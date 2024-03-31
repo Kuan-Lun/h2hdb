@@ -3,7 +3,7 @@ import logging
 from io import StringIO
 
 
-from hentaidb import setup_logger
+from ..logger import setup_logger
 
 
 class TestLogger(unittest.TestCase):
