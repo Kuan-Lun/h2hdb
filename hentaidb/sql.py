@@ -1,5 +1,3 @@
-from __future__ import barry_as_FLUFL
-
 from abc import ABCMeta, abstractmethod
 
 from mysql.connector import Error as MySQLError

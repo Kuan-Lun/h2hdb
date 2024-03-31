@@ -1,12 +1,14 @@
 import logging
 import unicodedata
 
+__all__ = ["logger"]
 
-def is_cjk(char: str):
+
+def is_cjk(char: str) -> bool:
     return "CJK UNIFIED" in unicodedata.name(char, "")
 
 
-def str_len(s: str):
+def str_len(s: str) -> int:
     length = 0
     for char in s:
         if is_cjk(char):
@@ -16,65 +18,80 @@ def str_len(s: str):
     return length
 
 
-def split_message(message: str, max_length: int):
+def split_message(message: str, max_length: int) -> list[str]:
     chunks = []
     chunk = ""
     chunk_len = 0
     for char in message:
-        if len(chunk) > 0 and chunk[0] == " ":
-            chunk = chunk[1:]
         char_len = 2 if is_cjk(char) else 1
         if chunk_len + char_len > max_length:
+            if chunk and chunk[0] == " ":
+                chunk = chunk[1:]
             chunks.append(chunk)
             chunk = ""
             chunk_len = 0
         chunk += char
         chunk_len += char_len
     if chunk:  # don't forget to append the last chunk
+        if chunk[0] == " ":
+            chunk = chunk[1:]
         chunks.append(chunk)
     return chunks
 
 
-def setup_logger(level: int = logging.DEBUG, max_length: int = 30) -> logging.Logger:
+def log_message(
+    level: int, message: str, max_length: int, original_log_message: callable
+) -> None:
+    chunks = split_message(message, max_length)
+    for chunk in chunks:
+        match level:
+            case logging.DEBUG:
+                original_log_message(chunk)
+            case logging.INFO:
+                original_log_message(chunk)
+            case logging.WARNING:
+                original_log_message(chunk)
+            case logging.ERROR:
+                original_log_message(chunk)
+            case logging.CRITICAL:
+                original_log_message(chunk)
+
+
+def setup_logger(level: str, max_length: int = 30) -> logging.Logger:
     logger = logging.getLogger()
-    logger.setLevel(
-        level
-    )  # logging.DEBUG or logging.INFO or logging.WARNING or logging.ERROR or logging.CRITICAL
+    level = {
+        "DEBUG": logging.DEBUG,
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "ERROR": logging.ERROR,
+        "CRITICAL": logging.CRITICAL,
+    }[level.upper()]
+    logger.setLevel(level)
     formatter = logging.Formatter(
-        "%(asctime)s %(name)-6s %(levelname)-8s %(filename)-10s %(funcName)-15s %(lineno)-3d %(message)s"
+        '"%(asctime)s","%(name)s","%(levelname)-8s","%(filename)-10s","%(funcName)-15s","%(lineno)-3d","%(message)s"'
     )
-    ch = logging.StreamHandler()
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
+    with open("logfile.csv", "w", encoding="utf-8") as f:
+        f.write('"timestamp","name","level","filename","function","lineno","message"\n')
+    handler = logging.FileHandler("logfile.csv", mode="a+", encoding="utf-8")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
-    # 保存原始的日志方法
-    original_debug = logger.debug
-    original_info = logger.info
-    original_warning = logger.warning
-    original_error = logger.error
-    original_critical = logger.critical
+    log_config = {
+        "debug": (logging.DEBUG, logger.debug),
+        "info": (logging.INFO, logger.info),
+        "warning": (logging.WARNING, logger.warning),
+        "error": (logging.ERROR, logger.error),
+        "critical": (logging.CRITICAL, logger.critical),
+    }
 
-    # 定义一个嵌套函数，用于处理日志消息的分行
-    def log_message(level: int, message: str):
-        chunks = split_message(message, max_length)
-        for chunk in chunks:
-            if level == logging.DEBUG:
-                original_debug(chunk)
-            elif level == logging.INFO:
-                original_info(chunk)
-            elif level == logging.WARNING:
-                original_warning(chunk)
-            elif level == logging.ERROR:
-                original_error(chunk)
-            elif level == logging.CRITICAL:
-                original_critical(chunk)
-
-    # 替换原来的 logger.info, logger.debug 等方法
-    logger.info = lambda message: log_message(logging.INFO, message)
-    logger.debug = lambda message: log_message(logging.DEBUG, message)
-    logger.warning = lambda message: log_message(logging.WARNING, message)
-    logger.error = lambda message: log_message(logging.ERROR, message)
-    logger.critical = lambda message: log_message(logging.CRITICAL, message)
+    for level_name, (level, original_function) in log_config.items():
+        setattr(
+            logger,
+            level_name,
+            lambda message, level=level, original_function=original_function: log_message(
+                level, message, max_length, original_function
+            ),
+        )
     return logger
 
 
