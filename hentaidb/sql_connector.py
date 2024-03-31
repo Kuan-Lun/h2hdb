@@ -1,11 +1,15 @@
+__all__ = ["hentaiDB"]
+
+
 from abc import ABCMeta, abstractmethod
 
-# from functools import partial
+# import logging
 
 from mysql.connector import Error as MySQLError
 from mysql.connector import connect as MySQLConnect
 
-from .config_loader import ConfigLoader
+from .logger import logger
+from .config_loader import config_loader
 
 
 class SQLConnectorParams(dict):
@@ -141,10 +145,14 @@ class DatabaseConfigurationError(Exception):
         super().__init__(self.message)
 
 
+def sql_type_to_name(sql_type: str) -> str:
+    match sql_type.lower():
+        case "mysql":
+            return "MySQL"
+
+
 class hentaiDB:
     def __init__(self):
-        config_loader = ConfigLoader()
-        self.sql_name = config_loader["database"]["sql_type"]
         self.sql_type = config_loader["database"]["sql_type"].lower()
         self.sql_connection_params = SQLConnectorParams(
             config_loader["database"]["host"],
@@ -163,6 +171,7 @@ class hentaiDB:
                 self.SQLError = MySQLError
 
     def check_database_character_set(self) -> None:
+        logger.info("Checking database character set...")
         with self.connector as conn:
             match self.sql_type:
                 case "mysql":
@@ -174,11 +183,13 @@ class hentaiDB:
                         == charset
                     )
         if not is_charset_valid:
-            raise DatabaseConfigurationError(
-                f"Invalid database character set. Must be '{charset}' for {self.sql_name}"
-            )
+            message = f"Invalid database character set. Must be '{charset}' for {sql_type_to_name(self.sql_type)}"
+            logger.error(message)
+            raise DatabaseConfigurationError(message)
+        logger.info("Database character set is valid.")
 
     def check_database_collation(self) -> None:
+        logger.info("Checking database collation...")
         with self.connector as conn:
             match self.sql_type:
                 case "mysql":
@@ -188,9 +199,10 @@ class hentaiDB:
                         == collation
                     )
         if not is_collation_valid:
-            raise DatabaseConfigurationError(
-                f"Invalid database collation. Must be '{collation}' for {self.sql_name}"
-            )
+            message = f"Invalid database collation. Must be '{collation}' for {sql_type_to_name(self.sql_type)}"
+            logger.error(message)
+            raise DatabaseConfigurationError(message)
+        logger.info("Database character set and collation are valid.")
 
     def __enter__(self):
         self.connector.connect()

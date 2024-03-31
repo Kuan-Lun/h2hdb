@@ -1,4 +1,4 @@
-__all__ = ["ConfigLoader"]
+__all__ = ["config_loader"]
 
 
 import argparse
@@ -34,5 +34,9 @@ class ConfigLoader(dict):
 
     Additional methods or attributes can be added to this class if there are specific behaviors you want for your configuration loading.
     """
+
     def __init__(self) -> None:
         super().__init__(load_config())
+
+
+config_loader = ConfigLoader()

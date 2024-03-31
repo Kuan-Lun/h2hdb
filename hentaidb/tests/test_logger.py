@@ -3,13 +3,15 @@ import logging
 from io import StringIO
 
 
-from ..logger import setup_logger
+from ..logger import setup_logger, reset_logger, logger
+
+reset_logger(logger)
 
 
 class TestLogger(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.logger = setup_logger("DEBUG")
+        cls.logger = setup_logger(level="DEBUG")
 
     def setUp(self) -> None:
         self.log_output = StringIO()
