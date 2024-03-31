@@ -5,7 +5,7 @@ __all__ = ["logger"]
 
 
 def is_cjk(char: str) -> bool:
-    return "CJK UNIFIED" in unicodedata.name(char, "")
+    return "CJK UNIFIED" in unicodedata.name(char, str())
 
 
 def str_len(s: str) -> int:
@@ -19,8 +19,8 @@ def str_len(s: str) -> int:
 
 
 def split_message(message: str, max_length: int) -> list[str]:
-    chunks = []
-    chunk = ""
+    chunks = list()
+    chunk = str()
     chunk_len = 0
     for char in message:
         char_len = 2 if is_cjk(char) else 1
@@ -28,7 +28,7 @@ def split_message(message: str, max_length: int) -> list[str]:
             if chunk and chunk[0] == " ":
                 chunk = chunk[1:]
             chunks.append(chunk)
-            chunk = ""
+            chunk = str()
             chunk_len = 0
         chunk += char
         chunk_len += char_len
@@ -58,15 +58,44 @@ def log_message(
 
 
 def setup_logger(level: str, max_length: int = 30) -> logging.Logger:
+    """
+    Set up a logger with the specified logging level and maximum message length.
+
+    This function creates a logger, sets its level to the specified value, and modifies its behavior to split log messages into chunks if they exceed the maximum length.
+
+    Parameters:
+    level (str): The logging level as a string. Should be one of "DEBUG", "INFO", "WARNING", "ERROR", or "CRITICAL".
+    max_length (int, optional): The maximum length of a log message. If a message exceeds this length, it will be split into multiple chunks. Default is 30.
+
+    Returns:
+    logging.Logger: The configured logger.
+    """
+
+    def reset_level(level: str) -> int:
+        """
+        Convert a string representation of a logging level to its corresponding constant.
+
+        Parameters:
+        level (str): The logging level as a string. Should be one of "DEBUG", "INFO", "WARNING", "ERROR", or "CRITICAL".
+
+        Returns:
+        int: The logging level as a constant. If the input is not a valid logging level, a ValueError is raised.
+        """
+        LOG_LEVELS = {
+            "DEBUG": logging.DEBUG,
+            "INFO": logging.INFO,
+            "WARNING": logging.WARNING,
+            "ERROR": logging.ERROR,
+            "CRITICAL": logging.CRITICAL,
+        }
+        level = level.upper()
+        if level not in LOG_LEVELS:
+            raise ValueError(f"Invalid logging level: {level}")
+        return LOG_LEVELS[level]
+
     logger = logging.getLogger()
-    level = {
-        "DEBUG": logging.DEBUG,
-        "INFO": logging.INFO,
-        "WARNING": logging.WARNING,
-        "ERROR": logging.ERROR,
-        "CRITICAL": logging.CRITICAL,
-    }[level.upper()]
-    logger.setLevel(level)
+    logging_level = reset_level(level)
+    logger.setLevel(logging_level)
     formatter = logging.Formatter(
         '"%(asctime)s","%(name)s","%(levelname)-8s","%(filename)-10s","%(funcName)-15s","%(lineno)-3d","%(message)s"'
     )
@@ -93,11 +122,3 @@ def setup_logger(level: str, max_length: int = 30) -> logging.Logger:
             ),
         )
     return logger
-
-
-# logger = setup_logger(logging.INFO)
-# logger.debug("這是一條 debug 級別的日誌")
-# logger.info("這是一條 info 級別的日誌")
-# logger.warning("這是一條 warning 級別的日誌")
-# logger.error("這是一條 error 級別的日誌")
-# logger.critical("這是一條 critical 級別的日誌")
