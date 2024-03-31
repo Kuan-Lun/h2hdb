@@ -4,7 +4,6 @@ __all__ = ["logger"]
 import logging
 import unicodedata
 import sys
-from types import FrameType
 
 from .config_loader import config_loader
 
@@ -24,29 +23,33 @@ def str_len(s: str) -> int:
 
 
 def split_message(message: str, max_length: int) -> list[str]:
-    chunks = list()
-    chunk = str()
-    chunk_len = 0
-    for char in message:
-        char_len = 2 if is_cjk(char) else 1
-        if chunk_len + char_len > max_length:
-            if chunk and chunk[0] == " ":
+    if max_length < 0:
+        return [message]
+    else:
+        chunks = list()
+        chunk = str()
+        chunk_len = 0
+        for char in message:
+            char_len = 2 if is_cjk(char) else 1
+            if chunk_len + char_len > max_length:
+                if chunk and chunk[0] == " ":
+                    chunk = chunk[1:]
+                chunks.append(chunk)
+                chunk = str()
+                chunk_len = 0
+            chunk += char
+            chunk_len += char_len
+        if chunk:  # don't forget to append the last chunk
+            if chunk[0] == " ":
                 chunk = chunk[1:]
             chunks.append(chunk)
-            chunk = str()
-            chunk_len = 0
-        chunk += char
-        chunk_len += char_len
-    if chunk:  # don't forget to append the last chunk
-        if chunk[0] == " ":
-            chunk = chunk[1:]
-        chunks.append(chunk)
-    return chunks
+        return chunks
 
 
 def log_message(
-    logger: logging.Logger, level: int, message: str, max_length: int, frame: FrameType
+    logger: logging.Logger, level: int, message: str, max_length: int
 ) -> None:
+    frame = sys._getframe(3)
     chunks = split_message(message, max_length)
     for chunk in chunks:
         record = logger.makeRecord(
@@ -62,6 +65,15 @@ def log_message(
         logger.handle(record)
 
 
+log_config = {
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+    "critical": logging.INFO,
+}
+
+
 def reset_level(level: str) -> int:
     """
     Convert a string representation of a logging level to its corresponding constant.
@@ -72,7 +84,7 @@ def reset_level(level: str) -> int:
     Returns:
     int: The logging level as a constant. If the input is not a valid logging level, a ValueError is raised.
     """
-    LOG_LEVELS = {
+    log_config = {
         "DEBUG": logging.DEBUG,
         "INFO": logging.INFO,
         "WARNING": logging.WARNING,
@@ -80,9 +92,9 @@ def reset_level(level: str) -> int:
         "CRITICAL": logging.CRITICAL,
     }
     level = level.upper()
-    if level not in LOG_LEVELS:
+    if level not in log_config:
         raise ValueError(f"Invalid logging level: {level}")
-    return LOG_LEVELS[level]
+    return log_config[level]
 
 
 class HentaiDBLogger:
@@ -93,7 +105,7 @@ class HentaiDBLogger:
         level (str): The logging level. Can be one of 'debug', 'info', 'warning', 'error', 'critical'.
         display_on_screen (bool): Whether to display the log messages on screen.
         display_on_file (str): The path of the log file to which the log messages are written.
-        max_length (int): The maximum length of the log messages. This only applies to messages logged to the file specified by `display_on_file`.
+        max_length (int): The maximum length of the log messages. This only applies to messages logged to the file specified by `display_on_screen`.
 
     It allows logging messages at different levels (debug, info, warning, error, critical) to both the screen and a log file.
     The logging level, whether to display on screen, the log file path, and the maximum log length can be configured upon initialization.
@@ -142,6 +154,18 @@ class HentaiDBLogger:
                 formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
                 handler.setFormatter(formatter)
                 screen_logger.addHandler(handler)
+
+            for level_name, level in log_config.items():
+
+                def reset_log_message(message: str):
+                    return log_message(
+                        logger=screen_logger,
+                        level=level,
+                        message=message,
+                        max_length=max_length,
+                    )
+
+                setattr(screen_logger, level_name, reset_log_message)
             return screen_logger
 
         self.screen_logger = setup_screen_logger()
@@ -163,26 +187,17 @@ class HentaiDBLogger:
                 handler.setFormatter(formatter)
                 file_logger.addHandler(handler)
 
-            log_config = {
-                "debug": logging.DEBUG,
-                "info": logging.INFO,
-                "warning": logging.WARNING,
-                "error": logging.ERROR,
-                "critical": logging.INFO,
-            }
-
             for level_name, level in log_config.items():
-                setattr(
-                    file_logger,
-                    level_name,
-                    lambda message, level=level: log_message(
+
+                def reset_log_message(message: str):
+                    return log_message(
                         logger=file_logger,
                         level=level,
                         message=message,
-                        max_length=max_length,
-                        frame=sys._getframe(2),
-                    ),
-                )
+                        max_length=-1,
+                    )
+
+                setattr(file_logger, level_name, reset_log_message)
             return file_logger
 
         self.file_logger = setup_file_logger()
@@ -224,7 +239,7 @@ def setup_logger(
     level: str,
     display_on_screen: bool = False,
     display_on_file: str = None,
-    max_length: int = 50,
+    max_length: int = -1,
 ) -> HentaiDBLogger:
     """
     Set up a logger with the specified logging level and maximum message length.

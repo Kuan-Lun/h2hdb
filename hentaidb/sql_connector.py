@@ -1,7 +1,8 @@
-__all__ = ["hentaiDB"]
+__all__ = ["HentaiDB"]
 
 
 from abc import ABCMeta, abstractmethod
+import re
 
 # import logging
 
@@ -104,10 +105,13 @@ class MySQLConnector(SQLConnector):
     def __init__(
         self, host: str, port: str, user: str, password: str, database: str
     ) -> None:
+        logger.debug("Initializing MySQL connector...")
         super().__init__(host, port, user, password, database)
         self.connection = None
+        logger.debug("MySQL connector initialized.")
 
     def connect(self) -> None:
+        logger.debug("Establishing MySQL connection...")
         self.connection = MySQLConnect(
             host=self.host,
             port=self.port,
@@ -115,17 +119,22 @@ class MySQLConnector(SQLConnector):
             password=self.password,
             database=self.database,
         )
+        logger.debug("MySQL connection established.")
 
     def close(self) -> bool:
+        logger.debug("Closing MySQL connection...")
         self.connection.close()
+        logger.debug("MySQL connection closed.")
 
     def execute(self, query: str, data: tuple = ()) -> None:
+        logger.debug(f"Executing MySQL query: {query}")
         cursor = self.connection.cursor()
         cursor.execute(query, data)
         self.connection.commit()
         cursor.close()
 
     def fetch(self, query: str, data: tuple = ()) -> list:
+        logger.debug(f"Fetching results for MySQL query: {query}")
         cursor = self.connection.cursor()
         cursor.execute(query, data)
         vlist = cursor.fetchall()
@@ -151,30 +160,41 @@ def sql_type_to_name(sql_type: str) -> str:
             return "MySQL"
 
 
-class hentaiDB:
-    def __init__(self):
+class HentaiDB:
+    def __init__(self) -> None:
         self.sql_type = config_loader["database"]["sql_type"].lower()
         self.sql_connection_params = SQLConnectorParams(
             config_loader["database"]["host"],
             config_loader["database"]["port"],
             config_loader["database"]["user"],
             config_loader["database"]["password"],
-            config_loader["database"]["database"] + "_0",
+            config_loader["database"]["database"],
         )
+
+        # Set the appropriate connector based on the SQL type
+        logger.debug("Setting connector...")
         match self.sql_type:
             case "mysql":
+                logger.debug("Setting MySQL connector...")
                 self.connector = MySQLConnector(**self.sql_connection_params)
             case _:
                 raise ValueError("Unsupported SQL type")
+        logger.debug("Connector set.")
+
+        # Set the appropriate error class based on the SQL type
+        logger.debug("Setting error class...")
         match self.sql_type:
             case "mysql":
+                logger.debug("Setting MySQL error class...")
                 self.SQLError = MySQLError
+        logger.debug("Error class set.")
 
     def check_database_character_set(self) -> None:
-        logger.info("Checking database character set...")
+        logger.debug("Checking database character set...")
         with self.connector as conn:
             match self.sql_type:
                 case "mysql":
+                    logger.debug("Checking database character set for MySQL...")
                     charset = "utf8mb4"
                     is_charset_valid = (
                         conn.fetch("SHOW VARIABLES LIKE 'character_set_database';")[0][
@@ -182,6 +202,8 @@ class hentaiDB:
                         ]
                         == charset
                     )
+
+        logger.debug(f"Database character set: {charset}")
         if not is_charset_valid:
             message = f"Invalid database character set. Must be '{charset}' for {sql_type_to_name(self.sql_type)}"
             logger.error(message)
@@ -189,10 +211,11 @@ class hentaiDB:
         logger.info("Database character set is valid.")
 
     def check_database_collation(self) -> None:
-        logger.info("Checking database collation...")
+        logger.debug("Checking database collation...")
         with self.connector as conn:
             match self.sql_type:
                 case "mysql":
+                    logger.debug("Checking database collation for MySQL...")
                     collation = "utf8mb4_bin"
                     is_collation_valid = (
                         conn.fetch("SHOW VARIABLES LIKE 'collation_database';")[0][1]
@@ -204,15 +227,56 @@ class hentaiDB:
             raise DatabaseConfigurationError(message)
         logger.info("Database character set and collation are valid.")
 
-    def __enter__(self):
+    def __enter__(self) -> "HentaiDB":
         self.connector.connect()
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback):
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.connector.close()
 
-    def execute(self, query: str, data: tuple = ()):
+    def execute(self, query: str, data: tuple = ()) -> None:
+        logger.info(f"Executing SQL query: {query}")
         self.connector.execute(query, data)
 
-    def fetch(self, query: str, data: tuple = ()):
+    def fetch(self, query: str, data: tuple = ()) -> list:
+        logger.info(f"Fetching results for SQL query: {query}")
         return self.connector.fetch(query, data)
+
+    def create_gallery_name_id_table(self) -> None:
+        logger.debug("Creating GalleryNameID table...")
+        match self.sql_type:
+            case "mysql":
+                query = """
+                    CREATE TABLE IF NOT EXISTS GalleryNameID (
+                        GalleryName CHAR(255) NOT NULL,
+                        GalleryNameID INT UNSIGNED AUTO_INCREMENT,
+                        PRIMARY KEY (GalleryNameID)
+                        )
+                    """
+        query = mullines2oneline(query)
+        logger.debug(f"Query: {query}")
+        with self.connector as conn:
+            conn.execute(query)
+        logger.info("GalleryNameID table created.")
+
+    def create_gid_table(self) -> None:
+        logger.debug("Creating GID table...")
+        match self.sql_type:
+            case "mysql":
+                query = """
+                    CREATE TABLE IF NOT EXISTS GID (
+                        GalleryNameID INT UNSIGNED,
+                        GID INT UNSIGNED NOT NULL,
+                        FOREIGN KEY (GalleryNameID) REFERENCES GalleryNameID(GalleryNameID),
+                        INDEX (GID, GalleryNameID)
+                    )
+                """
+        query = mullines2oneline(query)
+        logger.debug(f"Query: {query}")
+        with self.connector as conn:
+            conn.execute(query)
+        logger.info("GID table created.")
+
+
+def mullines2oneline(s: str) -> str:
+    return re.sub(" +", " ", s).replace("\n", " ").strip()
