@@ -155,17 +155,17 @@ class HentaiDBLogger:
                 handler.setFormatter(formatter)
                 screen_logger.addHandler(handler)
 
-            for level_name, level in log_config.items():
+            # for level_name, level in log_config.items():
 
-                def reset_log_message(message: str):
-                    return log_message(
-                        logger=screen_logger,
-                        level=level,
-                        message=message,
-                        max_length=max_length,
-                    )
+            #     def reset_log_message(message: str):
+            #         return log_message(
+            #             logger=screen_logger,
+            #             level=level,
+            #             message=message,
+            #             max_length=max_length,
+            #         )
 
-                setattr(screen_logger, level_name, reset_log_message)
+            #     setattr(screen_logger, level_name, reset_log_message)
             return screen_logger
 
         self.screen_logger = setup_screen_logger()
@@ -176,28 +176,28 @@ class HentaiDBLogger:
             if display_on_file is not None:
                 with open(display_on_file, "w", encoding="utf-8") as f:
                     f.write(
-                        '"time stamp","name","level","filename","function","line no.","message"\n'
+                        '"time stamp","level","filename","line no.","message"\n'
                     )
                 handler = logging.FileHandler(
                     display_on_file, mode="a+", encoding="utf-8"
                 )
                 formatter = logging.Formatter(
-                    '"%(asctime)s","%(name)-6s","%(levelname)-8s","%(filename)-10s","%(funcName)-10s","%(lineno)-3d","%(message)s"'
+                    '"%(asctime)s","%(levelname)-8s","%(filename)-10s","%(lineno)-3d","%(message)s"'
                 )
                 handler.setFormatter(formatter)
                 file_logger.addHandler(handler)
 
-            for level_name, level in log_config.items():
+            # for level_name, level in log_config.items():
 
-                def reset_log_message(message: str):
-                    return log_message(
-                        logger=file_logger,
-                        level=level,
-                        message=message,
-                        max_length=-1,
-                    )
+            #     def reset_log_message(message: str):
+            #         return log_message(
+            #             logger=file_logger,
+            #             level=level,
+            #             message=message,
+            #             max_length=-1,
+            #         )
 
-                setattr(file_logger, level_name, reset_log_message)
+            #     setattr(file_logger, level_name, reset_log_message)
             return file_logger
 
         self.file_logger = setup_file_logger()
