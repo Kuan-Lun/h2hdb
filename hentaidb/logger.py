@@ -4,6 +4,7 @@ __all__ = ["logger"]
 import logging
 import unicodedata
 import sys
+from functools import partial
 
 from .config_loader import config_loader
 
@@ -47,7 +48,7 @@ def split_message(message: str, max_length: int) -> list[str]:
 
 
 def log_message(
-    logger: logging.Logger, level: int, message: str, max_length: int
+    logger: logging.Logger, level: int, max_length: int, message: str
 ) -> None:
     frame = sys._getframe(3)
     chunks = split_message(message, max_length)
@@ -97,6 +98,46 @@ def reset_level(level: str) -> int:
     return log_config[level]
 
 
+def setup_screen_logger(level: int, max_length: int) -> logging.Logger:
+    screen_logger = logging.getLogger("display_on_screen")
+    screen_logger.setLevel(level)
+
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    handler.setFormatter(formatter)
+    screen_logger.addHandler(handler)
+
+    for level_name, level_value in log_config.items():
+        if level_value < level:
+            continue
+        partial_log_message = partial(
+            log_message, screen_logger, level_value, max_length
+        )
+        setattr(screen_logger, level_name, partial_log_message)
+    return screen_logger
+
+
+def setup_file_logger(display_on_file: str, level: int) -> logging.Logger:
+    file_logger = logging.getLogger("display_on_file")
+    file_logger.setLevel(level)
+
+    with open(display_on_file, "w", encoding="utf-8") as f:
+        f.write('"time stamp","level","filename","line no.","message"\n')
+    handler = logging.FileHandler(display_on_file, mode="a+", encoding="utf-8")
+    formatter = logging.Formatter(
+        '"%(asctime)s","%(levelname)-8s","%(filename)-10s","%(lineno)-3d","%(message)s"'
+    )
+    handler.setFormatter(formatter)
+    file_logger.addHandler(handler)
+
+    for level_name, level_value in log_config.items():
+        if level_value < level:
+            continue
+        partial_log_message = partial(log_message, file_logger, level_value, -1)
+        setattr(file_logger, level_name, partial_log_message)
+    return file_logger
+
+
 class HentaiDBLogger:
     """
     The HentaiDBLogger class provides a custom logging interface for the HentaiDB application.
@@ -144,63 +185,11 @@ class HentaiDBLogger:
         max_length: int,
     ):
         logging_level = reset_level(level)
+        if display_on_screen:
+            self.screen_logger = setup_screen_logger(logging_level, max_length)
 
-        def setup_screen_logger() -> logging.Logger:
-            screen_logger = logging.getLogger("display_on_screen")
-            screen_logger.setLevel(logging_level)
-
-            if display_on_screen:
-                handler = logging.StreamHandler()
-                formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-                handler.setFormatter(formatter)
-                screen_logger.addHandler(handler)
-
-            # for level_name, level in log_config.items():
-
-            #     def reset_log_message(message: str):
-            #         return log_message(
-            #             logger=screen_logger,
-            #             level=level,
-            #             message=message,
-            #             max_length=max_length,
-            #         )
-
-            #     setattr(screen_logger, level_name, reset_log_message)
-            return screen_logger
-
-        self.screen_logger = setup_screen_logger()
-
-        def setup_file_logger() -> logging.Logger:
-            file_logger = logging.getLogger("display_on_file")
-            file_logger.setLevel(logging_level)
-            if display_on_file is not None:
-                with open(display_on_file, "w", encoding="utf-8") as f:
-                    f.write(
-                        '"time stamp","level","filename","line no.","message"\n'
-                    )
-                handler = logging.FileHandler(
-                    display_on_file, mode="a+", encoding="utf-8"
-                )
-                formatter = logging.Formatter(
-                    '"%(asctime)s","%(levelname)-8s","%(filename)-10s","%(lineno)-3d","%(message)s"'
-                )
-                handler.setFormatter(formatter)
-                file_logger.addHandler(handler)
-
-            # for level_name, level in log_config.items():
-
-            #     def reset_log_message(message: str):
-            #         return log_message(
-            #             logger=file_logger,
-            #             level=level,
-            #             message=message,
-            #             max_length=-1,
-            #         )
-
-            #     setattr(file_logger, level_name, reset_log_message)
-            return file_logger
-
-        self.file_logger = setup_file_logger()
+        if display_on_file is not None:
+            self.file_logger = setup_file_logger(display_on_file, logging_level)
 
     def hasHandlers(self) -> bool:
         return self.screen_logger.hasHandlers() or self.file_logger.hasHandlers()
