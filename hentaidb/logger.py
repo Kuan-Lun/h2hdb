@@ -5,25 +5,35 @@ import logging
 import unicodedata
 import sys
 from functools import partial
+import unicodedata
 
 from .config_loader import config_loader
 
 
 def is_cjk(char: str) -> bool:
+    """
+    Check if a character is a CJK (Chinese, Japanese, Korean) character.
+
+    Args:
+        char (str): The character to check.
+
+    Returns:
+        bool: True if the character is a CJK character, False otherwise.
+    """
     return "CJK UNIFIED" in unicodedata.name(char, str())
 
 
-def str_len(s: str) -> int:
-    length = 0
-    for char in s:
-        if is_cjk(char):
-            length += 2
-        else:
-            length += 1
-    return length
+def split_message_with_cjk(message: str, max_length: int) -> list[str]:
+    """
+    Splits a message into chunks of a specified maximum length, taking into account the width of CJK characters.
 
+    Args:
+        message (str): The message to be split.
+        max_length (int): The maximum length of each chunk. Note that CJK characters count as 2 towards this limit.
 
-def split_message(message: str, max_length: int) -> list[str]:
+    Returns:
+        list[str]: A list of chunks, where each chunk is a substring of the original message.
+    """
     if max_length < 0:
         return [message]
     else:
@@ -51,7 +61,7 @@ def log_message(
     logger: logging.Logger, level: int, max_length: int, message: str
 ) -> None:
     frame = sys._getframe(3)
-    chunks = split_message(message, max_length)
+    chunks = split_message_with_cjk(message, max_length)
     for chunk in chunks:
         record = logger.makeRecord(
             logger.name,
@@ -99,6 +109,16 @@ def reset_level(level: str) -> int:
 
 
 def setup_screen_logger(level: int, max_length: int) -> logging.Logger:
+    """
+    Set up a logger that displays log messages on the screen.
+
+    Args:
+        level (int): The logging level to set for the logger.
+        max_length (int): The maximum length of log messages.
+
+    Returns:
+        logging.Logger: The configured logger instance.
+    """
     screen_logger = logging.getLogger("display_on_screen")
     screen_logger.setLevel(level)
 
@@ -118,6 +138,17 @@ def setup_screen_logger(level: int, max_length: int) -> logging.Logger:
 
 
 def setup_file_logger(display_on_file: str, level: int) -> logging.Logger:
+    """
+    Set up a file logger with the specified log level and log file.
+
+    Args:
+        display_on_file (str): The path to the log file.
+        level (int): The log level to be set for the file logger.
+
+    Returns:
+        logging.Logger: The configured file logger.
+
+    """
     file_logger = logging.getLogger("display_on_file")
     file_logger.setLevel(level)
 

@@ -410,12 +410,12 @@ class ComicDB:
             case "mysql":
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
-                        Name_Part1 CHAR(191) NOT NULL,
-                        Name_Part2 CHAR(64) NOT NULL,
+                        Part1 CHAR(191) NOT NULL,
+                        Part2 CHAR(64) NOT NULL,
                         DBID INT UNSIGNED AUTO_INCREMENT,
-                        UNIQUE Full_Name (Name_Part1, Name_Part2),
+                        UNIQUE Full_Name (Part1, Part2),
                         PRIMARY KEY (DBID),
-                        INDEX Name_Part2 (Name_Part2)
+                        INDEX Part2 (Part2)
                     )
                 """
         query = mullines2oneline(query)
@@ -431,7 +431,7 @@ class ComicDB:
             case "mysql":
                 query = f"""
                     CREATE VIEW IF NOT EXISTS {table_name} AS
-                    SELECT CONCAT(Name_Part1, Name_Part2) AS Name, DBID
+                    SELECT CONCAT(Part1, Part2) AS Name, DBID
                     FROM Gallery_DBID
                 """
         query = mullines2oneline(query)
@@ -457,10 +457,10 @@ class ComicDB:
         match self.sql_type:
             case "mysql":
                 insert_query = f"""
-                    INSERT INTO {table_name} (Name_Part1, Name_Part2) VALUES (%s, %s)
+                    INSERT INTO {table_name} (Part1, Part2) VALUES (%s, %s)
                 """
                 select_query = f"""
-                    SELECT DBID FROM {table_name} WHERE Name_Part1 = %s AND Name_Part2 = %s
+                    SELECT DBID FROM {table_name} WHERE Part1 = %s AND Part2 = %s
                 """
                 DuplicateKeyError = MySQLDuplicateKeyError
         insert_query, select_query = (
@@ -615,6 +615,148 @@ class ComicDB:
     def insert_access_time(self, gallery_name_id: int, time: str) -> None:
         self._insert_time("Access_Time", gallery_name_id, time)
 
+    def create_title_parts_table(self) -> None:
+        table_name = "Title_Parts"
+        logger.debug(f"Creating {table_name} table...")
+        match self.sql_type:
+            case "mysql":
+                query = f"""
+                    CREATE TABLE IF NOT EXISTS {table_name} (
+                        DBID INT UNSIGNED NOT NULL,
+                        Part1 CHAR(191) NOT NULL,
+                        Part2 CHAR(191) NOT NULL,
+                        Part3 CHAR(191) NOT NULL,
+                        FOREIGN KEY (DBID) REFERENCES Gallery_DBID(DBID),
+                        INDEX (Part1, Part2, Part3, DBID)
+                    )
+                """
+        query = mullines2oneline(query)
+        logger.debug(f"Query: {query}")
+        with self.connector as conn:
+            conn.execute(query)
+        logger.info(f"{table_name} table created.")
+
+    def create_title_view(self) -> None:
+        table_name = "Title"
+        logger.debug(f"Creating {table_name} view...")
+        match self.sql_type:
+            case "mysql":
+                query = f"""
+                    CREATE VIEW IF NOT EXISTS {table_name} AS
+                    SELECT CONCAT(Part1, Part2, Part3) AS Title, DBID
+                    FROM Title_Parts
+                """
+        query = mullines2oneline(query)
+        logger.debug(f"Query: {query}")
+        with self.connector as conn:
+            conn.execute(query)
+        logger.info(f"{table_name} view created.")
+
+    def insert_title(self, gallery_name_id: int, title: str) -> None:
+        logger.debug(
+            f"Inserting title '{title}' for gallery name ID {gallery_name_id}..."
+        )
+        table_name = "Title_Parts"
+        if len(title) > 573:
+            logger.error(
+                f"Title '{title}' is too long. Must be 573 characters or less."
+            )
+            raise ValueError("Title is too long.")
+        title_part1 = title[0:191]
+        title_part2 = title[191:382]
+        title_part3 = title[382:573]
+        logger.debug(
+            f"Title '{title}' split into parts '{title_part1}', '{title_part2}', and '{title_part3}'"
+        )
+
+        match self.sql_type:
+            case "mysql":
+                insert_query = f"""
+                    INSERT INTO {table_name} (DBID, Part1, Part2, Part3) VALUES (%s, %s, %s, %s)
+                """
+                select_query = f"""
+                    SELECT Part1, Part2, Part3 FROM {table_name} WHERE DBID = %s AND Part1 = %s AND Part2 = %s AND Part3 = %s
+                """
+                DuplicateKeyError = MySQLDuplicateKeyError
+        insert_query, select_query = (
+            mullines2oneline(query) for query in (insert_query, select_query)
+        )
+        data = (gallery_name_id, title_part1, title_part2, title_part3)
+
+        with self.connector as conn:
+            logger.debug(f"Insert query: {insert_query}")
+            try:
+                conn.execute(insert_query, data)
+                conn.commit()
+                logger.debug(
+                    f"Title '{title}' inserted for gallery name ID {gallery_name_id}."
+                )
+            except DuplicateKeyError:
+                logger.warning(
+                    f"Title '{title}' for gallery name ID {gallery_name_id} already exists."
+                )
+        logger.info(f"Title '{title}' inserted for gallery name ID {gallery_name_id}.")
+
+    def create_upload_account_table(self) -> None:
+        table_name = "Upload_Account"
+        logger.debug(f"Creating {table_name} table...")
+        match self.sql_type:
+            case "mysql":
+                query = f"""
+                    CREATE TABLE IF NOT EXISTS {table_name} (
+                        DBID INT UNSIGNED NOT NULL,
+                        Account CHAR(191) NOT NULL,
+                        FOREIGN KEY (DBID) REFERENCES Gallery_DBID(DBID),
+                        INDEX (Account, DBID)
+                    )
+                """
+        query = mullines2oneline(query)
+        logger.debug(f"Query: {query}")
+        with self.connector as conn:
+            conn.execute(query)
+        logger.info(f"{table_name} table created.")
+
+    def insert_upload_account(self, gallery_name_id: int, account: str) -> None:
+        logger.debug(
+            f"Inserting upload account '{account}' for gallery name ID {gallery_name_id}..."
+        )
+        table_name = "Upload_Account"
+        if len(account) > 191:
+            logger.error(
+                f"Upload account '{account}' is too long. Must be 191 characters or less."
+            )
+            raise ValueError("Upload account is too long.")
+
+        match self.sql_type:
+            case "mysql":
+                insert_query = f"""
+                    INSERT INTO {table_name} (DBID, Account) VALUES (%s, %s)
+                """
+                select_query = f"""
+                    SELECT Account FROM {table_name} WHERE DBID = %s AND Account = %s
+                """
+                DuplicateKeyError = MySQLDuplicateKeyError
+        insert_query, select_query = (
+            mullines2oneline(query) for query in (insert_query, select_query)
+        )
+        data = (gallery_name_id, account)
+
+        with self.connector as conn:
+            logger.debug(f"Insert query: {insert_query}")
+            try:
+                conn.execute(insert_query, data)
+                conn.commit()
+                logger.debug(
+                    f"Upload account '{account}' inserted for gallery name ID {gallery_name_id}."
+                )
+            except DuplicateKeyError:
+                logger.warning(
+                    f"Upload account '{account}' for gallery name ID {gallery_name_id} already exists."
+                )
+        logger.info(
+            f"Upload account '{account}' inserted for gallery name ID {gallery_name_id}."
+        )
+
     def create_gallery_info_view(self) -> None:
         logger.debug("Creating Gallery_Info view...")
         match self.sql_type:
@@ -624,16 +766,20 @@ class ComicDB:
                     SELECT
                         Gallery_Name.DBID AS DBID,
                         Gallery_Name.Name AS Name,
+                        Title.Title AS Title,
                         GID.GID AS GID,
-                        Download_Time.Time AS Download_Time,
+                        Upload_Account.Account AS Account,
                         Upload_Time.Time AS Upload_Time,
+                        Download_Time.Time AS Download_Time,
                         Modified_Time.Time AS Modified_Time,
                         Access_Time.Time AS Access_Time
                     FROM
                         Gallery_Name
+                        LEFT JOIN Title USING (DBID)
                         LEFT JOIN GID USING (DBID)
-                        LEFT JOIN Download_Time USING (DBID)
+                        LEFT JOIN Upload_Account USING (DBID)
                         LEFT JOIN Upload_Time USING (DBID)
+                        LEFT JOIN Download_Time USING (DBID)
                         LEFT JOIN Modified_Time USING (DBID)
                         LEFT JOIN Access_Time USING (DBID)
                 """
@@ -642,6 +788,43 @@ class ComicDB:
         with self.connector as conn:
             conn.execute(query)
         logger.info("Gallery_Info view created.")
+
+    def create_uploader_comment_table(self) -> None:
+        table_name = "Uploader_Comment"
+        logger.debug(f"Creating {table_name} table...")
+        match self.sql_type:
+            case "mysql":
+                query = f"""
+                    CREATE TABLE IF NOT EXISTS {table_name} (
+                        DBID INT UNSIGNED NOT NULL,
+                        Comment TEXT NOT NULL,
+                        FOREIGN KEY (DBID) REFERENCES Gallery_DBID(DBID),
+                        FULLTEXT (Comment)
+                    )
+                """
+        query = mullines2oneline(query)
+        logger.debug(f"Query: {query}")
+        with self.connector as conn:
+            conn.execute(query)
+        logger.info(f"{table_name} table created.")
+
+    def insert_uploader_comment(self, gallery_name_id: int, comment: str) -> None:
+        logger.debug(
+            f"Inserting uploader comment for gallery name ID {gallery_name_id}..."
+        )
+        table_name = "Uploader_Comment"
+        match self.sql_type:
+            case "mysql":
+                insert_query = f"""
+                    INSERT INTO {table_name} (DBID, Comment) VALUES (%s, %s)
+                """
+        insert_query = mullines2oneline(insert_query)
+        data = (gallery_name_id, comment)
+
+        with self.connector as conn:
+            logger.debug(f"Insert query: {insert_query}")
+            conn.execute(insert_query, data)
+        logger.info(f"Uploader comment inserted for gallery name ID {gallery_name_id}.")
 
 
 def mullines2oneline(s: str) -> str:
