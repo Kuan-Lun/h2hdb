@@ -768,7 +768,7 @@ class ComicDB:
                         Gallery_Name.Name AS Name,
                         Title.Title AS Title,
                         GID.GID AS GID,
-                        Upload_Account.Account AS Account,
+                        Upload_Account.Account AS Upload_Account,
                         Upload_Time.Time AS Upload_Time,
                         Download_Time.Time AS Download_Time,
                         Modified_Time.Time AS Modified_Time,
