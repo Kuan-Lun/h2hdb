@@ -1041,7 +1041,7 @@ class ComicDB:
         )
         with open(file_path, "rb") as f:
             file_content = f.read()
-        hash_value = hashlib.sha3_512(file_content).hexdigest()
+        hash_value = hashlib.sha512(file_content).hexdigest()
 
         logger.debug(
             f"Inserting image hash '{hash_value}' for image ID {image_id} and file '{file_path}'..."
@@ -1104,7 +1104,8 @@ class ComicDB:
                         DB_Image_ID IN (
                             SELECT
                                 DB_Image_ID
-                            FROM DB_Image_ID
+                            FROM
+                                DB_Image_ID
                             WHERE
                                 DB_Gallery_ID = (
                                     SELECT
