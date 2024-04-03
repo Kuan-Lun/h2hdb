@@ -234,7 +234,6 @@ class MySQLConnector(SQLConnector):
     ) -> None:
         logger.debug("Initializing MySQL connector...")
         super().__init__(host, port, user, password, database)
-        self.connection = None
         logger.debug("MySQL connector initialized.")
 
     def connect(self) -> None:
@@ -248,7 +247,7 @@ class MySQLConnector(SQLConnector):
         )
         logger.debug("MySQL connection established.")
 
-    def close(self) -> bool:
+    def close(self) -> None:
         logger.debug("Closing MySQL connection...")
         self.connection.close()
         logger.debug("MySQL connection closed.")
@@ -277,7 +276,7 @@ class MySQLConnector(SQLConnector):
         cursor.execute(query, data)
         vlist = cursor.fetchone()
         cursor.close()
-        return vlist
+        return vlist  # type: ignore
 
     def fetch_all(self, query: str, data: tuple = ()) -> list:
         logger.debug(f"Fetching results for MySQL query: {query}")
@@ -315,7 +314,8 @@ class DatabaseDuplicateKeyError(Exception):
 def sql_type_to_name(sql_type: str) -> str:
     match sql_type.lower():
         case "mysql":
-            return "MySQL"
+            name = "MySQL"
+    return name
 
 
 class ComicDB:

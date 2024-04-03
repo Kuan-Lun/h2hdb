@@ -1,7 +1,6 @@
 __all__ = ["get_gallery_info_path", "parse_gallery_info"]
 
 
-from typing import Union
 import os
 from copy import deepcopy
 import datetime
@@ -43,6 +42,11 @@ class GalleryInfoParser:
         self.tags = tags
 
 
+gallery_info_may_tag_type = str | dict[str, str]
+gallery_info_content_type = int | str | dict[str, str] | list[str]
+gallery_info_type = dict[str, gallery_info_content_type]
+
+
 def parse_gallery_info(
     folder_path: str,
 ) -> GalleryInfoParser:
@@ -50,9 +54,9 @@ def parse_gallery_info(
     with open(gallery_info_path, "r", encoding="utf-8") as file:
         lines = file.readlines()
 
-    info = dict()
+    info: gallery_info_type = dict[str, gallery_info_content_type]()
     info["db_gallery_id"] = os.path.basename(folder_path)
-    info["gid"] = convert_gallery_dbid_to_gid(info["db_gallery_id"])
+    info["gid"] = convert_gallery_dbid_to_gid(str(info["db_gallery_id"]))
     info["files_path"] = os.listdir(folder_path)
     info["modified_time"] = get_last_modified_time(gallery_info_path)
     comments = False
@@ -70,34 +74,32 @@ def parse_gallery_info(
             value = value.strip()
 
             if key == "Tags":
-                tags = {}
+                tags = dict[str, str]()
                 for tag in value.split(","):
                     if ":" in tag:
                         tag_key, tag_value = tag.split(":", 1)
                         tags[tag_key.strip()] = tag_value.strip()
                     else:
                         tags["no_tag"] = tag.strip()
-                value = tags
-
-            info[key] = value
+                info[key] = tags
+            else:
+                info[key] = value
 
     info["Uploader's Comments"] = "\n".join(comment_lines)
 
     info = convert_keys_to_comicdb(info)
-    return GalleryInfoParser(**info)
+    return GalleryInfoParser(**info)  # type: ignore
 
 
-def convert_keys_to_comicdb(
-    info: Union[dict[str, str], dict[str, dict[str, str]]],
-) -> Union[dict[str, str], dict[str, dict[str, str]]]:
+def convert_keys_to_comicdb(info: gallery_info_type) -> gallery_info_type:
     info["title"] = info.pop("Title")
     info["upload_time"] = info.pop("Upload Time")
     info["uploader_comment"] = info.pop("Uploader's Comments")
     info["upload_account"] = info.pop("Uploaded By")
     info["download_time"] = info.pop("Downloaded")
     info["tags"] = info.pop("Tags")
-    for key in deepcopy(info["tags"]):
-        info["tags"][key] = info["tags"].pop(key)
+    for key in deepcopy(info["tags"]):  # type: ignore
+        info["tags"][key] = info["tags"].pop(key)  # type: ignore
     return info
 
 

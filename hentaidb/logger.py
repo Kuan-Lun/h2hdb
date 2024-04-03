@@ -69,7 +69,7 @@ def log_message(
             frame.f_code.co_filename,
             frame.f_lineno,
             chunk,
-            None,
+            tuple(),
             None,
             frame.f_code.co_name,
         )
@@ -212,13 +212,15 @@ class HentaiDBLogger:
         self,
         level: str,
         display_on_screen: bool,
-        display_on_file: str,
+        display_on_file: str | None,
         max_length: int,
     ):
         logging_level = reset_level(level)
-        if display_on_screen:
+        self.display_on_screen = display_on_screen
+        if self.display_on_screen:
             self.screen_logger = setup_screen_logger(logging_level, max_length)
 
+        self.display_on_file = display_on_file
         if display_on_file is not None:
             self.file_logger = setup_file_logger(display_on_file, logging_level)
 
@@ -231,34 +233,46 @@ class HentaiDBLogger:
             self.file_logger.removeHandler(self.file_logger.handlers[0])
 
     def addHandler(self, handler: logging.Handler) -> None:
-        self.screen_logger.addHandler(handler)
-        self.file_logger.addHandler(handler)
+        if self.display_on_screen:
+            self.screen_logger.addHandler(handler)
+        if self.display_on_file is not None:
+            self.file_logger.addHandler(handler)
 
     def debug(self, message: str) -> None:
-        self.screen_logger.debug(message)
-        self.file_logger.debug(message)
+        if self.display_on_screen:
+            self.screen_logger.debug(message)
+        if self.display_on_file is not None:
+            self.file_logger.debug(message)
 
     def info(self, message: str) -> None:
-        self.screen_logger.info(message)
-        self.file_logger.info(message)
+        if self.display_on_screen:
+            self.screen_logger.info(message)
+        if self.display_on_file is not None:
+            self.file_logger.info(message)
 
     def warning(self, message: str) -> None:
-        self.screen_logger.warning(message)
-        self.file_logger.warning(message)
+        if self.display_on_screen:
+            self.screen_logger.warning(message)
+        if self.display_on_file is not None:
+            self.file_logger.warning(message)
 
     def error(self, message: str) -> None:
-        self.screen_logger.error(message)
-        self.file_logger.error(message)
+        if self.display_on_screen:
+            self.screen_logger.error(message)
+        if self.display_on_file is not None:
+            self.file_logger.error(message)
 
     def critical(self, message: str) -> None:
-        self.screen_logger.critical(message)
-        self.file_logger.critical(message)
+        if self.display_on_screen:
+            self.screen_logger.critical(message)
+        if self.display_on_file is not None:
+            self.file_logger.critical(message)
 
 
 def setup_logger(
     level: str,
     display_on_screen: bool = False,
-    display_on_file: str = None,
+    display_on_file: str | None = None,
     max_length: int = -1,
 ) -> HentaiDBLogger:
     """
