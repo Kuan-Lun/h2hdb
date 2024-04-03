@@ -18,7 +18,8 @@ setup(
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     packages=["hentaidb"],
-    install_requires=['mysql-connector-python'],
+    install_requires=[],
+    extras_require={"MySQL": ["mysql-connector-python"]},
 )
 
 # Path: hentaidb/__init__.py
