@@ -25,8 +25,9 @@ def parse_gallery_info(
         lines = file.readlines()
 
     info = dict()
-    info["Gallery_DBID"] = os.path.basename(folder_path)
-    info["GID"] = convert_gallery_dbid_to_gid(info["Gallery_DBID"])
+    info["DB_Gallery_ID"] = os.path.basename(folder_path)
+    info["GID"] = convert_gallery_dbid_to_gid(info["DB_Gallery_ID"])
+    info["Files_Path"] = os.listdir(folder_path)
     info["Modified_Time"] = get_last_modified_time(gallery_info_path)
     comments = False
     comment_lines = []
@@ -70,9 +71,9 @@ def convert_keys_to_comicdb(
     return info
 
 
-def convert_gallery_dbid_to_gid(gallery_dbid: str) -> int:
-    if "[" in gallery_dbid and "]" in gallery_dbid:
-        gid = int(gallery_dbid.split("[")[-1].replace("]", ""))
+def convert_gallery_dbid_to_gid(DB_Gallery_ID: str) -> int:
+    if "[" in DB_Gallery_ID and "]" in DB_Gallery_ID:
+        gid = int(DB_Gallery_ID.split("[")[-1].replace("]", ""))
     else:
-        gid = int(gallery_dbid)
+        gid = int(DB_Gallery_ID)
     return gid

@@ -3,6 +3,8 @@ __all__ = ["ComicDB"]
 
 from abc import ABCMeta, abstractmethod
 import re
+import hashlib
+import os
 
 from hentaidb import parse_gallery_info
 from .logger import logger
@@ -405,7 +407,7 @@ class ComicDB:
         self.connector.close()
 
     def _create_gallery_name_id_table(self) -> None:
-        table_name = "Gallery_DBID"
+        table_name = "DB_Gallery_ID"
         logger.debug(f"Creating {table_name} table...")
         match self.sql_type:
             case "mysql":
@@ -413,9 +415,9 @@ class ComicDB:
                     CREATE TABLE IF NOT EXISTS {table_name} (
                         Part1 CHAR(191) NOT NULL,
                         Part2 CHAR(64) NOT NULL,
-                        DBID INT UNSIGNED AUTO_INCREMENT,
+                        DB_Gallery_ID INT UNSIGNED AUTO_INCREMENT,
                         UNIQUE Full_Name (Part1, Part2),
-                        PRIMARY KEY (DBID),
+                        PRIMARY KEY (DB_Gallery_ID),
                         INDEX Part2 (Part2)
                     )
                 """
@@ -432,8 +434,8 @@ class ComicDB:
             case "mysql":
                 query = f"""
                     CREATE VIEW IF NOT EXISTS {table_name} AS
-                    SELECT CONCAT(Part1, Part2) AS Name, DBID
-                    FROM Gallery_DBID
+                    SELECT CONCAT(Part1, Part2) AS Name, DB_Gallery_ID
+                    FROM DB_Gallery_ID
                 """
         query = mullines2oneline(query)
         logger.debug(f"Query: {query}")
@@ -443,7 +445,7 @@ class ComicDB:
 
     def insert_gallery_name_and_return_id(self, gallery_name: str) -> int:
         logger.debug(f"Inserting gallery name '{gallery_name}'...")
-        table_name = "Gallery_DBID"
+        table_name = "DB_Gallery_ID"
         if len(gallery_name) > 255:
             logger.error(
                 f"Gallery name '{gallery_name}' is too long. Must be 255 characters or less."
@@ -461,7 +463,7 @@ class ComicDB:
                     INSERT INTO {table_name} (Part1, Part2) VALUES (%s, %s)
                 """
                 select_query = f"""
-                    SELECT DBID FROM {table_name} WHERE Part1 = %s AND Part2 = %s
+                    SELECT DB_Gallery_ID FROM {table_name} WHERE Part1 = %s AND Part2 = %s
                 """
         insert_query, select_query = (
             mullines2oneline(query) for query in (insert_query, select_query)
@@ -502,11 +504,11 @@ class ComicDB:
             case "mysql":
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
-                        DBID INT UNSIGNED NOT NULL,
+                        DB_Gallery_ID INT UNSIGNED NOT NULL,
                         GID INT UNSIGNED NOT NULL,
-                        PRIMARY KEY (DBID),
-                        FOREIGN KEY (DBID) REFERENCES Gallery_DBID(DBID),
-                        INDEX (GID, DBID)
+                        PRIMARY KEY (DB_Gallery_ID),
+                        FOREIGN KEY (DB_Gallery_ID) REFERENCES DB_Gallery_ID(DB_Gallery_ID),
+                        INDEX (GID, DB_Gallery_ID)
                     )
                 """
         query = mullines2oneline(query)
@@ -523,10 +525,10 @@ class ComicDB:
         match self.sql_type:
             case "mysql":
                 insert_query = f"""
-                    INSERT INTO {table_name} (DBID, GID) VALUES (%s, %s)
+                    INSERT INTO {table_name} (DB_Gallery_ID, GID) VALUES (%s, %s)
                 """
                 select_query = f"""
-                    SELECT GID FROM {table_name} WHERE DBID = %s AND GID = %s
+                    SELECT GID FROM {table_name} WHERE DB_Gallery_ID = %s AND GID = %s
                 """
         insert_query, select_query = (
             mullines2oneline(query) for query in (insert_query, select_query)
@@ -552,11 +554,11 @@ class ComicDB:
             case "mysql":
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
-                        DBID INT UNSIGNED NOT NULL,
+                        DB_Gallery_ID INT UNSIGNED NOT NULL,
                         Time DATETIME NOT NULL,
-                        PRIMARY KEY (DBID),
-                        FOREIGN KEY (DBID) REFERENCES Gallery_DBID(DBID),
-                        INDEX (Time, DBID)
+                        PRIMARY KEY (DB_Gallery_ID),
+                        FOREIGN KEY (DB_Gallery_ID) REFERENCES DB_Gallery_ID(DB_Gallery_ID),
+                        INDEX (Time, DB_Gallery_ID)
                     )
                 """
         query = mullines2oneline(query)
@@ -572,7 +574,7 @@ class ComicDB:
         match self.sql_type:
             case "mysql":
                 insert_query = f"""
-                    INSERT INTO {table_name} (DBID, Time) VALUES (%s, %s)
+                    INSERT INTO {table_name} (DB_Gallery_ID, Time) VALUES (%s, %s)
                 """
         insert_query = mullines2oneline(insert_query)
         data = (gallery_name_id, time)
@@ -598,7 +600,7 @@ class ComicDB:
         match self.sql_type:
             case "mysql":
                 update_query = f"""
-                    UPDATE {table_name} SET Time = %s WHERE DBID = %s
+                    UPDATE {table_name} SET Time = %s WHERE DB_Gallery_ID = %s
                 """
         update_query = mullines2oneline(update_query)
         data = (time, gallery_name_id)
@@ -645,13 +647,13 @@ class ComicDB:
             case "mysql":
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
-                        DBID INT UNSIGNED NOT NULL,
+                        DB_Gallery_ID INT UNSIGNED NOT NULL,
                         Part1 CHAR(191) NOT NULL,
                         Part2 CHAR(191) NOT NULL,
                         Part3 CHAR(191) NOT NULL,
-                        PRIMARY KEY (DBID),
-                        FOREIGN KEY (DBID) REFERENCES Gallery_DBID(DBID),
-                        INDEX (Part1, Part2, Part3, DBID)
+                        PRIMARY KEY (DB_Gallery_ID),
+                        FOREIGN KEY (DB_Gallery_ID) REFERENCES DB_Gallery_ID(DB_Gallery_ID),
+                        INDEX (Part1, Part2, Part3, DB_Gallery_ID)
                     )
                 """
         query = mullines2oneline(query)
@@ -667,7 +669,7 @@ class ComicDB:
             case "mysql":
                 query = f"""
                     CREATE VIEW IF NOT EXISTS {table_name} AS
-                    SELECT CONCAT(Part1, Part2, Part3) AS Title, DBID
+                    SELECT CONCAT(Part1, Part2, Part3) AS Title, DB_Gallery_ID
                     FROM Title_Parts
                 """
         query = mullines2oneline(query)
@@ -696,10 +698,10 @@ class ComicDB:
         match self.sql_type:
             case "mysql":
                 insert_query = f"""
-                    INSERT INTO {table_name} (DBID, Part1, Part2, Part3) VALUES (%s, %s, %s, %s)
+                    INSERT INTO {table_name} (DB_Gallery_ID, Part1, Part2, Part3) VALUES (%s, %s, %s, %s)
                 """
                 select_query = f"""
-                    SELECT Part1, Part2, Part3 FROM {table_name} WHERE DBID = %s AND Part1 = %s AND Part2 = %s AND Part3 = %s
+                    SELECT Part1, Part2, Part3 FROM {table_name} WHERE DB_Gallery_ID = %s AND Part1 = %s AND Part2 = %s AND Part3 = %s
                 """
         insert_query, select_query = (
             mullines2oneline(query) for query in (insert_query, select_query)
@@ -727,11 +729,11 @@ class ComicDB:
             case "mysql":
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
-                        DBID INT UNSIGNED NOT NULL,
+                        DB_Gallery_ID INT UNSIGNED NOT NULL,
                         Account CHAR(191) NOT NULL,
-                        PRIMARY KEY (DBID),
-                        FOREIGN KEY (DBID) REFERENCES Gallery_DBID(DBID),
-                        INDEX (Account, DBID)
+                        PRIMARY KEY (DB_Gallery_ID),
+                        FOREIGN KEY (DB_Gallery_ID) REFERENCES DB_Gallery_ID(DB_Gallery_ID),
+                        INDEX (Account, DB_Gallery_ID)
                     )
                 """
         query = mullines2oneline(query)
@@ -754,10 +756,10 @@ class ComicDB:
         match self.sql_type:
             case "mysql":
                 insert_query = f"""
-                    INSERT INTO {table_name} (DBID, Account) VALUES (%s, %s)
+                    INSERT INTO {table_name} (DB_Gallery_ID, Account) VALUES (%s, %s)
                 """
                 select_query = f"""
-                    SELECT Account FROM {table_name} WHERE DBID = %s AND Account = %s
+                    SELECT Account FROM {table_name} WHERE DB_Gallery_ID = %s AND Account = %s
                 """
         insert_query, select_query = (
             mullines2oneline(query) for query in (insert_query, select_query)
@@ -787,7 +789,7 @@ class ComicDB:
                 query = """
                     CREATE VIEW IF NOT EXISTS Gallery_Info AS
                     SELECT
-                        Gallery_Name.DBID AS DBID,
+                        Gallery_Name.DB_Gallery_ID AS DB_Gallery_ID,
                         Gallery_Name.Name AS Name,
                         Title.Title AS Title,
                         GID.GID AS GID,
@@ -798,13 +800,13 @@ class ComicDB:
                         Access_Time.Time AS Access_Time
                     FROM
                         Gallery_Name
-                        LEFT JOIN Title USING (DBID)
-                        LEFT JOIN GID USING (DBID)
-                        LEFT JOIN Upload_Account USING (DBID)
-                        LEFT JOIN Upload_Time USING (DBID)
-                        LEFT JOIN Download_Time USING (DBID)
-                        LEFT JOIN Modified_Time USING (DBID)
-                        LEFT JOIN Access_Time USING (DBID)
+                        LEFT JOIN Title USING (DB_Gallery_ID)
+                        LEFT JOIN GID USING (DB_Gallery_ID)
+                        LEFT JOIN Upload_Account USING (DB_Gallery_ID)
+                        LEFT JOIN Upload_Time USING (DB_Gallery_ID)
+                        LEFT JOIN Download_Time USING (DB_Gallery_ID)
+                        LEFT JOIN Modified_Time USING (DB_Gallery_ID)
+                        LEFT JOIN Access_Time USING (DB_Gallery_ID)
                 """
         query = mullines2oneline(query)
         logger.debug(f"Query: {query}")
@@ -819,10 +821,10 @@ class ComicDB:
             case "mysql":
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
-                        DBID INT UNSIGNED NOT NULL,
+                        DB_Gallery_ID INT UNSIGNED NOT NULL,
                         Comment TEXT NOT NULL,
-                        PRIMARY KEY (DBID),
-                        FOREIGN KEY (DBID) REFERENCES Gallery_DBID(DBID),
+                        PRIMARY KEY (DB_Gallery_ID),
+                        FOREIGN KEY (DB_Gallery_ID) REFERENCES DB_Gallery_ID(DB_Gallery_ID),
                         FULLTEXT (Comment)
                     )
                 """
@@ -840,7 +842,7 @@ class ComicDB:
         match self.sql_type:
             case "mysql":
                 insert_query = f"""
-                    INSERT INTO {table_name} (DBID, Comment) VALUES (%s, %s)
+                    INSERT INTO {table_name} (DB_Gallery_ID, Comment) VALUES (%s, %s)
                 """
         insert_query = mullines2oneline(insert_query)
         data = (gallery_name_id, comment)
@@ -867,7 +869,7 @@ class ComicDB:
         match self.sql_type:
             case "mysql":
                 update_query = f"""
-                    UPDATE {table_name} SET Comment = %s WHERE DBID = %s
+                    UPDATE {table_name} SET Comment = %s WHERE DB_Gallery_ID = %s
                 """
         update_query = mullines2oneline(update_query)
         data = (comment, gallery_name_id)
@@ -884,11 +886,11 @@ class ComicDB:
             case "mysql":
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
-                        DBID INT UNSIGNED NOT NULL,
+                        DB_Gallery_ID INT UNSIGNED NOT NULL,
                         Tag CHAR(191) NOT NULL,
-                        PRIMARY KEY (DBID),
-                        FOREIGN KEY (DBID) REFERENCES Gallery_DBID(DBID),
-                        INDEX (Tag, DBID)
+                        PRIMARY KEY (DB_Gallery_ID),
+                        FOREIGN KEY (DB_Gallery_ID) REFERENCES DB_Gallery_ID(DB_Gallery_ID),
+                        INDEX (Tag, DB_Gallery_ID)
                     )
                 """
         query = mullines2oneline(query)
@@ -903,7 +905,7 @@ class ComicDB:
         match self.sql_type:
             case "mysql":
                 insert_query = f"""
-                    INSERT INTO {table_name} (DBID, Tag) VALUES (%s, %s)
+                    INSERT INTO {table_name} (DB_Gallery_ID, Tag) VALUES (%s, %s)
                 """
         insert_query = mullines2oneline(insert_query)
         data = (gallery_name_id, tag_value)
@@ -911,22 +913,182 @@ class ComicDB:
         self._create_tag_table(tag_name)
         with self.connector as conn:
             logger.debug(f"Insert query: {insert_query}")
-            conn.execute(insert_query, data)
+            try:
+                conn.execute(insert_query, data)
+            except SQLDuplicateKeyError:
+                logger.warning(
+                    f"Tag '{tag_name}' for gallery name ID {gallery_name_id} already exists."
+                )
         logger.info(f"Tag '{tag_name}' inserted.")
 
-    def insert_gallery_info(self, gallery_folder: str) -> None:
-        gallery_info = parse_gallery_info(gallery_folder)
-        id = self.insert_gallery_name_and_return_id(gallery_info["Gallery_DBID"])
-        self.insert_gid(id, gallery_info["GID"])
-        self.insert_title(id, gallery_info["Title"])
-        self.insert_upload_time(id, gallery_info["Upload_Time"])
-        self.insert_uploader_comment(id, gallery_info["Uploader_Comment"])
-        self.insert_upload_account(id, gallery_info["Upload_Account"])
-        self.insert_download_time(id, gallery_info["Download_Time"])
-        self.insert_access_time(id, gallery_info["Download_Time"])
-        self.insert_modified_time(id, gallery_info["Modified_Time"])
-        for tag_name, tag_value in gallery_info["Tag"].items():
-            self.insert_tag(id, tag_name, tag_value)
+    def _create_gallery_image_id_table(self) -> None:
+        table_name = f"DB_Image_ID"
+        logger.debug(f"Creating {table_name} table...")
+        match self.sql_type:
+            case "mysql":
+                query = f"""
+                    CREATE TABLE IF NOT EXISTS {table_name} (
+                        DB_Gallery_ID INT UNSIGNED NOT NULL,
+                        Part1 CHAR(191) NOT NULL,
+                        Part2 CHAR(64) NOT NULL,
+                        DB_Image_ID INT UNSIGNED AUTO_INCREMENT,
+                        PRIMARY KEY (DB_Image_ID),
+                        UNIQUE File (DB_Gallery_ID, Part1, Part2),
+                        FOREIGN KEY (DB_Gallery_ID) REFERENCES DB_Gallery_ID(DB_Gallery_ID)
+                    )
+                """
+        query = mullines2oneline(query)
+        logger.debug(f"Query: {query}")
+        with self.connector as conn:
+            conn.execute(query)
+        logger.info(f"{table_name} table created.")
+
+    def _insert_gallery_image_and_return_id(
+        self, gallery_name_id: int, file: str
+    ) -> int:
+        logger.debug(
+            f"Inserting image ID for gallery name ID {gallery_name_id} and file '{file}'..."
+        )
+        table_name = "DB_Image_ID"
+        if len(file) > 255:
+            logger.error(f"File '{file}' is too long. Must be 255 characters or less.")
+            raise ValueError("File is too long.")
+        file_part1 = file[0:191]
+        file_part2 = file[191:255]
+        logger.debug(
+            f"File '{file}' split into parts '{file_part1}' and '{file_part2}'"
+        )
+
+        match self.sql_type:
+            case "mysql":
+                insert_query = f"""
+                    INSERT INTO {table_name} (DB_Gallery_ID, Part1, Part2) VALUES (%s, %s, %s)
+                """
+                select_query = f"""
+                    SELECT DB_Image_ID FROM {table_name} WHERE DB_Gallery_ID = %s AND Part1 = %s AND Part2 = %s
+                """
+        insert_query, select_query = (
+            mullines2oneline(query) for query in (insert_query, select_query)
+        )
+        data = (gallery_name_id, file_part1, file_part2)
+
+        with self.connector as conn:
+            logger.debug(f"Insert query: {insert_query}")
+            try:
+                conn.execute(insert_query, data)
+                conn.commit()
+                logger.debug(
+                    f"Image ID inserted for gallery name ID {gallery_name_id} and file '{file}'."
+                )
+            except SQLDuplicateKeyError:
+                logger.warning(
+                    f"Image ID for gallery name ID {gallery_name_id} and file '{file}' already exists."
+                )
+            logger.debug(f"Select query: {select_query}")
+            gallery_image_id = conn.fetch_one(select_query, data)[0]
+        logger.info(
+            f"Image ID inserted for gallery name ID {gallery_name_id} and file '{file}'."
+        )
+        return gallery_image_id
+
+    def _creage_gallery_image_id_view(self) -> None:
+        table_name = "Image_ID"
+        logger.debug(f"Creating {table_name} view...")
+        match self.sql_type:
+            case "mysql":
+                query = f"""
+                    CREATE VIEW IF NOT EXISTS {table_name} AS
+                    SELECT
+                        Gallery_Name.Name AS Gallery,
+                        CONCAT(Part1, Part2) AS File,
+                        DB_Image_ID
+                    FROM DB_Image_ID
+                    LEFT JOIN Gallery_Name USING (DB_Gallery_ID)
+                """
+        query = mullines2oneline(query)
+        logger.debug(f"Query: {query}")
+        with self.connector as conn:
+            conn.execute(query)
+        logger.info(f"{table_name} view created.")
+
+    def _create_gallery_image_hash_table(self) -> None:
+        table_name = "Image_Hash"
+        logger.debug(f"Creating {table_name} table...")
+        match self.sql_type:
+            case "mysql":
+                query = f"""
+                    CREATE TABLE IF NOT EXISTS {table_name} (
+                        DB_Image_ID INT UNSIGNED NOT NULL,
+                        Hash CHAR(128) NOT NULL,
+                        PRIMARY KEY (DB_Image_ID),
+                        FOREIGN KEY (DB_Image_ID) REFERENCES DB_Image_ID(DB_Image_ID),
+                        INDEX (Hash, DB_Image_ID)
+                    )
+                """
+        query = mullines2oneline(query)
+        logger.debug(f"Query: {query}")
+        with self.connector as conn:
+            conn.execute(query)
+        logger.info(f"{table_name} table created.")
+
+    def _insert_gallery_image_hash(self, image_id: int, file_path: str) -> None:
+        logger.debug(
+            f"Calculating hash for image ID {image_id} and file '{file_path}'..."
+        )
+        with open(file_path, "rb") as f:
+            file_content = f.read()
+        hash_value = hashlib.sha3_512(file_content).hexdigest()
+
+        logger.debug(
+            f"Inserting image hash '{hash_value}' for image ID {image_id} and file '{file_path}'..."
+        )
+        table_name = "Image_Hash"
+        match self.sql_type:
+            case "mysql":
+                insert_query = f"""
+                    INSERT INTO {table_name} (DB_Image_ID, Hash) VALUES (%s, %s)
+                """
+        insert_query = mullines2oneline(insert_query)
+        data = (image_id, hash_value)
+
+        isupdater = False
+        with self.connector as conn:
+            logger.debug(f"Insert query: {insert_query}")
+            try:
+                conn.execute(insert_query, data)
+                conn.commit()
+            except SQLDuplicateKeyError:
+                logger.warning(
+                    f"Image hash '{hash_value}' for image ID {image_id} and file '{file_path}' already exists."
+                )
+            isupdater = True
+        if isupdater:
+            self._update_gallery_image_hash(image_id, file_path, hash_value)
+        logger.info(
+            f"Image hash '{hash_value}' inserted for image ID {image_id} and file '{file_path}'."
+        )
+
+    def _update_gallery_image_hash(
+        self, image_id: int, file_path: str, hash_value: str
+    ) -> None:
+        logger.debug(
+            f"Updating image hash '{hash_value}' for image ID {image_id} and file '{file_path}'..."
+        )
+        table_name = "Image_Hash"
+        match self.sql_type:
+            case "mysql":
+                update_query = f"""
+                    UPDATE {table_name} SET Hash = %s WHERE DB_Image_ID = %s
+                """
+        update_query = mullines2oneline(update_query)
+        data = (hash_value, image_id)
+
+        with self.connector as conn:
+            logger.debug(f"Update query: {update_query}")
+            conn.execute(update_query, data)
+        logger.info(
+            f"Image hash '{hash_value}' updated for image ID {image_id} and file '{file_path}'."
+        )
 
     def create_main_tables(self) -> None:
         self._create_gallery_name_id_table()
@@ -941,6 +1103,29 @@ class ComicDB:
         self._create_upload_account_table()
         self._create_uploader_comment_table()
         self._create_gallery_info_view()
+        self._create_gallery_image_id_table()
+        self._creage_gallery_image_id_view()
+        self._create_gallery_image_hash_table()
+
+    def insert_gallery_info(self, gallery_folder: str) -> None:
+        gallery_info = parse_gallery_info(gallery_folder)
+        id = self.insert_gallery_name_and_return_id(gallery_info["DB_Gallery_ID"])
+        self.insert_gid(id, gallery_info["GID"])
+        self.insert_title(id, gallery_info["Title"])
+        self.insert_upload_time(id, gallery_info["Upload_Time"])
+        self.insert_uploader_comment(id, gallery_info["Uploader_Comment"])
+        self.insert_upload_account(id, gallery_info["Upload_Account"])
+        self.insert_download_time(id, gallery_info["Download_Time"])
+        self.insert_access_time(id, gallery_info["Download_Time"])
+        self.insert_modified_time(id, gallery_info["Modified_Time"])
+        for tag_name, tag_value in gallery_info["Tag"].items():
+            self.insert_tag(id, tag_name, tag_value)
+        for file_path in [
+            os.path.join(gallery_folder, file_path)
+            for file_path in gallery_info["Files_Path"]
+        ]:
+            image_id = self._insert_gallery_image_and_return_id(id, file_path)
+            self._insert_gallery_image_hash(image_id, file_path)
 
 
 def mullines2oneline(s: str) -> str:
