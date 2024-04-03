@@ -1094,7 +1094,96 @@ class ComicDB:
             f"Image hash '{hash_value}' updated for image ID {image_id} and file '{file_path}'."
         )
 
-    # def delete_gallery(self, gallery_name: str) -> None:
+    def delete_gallery_image(self, gallery_name: str) -> None:
+        logger.debug(f"Deleting gallery '{gallery_name}'...")
+        match self.sql_type:
+            case "mysql":
+                delete_image_hash_query = """
+                    DELETE FROM Image_Hash
+                    WHERE
+                        DB_Image_ID IN (
+                            SELECT
+                                DB_Image_ID
+                            FROM DB_Image_ID
+                            WHERE
+                                DB_Gallery_ID = (
+                                    SELECT
+                                        DB_Gallery_ID
+                                    FROM
+                                        Gallery_Name
+                                    WHERE
+                                        Name = %s
+                                )
+                        )
+                """
+                delete_image_image_id_query = """
+                    DELETE FROM DB_Image_ID
+                    WHERE
+                        DB_Gallery_ID = (
+                            SELECT
+                                DB_Gallery_ID
+                            FROM
+                                Gallery_Name
+                            WHERE
+                                Name = %s
+                        )
+                """
+        delete_image_hash_query, delete_image_image_id_query = (
+            mullines2oneline(query)
+            for query in (delete_image_hash_query, delete_image_image_id_query)
+        )
+        data = (gallery_name,)
+
+        with self.connector as conn:
+            logger.debug(f"Delete query: {delete_image_hash_query}")
+            conn.execute(delete_image_hash_query, data)
+            logger.debug(f"Delete query: {delete_image_image_id_query}")
+            conn.execute(delete_image_image_id_query, data)
+        logger.info(f"Gallery '{gallery_name}' deleted.")
+
+    def delete_gallery(self, gallery_name: str) -> None:
+        logger.debug(f"Deleting gallery '{gallery_name}'...")
+        match self.sql_type:
+            case "mysql":
+                select_table_name_query = f"""
+                    SELECT
+                        TABLE_NAME
+                    FROM
+                        INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+                    WHERE
+                        REFERENCED_TABLE_SCHEMA = '{config_loader["database"]["database"]}' AND
+                        REFERENCED_TABLE_NAME = 'DB_Gallery_ID' AND
+                        REFERENCED_COLUMN_NAME = 'DB_Gallery_ID'
+                """
+                delete_gallery_id_query = """
+                    DELETE FROM %s
+                    WHERE
+                        DB_Gallery_ID = (
+                            SELECT
+                                DB_Gallery_ID
+                            FROM
+                                Gallery_Name
+                            WHERE
+                                Name = '%s'
+                        )
+                """
+        select_table_name_query, delete_gallery_id_query = (
+            mullines2oneline(query)
+            for query in (select_table_name_query, delete_gallery_id_query)
+        )
+
+        with self.connector as conn:
+            logger.debug(f"Select query: {select_table_name_query}")
+            table_names = conn.fetch_all(select_table_name_query)
+        table_names = [t[0] for t in table_names] + ["DB_Gallery_ID"]
+        logger.debug(f"Table names: {table_names}")
+
+        with self.connector as conn:
+            logger.debug(f"Delete query: {delete_gallery_id_query}")
+            for table_name in table_names:
+                data = (table_name, gallery_name)
+                conn.execute(delete_gallery_id_query % data)
+        logger.info(f"Gallery '{gallery_name}' deleted.")
 
     def create_main_tables(self) -> None:
         self._create_gallery_name_id_table()
@@ -1143,4 +1232,4 @@ def mullines2oneline(s: str) -> str:
     Returns:
         str: The modified string with multiple spaces replaced by a single space and newlines replaced by a space.
     """
-    return re.sub(" +", " ", s).replace("\n", " ").strip()
+    return re.sub(" +", " ", s.replace("\n", " ")).strip()
