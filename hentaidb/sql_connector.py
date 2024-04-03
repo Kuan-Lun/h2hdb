@@ -443,7 +443,7 @@ class ComicDB:
             conn.execute(query)
         logger.info(f"{table_name} view created.")
 
-    def insert_gallery_name_and_return_id(self, gallery_name: str) -> int:
+    def _insert_gallery_name_and_return_id(self, gallery_name: str) -> int:
         logger.debug(f"Inserting gallery name '{gallery_name}'...")
         table_name = "DB_Gallery_ID"
         if len(gallery_name) > 255:
@@ -487,13 +487,13 @@ class ComicDB:
         )
         return gallery_name_id
 
-    def insert_gallery_names_and_return_ids(
+    def _insert_gallery_names_and_return_ids(
         self, gallery_names: list[str]
     ) -> dict[str, int]:
         logger.debug(f"Inserting gallery names '{gallery_names}'...")
         gallery_name_ids = dict()
         for gallery_name in gallery_names:
-            gallery_name_id = self.insert_gallery_name_and_return_id(gallery_name)
+            gallery_name_id = self._insert_gallery_name_and_return_id(gallery_name)
             gallery_name_ids[gallery_name] = gallery_name_id
         return gallery_name_ids
 
@@ -517,7 +517,7 @@ class ComicDB:
             conn.execute(query)
         logger.info(f"{table_name} table created.")
 
-    def insert_gid(self, gallery_name_id: int, gid: int) -> None:
+    def _insert_gid(self, gallery_name_id: int, gid: int) -> None:
         table_name = "GID"
         logger.debug(
             f"Inserting {table_name} {gid} for gallery name ID {gallery_name_id}..."
@@ -579,6 +579,7 @@ class ComicDB:
         insert_query = mullines2oneline(insert_query)
         data = (gallery_name_id, time)
 
+        isupdate = False
         with self.connector as conn:
             logger.debug(f"Insert query: {insert_query}")
             try:
@@ -591,6 +592,9 @@ class ComicDB:
                 logger.warning(
                     f"Time '{time}' for gallery name ID {gallery_name_id} already exists."
                 )
+            isupdate = True
+        if isupdate:
+            self._update_time(table_name, gallery_name_id, time)
         logger.info(f"Time '{time}' inserted for gallery name ID {gallery_name_id}.")
 
     def _update_time(self, table_name: str, gallery_name_id: int, time: str) -> None:
@@ -608,7 +612,6 @@ class ComicDB:
         with self.connector as conn:
             logger.debug(f"Update query: {update_query}")
             conn.execute(update_query, data)
-            conn.commit()
         logger.info(
             f"Time '{time}' updated for gallery name ID {gallery_name_id} in table '{table_name}'."
         )
@@ -616,25 +619,25 @@ class ComicDB:
     def _create_download_time_table(self) -> None:
         self._create_time_table("Download_Time")
 
-    def insert_download_time(self, gallery_name_id: int, time: str) -> None:
+    def _insert_download_time(self, gallery_name_id: int, time: str) -> None:
         self._insert_time("Download_Time", gallery_name_id, time)
 
     def _create_upload_time_table(self) -> None:
         self._create_time_table("Upload_Time")
 
-    def insert_upload_time(self, gallery_name_id: int, time: str) -> None:
+    def _insert_upload_time(self, gallery_name_id: int, time: str) -> None:
         self._insert_time("Upload_Time", gallery_name_id, time)
 
     def _create_modified_time_table(self) -> None:
         self._create_time_table("Modified_Time")
 
-    def insert_modified_time(self, gallery_name_id: int, time: str) -> None:
+    def _insert_modified_time(self, gallery_name_id: int, time: str) -> None:
         self._insert_time("Modified_Time", gallery_name_id, time)
 
     def _create_access_time_table(self) -> None:
         self._create_time_table("Access_Time")
 
-    def insert_access_time(self, gallery_name_id: int, time: str) -> None:
+    def _insert_access_time(self, gallery_name_id: int, time: str) -> None:
         self._insert_time("Access_Time", gallery_name_id, time)
 
     def update_access_time(self, gallery_name_id: int, time: str) -> None:
@@ -678,7 +681,7 @@ class ComicDB:
             conn.execute(query)
         logger.info(f"{table_name} view created.")
 
-    def insert_title(self, gallery_name_id: int, title: str) -> None:
+    def _insert_title(self, gallery_name_id: int, title: str) -> None:
         logger.debug(
             f"Inserting title '{title}' for gallery name ID {gallery_name_id}..."
         )
@@ -742,7 +745,7 @@ class ComicDB:
             conn.execute(query)
         logger.info(f"{table_name} table created.")
 
-    def insert_upload_account(self, gallery_name_id: int, account: str) -> None:
+    def _insert_upload_account(self, gallery_name_id: int, account: str) -> None:
         logger.debug(
             f"Inserting upload account '{account}' for gallery name ID {gallery_name_id}..."
         )
@@ -834,7 +837,7 @@ class ComicDB:
             conn.execute(query)
         logger.info(f"{table_name} table created.")
 
-    def insert_uploader_comment(self, gallery_name_id: int, comment: str) -> None:
+    def _insert_uploader_comment(self, gallery_name_id: int, comment: str) -> None:
         logger.debug(
             f"Inserting uploader comment for gallery name ID {gallery_name_id}..."
         )
@@ -999,6 +1002,7 @@ class ComicDB:
                 query = f"""
                     CREATE VIEW IF NOT EXISTS {table_name} AS
                     SELECT
+                        DB_Image_ID.DB_Gallery_ID AS DB_Gallery_ID,
                         Gallery_Name.Name AS Gallery,
                         CONCAT(Part1, Part2) AS File,
                         DB_Image_ID
@@ -1090,6 +1094,8 @@ class ComicDB:
             f"Image hash '{hash_value}' updated for image ID {image_id} and file '{file_path}'."
         )
 
+    # def delete_gallery(self, gallery_name: str) -> None:
+
     def create_main_tables(self) -> None:
         self._create_gallery_name_id_table()
         self._create_gallery_name_view()
@@ -1109,23 +1115,22 @@ class ComicDB:
 
     def insert_gallery_info(self, gallery_folder: str) -> None:
         gallery_info = parse_gallery_info(gallery_folder)
-        id = self.insert_gallery_name_and_return_id(gallery_info["DB_Gallery_ID"])
-        self.insert_gid(id, gallery_info["GID"])
-        self.insert_title(id, gallery_info["Title"])
-        self.insert_upload_time(id, gallery_info["Upload_Time"])
-        self.insert_uploader_comment(id, gallery_info["Uploader_Comment"])
-        self.insert_upload_account(id, gallery_info["Upload_Account"])
-        self.insert_download_time(id, gallery_info["Download_Time"])
-        self.insert_access_time(id, gallery_info["Download_Time"])
-        self.insert_modified_time(id, gallery_info["Modified_Time"])
-        for tag_name, tag_value in gallery_info["Tag"].items():
+        id = self._insert_gallery_name_and_return_id(gallery_info.db_gallery_id)
+        self._insert_gid(id, gallery_info.gid)
+        self._insert_title(id, gallery_info.title)
+        self._insert_upload_time(id, gallery_info.upload_time)
+        self._insert_uploader_comment(id, gallery_info.uploader_comment)
+        self._insert_upload_account(id, gallery_info.upload_account)
+        self._insert_download_time(id, gallery_info.download_time)
+        self._insert_access_time(id, gallery_info.download_time)
+        self._insert_modified_time(id, gallery_info.modified_time)
+        for tag_name, tag_value in gallery_info.tags.items():
             self.insert_tag(id, tag_name, tag_value)
-        for file_path in [
-            os.path.join(gallery_folder, file_path)
-            for file_path in gallery_info["Files_Path"]
-        ]:
+        for file_path in gallery_info.files_path:
             image_id = self._insert_gallery_image_and_return_id(id, file_path)
-            self._insert_gallery_image_hash(image_id, file_path)
+            self._insert_gallery_image_hash(
+                image_id, os.path.join(gallery_folder, file_path)
+            )
 
 
 def mullines2oneline(s: str) -> str:
