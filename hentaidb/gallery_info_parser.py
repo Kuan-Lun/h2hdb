@@ -1,21 +1,27 @@
-__all__ = ["get_gallery_info_path", "parse_gallery_info"]
+__all__ = ["parse_gallery_info"]
 
 
 import os
 import datetime
 
 
-def get_last_modified_time(file: str):
-    return datetime.datetime.fromtimestamp(os.path.getmtime(file)).strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-
-
-def get_gallery_info_path(folder_path: str) -> str:
-    return os.path.join(folder_path, "galleryinfo.txt")
-
-
 class GalleryInfoParser:
+    """
+    A class that represents a parser for gallery information.
+
+    Attributes:
+        gallery_name (str): The name of the gallery.
+        gid (int): The gallery ID.
+        files_path (list[str]): The paths of the files in the gallery.
+        modified_time (str): The modified time of the gallery.
+        title (str): The title of the gallery.
+        upload_time (str): The upload time of the gallery.
+        uploader_comment (str): The uploader's comment for the gallery.
+        upload_account (str): The account used to upload the gallery.
+        download_time (str): The download time of the gallery.
+        tags (dict[str, str]): The tags associated with the gallery.
+    """
+
     def __init__(
         self,
         gallery_name: str,
@@ -54,22 +60,29 @@ class GalleryInfoParser:
     ]
 
 
-gallery_info_may_tag_type = str | dict[str, str]
-gallery_info_content_type = int | str | dict[str, str] | list[str]
-gallery_info_type = dict[str, gallery_info_content_type]
+def parse_gallery_info(folder_path: str) -> GalleryInfoParser:
+    """
+    Parses the gallery information from the given folder path.
 
+    Args:
+        folder_path (str): The path to the folder containing the gallery information.
 
-def parse_gallery_info(
-    folder_path: str,
-) -> GalleryInfoParser:
-    gallery_info_path = get_gallery_info_path(folder_path)
+    Returns:
+        GalleryInfoParser: An instance of the GalleryInfoParser class containing the parsed gallery information.
+    """
+    gallery_info_path = os.path.join(folder_path, "galleryinfo.txt")
     with open(gallery_info_path, "r", encoding="utf-8") as file:
         lines = file.read().strip("\n").split("\n")
 
     gallery_name = os.path.basename(folder_path)
-    gid = convert_gallery_name_to_gid(gallery_name)
+    if "[" in gallery_name and "]" in gallery_name:
+        gid = int(gallery_name.split("[")[-1].replace("]", ""))
+    else:
+        gid = int(gallery_name)
     files_path = os.listdir(folder_path)
-    modified_time = get_last_modified_time(gallery_info_path)
+    modified_time = datetime.datetime.fromtimestamp(
+        os.path.getmtime(gallery_info_path)
+    ).strftime("%Y-%m-%d %H:%M:%S")
 
     comments = False
     comment_lines = list()
@@ -114,11 +127,3 @@ def parse_gallery_info(
         download_time,
         tags,
     )
-
-
-def convert_gallery_name_to_gid(gallery_name: str) -> int:
-    if "[" in gallery_name and "]" in gallery_name:
-        gid = int(gallery_name.split("[")[-1].replace("]", ""))
-    else:
-        gid = int(gallery_name)
-    return gid
