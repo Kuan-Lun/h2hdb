@@ -413,12 +413,12 @@ class ComicDB:
             case "mysql":
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
-                        Part1 CHAR(191) NOT NULL,
-                        Part2 CHAR(64) NOT NULL,
+                        Gallery_Name_Part1 CHAR(191) NOT NULL,
+                        Gallery_Name_Part2 CHAR(64) NOT NULL,
                         DB_Gallery_ID INT UNSIGNED AUTO_INCREMENT,
-                        UNIQUE Full_Name (Part1, Part2),
+                        UNIQUE Full_Name (Gallery_Name_Part1, Gallery_Name_Part2),
                         PRIMARY KEY (DB_Gallery_ID),
-                        INDEX Part2 (Part2)
+                        INDEX Name_Part2 (Gallery_Name_Part2)
                     )
                 """
         query = mullines2oneline(query)
@@ -434,7 +434,7 @@ class ComicDB:
             case "mysql":
                 query = f"""
                     CREATE VIEW IF NOT EXISTS {table_name} AS
-                    SELECT CONCAT(Part1, Part2) AS Name, DB_Gallery_ID
+                    SELECT CONCAT(Gallery_Name_Part1, Gallery_Name_Part2) AS Name, DB_Gallery_ID
                     FROM DB_Gallery_ID
                 """
         query = mullines2oneline(query)
@@ -460,10 +460,10 @@ class ComicDB:
         match self.sql_type:
             case "mysql":
                 insert_query = f"""
-                    INSERT INTO {table_name} (Part1, Part2) VALUES (%s, %s)
+                    INSERT INTO {table_name} (Gallery_Name_Part1, Gallery_Name_Part2) VALUES (%s, %s)
                 """
                 select_query = f"""
-                    SELECT DB_Gallery_ID FROM {table_name} WHERE Part1 = %s AND Part2 = %s
+                    SELECT DB_Gallery_ID FROM {table_name} WHERE Gallery_Name_Part1 = %s AND Gallery_Name_Part2 = %s
                 """
         insert_query, select_query = (
             mullines2oneline(query) for query in (insert_query, select_query)
@@ -651,12 +651,12 @@ class ComicDB:
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
                         DB_Gallery_ID INT UNSIGNED NOT NULL,
-                        Part1 CHAR(191) NOT NULL,
-                        Part2 CHAR(191) NOT NULL,
-                        Part3 CHAR(191) NOT NULL,
+                        Title_Part1 CHAR(191) NOT NULL,
+                        Title_Part2 CHAR(191) NOT NULL,
+                        Title_Part3 CHAR(191) NOT NULL,
                         PRIMARY KEY (DB_Gallery_ID),
                         FOREIGN KEY (DB_Gallery_ID) REFERENCES DB_Gallery_ID(DB_Gallery_ID),
-                        INDEX (Part1, Part2, Part3, DB_Gallery_ID)
+                        INDEX (Title_Part1, Title_Part2, Title_Part3, DB_Gallery_ID)
                     )
                 """
         query = mullines2oneline(query)
@@ -672,7 +672,7 @@ class ComicDB:
             case "mysql":
                 query = f"""
                     CREATE VIEW IF NOT EXISTS {table_name} AS
-                    SELECT CONCAT(Part1, Part2, Part3) AS Title, DB_Gallery_ID
+                    SELECT CONCAT(Title_Part1, Title_Part2, Title_Part3) AS Title, DB_Gallery_ID
                     FROM Title_Parts
                 """
         query = mullines2oneline(query)
@@ -701,10 +701,10 @@ class ComicDB:
         match self.sql_type:
             case "mysql":
                 insert_query = f"""
-                    INSERT INTO {table_name} (DB_Gallery_ID, Part1, Part2, Part3) VALUES (%s, %s, %s, %s)
+                    INSERT INTO {table_name} (DB_Gallery_ID, Title_Part1, Title_Part2, Title_Part3) VALUES (%s, %s, %s, %s)
                 """
                 select_query = f"""
-                    SELECT Part1, Part2, Part3 FROM {table_name} WHERE DB_Gallery_ID = %s AND Part1 = %s AND Part2 = %s AND Part3 = %s
+                    SELECT Title_Part1, Title_Part2, Title_Part3 FROM {table_name} WHERE DB_Gallery_ID = %s AND Title_Part1 = %s AND Title_Part2 = %s AND Title_Part3 = %s
                 """
         insert_query, select_query = (
             mullines2oneline(query) for query in (insert_query, select_query)
@@ -932,11 +932,11 @@ class ComicDB:
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
                         DB_Gallery_ID INT UNSIGNED NOT NULL,
-                        Part1 CHAR(191) NOT NULL,
-                        Part2 CHAR(64) NOT NULL,
+                        File_Name_Part1 CHAR(191) NOT NULL,
+                        File_Name_Part2 CHAR(64) NOT NULL,
                         DB_Image_ID INT UNSIGNED AUTO_INCREMENT,
                         PRIMARY KEY (DB_Image_ID),
-                        UNIQUE File (DB_Gallery_ID, Part1, Part2),
+                        UNIQUE File (DB_Gallery_ID, File_Name_Part1, File_Name_Part2),
                         FOREIGN KEY (DB_Gallery_ID) REFERENCES DB_Gallery_ID(DB_Gallery_ID)
                     )
                 """
@@ -965,10 +965,10 @@ class ComicDB:
         match self.sql_type:
             case "mysql":
                 insert_query = f"""
-                    INSERT INTO {table_name} (DB_Gallery_ID, Part1, Part2) VALUES (%s, %s, %s)
+                    INSERT INTO {table_name} (DB_Gallery_ID, File_Name_Part1, File_Name_Part2) VALUES (%s, %s, %s)
                 """
                 select_query = f"""
-                    SELECT DB_Image_ID FROM {table_name} WHERE DB_Gallery_ID = %s AND Part1 = %s AND Part2 = %s
+                    SELECT DB_Image_ID FROM {table_name} WHERE DB_Gallery_ID = %s AND File_Name_Part1 = %s AND File_Name_Part2 = %s
                 """
         insert_query, select_query = (
             mullines2oneline(query) for query in (insert_query, select_query)
@@ -1004,7 +1004,7 @@ class ComicDB:
                     SELECT
                         DB_Image_ID.DB_Gallery_ID AS DB_Gallery_ID,
                         Gallery_Name.Name AS Gallery,
-                        CONCAT(Part1, Part2) AS File,
+                        CONCAT(File_Name_Part1, File_Name_Part2) AS File,
                         DB_Image_ID
                     FROM DB_Image_ID
                     LEFT JOIN Gallery_Name USING (DB_Gallery_ID)
@@ -1205,7 +1205,7 @@ class ComicDB:
 
     def insert_gallery_info(self, gallery_folder: str) -> None:
         gallery_info = parse_gallery_info(gallery_folder)
-        id = self._insert_gallery_name_and_return_id(gallery_info.db_gallery_id)
+        id = self._insert_gallery_name_and_return_id(gallery_info.gallery_name)
         self._insert_gid(id, gallery_info.gid)
         self._insert_title(id, gallery_info.title)
         self._insert_upload_time(id, gallery_info.upload_time)
