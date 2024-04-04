@@ -6,4 +6,4 @@ __version_info__ = tuple(map(int, __version__.split(".")))
 
 
 from .gallery_info_parser import parse_gallery_info
-from .sql_connector import ComicDB
+from .gallery_db import ComicDB

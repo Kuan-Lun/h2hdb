@@ -10,19 +10,6 @@ import unicodedata
 from .config_loader import config_loader
 
 
-def is_cjk(char: str) -> bool:
-    """
-    Check if a character is a CJK (Chinese, Japanese, Korean) character.
-
-    Args:
-        char (str): The character to check.
-
-    Returns:
-        bool: True if the character is a CJK character, False otherwise.
-    """
-    return "CJK UNIFIED" in unicodedata.name(char, str())
-
-
 def split_message_with_cjk(message: str, max_length: int) -> list[str]:
     """
     Splits a message into chunks of a specified maximum length, taking into account the width of CJK characters.
@@ -41,7 +28,7 @@ def split_message_with_cjk(message: str, max_length: int) -> list[str]:
         chunk = str()
         chunk_len = 0
         for char in message:
-            char_len = 2 if is_cjk(char) else 1
+            char_len = 2 if "CJK UNIFIED" in unicodedata.name(char, str()) else 1
             if chunk_len + char_len > max_length:
                 if chunk and chunk[0] == " ":
                     chunk = chunk[1:]
@@ -76,36 +63,13 @@ def log_message(
         logger.handle(record)
 
 
-log_config = {
+LOG_CONFIG = {
     "debug": logging.DEBUG,
     "info": logging.INFO,
     "warning": logging.WARNING,
     "error": logging.ERROR,
     "critical": logging.INFO,
 }
-
-
-def reset_level(level: str) -> int:
-    """
-    Convert a string representation of a logging level to its corresponding constant.
-
-    Parameters:
-    level (str): The logging level as a string. Should be one of "DEBUG", "INFO", "WARNING", "ERROR", or "CRITICAL".
-
-    Returns:
-    int: The logging level as a constant. If the input is not a valid logging level, a ValueError is raised.
-    """
-    log_config = {
-        "DEBUG": logging.DEBUG,
-        "INFO": logging.INFO,
-        "WARNING": logging.WARNING,
-        "ERROR": logging.ERROR,
-        "CRITICAL": logging.CRITICAL,
-    }
-    level = level.upper()
-    if level not in log_config:
-        raise ValueError(f"Invalid logging level: {level}")
-    return log_config[level]
 
 
 def setup_screen_logger(level: int, max_length: int) -> logging.Logger:
@@ -127,7 +91,7 @@ def setup_screen_logger(level: int, max_length: int) -> logging.Logger:
     handler.setFormatter(formatter)
     screen_logger.addHandler(handler)
 
-    for level_name, level_value in log_config.items():
+    for level_name, level_value in LOG_CONFIG.items():
         if level_value < level:
             continue
         partial_log_message = partial(
@@ -161,7 +125,7 @@ def setup_file_logger(display_on_file: str, level: int) -> logging.Logger:
     handler.setFormatter(formatter)
     file_logger.addHandler(handler)
 
-    for level_name, level_value in log_config.items():
+    for level_name, level_value in LOG_CONFIG.items():
         if level_value < level:
             continue
         partial_log_message = partial(log_message, file_logger, level_value, -1)
@@ -215,7 +179,7 @@ class HentaiDBLogger:
         display_on_file: str | None,
         max_length: int,
     ):
-        logging_level = reset_level(level)
+        logging_level = LOG_CONFIG[level.lower()]
         self.display_on_screen = display_on_screen
         if self.display_on_screen:
             self.screen_logger = setup_screen_logger(logging_level, max_length)

@@ -1,20 +1,18 @@
-__all__ = ["ComicDB"]
+__all__ = ["SQLConnectorParams", "MySQLConnector", "DatabaseConfigurationError", "DatabaseDuplicateKeyError"]
 
 
 from abc import ABCMeta, abstractmethod
-import re
-import hashlib
-import os
 
-from hentaidb import parse_gallery_info
+
 from .logger import logger
-from .config_loader import config_loader
 
-match config_loader["database"]["sql_type"].lower():
-    case "mysql":
-        from mysql.connector import Error as SQLError
-        from mysql.connector import connect as SQLConnect
-        from mysql.connector.errors import IntegrityError as SQLDuplicateKeyError
+# from .config_loader import config_loader
+
+# match config_loader["database"]["sql_type"].lower():
+#     case "mysql":
+#         from mysql.connector import Error as SQLError
+#         from mysql.connector import connect as SQLConnect
+#         from mysql.connector.errors import IntegrityError as SQLDuplicateKeyError
 
 
 class SQLConnectorParams(dict):
@@ -51,7 +49,7 @@ class SQLConnector(metaclass=ABCMeta):
 
     The constructor takes in the necessary parameters to establish a database connection, such as host, port, user, password, and database.
 
-    The 'connect', 'close', 'execute', 'execute_many', 'fetch_one', 'fetch_all', and 'commit' methods are abstract methods that must be implemented by subclasses.
+    The 'connect', 'close', 'execute', 'execute_many', 'fetch_one', 'fetch_all', 'commit', and 'rollback' methods are abstract and must be implemented by concrete subclasses.
 
     The 'connect' method is designed to establish a connection to the database. It doesn't take any parameters.
 
@@ -66,6 +64,8 @@ class SQLConnector(metaclass=ABCMeta):
     The 'fetch_all' method is designed to fetch all results from the database. It takes a SQL query string and a tuple of data as parameters.
 
     The 'commit' method is designed to commit the current transaction to the database. It doesn't take any parameters.
+
+    The 'rollback' method is designed to roll back the current transaction in the database. It doesn't take any parameters.
     """
 
     def __init__(
@@ -132,6 +132,19 @@ class SQLConnector(metaclass=ABCMeta):
         This method is used to save any changes made within the current transaction
         to the database. It ensures that all changes are permanently saved and can
         be accessed by other transactions.
+
+        Returns:
+            None
+        """
+        pass
+
+    @abstractmethod
+    def rollback(self) -> None:
+        """
+        Rolls back the current transaction in the database.
+
+        This method is used to undo any changes made within the current transaction
+        and return the database to its state before the transaction began.
 
         Returns:
             None
@@ -227,6 +240,8 @@ class MySQLConnector(SQLConnector):
     The 'fetch_all' method fetches all results from the MySQL database.
 
     The 'commit' method commits the current transaction to the MySQL database.
+
+    The 'rollback' method rolls back the current transaction in the MySQL database.
     """
 
     def __init__(
@@ -238,6 +253,8 @@ class MySQLConnector(SQLConnector):
 
     def connect(self) -> None:
         logger.debug("Establishing MySQL connection...")
+        from mysql.connector import connect as SQLConnect
+
         self.connection = SQLConnect(
             host=self.host,
             port=self.port,
@@ -246,9 +263,11 @@ class MySQLConnector(SQLConnector):
             database=self.database,
         )
         logger.debug("MySQL connection established.")
+        self._cursor = self.connection.cursor()
 
     def close(self) -> None:
         logger.debug("Closing MySQL connection...")
+        self._cursor.close()
         self.connection.close()
         logger.debug("MySQL connection closed.")
 
@@ -257,33 +276,29 @@ class MySQLConnector(SQLConnector):
         self.connection.commit()
         logger.debug("MySQL transaction committed.")
 
+    def rollback(self) -> None:
+        logger.debug("Rolling back MySQL transaction...")
+        self.connection.rollback()
+        logger.debug("MySQL transaction rolled back.")
+
     def execute(self, query: str, data: tuple = ()) -> None:
         logger.debug(f"Executing MySQL query: {query}")
-        cursor = self.connection.cursor()
-        cursor.execute(query, data)
-        cursor.close()
+        self._cursor.execute(query, data)
 
     def execute_many(self, query: str, data: list[tuple]) -> None:
         logger.debug(f"Executing multiple MySQL queries: {query}")
-        cursor = self.connection.cursor()
-        cursor.executemany(query, data)
-        self.connection.commit()
-        cursor.close()
+        self._cursor.executemany(query, data)
 
     def fetch_one(self, query: str, data: tuple = ()) -> tuple:
         logger.debug(f"Fetching result for MySQL query: {query}")
-        cursor = self.connection.cursor()
-        cursor.execute(query, data)
-        vlist = cursor.fetchone()
-        cursor.close()
+        self._cursor.execute(query, data)
+        vlist = self._cursor.fetchone()
         return vlist  # type: ignore
 
     def fetch_all(self, query: str, data: tuple = ()) -> list:
         logger.debug(f"Fetching results for MySQL query: {query}")
-        cursor = self.connection.cursor()
-        cursor.execute(query, data)
-        vlist = cursor.fetchall()
-        cursor.close()
+        self._cursor.execute(query, data)
+        vlist = self._cursor.fetchall()
         return vlist
 
 
@@ -309,928 +324,3 @@ class DatabaseDuplicateKeyError(Exception):
     def __init__(self, message):
         self.message = message
         super().__init__(self.message)
-
-
-def sql_type_to_name(sql_type: str) -> str:
-    match sql_type.lower():
-        case "mysql":
-            name = "MySQL"
-    return name
-
-
-class ComicDB:
-    def __init__(self) -> None:
-        """
-        Initializes the SQLConnector object.
-
-        This method sets the SQL type, connection parameters, connector, and error class based on the configuration
-        settings loaded from the config file.
-
-        Raises:
-            ValueError: If the SQL type is not supported.
-
-        """
-        self.sql_type = config_loader["database"]["sql_type"].lower()
-        self.sql_connection_params = SQLConnectorParams(
-            config_loader["database"]["host"],
-            config_loader["database"]["port"],
-            config_loader["database"]["user"],
-            config_loader["database"]["password"],
-            config_loader["database"]["database"],
-        )
-
-        # Set the appropriate connector based on the SQL type
-        logger.debug("Setting connector...")
-        match self.sql_type:
-            case "mysql":
-                logger.debug("Setting MySQL connector...")
-                self.connector = MySQLConnector(**self.sql_connection_params)
-            case _:
-                raise ValueError("Unsupported SQL type")
-        logger.debug("Connector set.")
-
-        # Set the appropriate error class based on the SQL type
-        logger.debug("Setting error class...")
-        match self.sql_type:
-            case "mysql":
-                logger.debug("Setting MySQL error class...")
-                self.SQLError = SQLError
-        logger.debug("Error class set.")
-
-    def check_database_character_set(self) -> None:
-        """
-        Checks the character set of the database and raises an error if it is invalid.
-
-        Raises:
-            DatabaseConfigurationError: If the database character set is invalid.
-        """
-        logger.debug("Checking database character set...")
-        with self.connector as conn:
-            match self.sql_type:
-                case "mysql":
-                    logger.debug("Checking database character set for MySQL...")
-                    charset = "utf8mb4"
-                    query = "SHOW VARIABLES LIKE 'character_set_database';"
-            logger.debug(f"Database character set: {charset}")
-
-            charset_result = conn.fetch_one(query)[1]
-        is_charset_valid = charset_result == charset
-        if not is_charset_valid:
-            message = f"Invalid database character set. Must be '{charset}' for {sql_type_to_name(self.sql_type)} but is '{charset_result}'"
-            logger.error(message)
-            raise DatabaseConfigurationError(message)
-        logger.info("Database character set is valid.")
-
-    def check_database_collation(self) -> None:
-        logger.debug("Checking database collation...")
-        with self.connector as conn:
-            match self.sql_type:
-                case "mysql":
-                    logger.debug("Checking database collation for MySQL...")
-                    query = "SHOW VARIABLES LIKE 'collation_database';"
-                    collation = "utf8mb4_bin"
-            logger.debug(f"Database collation: {collation}")
-
-            collation_result = conn.fetch_one(query)[1]
-        is_collation_valid = collation_result == collation
-        if not is_collation_valid:
-            message = f"Invalid database collation. Must be '{collation}' for {sql_type_to_name(self.sql_type)} but is '{collation_result}'"
-            logger.error(message)
-            raise DatabaseConfigurationError(message)
-        logger.info("Database character set and collation are valid.")
-
-    def __enter__(self) -> "ComicDB":
-        self.connector.connect()
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
-        self.connector.close()
-
-    def _create_gallery_name_id_table(self) -> None:
-        table_name = "DB_Gallery_ID"
-        logger.debug(f"Creating {table_name} table...")
-        match self.sql_type:
-            case "mysql":
-                query = f"""
-                    CREATE TABLE IF NOT EXISTS {table_name} (
-                        Gallery_Name_Part1 CHAR(191) NOT NULL,
-                        Gallery_Name_Part2 CHAR(64) NOT NULL,
-                        DB_Gallery_ID INT UNSIGNED AUTO_INCREMENT,
-                        UNIQUE Full_Name (Gallery_Name_Part1, Gallery_Name_Part2),
-                        PRIMARY KEY (DB_Gallery_ID),
-                        INDEX Name_Part2 (Gallery_Name_Part2)
-                    )
-                """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
-        with self.connector as conn:
-            conn.execute(query)
-        logger.info(f"{table_name} table created.")
-
-    def _create_gallery_name_view(self) -> None:
-        table_name = "Gallery_Name"
-        logger.debug(f"Creating {table_name} view...")
-        match self.sql_type:
-            case "mysql":
-                query = f"""
-                    CREATE VIEW IF NOT EXISTS {table_name} AS
-                    SELECT CONCAT(Gallery_Name_Part1, Gallery_Name_Part2) AS Name, DB_Gallery_ID
-                    FROM DB_Gallery_ID
-                """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
-        with self.connector as conn:
-            conn.execute(query)
-        logger.info(f"{table_name} view created.")
-
-    def _insert_gallery_name_and_return_id(self, gallery_name: str) -> int:
-        logger.debug(f"Inserting gallery name '{gallery_name}'...")
-        table_name = "DB_Gallery_ID"
-        if len(gallery_name) > 255:
-            logger.error(
-                f"Gallery name '{gallery_name}' is too long. Must be 255 characters or less."
-            )
-            raise ValueError("Gallery name is too long.")
-        gallery_name_part1 = gallery_name[0:191]
-        gallery_name_part2 = gallery_name[191:255]
-        logger.debug(
-            f"Gallery name '{gallery_name}' split into parts '{gallery_name_part1}' and '{gallery_name_part2}'"
-        )
-
-        match self.sql_type:
-            case "mysql":
-                insert_query = f"""
-                    INSERT INTO {table_name} (Gallery_Name_Part1, Gallery_Name_Part2) VALUES (%s, %s)
-                """
-                select_query = f"""
-                    SELECT DB_Gallery_ID FROM {table_name} WHERE Gallery_Name_Part1 = %s AND Gallery_Name_Part2 = %s
-                """
-        insert_query, select_query = (
-            mullines2oneline(query) for query in (insert_query, select_query)
-        )
-        data = (gallery_name_part1, gallery_name_part2)
-
-        with self.connector as conn:
-            logger.debug(f"Insert query: {insert_query}")
-            try:
-                conn.execute(insert_query, data)
-                conn.commit()
-                logger.debug(f"Gallery name '{gallery_name}' inserted.")
-            except SQLDuplicateKeyError:
-                logger.warning(
-                    f"Gallery name '{gallery_name}' already exists. Retrieving ID..."
-                )
-            logger.debug(f"Select query: {select_query}")
-            gallery_name_id = conn.fetch_one(select_query, data)[0]
-        logger.info(
-            f"Gallery name '{gallery_name}' inserted with ID {gallery_name_id}."
-        )
-        return gallery_name_id
-
-    def _insert_gallery_names_and_return_ids(
-        self, gallery_names: list[str]
-    ) -> dict[str, int]:
-        logger.debug(f"Inserting gallery names '{gallery_names}'...")
-        gallery_name_ids = dict()
-        for gallery_name in gallery_names:
-            gallery_name_id = self._insert_gallery_name_and_return_id(gallery_name)
-            gallery_name_ids[gallery_name] = gallery_name_id
-        return gallery_name_ids
-
-    def _create_gid_table(self) -> None:
-        table_name = "GID"
-        logger.debug(f"Creating {table_name} table...")
-        match self.sql_type:
-            case "mysql":
-                query = f"""
-                    CREATE TABLE IF NOT EXISTS {table_name} (
-                        DB_Gallery_ID INT UNSIGNED NOT NULL,
-                        GID INT UNSIGNED NOT NULL,
-                        PRIMARY KEY (DB_Gallery_ID),
-                        FOREIGN KEY (DB_Gallery_ID) REFERENCES DB_Gallery_ID(DB_Gallery_ID),
-                        INDEX (GID, DB_Gallery_ID)
-                    )
-                """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
-        with self.connector as conn:
-            conn.execute(query)
-        logger.info(f"{table_name} table created.")
-
-    def _insert_gid(self, gallery_name_id: int, gid: int) -> None:
-        table_name = "GID"
-        logger.debug(
-            f"Inserting {table_name} {gid} for gallery name ID {gallery_name_id}..."
-        )
-        match self.sql_type:
-            case "mysql":
-                insert_query = f"""
-                    INSERT INTO {table_name} (DB_Gallery_ID, GID) VALUES (%s, %s)
-                """
-                select_query = f"""
-                    SELECT GID FROM {table_name} WHERE DB_Gallery_ID = %s AND GID = %s
-                """
-        insert_query, select_query = (
-            mullines2oneline(query) for query in (insert_query, select_query)
-        )
-        data = (gallery_name_id, gid)
-
-        with self.connector as conn:
-            logger.debug(f"Insert query: {insert_query}")
-            try:
-                conn.execute(insert_query, data)
-                logger.debug(
-                    f"GID {gid} inserted for gallery name ID {gallery_name_id}."
-                )
-            except SQLDuplicateKeyError:
-                logger.warning(
-                    f"GID {gid} for gallery name ID {gallery_name_id} already exists."
-                )
-        logger.info(f"GID {gid} inserted for gallery name ID {gallery_name_id}.")
-
-    def _create_time_table(self, table_name: str) -> None:
-        logger.debug(f"Creating {table_name} table...")
-        match self.sql_type:
-            case "mysql":
-                query = f"""
-                    CREATE TABLE IF NOT EXISTS {table_name} (
-                        DB_Gallery_ID INT UNSIGNED NOT NULL,
-                        Time DATETIME NOT NULL,
-                        PRIMARY KEY (DB_Gallery_ID),
-                        FOREIGN KEY (DB_Gallery_ID) REFERENCES DB_Gallery_ID(DB_Gallery_ID),
-                        INDEX (Time, DB_Gallery_ID)
-                    )
-                """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
-        with self.connector as conn:
-            conn.execute(query)
-        logger.info(f"{table_name} table created.")
-
-    def _insert_time(self, table_name: str, gallery_name_id: int, time: str) -> None:
-        logger.debug(
-            f"Inserting time '{time}' for gallery name ID {gallery_name_id} into table '{table_name}'..."
-        )
-        match self.sql_type:
-            case "mysql":
-                insert_query = f"""
-                    INSERT INTO {table_name} (DB_Gallery_ID, Time) VALUES (%s, %s)
-                """
-        insert_query = mullines2oneline(insert_query)
-        data = (gallery_name_id, time)
-
-        isupdate = False
-        with self.connector as conn:
-            logger.debug(f"Insert query: {insert_query}")
-            try:
-                conn.execute(insert_query, data)
-                conn.commit()
-                logger.debug(
-                    f"Time '{time}' inserted for gallery name ID {gallery_name_id}."
-                )
-            except SQLDuplicateKeyError:
-                logger.warning(
-                    f"Time '{time}' for gallery name ID {gallery_name_id} already exists."
-                )
-            isupdate = True
-        if isupdate:
-            self._update_time(table_name, gallery_name_id, time)
-        logger.info(f"Time '{time}' inserted for gallery name ID {gallery_name_id}.")
-
-    def _update_time(self, table_name: str, gallery_name_id: int, time: str) -> None:
-        logger.debug(
-            f"Updating time '{time}' for gallery name ID {gallery_name_id} in table '{table_name}'..."
-        )
-        match self.sql_type:
-            case "mysql":
-                update_query = f"""
-                    UPDATE {table_name} SET Time = %s WHERE DB_Gallery_ID = %s
-                """
-        update_query = mullines2oneline(update_query)
-        data = (time, gallery_name_id)
-
-        with self.connector as conn:
-            logger.debug(f"Update query: {update_query}")
-            conn.execute(update_query, data)
-        logger.info(
-            f"Time '{time}' updated for gallery name ID {gallery_name_id} in table '{table_name}'."
-        )
-
-    def _create_download_time_table(self) -> None:
-        self._create_time_table("Download_Time")
-
-    def _insert_download_time(self, gallery_name_id: int, time: str) -> None:
-        self._insert_time("Download_Time", gallery_name_id, time)
-
-    def _create_upload_time_table(self) -> None:
-        self._create_time_table("Upload_Time")
-
-    def _insert_upload_time(self, gallery_name_id: int, time: str) -> None:
-        self._insert_time("Upload_Time", gallery_name_id, time)
-
-    def _create_modified_time_table(self) -> None:
-        self._create_time_table("Modified_Time")
-
-    def _insert_modified_time(self, gallery_name_id: int, time: str) -> None:
-        self._insert_time("Modified_Time", gallery_name_id, time)
-
-    def _create_access_time_table(self) -> None:
-        self._create_time_table("Access_Time")
-
-    def _insert_access_time(self, gallery_name_id: int, time: str) -> None:
-        self._insert_time("Access_Time", gallery_name_id, time)
-
-    def update_access_time(self, gallery_name_id: int, time: str) -> None:
-        self._update_time("Access_Time", gallery_name_id, time)
-
-    def _create_title_parts_table(self) -> None:
-        table_name = "Title_Parts"
-        logger.debug(f"Creating {table_name} table...")
-        match self.sql_type:
-            case "mysql":
-                query = f"""
-                    CREATE TABLE IF NOT EXISTS {table_name} (
-                        DB_Gallery_ID INT UNSIGNED NOT NULL,
-                        Title_Part1 CHAR(191) NOT NULL,
-                        Title_Part2 CHAR(191) NOT NULL,
-                        Title_Part3 CHAR(191) NOT NULL,
-                        PRIMARY KEY (DB_Gallery_ID),
-                        FOREIGN KEY (DB_Gallery_ID) REFERENCES DB_Gallery_ID(DB_Gallery_ID),
-                        INDEX (Title_Part1, Title_Part2, Title_Part3, DB_Gallery_ID)
-                    )
-                """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
-        with self.connector as conn:
-            conn.execute(query)
-        logger.info(f"{table_name} table created.")
-
-    def _create_title_view(self) -> None:
-        table_name = "Title"
-        logger.debug(f"Creating {table_name} view...")
-        match self.sql_type:
-            case "mysql":
-                query = f"""
-                    CREATE VIEW IF NOT EXISTS {table_name} AS
-                    SELECT CONCAT(Title_Part1, Title_Part2, Title_Part3) AS Title, DB_Gallery_ID
-                    FROM Title_Parts
-                """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
-        with self.connector as conn:
-            conn.execute(query)
-        logger.info(f"{table_name} view created.")
-
-    def _insert_title(self, gallery_name_id: int, title: str) -> None:
-        logger.debug(
-            f"Inserting title '{title}' for gallery name ID {gallery_name_id}..."
-        )
-        table_name = "Title_Parts"
-        if len(title) > 573:
-            logger.error(
-                f"Title '{title}' is too long. Must be 573 characters or less."
-            )
-            raise ValueError("Title is too long.")
-        title_part1 = title[0:191]
-        title_part2 = title[191:382]
-        title_part3 = title[382:573]
-        logger.debug(
-            f"Title '{title}' split into parts '{title_part1}', '{title_part2}', and '{title_part3}'"
-        )
-
-        match self.sql_type:
-            case "mysql":
-                insert_query = f"""
-                    INSERT INTO {table_name} (DB_Gallery_ID, Title_Part1, Title_Part2, Title_Part3) VALUES (%s, %s, %s, %s)
-                """
-                select_query = f"""
-                    SELECT Title_Part1, Title_Part2, Title_Part3 FROM {table_name} WHERE DB_Gallery_ID = %s AND Title_Part1 = %s AND Title_Part2 = %s AND Title_Part3 = %s
-                """
-        insert_query, select_query = (
-            mullines2oneline(query) for query in (insert_query, select_query)
-        )
-        data = (gallery_name_id, title_part1, title_part2, title_part3)
-
-        with self.connector as conn:
-            logger.debug(f"Insert query: {insert_query}")
-            try:
-                conn.execute(insert_query, data)
-                conn.commit()
-                logger.debug(
-                    f"Title '{title}' inserted for gallery name ID {gallery_name_id}."
-                )
-            except SQLDuplicateKeyError:
-                logger.warning(
-                    f"Title '{title}' for gallery name ID {gallery_name_id} already exists."
-                )
-        logger.info(f"Title '{title}' inserted for gallery name ID {gallery_name_id}.")
-
-    def _create_upload_account_table(self) -> None:
-        table_name = "Upload_Account"
-        logger.debug(f"Creating {table_name} table...")
-        match self.sql_type:
-            case "mysql":
-                query = f"""
-                    CREATE TABLE IF NOT EXISTS {table_name} (
-                        DB_Gallery_ID INT UNSIGNED NOT NULL,
-                        Account CHAR(191) NOT NULL,
-                        PRIMARY KEY (DB_Gallery_ID),
-                        FOREIGN KEY (DB_Gallery_ID) REFERENCES DB_Gallery_ID(DB_Gallery_ID),
-                        INDEX (Account, DB_Gallery_ID)
-                    )
-                """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
-        with self.connector as conn:
-            conn.execute(query)
-        logger.info(f"{table_name} table created.")
-
-    def _insert_upload_account(self, gallery_name_id: int, account: str) -> None:
-        logger.debug(
-            f"Inserting upload account '{account}' for gallery name ID {gallery_name_id}..."
-        )
-        table_name = "Upload_Account"
-        if len(account) > 191:
-            logger.error(
-                f"Upload account '{account}' is too long. Must be 191 characters or less."
-            )
-            raise ValueError("Upload account is too long.")
-
-        match self.sql_type:
-            case "mysql":
-                insert_query = f"""
-                    INSERT INTO {table_name} (DB_Gallery_ID, Account) VALUES (%s, %s)
-                """
-                select_query = f"""
-                    SELECT Account FROM {table_name} WHERE DB_Gallery_ID = %s AND Account = %s
-                """
-        insert_query, select_query = (
-            mullines2oneline(query) for query in (insert_query, select_query)
-        )
-        data = (gallery_name_id, account)
-
-        with self.connector as conn:
-            logger.debug(f"Insert query: {insert_query}")
-            try:
-                conn.execute(insert_query, data)
-                conn.commit()
-                logger.debug(
-                    f"Upload account '{account}' inserted for gallery name ID {gallery_name_id}."
-                )
-            except SQLDuplicateKeyError:
-                logger.warning(
-                    f"Upload account '{account}' for gallery name ID {gallery_name_id} already exists."
-                )
-        logger.info(
-            f"Upload account '{account}' inserted for gallery name ID {gallery_name_id}."
-        )
-
-    def _create_gallery_info_view(self) -> None:
-        logger.debug("Creating Gallery_Info view...")
-        match self.sql_type:
-            case "mysql":
-                query = """
-                    CREATE VIEW IF NOT EXISTS Gallery_Info AS
-                    SELECT
-                        Gallery_Name.DB_Gallery_ID AS DB_Gallery_ID,
-                        Gallery_Name.Name AS Name,
-                        Title.Title AS Title,
-                        GID.GID AS GID,
-                        Upload_Account.Account AS Upload_Account,
-                        Upload_Time.Time AS Upload_Time,
-                        Download_Time.Time AS Download_Time,
-                        Modified_Time.Time AS Modified_Time,
-                        Access_Time.Time AS Access_Time
-                    FROM
-                        Gallery_Name
-                        LEFT JOIN Title USING (DB_Gallery_ID)
-                        LEFT JOIN GID USING (DB_Gallery_ID)
-                        LEFT JOIN Upload_Account USING (DB_Gallery_ID)
-                        LEFT JOIN Upload_Time USING (DB_Gallery_ID)
-                        LEFT JOIN Download_Time USING (DB_Gallery_ID)
-                        LEFT JOIN Modified_Time USING (DB_Gallery_ID)
-                        LEFT JOIN Access_Time USING (DB_Gallery_ID)
-                """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
-        with self.connector as conn:
-            conn.execute(query)
-        logger.info("Gallery_Info view created.")
-
-    def _create_uploader_comment_table(self) -> None:
-        table_name = "Uploader_Comment"
-        logger.debug(f"Creating {table_name} table...")
-        match self.sql_type:
-            case "mysql":
-                query = f"""
-                    CREATE TABLE IF NOT EXISTS {table_name} (
-                        DB_Gallery_ID INT UNSIGNED NOT NULL,
-                        Comment TEXT NOT NULL,
-                        PRIMARY KEY (DB_Gallery_ID),
-                        FOREIGN KEY (DB_Gallery_ID) REFERENCES DB_Gallery_ID(DB_Gallery_ID),
-                        FULLTEXT (Comment)
-                    )
-                """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
-        with self.connector as conn:
-            conn.execute(query)
-        logger.info(f"{table_name} table created.")
-
-    def _insert_uploader_comment(self, gallery_name_id: int, comment: str) -> None:
-        logger.debug(
-            f"Inserting uploader comment for gallery name ID {gallery_name_id}..."
-        )
-        table_name = "Uploader_Comment"
-        match self.sql_type:
-            case "mysql":
-                insert_query = f"""
-                    INSERT INTO {table_name} (DB_Gallery_ID, Comment) VALUES (%s, %s)
-                """
-        insert_query = mullines2oneline(insert_query)
-        data = (gallery_name_id, comment)
-
-        isupdater = False
-        with self.connector as conn:
-            logger.debug(f"Insert query: {insert_query}")
-            try:
-                conn.execute(insert_query, data)
-            except SQLDuplicateKeyError:
-                isupdater = True
-        if isupdater:
-            logger.warning(
-                f"Uploader comment already exists for gallery name ID {gallery_name_id}. Updating..."
-            )
-            self._update_uploader_comment(gallery_name_id, comment)
-        logger.info(f"Uploader comment inserted for gallery name ID {gallery_name_id}.")
-
-    def _update_uploader_comment(self, gallery_name_id: int, comment: str) -> None:
-        logger.debug(
-            f"Updating uploader comment for gallery name ID {gallery_name_id}..."
-        )
-        table_name = "Uploader_Comment"
-        match self.sql_type:
-            case "mysql":
-                update_query = f"""
-                    UPDATE {table_name} SET Comment = %s WHERE DB_Gallery_ID = %s
-                """
-        update_query = mullines2oneline(update_query)
-        data = (comment, gallery_name_id)
-
-        with self.connector as conn:
-            logger.debug(f"Update query: {update_query}")
-            conn.execute(update_query, data)
-        logger.info(f"Uploader comment updated for gallery name ID {gallery_name_id}.")
-
-    def _create_tag_table(self, tag_name: str) -> None:
-        table_name = f"Tag_{tag_name}"
-        logger.debug(f"Creating {table_name} table...")
-        match self.sql_type:
-            case "mysql":
-                query = f"""
-                    CREATE TABLE IF NOT EXISTS {table_name} (
-                        DB_Gallery_ID INT UNSIGNED NOT NULL,
-                        Tag CHAR(191) NOT NULL,
-                        PRIMARY KEY (DB_Gallery_ID),
-                        FOREIGN KEY (DB_Gallery_ID) REFERENCES DB_Gallery_ID(DB_Gallery_ID),
-                        INDEX (Tag, DB_Gallery_ID)
-                    )
-                """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
-        with self.connector as conn:
-            conn.execute(query)
-        logger.info(f"{table_name} table created.")
-
-    def insert_tag(self, gallery_name_id: int, tag_name: str, tag_value: str) -> None:
-        logger.debug(f"Inserting tag '{tag_name}'...")
-        table_name = f"Tag_{tag_name}"
-        match self.sql_type:
-            case "mysql":
-                insert_query = f"""
-                    INSERT INTO {table_name} (DB_Gallery_ID, Tag) VALUES (%s, %s)
-                """
-        insert_query = mullines2oneline(insert_query)
-        data = (gallery_name_id, tag_value)
-
-        self._create_tag_table(tag_name)
-        with self.connector as conn:
-            logger.debug(f"Insert query: {insert_query}")
-            try:
-                conn.execute(insert_query, data)
-            except SQLDuplicateKeyError:
-                logger.warning(
-                    f"Tag '{tag_name}' for gallery name ID {gallery_name_id} already exists."
-                )
-        logger.info(f"Tag '{tag_name}' inserted.")
-
-    def _create_gallery_image_id_table(self) -> None:
-        table_name = f"DB_Image_ID"
-        logger.debug(f"Creating {table_name} table...")
-        match self.sql_type:
-            case "mysql":
-                query = f"""
-                    CREATE TABLE IF NOT EXISTS {table_name} (
-                        DB_Gallery_ID INT UNSIGNED NOT NULL,
-                        File_Name_Part1 CHAR(191) NOT NULL,
-                        File_Name_Part2 CHAR(64) NOT NULL,
-                        DB_Image_ID INT UNSIGNED AUTO_INCREMENT,
-                        PRIMARY KEY (DB_Image_ID),
-                        UNIQUE File (DB_Gallery_ID, File_Name_Part1, File_Name_Part2),
-                        FOREIGN KEY (DB_Gallery_ID) REFERENCES DB_Gallery_ID(DB_Gallery_ID)
-                    )
-                """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
-        with self.connector as conn:
-            conn.execute(query)
-        logger.info(f"{table_name} table created.")
-
-    def _insert_gallery_image_and_return_id(
-        self, gallery_name_id: int, file: str
-    ) -> int:
-        logger.debug(
-            f"Inserting image ID for gallery name ID {gallery_name_id} and file '{file}'..."
-        )
-        table_name = "DB_Image_ID"
-        if len(file) > 255:
-            logger.error(f"File '{file}' is too long. Must be 255 characters or less.")
-            raise ValueError("File is too long.")
-        file_part1 = file[0:191]
-        file_part2 = file[191:255]
-        logger.debug(
-            f"File '{file}' split into parts '{file_part1}' and '{file_part2}'"
-        )
-
-        match self.sql_type:
-            case "mysql":
-                insert_query = f"""
-                    INSERT INTO {table_name} (DB_Gallery_ID, File_Name_Part1, File_Name_Part2) VALUES (%s, %s, %s)
-                """
-                select_query = f"""
-                    SELECT DB_Image_ID FROM {table_name} WHERE DB_Gallery_ID = %s AND File_Name_Part1 = %s AND File_Name_Part2 = %s
-                """
-        insert_query, select_query = (
-            mullines2oneline(query) for query in (insert_query, select_query)
-        )
-        data = (gallery_name_id, file_part1, file_part2)
-
-        with self.connector as conn:
-            logger.debug(f"Insert query: {insert_query}")
-            try:
-                conn.execute(insert_query, data)
-                conn.commit()
-                logger.debug(
-                    f"Image ID inserted for gallery name ID {gallery_name_id} and file '{file}'."
-                )
-            except SQLDuplicateKeyError:
-                logger.warning(
-                    f"Image ID for gallery name ID {gallery_name_id} and file '{file}' already exists."
-                )
-            logger.debug(f"Select query: {select_query}")
-            gallery_image_id = conn.fetch_one(select_query, data)[0]
-        logger.info(
-            f"Image ID inserted for gallery name ID {gallery_name_id} and file '{file}'."
-        )
-        return gallery_image_id
-
-    def _creage_gallery_image_id_view(self) -> None:
-        table_name = "Image_ID"
-        logger.debug(f"Creating {table_name} view...")
-        match self.sql_type:
-            case "mysql":
-                query = f"""
-                    CREATE VIEW IF NOT EXISTS {table_name} AS
-                    SELECT
-                        DB_Image_ID.DB_Gallery_ID AS DB_Gallery_ID,
-                        Gallery_Name.Name AS Gallery,
-                        CONCAT(File_Name_Part1, File_Name_Part2) AS File,
-                        DB_Image_ID
-                    FROM DB_Image_ID
-                    LEFT JOIN Gallery_Name USING (DB_Gallery_ID)
-                """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
-        with self.connector as conn:
-            conn.execute(query)
-        logger.info(f"{table_name} view created.")
-
-    def _create_gallery_image_hash_table(self) -> None:
-        table_name = "Image_Hash"
-        logger.debug(f"Creating {table_name} table...")
-        match self.sql_type:
-            case "mysql":
-                query = f"""
-                    CREATE TABLE IF NOT EXISTS {table_name} (
-                        DB_Image_ID INT UNSIGNED NOT NULL,
-                        Hash CHAR(128) NOT NULL,
-                        PRIMARY KEY (DB_Image_ID),
-                        FOREIGN KEY (DB_Image_ID) REFERENCES DB_Image_ID(DB_Image_ID),
-                        INDEX (Hash, DB_Image_ID)
-                    )
-                """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
-        with self.connector as conn:
-            conn.execute(query)
-        logger.info(f"{table_name} table created.")
-
-    def _insert_gallery_image_hash(self, image_id: int, file_path: str) -> None:
-        logger.debug(
-            f"Calculating hash for image ID {image_id} and file '{file_path}'..."
-        )
-        with open(file_path, "rb") as f:
-            file_content = f.read()
-        hash_value = hashlib.sha512(file_content).hexdigest()
-
-        logger.debug(
-            f"Inserting image hash '{hash_value}' for image ID {image_id} and file '{file_path}'..."
-        )
-        table_name = "Image_Hash"
-        match self.sql_type:
-            case "mysql":
-                insert_query = f"""
-                    INSERT INTO {table_name} (DB_Image_ID, Hash) VALUES (%s, %s)
-                """
-        insert_query = mullines2oneline(insert_query)
-        data = (image_id, hash_value)
-
-        isupdater = False
-        with self.connector as conn:
-            logger.debug(f"Insert query: {insert_query}")
-            try:
-                conn.execute(insert_query, data)
-                conn.commit()
-            except SQLDuplicateKeyError:
-                logger.warning(
-                    f"Image hash '{hash_value}' for image ID {image_id} and file '{file_path}' already exists."
-                )
-            isupdater = True
-        if isupdater:
-            self._update_gallery_image_hash(image_id, file_path, hash_value)
-        logger.info(
-            f"Image hash '{hash_value}' inserted for image ID {image_id} and file '{file_path}'."
-        )
-
-    def _update_gallery_image_hash(
-        self, image_id: int, file_path: str, hash_value: str
-    ) -> None:
-        logger.debug(
-            f"Updating image hash '{hash_value}' for image ID {image_id} and file '{file_path}'..."
-        )
-        table_name = "Image_Hash"
-        match self.sql_type:
-            case "mysql":
-                update_query = f"""
-                    UPDATE {table_name} SET Hash = %s WHERE DB_Image_ID = %s
-                """
-        update_query = mullines2oneline(update_query)
-        data = (hash_value, image_id)
-
-        with self.connector as conn:
-            logger.debug(f"Update query: {update_query}")
-            conn.execute(update_query, data)
-        logger.info(
-            f"Image hash '{hash_value}' updated for image ID {image_id} and file '{file_path}'."
-        )
-
-    def delete_gallery_image(self, gallery_name: str) -> None:
-        logger.debug(f"Deleting gallery '{gallery_name}'...")
-        match self.sql_type:
-            case "mysql":
-                delete_image_hash_query = """
-                    DELETE FROM Image_Hash
-                    WHERE
-                        DB_Image_ID IN (
-                            SELECT
-                                DB_Image_ID
-                            FROM
-                                DB_Image_ID
-                            WHERE
-                                DB_Gallery_ID = (
-                                    SELECT
-                                        DB_Gallery_ID
-                                    FROM
-                                        Gallery_Name
-                                    WHERE
-                                        Name = %s
-                                )
-                        )
-                """
-                delete_image_image_id_query = """
-                    DELETE FROM DB_Image_ID
-                    WHERE
-                        DB_Gallery_ID = (
-                            SELECT
-                                DB_Gallery_ID
-                            FROM
-                                Gallery_Name
-                            WHERE
-                                Name = %s
-                        )
-                """
-        delete_image_hash_query, delete_image_image_id_query = (
-            mullines2oneline(query)
-            for query in (delete_image_hash_query, delete_image_image_id_query)
-        )
-        data = (gallery_name,)
-
-        with self.connector as conn:
-            logger.debug(f"Delete query: {delete_image_hash_query}")
-            conn.execute(delete_image_hash_query, data)
-            logger.debug(f"Delete query: {delete_image_image_id_query}")
-            conn.execute(delete_image_image_id_query, data)
-        logger.info(f"Gallery '{gallery_name}' deleted.")
-
-    def delete_gallery(self, gallery_name: str) -> None:
-        logger.debug(f"Deleting gallery '{gallery_name}'...")
-        match self.sql_type:
-            case "mysql":
-                select_table_name_query = f"""
-                    SELECT
-                        TABLE_NAME
-                    FROM
-                        INFORMATION_SCHEMA.KEY_COLUMN_USAGE
-                    WHERE
-                        REFERENCED_TABLE_SCHEMA = '{config_loader["database"]["database"]}' AND
-                        REFERENCED_TABLE_NAME = 'DB_Gallery_ID' AND
-                        REFERENCED_COLUMN_NAME = 'DB_Gallery_ID'
-                """
-                delete_gallery_id_query = """
-                    DELETE FROM %s
-                    WHERE
-                        DB_Gallery_ID = (
-                            SELECT
-                                DB_Gallery_ID
-                            FROM
-                                Gallery_Name
-                            WHERE
-                                Name = '%s'
-                        )
-                """
-        select_table_name_query, delete_gallery_id_query = (
-            mullines2oneline(query)
-            for query in (select_table_name_query, delete_gallery_id_query)
-        )
-
-        with self.connector as conn:
-            logger.debug(f"Select query: {select_table_name_query}")
-            table_names = conn.fetch_all(select_table_name_query)
-        table_names = [t[0] for t in table_names] + ["DB_Gallery_ID"]
-        logger.debug(f"Table names: {table_names}")
-
-        with self.connector as conn:
-            logger.debug(f"Delete query: {delete_gallery_id_query}")
-            for table_name in table_names:
-                data = (table_name, gallery_name)
-                conn.execute(delete_gallery_id_query % data)
-        logger.info(f"Gallery '{gallery_name}' deleted.")
-
-    def create_main_tables(self) -> None:
-        self._create_gallery_name_id_table()
-        self._create_gallery_name_view()
-        self._create_gid_table()
-        self._create_download_time_table()
-        self._create_upload_time_table()
-        self._create_modified_time_table()
-        self._create_access_time_table()
-        self._create_title_parts_table()
-        self._create_title_view()
-        self._create_upload_account_table()
-        self._create_uploader_comment_table()
-        self._create_gallery_info_view()
-        self._create_gallery_image_id_table()
-        self._creage_gallery_image_id_view()
-        self._create_gallery_image_hash_table()
-
-    def insert_gallery_info(self, gallery_folder: str) -> None:
-        gallery_info = parse_gallery_info(gallery_folder)
-        id = self._insert_gallery_name_and_return_id(gallery_info.gallery_name)
-        self._insert_gid(id, gallery_info.gid)
-        self._insert_title(id, gallery_info.title)
-        self._insert_upload_time(id, gallery_info.upload_time)
-        self._insert_uploader_comment(id, gallery_info.uploader_comment)
-        self._insert_upload_account(id, gallery_info.upload_account)
-        self._insert_download_time(id, gallery_info.download_time)
-        self._insert_access_time(id, gallery_info.download_time)
-        self._insert_modified_time(id, gallery_info.modified_time)
-        for tag_name, tag_value in gallery_info.tags.items():
-            self.insert_tag(id, tag_name, tag_value)
-        for file_path in gallery_info.files_path:
-            image_id = self._insert_gallery_image_and_return_id(id, file_path)
-            self._insert_gallery_image_hash(
-                image_id, os.path.join(gallery_folder, file_path)
-            )
-
-
-def mullines2oneline(s: str) -> str:
-    """
-    Replaces multiple spaces with a single space, and replaces newlines with a space.
-
-    Args:
-        s (str): The input string.
-
-    Returns:
-        str: The modified string with multiple spaces replaced by a single space and newlines replaced by a space.
-    """
-    return re.sub(" +", " ", s.replace("\n", " ")).strip()

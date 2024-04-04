@@ -16,7 +16,7 @@ class GalleryInfoParser:
         modified_time (str): The modified time of the gallery.
         title (str): The title of the gallery.
         upload_time (str): The upload time of the gallery.
-        uploader_comment (str): The uploader's comment for the gallery.
+        galleries_comments (str): The uploader's comment for the gallery.
         upload_account (str): The account used to upload the gallery.
         download_time (str): The download time of the gallery.
         tags (dict[str, str]): The tags associated with the gallery.
@@ -30,7 +30,7 @@ class GalleryInfoParser:
         modified_time: str,
         title: str,
         upload_time: str,
-        uploader_comment: str,
+        galleries_comments: str,
         upload_account: str,
         download_time: str,
         tags: dict[str, str],
@@ -41,7 +41,7 @@ class GalleryInfoParser:
         self.modified_time = modified_time
         self.title = title
         self.upload_time = upload_time
-        self.uploader_comment = uploader_comment
+        self.galleries_comments = galleries_comments
         self.upload_account = upload_account
         self.download_time = download_time
         self.tags = tags
@@ -53,7 +53,7 @@ class GalleryInfoParser:
         "modified_time",
         "title",
         "upload_time",
-        "uploader_comment",
+        "galleries_comments",
         "upload_account",
         "download_time",
         "tags",
