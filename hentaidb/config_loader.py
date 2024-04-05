@@ -86,6 +86,7 @@ def load_config() -> Config:
     )
 
     if "logger" not in user_config:
+        level = "INFO"
         display_on_screen = False
         write_to_file = False
         max_log_entry_length = -1
