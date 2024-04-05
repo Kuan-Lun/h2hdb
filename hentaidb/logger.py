@@ -10,18 +10,18 @@ import unicodedata
 from .config_loader import config_loader
 
 
-def split_message_with_cjk(message: str, max_length: int) -> list[str]:
+def split_message_with_cjk(message: str, max_log_entry_length: int) -> list[str]:
     """
     Splits a message into chunks of a specified maximum length, taking into account the width of CJK characters.
 
     Args:
         message (str): The message to be split.
-        max_length (int): The maximum length of each chunk. Note that CJK characters count as 2 towards this limit.
+        max_log_entry_length (int): The maximum length of each chunk. Note that CJK characters count as 2 towards this limit.
 
     Returns:
         list[str]: A list of chunks, where each chunk is a substring of the original message.
     """
-    if max_length < 0:
+    if max_log_entry_length < 0:
         return [message]
     else:
         chunks = list()
@@ -29,7 +29,7 @@ def split_message_with_cjk(message: str, max_length: int) -> list[str]:
         chunk_len = 0
         for char in message:
             char_len = 2 if "CJK UNIFIED" in unicodedata.name(char, str()) else 1
-            if chunk_len + char_len > max_length:
+            if chunk_len + char_len > max_log_entry_length:
                 if chunk and chunk[0] == " ":
                     chunk = chunk[1:]
                 chunks.append(chunk)
@@ -45,10 +45,10 @@ def split_message_with_cjk(message: str, max_length: int) -> list[str]:
 
 
 def log_message(
-    logger: logging.Logger, level: int, max_length: int, message: str
+    logger: logging.Logger, level: int, max_log_entry_length: int, message: str
 ) -> None:
     frame = sys._getframe(3)
-    chunks = split_message_with_cjk(message, max_length)
+    chunks = split_message_with_cjk(message, max_log_entry_length)
     for chunk in chunks:
         record = logger.makeRecord(
             logger.name,
@@ -72,13 +72,13 @@ LOG_CONFIG = {
 }
 
 
-def setup_screen_logger(level: int, max_length: int) -> logging.Logger:
+def setup_screen_logger(level: int, max_log_entry_length: int) -> logging.Logger:
     """
     Set up a logger that displays log messages on the screen.
 
     Args:
         level (int): The logging level to set for the logger.
-        max_length (int): The maximum length of log messages.
+        max_log_entry_length (int): The maximum length of log messages.
 
     Returns:
         logging.Logger: The configured logger instance.
@@ -95,30 +95,30 @@ def setup_screen_logger(level: int, max_length: int) -> logging.Logger:
         if level_value < level:
             continue
         partial_log_message = partial(
-            log_message, screen_logger, level_value, max_length
+            log_message, screen_logger, level_value, max_log_entry_length
         )
         setattr(screen_logger, level_name, partial_log_message)
     return screen_logger
 
 
-def setup_file_logger(display_on_file: str, level: int) -> logging.Logger:
+def setup_file_logger(write_to_file: str, level: int) -> logging.Logger:
     """
     Set up a file logger with the specified log level and log file.
 
     Args:
-        display_on_file (str): The path to the log file.
+        write_to_file (str): The path to the log file.
         level (int): The log level to be set for the file logger.
 
     Returns:
         logging.Logger: The configured file logger.
 
     """
-    file_logger = logging.getLogger("display_on_file")
+    file_logger = logging.getLogger("write_to_file")
     file_logger.setLevel(level)
 
-    with open(display_on_file, "w", encoding="utf-8") as f:
+    with open(write_to_file, "w", encoding="utf-8") as f:
         f.write('"time stamp","level","filename","line no.","message"\n')
-    handler = logging.FileHandler(display_on_file, mode="a+", encoding="utf-8")
+    handler = logging.FileHandler(write_to_file, mode="a+", encoding="utf-8")
     formatter = logging.Formatter(
         '"%(asctime)s","%(levelname)-8s","%(filename)-10s","%(lineno)-3d","%(message)s"'
     )
@@ -140,8 +140,8 @@ class HentaiDBLogger:
     Attributes:
         level (str): The logging level. Can be one of 'debug', 'info', 'warning', 'error', 'critical'.
         display_on_screen (bool): Whether to display the log messages on screen.
-        display_on_file (str): The path of the log file to which the log messages are written.
-        max_length (int): The maximum length of the log messages. This only applies to messages logged to the file specified by `display_on_screen`.
+        max_log_entry_length (int): The maximum length of the log messages. This only applies to messages logged to the file specified by `display_on_screen`.
+        write_to_file (str | bool): The path to the log file, or False if logging to a file is disabled.
 
     It allows logging messages at different levels (debug, info, warning, error, critical) to both the screen and a log file.
     The logging level, whether to display on screen, the log file path, and the maximum log length can be configured upon initialization.
@@ -176,17 +176,25 @@ class HentaiDBLogger:
         self,
         level: str,
         display_on_screen: bool,
-        display_on_file: str | None,
-        max_length: int,
+        write_to_file: str | bool,
+        max_log_entry_length: int,
     ):
         logging_level = LOG_CONFIG[level.lower()]
         self.display_on_screen = display_on_screen
         if self.display_on_screen:
-            self.screen_logger = setup_screen_logger(logging_level, max_length)
+            self.screen_logger = setup_screen_logger(
+                logging_level, max_log_entry_length
+            )
 
-        self.display_on_file = display_on_file
-        if display_on_file is not None:
-            self.file_logger = setup_file_logger(display_on_file, logging_level)
+        self.write_to_file = write_to_file
+        match write_to_file:
+            case False:
+                pass
+            case True:
+                write_to_file = "comicdb.log"
+                self.file_logger = setup_file_logger(write_to_file, logging_level)
+            case _:
+                self.file_logger = setup_file_logger(write_to_file, logging_level)
 
     def hasHandlers(self) -> bool:
         return self.screen_logger.hasHandlers() or self.file_logger.hasHandlers()
@@ -199,45 +207,45 @@ class HentaiDBLogger:
     def addHandler(self, handler: logging.Handler) -> None:
         if self.display_on_screen:
             self.screen_logger.addHandler(handler)
-        if self.display_on_file is not None:
+        if self.write_to_file is not False:
             self.file_logger.addHandler(handler)
 
     def debug(self, message: str) -> None:
         if self.display_on_screen:
             self.screen_logger.debug(message)
-        if self.display_on_file is not None:
+        if self.write_to_file is not False:
             self.file_logger.debug(message)
 
     def info(self, message: str) -> None:
         if self.display_on_screen:
             self.screen_logger.info(message)
-        if self.display_on_file is not None:
+        if self.write_to_file is not False:
             self.file_logger.info(message)
 
     def warning(self, message: str) -> None:
         if self.display_on_screen:
             self.screen_logger.warning(message)
-        if self.display_on_file is not None:
+        if self.write_to_file is not False:
             self.file_logger.warning(message)
 
     def error(self, message: str) -> None:
         if self.display_on_screen:
             self.screen_logger.error(message)
-        if self.display_on_file is not None:
+        if self.write_to_file is not False:
             self.file_logger.error(message)
 
     def critical(self, message: str) -> None:
         if self.display_on_screen:
             self.screen_logger.critical(message)
-        if self.display_on_file is not None:
+        if self.write_to_file is not False:
             self.file_logger.critical(message)
 
 
 def setup_logger(
     level: str,
-    display_on_screen: bool = False,
-    display_on_file: str | None = None,
-    max_length: int = -1,
+    display_on_screen: bool,
+    write_to_file: str | bool,
+    max_log_entry_length: int = -1,
 ) -> HentaiDBLogger:
     """
     Set up a logger with the specified logging level and maximum message length.
@@ -246,12 +254,12 @@ def setup_logger(
 
     Parameters:
     level (str): The logging level as a string. Should be one of "DEBUG", "INFO", "WARNING", "ERROR", or "CRITICAL".
-    max_length (int, optional): The maximum length of a log message. If a message exceeds this length, it will be split into multiple chunks. Default is 30.
+    max_log_entry_length (int, optional): The maximum length of a log message. If a message exceeds this length, it will be split into multiple chunks. Default is 30.
 
     Returns:
     logging.Logger: The configured logger.
     """
-    return HentaiDBLogger(level, display_on_screen, display_on_file, max_length)
+    return HentaiDBLogger(level, display_on_screen, write_to_file, max_log_entry_length)
 
 
 def reset_logger(logger: HentaiDBLogger) -> None:
@@ -270,12 +278,12 @@ def reset_logger(logger: HentaiDBLogger) -> None:
 Set up the logger using the configuration loaded from `config_loader`.
 The logging level is set to `config_loader["logger"]["level"]`.
 If `config_loader["logger"]["display_on_screen"]` is True, the logger will also output to the console.
-If `config_loader["logger"]["display_on_file"]` is not None, the logger will write logs to the specified file.
-The maximum length of a log message is set to `config_loader["logger"]["max_length"]`. If a message exceeds this length, it will be split into multiple chunks.
+If `config_loader["logger"]["write_to_file"]` is not None, the logger will write logs to the specified file.
+The maximum length of a log message is set to `config_loader["logger"]["max_log_entry_length"]`. If a message exceeds this length, it will be split into multiple chunks.
 """
 logger = setup_logger(
-    config_loader["logger"]["level"],
-    config_loader["logger"]["display_on_screen"],
-    config_loader["logger"]["display_on_file"],
-    config_loader["logger"]["max_length"],
+    config_loader.logger.level,
+    config_loader.logger.display_on_screen,
+    config_loader.logger.write_to_file,
+    config_loader.logger.max_log_entry_length,
 )

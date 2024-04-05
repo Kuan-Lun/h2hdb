@@ -22,6 +22,19 @@ class GalleryInfoParser:
         tags (dict[str, str]): The tags associated with the gallery.
     """
 
+    __slots__ = [
+        "gallery_name",
+        "gid",
+        "files_path",
+        "modified_time",
+        "title",
+        "upload_time",
+        "galleries_comments",
+        "upload_account",
+        "download_time",
+        "tags",
+    ]
+
     def __init__(
         self,
         gallery_name: str,
@@ -46,18 +59,11 @@ class GalleryInfoParser:
         self.download_time = download_time
         self.tags = tags
 
-    __slots__ = [
-        "gallery_name",
-        "gid",
-        "files_path",
-        "modified_time",
-        "title",
-        "upload_time",
-        "galleries_comments",
-        "upload_account",
-        "download_time",
-        "tags",
-    ]
+    def __repr__(self) -> str:
+        return f"GalleryInfoParser(gallery_name={self.gallery_name}, gid={self.gid}, files_path={self.files_path}, modified_time={self.modified_time}, title={self.title}, upload_time={self.upload_time}, galleries_comments={self.galleries_comments}, upload_account={self.upload_account}, download_time={self.download_time}, tags={self.tags})"
+
+    def __str__(self) -> str:
+        return self.__repr__()
 
 
 def parse_gallery_info(folder_path: str) -> GalleryInfoParser:
