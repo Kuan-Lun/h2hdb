@@ -5,6 +5,7 @@ import re
 import hashlib
 import os
 from abc import ABCMeta, abstractmethod
+import math
 
 from hentaidb import parse_gallery_info
 from .config_loader import config_loader
@@ -20,6 +21,20 @@ match config_loader["database"]["sql_type"].lower():
         from mysql.connector import Error as SQLError
         from mysql.connector.errors import IntegrityError as SQLDuplicateKeyError
 
+        INNODB_INDEX_PREFIX_LIMIT = 191
+
+FOLDER_NAME_LENGTH_LIMIT = 255
+FILE_NAME_LENGTH_LIMIT = 255
+
+
+def split_gallery_name(gallery_name: str) -> list[str]:
+    size = FOLDER_NAME_LENGTH_LIMIT // INNODB_INDEX_PREFIX_LIMIT + (
+        FOLDER_NAME_LENGTH_LIMIT % INNODB_INDEX_PREFIX_LIMIT > 0
+    )
+    gallery_name_parts = re.findall(f".{{1,{INNODB_INDEX_PREFIX_LIMIT}}}", gallery_name)
+    gallery_name_parts += [""] * (size - len(gallery_name_parts))
+    return gallery_name_parts
+
 
 def sql_type_to_name(sql_type: str) -> str:
     match sql_type.lower():
@@ -29,7 +44,28 @@ def sql_type_to_name(sql_type: str) -> str:
 
 
 class ComicDBInitSQLConnector(metaclass=ABCMeta):
+    """
+    A class representing the initialization of an SQL connector for the comic database.
+
+    Attributes:
+        sql_type (str): The type of SQL database.
+        sql_connection_params (SQLConnectorParams): The parameters for establishing the SQL connection.
+        connector (SQLConnector): The SQL connector object.
+        SQLError (Exception): The error class for the SQL type.
+
+    Methods:
+        __init__: Initializes the ComicDBInitSQLConnector object.
+        __enter__: Establishes the SQL connection and starts a transaction.
+        __exit__: Commits or rolls back the transaction and closes the SQL connection.
+    """
+
     def __init__(self) -> None:
+        """
+        Initializes the ComicDBInitSQLConnector object.
+
+        Raises:
+            ValueError: If the SQL type is unsupported.
+        """
         self.sql_type = config_loader["database"]["sql_type"].lower()
         self.sql_connection_params = SQLConnectorParams(
             config_loader["database"]["host"],
@@ -58,6 +94,12 @@ class ComicDBInitSQLConnector(metaclass=ABCMeta):
         logger.debug("Error class set.")
 
     def __enter__(self) -> "ComicDBInitSQLConnector":
+        """
+        Establishes the SQL connection and starts a transaction.
+
+        Returns:
+            ComicDBInitSQLConnector: The initialized ComicDBInitSQLConnector object.
+        """
         self.connector.connect()
         match self.sql_type:
             case "mysql":
@@ -65,6 +107,14 @@ class ComicDBInitSQLConnector(metaclass=ABCMeta):
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
+        """
+        Commits or rolls back the transaction and closes the SQL connection.
+
+        Args:
+            exc_type (type): The type of the exception raised, if any.
+            exc_value (Exception): The exception raised, if any.
+            traceback (traceback): The traceback information of the exception, if any.
+        """
         if exc_type is None:
             self.connector.commit()
         else:
@@ -73,6 +123,21 @@ class ComicDBInitSQLConnector(metaclass=ABCMeta):
 
 
 class ComicDBCheckDatabaseSettings(ComicDBInitSQLConnector, metaclass=ABCMeta):
+    """
+    A class that checks the database settings for character set and collation.
+
+    This class inherits from `ComicDBInitSQLConnector` and is used to ensure that the database
+    character set and collation are valid. It provides methods to check the character set and
+    collation of the database and raises an error if they are invalid.
+
+    Attributes:
+        sql_type (str): The type of SQL database being used.
+
+    Methods:
+        check_database_character_set: Checks the character set of the database.
+        check_database_collation: Checks the collation of the database.
+    """
+
     def check_database_character_set(self) -> None:
         """
         Checks the character set of the database and raises an error if it is invalid.
@@ -97,6 +162,12 @@ class ComicDBCheckDatabaseSettings(ComicDBInitSQLConnector, metaclass=ABCMeta):
         logger.info("Database character set is valid.")
 
     def check_database_collation(self) -> None:
+        """
+        Checks the collation of the database and raises an error if it is invalid.
+
+        Raises:
+            DatabaseConfigurationError: If the database collation is invalid.
+        """
         logger.debug("Checking database collation...")
         match self.sql_type:
             case "mysql":
@@ -114,20 +185,37 @@ class ComicDBCheckDatabaseSettings(ComicDBInitSQLConnector, metaclass=ABCMeta):
         logger.info("Database character set and collation are valid.")
 
 
+def mysql_split_name_based_on_limit(name: str) -> tuple[list[str], str]:
+    num_parts = math.ceil(FOLDER_NAME_LENGTH_LIMIT / INNODB_INDEX_PREFIX_LIMIT)
+    name_parts = [
+        f"{name}_part{i} CHAR({INNODB_INDEX_PREFIX_LIMIT}) NOT NULL"
+        for i in range(1, FOLDER_NAME_LENGTH_LIMIT // INNODB_INDEX_PREFIX_LIMIT + 1)
+    ]
+    if FOLDER_NAME_LENGTH_LIMIT % INNODB_INDEX_PREFIX_LIMIT > 0:
+        name_parts.append(
+            f"{name}_part{num_parts} CHAR({FOLDER_NAME_LENGTH_LIMIT % INNODB_INDEX_PREFIX_LIMIT}) NOT NULL"
+        )
+    create_name_parts_sql = ", ".join(name_parts)
+    column_name_parts = [f"{name}_part{i}" for i in range(1, num_parts + 1)]
+    return column_name_parts, create_name_parts_sql
+
+
 class ComaicDBDBGalleriesIDs(ComicDBInitSQLConnector, metaclass=ABCMeta):
     def _create_db_galleries_ids_table(self) -> None:
         table_name = "db_galleries_ids"
         logger.debug(f"Creating {table_name} table...")
         match self.sql_type:
             case "mysql":
+                column_name = "gallery_name"
+                column_name_parts, create_gallery_name_parts_sql = (
+                    mysql_split_name_based_on_limit(column_name)
+                )
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
-                        gallery_name_part1 CHAR(191) NOT NULL,
-                        gallery_name_part2 CHAR(64) NOT NULL,
+                        {create_gallery_name_parts_sql},
                         id INT UNSIGNED AUTO_INCREMENT,
-                        UNIQUE full_name (gallery_name_part1, gallery_name_part2),
-                        PRIMARY KEY (id),
-                        INDEX gallery_name_part2 (gallery_name_part2)
+                        UNIQUE full_name ({", ".join(column_name_parts)}),
+                        PRIMARY KEY (id)
                     )
                 """
         query = mullines2oneline(query)
@@ -140,9 +228,11 @@ class ComaicDBDBGalleriesIDs(ComicDBInitSQLConnector, metaclass=ABCMeta):
         logger.debug(f"Creating {table_name} view...")
         match self.sql_type:
             case "mysql":
+                column_name = "gallery_name"
+                column_name_parts, _ = mysql_split_name_based_on_limit(column_name)
                 query = f"""
                     CREATE VIEW IF NOT EXISTS {table_name} AS
-                    SELECT db_galleries_ids.id AS db_gallery_id, CONCAT(gallery_name_part1, gallery_name_part2) AS name
+                    SELECT db_galleries_ids.id AS db_gallery_id, CONCAT({", ".join(column_name_parts)}) AS name
                     FROM db_galleries_ids
                 """
         query = mullines2oneline(query)
@@ -153,29 +243,38 @@ class ComaicDBDBGalleriesIDs(ComicDBInitSQLConnector, metaclass=ABCMeta):
     def _insert_gallery_name_and_return_db_gallery_id(self, gallery_name: str) -> int:
         logger.debug(f"Inserting gallery name '{gallery_name}'...")
         table_name = "db_galleries_ids"
-        if len(gallery_name) > 255:
+        if len(gallery_name) > FOLDER_NAME_LENGTH_LIMIT:
             logger.error(
-                f"Gallery name '{gallery_name}' is too long. Must be 255 characters or less."
+                f"Gallery name '{gallery_name}' is too long. Must be {FOLDER_NAME_LENGTH_LIMIT} characters or less."
             )
             raise ValueError("Gallery name is too long.")
-        gallery_name_part1 = gallery_name[0:191]
-        gallery_name_part2 = gallery_name[191:255]
+        gallery_name_parts = split_gallery_name(gallery_name)
         logger.debug(
-            f"Gallery name '{gallery_name}' split into parts '{gallery_name_part1}' and '{gallery_name_part2}'"
+            f"Gallery name '{gallery_name}' split into parts  %s"
+            % " and ".join(
+                [
+                    "'" + gallery_name_part + "'"
+                    for gallery_name_part in gallery_name_parts
+                ]
+            )
         )
 
         match self.sql_type:
             case "mysql":
+                column_name = "gallery_name"
+                column_name_parts, _ = mysql_split_name_based_on_limit(column_name)
                 insert_query = f"""
-                    INSERT INTO {table_name} (gallery_name_part1, gallery_name_part2) VALUES (%s, %s)
+                    INSERT INTO {table_name}
+                        ({", ".join(column_name_parts)}) VALUES ({", ".join(["%s" for _ in column_name_parts])})
                 """
                 select_query = f"""
-                    SELECT id FROM {table_name} WHERE gallery_name_part1 = %s AND gallery_name_part2 = %s
+                    SELECT id FROM {table_name}
+                    WHERE {"AND ".join([f"{part} = %s" for part in column_name_parts])}
                 """
         insert_query, select_query = (
             mullines2oneline(query) for query in (insert_query, select_query)
         )
-        data = (gallery_name_part1, gallery_name_part2)
+        data = tuple(gallery_name_parts)
 
         logger.debug(f"Insert query: {insert_query}")
         try:
@@ -203,6 +302,41 @@ class ComaicDBDBGalleriesIDs(ComicDBInitSQLConnector, metaclass=ABCMeta):
             )
             gallery_name_ids[gallery_name] = gallery_name_id
         return gallery_name_ids
+
+    def select_gallery_name_id(self, gallery_name: str) -> int:
+        logger.debug(f"Selecting gallery name ID for gallery name '{gallery_name}'...")
+        table_name = "db_galleries_ids"
+        gallery_name_parts = split_gallery_name(gallery_name)
+        logger.debug(
+            f"Gallery name '{gallery_name}' split into parts  %s"
+            % " and ".join(
+                [
+                    "'" + gallery_name_part + "'"
+                    for gallery_name_part in gallery_name_parts
+                ]
+            )
+        )
+
+        match self.sql_type:
+            case "mysql":
+                column_name = "gallery_name"
+                column_name_parts, _ = mysql_split_name_based_on_limit(column_name)
+                select_query = f"""
+                    SELECT id
+                    FROM {table_name}
+                    WHERE
+                        {" AND ".join([f"{part} = %s" for part in column_name_parts])}
+                """
+        select_query = mullines2oneline(select_query)
+
+        logger.debug(f"Select query: {select_query}")
+        gallery_name_id = self.connector.fetch_one(
+            select_query, tuple(gallery_name_parts)
+        )[0]
+        logger.info(
+            f"Gallery name ID for gallery name '{gallery_name}' is {gallery_name_id}."
+        )
+        return gallery_name_id
 
 
 class ComaicDBGalleriesGIDs(ComicDBInitSQLConnector, metaclass=ABCMeta):
@@ -351,9 +485,9 @@ class ComicDBGalleriesTitles(ComicDBInitSQLConnector, metaclass=ABCMeta):
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
                         db_gallery_id INT UNSIGNED NOT NULL,
-                        title_part1 CHAR(191) NOT NULL,
-                        title_part2 CHAR(191) NOT NULL,
-                        title_part3 CHAR(191) NOT NULL,
+                        title_part1 CHAR({INNODB_INDEX_PREFIX_LIMIT}) NOT NULL,
+                        title_part2 CHAR({INNODB_INDEX_PREFIX_LIMIT}) NOT NULL,
+                        title_part3 CHAR({INNODB_INDEX_PREFIX_LIMIT}) NOT NULL,
                         PRIMARY KEY (db_gallery_id),
                         FOREIGN KEY (db_gallery_id) REFERENCES db_galleries_ids(id),
                         INDEX (title_part1, title_part2, title_part3, db_gallery_id)
@@ -389,9 +523,11 @@ class ComicDBGalleriesTitles(ComicDBInitSQLConnector, metaclass=ABCMeta):
                 f"Title '{title}' is too long. Must be 573 characters or less."
             )
             raise ValueError("Title is too long.")
-        title_part1 = title[0:191]
-        title_part2 = title[191:382]
-        title_part3 = title[382:573]
+        title_part1 = title[0:INNODB_INDEX_PREFIX_LIMIT]
+        title_part2 = title[INNODB_INDEX_PREFIX_LIMIT : 2 * INNODB_INDEX_PREFIX_LIMIT]
+        title_part3 = title[
+            2 * INNODB_INDEX_PREFIX_LIMIT : 3 * INNODB_INDEX_PREFIX_LIMIT
+        ]
         logger.debug(
             f"Title '{title}' split into parts '{title_part1}', '{title_part2}', and '{title_part3}'"
         )
@@ -399,7 +535,8 @@ class ComicDBGalleriesTitles(ComicDBInitSQLConnector, metaclass=ABCMeta):
         match self.sql_type:
             case "mysql":
                 insert_query = f"""
-                    INSERT INTO {table_name} (db_gallery_id, title_part1, title_part2, title_part3) VALUES (%s, %s, %s, %s)
+                    INSERT INTO {table_name}
+                        (db_gallery_id, title_part1, title_part2, title_part3) VALUES (%s, %s, %s, %s)
                 """
                 select_query = f"""
                     SELECT
@@ -427,14 +564,14 @@ class ComicDBGalleriesTitles(ComicDBInitSQLConnector, metaclass=ABCMeta):
 
 class ComicDBUploadAccounts(ComicDBInitSQLConnector, metaclass=ABCMeta):
     def _create_upload_account_table(self) -> None:
-        table_name = "upload_accounts"
+        table_name = "galleries_upload_accounts"
         logger.debug(f"Creating {table_name} table...")
         match self.sql_type:
             case "mysql":
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
                         db_gallery_id INT UNSIGNED NOT NULL,
-                        account CHAR(191) NOT NULL,
+                        account CHAR({INNODB_INDEX_PREFIX_LIMIT}) NOT NULL,
                         PRIMARY KEY (db_gallery_id),
                         FOREIGN KEY (db_gallery_id) REFERENCES db_galleries_ids(id),
                         INDEX (account, db_gallery_id)
@@ -451,10 +588,10 @@ class ComicDBUploadAccounts(ComicDBInitSQLConnector, metaclass=ABCMeta):
         logger.debug(
             f"Inserting upload account '{account}' for gallery name ID {gallery_name_id}..."
         )
-        table_name = "upload_accounts"
-        if len(account) > 191:
+        table_name = "galleries_upload_accounts"
+        if len(account) > INNODB_INDEX_PREFIX_LIMIT:
             logger.error(
-                f"Upload account '{account}' is too long. Must be 191 characters or less."
+                f"Upload account '{account}' is too long. Must be {INNODB_INDEX_PREFIX_LIMIT} characters or less."
             )
             raise ValueError("Upload account is too long.")
 
@@ -505,7 +642,7 @@ class ComicDBGalleriesInfos(
                         galleries_names.name AS name,
                         galleries_titles.title AS title,
                         galleries_gids.gid AS gid,
-                        upload_accounts.account AS upload_account,
+                        galleries_upload_accounts.account AS upload_account,
                         galleries_upload_times.time AS galleries_upload_time,
                         galleries_download_times.time AS galleries_download_time,
                         galleries_modified_times.time AS galleries_modified_time,
@@ -514,7 +651,7 @@ class ComicDBGalleriesInfos(
                         galleries_names
                         LEFT JOIN galleries_titles USING (db_gallery_id)
                         LEFT JOIN galleries_gids USING (db_gallery_id)
-                        LEFT JOIN upload_accounts USING (db_gallery_id)
+                        LEFT JOIN galleries_upload_accounts USING (db_gallery_id)
                         LEFT JOIN galleries_upload_times USING (db_gallery_id)
                         LEFT JOIN galleries_download_times USING (db_gallery_id)
                         LEFT JOIN galleries_modified_times USING (db_gallery_id)
@@ -602,7 +739,7 @@ class ComicDBGalleriesTags(ComicDBInitSQLConnector):
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
                         db_gallery_id INT UNSIGNED NOT NULL,
-                        tag CHAR(191) NOT NULL,
+                        tag CHAR({INNODB_INDEX_PREFIX_LIMIT}) NOT NULL,
                         PRIMARY KEY (db_gallery_id),
                         FOREIGN KEY (db_gallery_id) REFERENCES db_galleries_ids(id),
                         INDEX (tag, db_gallery_id)
@@ -637,7 +774,7 @@ class ComicDBGalleriesTags(ComicDBInitSQLConnector):
         logger.info(f"Tag '{tag_name}' inserted.")
 
 
-class ComicDB(ComicDBGalleriesInfos, ComicDBGalleriesComments, ComicDBGalleriesTags):
+class ComicDBFiles(ComicDBInitSQLConnector, metaclass=ABCMeta):
     def _create_galleries_files_ids_table(self) -> None:
         table_name = f"db_files_ids"
         logger.debug(f"Creating {table_name} table...")
@@ -646,8 +783,8 @@ class ComicDB(ComicDBGalleriesInfos, ComicDBGalleriesComments, ComicDBGalleriesT
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
                         db_gallery_id INT UNSIGNED NOT NULL,
-                        file_name_part1 CHAR(191) NOT NULL,
-                        file_name_part2 CHAR(64) NOT NULL,
+                        file_name_part1 CHAR({INNODB_INDEX_PREFIX_LIMIT}) NOT NULL,
+                        file_name_part2 CHAR({FILE_NAME_LENGTH_LIMIT-INNODB_INDEX_PREFIX_LIMIT}) NOT NULL,
                         db_file_id INT UNSIGNED AUTO_INCREMENT,
                         PRIMARY KEY (db_file_id),
                         UNIQUE File (db_gallery_id, file_name_Part1, file_name_part2),
@@ -666,11 +803,11 @@ class ComicDB(ComicDBGalleriesInfos, ComicDBGalleriesComments, ComicDBGalleriesT
             f"Inserting image ID for gallery name ID {gallery_name_id} and file '{file}'..."
         )
         table_name = "db_files_ids"
-        if len(file) > 255:
+        if len(file) > FILE_NAME_LENGTH_LIMIT:
             logger.error(f"File '{file}' is too long. Must be 255 characters or less.")
             raise ValueError("File is too long.")
-        file_part1 = file[0:191]
-        file_part2 = file[191:255]
+        file_part1 = file[0:INNODB_INDEX_PREFIX_LIMIT]
+        file_part2 = file[INNODB_INDEX_PREFIX_LIMIT:FILE_NAME_LENGTH_LIMIT]
         logger.debug(
             f"File '{file}' split into parts '{file_part1}' and '{file_part2}'"
         )
@@ -678,10 +815,16 @@ class ComicDB(ComicDBGalleriesInfos, ComicDBGalleriesComments, ComicDBGalleriesT
         match self.sql_type:
             case "mysql":
                 insert_query = f"""
-                    INSERT INTO {table_name} (db_gallery_id, file_name_part1, file_name_part2) VALUES (%s, %s, %s)
+                    INSERT INTO {table_name}
+                        (db_gallery_id, file_name_part1, file_name_part2) VALUES (%s, %s, %s)
                 """
                 select_query = f"""
-                    SELECT db_file_id FROM {table_name} WHERE db_gallery_id = %s AND file_name_part1 = %s AND file_name_part2 = %s
+                    SELECT db_file_id
+                    FROM {table_name}
+                    WHERE
+                        db_gallery_id = %s AND
+                        file_name_part1 = %s AND
+                        file_name_part2 = %s
                 """
         insert_query, select_query = (
             mullines2oneline(query) for query in (insert_query, select_query)
@@ -725,15 +868,17 @@ class ComicDB(ComicDBGalleriesInfos, ComicDBGalleriesComments, ComicDBGalleriesT
         self.connector.execute(query)
         logger.info(f"{table_name} view created.")
 
-    def _create_galleries_files_hashs_table(self, algorithm: str) -> None:
-        table_name = "images_hashs_%s" % algorithm.lower()
+    def _create_galleries_files_hashs_table(
+        self, algorithm: str, output_len: int
+    ) -> None:
+        table_name = "files_hashs_%s" % algorithm.lower()
         logger.debug(f"Creating {table_name} table...")
         match self.sql_type:
             case "mysql":
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
                         db_file_id INT UNSIGNED NOT NULL,
-                        hash_value CHAR(128) NOT NULL,
+                        hash_value CHAR({output_len}) NOT NULL,
                         PRIMARY KEY (db_file_id),
                         FOREIGN KEY (db_file_id) REFERENCES db_files_ids(db_file_id),
                         INDEX (hash_value, db_file_id)
@@ -745,37 +890,37 @@ class ComicDB(ComicDBGalleriesInfos, ComicDBGalleriesComments, ComicDBGalleriesT
         logger.info(f"{table_name} table created.")
 
     def _create_galleries_files_sha224_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha224")
+        self._create_galleries_files_hashs_table("sha224", output_len=56)
 
     def _create_galleries_files_sha256_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha256")
+        self._create_galleries_files_hashs_table("sha256", output_len=64)
 
     def _create_galleries_files_sha384_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha384")
+        self._create_galleries_files_hashs_table("sha384", output_len=96)
 
     def _create_galleries_files_sha1_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha1")
+        self._create_galleries_files_hashs_table("sha1", output_len=40)
 
     def _create_galleries_files_sha512_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha512")
+        self._create_galleries_files_hashs_table("sha512", output_len=128)
 
     def _create_galleries_files_sha3_224_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha3_224")
+        self._create_galleries_files_hashs_table("sha3_224", output_len=56)
 
     def _create_galleries_files_sha3_256_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha3_256")
+        self._create_galleries_files_hashs_table("sha3_256", output_len=64)
 
     def _create_galleries_files_sha3_384_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha3_384")
+        self._create_galleries_files_hashs_table("sha3_384", output_len=96)
 
     def _create_galleries_files_sha3_512_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha3_512")
+        self._create_galleries_files_hashs_table("sha3_512", output_len=128)
 
     def _create_galleries_files_blake2b_table(self) -> None:
-        self._create_galleries_files_hashs_table("blake2b")
+        self._create_galleries_files_hashs_table("blake2b", output_len=128)
 
     def _create_galleries_files_blake2s_table(self) -> None:
-        self._create_galleries_files_hashs_table("blake2s")
+        self._create_galleries_files_hashs_table("blake2s", output_len=64)
 
     def _create_galleries_files_hashs_tables(self) -> None:
         logger.debug("Creating gallery image hash tables...")
@@ -793,37 +938,37 @@ class ComicDB(ComicDBGalleriesInfos, ComicDBGalleriesComments, ComicDBGalleriesT
         logger.info("Gallery image hash tables created.")
 
     def _create_gallery_image_hash_view(self) -> None:
-        table_name = "images_hashs"
+        table_name = "files_hashs"
         logger.debug(f"Creating {table_name} view...")
         match self.sql_type:
             case "mysql":
                 query = f"""
                     CREATE VIEW IF NOT EXISTS {table_name} AS
                     SELECT
-                        images_hashs_sha224.db_file_id AS db_file_id,
-                        images_hashs_sha224.hash_value AS sha224,
-                        images_hashs_sha256.hash_value AS sha256,
-                        images_hashs_sha384.hash_value AS sha384,
-                        images_hashs_sha1.hash_value AS sha1,
-                        images_hashs_sha512.hash_value AS sha512,
-                        images_hashs_sha3_224.hash_value AS sha3_224,
-                        images_hashs_sha3_256.hash_value AS sha3_256,
-                        images_hashs_sha3_384.hash_value AS sha3_384,
-                        images_hashs_sha3_512.hash_value AS sha3_512,
-                        images_hashs_blake2b.hash_value AS blake2b,
-                        images_hashs_blake2s.hash_value AS blake2s
+                        files_hashs_sha224.db_file_id AS db_file_id,
+                        files_hashs_sha224.hash_value AS sha224,
+                        files_hashs_sha256.hash_value AS sha256,
+                        files_hashs_sha384.hash_value AS sha384,
+                        files_hashs_sha1.hash_value AS sha1,
+                        files_hashs_sha512.hash_value AS sha512,
+                        files_hashs_sha3_224.hash_value AS sha3_224,
+                        files_hashs_sha3_256.hash_value AS sha3_256,
+                        files_hashs_sha3_384.hash_value AS sha3_384,
+                        files_hashs_sha3_512.hash_value AS sha3_512,
+                        files_hashs_blake2b.hash_value AS blake2b,
+                        files_hashs_blake2s.hash_value AS blake2s
                     FROM
-                        images_hashs_sha224
-                        LEFT JOIN images_hashs_sha256 USING (db_file_id)
-                        LEFT JOIN images_hashs_sha384 USING (db_file_id)
-                        LEFT JOIN images_hashs_sha1 USING (db_file_id)
-                        LEFT JOIN images_hashs_sha512 USING (db_file_id)
-                        LEFT JOIN images_hashs_sha3_224 USING (db_file_id)
-                        LEFT JOIN images_hashs_sha3_256 USING (db_file_id)
-                        LEFT JOIN images_hashs_sha3_384 USING (db_file_id)
-                        LEFT JOIN images_hashs_sha3_512 USING (db_file_id)
-                        LEFT JOIN images_hashs_blake2b USING (db_file_id)
-                        LEFT JOIN images_hashs_blake2s USING (db_file_id)
+                        files_hashs_sha224
+                        LEFT JOIN files_hashs_sha256 USING (db_file_id)
+                        LEFT JOIN files_hashs_sha384 USING (db_file_id)
+                        LEFT JOIN files_hashs_sha1 USING (db_file_id)
+                        LEFT JOIN files_hashs_sha512 USING (db_file_id)
+                        LEFT JOIN files_hashs_sha3_224 USING (db_file_id)
+                        LEFT JOIN files_hashs_sha3_256 USING (db_file_id)
+                        LEFT JOIN files_hashs_sha3_384 USING (db_file_id)
+                        LEFT JOIN files_hashs_sha3_512 USING (db_file_id)
+                        LEFT JOIN files_hashs_blake2b USING (db_file_id)
+                        LEFT JOIN files_hashs_blake2s USING (db_file_id)
                 """
         query = mullines2oneline(query)
         logger.debug(f"Query: {query}")
@@ -836,7 +981,7 @@ class ComicDB(ComicDBGalleriesInfos, ComicDBGalleriesComments, ComicDBGalleriesT
         logger.debug(
             f"Inserting image hash for image ID {image_id} and file '{file_path}'..."
         )
-        table_name = f"images_hashs_{algorithm.lower()}"
+        table_name = f"files_hashs_{algorithm.lower()}"
         hash_function = lambda x: getattr(hashlib, algorithm.lower())(x).hexdigest()
         hash_value = hash_function(file_content)
         logger.debug(f"Hash value: {hash_value}")
@@ -847,7 +992,11 @@ class ComicDB(ComicDBGalleriesInfos, ComicDBGalleriesComments, ComicDBGalleriesT
                     INSERT INTO {table_name} (db_file_id, hash_value) VALUES (%s, %s)
                 """
                 select_query = f"""
-                    SELECT hash_value FROM {table_name} WHERE db_file_id = %s AND hash_value = %s
+                    SELECT hash_value
+                    FROM {table_name}
+                    WHERE
+                        db_file_id = %s AND
+                        hash_value = %s
                 """
         insert_query, select_query = (
             mullines2oneline(query) for query in (insert_query, select_query)
@@ -929,7 +1078,7 @@ class ComicDB(ComicDBGalleriesInfos, ComicDBGalleriesComments, ComicDBGalleriesT
         logger.debug(
             f"Updating image hash '{hash_value}' for image ID {image_id} and file '{file_path}'..."
         )
-        table_name = "images_hashs"
+        table_name = "files_hashs"
         match self.sql_type:
             case "mysql":
                 update_query = f"""
@@ -944,6 +1093,10 @@ class ComicDB(ComicDBGalleriesInfos, ComicDBGalleriesComments, ComicDBGalleriesT
             f"Image hash '{hash_value}' updated for image ID {image_id} and file '{file_path}'."
         )
 
+
+class ComicDB(
+    ComicDBGalleriesInfos, ComicDBGalleriesComments, ComicDBGalleriesTags, ComicDBFiles
+):
     def delete_gallery_image(self, gallery_name: str) -> None:
         logger.debug(f"Deleting gallery '{gallery_name}'...")
         match self.sql_type:
@@ -956,16 +1109,19 @@ class ComicDB(ComicDBGalleriesInfos, ComicDBGalleriesComments, ComicDBGalleriesT
                         REFERENCED_TABLE_NAME = 'db_files_ids' AND
                         REFERENCED_COLUMN_NAME = 'db_file_id'
                 """
-                delete_image_id_query = """
+                column_name = "gallery_name"
+                column_name_parts, _ = mysql_split_name_based_on_limit(column_name)
+                delete_image_id_query = f"""
                     DELETE FROM %s
                     WHERE
                         db_file_id in (
                             SELECT db_file_id
                             FROM db_files_ids
                             WHERE db_gallery_id = (
-                                SELECT db_gallery_id
-                                FROM galleries_names
-                                WHERE name = '%s'
+                                SELECT id
+                                FROM db_galleries_ids
+                                WHERE 
+                                    {" AND ".join([f"{part} = '%s'" for part in column_name_parts])}
                             )
                         )
                 """
@@ -976,17 +1132,13 @@ class ComicDB(ComicDBGalleriesInfos, ComicDBGalleriesComments, ComicDBGalleriesT
 
         logger.debug(f"Select query: {select_table_name_query}")
         table_names = self.connector.fetch_all(select_table_name_query)
-        print(table_names)
         table_names = [t[0] for t in table_names] + ["db_files_ids"]
-        print(table_names)
         logger.debug(f"Table names: {table_names}")
 
         logger.debug(f"Delete query: {delete_image_id_query}")
+        gallery_name_parts = split_gallery_name(gallery_name)
         for table_name in table_names:
-            data = (
-                table_name,
-                gallery_name,
-            )
+            data = (table_name, *gallery_name_parts)
             self.connector.execute(delete_image_id_query % data)
         logger.info(f"Gallery '{gallery_name}' deleted.")
 
@@ -1002,13 +1154,16 @@ class ComicDB(ComicDBGalleriesInfos, ComicDBGalleriesComments, ComicDBGalleriesT
                         REFERENCED_TABLE_NAME = 'db_galleries_ids' AND
                         REFERENCED_COLUMN_NAME = 'id'
                 """
-                delete_gallery_id_query = """
+                column_name = "gallery_name"
+                column_name_parts, _ = mysql_split_name_based_on_limit(column_name)
+                delete_gallery_id_query = f"""
                     DELETE FROM %s
                     WHERE
                         %s = (
-                            SELECT db_gallery_id
-                            FROM galleries_names
-                            WHERE name = '%s'
+                            SELECT id
+                            FROM db_galleries_ids
+                            WHERE 
+                                {" AND ".join([f"{part} = '%s'" for part in column_name_parts])}
                         )
                 """
         select_table_name_query, delete_gallery_id_query = (
@@ -1022,10 +1177,11 @@ class ComicDB(ComicDBGalleriesInfos, ComicDBGalleriesComments, ComicDBGalleriesT
         logger.debug(f"Table names: {table_names}")
 
         logger.debug(f"Delete query: {delete_gallery_id_query}")
+        gallery_name_parts = split_gallery_name(gallery_name)
         for table_name in table_names:
-            data = (table_name, "db_gallery_id", gallery_name)
+            data = (table_name, "db_gallery_id", *gallery_name_parts)
             self.connector.execute(delete_gallery_id_query % data)
-        data = ("db_galleries_ids", "id", gallery_name)
+        data = ("db_galleries_ids", "id", *gallery_name_parts)
         self.connector.execute(delete_gallery_id_query % data)
         logger.info(f"Gallery '{gallery_name}' deleted.")
 
