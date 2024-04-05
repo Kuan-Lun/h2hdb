@@ -1,4 +1,4 @@
-__all__ = ["ComicDB"]
+__all__ = ["H2HDB"]
 
 
 import re
@@ -7,19 +7,19 @@ import os
 from abc import ABCMeta, abstractmethod
 import math
 
-from hentaidb import parse_gallery_info
+from .gallery_info_parser import parse_gallery_info
 from .config_loader import config_loader
 from .logger import logger
 from .sql_connector import (
     MySQLConnector,
     SQLConnectorParams,
     DatabaseConfigurationError,
+    DatabaseKeyError,
 )
 
 match config_loader.database.sql_type.lower():
     case "mysql":
         from mysql.connector import Error as SQLError
-        from mysql.connector.errors import IntegrityError as SQLDuplicateKeyError
 
         INNODB_INDEX_PREFIX_LIMIT = 191
 
@@ -43,7 +43,7 @@ def sql_type_to_name(sql_type: str) -> str:
     return name
 
 
-class ComicDBInitSQLConnector(metaclass=ABCMeta):
+class H2HDBAbstract(metaclass=ABCMeta):
     """
     A class representing the initialization of an SQL connector for the comic database.
 
@@ -61,16 +61,33 @@ class ComicDBInitSQLConnector(metaclass=ABCMeta):
         check_database_collation: Checks the collation of the database.
         create_main_tables: Creates the main tables for the comic database.
         insert_gallery_info: Inserts the gallery information into the database.
+        select_gallery_gid: Selects the gallery GID from the database.
+        select_gallery_title: Selects the gallery title from the database.
+        update_access_time: Updates the access time for the gallery in the database.
+        select_gallery_upload_account: Selects the gallery upload account from the database.
+        select_gallery_comment: Selects the gallery comment from the database.
+        insert_gallery_tag: Inserts the gallery tag into the database.
+        select_gallery_tag: Selects the gallery tag from the database.
+        select_gallery_file: Selects the gallery files from the database.
+        delete_gallery_image: Deletes the gallery image from the database.
+        delete_gallery: Deletes the gallery from the database.
 
     Methods:
-        __init__: Initializes the ComicDBInitSQLConnector object.
+        __init__: Initializes the H2HDBAbstract object.
         __enter__: Establishes the SQL connection and starts a transaction.
         __exit__: Commits or rolls back the transaction and closes the SQL connection.
     """
 
+    __slots__ = [
+        "sql_type",
+        "sql_connection_params",
+        "connector",
+        "SQLError",
+    ]
+
     def __init__(self) -> None:
         """
-        Initializes the ComicDBInitSQLConnector object.
+        Initializes the H2HDBAbstract object.
 
         Raises:
             ValueError: If the SQL type is unsupported.
@@ -90,24 +107,18 @@ class ComicDBInitSQLConnector(metaclass=ABCMeta):
             case "mysql":
                 logger.debug("Setting MySQL connector...")
                 self.connector = MySQLConnector(**self.sql_connection_params)
+                logger.debug("Setting MySQL error class...")
+                self.SQLError = SQLError
             case _:
                 raise ValueError("Unsupported SQL type")
         logger.debug("Connector set.")
 
-        # Set the appropriate error class based on the SQL type
-        logger.debug("Setting error class...")
-        match self.sql_type:
-            case "mysql":
-                logger.debug("Setting MySQL error class...")
-                self.SQLError = SQLError
-        logger.debug("Error class set.")
-
-    def __enter__(self) -> "ComicDBInitSQLConnector":
+    def __enter__(self) -> "H2HDBAbstract":
         """
         Establishes the SQL connection and starts a transaction.
 
         Returns:
-            ComicDBInitSQLConnector: The initialized ComicDBInitSQLConnector object.
+            H2HDBAbstract: The initialized H2HDBAbstract object.
         """
         self.connector.connect()
         match self.sql_type:
@@ -161,12 +172,136 @@ class ComicDBInitSQLConnector(metaclass=ABCMeta):
         """
         pass
 
+    @abstractmethod
+    def select_gallery_gid(self, gallery_name: str) -> int:
+        """
+        Selects the gallery GID from the database.
 
-class ComicDBCheckDatabaseSettings(ComicDBInitSQLConnector, metaclass=ABCMeta):
+        Args:
+            gallery_name (str): The name of the gallery.
+
+        Returns:
+            int: The gallery GID.
+        """
+        pass
+
+    @abstractmethod
+    def select_gallery_title(self, gallery_name: str) -> str:
+        """
+        Selects the gallery title from the database.
+
+        Args:
+            gallery_name (str): The name of the gallery.
+
+        Returns:
+            str: The gallery title.
+        """
+        pass
+
+    @abstractmethod
+    def update_access_time(self, gallery_name: str, time: str) -> None:
+        """
+        Updates the access time for the gallery in the database.
+
+        Args:
+            gallery_name_id (int): The ID of the gallery.
+            time (str): The access time.
+        """
+        pass
+
+    @abstractmethod
+    def select_gallery_upload_account(self, gallery_name: str) -> str:
+        """
+        Selects the gallery upload account from the database.
+
+        Args:
+            gallery_name (str): The name of the gallery.
+
+        Returns:
+            str: The gallery upload account.
+        """
+        pass
+
+    @abstractmethod
+    def select_gallery_comment(self, gallery_name: str) -> str:
+        """
+        Selects the gallery comment from the database.
+
+        Args:
+            gallery_name (str): The name of the gallery.
+
+        Returns:
+            str: The gallery comment.
+        """
+        pass
+
+    @abstractmethod
+    def insert_gallery_tag(
+        self, gallery_name: str, tag_name: str, tag_value: str
+    ) -> None:
+        """
+        Inserts the gallery tag into the database.
+
+        Args:
+            gallery_name (str): The name of the gallery.
+            tag_name (str): The name of the tag.
+            tag_value (str): The value of the tag.
+        """
+        pass
+
+    @abstractmethod
+    def select_gallery_tag(self, gallery_name: str, tag_name: str) -> str:
+        """
+        Selects the gallery tag from the database.
+
+        Args:
+            gallery_name (str): The name of the gallery.
+            tag_name (str): The name of the tag.
+
+        Returns:
+            str: The value of the tag.
+        """
+        pass
+
+    @abstractmethod
+    def select_gallery_file(self, gallery_name: str) -> list[str]:
+        """
+        Selects the gallery files from the database.
+
+        Args:
+            gallery_name (str): The name of the gallery.
+
+        Returns:
+            list[str]: The list of files in the gallery.
+        """
+        pass
+
+    @abstractmethod
+    def delete_gallery_image(self, gallery_name: str) -> None:
+        """
+        Deletes the gallery image from the database.
+
+        Args:
+            gallery_name (str): The name of the gallery.
+        """
+        pass
+
+    @abstractmethod
+    def delete_gallery(self, gallery_name: str) -> None:
+        """
+        Deletes the gallery from the database.
+
+        Args:
+            gallery_name (str): The name of the gallery.
+        """
+        pass
+
+
+class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
     """
     A class that checks the database settings for character set and collation.
 
-    This class inherits from `ComicDBInitSQLConnector` and is used to ensure that the database
+    This class inherits from `H2HDBAbstract` and is used to ensure that the database
     character set and collation are valid. It provides methods to check the character set and
     collation of the database and raises an error if they are invalid.
 
@@ -250,7 +385,7 @@ def mysql_split_file_name_based_on_limit(name: str) -> tuple[list[str], str]:
     return mysql_split_name_based_on_limit(name, FILE_NAME_LENGTH_LIMIT)
 
 
-class ComaicDBDBGalleriesIDs(ComicDBInitSQLConnector, metaclass=ABCMeta):
+class ComaicDBDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
     def _create_galleries_names_table(self) -> None:
         table_name = "galleries_names"
         logger.debug(f"Creating {table_name} table...")
@@ -299,23 +434,25 @@ class ComaicDBDBGalleriesIDs(ComicDBInitSQLConnector, metaclass=ABCMeta):
                 column_name_parts, _ = mysql_split_gallery_name_based_on_limit("name")
                 insert_query = f"""
                     INSERT INTO {table_name}
-                        ({", ".join(column_name_parts)}, full_name) VALUES ({", ".join(["%s" for _ in column_name_parts])}, %s)
+                        ({", ".join(column_name_parts)}, full_name)
+                    VALUES ({", ".join(["%s" for _ in column_name_parts])}, %s)
                 """
         insert_query = mullines2oneline(insert_query)
 
-        gallery_name_id = self.select_gallery_name_id(gallery_name)
-        match gallery_name_id:
-            case -1:
-                logger.debug(f"Insert query: {insert_query}")
-                self.connector.execute(
-                    insert_query, (*tuple(gallery_name_parts), gallery_name)
-                )
-                logger.debug(f"Gallery name '{gallery_name}' inserted.")
-                gallery_name_id = self.select_gallery_name_id(gallery_name)
-            case _:
-                logger.warning(
-                    f"Gallery name '{gallery_name}' already exists. Returning ID..."
-                )
+        try:
+            gallery_name_id = self._select_gallery_name_id(gallery_name)
+            logger.warning(
+                f"Gallery name '{gallery_name}' already exists. Returning ID..."
+            )
+        except DatabaseKeyError:
+            # If gallery name does not exist, insert it
+            logger.debug(f"Insert query: {insert_query}")
+            self.connector.execute(
+                insert_query, (*tuple(gallery_name_parts), gallery_name)
+            )
+            logger.debug(f"Gallery name '{gallery_name}' inserted.")
+            gallery_name_id = self._select_gallery_name_id(gallery_name)
+
         return gallery_name_id
 
     def _insert_galleries_names_and_return_db_gallery_id(
@@ -330,7 +467,7 @@ class ComaicDBDBGalleriesIDs(ComicDBInitSQLConnector, metaclass=ABCMeta):
             gallery_name_ids[gallery_name] = gallery_name_id
         return gallery_name_ids
 
-    def select_gallery_name_id(self, gallery_name: str) -> int:
+    def _select_gallery_name_id(self, gallery_name: str) -> int:
         logger.debug(f"Selecting gallery name ID for gallery name '{gallery_name}'...")
         table_name = "galleries_names"
         gallery_name_parts = split_gallery_name(gallery_name)
@@ -358,16 +495,34 @@ class ComaicDBDBGalleriesIDs(ComicDBInitSQLConnector, metaclass=ABCMeta):
         query_result = self.connector.fetch_one(select_query, tuple(gallery_name_parts))
         if query_result is None:
             logger.debug(f"Gallery name '{gallery_name}' does not exist.")
-            return -1
+            raise DatabaseKeyError(f"Gallery name '{gallery_name}' does not exist.")
         else:
             gallery_name_id = query_result[0]
             logger.info(
                 f"Gallery name ID for gallery name '{gallery_name}' is {gallery_name_id}."
             )
-            return gallery_name_id
+        return gallery_name_id
 
 
-class ComaicDBGalleriesGIDs(ComicDBInitSQLConnector, metaclass=ABCMeta):
+class ComaicDBGalleriesGIDs(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
+    """
+    A class that handles the GIDs for galleries in the comic database.
+
+    This class inherits from `H2HDBAbstract` and is used to manage the GIDs for galleries
+
+    Attributes:
+        sql_type (str): The type of SQL database being used.
+        sql_connection_params (SQLConnectorParams): The parameters for establishing the SQL connection.
+        connector (SQLConnector): The SQL connector object.
+        SQLError (Exception): The error class for the SQL type.
+
+    Methods:
+        _create_galleries_gids_table: Creates the galleries_gids table.
+        _insert_galleries_gids: Inserts the GID for the gallery name ID into the galleries_gids table.
+        _select_gallery_gid: Selects the GID for the gallery name ID from the galleries_gids table.
+        select_gallery_gid: Selects the GID for the gallery name from the database.
+    """
+
     def _create_galleries_gids_table(self) -> None:
         table_name = "galleries_gids"
         logger.debug(f"Creating {table_name} table...")
@@ -402,16 +557,46 @@ class ComaicDBGalleriesGIDs(ComicDBInitSQLConnector, metaclass=ABCMeta):
 
         logger.debug(f"Insert query: {insert_query}")
         try:
-            self.connector.execute(insert_query, data)
-            logger.debug(f"GID {gid} inserted for gallery name ID {gallery_name_id}.")
-        except SQLDuplicateKeyError:
+            self._select_gallery_gid(gallery_name_id)
             logger.warning(
-                f"GID {gid} for gallery name ID {gallery_name_id} already exists."
+                f"GID for gallery name ID {gallery_name_id} already exists. Updating..."
             )
-        logger.info(f"GID {gid} inserted for gallery name ID {gallery_name_id}.")
+        except DatabaseKeyError:
+            self.connector.execute(insert_query, data)
+            logger.debug(
+                f"{table_name} {gid} inserted for gallery name ID {gallery_name_id}."
+            )
+
+    def _select_gallery_gid(self, gallery_name_id: int) -> int:
+        logger.debug(f"Selecting GID for gallery name ID {gallery_name_id}...")
+        table_name = "galleries_gids"
+        match self.sql_type:
+            case "mysql":
+                select_query = f"""
+                    SELECT gid
+                      FROM {table_name}
+                     WHERE db_gallery_id = %s
+                """
+        select_query = mullines2oneline(select_query)
+        data = (gallery_name_id,)
+
+        logger.debug(f"Select query: {select_query}")
+        query_result = self.connector.fetch_one(select_query, data)
+        if query_result is None:
+            msg = f"GID for gallery name ID {gallery_name_id} does not exist."
+            logger.error(msg)
+            raise DatabaseKeyError(msg)
+        else:
+            gid = query_result[0]
+            logger.info(f"GID for gallery name ID {gallery_name_id} is {gid}.")
+        return gid
+
+    def select_gallery_gid(self, gallery_name: str) -> int:
+        gallery_name_id = self._select_gallery_name_id(gallery_name)
+        return self._select_gallery_gid(gallery_name_id)
 
 
-class ComaicDBTimes(ComicDBInitSQLConnector, metaclass=ABCMeta):
+class ComaicDBTimes(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_times_table(self, table_name: str) -> None:
         logger.debug(f"Creating {table_name} table...")
         match self.sql_type:
@@ -442,21 +627,42 @@ class ComaicDBTimes(ComicDBInitSQLConnector, metaclass=ABCMeta):
         insert_query = mullines2oneline(insert_query)
         data = (gallery_name_id, time)
 
-        isupdate = False
-        logger.debug(f"Insert query: {insert_query}")
         try:
+            self._select_time(table_name, gallery_name_id)
+        except DatabaseKeyError:
+            logger.debug(f"Insert query: {insert_query}")
             self.connector.execute(insert_query, data)
             logger.debug(
                 f"Time '{time}' inserted for gallery name ID {gallery_name_id}."
             )
-        except SQLDuplicateKeyError:
-            logger.warning(
-                f"Time '{time}' for gallery name ID {gallery_name_id} already exists."
-            )
-            isupdate = True
-        if isupdate:
-            self._update_time(table_name, gallery_name_id, time)
         logger.info(f"Time '{time}' inserted for gallery name ID {gallery_name_id}.")
+
+    def _select_time(self, table_name: str, gallery_name_id: int) -> str:
+        logger.debug(
+            f"Selecting time for gallery name ID {gallery_name_id} from table '{table_name}'..."
+        )
+        match self.sql_type:
+            case "mysql":
+                select_query = f"""
+                    SELECT time
+                      FROM {table_name}
+                     WHERE db_gallery_id = %s
+                """
+        select_query = mullines2oneline(select_query)
+        data = (gallery_name_id,)
+
+        logger.debug(f"Select query: {select_query}")
+        query_result = self.connector.fetch_one(select_query, data)
+        if query_result is None:
+            msg = f"Time for gallery name ID {gallery_name_id} does not exist in table '{table_name}'."
+            logger.error(msg)
+            raise DatabaseKeyError(msg)
+        else:
+            time = query_result[0]
+            logger.info(
+                f"Time for gallery name ID {gallery_name_id} in table '{table_name}' is '{time}'."
+            )
+        return time
 
     def _update_time(self, table_name: str, gallery_name_id: int, time: str) -> None:
         logger.debug(
@@ -500,11 +706,14 @@ class ComaicDBTimes(ComicDBInitSQLConnector, metaclass=ABCMeta):
     def _insert_access_time(self, gallery_name_id: int, time: str) -> None:
         self._insert_time("galleries_access_times", gallery_name_id, time)
 
-    def update_access_time(self, gallery_name_id: int, time: str) -> None:
+    def update_access_time(self, gallery_name: str, time: str) -> None:
+        gallery_name_id = self._select_gallery_name_id(gallery_name)
         self._update_time("galleries_access_times", gallery_name_id, time)
 
 
-class ComicDBGalleriesTitles(ComicDBInitSQLConnector, metaclass=ABCMeta):
+class H2HDBGalleriesTitles(
+    ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
+):
     def _create_galleries_titles_table(self) -> None:
         table_name = "galleries_titles"
         logger.debug(f"Creating {table_name} table...")
@@ -532,25 +741,54 @@ class ComicDBGalleriesTitles(ComicDBInitSQLConnector, metaclass=ABCMeta):
         match self.sql_type:
             case "mysql":
                 insert_query = f"""
-                    INSERT INTO {table_name}
-                        (db_gallery_id, title) VALUES (%s, %s)
+                    INSERT INTO {table_name} (db_gallery_id, title) VALUES (%s, %s)
                 """
         insert_query = mullines2oneline(insert_query)
         data = (gallery_name_id, title)
-        logger.debug(f"Insert query: {insert_query}")
+
         try:
+            self._select_gallery_title(gallery_name_id)
+            logger.warning(
+                f"Title for gallery name ID {gallery_name_id} already exists. Updating..."
+            )
+        except DatabaseKeyError:
+            logger.debug(f"Insert query: {insert_query}")
             self.connector.execute(insert_query, data)
             logger.debug(
                 f"Title '{title}' inserted for gallery name ID {gallery_name_id}."
             )
-        except SQLDuplicateKeyError:
-            logger.warning(
-                f"Title '{title}' for gallery name ID {gallery_name_id} already exists."
-            )
         logger.info(f"Title '{title}' inserted for gallery name ID {gallery_name_id}.")
 
+    def _select_gallery_title(self, gallery_name_id: int) -> str:
+        logger.debug(f"Selecting title for gallery name ID {gallery_name_id}...")
+        table_name = "galleries_titles"
+        match self.sql_type:
+            case "mysql":
+                select_query = f"""
+                    SELECT title
+                      FROM {table_name}
+                     WHERE db_gallery_id = %s
+                """
+        select_query = mullines2oneline(select_query)
+        data = (gallery_name_id,)
 
-class ComicDBUploadAccounts(ComicDBInitSQLConnector, metaclass=ABCMeta):
+        logger.debug(f"Select query: {select_query}")
+        query_result = self.connector.fetch_one(select_query, data)
+        if query_result is None:
+            msg = f"Title for gallery name ID {gallery_name_id} does not exist."
+            logger.error(msg)
+            raise DatabaseKeyError(msg)
+        else:
+            title = query_result[0]
+            logger.info(f"Title for gallery name ID {gallery_name_id} is '{title}'.")
+        return title
+
+    def select_gallery_title(self, gallery_name: str) -> str:
+        gallery_name_id = self._select_gallery_name_id(gallery_name)
+        return self._select_gallery_title(gallery_name_id)
+
+
+class H2HDBUploadAccounts(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_upload_account_table(self) -> None:
         table_name = "galleries_upload_accounts"
         logger.debug(f"Creating {table_name} table...")
@@ -577,12 +815,6 @@ class ComicDBUploadAccounts(ComicDBInitSQLConnector, metaclass=ABCMeta):
             f"Inserting upload account '{account}' for gallery name ID {gallery_name_id}..."
         )
         table_name = "galleries_upload_accounts"
-        if len(account) > INNODB_INDEX_PREFIX_LIMIT:
-            logger.error(
-                f"Upload account '{account}' is too long. Must be {INNODB_INDEX_PREFIX_LIMIT} characters or less."
-            )
-            raise ValueError("Upload account is too long.")
-
         match self.sql_type:
             case "mysql":
                 insert_query = f"""
@@ -591,28 +823,63 @@ class ComicDBUploadAccounts(ComicDBInitSQLConnector, metaclass=ABCMeta):
         insert_query = mullines2oneline(insert_query)
         data = (gallery_name_id, account)
 
-        logger.debug(f"Insert query: {insert_query}")
         try:
+            self._select_gallery_upload_account(gallery_name_id)
+            logger.warning(
+                f"Upload account for gallery name ID {gallery_name_id} already exists. Updating..."
+            )
+        except DatabaseKeyError:
+            logger.debug(f"Insert query: {insert_query}")
             self.connector.execute(insert_query, data)
             logger.debug(
                 f"Upload account '{account}' inserted for gallery name ID {gallery_name_id}."
-            )
-        except SQLDuplicateKeyError:
-            logger.warning(
-                f"Upload account '{account}' for gallery name ID {gallery_name_id} already exists."
             )
         logger.info(
             f"Upload account '{account}' inserted for gallery name ID {gallery_name_id}."
         )
 
+    def _select_gallery_upload_account(self, gallery_name_id: int) -> str:
+        logger.debug(
+            f"Selecting upload account for gallery name ID {gallery_name_id}..."
+        )
+        table_name = "galleries_upload_accounts"
+        match self.sql_type:
+            case "mysql":
+                select_query = f"""
+                    SELECT account
+                      FROM {table_name}
+                     WHERE db_gallery_id = %s
+                """
+        select_query = mullines2oneline(select_query)
+        data = (gallery_name_id,)
 
-class ComicDBGalleriesInfos(
-    ComaicDBDBGalleriesIDs,
-    ComicDBGalleriesTitles,
-    ComaicDBGalleriesGIDs,
-    ComicDBUploadAccounts,
+        logger.debug(f"Select query: {select_query}")
+        query_result = self.connector.fetch_one(select_query, data)
+        if query_result is None:
+            msg = (
+                f"Upload account for gallery name ID {gallery_name_id} does not exist."
+            )
+            logger.error(msg)
+            raise DatabaseKeyError(msg)
+        else:
+            account = query_result[0]
+            logger.info(
+                f"Upload account for gallery name ID {gallery_name_id} is '{account}'."
+            )
+        return account
+
+    def select_gallery_upload_account(self, gallery_name: str) -> str:
+        gallery_name_id = self._select_gallery_name_id(gallery_name)
+        return self._select_gallery_upload_account(gallery_name_id)
+
+
+class H2HDBGalleriesInfos(
+    H2HDBGalleriesTitles,
+    H2HDBUploadAccounts,
     ComaicDBTimes,
-    ComicDBCheckDatabaseSettings,
+    ComaicDBGalleriesGIDs,
+    ComaicDBDBGalleriesIDs,
+    H2HDBCheckDatabaseSettings,
 ):
     def _create_galleries_infos_view(self) -> None:
         logger.debug("Creating galleries_infos view...")
@@ -644,7 +911,9 @@ class ComicDBGalleriesInfos(
         logger.info("galleries_infos view created.")
 
 
-class ComicDBGalleriesComments(ComicDBInitSQLConnector):
+class H2HDBGalleriesComments(
+    ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
+):
     def _create_galleries_comments_table(self) -> None:
         table_name = "galleries_comments"
         logger.debug(f"Creating {table_name} table...")
@@ -666,7 +935,7 @@ class ComicDBGalleriesComments(ComicDBInitSQLConnector):
 
     def _insert_gallery_comment(self, gallery_name_id: int, comment: str) -> None:
         logger.debug(
-            f"Inserting uploader comment for gallery name ID {gallery_name_id}..."
+            f"Inserting uploader comment '{comment}' for gallery name ID {gallery_name_id}..."
         )
         table_name = "galleries_comments"
         match self.sql_type:
@@ -677,21 +946,20 @@ class ComicDBGalleriesComments(ComicDBInitSQLConnector):
         insert_query = mullines2oneline(insert_query)
         data = (gallery_name_id, comment)
 
-        isupdater = False
-        logger.debug(f"Insert query: {insert_query}")
         try:
+            self._select_gallery_comment(gallery_name_id)
+            logger.warning(
+                f"Uploader comment for gallery name ID {gallery_name_id} already exists. Updating..."
+            )
+        except DatabaseKeyError:
+            logger.debug(f"Insert query: {insert_query}")
             self.connector.execute(insert_query, data)
-        except SQLDuplicateKeyError:
-            logger.warning(
-                f"Uploader comment for gallery name ID {gallery_name_id} already exists."
+            logger.debug(
+                f"Uploader comment '{comment}' inserted for gallery name ID {gallery_name_id}."
             )
-            isupdater = True
-        if isupdater:
-            logger.warning(
-                f"Uploader comment already exists for gallery name ID {gallery_name_id}. Updating..."
-            )
-            self._update_gallery_comment(gallery_name_id, comment)
-        logger.info(f"Uploader comment inserted for gallery name ID {gallery_name_id}.")
+        logger.info(
+            f"Uploader comment '{comment}' inserted for gallery name ID {gallery_name_id}."
+        )
 
     def _update_gallery_comment(self, gallery_name_id: int, comment: str) -> None:
         logger.debug(
@@ -710,8 +978,40 @@ class ComicDBGalleriesComments(ComicDBInitSQLConnector):
         self.connector.execute(update_query, data)
         logger.info(f"Uploader comment updated for gallery name ID {gallery_name_id}.")
 
+    def _select_gallery_comment(self, gallery_name_id: int) -> str:
+        logger.debug(
+            f"Selecting uploader comment for gallery name ID {gallery_name_id}..."
+        )
+        table_name = "galleries_comments"
+        match self.sql_type:
+            case "mysql":
+                select_query = f"""
+                    SELECT Comment
+                      FROM {table_name}
+                     WHERE db_gallery_id = %s
+                """
+        select_query = mullines2oneline(select_query)
+        data = (gallery_name_id,)
 
-class ComicDBGalleriesTags(ComicDBInitSQLConnector):
+        logger.debug(f"Select query: {select_query}")
+        query_result = self.connector.fetch_one(select_query, data)
+        if query_result is None:
+            msg = f"Uploader comment for gallery name ID {gallery_name_id} does not exist."
+            logger.error(msg)
+            raise DatabaseKeyError(msg)
+        else:
+            comment = query_result[0]
+            logger.info(
+                f"Uploader comment for gallery name ID {gallery_name_id} is '{comment}'."
+            )
+        return comment
+
+    def select_gallery_comment(self, gallery_name: str) -> str:
+        gallery_name_id = self._select_gallery_name_id(gallery_name)
+        return self._select_gallery_comment(gallery_name_id)
+
+
+class H2HDBGalleriesTags(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_galleries_tags_table(self, tag_name: str) -> None:
         table_name = f"galleries_tags_{tag_name}"
         logger.debug(f"Creating {table_name} table...")
@@ -731,10 +1031,12 @@ class ComicDBGalleriesTags(ComicDBInitSQLConnector):
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
-    def insert_gallery_tag(
+    def _insert_gallery_tag(
         self, gallery_name_id: int, tag_name: str, tag_value: str
     ) -> None:
-        logger.debug(f"Inserting tag '{tag_name}'...")
+        logger.debug(
+            f"Inserting tag '{tag_name}' with value '{tag_value}' for gallery name ID {gallery_name_id}..."
+        )
         table_name = f"galleries_tags_{tag_name}"
         match self.sql_type:
             case "mysql":
@@ -744,18 +1046,64 @@ class ComicDBGalleriesTags(ComicDBInitSQLConnector):
         insert_query = mullines2oneline(insert_query)
         data = (gallery_name_id, tag_value)
 
-        self._create_galleries_tags_table(tag_name)
-        logger.debug(f"Insert query: {insert_query}")
         try:
-            self.connector.execute(insert_query, data)
-        except SQLDuplicateKeyError:
+            self._select_gallery_tag(gallery_name_id, tag_name)
             logger.warning(
-                f"Tag '{tag_name}' for gallery name ID {gallery_name_id} already exists."
+                f"Tag '{tag_name}' for gallery name ID {gallery_name_id} already exists. Updating..."
             )
-        logger.info(f"Tag '{tag_name}' inserted.")
+        except (DatabaseKeyError, Exception) as e:
+            if re.search(r"Table '[\w.]+' doesn't exist", str(e)):
+                self._create_galleries_tags_table(tag_name)
+                logger.warning(
+                    f"Table '{table_name}' does not exist. Creating table..."
+                )
+            logger.debug(
+                f"Insert query: {insert_query} with data {data} for table '{table_name}'"
+            )
+            self.connector.execute(insert_query, data)
+            logger.debug(
+                f"Tag '{tag_name}' with value '{tag_value}' inserted for gallery name ID {gallery_name_id}."
+            )
+        logger.info(
+            f"Tag '{tag_name}' with value '{tag_value}' inserted for gallery name ID {gallery_name_id}."
+        )
+
+    def insert_gallery_tag(
+        self, gallery_name: str, tag_name: str, tag_value: str
+    ) -> None:
+        gallery_name_id = self._select_gallery_name_id(gallery_name)
+        self._insert_gallery_tag(gallery_name_id, tag_name, tag_value)
+
+    def _select_gallery_tag(self, gallery_name_id: int, tag_name: str) -> str:
+        logger.debug(f"Selecting tag '{tag_name}'...")
+        table_name = f"galleries_tags_{tag_name}"
+        match self.sql_type:
+            case "mysql":
+                select_query = f"""
+                    SELECT tag
+                      FROM {table_name}
+                     WHERE db_gallery_id = %s
+                """
+        select_query = mullines2oneline(select_query)
+        data = (gallery_name_id,)
+
+        logger.debug(f"Select query: {select_query}")
+        query_result = self.connector.fetch_one(select_query, data)
+        if query_result is None:
+            msg = f"Tag '{tag_name}' does not exist."
+            logger.error(msg)
+            raise DatabaseKeyError(msg)
+        else:
+            tag = query_result[0]
+            logger.info(f"Tag '{tag_name}' is '{tag}'.")
+        return tag
+
+    def select_gallery_tag(self, gallery_name: str, tag_name: str) -> str:
+        gallery_name_id = self._select_gallery_name_id(gallery_name)
+        return self._select_gallery_tag(gallery_name_id, tag_name)
 
 
-class ComicDBFiles(ComicDBInitSQLConnector, metaclass=ABCMeta):
+class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_files_names_table(self) -> None:
         table_name = f"files_names"
         logger.debug(f"Creating {table_name} table...")
@@ -786,18 +1134,17 @@ class ComicDBFiles(ComicDBInitSQLConnector, metaclass=ABCMeta):
         self, gallery_name_id: int, file_name: str
     ) -> int:
         logger.debug(
-            f"Inserting image ID for gallery name ID {gallery_name_id} and file '{file_name}'..."
+            f"Inserting file '{file_name}' for gallery name ID {gallery_name_id}..."
         )
         table_name = "files_names"
         if len(file_name) > FILE_NAME_LENGTH_LIMIT:
             logger.error(
-                f"File '{file_name}' is too long. Must be 255 characters or less."
+                f"File name '{file_name}' is too long. Must be {FILE_NAME_LENGTH_LIMIT} characters or less."
             )
-            raise ValueError("File is too long.")
-
+            raise ValueError("File name is too long.")
         file_name_parts = split_gallery_name(file_name)
         logger.debug(
-            f"File '{file_name}' split into parts  %s"
+            f"File name '{file_name}' split into parts  %s"
             % " and ".join(
                 ["'" + file_name_part + "'" for file_name_part in file_name_parts]
             )
@@ -808,37 +1155,80 @@ class ComicDBFiles(ComicDBInitSQLConnector, metaclass=ABCMeta):
                 column_name_parts, _ = mysql_split_file_name_based_on_limit("name")
                 insert_query = f"""
                     INSERT INTO {table_name}
-                        (db_gallery_id, {", ".join(column_name_parts)}, full_name) VALUES
-                        (%s, {", ".join(["%s" for _ in column_name_parts])}, %s)
+                        (db_gallery_id, {", ".join(column_name_parts)}, full_name)
+                    VALUES (%s, {", ".join(["%s" for _ in column_name_parts])}, %s)
                 """
+        insert_query = mullines2oneline(insert_query)
+        data = (gallery_name_id, *file_name_parts, file_name)
+
+        try:
+            gallery_image_id = self._select_gallery_file_id(gallery_name_id, file_name)
+            logger.warning(
+                f"File '{file_name}' for gallery name ID {gallery_name_id} already exists. Returning ID..."
+            )
+        except DatabaseKeyError:
+            # If gallery name does not exist, insert it
+            logger.debug(f"Insert query: {insert_query}")
+            self.connector.execute(insert_query, data)
+            logger.debug(f"File '{file_name}' inserted.")
+            gallery_image_id = self._select_gallery_file_id(gallery_name_id, file_name)
+
+        return gallery_image_id
+
+    def _select_gallery_file_id(self, gallery_name_id: int, file_name: str) -> int:
+        logger.debug(
+            f"Selecting image ID for gallery name ID {gallery_name_id} and file '{file_name}'..."
+        )
+        table_name = "files_names"
+        file_name_parts = split_gallery_name(file_name)
+        match self.sql_type:
+            case "mysql":
+                column_name_parts, _ = mysql_split_file_name_based_on_limit("name")
                 select_query = f"""
                     SELECT db_file_id
                       FROM {table_name}
                      WHERE db_gallery_id = %s
                        AND {" AND ".join([f"{part} = %s" for part in column_name_parts])}
                 """
-        insert_query, select_query = (
-            mullines2oneline(query) for query in (insert_query, select_query)
-        )
-        data = (gallery_name_id, *file_name_parts, file_name)
-
-        logger.debug(f"Insert query: {insert_query}")
-        try:
-            self.connector.execute(insert_query, data)
-            logger.debug(
-                f"Image ID inserted for gallery name ID {gallery_name_id} and file '{file_name}'."
-            )
-        except SQLDuplicateKeyError:
-            logger.warning(
-                f"Image ID for gallery name ID {gallery_name_id} and file '{file_name}' already exists."
-            )
-        logger.debug(f"Select query: {select_query}")
+        select_query = mullines2oneline(select_query)
         data = (gallery_name_id, *file_name_parts)
-        gallery_image_id = self.connector.fetch_one(select_query, data)[0]
-        logger.info(
-            f"Image ID inserted for gallery name ID {gallery_name_id} and file '{file_name}'."
-        )
+
+        logger.debug(f"Select query: {select_query}")
+        query_result = self.connector.fetch_one(select_query, data)
+        if query_result is None:
+            msg = f"Image ID for gallery name ID {gallery_name_id} and file '{file_name}' does not exist."
+            logger.error(msg)
+            raise DatabaseKeyError(msg)
+        else:
+            gallery_image_id = query_result[0]
+            logger.info(
+                f"Image ID for gallery name ID {gallery_name_id} and file '{file_name}' is {gallery_image_id}."
+            )
         return gallery_image_id
+
+    def select_gallery_file(self, gallery_name: str) -> list[str]:
+        gallery_name_id = self._select_gallery_name_id(gallery_name)
+        logger.debug(f"Selecting files for gallery name ID {gallery_name_id}...")
+        table_name = "files_names"
+        match self.sql_type:
+            case "mysql":
+                select_query = f"""
+                    SELECT full_name
+                        FROM {table_name}
+                          WHERE db_gallery_id = %s
+                """
+        select_query = mullines2oneline(select_query)
+        data = (gallery_name_id,)
+        logger.debug(f"Select query: {select_query}")
+        query_result = self.connector.fetch_all(select_query, data)
+        if query_result is None:
+            msg = f"Files for gallery name ID {gallery_name_id} do not exist."
+            logger.error(msg)
+            raise DatabaseKeyError(msg)
+        else:
+            files = [query[0] for query in query_result]
+            logger.info(f"Files for gallery name ID {gallery_name_id} are {files}.")
+        return files
 
     def _create_galleries_files_hashs_table(
         self, algorithm: str, output_len: int
@@ -931,20 +1321,20 @@ class ComicDBFiles(ComicDBInitSQLConnector, metaclass=ABCMeta):
                            files_hashs_sha3_512.hash_value AS sha3_512,
                            files_hashs_blake2b.hash_value  AS blake2b,
                            files_hashs_blake2s.hash_value  AS blake2s
-                    FROM files_names
-                         LEFT JOIN galleries_titles     USING (db_gallery_id)
-                         LEFT JOIN galleries_names      USING (db_gallery_id)
-                         LEFT JOIN files_hashs_sha224   USING (db_file_id)
-                         LEFT JOIN files_hashs_sha256   USING (db_file_id)
-                         LEFT JOIN files_hashs_sha384   USING (db_file_id)
-                         LEFT JOIN files_hashs_sha1     USING (db_file_id)
-                         LEFT JOIN files_hashs_sha512   USING (db_file_id)
-                         LEFT JOIN files_hashs_sha3_224 USING (db_file_id)
-                         LEFT JOIN files_hashs_sha3_256 USING (db_file_id)
-                         LEFT JOIN files_hashs_sha3_384 USING (db_file_id)
-                         LEFT JOIN files_hashs_sha3_512 USING (db_file_id)
-                         LEFT JOIN files_hashs_blake2b  USING (db_file_id)
-                         LEFT JOIN files_hashs_blake2s  USING (db_file_id)
+                      FROM files_names
+                           LEFT JOIN galleries_titles     USING (db_gallery_id)
+                           LEFT JOIN galleries_names      USING (db_gallery_id)
+                           LEFT JOIN files_hashs_sha224   USING (db_file_id)
+                           LEFT JOIN files_hashs_sha256   USING (db_file_id)
+                           LEFT JOIN files_hashs_sha384   USING (db_file_id)
+                           LEFT JOIN files_hashs_sha1     USING (db_file_id)
+                           LEFT JOIN files_hashs_sha512   USING (db_file_id)
+                           LEFT JOIN files_hashs_sha3_224 USING (db_file_id)
+                           LEFT JOIN files_hashs_sha3_256 USING (db_file_id)
+                           LEFT JOIN files_hashs_sha3_384 USING (db_file_id)
+                           LEFT JOIN files_hashs_sha3_512 USING (db_file_id)
+                           LEFT JOIN files_hashs_blake2b  USING (db_file_id)
+                           LEFT JOIN files_hashs_blake2s  USING (db_file_id)
                 """
         query = mullines2oneline(query)
         logger.debug(f"Query: {query}")
@@ -952,124 +1342,114 @@ class ComicDBFiles(ComicDBInitSQLConnector, metaclass=ABCMeta):
         logger.info(f"{table_name} view created.")
 
     def _insert_gallery_file_hash(
-        self, image_id: int, file_path: str, file_content: bytes, algorithm: str
+        self, file_id: int, file_content: bytes, algorithm: str
     ) -> None:
-        logger.debug(
-            f"Inserting image hash for image ID {image_id} and file '{file_path}'..."
-        )
+        logger.debug(f"Inserting image hash for image ID {file_id}...")
         table_name = f"files_hashs_{algorithm.lower()}"
-        hash_function = lambda x: getattr(hashlib, algorithm.lower())(x).hexdigest()
-        hash_value = hash_function(file_content)
-        logger.debug(f"Hash value: {hash_value}")
-
         match self.sql_type:
             case "mysql":
                 insert_query = f"""
                     INSERT INTO {table_name} (db_file_id, hash_value) VALUES (%s, %s)
                 """
+        insert_query = mullines2oneline(insert_query)
+        hash_function = lambda x: getattr(hashlib, algorithm.lower())(x).hexdigest()
+        hash_value = hash_function(file_content)
+        data = (file_id, hash_value)
+
+        try:
+            original_hash_value = self._select_gallery_file_hash(file_id, algorithm)
+            logger.warning(
+                f"Image hash for image ID {file_id} already exists. Updating..."
+            )
+            if original_hash_value != hash_value:
+                logger.warning(
+                    f"Original hash value '{original_hash_value}' is different from new hash value '{hash_value}'."
+                )
+                self._update_gallery_file_hash(file_id, data[1], algorithm)
+        except DatabaseKeyError:
+            logger.debug(f"Insert query: {insert_query}")
+            self.connector.execute(insert_query, data)
+            logger.debug(f"Image hash inserted for image ID {file_id}.")
+        logger.info(f"Image hash inserted for image ID {file_id}.")
+
+    def _select_gallery_file_hash(self, file_id: int, algorithm: str) -> str:
+        logger.debug(f"Selecting image hash for image ID {file_id}...")
+        table_name = f"files_hashs_{algorithm.lower()}"
+        match self.sql_type:
+            case "mysql":
                 select_query = f"""
                     SELECT hash_value
-                     FROM {table_name}
-                    WHERE db_file_id = %s
-                      AND hash_value = %s
+                      FROM {table_name}
+                     WHERE db_file_id = %s
                 """
-        insert_query, select_query = (
-            mullines2oneline(query) for query in (insert_query, select_query)
-        )
-        data = (image_id, hash_value)
+        select_query = mullines2oneline(select_query)
+        data = (file_id,)
 
-        logger.debug(f"Insert query: {insert_query}")
-        try:
-            self.connector.execute(insert_query, data)
-            logger.debug(
-                f"Image hash '{hash_value}' inserted for image ID {image_id} and file '{file_path}'."
-            )
-        except SQLDuplicateKeyError:
-            logger.warning(
-                f"Image hash '{hash_value}' for image ID {image_id} and file '{file_path}' already exists."
-            )
-        logger.info(
-            f"Image hash '{hash_value}' inserted for image ID {image_id} and file '{file_path}'."
-        )
+        logger.debug(f"Select query: {select_query}")
+        query_result = self.connector.fetch_one(select_query, data)
+        if query_result is None:
+            msg = f"Image hash for image ID {file_id} does not exist."
+            logger.error(msg)
+            raise DatabaseKeyError(msg)
+        else:
+            hash_value = query_result[0]
+            logger.info(f"Image hash for image ID {file_id} is '{hash_value}'.")
+        return hash_value
 
-    def _insert_gallery_file_sha224(
-        self, image_id: int, file_path: str, file_content: bytes
-    ) -> None:
-        self._insert_gallery_file_hash(image_id, file_path, file_content, "sha224")
+    def _insert_gallery_file_sha224(self, file_id: int, file_content: bytes) -> None:
+        self._insert_gallery_file_hash(file_id, file_content, "sha224")
 
-    def _insert_gallery_file_sha256(
-        self, image_id: int, file_path: str, file_content: bytes
-    ) -> None:
-        self._insert_gallery_file_hash(image_id, file_path, file_content, "sha256")
+    def _insert_gallery_file_sha256(self, file_id: int, file_content: bytes) -> None:
+        self._insert_gallery_file_hash(file_id, file_content, "sha256")
 
-    def _insert_gallery_file_sha384(
-        self, image_id: int, file_path: str, file_content: bytes
-    ) -> None:
-        self._insert_gallery_file_hash(image_id, file_path, file_content, "sha384")
+    def _insert_gallery_file_sha384(self, file_id: int, file_content: bytes) -> None:
+        self._insert_gallery_file_hash(file_id, file_content, "sha384")
 
-    def _insert_gallery_file_sha1(
-        self, image_id: int, file_path: str, file_content: bytes
-    ) -> None:
-        self._insert_gallery_file_hash(image_id, file_path, file_content, "sha1")
+    def _insert_gallery_file_sha1(self, file_id: int, file_content: bytes) -> None:
+        self._insert_gallery_file_hash(file_id, file_content, "sha1")
 
-    def _insert_gallery_file_sha512(
-        self, image_id: int, file_path: str, file_content: bytes
-    ) -> None:
-        self._insert_gallery_file_hash(image_id, file_path, file_content, "sha512")
+    def _insert_gallery_file_sha512(self, file_id: int, file_content: bytes) -> None:
+        self._insert_gallery_file_hash(file_id, file_content, "sha512")
 
-    def _insert_gallery_file_sha3_224(
-        self, image_id: int, file_path: str, file_content: bytes
-    ) -> None:
-        self._insert_gallery_file_hash(image_id, file_path, file_content, "sha3_224")
+    def _insert_gallery_file_sha3_224(self, file_id: int, file_content: bytes) -> None:
+        self._insert_gallery_file_hash(file_id, file_content, "sha3_224")
 
-    def _insert_gallery_file_sha3_256(
-        self, image_id: int, file_path: str, file_content: bytes
-    ) -> None:
-        self._insert_gallery_file_hash(image_id, file_path, file_content, "sha3_256")
+    def _insert_gallery_file_sha3_256(self, file_id: int, file_content: bytes) -> None:
+        self._insert_gallery_file_hash(file_id, file_content, "sha3_256")
 
-    def _insert_gallery_file_sha3_384(
-        self, image_id: int, file_path: str, file_content: bytes
-    ) -> None:
-        self._insert_gallery_file_hash(image_id, file_path, file_content, "sha3_384")
+    def _insert_gallery_file_sha3_384(self, file_id: int, file_content: bytes) -> None:
+        self._insert_gallery_file_hash(file_id, file_content, "sha3_384")
 
-    def _insert_gallery_file_sha3_512(
-        self, image_id: int, file_path: str, file_content: bytes
-    ) -> None:
-        self._insert_gallery_file_hash(image_id, file_path, file_content, "sha3_512")
+    def _insert_gallery_file_sha3_512(self, file_id: int, file_content: bytes) -> None:
+        self._insert_gallery_file_hash(file_id, file_content, "sha3_512")
 
-    def _insert_gallery_file_blake2b(
-        self, image_id: int, file_path: str, file_content: bytes
-    ) -> None:
-        self._insert_gallery_file_hash(image_id, file_path, file_content, "blake2b")
+    def _insert_gallery_file_blake2b(self, file_id: int, file_content: bytes) -> None:
+        self._insert_gallery_file_hash(file_id, file_content, "blake2b")
 
-    def _insert_gallery_file_blake2s(
-        self, image_id: int, file_path: str, file_content: bytes
-    ) -> None:
-        self._insert_gallery_file_hash(image_id, file_path, file_content, "blake2s")
+    def _insert_gallery_file_blake2s(self, file_id: int, file_content: bytes) -> None:
+        self._insert_gallery_file_hash(file_id, file_content, "blake2s")
 
     def _update_gallery_file_hash(
-        self, image_id: int, file_path: str, hash_value: str
+        self, file_id: int, hash_value: str, algorithm: str
     ) -> None:
-        logger.debug(
-            f"Updating image hash '{hash_value}' for image ID {image_id} and file '{file_path}'..."
-        )
-        table_name = "files_hashs"
+        logger.debug(f"Updating image hash for image ID {file_id}...")
+        table_name = f"files_hashs_{algorithm.lower()}"
         match self.sql_type:
             case "mysql":
                 update_query = f"""
-                    UPDATE {table_name} SET Hash = %s WHERE DB_Image_ID = %s
+                    UPDATE {table_name} SET hash_value = %s WHERE db_file_id = %s
                 """
         update_query = mullines2oneline(update_query)
-        data = (hash_value, image_id)
+        data = (hash_value, file_id)
 
         logger.debug(f"Update query: {update_query}")
         self.connector.execute(update_query, data)
-        logger.info(
-            f"Image hash '{hash_value}' updated for image ID {image_id} and file '{file_path}'."
-        )
+        logger.info(f"Image hash updated for image ID {file_id}.")
 
 
-class ComicDBRemovedGalleries(ComicDBInitSQLConnector):
+class H2HDBRemovedGalleries(
+    ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
+):
     def _create_removed_galleries_gids_table(self) -> None:
         table_name = "removed_galleries_gids"
         logger.debug(f"Creating {table_name} table...")
@@ -1097,21 +1477,46 @@ class ComicDBRemovedGalleries(ComicDBInitSQLConnector):
         insert_query = mullines2oneline(insert_query)
         data = (gid,)
 
-        logger.debug(f"Insert query: {insert_query}")
         try:
+            self.select_removed_gallery_gid(gid)
+            logger.warning(f"Removed gallery GID {gid} already exists.")
+        except DatabaseKeyError:
+            logger.debug(f"Insert query: {insert_query}")
             self.connector.execute(insert_query, data)
             logger.debug(f"Removed gallery GID {gid} inserted.")
-        except SQLDuplicateKeyError:
-            logger.warning(f"Removed gallery GID {gid} already exists.")
         logger.info(f"Removed gallery GID {gid} inserted.")
 
+    def select_removed_gallery_gid(self, gid: int) -> int:
+        logger.debug(f"Selecting removed gallery GID {gid}...")
+        table_name = "removed_galleries_gids"
+        match self.sql_type:
+            case "mysql":
+                select_query = f"""
+                    SELECT gid
+                      FROM {table_name}
+                     WHERE gid = %s
+                """
+        select_query = mullines2oneline(select_query)
+        data = (gid,)
 
-class ComicDB(
-    ComicDBGalleriesInfos,
-    ComicDBGalleriesComments,
-    ComicDBGalleriesTags,
-    ComicDBFiles,
-    ComicDBRemovedGalleries,
+        logger.debug(f"Select query: {select_query}")
+        query_result = self.connector.fetch_one(select_query, data)
+        if query_result is None:
+            msg = f"Removed gallery GID {gid} does not exist."
+            logger.error(msg)
+            raise DatabaseKeyError(msg)
+        else:
+            gid = query_result[0]
+            logger.info(f"Removed gallery GID {gid} exists.")
+        return gid
+
+
+class H2HDB(
+    H2HDBGalleriesInfos,
+    H2HDBGalleriesComments,
+    H2HDBGalleriesTags,
+    H2HDBFiles,
+    H2HDBRemovedGalleries,
 ):
     def delete_gallery_image(self, gallery_name: str) -> None:
         logger.debug(f"Deleting gallery '{gallery_name}'...")
@@ -1225,11 +1630,11 @@ class ComicDB(
             self._insert_access_time(id, gallery_info.download_time)
             self._insert_modified_time(id, gallery_info.modified_time)
             for file_path in gallery_info.files_path:
-                image_id = self._insert_gallery_file_and_return_id(id, file_path)
+                file_id = self._insert_gallery_file_and_return_id(id, file_path)
                 absolute_file_path = os.path.join(gallery_folder, file_path)
                 with open(absolute_file_path, "rb") as f:
                     file_content = f.read()
-                image_hash_insert_params = (image_id, absolute_file_path, file_content)
+                image_hash_insert_params = (file_id, file_content)
                 self._insert_gallery_file_sha224(*image_hash_insert_params)
                 self._insert_gallery_file_sha256(*image_hash_insert_params)
                 self._insert_gallery_file_sha384(*image_hash_insert_params)
@@ -1245,7 +1650,7 @@ class ComicDB(
             # When the corresponding Tag_{tag_name} table does not exist, a table creation operation will be performed.
             # This will commit and create a new TRANSACTION.
             for tag_name, tag_value in gallery_info.tags.items():
-                self.insert_gallery_tag(id, tag_name, tag_value)
+                self._insert_gallery_tag(id, tag_name, tag_value)
         except Exception as e:
             self.delete_gallery_image(gallery_info.gallery_name)
             self.delete_gallery(gallery_info.gallery_name)

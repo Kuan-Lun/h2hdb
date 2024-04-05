@@ -1,4 +1,9 @@
-__all__ = ["SQLConnectorParams", "MySQLConnector", "DatabaseConfigurationError", "DatabaseDuplicateKeyError"]
+__all__ = [
+    "SQLConnectorParams",
+    "MySQLConnector",
+    "DatabaseConfigurationError",
+    "DatabaseKeyError",
+]
 
 
 from abc import ABCMeta, abstractmethod
@@ -314,9 +319,9 @@ class DatabaseConfigurationError(Exception):
         super().__init__(self.message)
 
 
-class DatabaseDuplicateKeyError(Exception):
+class DatabaseKeyError(Exception):
     """
-    Custom exception class for database duplicate key errors.
+    Custom exception class for database key errors.
 
     This class inherits from the built-in Python Exception class. You can add additional methods or attributes if needed.
     """
