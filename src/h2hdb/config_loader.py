@@ -52,16 +52,32 @@ class LoggerConfig:
     def __str__(self) -> str:
         return self.__repr__()
 
+class H2HConfig:
+    __slots__ = ["download_path"]
+
+    def __init__(self, download_path: str) -> None:
+        self.download_path = download_path
+
+    def __repr__(self) -> str:
+        return f"H2HConfig(download_path={self.download_path})"
+
+    def __str__(self) -> str:
+        return self.__repr__()
+
 
 class Config:
+    __slots__ = ["h2h", "database", "logger"]
+
     def __init__(
-        self, database_config: DatabaseConfig, logger_config: LoggerConfig
+        self, h2h_config: H2HConfig,
+        database_config: DatabaseConfig, logger_config: LoggerConfig
     ) -> None:
+        self.h2h = h2h_config
         self.database = database_config
         self.logger = logger_config
 
     def __repr__(self) -> str:
-        return f"Config(database_config={self.database}, logger_config={self.logger})"
+        return f"Config(h2h={self.h2h}, database_config={self.database}, logger_config={self.logger})"
 
     def __str__(self) -> str:
         return self.__repr__()
@@ -74,6 +90,9 @@ def load_config() -> Config:
 
     with open(args.config, "r") as f:
         user_config = json.load(f)
+
+    download_path = user_config["h2h"]["download_path"]
+    h2h_config = H2HConfig(download_path)
 
     database_config = DatabaseConfig(
         sql_type=user_config["database"]["sql_type"],
@@ -115,7 +134,7 @@ def load_config() -> Config:
         max_log_entry_length=max_log_entry_length,
     )
 
-    return Config(database_config, logger_config)
+    return Config(h2h_config, database_config, logger_config)
 
 
 config_loader = load_config()

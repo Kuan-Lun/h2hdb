@@ -9,10 +9,7 @@ __all__ = [
 
 from abc import ABCMeta, abstractmethod
 
-
 from .logger import logger
-
-# from .config_loader import config_loader
 
 
 class DatabaseConfigurationError(Exception):

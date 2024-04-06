@@ -20,8 +20,6 @@ from .settings import FOLDER_NAME_LENGTH_LIMIT, FILE_NAME_LENGTH_LIMIT
 
 match config_loader.database.sql_type.lower():
     case "mysql":
-        from mysql.connector import Error as SQLError
-
         INNODB_INDEX_PREFIX_LIMIT = 191
 
 
@@ -52,7 +50,6 @@ class H2HDBAbstract(metaclass=ABCMeta):
         sql_type (str): The type of SQL database.
         sql_connection_params (SQLConnectorParams): The parameters for establishing the SQL connection.
         connector (SQLConnector): The SQL connector object.
-        SQLError (Exception): The error class for the SQL type.
 
     Abstract Methods:
         check_database_character_set: Checks the character set of the database.
@@ -80,7 +77,6 @@ class H2HDBAbstract(metaclass=ABCMeta):
         "sql_type",
         "sql_connection_params",
         "connector",
-        "SQLError",
     ]
 
     def __init__(self) -> None:
@@ -104,7 +100,6 @@ class H2HDBAbstract(metaclass=ABCMeta):
             case "mysql":
                 logger.debug("Setting MySQL connector...")
                 self.connector = MySQLConnector(**self.sql_connection_params)
-                self.SQLError = SQLError
             case _:
                 raise ValueError("Unsupported SQL type")
         logger.info("Connector set.")
@@ -170,6 +165,13 @@ class H2HDBAbstract(metaclass=ABCMeta):
 
         Args:
             gallery_path (str): The path to the gallery folder.
+        """
+        pass
+
+    @abstractmethod
+    def insert_h2h_download(self) -> None:
+        """
+        Inserts the H@H download information into the database.
         """
         pass
 
@@ -460,7 +462,6 @@ class ComaicDBGalleriesGIDs(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABC
         sql_type (str): The type of SQL database being used.
         sql_connection_params (SQLConnectorParams): The parameters for establishing the SQL connection.
         connector (SQLConnector): The SQL connector object.
-        SQLError (Exception): The error class for the SQL type.
 
     Methods:
         _create_galleries_gids_table: Creates the galleries_gids table.
@@ -479,7 +480,7 @@ class ComaicDBGalleriesGIDs(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABC
                         FOREIGN KEY (db_gallery_id) REFERENCES galleries_names(db_gallery_id),
                         db_gallery_id INT UNSIGNED NOT NULL,
                         gid           INT UNSIGNED NOT NULL,
-                        INDEX (gid, db_gallery_id)
+                        INDEX (gid)
                     )
                 """
         query = mullines2oneline(query)
@@ -537,7 +538,7 @@ class ComaicDBTimes(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         FOREIGN KEY (db_gallery_id) REFERENCES galleries_names(db_gallery_id),
                         db_gallery_id INT UNSIGNED NOT NULL,
                         time          DATETIME     NOT NULL,
-                        INDEX (time, db_gallery_id)
+                        INDEX (time)
                     )
                 """
         query = mullines2oneline(query)
@@ -689,7 +690,7 @@ class H2HDBUploadAccounts(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMe
                         FOREIGN KEY (db_gallery_id) REFERENCES galleries_names(db_gallery_id),
                         db_gallery_id INT UNSIGNED                      NOT NULL,
                         account       CHAR({INNODB_INDEX_PREFIX_LIMIT}) NOT NULL,
-                        INDEX (account, db_gallery_id)
+                        INDEX (account)
                     )
                 """
         query = mullines2oneline(query)
@@ -861,7 +862,7 @@ class H2HDBGalleriesTags(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMet
                         FOREIGN KEY (db_gallery_id) REFERENCES galleries_names(db_gallery_id),
                         db_gallery_id INT UNSIGNED                      NOT NULL,
                         tag           CHAR({INNODB_INDEX_PREFIX_LIMIT}) NOT NULL,
-                        INDEX (tag, db_gallery_id)
+                        INDEX (tag)
                     )
                 """
         query = mullines2oneline(query)
@@ -1032,7 +1033,7 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         FOREIGN KEY (db_file_id) REFERENCES files_names(db_file_id),
                         db_file_id INT UNSIGNED       NOT NULL,
                         hash_value CHAR({output_len}) NOT NULL,
-                        INDEX (hash_value, db_file_id)
+                        INDEX (hash_value)
                     )
                 """
         query = mullines2oneline(query)
@@ -1448,6 +1449,11 @@ class H2HDB(
             pass
         self._insert_gallery_info(gallery_info_params)
         logger.info(f"Gallery '{gallery_info_params.gallery_name}' inserted.")
+
+    def insert_h2h_download(self) -> None:
+        for root, _, files in os.walk(config_loader.h2h.download_path):
+            if "galleryinfo.txt" in files:
+                self.insert_gallery_info(root)
 
 
 def mullines2oneline(s: str) -> str:
