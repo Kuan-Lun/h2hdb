@@ -47,7 +47,7 @@ def split_message_with_cjk(message: str, max_log_entry_length: int) -> list[str]
 def log_message(
     logger: logging.Logger, level: int, max_log_entry_length: int, message: str
 ) -> None:
-    frame = sys._getframe(3)
+    frame = sys._getframe(2)
     chunks = split_message_with_cjk(message, max_log_entry_length)
     for chunk in chunks:
         record = logger.makeRecord(
@@ -64,6 +64,7 @@ def log_message(
 
 
 LOG_CONFIG = {
+    "notset": logging.NOTSET,
     "debug": logging.DEBUG,
     "info": logging.INFO,
     "warning": logging.WARNING,

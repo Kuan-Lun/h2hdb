@@ -1,4 +1,4 @@
-__all__ = ["parse_gallery_info"]
+__all__ = ["parse_gallery_info", "GalleryInfoParser"]
 
 
 import os
@@ -23,6 +23,7 @@ class GalleryInfoParser:
     """
 
     __slots__ = [
+        "gallery_folder",
         "gallery_name",
         "gid",
         "files_path",
@@ -37,6 +38,7 @@ class GalleryInfoParser:
 
     def __init__(
         self,
+        gallery_folder: str,
         gallery_name: str,
         gid: int,
         files_path: list[str],
@@ -48,6 +50,7 @@ class GalleryInfoParser:
         download_time: str,
         tags: dict[str, str],
     ) -> None:
+        self.gallery_folder = gallery_folder
         self.gallery_name = gallery_name
         self.gid = gid
         self.files_path = files_path
@@ -66,26 +69,26 @@ class GalleryInfoParser:
         return self.__repr__()
 
 
-def parse_gallery_info(folder_path: str) -> GalleryInfoParser:
+def parse_gallery_info(gallery_folder: str) -> GalleryInfoParser:
     """
     Parses the gallery information from the given folder path.
 
     Args:
-        folder_path (str): The path to the folder containing the gallery information.
+        gallery_folder (str): The path to the folder containing the gallery information.
 
     Returns:
         GalleryInfoParser: An instance of the GalleryInfoParser class containing the parsed gallery information.
     """
-    gallery_info_path = os.path.join(folder_path, "galleryinfo.txt")
+    gallery_info_path = os.path.join(gallery_folder, "galleryinfo.txt")
     with open(gallery_info_path, "r", encoding="utf-8") as file:
         lines = file.read().strip("\n").split("\n")
 
-    gallery_name = os.path.basename(folder_path)
+    gallery_name = os.path.basename(gallery_folder)
     if "[" in gallery_name and "]" in gallery_name:
         gid = int(gallery_name.split("[")[-1].replace("]", ""))
     else:
         gid = int(gallery_name)
-    files_path = os.listdir(folder_path)
+    files_path = os.listdir(gallery_folder)
     modified_time = datetime.datetime.fromtimestamp(
         os.path.getmtime(gallery_info_path)
     ).strftime("%Y-%m-%d %H:%M:%S")
@@ -119,17 +122,18 @@ def parse_gallery_info(folder_path: str) -> GalleryInfoParser:
                 case "Downloaded":
                     download_time = value
 
-    uploader_comment = "\n".join(comment_lines).strip("\n")
+    galleries_comments = "\n".join(comment_lines).strip("\n")
 
     return GalleryInfoParser(
-        gallery_name,
-        gid,
-        files_path,
-        modified_time,
-        title,
-        upload_time,
-        uploader_comment,
-        upload_account,
-        download_time,
-        tags,
+        gallery_folder=gallery_folder,
+        gallery_name=gallery_name,
+        gid=gid,
+        files_path=files_path,
+        modified_time=modified_time,
+        title=title,
+        upload_time=upload_time,
+        galleries_comments=galleries_comments,
+        upload_account=upload_account,
+        download_time=download_time,
+        tags=tags,
     )

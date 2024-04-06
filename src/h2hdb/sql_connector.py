@@ -3,6 +3,7 @@ __all__ = [
     "MySQLConnector",
     "DatabaseConfigurationError",
     "DatabaseKeyError",
+    "DatabaseTableError",
 ]
 
 
@@ -13,11 +14,41 @@ from .logger import logger
 
 # from .config_loader import config_loader
 
-# match config_loader["database"]["sql_type"].lower():
-#     case "mysql":
-#         from mysql.connector import Error as SQLError
-#         from mysql.connector import connect as SQLConnect
-#         from mysql.connector.errors import IntegrityError as SQLDuplicateKeyError
+
+class DatabaseConfigurationError(Exception):
+    """
+    Custom exception class for database configuration errors.
+
+    This class inherits from the built-in Python Exception class. You can add additional methods or attributes if needed.
+    """
+
+    def __init__(self, message):
+        self.message = message
+        super().__init__(self.message)
+
+
+class DatabaseKeyError(Exception):
+    """
+    Custom exception class for database key errors.
+
+    This class inherits from the built-in Python Exception class. You can add additional methods or attributes if needed.
+    """
+
+    def __init__(self, message):
+        self.message = message
+        super().__init__(self.message)
+
+
+class DatabaseTableError(Exception):
+    """
+    Custom exception class for database table errors.
+
+    This class inherits from the built-in Python Exception class. You can add additional methods or attributes if needed.
+    """
+
+    def __init__(self, message):
+        self.message = message
+        super().__init__(self.message)
 
 
 class SQLConnectorParams(dict):
@@ -54,11 +85,13 @@ class SQLConnector(metaclass=ABCMeta):
 
     The constructor takes in the necessary parameters to establish a database connection, such as host, port, user, password, and database.
 
-    The 'connect', 'close', 'execute', 'execute_many', 'fetch_one', 'fetch_all', 'commit', and 'rollback' methods are abstract and must be implemented by concrete subclasses.
+    The 'connect', 'close', 'check_table_exists', 'execute', 'execute_many', 'fetch_one', 'fetch_all', 'commit', and 'rollback' methods are abstract and must be implemented by concrete subclasses.
 
     The 'connect' method is designed to establish a connection to the database. It doesn't take any parameters.
 
     The 'close' method is designed to close the connection to the database. It doesn't take any parameters.
+
+    The 'check_table_exists' method is designed to check if a table exists in the database. It takes the name of the table as a parameter and returns a boolean value.
 
     The 'execute' method is designed to execute a single SQL command. It takes a SQL query string and a tuple of data as parameters.
 
@@ -128,6 +161,19 @@ class SQLConnector(metaclass=ABCMeta):
         """
         self.connect()
         return self
+
+    @abstractmethod
+    def check_table_exists(self, table_name: str) -> bool:
+        """
+        Checks if a table exists in the database.
+
+        Args:
+            table_name (str): The name of the table to check for existence.
+
+        Returns:
+            bool: True if the table exists, False otherwise.
+        """
+        pass
 
     @abstractmethod
     def commit(self) -> None:
@@ -226,6 +272,18 @@ class SQLConnector(metaclass=ABCMeta):
         pass
 
 
+class MySQLTableError(DatabaseTableError):
+    """
+    Custom exception class for MySQL table errors.
+
+    This class inherits from the built-in Python Exception class. You can add additional methods or attributes if needed.
+    """
+
+    def __init__(self, message):
+        self.message = message
+        super().__init__(self.message)
+
+
 class MySQLConnector(SQLConnector):
     """
     MySQLConnector is a concrete subclass of SQLConnector that provides an implementation for connecting to a MySQL database.
@@ -276,6 +334,12 @@ class MySQLConnector(SQLConnector):
         self.connection.close()
         logger.debug("MySQL connection closed.")
 
+    def check_table_exists(self, table_name: str) -> bool:
+        query = f"SHOW TABLES LIKE '{table_name}'"
+        logger.debug(f"Executing MySQL query: {query}")
+        result = self.fetch_one(query)
+        return result is not None
+
     def commit(self) -> None:
         logger.debug("Committing MySQL transaction...")
         self.connection.commit()
@@ -305,27 +369,3 @@ class MySQLConnector(SQLConnector):
         self._cursor.execute(query, data)
         vlist = self._cursor.fetchall()
         return vlist
-
-
-class DatabaseConfigurationError(Exception):
-    """
-    Custom exception class for database configuration errors.
-
-    This class inherits from the built-in Python Exception class. You can add additional methods or attributes if needed.
-    """
-
-    def __init__(self, message):
-        self.message = message
-        super().__init__(self.message)
-
-
-class DatabaseKeyError(Exception):
-    """
-    Custom exception class for database key errors.
-
-    This class inherits from the built-in Python Exception class. You can add additional methods or attributes if needed.
-    """
-
-    def __init__(self, message):
-        self.message = message
-        super().__init__(self.message)

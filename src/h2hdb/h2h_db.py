@@ -7,7 +7,7 @@ import os
 from abc import ABCMeta, abstractmethod
 import math
 
-from .gallery_info_parser import parse_gallery_info
+from .gallery_info_parser import parse_gallery_info, GalleryInfoParser
 from .config_loader import config_loader
 from .logger import logger
 from .sql_connector import (
@@ -100,16 +100,14 @@ class H2HDBAbstract(metaclass=ABCMeta):
         )
 
         # Set the appropriate connector based on the SQL type
-        logger.debug("Setting connector...")
         match self.sql_type:
             case "mysql":
                 logger.debug("Setting MySQL connector...")
                 self.connector = MySQLConnector(**self.sql_connection_params)
-                logger.debug("Setting MySQL error class...")
                 self.SQLError = SQLError
             case _:
                 raise ValueError("Unsupported SQL type")
-        logger.debug("Connector set.")
+        logger.info("Connector set.")
 
     def __enter__(self) -> "H2HDBAbstract":
         """
@@ -118,9 +116,11 @@ class H2HDBAbstract(metaclass=ABCMeta):
         Returns:
             H2HDBAbstract: The initialized H2HDBAbstract object.
         """
+        logger.debug("Establishing SQL connection...")
         self.connector.connect()
         match self.sql_type:
             case "mysql":
+                logger.debug("Setting MySQL autocommit to False...")
                 self.connector.execute("START TRANSACTION")
         return self
 
@@ -134,9 +134,12 @@ class H2HDBAbstract(metaclass=ABCMeta):
             traceback (traceback): The traceback information of the exception, if any.
         """
         if exc_type is None:
+            logger.debug("Committing transaction...")
             self.connector.commit()
         else:
+            logger.debug("Rolling back transaction...")
             self.connector.rollback()
+        logger.debug("Closing SQL connection...")
         self.connector.close()
 
     @abstractmethod
@@ -318,13 +321,10 @@ class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
         Raises:
             DatabaseConfigurationError: If the database character set is invalid.
         """
-        logger.debug("Checking database character set...")
         match self.sql_type:
             case "mysql":
-                logger.debug("Checking database character set for MySQL...")
                 charset = "utf8mb4"
                 query = "SHOW VARIABLES LIKE 'character_set_database';"
-        logger.debug(f"Database character set: {charset}")
 
         charset_result = self.connector.fetch_one(query)[1]
         is_charset_valid = charset_result == charset
@@ -341,14 +341,12 @@ class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
         Raises:
             DatabaseConfigurationError: If the database collation is invalid.
         """
-        logger.debug("Checking database collation...")
         match self.sql_type:
             case "mysql":
-                logger.debug("Checking database collation for MySQL...")
                 query = "SHOW VARIABLES LIKE 'collation_database';"
                 collation = "utf8mb4_bin"
-        logger.debug(f"Database collation: {collation}")
 
+        logger.debug(f"Query: {query}")
         collation_result = self.connector.fetch_one(query)[1]
         is_collation_valid = collation_result == collation
         if not is_collation_valid:
@@ -386,7 +384,6 @@ def mysql_split_file_name_based_on_limit(name: str) -> tuple[list[str], str]:
 class ComaicDBDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
     def _create_galleries_names_table(self) -> None:
         table_name = "galleries_names"
-        logger.debug(f"Creating {table_name} table...")
         match self.sql_type:
             case "mysql":
                 column_name = "name"
@@ -408,8 +405,7 @@ class ComaicDBDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
-    def _insert_gallery_name_and_return_db_gallery_id(self, gallery_name: str) -> int:
-        logger.debug(f"Inserting gallery name '{gallery_name}'...")
+    def _insert_gallery_name(self, gallery_name: str) -> None:
         table_name = "galleries_names"
         if len(gallery_name) > FOLDER_NAME_LENGTH_LIMIT:
             logger.error(
@@ -417,15 +413,6 @@ class ComaicDBDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
             )
             raise ValueError("Gallery name is too long.")
         gallery_name_parts = split_gallery_name(gallery_name)
-        logger.debug(
-            f"Gallery name '{gallery_name}' split into parts  %s"
-            % " and ".join(
-                [
-                    "'" + gallery_name_part + "'"
-                    for gallery_name_part in gallery_name_parts
-                ]
-            )
-        )
 
         match self.sql_type:
             case "mysql":
@@ -436,48 +423,12 @@ class ComaicDBDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
                     VALUES ({", ".join(["%s" for _ in column_name_parts])}, %s)
                 """
         insert_query = mullines2oneline(insert_query)
-
-        try:
-            gallery_name_id = self._select_gallery_name_id(gallery_name)
-            logger.warning(
-                f"Gallery name '{gallery_name}' already exists. Returning ID..."
-            )
-        except DatabaseKeyError:
-            # If gallery name does not exist, insert it
-            logger.debug(f"Insert query: {insert_query}")
-            self.connector.execute(
-                insert_query, (*tuple(gallery_name_parts), gallery_name)
-            )
-            logger.debug(f"Gallery name '{gallery_name}' inserted.")
-            gallery_name_id = self._select_gallery_name_id(gallery_name)
-
-        return gallery_name_id
-
-    def _insert_galleries_names_and_return_db_gallery_id(
-        self, gallery_names: list[str]
-    ) -> dict[str, int]:
-        logger.debug(f"Inserting gallery names '{gallery_names}'...")
-        gallery_name_ids = dict()
-        for gallery_name in gallery_names:
-            gallery_name_id = self._insert_gallery_name_and_return_db_gallery_id(
-                gallery_name
-            )
-            gallery_name_ids[gallery_name] = gallery_name_id
-        return gallery_name_ids
+        logger.debug(f"Insert query: {insert_query}")
+        self.connector.execute(insert_query, (*tuple(gallery_name_parts), gallery_name))
 
     def _select_gallery_name_id(self, gallery_name: str) -> int:
-        logger.debug(f"Selecting gallery name ID for gallery name '{gallery_name}'...")
         table_name = "galleries_names"
         gallery_name_parts = split_gallery_name(gallery_name)
-        logger.debug(
-            f"Gallery name '{gallery_name}' split into parts  %s"
-            % " and ".join(
-                [
-                    "'" + gallery_name_part + "'"
-                    for gallery_name_part in gallery_name_parts
-                ]
-            )
-        )
 
         match self.sql_type:
             case "mysql":
@@ -492,13 +443,10 @@ class ComaicDBDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
         logger.debug(f"Select query: {select_query}")
         query_result = self.connector.fetch_one(select_query, tuple(gallery_name_parts))
         if query_result is None:
-            logger.debug(f"Gallery name '{gallery_name}' does not exist.")
+            logger.error(f"Gallery name '{gallery_name}' does not exist.")
             raise DatabaseKeyError(f"Gallery name '{gallery_name}' does not exist.")
         else:
             gallery_name_id = query_result[0]
-            logger.info(
-                f"Gallery name ID for gallery name '{gallery_name}' is {gallery_name_id}."
-            )
         return gallery_name_id
 
 
@@ -516,14 +464,13 @@ class ComaicDBGalleriesGIDs(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABC
 
     Methods:
         _create_galleries_gids_table: Creates the galleries_gids table.
-        _insert_galleries_gids: Inserts the GID for the gallery name ID into the galleries_gids table.
+        _insert_gallery_gid: Inserts the GID for the gallery name ID into the galleries_gids table.
         _select_gallery_gid: Selects the GID for the gallery name ID from the galleries_gids table.
         select_gallery_gid: Selects the GID for the gallery name from the database.
     """
 
     def _create_galleries_gids_table(self) -> None:
         table_name = "galleries_gids"
-        logger.debug(f"Creating {table_name} table...")
         match self.sql_type:
             case "mysql":
                 query = f"""
@@ -540,11 +487,8 @@ class ComaicDBGalleriesGIDs(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABC
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
-    def _insert_galleries_gids(self, gallery_name_id: int, gid: int) -> None:
+    def _insert_gallery_gid(self, gallery_name_id: int, gid: int) -> None:
         table_name = "galleries_gids"
-        logger.debug(
-            f"Inserting {table_name} {gid} for gallery name ID {gallery_name_id}..."
-        )
         match self.sql_type:
             case "mysql":
                 insert_query = f"""
@@ -554,19 +498,9 @@ class ComaicDBGalleriesGIDs(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABC
         data = (gallery_name_id, gid)
 
         logger.debug(f"Insert query: {insert_query}")
-        try:
-            self._select_gallery_gid(gallery_name_id)
-            logger.warning(
-                f"GID for gallery name ID {gallery_name_id} already exists. Updating..."
-            )
-        except DatabaseKeyError:
-            self.connector.execute(insert_query, data)
-            logger.debug(
-                f"{table_name} {gid} inserted for gallery name ID {gallery_name_id}."
-            )
+        self.connector.execute(insert_query, data)
 
     def _select_gallery_gid(self, gallery_name_id: int) -> int:
-        logger.debug(f"Selecting GID for gallery name ID {gallery_name_id}...")
         table_name = "galleries_gids"
         match self.sql_type:
             case "mysql":
@@ -586,7 +520,6 @@ class ComaicDBGalleriesGIDs(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABC
             raise DatabaseKeyError(msg)
         else:
             gid = query_result[0]
-            logger.info(f"GID for gallery name ID {gallery_name_id} is {gid}.")
         return gid
 
     def select_gallery_gid(self, gallery_name: str) -> int:
@@ -596,7 +529,6 @@ class ComaicDBGalleriesGIDs(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABC
 
 class ComaicDBTimes(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_times_table(self, table_name: str) -> None:
-        logger.debug(f"Creating {table_name} table...")
         match self.sql_type:
             case "mysql":
                 query = f"""
@@ -614,9 +546,6 @@ class ComaicDBTimes(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         logger.info(f"{table_name} table created.")
 
     def _insert_time(self, table_name: str, gallery_name_id: int, time: str) -> None:
-        logger.debug(
-            f"Inserting time '{time}' for gallery name ID {gallery_name_id} into table '{table_name}'..."
-        )
         match self.sql_type:
             case "mysql":
                 insert_query = f"""
@@ -625,20 +554,10 @@ class ComaicDBTimes(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         insert_query = mullines2oneline(insert_query)
         data = (gallery_name_id, time)
 
-        try:
-            self._select_time(table_name, gallery_name_id)
-        except DatabaseKeyError:
-            logger.debug(f"Insert query: {insert_query}")
-            self.connector.execute(insert_query, data)
-            logger.debug(
-                f"Time '{time}' inserted for gallery name ID {gallery_name_id}."
-            )
-        logger.info(f"Time '{time}' inserted for gallery name ID {gallery_name_id}.")
+        logger.debug(f"Insert query: {insert_query}")
+        self.connector.execute(insert_query, data)
 
     def _select_time(self, table_name: str, gallery_name_id: int) -> str:
-        logger.debug(
-            f"Selecting time for gallery name ID {gallery_name_id} from table '{table_name}'..."
-        )
         match self.sql_type:
             case "mysql":
                 select_query = f"""
@@ -657,15 +576,9 @@ class ComaicDBTimes(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             raise DatabaseKeyError(msg)
         else:
             time = query_result[0]
-            logger.info(
-                f"Time for gallery name ID {gallery_name_id} in table '{table_name}' is '{time}'."
-            )
         return time
 
     def _update_time(self, table_name: str, gallery_name_id: int, time: str) -> None:
-        logger.debug(
-            f"Updating time '{time}' for gallery name ID {gallery_name_id} in table '{table_name}'..."
-        )
         match self.sql_type:
             case "mysql":
                 update_query = f"""
@@ -676,9 +589,6 @@ class ComaicDBTimes(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
         logger.debug(f"Update query: {update_query}")
         self.connector.execute(update_query, data)
-        logger.info(
-            f"Time '{time}' updated for gallery name ID {gallery_name_id} in table '{table_name}'."
-        )
 
     def _create_galleries_download_times_table(self) -> None:
         self._create_times_table("galleries_download_times")
@@ -712,7 +622,6 @@ class ComaicDBTimes(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 class H2HDBGalleriesTitles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_galleries_titles_table(self) -> None:
         table_name = "galleries_titles"
-        logger.debug(f"Creating {table_name} table...")
         match self.sql_type:
             case "mysql":
                 query = f"""
@@ -730,9 +639,6 @@ class H2HDBGalleriesTitles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCM
         logger.info(f"{table_name} table created.")
 
     def _insert_gallery_title(self, gallery_name_id: int, title: str) -> None:
-        logger.debug(
-            f"Inserting title '{title}' for gallery name ID {gallery_name_id}..."
-        )
         table_name = "galleries_titles"
         match self.sql_type:
             case "mysql":
@@ -742,21 +648,10 @@ class H2HDBGalleriesTitles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCM
         insert_query = mullines2oneline(insert_query)
         data = (gallery_name_id, title)
 
-        try:
-            self._select_gallery_title(gallery_name_id)
-            logger.warning(
-                f"Title for gallery name ID {gallery_name_id} already exists. Updating..."
-            )
-        except DatabaseKeyError:
-            logger.debug(f"Insert query: {insert_query}")
-            self.connector.execute(insert_query, data)
-            logger.debug(
-                f"Title '{title}' inserted for gallery name ID {gallery_name_id}."
-            )
-        logger.info(f"Title '{title}' inserted for gallery name ID {gallery_name_id}.")
+        logger.debug(f"Insert query: {insert_query}")
+        self.connector.execute(insert_query, data)
 
     def _select_gallery_title(self, gallery_name_id: int) -> str:
-        logger.debug(f"Selecting title for gallery name ID {gallery_name_id}...")
         table_name = "galleries_titles"
         match self.sql_type:
             case "mysql":
@@ -776,7 +671,6 @@ class H2HDBGalleriesTitles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCM
             raise DatabaseKeyError(msg)
         else:
             title = query_result[0]
-            logger.info(f"Title for gallery name ID {gallery_name_id} is '{title}'.")
         return title
 
     def select_gallery_title(self, gallery_name: str) -> str:
@@ -787,7 +681,6 @@ class H2HDBGalleriesTitles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCM
 class H2HDBUploadAccounts(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_upload_account_table(self) -> None:
         table_name = "galleries_upload_accounts"
-        logger.debug(f"Creating {table_name} table...")
         match self.sql_type:
             case "mysql":
                 query = f"""
@@ -807,9 +700,6 @@ class H2HDBUploadAccounts(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMe
     def _insert_gallery_upload_account(
         self, gallery_name_id: int, account: str
     ) -> None:
-        logger.debug(
-            f"Inserting upload account '{account}' for gallery name ID {gallery_name_id}..."
-        )
         table_name = "galleries_upload_accounts"
         match self.sql_type:
             case "mysql":
@@ -819,25 +709,10 @@ class H2HDBUploadAccounts(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMe
         insert_query = mullines2oneline(insert_query)
         data = (gallery_name_id, account)
 
-        try:
-            self._select_gallery_upload_account(gallery_name_id)
-            logger.warning(
-                f"Upload account for gallery name ID {gallery_name_id} already exists. Updating..."
-            )
-        except DatabaseKeyError:
-            logger.debug(f"Insert query: {insert_query}")
-            self.connector.execute(insert_query, data)
-            logger.debug(
-                f"Upload account '{account}' inserted for gallery name ID {gallery_name_id}."
-            )
-        logger.info(
-            f"Upload account '{account}' inserted for gallery name ID {gallery_name_id}."
-        )
+        logger.debug(f"Insert query: {insert_query}")
+        self.connector.execute(insert_query, data)
 
     def _select_gallery_upload_account(self, gallery_name_id: int) -> str:
-        logger.debug(
-            f"Selecting upload account for gallery name ID {gallery_name_id}..."
-        )
         table_name = "galleries_upload_accounts"
         match self.sql_type:
             case "mysql":
@@ -859,9 +734,6 @@ class H2HDBUploadAccounts(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMe
             raise DatabaseKeyError(msg)
         else:
             account = query_result[0]
-            logger.info(
-                f"Upload account for gallery name ID {gallery_name_id} is '{account}'."
-            )
         return account
 
     def select_gallery_upload_account(self, gallery_name: str) -> str:
@@ -878,7 +750,6 @@ class H2HDBGalleriesInfos(
     H2HDBCheckDatabaseSettings,
 ):
     def _create_galleries_infos_view(self) -> None:
-        logger.debug("Creating galleries_infos view...")
         match self.sql_type:
             case "mysql":
                 query = """
@@ -910,7 +781,6 @@ class H2HDBGalleriesInfos(
 class H2HDBGalleriesComments(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_galleries_comments_table(self) -> None:
         table_name = "galleries_comments"
-        logger.debug(f"Creating {table_name} table...")
         match self.sql_type:
             case "mysql":
                 query = f"""
@@ -928,9 +798,6 @@ class H2HDBGalleriesComments(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=AB
         logger.info(f"{table_name} table created.")
 
     def _insert_gallery_comment(self, gallery_name_id: int, comment: str) -> None:
-        logger.debug(
-            f"Inserting uploader comment '{comment}' for gallery name ID {gallery_name_id}..."
-        )
         table_name = "galleries_comments"
         match self.sql_type:
             case "mysql":
@@ -940,25 +807,10 @@ class H2HDBGalleriesComments(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=AB
         insert_query = mullines2oneline(insert_query)
         data = (gallery_name_id, comment)
 
-        try:
-            self._select_gallery_comment(gallery_name_id)
-            logger.warning(
-                f"Uploader comment for gallery name ID {gallery_name_id} already exists. Updating..."
-            )
-        except DatabaseKeyError:
-            logger.debug(f"Insert query: {insert_query}")
-            self.connector.execute(insert_query, data)
-            logger.debug(
-                f"Uploader comment '{comment}' inserted for gallery name ID {gallery_name_id}."
-            )
-        logger.info(
-            f"Uploader comment '{comment}' inserted for gallery name ID {gallery_name_id}."
-        )
+        logger.debug(f"Insert query: {insert_query}")
+        self.connector.execute(insert_query, data)
 
     def _update_gallery_comment(self, gallery_name_id: int, comment: str) -> None:
-        logger.debug(
-            f"Updating uploader comment for gallery name ID {gallery_name_id}..."
-        )
         table_name = "galleries_comments"
         match self.sql_type:
             case "mysql":
@@ -970,12 +822,8 @@ class H2HDBGalleriesComments(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=AB
 
         logger.debug(f"Update query: {update_query}")
         self.connector.execute(update_query, data)
-        logger.info(f"Uploader comment updated for gallery name ID {gallery_name_id}.")
 
     def _select_gallery_comment(self, gallery_name_id: int) -> str:
-        logger.debug(
-            f"Selecting uploader comment for gallery name ID {gallery_name_id}..."
-        )
         table_name = "galleries_comments"
         match self.sql_type:
             case "mysql":
@@ -995,9 +843,6 @@ class H2HDBGalleriesComments(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=AB
             raise DatabaseKeyError(msg)
         else:
             comment = query_result[0]
-            logger.info(
-                f"Uploader comment for gallery name ID {gallery_name_id} is '{comment}'."
-            )
         return comment
 
     def select_gallery_comment(self, gallery_name: str) -> str:
@@ -1008,7 +853,6 @@ class H2HDBGalleriesComments(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=AB
 class H2HDBGalleriesTags(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_galleries_tags_table(self, tag_name: str) -> None:
         table_name = f"galleries_tags_{tag_name}"
-        logger.debug(f"Creating {table_name} table...")
         match self.sql_type:
             case "mysql":
                 query = f"""
@@ -1028,9 +872,6 @@ class H2HDBGalleriesTags(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMet
     def _insert_gallery_tag(
         self, gallery_name_id: int, tag_name: str, tag_value: str
     ) -> None:
-        logger.debug(
-            f"Inserting tag '{tag_name}' with value '{tag_value}' for gallery name ID {gallery_name_id}..."
-        )
         table_name = f"galleries_tags_{tag_name}"
         match self.sql_type:
             case "mysql":
@@ -1040,27 +881,14 @@ class H2HDBGalleriesTags(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMet
         insert_query = mullines2oneline(insert_query)
         data = (gallery_name_id, tag_value)
 
-        try:
-            self._select_gallery_tag(gallery_name_id, tag_name)
-            logger.warning(
-                f"Tag '{tag_name}' for gallery name ID {gallery_name_id} already exists. Updating..."
-            )
-        except (DatabaseKeyError, Exception) as e:
-            if re.search(r"Table '[\w.]+' doesn't exist", str(e)):
-                self._create_galleries_tags_table(tag_name)
-                logger.warning(
-                    f"Table '{table_name}' does not exist. Creating table..."
-                )
-            logger.debug(
-                f"Insert query: {insert_query} with data {data} for table '{table_name}'"
-            )
-            self.connector.execute(insert_query, data)
-            logger.debug(
-                f"Tag '{tag_name}' with value '{tag_value}' inserted for gallery name ID {gallery_name_id}."
-            )
-        logger.info(
-            f"Tag '{tag_name}' with value '{tag_value}' inserted for gallery name ID {gallery_name_id}."
+        if self.connector.check_table_exists(table_name) is False:
+            logger.warning(f"Table '{table_name}' does not exist. Creating table...")
+            self._create_galleries_tags_table(tag_name)
+
+        logger.debug(
+            f"Insert query: {insert_query} with data {data} for table '{table_name}'"
         )
+        self.connector.execute(insert_query, data)
 
     def insert_gallery_tag(
         self, gallery_name: str, tag_name: str, tag_value: str
@@ -1069,7 +897,6 @@ class H2HDBGalleriesTags(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMet
         self._insert_gallery_tag(gallery_name_id, tag_name, tag_value)
 
     def _select_gallery_tag(self, gallery_name_id: int, tag_name: str) -> str:
-        logger.debug(f"Selecting tag '{tag_name}'...")
         table_name = f"galleries_tags_{tag_name}"
         match self.sql_type:
             case "mysql":
@@ -1089,7 +916,6 @@ class H2HDBGalleriesTags(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMet
             raise DatabaseKeyError(msg)
         else:
             tag = query_result[0]
-            logger.info(f"Tag '{tag_name}' is '{tag}'.")
         return tag
 
     def select_gallery_tag(self, gallery_name: str, tag_name: str) -> str:
@@ -1100,7 +926,6 @@ class H2HDBGalleriesTags(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMet
 class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_files_names_table(self) -> None:
         table_name = f"files_names"
-        logger.debug(f"Creating {table_name} table...")
         match self.sql_type:
             case "mysql":
                 column_name = "name"
@@ -1124,12 +949,7 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
-    def _insert_gallery_file_and_return_id(
-        self, gallery_name_id: int, file_name: str
-    ) -> int:
-        logger.debug(
-            f"Inserting file '{file_name}' for gallery name ID {gallery_name_id}..."
-        )
+    def _insert_gallery_file(self, gallery_name_id: int, file_name: str) -> None:
         table_name = "files_names"
         if len(file_name) > FILE_NAME_LENGTH_LIMIT:
             logger.error(
@@ -1137,12 +957,6 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             )
             raise ValueError("File name is too long.")
         file_name_parts = split_gallery_name(file_name)
-        logger.debug(
-            f"File name '{file_name}' split into parts  %s"
-            % " and ".join(
-                ["'" + file_name_part + "'" for file_name_part in file_name_parts]
-            )
-        )
 
         match self.sql_type:
             case "mysql":
@@ -1155,24 +969,10 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         insert_query = mullines2oneline(insert_query)
         data = (gallery_name_id, *file_name_parts, file_name)
 
-        try:
-            gallery_image_id = self._select_gallery_file_id(gallery_name_id, file_name)
-            logger.warning(
-                f"File '{file_name}' for gallery name ID {gallery_name_id} already exists. Returning ID..."
-            )
-        except DatabaseKeyError:
-            # If gallery name does not exist, insert it
-            logger.debug(f"Insert query: {insert_query}")
-            self.connector.execute(insert_query, data)
-            logger.debug(f"File '{file_name}' inserted.")
-            gallery_image_id = self._select_gallery_file_id(gallery_name_id, file_name)
-
-        return gallery_image_id
+        logger.debug(f"Insert query: {insert_query}")
+        self.connector.execute(insert_query, data)
 
     def _select_gallery_file_id(self, gallery_name_id: int, file_name: str) -> int:
-        logger.debug(
-            f"Selecting image ID for gallery name ID {gallery_name_id} and file '{file_name}'..."
-        )
         table_name = "files_names"
         file_name_parts = split_gallery_name(file_name)
         match self.sql_type:
@@ -1195,14 +995,10 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             raise DatabaseKeyError(msg)
         else:
             gallery_image_id = query_result[0]
-            logger.info(
-                f"Image ID for gallery name ID {gallery_name_id} and file '{file_name}' is {gallery_image_id}."
-            )
         return gallery_image_id
 
     def select_gallery_file(self, gallery_name: str) -> list[str]:
         gallery_name_id = self._select_gallery_name_id(gallery_name)
-        logger.debug(f"Selecting files for gallery name ID {gallery_name_id}...")
         table_name = "files_names"
         match self.sql_type:
             case "mysql":
@@ -1228,7 +1024,6 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self, algorithm: str, output_len: int
     ) -> None:
         table_name = "files_hashs_%s" % algorithm.lower()
-        logger.debug(f"Creating {table_name} table...")
         match self.sql_type:
             case "mysql":
                 query = f"""
@@ -1295,7 +1090,6 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
     def _create_gallery_image_hash_view(self) -> None:
         table_name = "files_hashs"
-        logger.debug(f"Creating {table_name} view...")
         match self.sql_type:
             case "mysql":
                 query = f"""
@@ -1338,7 +1132,6 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _insert_gallery_file_hash(
         self, file_id: int, file_content: bytes, algorithm: str
     ) -> None:
-        logger.debug(f"Inserting image hash for image ID {file_id}...")
         table_name = f"files_hashs_{algorithm.lower()}"
         match self.sql_type:
             case "mysql":
@@ -1363,11 +1156,8 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         except DatabaseKeyError:
             logger.debug(f"Insert query: {insert_query}")
             self.connector.execute(insert_query, data)
-            logger.debug(f"Image hash inserted for image ID {file_id}.")
-        logger.info(f"Image hash inserted for image ID {file_id}.")
 
     def _select_gallery_file_hash(self, file_id: int, algorithm: str) -> str:
-        logger.debug(f"Selecting image hash for image ID {file_id}...")
         table_name = f"files_hashs_{algorithm.lower()}"
         match self.sql_type:
             case "mysql":
@@ -1387,7 +1177,6 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             raise DatabaseKeyError(msg)
         else:
             hash_value = query_result[0]
-            logger.info(f"Image hash for image ID {file_id} is '{hash_value}'.")
         return hash_value
 
     def _insert_gallery_file_sha224(self, file_id: int, file_content: bytes) -> None:
@@ -1426,7 +1215,6 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _update_gallery_file_hash(
         self, file_id: int, hash_value: str, algorithm: str
     ) -> None:
-        logger.debug(f"Updating image hash for image ID {file_id}...")
         table_name = f"files_hashs_{algorithm.lower()}"
         match self.sql_type:
             case "mysql":
@@ -1438,13 +1226,11 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
         logger.debug(f"Update query: {update_query}")
         self.connector.execute(update_query, data)
-        logger.info(f"Image hash updated for image ID {file_id}.")
 
 
 class H2HDBRemovedGalleries(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_removed_galleries_gids_table(self) -> None:
         table_name = "removed_galleries_gids"
-        logger.debug(f"Creating {table_name} table...")
         match self.sql_type:
             case "mysql":
                 query = f"""
@@ -1459,7 +1245,6 @@ class H2HDBRemovedGalleries(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABC
         logger.info(f"{table_name} table created.")
 
     def insert_removed_gallery_gid(self, gid: int) -> None:
-        logger.debug(f"Inserting removed gallery GID {gid}...")
         table_name = "removed_galleries_gids"
         match self.sql_type:
             case "mysql":
@@ -1475,11 +1260,8 @@ class H2HDBRemovedGalleries(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABC
         except DatabaseKeyError:
             logger.debug(f"Insert query: {insert_query}")
             self.connector.execute(insert_query, data)
-            logger.debug(f"Removed gallery GID {gid} inserted.")
-        logger.info(f"Removed gallery GID {gid} inserted.")
 
     def select_removed_gallery_gid(self, gid: int) -> int:
-        logger.debug(f"Selecting removed gallery GID {gid}...")
         table_name = "removed_galleries_gids"
         match self.sql_type:
             case "mysql":
@@ -1499,7 +1281,7 @@ class H2HDBRemovedGalleries(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABC
             raise DatabaseKeyError(msg)
         else:
             gid = query_result[0]
-            logger.info(f"Removed gallery GID {gid} exists.")
+            logger.warning(f"Removed gallery GID {gid} exists.")
         return gid
 
 
@@ -1511,7 +1293,6 @@ class H2HDB(
     H2HDBRemovedGalleries,
 ):
     def delete_gallery_image(self, gallery_name: str) -> None:
-        logger.debug(f"Deleting gallery '{gallery_name}'...")
         match self.sql_type:
             case "mysql":
                 select_table_name_query = f"""
@@ -1550,10 +1331,9 @@ class H2HDB(
         for table_name in table_names:
             data = (table_name, *gallery_name_parts)
             self.connector.execute(delete_image_id_query % data)
-        logger.info(f"Gallery '{gallery_name}' deleted.")
+        logger.info(f"Gallery images for '{gallery_name}' deleted.")
 
     def delete_gallery(self, gallery_name: str) -> None:
-        logger.debug(f"Deleting gallery '{gallery_name}'...")
         match self.sql_type:
             case "mysql":
                 select_table_name_query = f"""
@@ -1592,6 +1372,7 @@ class H2HDB(
         logger.info(f"Gallery '{gallery_name}' deleted.")
 
     def create_main_tables(self) -> None:
+        logger.debug("Creating main tables...")
         self._create_galleries_names_table()
         self._create_galleries_gids_table()
         self._create_galleries_download_times_table()
@@ -1606,48 +1387,67 @@ class H2HDB(
         self._create_galleries_files_hashs_tables()
         self._create_gallery_image_hash_view()
         self._create_removed_galleries_gids_table()
+        logger.info("Main tables created.")
+
+    def _insert_gallery_info(self, gallery_info_params: GalleryInfoParser) -> None:
+        self._insert_gallery_name(gallery_info_params.gallery_name)
+        gallery_name_id = self._select_gallery_name_id(gallery_info_params.gallery_name)
+        self._insert_gallery_gid(gallery_name_id, gallery_info_params.gid)
+        self._insert_gallery_title(gallery_name_id, gallery_info_params.title)
+        self._insert_upload_time(gallery_name_id, gallery_info_params.upload_time)
+        self._insert_gallery_comment(
+            gallery_name_id, gallery_info_params.galleries_comments
+        )
+        self._insert_gallery_upload_account(
+            gallery_name_id, gallery_info_params.upload_account
+        )
+        self._insert_download_time(gallery_name_id, gallery_info_params.download_time)
+        self._insert_access_time(gallery_name_id, gallery_info_params.download_time)
+        self._insert_modified_time(gallery_name_id, gallery_info_params.modified_time)
+        for file_path in gallery_info_params.files_path:
+            self._insert_gallery_file(gallery_name_id, file_path)
+            file_id = self._select_gallery_file_id(gallery_name_id, file_path)
+            absolute_file_path = os.path.join(
+                gallery_info_params.gallery_folder, file_path
+            )
+            with open(absolute_file_path, "rb") as f:
+                file_content = f.read()
+            image_hash_insert_params = (file_id, file_content)
+            self._insert_gallery_file_sha224(*image_hash_insert_params)
+            self._insert_gallery_file_sha256(*image_hash_insert_params)
+            self._insert_gallery_file_sha384(*image_hash_insert_params)
+            self._insert_gallery_file_sha1(*image_hash_insert_params)
+            self._insert_gallery_file_sha512(*image_hash_insert_params)
+            self._insert_gallery_file_sha3_224(*image_hash_insert_params)
+            self._insert_gallery_file_sha3_256(*image_hash_insert_params)
+            self._insert_gallery_file_sha3_384(*image_hash_insert_params)
+            self._insert_gallery_file_sha3_512(*image_hash_insert_params)
+            self._insert_gallery_file_blake2b(*image_hash_insert_params)
+            self._insert_gallery_file_blake2s(*image_hash_insert_params)
+
+        # When the corresponding Tag_{tag_name} table does not exist, a table creation operation will be performed.
+        # This will commit and create a new TRANSACTION.
+        for tag_name, tag_value in gallery_info_params.tags.items():
+            self._insert_gallery_tag(gallery_name_id, tag_name, tag_value)
 
     def insert_gallery_info(self, gallery_folder: str) -> None:
-        gallery_info = parse_gallery_info(gallery_folder)
+        gallery_info_params = parse_gallery_info(gallery_folder)
         try:
-            id = self._insert_gallery_name_and_return_db_gallery_id(
-                gallery_info.gallery_name
+            gallery_name_id = self._select_gallery_name_id(
+                gallery_info_params.gallery_name
             )
-            self._insert_galleries_gids(id, gallery_info.gid)
-            self._insert_gallery_title(id, gallery_info.title)
-            self._insert_upload_time(id, gallery_info.upload_time)
-            self._insert_gallery_comment(id, gallery_info.galleries_comments)
-            self._insert_gallery_upload_account(id, gallery_info.upload_account)
-            self._insert_download_time(id, gallery_info.download_time)
-            self._insert_access_time(id, gallery_info.download_time)
-            self._insert_modified_time(id, gallery_info.modified_time)
-            for file_path in gallery_info.files_path:
-                file_id = self._insert_gallery_file_and_return_id(id, file_path)
-                absolute_file_path = os.path.join(gallery_folder, file_path)
-                with open(absolute_file_path, "rb") as f:
-                    file_content = f.read()
-                image_hash_insert_params = (file_id, file_content)
-                self._insert_gallery_file_sha224(*image_hash_insert_params)
-                self._insert_gallery_file_sha256(*image_hash_insert_params)
-                self._insert_gallery_file_sha384(*image_hash_insert_params)
-                self._insert_gallery_file_sha1(*image_hash_insert_params)
-                self._insert_gallery_file_sha512(*image_hash_insert_params)
-                self._insert_gallery_file_sha3_224(*image_hash_insert_params)
-                self._insert_gallery_file_sha3_256(*image_hash_insert_params)
-                self._insert_gallery_file_sha3_384(*image_hash_insert_params)
-                self._insert_gallery_file_sha3_512(*image_hash_insert_params)
-                self._insert_gallery_file_blake2b(*image_hash_insert_params)
-                self._insert_gallery_file_blake2s(*image_hash_insert_params)
-
-            # When the corresponding Tag_{tag_name} table does not exist, a table creation operation will be performed.
-            # This will commit and create a new TRANSACTION.
-            for tag_name, tag_value in gallery_info.tags.items():
-                self._insert_gallery_tag(id, tag_name, tag_value)
-        except Exception as e:
-            self.delete_gallery_image(gallery_info.gallery_name)
-            self.delete_gallery(gallery_info.gallery_name)
-            self.connector.commit()
-            raise e
+            print(gallery_name_id)
+            logger.warning(
+                f"Gallery '{gallery_info_params.gallery_name}' already exists."
+            )
+            logger.warning("Deleting gallery info...")
+            self.delete_gallery_image(gallery_info_params.gallery_name)
+            self.delete_gallery(gallery_info_params.gallery_name)
+            logger.warning("Re-inserting gallery info...")
+        except DatabaseKeyError:
+            pass
+        self._insert_gallery_info(gallery_info_params)
+        logger.info(f"Gallery '{gallery_info_params.gallery_name}' inserted.")
 
 
 def mullines2oneline(s: str) -> str:
