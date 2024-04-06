@@ -16,15 +16,13 @@ from .sql_connector import (
     DatabaseConfigurationError,
     DatabaseKeyError,
 )
+from .settings import FOLDER_NAME_LENGTH_LIMIT, FILE_NAME_LENGTH_LIMIT
 
 match config_loader.database.sql_type.lower():
     case "mysql":
         from mysql.connector import Error as SQLError
 
         INNODB_INDEX_PREFIX_LIMIT = 191
-
-FOLDER_NAME_LENGTH_LIMIT = 255
-FILE_NAME_LENGTH_LIMIT = 255
 
 
 def split_gallery_name(gallery_name: str) -> list[str]:
@@ -711,9 +709,7 @@ class ComaicDBTimes(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self._update_time("galleries_access_times", gallery_name_id, time)
 
 
-class H2HDBGalleriesTitles(
-    ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
-):
+class H2HDBGalleriesTitles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_galleries_titles_table(self) -> None:
         table_name = "galleries_titles"
         logger.debug(f"Creating {table_name} table...")
@@ -911,9 +907,7 @@ class H2HDBGalleriesInfos(
         logger.info("galleries_infos view created.")
 
 
-class H2HDBGalleriesComments(
-    ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
-):
+class H2HDBGalleriesComments(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_galleries_comments_table(self) -> None:
         table_name = "galleries_comments"
         logger.debug(f"Creating {table_name} table...")
@@ -1447,9 +1441,7 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         logger.info(f"Image hash updated for image ID {file_id}.")
 
 
-class H2HDBRemovedGalleries(
-    ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
-):
+class H2HDBRemovedGalleries(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_removed_galleries_gids_table(self) -> None:
         table_name = "removed_galleries_gids"
         logger.debug(f"Creating {table_name} table...")

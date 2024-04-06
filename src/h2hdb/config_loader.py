@@ -3,7 +3,6 @@ __all__ = ["config_loader"]
 
 import argparse
 import json
-from typing import TypeVar, Union, Generic
 
 
 class DatabaseConfig:
