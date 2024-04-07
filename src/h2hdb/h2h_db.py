@@ -35,8 +35,8 @@ HASH_ALGORITHMS = [
 ]
 
 
-def hash_function(x: bytes, algorithm: str) -> str:
-    return getattr(hashlib, algorithm.lower())(x).hexdigest()
+def hash_function(x: bytes, algorithm: str) -> bytes:
+    return getattr(hashlib, algorithm.lower())(x).digest()
 
 
 def sql_type_to_name(sql_type: str) -> str:
@@ -1008,7 +1008,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         return files
 
     def _create_galleries_files_hashs_table(
-        self, algorithm: str, output_len: int
+        self, algorithm: str, output_bits: int
     ) -> None:
         table_name = "files_hashs_%s" % algorithm.lower()
         match self.config.database.sql_type.lower():
@@ -1018,7 +1018,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         PRIMARY KEY (db_file_id),
                         FOREIGN KEY (db_file_id) REFERENCES files_names(db_file_id),
                         db_file_id INT UNSIGNED       NOT NULL,
-                        hash_value CHAR({output_len}) NOT NULL,
+                        hash_value BINARY({output_bits/8}) NOT NULL,
                         INDEX (hash_value)
                     )
                 """
@@ -1026,37 +1026,37 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         logger.info(f"{table_name} table created.")
 
     def _create_galleries_files_sha224_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha224", output_len=56)
+        self._create_galleries_files_hashs_table("sha224", output_bits=224)
 
     def _create_galleries_files_sha256_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha256", output_len=64)
+        self._create_galleries_files_hashs_table("sha256", output_bits=256)
 
     def _create_galleries_files_sha384_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha384", output_len=96)
+        self._create_galleries_files_hashs_table("sha384", output_bits=384)
 
     def _create_galleries_files_sha1_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha1", output_len=40)
+        self._create_galleries_files_hashs_table("sha1", output_bits=160)
 
     def _create_galleries_files_sha512_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha512", output_len=128)
+        self._create_galleries_files_hashs_table("sha512", output_bits=512)
 
     def _create_galleries_files_sha3_224_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha3_224", output_len=56)
+        self._create_galleries_files_hashs_table("sha3_224", output_bits=224)
 
     def _create_galleries_files_sha3_256_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha3_256", output_len=64)
+        self._create_galleries_files_hashs_table("sha3_256", output_bits=256)
 
     def _create_galleries_files_sha3_384_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha3_384", output_len=96)
+        self._create_galleries_files_hashs_table("sha3_384", output_bits=384)
 
     def _create_galleries_files_sha3_512_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha3_512", output_len=128)
+        self._create_galleries_files_hashs_table("sha3_512", output_bits=512)
 
     def _create_galleries_files_blake2b_table(self) -> None:
-        self._create_galleries_files_hashs_table("blake2b", output_len=128)
+        self._create_galleries_files_hashs_table("blake2b", output_bits=512)
 
     def _create_galleries_files_blake2s_table(self) -> None:
-        self._create_galleries_files_hashs_table("blake2s", output_len=64)
+        self._create_galleries_files_hashs_table("blake2s", output_bits=256)
 
     def _create_galleries_files_hashs_tables(self) -> None:
         logger.debug("Creating gallery image hash tables...")
@@ -1131,13 +1131,13 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             )
             if original_hash_value != hash_value:
                 logger.warning(
-                    f"Original hash value '{original_hash_value}' is different from new hash value '{hash_value}'."
+                    f"Original hash value '{original_hash_value.decode('utf-8')}' is different from new hash value '{hash_value.decode('utf-8')}'."
                 )
                 self._update_gallery_file_hash(file_id, data[1], algorithm)
         except DatabaseKeyError:
             self.connector.execute(insert_query, data)
 
-    def _select_gallery_file_hash(self, file_id: int, algorithm: str) -> str:
+    def _select_gallery_file_hash(self, file_id: int, algorithm: str) -> bytes:
         table_name = f"files_hashs_{algorithm.lower()}"
         match self.config.database.sql_type.lower():
             case "mysql":
@@ -1190,7 +1190,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self._insert_gallery_file_hash(file_id, file_content, "blake2s")
 
     def _update_gallery_file_hash(
-        self, file_id: int, hash_value: str, algorithm: str
+        self, file_id: int, hash_value: bytes, algorithm: str
     ) -> None:
         table_name = f"files_hashs_{algorithm.lower()}"
         match self.config.database.sql_type.lower():
