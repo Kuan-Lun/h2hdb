@@ -1002,7 +1002,6 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             raise DatabaseKeyError(msg)
         else:
             files = [query[0] for query in query_result]
-            logger.info(f"Files for gallery name ID {gallery_name_id} are {files}.")
         return files
 
     def _create_galleries_files_hashs_table(
