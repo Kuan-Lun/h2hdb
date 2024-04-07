@@ -8,7 +8,7 @@ from abc import ABCMeta, abstractmethod
 import math
 
 from .gallery_info_parser import parse_gallery_info, GalleryInfoParser
-from .config_loader import config_loader
+from .config_loader import Config
 from .logger import logger
 from .sql_connector import (
     MySQLConnector,
@@ -18,9 +18,6 @@ from .sql_connector import (
 )
 from .settings import FOLDER_NAME_LENGTH_LIMIT, FILE_NAME_LENGTH_LIMIT
 
-match config_loader.database.sql_type.lower():
-    case "mysql":
-        INNODB_INDEX_PREFIX_LIMIT = 191
 
 GALLERY_INFO_FILE_NAME = "galleryinfo.txt"
 HASH_ALGORITHMS = [
@@ -40,15 +37,6 @@ HASH_ALGORITHMS = [
 
 def hash_function(x: bytes, algorithm: str) -> str:
     return getattr(hashlib, algorithm.lower())(x).hexdigest()
-
-
-def split_gallery_name(gallery_name: str) -> list[str]:
-    size = FOLDER_NAME_LENGTH_LIMIT // INNODB_INDEX_PREFIX_LIMIT + (
-        FOLDER_NAME_LENGTH_LIMIT % INNODB_INDEX_PREFIX_LIMIT > 0
-    )
-    gallery_name_parts = re.findall(f".{{1,{INNODB_INDEX_PREFIX_LIMIT}}}", gallery_name)
-    gallery_name_parts += [""] * (size - len(gallery_name_parts))
-    return gallery_name_parts
 
 
 def sql_type_to_name(sql_type: str) -> str:
@@ -93,31 +81,33 @@ class H2HDBAbstract(metaclass=ABCMeta):
     """
 
     __slots__ = [
-        "sql_type",
         "sql_connection_params",
         "connector",
+        "innodb_index_prefix_limit",
+        "config",
     ]
 
-    def __init__(self) -> None:
+    def __init__(self, config: Config) -> None:
         """
         Initializes the H2HDBAbstract object.
 
         Raises:
             ValueError: If the SQL type is unsupported.
         """
-        self.sql_type = config_loader.database.sql_type.lower()
+        self.config = config
         self.sql_connection_params = SQLConnectorParams(
-            config_loader.database.host,
-            config_loader.database.port,
-            config_loader.database.user,
-            config_loader.database.password,
-            config_loader.database.database,
+            self.config.database.host,
+            self.config.database.port,
+            self.config.database.user,
+            self.config.database.password,
+            self.config.database.database,
         )
 
         # Set the appropriate connector based on the SQL type
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 self.connector = MySQLConnector(**self.sql_connection_params)
+                self.innodb_index_prefix_limit = 191
             case _:
                 raise ValueError("Unsupported SQL type")
         logger.info("Connector set.")
@@ -130,7 +120,7 @@ class H2HDBAbstract(metaclass=ABCMeta):
             H2HDBAbstract: The initialized H2HDBAbstract object.
         """
         self.connector.connect()
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 self.connector.execute("START TRANSACTION")
         return self
@@ -149,6 +139,40 @@ class H2HDBAbstract(metaclass=ABCMeta):
         else:
             self.connector.rollback()
         self.connector.close()
+
+    def _split_gallery_name(self, gallery_name: str) -> list[str]:
+        size = FOLDER_NAME_LENGTH_LIMIT // self.innodb_index_prefix_limit + (
+            FOLDER_NAME_LENGTH_LIMIT % self.innodb_index_prefix_limit > 0
+        )
+        gallery_name_parts = re.findall(
+            f".{{1,{self.innodb_index_prefix_limit}}}", gallery_name
+        )
+        gallery_name_parts += [""] * (size - len(gallery_name_parts))
+        return gallery_name_parts
+
+    def _mysql_split_name_based_on_limit(
+        self, name: str, name_length_limit: int
+    ) -> tuple[list[str], str]:
+        num_parts = math.ceil(name_length_limit / self.innodb_index_prefix_limit)
+        name_parts = [
+            f"{name}_part{i} CHAR({self.innodb_index_prefix_limit}) NOT NULL"
+            for i in range(1, name_length_limit // self.innodb_index_prefix_limit + 1)
+        ]
+        if name_length_limit % self.innodb_index_prefix_limit > 0:
+            name_parts.append(
+                f"{name}_part{num_parts} CHAR({name_length_limit % self.innodb_index_prefix_limit}) NOT NULL"
+            )
+        create_name_parts_sql = ", ".join(name_parts)
+        column_name_parts = [f"{name}_part{i}" for i in range(1, num_parts + 1)]
+        return column_name_parts, create_name_parts_sql
+
+    def mysql_split_gallery_name_based_on_limit(
+        self, name: str
+    ) -> tuple[list[str], str]:
+        return self._mysql_split_name_based_on_limit(name, FOLDER_NAME_LENGTH_LIMIT)
+
+    def mysql_split_file_name_based_on_limit(self, name: str) -> tuple[list[str], str]:
+        return self._mysql_split_name_based_on_limit(name, FILE_NAME_LENGTH_LIMIT)
 
     @abstractmethod
     def check_database_character_set(self) -> None:
@@ -383,7 +407,7 @@ class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
         Raises:
             DatabaseConfigurationError: If the database character set is invalid.
         """
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 charset = "utf8mb4"
                 query = "SHOW VARIABLES LIKE 'character_set_database';"
@@ -391,7 +415,7 @@ class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
         charset_result = self.connector.fetch_one(query)[1]
         is_charset_valid = charset_result == charset
         if not is_charset_valid:
-            message = f"Invalid database character set. Must be '{charset}' for {sql_type_to_name(self.sql_type)} but is '{charset_result}'"
+            message = f"Invalid database character set. Must be '{charset}' for {sql_type_to_name(self.config.database.sql_type.lower())} but is '{charset_result}'"
             logger.error(message)
             raise DatabaseConfigurationError(message)
         logger.info("Database character set is valid.")
@@ -403,7 +427,7 @@ class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
         Raises:
             DatabaseConfigurationError: If the database collation is invalid.
         """
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 query = "SHOW VARIABLES LIKE 'collation_database';"
                 collation = "utf8mb4_bin"
@@ -411,45 +435,20 @@ class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
         collation_result = self.connector.fetch_one(query)[1]
         is_collation_valid = collation_result == collation
         if not is_collation_valid:
-            message = f"Invalid database collation. Must be '{collation}' for {sql_type_to_name(self.sql_type)} but is '{collation_result}'"
+            message = f"Invalid database collation. Must be '{collation}' for {sql_type_to_name(self.config.database.sql_type.lower())} but is '{collation_result}'"
             logger.error(message)
             raise DatabaseConfigurationError(message)
         logger.info("Database character set and collation are valid.")
 
 
-def mysql_split_name_based_on_limit(
-    name: str, name_length_limit: int
-) -> tuple[list[str], str]:
-    num_parts = math.ceil(name_length_limit / INNODB_INDEX_PREFIX_LIMIT)
-    name_parts = [
-        f"{name}_part{i} CHAR({INNODB_INDEX_PREFIX_LIMIT}) NOT NULL"
-        for i in range(1, name_length_limit // INNODB_INDEX_PREFIX_LIMIT + 1)
-    ]
-    if name_length_limit % INNODB_INDEX_PREFIX_LIMIT > 0:
-        name_parts.append(
-            f"{name}_part{num_parts} CHAR({name_length_limit % INNODB_INDEX_PREFIX_LIMIT}) NOT NULL"
-        )
-    create_name_parts_sql = ", ".join(name_parts)
-    column_name_parts = [f"{name}_part{i}" for i in range(1, num_parts + 1)]
-    return column_name_parts, create_name_parts_sql
-
-
-def mysql_split_gallery_name_based_on_limit(name: str) -> tuple[list[str], str]:
-    return mysql_split_name_based_on_limit(name, FOLDER_NAME_LENGTH_LIMIT)
-
-
-def mysql_split_file_name_based_on_limit(name: str) -> tuple[list[str], str]:
-    return mysql_split_name_based_on_limit(name, FILE_NAME_LENGTH_LIMIT)
-
-
-class ComaicDBDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
+class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
     def _create_galleries_names_table(self) -> None:
         table_name = "galleries_names"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 column_name = "name"
                 column_name_parts, create_gallery_name_parts_sql = (
-                    mysql_split_gallery_name_based_on_limit(column_name)
+                    self.mysql_split_gallery_name_based_on_limit(column_name)
                 )
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
@@ -466,11 +465,13 @@ class ComaicDBDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
 
     def _insert_gallery_name(self, gallery_name: str) -> None:
         table_name = "galleries_names"
-        gallery_name_parts = split_gallery_name(gallery_name)
+        gallery_name_parts = self._split_gallery_name(gallery_name)
 
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
-                column_name_parts, _ = mysql_split_gallery_name_based_on_limit("name")
+                column_name_parts, _ = self.mysql_split_gallery_name_based_on_limit(
+                    "name"
+                )
                 insert_query = f"""
                     INSERT INTO {table_name}
                         ({", ".join(column_name_parts)}, full_name)
@@ -480,11 +481,13 @@ class ComaicDBDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
 
     def _select_gallery_name_id(self, gallery_name: str) -> int:
         table_name = "galleries_names"
-        gallery_name_parts = split_gallery_name(gallery_name)
+        gallery_name_parts = self._split_gallery_name(gallery_name)
 
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
-                column_name_parts, _ = mysql_split_gallery_name_based_on_limit("name")
+                column_name_parts, _ = self.mysql_split_gallery_name_based_on_limit(
+                    "name"
+                )
                 select_query = f"""
                     SELECT db_gallery_id
                       FROM {table_name}
@@ -500,7 +503,7 @@ class ComaicDBDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
         return gallery_name_id
 
 
-class ComaicDBGalleriesGIDs(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
+class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     """
     A class that handles the GIDs for galleries in the comic database.
 
@@ -520,7 +523,7 @@ class ComaicDBGalleriesGIDs(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABC
 
     def _create_galleries_gids_table(self) -> None:
         table_name = "galleries_gids"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
@@ -537,7 +540,7 @@ class ComaicDBGalleriesGIDs(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABC
 
     def _insert_gallery_gid(self, gallery_name_id: int, gid: int) -> None:
         table_name = "galleries_gids"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 insert_query = f"""
                     INSERT INTO {table_name} (db_gallery_id, gid) VALUES (%s, %s)
@@ -547,7 +550,7 @@ class ComaicDBGalleriesGIDs(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABC
 
     def _select_gallery_gid(self, gallery_name_id: int) -> int:
         table_name = "galleries_gids"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 select_query = f"""
                     SELECT gid
@@ -570,9 +573,9 @@ class ComaicDBGalleriesGIDs(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABC
         return self._select_gallery_gid(gallery_name_id)
 
 
-class ComaicDBTimes(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
+class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_times_table(self, table_name: str) -> None:
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
@@ -588,7 +591,7 @@ class ComaicDBTimes(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         logger.info(f"{table_name} table created.")
 
     def _insert_time(self, table_name: str, gallery_name_id: int, time: str) -> None:
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 insert_query = f"""
                     INSERT INTO {table_name} (db_gallery_id, time) VALUES (%s, %s)
@@ -597,7 +600,7 @@ class ComaicDBTimes(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self.connector.execute(insert_query, data)
 
     def _select_time(self, table_name: str, gallery_name_id: int) -> str:
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 select_query = f"""
                     SELECT time
@@ -615,7 +618,7 @@ class ComaicDBTimes(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         return time
 
     def _update_time(self, table_name: str, gallery_name_id: int, time: str) -> None:
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 update_query = f"""
                     UPDATE {table_name} SET time = %s WHERE db_gallery_id = %s
@@ -652,10 +655,10 @@ class ComaicDBTimes(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self._update_time("galleries_access_times", gallery_name_id, time)
 
 
-class H2HDBGalleriesTitles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
+class H2HDBGalleriesTitles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_galleries_titles_table(self) -> None:
         table_name = "galleries_titles"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
@@ -671,7 +674,7 @@ class H2HDBGalleriesTitles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCM
 
     def _insert_gallery_title(self, gallery_name_id: int, title: str) -> None:
         table_name = "galleries_titles"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 insert_query = f"""
                     INSERT INTO {table_name} (db_gallery_id, title) VALUES (%s, %s)
@@ -681,7 +684,7 @@ class H2HDBGalleriesTitles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCM
 
     def _select_gallery_title(self, gallery_name_id: int) -> str:
         table_name = "galleries_titles"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 select_query = f"""
                     SELECT title
@@ -703,17 +706,17 @@ class H2HDBGalleriesTitles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCM
         return self._select_gallery_title(gallery_name_id)
 
 
-class H2HDBUploadAccounts(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
+class H2HDBUploadAccounts(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_upload_account_table(self) -> None:
         table_name = "galleries_upload_accounts"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
                         PRIMARY KEY (db_gallery_id),
                         FOREIGN KEY (db_gallery_id) REFERENCES galleries_names(db_gallery_id),
                         db_gallery_id INT UNSIGNED                      NOT NULL,
-                        account       CHAR({INNODB_INDEX_PREFIX_LIMIT}) NOT NULL,
+                        account       CHAR({self.innodb_index_prefix_limit}) NOT NULL,
                         INDEX (account)
                     )
                 """
@@ -724,7 +727,7 @@ class H2HDBUploadAccounts(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMe
         self, gallery_name_id: int, account: str
     ) -> None:
         table_name = "galleries_upload_accounts"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 insert_query = f"""
                     INSERT INTO {table_name} (db_gallery_id, account) VALUES (%s, %s)
@@ -734,7 +737,7 @@ class H2HDBUploadAccounts(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMe
 
     def _select_gallery_upload_account(self, gallery_name_id: int) -> str:
         table_name = "galleries_upload_accounts"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 select_query = f"""
                     SELECT account
@@ -761,13 +764,13 @@ class H2HDBUploadAccounts(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMe
 class H2HDBGalleriesInfos(
     H2HDBGalleriesTitles,
     H2HDBUploadAccounts,
-    ComaicDBTimes,
-    ComaicDBGalleriesGIDs,
-    ComaicDBDBGalleriesIDs,
+    H2HDBTimes,
+    H2HDBGalleriesGIDs,
+    H2HDBGalleriesIDs,
     H2HDBCheckDatabaseSettings,
 ):
     def _create_galleries_infos_view(self) -> None:
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 query = """
                     CREATE VIEW IF NOT EXISTS galleries_infos AS
@@ -793,10 +796,10 @@ class H2HDBGalleriesInfos(
         logger.info("galleries_infos view created.")
 
 
-class H2HDBGalleriesComments(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
+class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_galleries_comments_table(self) -> None:
         table_name = "galleries_comments"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
@@ -812,7 +815,7 @@ class H2HDBGalleriesComments(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=AB
 
     def _insert_gallery_comment(self, gallery_name_id: int, comment: str) -> None:
         table_name = "galleries_comments"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 insert_query = f"""
                     INSERT INTO {table_name} (db_gallery_id, comment) VALUES (%s, %s)
@@ -822,7 +825,7 @@ class H2HDBGalleriesComments(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=AB
 
     def _update_gallery_comment(self, gallery_name_id: int, comment: str) -> None:
         table_name = "galleries_comments"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 update_query = f"""
                     UPDATE {table_name} SET Comment = %s WHERE db_gallery_id = %s
@@ -832,7 +835,7 @@ class H2HDBGalleriesComments(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=AB
 
     def _select_gallery_comment(self, gallery_name_id: int) -> str:
         table_name = "galleries_comments"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 select_query = f"""
                     SELECT Comment
@@ -854,17 +857,17 @@ class H2HDBGalleriesComments(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=AB
         return self._select_gallery_comment(gallery_name_id)
 
 
-class H2HDBGalleriesTags(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
+class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_galleries_tags_table(self, tag_name: str) -> None:
         table_name = f"galleries_tags_{tag_name}"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
                         PRIMARY KEY (db_gallery_id),
                         FOREIGN KEY (db_gallery_id) REFERENCES galleries_names(db_gallery_id),
                         db_gallery_id INT UNSIGNED                      NOT NULL,
-                        tag           CHAR({INNODB_INDEX_PREFIX_LIMIT}) NOT NULL,
+                        tag           CHAR({self.innodb_index_prefix_limit}) NOT NULL,
                         INDEX (tag)
                     )
                 """
@@ -875,7 +878,7 @@ class H2HDBGalleriesTags(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMet
         self, gallery_name_id: int, tag_name: str, tag_value: str
     ) -> None:
         table_name = f"galleries_tags_{tag_name}"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 insert_query = f"""
                     INSERT INTO {table_name} (db_gallery_id, tag) VALUES (%s, %s)
@@ -895,7 +898,7 @@ class H2HDBGalleriesTags(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMet
 
     def _select_gallery_tag(self, gallery_name_id: int, tag_name: str) -> str:
         table_name = f"galleries_tags_{tag_name}"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 select_query = f"""
                     SELECT tag
@@ -918,14 +921,14 @@ class H2HDBGalleriesTags(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMet
         return self._select_gallery_tag(gallery_name_id, tag_name)
 
 
-class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
+class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_files_names_table(self) -> None:
         table_name = f"files_names"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 column_name = "name"
                 column_name_parts, create_gallery_name_parts_sql = (
-                    mysql_split_file_name_based_on_limit(column_name)
+                    self.mysql_split_file_name_based_on_limit(column_name)
                 )
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
@@ -949,11 +952,11 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                 f"File name '{file_name}' is too long. Must be {FILE_NAME_LENGTH_LIMIT} characters or less."
             )
             raise ValueError("File name is too long.")
-        file_name_parts = split_gallery_name(file_name)
+        file_name_parts = self._split_gallery_name(file_name)
 
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
-                column_name_parts, _ = mysql_split_file_name_based_on_limit("name")
+                column_name_parts, _ = self.mysql_split_file_name_based_on_limit("name")
                 insert_query = f"""
                     INSERT INTO {table_name}
                         (db_gallery_id, {", ".join(column_name_parts)}, full_name)
@@ -964,10 +967,10 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
     def _select_gallery_file_id(self, gallery_name_id: int, file_name: str) -> int:
         table_name = "files_names"
-        file_name_parts = split_gallery_name(file_name)
-        match self.sql_type:
+        file_name_parts = self._split_gallery_name(file_name)
+        match self.config.database.sql_type.lower():
             case "mysql":
-                column_name_parts, _ = mysql_split_file_name_based_on_limit("name")
+                column_name_parts, _ = self.mysql_split_file_name_based_on_limit("name")
                 select_query = f"""
                     SELECT db_file_id
                       FROM {table_name}
@@ -987,7 +990,7 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def select_gallery_file(self, gallery_name: str) -> list[str]:
         gallery_name_id = self._select_gallery_name_id(gallery_name)
         table_name = "files_names"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 select_query = f"""
                     SELECT full_name
@@ -1008,7 +1011,7 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self, algorithm: str, output_len: int
     ) -> None:
         table_name = "files_hashs_%s" % algorithm.lower()
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
@@ -1072,7 +1075,7 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
     def _create_gallery_image_hash_view(self) -> None:
         table_name = "files_hashs"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 query = f"""
                     CREATE VIEW IF NOT EXISTS {table_name} AS
@@ -1113,7 +1116,7 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self, file_id: int, file_content: bytes, algorithm: str
     ) -> None:
         table_name = f"files_hashs_{algorithm.lower()}"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 insert_query = f"""
                     INSERT INTO {table_name} (db_file_id, hash_value) VALUES (%s, %s)
@@ -1136,7 +1139,7 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
     def _select_gallery_file_hash(self, file_id: int, algorithm: str) -> str:
         table_name = f"files_hashs_{algorithm.lower()}"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 select_query = f"""
                     SELECT hash_value
@@ -1190,7 +1193,7 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self, file_id: int, hash_value: str, algorithm: str
     ) -> None:
         table_name = f"files_hashs_{algorithm.lower()}"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 update_query = f"""
                     UPDATE {table_name} SET hash_value = %s WHERE db_file_id = %s
@@ -1199,10 +1202,10 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self.connector.execute(update_query, data)
 
 
-class H2HDBRemovedGalleries(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
+class H2HDBRemovedGalleries(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_removed_galleries_gids_table(self) -> None:
         table_name = "removed_galleries_gids"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
@@ -1215,7 +1218,7 @@ class H2HDBRemovedGalleries(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABC
 
     def insert_removed_gallery_gid(self, gid: int) -> None:
         table_name = "removed_galleries_gids"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 insert_query = f"""
                     INSERT INTO {table_name} (gid) VALUES (%s)
@@ -1230,7 +1233,7 @@ class H2HDBRemovedGalleries(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABC
 
     def select_removed_gallery_gid(self, gid: int) -> int:
         table_name = "removed_galleries_gids"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 select_query = f"""
                     SELECT gid
@@ -1259,11 +1262,11 @@ class H2HDB(
 ):
     def _create_pending_gallery_removals_table(self) -> None:
         table_name = "pending_gallery_removals"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 column_name = "name"
                 column_name_parts, create_gallery_name_parts_sql = (
-                    mysql_split_gallery_name_based_on_limit(column_name)
+                    self.mysql_split_gallery_name_based_on_limit(column_name)
                 )
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
@@ -1284,11 +1287,11 @@ class H2HDB(
                     f"Gallery name '{gallery_name}' is too long. Must be {FOLDER_NAME_LENGTH_LIMIT} characters or less."
                 )
                 raise ValueError("Gallery name is too long.")
-            gallery_name_parts = split_gallery_name(gallery_name)
+            gallery_name_parts = self._split_gallery_name(gallery_name)
 
-            match self.sql_type:
+            match self.config.database.sql_type.lower():
                 case "mysql":
-                    column_name_parts, _ = mysql_split_gallery_name_based_on_limit(
+                    column_name_parts, _ = self.mysql_split_gallery_name_based_on_limit(
                         "name"
                     )
                     insert_query = f"""
@@ -1301,10 +1304,12 @@ class H2HDB(
 
     def check_pending_gallery_removal(self, gallery_name: str) -> bool:
         table_name = "pending_gallery_removals"
-        gallery_name_parts = split_gallery_name(gallery_name)
-        match self.sql_type:
+        gallery_name_parts = self._split_gallery_name(gallery_name)
+        match self.config.database.sql_type.lower():
             case "mysql":
-                column_name_parts, _ = mysql_split_gallery_name_based_on_limit("name")
+                column_name_parts, _ = self.mysql_split_gallery_name_based_on_limit(
+                    "name"
+                )
                 select_query = f"""
                     SELECT full_name
                       FROM {table_name}
@@ -1317,7 +1322,7 @@ class H2HDB(
 
     def select_pending_gallery_removals(self) -> list[str]:
         table_name = "pending_gallery_removals"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 select_query = f"""
                     SELECT full_name
@@ -1330,14 +1335,16 @@ class H2HDB(
 
     def delete_pending_gallery_removal(self, gallery_name: str) -> None:
         table_name = "pending_gallery_removals"
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
-                column_name_parts, _ = mysql_split_gallery_name_based_on_limit("name")
+                column_name_parts, _ = self.mysql_split_gallery_name_based_on_limit(
+                    "name"
+                )
                 delete_query = f"""
                     DELETE FROM {table_name} WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
                 """
 
-        gallery_name_parts = split_gallery_name(gallery_name)
+        gallery_name_parts = self._split_gallery_name(gallery_name)
         self.connector.execute(delete_query, tuple(gallery_name_parts))
 
     def delete_pending_gallery_removals(self) -> None:
@@ -1355,16 +1362,18 @@ class H2HDB(
             logger.warning(f"Gallery '{gallery_name}' does not exist.")
             return
 
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 select_table_name_query = f"""
                     SELECT TABLE_NAME
                       FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
-                     WHERE REFERENCED_TABLE_SCHEMA = '{config_loader.database.database}'
+                     WHERE REFERENCED_TABLE_SCHEMA = '{self.config.database.database}'
                        AND REFERENCED_TABLE_NAME = 'files_names'
                        AND REFERENCED_COLUMN_NAME = 'db_file_id'
                 """
-                column_name_parts, _ = mysql_split_gallery_name_based_on_limit("name")
+                column_name_parts, _ = self.mysql_split_gallery_name_based_on_limit(
+                    "name"
+                )
                 get_delete_image_id_query = (
                     lambda x: f"""
                     DELETE FROM {x}
@@ -1385,7 +1394,7 @@ class H2HDB(
         table_names = [t[0] for t in table_names] + ["files_names"]
         logger.debug(f"Table names: {table_names}")
 
-        gallery_name_parts = split_gallery_name(gallery_name)
+        gallery_name_parts = self._split_gallery_name(gallery_name)
         for table_name in table_names:
             self.connector.execute(
                 get_delete_image_id_query(table_name), tuple(gallery_name_parts)
@@ -1399,16 +1408,18 @@ class H2HDB(
             logger.warning(f"Gallery '{gallery_name}' does not exist.")
             return
 
-        match self.sql_type:
+        match self.config.database.sql_type.lower():
             case "mysql":
                 select_table_name_query = f"""
                     SELECT TABLE_NAME
                       FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
-                     WHERE REFERENCED_TABLE_SCHEMA = '{config_loader.database.database}'
+                     WHERE REFERENCED_TABLE_SCHEMA = '{self.config.database.database}'
                        AND REFERENCED_TABLE_NAME = 'galleries_names'
                        AND REFERENCED_COLUMN_NAME = 'db_gallery_id'
                 """
-                column_name_parts, _ = mysql_split_gallery_name_based_on_limit("name")
+                column_name_parts, _ = self.mysql_split_gallery_name_based_on_limit(
+                    "name"
+                )
                 get_delete_gallery_id_query = (
                     lambda x: f"""
                     DELETE FROM {x}
@@ -1424,7 +1435,7 @@ class H2HDB(
         table_names = [t[0] for t in table_names]
         logger.debug(f"Table names: {table_names}")
 
-        gallery_name_parts = split_gallery_name(gallery_name)
+        gallery_name_parts = self._split_gallery_name(gallery_name)
         for table_name in table_names:
             self.connector.execute(
                 get_delete_gallery_id_query(table_name), tuple(gallery_name_parts)
@@ -1551,6 +1562,6 @@ class H2HDB(
 
     def insert_h2h_download(self) -> None:
         self.delete_pending_gallery_removals()
-        for root, _, files in os.walk(config_loader.h2h.download_path):
+        for root, _, files in os.walk(self.config.h2h.download_path):
             if GALLERY_INFO_FILE_NAME in files:
                 self.insert_gallery_info(root)

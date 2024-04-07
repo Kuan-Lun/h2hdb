@@ -1,4 +1,4 @@
-__all__ = ["config_loader"]
+__all__ = ["DatabaseConfig", "LoggerConfig", "H2HConfig", "Config", "load_config"]
 
 
 import argparse
@@ -6,7 +6,7 @@ import json
 
 
 DEFAULT_CONFIG = dict[str, dict](
-    h2h=dict[str, str](download_path="data"),
+    h2h=dict[str, str](download_path="download"),
     database=dict[str, str](
         sql_type="mysql",
         host="localhost",
@@ -17,7 +17,7 @@ DEFAULT_CONFIG = dict[str, dict](
     ),
     logger=dict[str, str | bool | int](
         level="INFO",
-        display_on_screen=True,
+        display_on_screen=False,
         max_log_entry_length=-1,
         write_to_file="",
     ),
@@ -110,7 +110,9 @@ class LoggerConfig:
             )
 
         if type(write_to_file) is not str:
-            raise ConfigError(f"Incorrect type for write_to_file: {type(write_to_file)}")
+            raise ConfigError(
+                f"Incorrect type for write_to_file: {type(write_to_file)}"
+            )
 
         if type(max_log_entry_length) is not int:
             raise ConfigError(
@@ -160,16 +162,20 @@ class Config:
         return self.__repr__()
 
 
-def load_config() -> Config:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config")
-    args = parser.parse_args()
-
-    if args.config is None:
-        user_config = DEFAULT_CONFIG
-    else:
-        with open(args.config, "r") as f:
+def load_config(config_path: str = "") -> Config:
+    if config_path != "":
+        with open(config_path, "r") as f:
             user_config = json.load(f)
+    else:
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--config")
+        args = parser.parse_args()
+
+        if args.config is None:
+            user_config = DEFAULT_CONFIG
+        else:
+            with open(args.config, "r") as f:
+                user_config = json.load(f)
 
     # Validate the h2h configuration
     download_path = user_config["h2h"]["download_path"]
@@ -229,6 +235,3 @@ def load_config() -> Config:
     )
 
     return Config(h2h_config, database_config, logger_config)
-
-
-config_loader = load_config()

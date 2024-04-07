@@ -7,9 +7,10 @@ import sys
 from functools import partial
 import unicodedata
 import re
-from typing import Callable
 
-from .config_loader import config_loader
+from .config_loader import load_config
+
+CONFIG_LOADER = load_config()
 
 
 def split_message_with_cjk(message: str, max_log_entry_length: int) -> list[str]:
@@ -275,15 +276,15 @@ def reset_logger(logger: HentaiDBLogger) -> None:
 
 
 """
-Set up the logger using the configuration loaded from `config_loader`.
-The logging level is set to `config_loader["logger"]["level"]`.
-If `config_loader["logger"]["display_on_screen"]` is True, the logger will also output to the console.
-If `config_loader["logger"]["write_to_file"]` is not None, the logger will write logs to the specified file.
-The maximum length of a log message is set to `config_loader["logger"]["max_log_entry_length"]`. If a message exceeds this length, it will be split into multiple chunks.
+Set up the logger using the configuration loaded from `CONFIG_LOADER`.
+The logging level is set to `CONFIG_LOADER["logger"]["level"]`.
+If `CONFIG_LOADER["logger"]["display_on_screen"]` is True, the logger will also output to the console.
+If `CONFIG_LOADER["logger"]["write_to_file"]` is not None, the logger will write logs to the specified file.
+The maximum length of a log message is set to `CONFIG_LOADER["logger"]["max_log_entry_length"]`. If a message exceeds this length, it will be split into multiple chunks.
 """
 logger = setup_logger(
-    config_loader.logger.level,
-    config_loader.logger.display_on_screen,
-    config_loader.logger.write_to_file,
-    config_loader.logger.max_log_entry_length,
+    CONFIG_LOADER.logger.level,
+    CONFIG_LOADER.logger.display_on_screen,
+    CONFIG_LOADER.logger.write_to_file,
+    CONFIG_LOADER.logger.max_log_entry_length,
 )
