@@ -496,7 +496,7 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
 
         query_result = self.connector.fetch_one(select_query, tuple(gallery_name_parts))
         if query_result is None:
-            logger.error(f"Gallery name '{gallery_name}' does not exist.")
+            logger.debug(f"Gallery name '{gallery_name}' does not exist.")
             raise DatabaseKeyError(f"Gallery name '{gallery_name}' does not exist.")
         else:
             gallery_name_id = query_result[0]
@@ -886,7 +886,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         data = (gallery_name_id, tag_value)
 
         if self.connector.check_table_exists(table_name) is False:
-            logger.warning(f"Table '{table_name}' does not exist. Creating table...")
+            logger.debug(f"Table '{table_name}' does not exist. Creating table...")
             self._create_galleries_tags_table(tag_name)
         self.connector.execute(insert_query, data)
 
@@ -1359,7 +1359,7 @@ class H2HDB(
         try:
             self._select_gallery_name_id(gallery_name)
         except DatabaseKeyError:
-            logger.warning(f"Gallery '{gallery_name}' does not exist.")
+            logger.debug(f"Gallery '{gallery_name}' does not exist.")
             return
 
         match self.config.database.sql_type.lower():
@@ -1405,7 +1405,7 @@ class H2HDB(
         try:
             self._select_gallery_name_id(gallery_name)
         except DatabaseKeyError:
-            logger.warning(f"Gallery '{gallery_name}' does not exist.")
+            logger.debug(f"Gallery '{gallery_name}' does not exist.")
             return
 
         match self.config.database.sql_type.lower():
@@ -1444,6 +1444,25 @@ class H2HDB(
             get_delete_gallery_id_query("galleries_names"), tuple(gallery_name_parts)
         )
         logger.info(f"Gallery '{gallery_name}' deleted.")
+
+    def optimize_database(self) -> None:
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                select_table_name_query = f"""
+                    SELECT TABLE_NAME
+                      FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+                     WHERE REFERENCED_TABLE_SCHEMA = '{self.config.database.database}'
+                """
+        table_names = self.connector.fetch_all(select_table_name_query)
+        table_names = [t[0] for t in table_names]
+
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                get_optimize_query = lambda x: "OPTIMIZE TABLE {x}".format(x=x)
+
+        for table_name in table_names:
+            self.connector.execute(get_optimize_query(table_name))
+        logger.info("Database optimized.")
 
     def create_main_tables(self) -> None:
         logger.debug("Creating main tables...")
@@ -1545,18 +1564,17 @@ class H2HDB(
             gallery_name_id = self._select_gallery_name_id(
                 gallery_info_params.gallery_name
             )
-            logger.warning(
+            logger.debug(
                 f"Gallery '{gallery_info_params.gallery_name}' already exists."
             )
             isthesame = check_gallery_info_file_hash()
+            if isthesame is False:
+                logger.warning("Gallery info file hash is different. Re-inserting...")
         except DatabaseKeyError:
             isthesame = False
         if isthesame is False:
-            logger.warning("Gallery info file hash is different. Re-inserting...")
-            logger.warning("Deleting gallery info...")
             self.delete_gallery_image(gallery_info_params.gallery_name)
             self.delete_gallery(gallery_info_params.gallery_name)
-            logger.warning("Re-inserting gallery info...")
             self._insert_gallery_info(gallery_info_params)
             logger.info(f"Gallery '{gallery_info_params.gallery_name}' inserted.")
 
