@@ -1464,8 +1464,9 @@ class H2HDB(
                        AND REFERENCED_COLUMN_NAME = 'db_file_id'
                 """
                 column_name_parts, _ = mysql_split_gallery_name_based_on_limit("name")
-                delete_image_id_query = f"""
-                    DELETE FROM %s
+                get_delete_image_id_query = (
+                    lambda x: f"""
+                    DELETE FROM {x}
                     WHERE
                         db_file_id IN (
                             SELECT db_file_id
@@ -1473,25 +1474,22 @@ class H2HDB(
                             WHERE db_gallery_id = (
                                 SELECT db_gallery_id
                                 FROM galleries_names
-                                WHERE {" AND ".join([f"{part} = '%s'" for part in column_name_parts])}
+                                WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
                             )
                         )
                 """
-        select_table_name_query, delete_image_id_query = (
-            mullines2oneline(query)
-            for query in (select_table_name_query, delete_image_id_query)
-        )
+                )
+        select_table_name_query = mullines2oneline(select_table_name_query)
 
         logger.debug(f"Select query: {select_table_name_query}")
         table_names = self.connector.fetch_all(select_table_name_query)
         table_names = [t[0] for t in table_names] + ["files_names"]
         logger.debug(f"Table names: {table_names}")
 
-        logger.debug(f"Delete query: {delete_image_id_query}")
+        logger.debug(f"Delete query: {mullines2oneline(get_delete_image_id_query(f"%s"))}")
         gallery_name_parts = split_gallery_name(gallery_name)
         for table_name in table_names:
-            data = (table_name, *gallery_name_parts)
-            self.connector.execute(delete_image_id_query % data)
+            self.connector.execute(get_delete_image_id_query(table_name), tuple(gallery_name_parts))
         logger.info(f"Gallery images for '{gallery_name}' deleted.")
 
     def delete_gallery(self, gallery_name: str) -> None:
@@ -1505,31 +1503,26 @@ class H2HDB(
                        AND REFERENCED_COLUMN_NAME = 'db_gallery_id'
                 """
                 column_name_parts, _ = mysql_split_gallery_name_based_on_limit("name")
-                delete_gallery_id_query = f"""
-                    DELETE FROM %s
+                get_delete_gallery_id_query = lambda x: f"""
+                    DELETE FROM {x}
                      WHERE db_gallery_id = (
                             SELECT db_gallery_id
                             FROM galleries_names
                             WHERE {" AND ".join([f"{part} = '%s'" for part in column_name_parts])}
                            )
                 """
-        select_table_name_query, delete_gallery_id_query = (
-            mullines2oneline(query)
-            for query in (select_table_name_query, delete_gallery_id_query)
-        )
+        select_table_name_query = mullines2oneline(select_table_name_query)
 
         logger.debug(f"Select query: {select_table_name_query}")
         table_names = self.connector.fetch_all(select_table_name_query)
         table_names = [t[0] for t in table_names]
         logger.debug(f"Table names: {table_names}")
 
-        logger.debug(f"Delete query: {delete_gallery_id_query}")
+        logger.debug(f"Delete query: {mullines2oneline(get_delete_gallery_id_query(f"%s"))}")
         gallery_name_parts = split_gallery_name(gallery_name)
         for table_name in table_names:
-            data = (table_name, *gallery_name_parts)
-            self.connector.execute(delete_gallery_id_query % data)
-        data = ("galleries_names", *gallery_name_parts)
-        self.connector.execute(delete_gallery_id_query % data)
+            self.connector.execute(get_delete_gallery_id_query(table_name), tuple(gallery_name_parts))
+        self.connector.execute(get_delete_gallery_id_query("galleries_names"), tuple(gallery_name_parts))
         logger.info(f"Gallery '{gallery_name}' deleted.")
 
     def create_main_tables(self) -> None:
@@ -1553,6 +1546,7 @@ class H2HDB(
 
     def _insert_gallery_info(self, gallery_info_params: GalleryInfoParser) -> None:
         self.insert_pending_gallery_removal(gallery_info_params.gallery_name)
+        self.connector.commit()
 
         self._insert_gallery_name(gallery_info_params.gallery_name)
         gallery_name_id = self._select_gallery_name_id(gallery_info_params.gallery_name)
