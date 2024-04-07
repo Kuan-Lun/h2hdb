@@ -1504,6 +1504,7 @@ class H2HDB(
                     )
                     if original_hash_value != current_hash_value:
                         issame &= False
+                        break
             except DatabaseKeyError:
                 issame = False
             return issame
