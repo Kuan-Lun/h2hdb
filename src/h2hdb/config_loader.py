@@ -75,7 +75,7 @@ class LoggerConfig:
         self,
         level: str,
         display_on_screen: bool,
-        write_to_file: bool,
+        write_to_file: str,
         max_log_entry_length: int,
     ) -> None:
         self.level = level
@@ -84,19 +84,19 @@ class LoggerConfig:
         self.max_log_entry_length = max_log_entry_length
 
         match level.lower():
-            case "notset", "debug", "info", "warning", "error", "critical":
+            case "notset" | "debug" | "info" | "warning" | "error" | "critical":
                 pass
             case _:
-                raise ValueError("Invalid log level")
+                raise ValueError(f"Invalid log level {level} (must be one of NOTSET, DEBUG, INFO, WARNING, ERROR, CRITICAL)")
 
         if type(display_on_screen) is not bool:
-            raise ValueError("display_on_screen must be a boolean")
+            raise ValueError(f"Incorrect type for display_on_screen: {display_on_screen}")
 
-        if type(write_to_file) is not bool:
-            raise ValueError("write_to_file must be a boolean")
+        if type(write_to_file) is not str:
+            raise ValueError(f"Incorrect type for write_to_file: {write_to_file}")
 
         if type(max_log_entry_length) is not int:
-            raise ValueError("max_log_entry_length must be an integer")
+            raise ValueError(f"Incorrect type for max_log_entry_length: {max_log_entry_length}")
 
     def __repr__(self) -> str:
         return f"LoggerConfig(level={self.level}, display_on_screen={self.display_on_screen}, write_to_file={self.write_to_file}, max_log_entry_length={self.max_log_entry_length})"
