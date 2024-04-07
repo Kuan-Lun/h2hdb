@@ -6,6 +6,8 @@ import unicodedata
 import sys
 from functools import partial
 import unicodedata
+import re
+from typing import Callable
 
 from .config_loader import config_loader
 
@@ -48,6 +50,7 @@ def log_message(
     logger: logging.Logger, level: int, max_log_entry_length: int, message: str
 ) -> None:
     frame = sys._getframe(2)
+    message = re.sub(" +", " ", message.replace("\n", " ")).strip()
     chunks = split_message_with_cjk(message, max_log_entry_length)
     for chunk in chunks:
         record = logger.makeRecord(

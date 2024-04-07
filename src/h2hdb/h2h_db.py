@@ -117,7 +117,6 @@ class H2HDBAbstract(metaclass=ABCMeta):
         # Set the appropriate connector based on the SQL type
         match self.sql_type:
             case "mysql":
-                logger.debug("Setting MySQL connector...")
                 self.connector = MySQLConnector(**self.sql_connection_params)
             case _:
                 raise ValueError("Unsupported SQL type")
@@ -130,11 +129,9 @@ class H2HDBAbstract(metaclass=ABCMeta):
         Returns:
             H2HDBAbstract: The initialized H2HDBAbstract object.
         """
-        logger.debug("Establishing SQL connection...")
         self.connector.connect()
         match self.sql_type:
             case "mysql":
-                logger.debug("Setting MySQL autocommit to False...")
                 self.connector.execute("START TRANSACTION")
         return self
 
@@ -148,12 +145,9 @@ class H2HDBAbstract(metaclass=ABCMeta):
             traceback (traceback): The traceback information of the exception, if any.
         """
         if exc_type is None:
-            logger.debug("Committing transaction...")
             self.connector.commit()
         else:
-            logger.debug("Rolling back transaction...")
             self.connector.rollback()
-        logger.debug("Closing SQL connection...")
         self.connector.close()
 
     @abstractmethod
@@ -414,7 +408,6 @@ class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
                 query = "SHOW VARIABLES LIKE 'collation_database';"
                 collation = "utf8mb4_bin"
 
-        logger.debug(f"Query: {query}")
         collation_result = self.connector.fetch_one(query)[1]
         is_collation_valid = collation_result == collation
         if not is_collation_valid:
@@ -468,8 +461,6 @@ class ComaicDBDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
                         FULLTEXT (full_name)
                     )
                 """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
@@ -485,8 +476,6 @@ class ComaicDBDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
                         ({", ".join(column_name_parts)}, full_name)
                     VALUES ({", ".join(["%s" for _ in column_name_parts])}, %s)
                 """
-        insert_query = mullines2oneline(insert_query)
-        logger.debug(f"Insert query: {insert_query}")
         self.connector.execute(insert_query, (*tuple(gallery_name_parts), gallery_name))
 
     def _select_gallery_name_id(self, gallery_name: str) -> int:
@@ -501,9 +490,7 @@ class ComaicDBDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
                       FROM {table_name}
                      WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
                 """
-        select_query = mullines2oneline(select_query)
 
-        logger.debug(f"Select query: {select_query}")
         query_result = self.connector.fetch_one(select_query, tuple(gallery_name_parts))
         if query_result is None:
             logger.error(f"Gallery name '{gallery_name}' does not exist.")
@@ -544,8 +531,7 @@ class ComaicDBGalleriesGIDs(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABC
                         INDEX (gid)
                     )
                 """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
+
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
@@ -556,10 +542,7 @@ class ComaicDBGalleriesGIDs(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABC
                 insert_query = f"""
                     INSERT INTO {table_name} (db_gallery_id, gid) VALUES (%s, %s)
                 """
-        insert_query = mullines2oneline(insert_query)
         data = (gallery_name_id, gid)
-
-        logger.debug(f"Insert query: {insert_query}")
         self.connector.execute(insert_query, data)
 
     def _select_gallery_gid(self, gallery_name_id: int) -> int:
@@ -571,10 +554,8 @@ class ComaicDBGalleriesGIDs(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABC
                       FROM {table_name}
                      WHERE db_gallery_id = %s
                 """
-        select_query = mullines2oneline(select_query)
+        
         data = (gallery_name_id,)
-
-        logger.debug(f"Select query: {select_query}")
         query_result = self.connector.fetch_one(select_query, data)
         if query_result is None:
             msg = f"GID for gallery name ID {gallery_name_id} does not exist."
@@ -602,8 +583,7 @@ class ComaicDBTimes(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         INDEX (time)
                     )
                 """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
+
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
@@ -613,10 +593,7 @@ class ComaicDBTimes(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                 insert_query = f"""
                     INSERT INTO {table_name} (db_gallery_id, time) VALUES (%s, %s)
                 """
-        insert_query = mullines2oneline(insert_query)
         data = (gallery_name_id, time)
-
-        logger.debug(f"Insert query: {insert_query}")
         self.connector.execute(insert_query, data)
 
     def _select_time(self, table_name: str, gallery_name_id: int) -> str:
@@ -627,10 +604,7 @@ class ComaicDBTimes(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                       FROM {table_name}
                      WHERE db_gallery_id = %s
                 """
-        select_query = mullines2oneline(select_query)
         data = (gallery_name_id,)
-
-        logger.debug(f"Select query: {select_query}")
         query_result = self.connector.fetch_one(select_query, data)
         if query_result is None:
             msg = f"Time for gallery name ID {gallery_name_id} does not exist in table '{table_name}'."
@@ -646,10 +620,7 @@ class ComaicDBTimes(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                 update_query = f"""
                     UPDATE {table_name} SET time = %s WHERE db_gallery_id = %s
                 """
-        update_query = mullines2oneline(update_query)
         data = (time, gallery_name_id)
-
-        logger.debug(f"Update query: {update_query}")
         self.connector.execute(update_query, data)
 
     def _create_galleries_download_times_table(self) -> None:
@@ -695,8 +666,6 @@ class H2HDBGalleriesTitles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCM
                         FULLTEXT (title)
                     )
                 """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
@@ -707,10 +676,7 @@ class H2HDBGalleriesTitles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCM
                 insert_query = f"""
                     INSERT INTO {table_name} (db_gallery_id, title) VALUES (%s, %s)
                 """
-        insert_query = mullines2oneline(insert_query)
         data = (gallery_name_id, title)
-
-        logger.debug(f"Insert query: {insert_query}")
         self.connector.execute(insert_query, data)
 
     def _select_gallery_title(self, gallery_name_id: int) -> str:
@@ -722,10 +688,7 @@ class H2HDBGalleriesTitles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCM
                       FROM {table_name}
                      WHERE db_gallery_id = %s
                 """
-        select_query = mullines2oneline(select_query)
         data = (gallery_name_id,)
-
-        logger.debug(f"Select query: {select_query}")
         query_result = self.connector.fetch_one(select_query, data)
         if query_result is None:
             msg = f"Title for gallery name ID {gallery_name_id} does not exist."
@@ -754,8 +717,6 @@ class H2HDBUploadAccounts(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMe
                         INDEX (account)
                     )
                 """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
@@ -768,10 +729,7 @@ class H2HDBUploadAccounts(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMe
                 insert_query = f"""
                     INSERT INTO {table_name} (db_gallery_id, account) VALUES (%s, %s)
                 """
-        insert_query = mullines2oneline(insert_query)
         data = (gallery_name_id, account)
-
-        logger.debug(f"Insert query: {insert_query}")
         self.connector.execute(insert_query, data)
 
     def _select_gallery_upload_account(self, gallery_name_id: int) -> str:
@@ -783,10 +741,7 @@ class H2HDBUploadAccounts(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMe
                       FROM {table_name}
                      WHERE db_gallery_id = %s
                 """
-        select_query = mullines2oneline(select_query)
         data = (gallery_name_id,)
-
-        logger.debug(f"Select query: {select_query}")
         query_result = self.connector.fetch_one(select_query, data)
         if query_result is None:
             msg = (
@@ -834,8 +789,6 @@ class H2HDBGalleriesInfos(
                            LEFT JOIN galleries_modified_times USING (db_gallery_id)
                            LEFT JOIN galleries_access_times USING (db_gallery_id)
                 """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
         self.connector.execute(query)
         logger.info("galleries_infos view created.")
 
@@ -854,8 +807,6 @@ class H2HDBGalleriesComments(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=AB
                         FULLTEXT (Comment)
                     )
                 """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
@@ -866,10 +817,7 @@ class H2HDBGalleriesComments(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=AB
                 insert_query = f"""
                     INSERT INTO {table_name} (db_gallery_id, comment) VALUES (%s, %s)
                 """
-        insert_query = mullines2oneline(insert_query)
         data = (gallery_name_id, comment)
-
-        logger.debug(f"Insert query: {insert_query}")
         self.connector.execute(insert_query, data)
 
     def _update_gallery_comment(self, gallery_name_id: int, comment: str) -> None:
@@ -879,10 +827,7 @@ class H2HDBGalleriesComments(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=AB
                 update_query = f"""
                     UPDATE {table_name} SET Comment = %s WHERE db_gallery_id = %s
                 """
-        update_query = mullines2oneline(update_query)
         data = (comment, gallery_name_id)
-
-        logger.debug(f"Update query: {update_query}")
         self.connector.execute(update_query, data)
 
     def _select_gallery_comment(self, gallery_name_id: int) -> str:
@@ -894,10 +839,7 @@ class H2HDBGalleriesComments(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=AB
                       FROM {table_name}
                      WHERE db_gallery_id = %s
                 """
-        select_query = mullines2oneline(select_query)
         data = (gallery_name_id,)
-
-        logger.debug(f"Select query: {select_query}")
         query_result = self.connector.fetch_one(select_query, data)
         if query_result is None:
             msg = f"Uploader comment for gallery name ID {gallery_name_id} does not exist."
@@ -926,8 +868,6 @@ class H2HDBGalleriesTags(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMet
                         INDEX (tag)
                     )
                 """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
@@ -940,16 +880,11 @@ class H2HDBGalleriesTags(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMet
                 insert_query = f"""
                     INSERT INTO {table_name} (db_gallery_id, tag) VALUES (%s, %s)
                 """
-        insert_query = mullines2oneline(insert_query)
         data = (gallery_name_id, tag_value)
 
         if self.connector.check_table_exists(table_name) is False:
             logger.warning(f"Table '{table_name}' does not exist. Creating table...")
             self._create_galleries_tags_table(tag_name)
-
-        logger.debug(
-            f"Insert query: {insert_query} with data {data} for table '{table_name}'"
-        )
         self.connector.execute(insert_query, data)
 
     def insert_gallery_tag(
@@ -967,10 +902,8 @@ class H2HDBGalleriesTags(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMet
                       FROM {table_name}
                      WHERE db_gallery_id = %s
                 """
-        select_query = mullines2oneline(select_query)
         data = (gallery_name_id,)
 
-        logger.debug(f"Select query: {select_query}")
         query_result = self.connector.fetch_one(select_query, data)
         if query_result is None:
             msg = f"Tag '{tag_name}' does not exist."
@@ -1006,8 +939,6 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         FULLTEXT (full_name)
                     )
                 """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
@@ -1028,10 +959,7 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         (db_gallery_id, {", ".join(column_name_parts)}, full_name)
                     VALUES (%s, {", ".join(["%s" for _ in column_name_parts])}, %s)
                 """
-        insert_query = mullines2oneline(insert_query)
         data = (gallery_name_id, *file_name_parts, file_name)
-
-        logger.debug(f"Insert query: {insert_query}")
         self.connector.execute(insert_query, data)
 
     def _select_gallery_file_id(self, gallery_name_id: int, file_name: str) -> int:
@@ -1046,10 +974,7 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                      WHERE db_gallery_id = %s
                        AND {" AND ".join([f"{part} = %s" for part in column_name_parts])}
                 """
-        select_query = mullines2oneline(select_query)
         data = (gallery_name_id, *file_name_parts)
-
-        logger.debug(f"Select query: {select_query}")
         query_result = self.connector.fetch_one(select_query, data)
         if query_result is None:
             msg = f"Image ID for gallery name ID {gallery_name_id} and file '{file_name}' does not exist."
@@ -1069,9 +994,7 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         FROM {table_name}
                           WHERE db_gallery_id = %s
                 """
-        select_query = mullines2oneline(select_query)
         data = (gallery_name_id,)
-        logger.debug(f"Select query: {select_query}")
         query_result = self.connector.fetch_all(select_query, data)
         if len(query_result) == 0:
             msg = f"Files for gallery name ID {gallery_name_id} do not exist."
@@ -1097,8 +1020,6 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         INDEX (hash_value)
                     )
                 """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
@@ -1186,8 +1107,6 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                            LEFT JOIN files_hashs_blake2b  USING (db_file_id)
                            LEFT JOIN files_hashs_blake2s  USING (db_file_id)
                 """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
         self.connector.execute(query)
         logger.info(f"{table_name} view created.")
 
@@ -1200,7 +1119,6 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                 insert_query = f"""
                     INSERT INTO {table_name} (db_file_id, hash_value) VALUES (%s, %s)
                 """
-        insert_query = mullines2oneline(insert_query)
         hash_value = hash_function(file_content, algorithm)
         data = (file_id, hash_value)
 
@@ -1215,7 +1133,6 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                 )
                 self._update_gallery_file_hash(file_id, data[1], algorithm)
         except DatabaseKeyError:
-            logger.debug(f"Insert query: {insert_query}")
             self.connector.execute(insert_query, data)
 
     def _select_gallery_file_hash(self, file_id: int, algorithm: str) -> str:
@@ -1227,10 +1144,8 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                       FROM {table_name}
                      WHERE db_file_id = %s
                 """
-        select_query = mullines2oneline(select_query)
         data = (file_id,)
 
-        logger.debug(f"Select query: {select_query}")
         query_result = self.connector.fetch_one(select_query, data)
         if query_result is None:
             msg = f"Image hash for image ID {file_id} does not exist."
@@ -1281,10 +1196,7 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                 update_query = f"""
                     UPDATE {table_name} SET hash_value = %s WHERE db_file_id = %s
                 """
-        update_query = mullines2oneline(update_query)
         data = (hash_value, file_id)
-
-        logger.debug(f"Update query: {update_query}")
         self.connector.execute(update_query, data)
 
 
@@ -1299,8 +1211,6 @@ class H2HDBRemovedGalleries(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABC
                         gid INT UNSIGNED NOT NULL
                     )
                 """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
@@ -1311,14 +1221,12 @@ class H2HDBRemovedGalleries(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABC
                 insert_query = f"""
                     INSERT INTO {table_name} (gid) VALUES (%s)
                 """
-        insert_query = mullines2oneline(insert_query)
         data = (gid,)
 
         try:
             self.select_removed_gallery_gid(gid)
             logger.warning(f"Removed gallery GID {gid} already exists.")
         except DatabaseKeyError:
-            logger.debug(f"Insert query: {insert_query}")
             self.connector.execute(insert_query, data)
 
     def select_removed_gallery_gid(self, gid: int) -> int:
@@ -1330,10 +1238,8 @@ class H2HDBRemovedGalleries(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABC
                       FROM {table_name}
                      WHERE gid = %s
                 """
-        select_query = mullines2oneline(select_query)
         data = (gid,)
 
-        logger.debug(f"Select query: {select_query}")
         query_result = self.connector.fetch_one(select_query, data)
         if query_result is None:
             msg = f"Removed gallery GID {gid} does not exist."
@@ -1368,8 +1274,6 @@ class H2HDB(
                         FULLTEXT (full_name)
                     )
                 """
-        query = mullines2oneline(query)
-        logger.debug(f"Query: {query}")
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
@@ -1392,8 +1296,6 @@ class H2HDB(
                         INSERT INTO {table_name} ({", ".join(column_name_parts)}, full_name)
                         VALUES ({", ".join(["%s" for _ in column_name_parts])}, %s)
                     """
-            insert_query = mullines2oneline(insert_query)
-            logger.debug(f"Insert query: {insert_query}")
             self.connector.execute(
                 insert_query, (*tuple(gallery_name_parts), gallery_name)
             )
@@ -1409,10 +1311,8 @@ class H2HDB(
                       FROM {table_name}
                      WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
                 """
-        select_query = mullines2oneline(select_query)
         data = tuple(gallery_name_parts)
 
-        logger.debug(f"Select query: {select_query}")
         query_result = self.connector.fetch_one(select_query, data)
         return query_result is not None
 
@@ -1424,9 +1324,7 @@ class H2HDB(
                     SELECT full_name
                       FROM {table_name}
                 """
-        select_query = mullines2oneline(select_query)
 
-        logger.debug(f"Select query: {select_query}")
         query_result = self.connector.fetch_all(select_query)
         pending_gallery_removals = [query[0] for query in query_result]
         return pending_gallery_removals
@@ -1439,10 +1337,8 @@ class H2HDB(
                 delete_query = f"""
                     DELETE FROM {table_name} WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
                 """
-        delete_query = mullines2oneline(delete_query)
 
         gallery_name_parts = split_gallery_name(gallery_name)
-        logger.debug(f"Delete query: {delete_query}")
         self.connector.execute(delete_query, tuple(gallery_name_parts))
 
     def delete_pending_gallery_removals(self) -> None:
@@ -1479,14 +1375,11 @@ class H2HDB(
                         )
                 """
                 )
-        select_table_name_query = mullines2oneline(select_table_name_query)
 
-        logger.debug(f"Select query: {select_table_name_query}")
         table_names = self.connector.fetch_all(select_table_name_query)
         table_names = [t[0] for t in table_names] + ["files_names"]
         logger.debug(f"Table names: {table_names}")
 
-        logger.debug(f"Delete query: {mullines2oneline(get_delete_image_id_query(f"%s"))}")
         gallery_name_parts = split_gallery_name(gallery_name)
         for table_name in table_names:
             self.connector.execute(get_delete_image_id_query(table_name), tuple(gallery_name_parts))
@@ -1508,17 +1401,14 @@ class H2HDB(
                      WHERE db_gallery_id = (
                             SELECT db_gallery_id
                             FROM galleries_names
-                            WHERE {" AND ".join([f"{part} = '%s'" for part in column_name_parts])}
+                            WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
                            )
                 """
-        select_table_name_query = mullines2oneline(select_table_name_query)
 
-        logger.debug(f"Select query: {select_table_name_query}")
         table_names = self.connector.fetch_all(select_table_name_query)
         table_names = [t[0] for t in table_names]
         logger.debug(f"Table names: {table_names}")
 
-        logger.debug(f"Delete query: {mullines2oneline(get_delete_gallery_id_query(f"%s"))}")
         gallery_name_parts = split_gallery_name(gallery_name)
         for table_name in table_names:
             self.connector.execute(get_delete_gallery_id_query(table_name), tuple(gallery_name_parts))
@@ -1646,14 +1536,4 @@ class H2HDB(
                 self.insert_gallery_info(root)
 
 
-def mullines2oneline(s: str) -> str:
-    """
-    Replaces multiple spaces with a single space, and replaces newlines with a space.
 
-    Args:
-        s (str): The input string.
-
-    Returns:
-        str: The modified string with multiple spaces replaced by a single space and newlines replaced by a space.
-    """
-    return re.sub(" +", " ", s.replace("\n", " ")).strip()
