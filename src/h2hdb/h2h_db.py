@@ -1596,6 +1596,7 @@ class H2HDB(
             self._insert_gallery_tag(gallery_name_id, tag_name, tag_value)
 
         self.delete_pending_gallery_removal(gallery_info_params.gallery_name)
+        self.connector.commit()
 
     def insert_gallery_info(self, gallery_folder: str) -> None:
         # Check if the gallery info file hash is the same as the original hash value.
