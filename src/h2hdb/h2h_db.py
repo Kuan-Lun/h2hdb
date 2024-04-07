@@ -22,6 +22,25 @@ match config_loader.database.sql_type.lower():
     case "mysql":
         INNODB_INDEX_PREFIX_LIMIT = 191
 
+GALLERY_INFO_FILE_NAME = "galleryinfo.txt"
+HASH_ALGORITHMS = [
+    "blake2b",
+    "blake2s",
+    "sha1",
+    "sha224",
+    "sha256",
+    "sha384",
+    "sha3_224",
+    "sha3_256",
+    "sha3_384",
+    "sha3_512",
+    "sha512",
+]
+
+
+def hash_function(x: bytes, algorithm: str) -> str:
+    return getattr(hashlib, algorithm.lower())(x).hexdigest()
+
 
 def split_gallery_name(gallery_name: str) -> list[str]:
     size = FOLDER_NAME_LENGTH_LIMIT // INNODB_INDEX_PREFIX_LIMIT + (
@@ -336,6 +355,13 @@ class H2HDBAbstract(metaclass=ABCMeta):
 
         Args:
             gallery_name (str): The name of the gallery.
+        """
+        pass
+
+    @abstractmethod
+    def delete_pending_gallery_removals(self) -> None:
+        """
+        Deletes all pending gallery removals from the database.
         """
         pass
 
@@ -1175,8 +1201,7 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                     INSERT INTO {table_name} (db_file_id, hash_value) VALUES (%s, %s)
                 """
         insert_query = mullines2oneline(insert_query)
-        hash_function = lambda x: getattr(hashlib, algorithm.lower())(x).hexdigest()
-        hash_value = hash_function(file_content)
+        hash_value = hash_function(file_content, algorithm)
         data = (file_id, hash_value)
 
         try:
@@ -1209,7 +1234,6 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         query_result = self.connector.fetch_one(select_query, data)
         if query_result is None:
             msg = f"Image hash for image ID {file_id} does not exist."
-            logger.error(msg)
             raise DatabaseKeyError(msg)
         else:
             hash_value = query_result[0]
@@ -1421,6 +1445,14 @@ class H2HDB(
         logger.debug(f"Delete query: {delete_query}")
         self.connector.execute(delete_query, tuple(gallery_name_parts))
 
+    def delete_pending_gallery_removals(self) -> None:
+        pending_gallery_removals = self.select_pending_gallery_removals()
+        for gallery_name in pending_gallery_removals:
+            self.delete_gallery_image(gallery_name)
+            self.delete_gallery(gallery_name)
+            logger.info(f"Gallery '{gallery_name}' deleted.")
+            self.delete_pending_gallery_removal(gallery_name)
+
     def delete_gallery_image(self, gallery_name: str) -> None:
         match self.sql_type:
             case "mysql":
@@ -1524,6 +1556,7 @@ class H2HDB(
 
         self._insert_gallery_name(gallery_info_params.gallery_name)
         gallery_name_id = self._select_gallery_name_id(gallery_info_params.gallery_name)
+
         self._insert_gallery_gid(gallery_name_id, gallery_info_params.gid)
         self._insert_gallery_title(gallery_name_id, gallery_info_params.title)
         self._insert_upload_time(gallery_name_id, gallery_info_params.upload_time)
@@ -1565,30 +1598,56 @@ class H2HDB(
         self.delete_pending_gallery_removal(gallery_info_params.gallery_name)
 
     def insert_gallery_info(self, gallery_folder: str) -> None:
+        # Check if the gallery info file hash is the same as the original hash value.
+        def check_gallery_info_file_hash() -> bool:
+            try:
+                gallery_info_file_id = self._select_gallery_file_id(
+                    gallery_name_id, GALLERY_INFO_FILE_NAME
+                )
+                absolute_file_path = os.path.join(
+                    gallery_info_params.gallery_folder, GALLERY_INFO_FILE_NAME
+                )
+                with open(absolute_file_path, "rb") as f:
+                    gallery_info_file_content = f.read()
+                issame = True
+                for algorithm in HASH_ALGORITHMS:
+                    original_hash_value = self._select_gallery_file_hash(
+                        gallery_info_file_id, algorithm
+                    )
+                    current_hash_value = hash_function(
+                        gallery_info_file_content, algorithm
+                    )
+                    if original_hash_value != current_hash_value:
+                        issame &= False
+            except DatabaseKeyError:
+                issame = False
+            return issame
+
         gallery_info_params = parse_gallery_info(gallery_folder)
+
         try:
-            self._select_gallery_name_id(gallery_info_params.gallery_name)
+            gallery_name_id = self._select_gallery_name_id(
+                gallery_info_params.gallery_name
+            )
             logger.warning(
                 f"Gallery '{gallery_info_params.gallery_name}' already exists."
             )
+            isthesame = check_gallery_info_file_hash()
+        except DatabaseKeyError:
+            isthesame = False
+        if isthesame is False:
+            logger.warning("Gallery info file hash is different. Re-inserting...")
             logger.warning("Deleting gallery info...")
             self.delete_gallery_image(gallery_info_params.gallery_name)
             self.delete_gallery(gallery_info_params.gallery_name)
             logger.warning("Re-inserting gallery info...")
-        except DatabaseKeyError:
-            pass
-        self._insert_gallery_info(gallery_info_params)
-        logger.info(f"Gallery '{gallery_info_params.gallery_name}' inserted.")
+            self._insert_gallery_info(gallery_info_params)
+            logger.info(f"Gallery '{gallery_info_params.gallery_name}' inserted.")
 
     def insert_h2h_download(self) -> None:
-        pending_gallery_removals = self.select_pending_gallery_removals()
-        for gallery_name in pending_gallery_removals:
-            self.delete_gallery_image(gallery_name)
-            self.delete_gallery(gallery_name)
-            logger.info(f"Gallery '{gallery_name}' deleted.")
-            self.delete_pending_gallery_removal(gallery_name)
+        self.delete_pending_gallery_removals()
         for root, _, files in os.walk(config_loader.h2h.download_path):
-            if "galleryinfo.txt" in files:
+            if GALLERY_INFO_FILE_NAME in files:
                 self.insert_gallery_info(root)
 
 
