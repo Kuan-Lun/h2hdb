@@ -142,7 +142,7 @@ class HentaiDBLogger:
         level (str): The logging level. Can be one of 'debug', 'info', 'warning', 'error', 'critical'.
         display_on_screen (bool): Whether to display the log messages on screen.
         max_log_entry_length (int): The maximum length of the log messages. This only applies to messages logged to the file specified by `display_on_screen`.
-        write_to_file (str | bool): The path to the log file, or False if logging to a file is disabled.
+        write_to_file (str): The path to the log file. If an empty string is provided, logging to a file is disabled.
 
     It allows logging messages at different levels (debug, info, warning, error, critical) to both the screen and a log file.
     The logging level, whether to display on screen, the log file path, and the maximum log length can be configured upon initialization.
@@ -177,7 +177,7 @@ class HentaiDBLogger:
         self,
         level: str,
         display_on_screen: bool,
-        write_to_file: str | bool,
+        write_to_file: str,
         max_log_entry_length: int,
     ):
         logging_level = LOG_CONFIG[level.lower()]
@@ -188,14 +188,8 @@ class HentaiDBLogger:
             )
 
         self.write_to_file = write_to_file
-        match write_to_file:
-            case False:
-                pass
-            case True:
-                write_to_file = "comicdb.log"
-                self.file_logger = setup_file_logger(write_to_file, logging_level)
-            case _:
-                self.file_logger = setup_file_logger(write_to_file, logging_level)
+        if self.write_to_file != "":
+            self.file_logger = setup_file_logger(write_to_file, logging_level)
 
     def hasHandlers(self) -> bool:
         return self.screen_logger.hasHandlers() or self.file_logger.hasHandlers()
@@ -208,44 +202,44 @@ class HentaiDBLogger:
     def addHandler(self, handler: logging.Handler) -> None:
         if self.display_on_screen:
             self.screen_logger.addHandler(handler)
-        if self.write_to_file is not False:
+        if self.write_to_file != "":
             self.file_logger.addHandler(handler)
 
     def debug(self, message: str) -> None:
         if self.display_on_screen:
             self.screen_logger.debug(message)
-        if self.write_to_file is not False:
+        if self.write_to_file != "":
             self.file_logger.debug(message)
 
     def info(self, message: str) -> None:
         if self.display_on_screen:
             self.screen_logger.info(message)
-        if self.write_to_file is not False:
+        if self.write_to_file != "":
             self.file_logger.info(message)
 
     def warning(self, message: str) -> None:
         if self.display_on_screen:
             self.screen_logger.warning(message)
-        if self.write_to_file is not False:
+        if self.write_to_file != "":
             self.file_logger.warning(message)
 
     def error(self, message: str) -> None:
         if self.display_on_screen:
             self.screen_logger.error(message)
-        if self.write_to_file is not False:
+        if self.write_to_file != "":
             self.file_logger.error(message)
 
     def critical(self, message: str) -> None:
         if self.display_on_screen:
             self.screen_logger.critical(message)
-        if self.write_to_file is not False:
+        if self.write_to_file != "":
             self.file_logger.critical(message)
 
 
 def setup_logger(
     level: str,
     display_on_screen: bool,
-    write_to_file: str | bool,
+    write_to_file: str,
     max_log_entry_length: int = -1,
 ) -> HentaiDBLogger:
     """
@@ -255,6 +249,8 @@ def setup_logger(
 
     Parameters:
     level (str): The logging level as a string. Should be one of "DEBUG", "INFO", "WARNING", "ERROR", or "CRITICAL".
+    display_on_screen (bool): Whether to display log messages on the screen.
+    write_to_file (str): The path to the log file. If an empty string is provided, logging to a file is disabled.
     max_log_entry_length (int, optional): The maximum length of a log message. If a message exceeds this length, it will be split into multiple chunks. Default is 30.
 
     Returns:

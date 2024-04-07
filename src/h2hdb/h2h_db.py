@@ -299,6 +299,46 @@ class H2HDBAbstract(metaclass=ABCMeta):
         """
         pass
 
+    @abstractmethod
+    def insert_pending_gallery_removal(self, gallery_name: str) -> None:
+        """
+        Inserts the pending gallery removal into the database.
+
+        Args:
+            gallery_name (str): The name of the gallery.
+        """
+        pass
+
+    @abstractmethod
+    def check_pending_gallery_removal(self, gallery_name: str) -> bool:
+        """
+        Checks if the gallery is pending removal.
+
+        Returns:
+            bool: True if the gallery is pending removal, False otherwise.
+        """
+        pass
+
+    @abstractmethod
+    def select_pending_gallery_removals(self) -> list[str]:
+        """
+        Selects the pending gallery removals from the database.
+
+        Returns:
+            list[str]: The list of pending gallery removals.
+        """
+        pass
+
+    @abstractmethod
+    def delete_pending_gallery_removal(self, gallery_name: str) -> None:
+        """
+        Deletes the pending gallery removal from the database.
+
+        Args:
+            gallery_name (str): The name of the gallery.
+        """
+        pass
+
 
 class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
     """
@@ -409,11 +449,6 @@ class ComaicDBDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
 
     def _insert_gallery_name(self, gallery_name: str) -> None:
         table_name = "galleries_names"
-        if len(gallery_name) > FOLDER_NAME_LENGTH_LIMIT:
-            logger.error(
-                f"Gallery name '{gallery_name}' is too long. Must be {FOLDER_NAME_LENGTH_LIMIT} characters or less."
-            )
-            raise ValueError("Gallery name is too long.")
         gallery_name_parts = split_gallery_name(gallery_name)
 
         match self.sql_type:
@@ -1012,7 +1047,7 @@ class H2HDBFiles(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         data = (gallery_name_id,)
         logger.debug(f"Select query: {select_query}")
         query_result = self.connector.fetch_all(select_query, data)
-        if query_result is None:
+        if len(query_result) == 0:
             msg = f"Files for gallery name ID {gallery_name_id} do not exist."
             logger.error(msg)
             raise DatabaseKeyError(msg)
@@ -1293,6 +1328,99 @@ class H2HDB(
     H2HDBFiles,
     H2HDBRemovedGalleries,
 ):
+    def _create_pending_gallery_removals_table(self) -> None:
+        table_name = "pending_gallery_removals"
+        match self.sql_type:
+            case "mysql":
+                column_name = "name"
+                column_name_parts, create_gallery_name_parts_sql = (
+                    mysql_split_gallery_name_based_on_limit(column_name)
+                )
+                query = f"""
+                    CREATE TABLE IF NOT EXISTS {table_name} (
+                        PRIMARY KEY ({", ".join(column_name_parts)}),
+                        {create_gallery_name_parts_sql},
+                        full_name TEXT NOT NULL,
+                        FULLTEXT (full_name)
+                    )
+                """
+        query = mullines2oneline(query)
+        logger.debug(f"Query: {query}")
+        self.connector.execute(query)
+        logger.info(f"{table_name} table created.")
+
+    def insert_pending_gallery_removal(self, gallery_name: str) -> None:
+        if self.check_pending_gallery_removal(gallery_name) is False:
+            table_name = "pending_gallery_removals"
+            if len(gallery_name) > FOLDER_NAME_LENGTH_LIMIT:
+                logger.error(
+                    f"Gallery name '{gallery_name}' is too long. Must be {FOLDER_NAME_LENGTH_LIMIT} characters or less."
+                )
+                raise ValueError("Gallery name is too long.")
+            gallery_name_parts = split_gallery_name(gallery_name)
+
+            match self.sql_type:
+                case "mysql":
+                    column_name_parts, _ = mysql_split_gallery_name_based_on_limit(
+                        "name"
+                    )
+                    insert_query = f"""
+                        INSERT INTO {table_name} ({", ".join(column_name_parts)}, full_name)
+                        VALUES ({", ".join(["%s" for _ in column_name_parts])}, %s)
+                    """
+            insert_query = mullines2oneline(insert_query)
+            logger.debug(f"Insert query: {insert_query}")
+            self.connector.execute(
+                insert_query, (*tuple(gallery_name_parts), gallery_name)
+            )
+
+    def check_pending_gallery_removal(self, gallery_name: str) -> bool:
+        table_name = "pending_gallery_removals"
+        gallery_name_parts = split_gallery_name(gallery_name)
+        match self.sql_type:
+            case "mysql":
+                column_name_parts, _ = mysql_split_gallery_name_based_on_limit("name")
+                select_query = f"""
+                    SELECT full_name
+                      FROM {table_name}
+                     WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
+                """
+        select_query = mullines2oneline(select_query)
+        data = tuple(gallery_name_parts)
+
+        logger.debug(f"Select query: {select_query}")
+        query_result = self.connector.fetch_one(select_query, data)
+        return query_result is not None
+
+    def select_pending_gallery_removals(self) -> list[str]:
+        table_name = "pending_gallery_removals"
+        match self.sql_type:
+            case "mysql":
+                select_query = f"""
+                    SELECT full_name
+                      FROM {table_name}
+                """
+        select_query = mullines2oneline(select_query)
+
+        logger.debug(f"Select query: {select_query}")
+        query_result = self.connector.fetch_all(select_query)
+        pending_gallery_removals = [query[0] for query in query_result]
+        return pending_gallery_removals
+
+    def delete_pending_gallery_removal(self, gallery_name: str) -> None:
+        table_name = "pending_gallery_removals"
+        match self.sql_type:
+            case "mysql":
+                column_name_parts, _ = mysql_split_gallery_name_based_on_limit("name")
+                delete_query = f"""
+                    DELETE FROM {table_name} WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
+                """
+        delete_query = mullines2oneline(delete_query)
+
+        gallery_name_parts = split_gallery_name(gallery_name)
+        logger.debug(f"Delete query: {delete_query}")
+        self.connector.execute(delete_query, tuple(gallery_name_parts))
+
     def delete_gallery_image(self, gallery_name: str) -> None:
         match self.sql_type:
             case "mysql":
@@ -1374,6 +1502,7 @@ class H2HDB(
 
     def create_main_tables(self) -> None:
         logger.debug("Creating main tables...")
+        self._create_pending_gallery_removals_table()
         self._create_galleries_names_table()
         self._create_galleries_gids_table()
         self._create_galleries_download_times_table()
@@ -1391,6 +1520,8 @@ class H2HDB(
         logger.info("Main tables created.")
 
     def _insert_gallery_info(self, gallery_info_params: GalleryInfoParser) -> None:
+        self.insert_pending_gallery_removal(gallery_info_params.gallery_name)
+
         self._insert_gallery_name(gallery_info_params.gallery_name)
         gallery_name_id = self._select_gallery_name_id(gallery_info_params.gallery_name)
         self._insert_gallery_gid(gallery_name_id, gallery_info_params.gid)
@@ -1431,13 +1562,12 @@ class H2HDB(
         for tag_name, tag_value in gallery_info_params.tags.items():
             self._insert_gallery_tag(gallery_name_id, tag_name, tag_value)
 
+        self.delete_pending_gallery_removal(gallery_info_params.gallery_name)
+
     def insert_gallery_info(self, gallery_folder: str) -> None:
         gallery_info_params = parse_gallery_info(gallery_folder)
         try:
-            gallery_name_id = self._select_gallery_name_id(
-                gallery_info_params.gallery_name
-            )
-            print(gallery_name_id)
+            self._select_gallery_name_id(gallery_info_params.gallery_name)
             logger.warning(
                 f"Gallery '{gallery_info_params.gallery_name}' already exists."
             )
@@ -1451,6 +1581,12 @@ class H2HDB(
         logger.info(f"Gallery '{gallery_info_params.gallery_name}' inserted.")
 
     def insert_h2h_download(self) -> None:
+        pending_gallery_removals = self.select_pending_gallery_removals()
+        for gallery_name in pending_gallery_removals:
+            self.delete_gallery_image(gallery_name)
+            self.delete_gallery(gallery_name)
+            logger.info(f"Gallery '{gallery_name}' deleted.")
+            self.delete_pending_gallery_removal(gallery_name)
         for root, _, files in os.walk(config_loader.h2h.download_path):
             if "galleryinfo.txt" in files:
                 self.insert_gallery_info(root)
