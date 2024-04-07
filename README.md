@@ -1,7 +1,7 @@
 # H2HDB
 ## Description
 
-H2HDB is a comprehensive database for organising and managing H@H (Hitomi la@Home) comic collections. It offers a streamlined way to catalogue your comics, providing key information such as GID (Gallery ID), title, tags and more, ensuring your collection is always organised and accessible.
+H2HDB is a comprehensive database for organising and managing H@H comic collections. It offers a streamlined way to catalogue your comics, providing key information such as GID (Gallery ID), title, tags and more, ensuring your collection is always organised and accessible.
 
 ## Features
 
@@ -53,25 +53,25 @@ H2HDB is a comprehensive database for organising and managing H@H (Hitomi la@Hom
 ```
 
 
-### Tables
+### Views and Tables
 
-There are two SQL views in the database:
+#### Gallery Information View `galleries_infos`
+This table contains information about the files in the galleries. It contains columns like `db_file_id`, `gallery_title`, `gallery_name`, `file_name`, `sha224` and more. Here is an example of the table:
 
-1. `galleries_infos`: This table contains information about the galleries in the database. It contains columns such as `db_gallery_id`, `name`, `title`, `gid`, `upload_account`, `upload_time`, `download_time`, `modified_time`, and `access_time`. Here is an example of the table:
+| db_gallery_id | name                  | title           | gid | upload_account | upload_time         | download_time       | modified_time       | access_time         |
+| ------------- | --------------------- | --------------- | --- | -------------- | ------------------- | ------------------- | ------------------- | ------------------- |
+| 1             | [xxx] xxx [xxx] [123] | [xxx] xxx [xxx] | 123 | alice          | 2019-08-03 06:16:00 | 2023-02-09 11:26:00 | 2023-02-09 19:26:05 | 2023-02-09 11:26:00 |
+| 2             | 456                   | A long name     | 456 | bob            | 2019-08-30 16:01:00 | 2020-10-15 17:15:00 | 2020-10-16 01:16:47 | 2020-10-15 17:15:00 |
 
-    | db_gallery_id | name                  | title           | gid | upload_account | upload_time         | download_time       | modified_time       | access_time         |
-    | ------------- | --------------------- | --------------- | --- | -------------- | ------------------- | ------------------- | ------------------- | ------------------- |
-    | 1             | [xxx] xxx [xxx] [123] | [xxx] xxx [xxx] | 123 | alice          | 2019-08-03 06:16:00 | 2023-02-09 11:26:00 | 2023-02-09 19:26:05 | 2023-02-09 11:26:00 |
-    | 2             | 456                   | A long name     | 456 | bob            | 2019-08-30 16:01:00 | 2020-10-15 17:15:00 | 2020-10-16 01:16:47 | 2020-10-15 17:15:00 |
+#### File Hash Views `files_hashs`
+This table contains information about the files in the galleries. It contains columns like `db_file_id`, `gallery_title`, `gallery_name`, `file_name`, `sha224` and more. Here is an example of the table:
 
-2. `files_hashs`: This table contains information about the files in the galleries. It contains columns like `db_file_id`, `gallery_title`, `gallery_name`, `file_name`, `sha224` and more. Here is an example of the table:
+| db_file_id | gallery_title        | gallery_name    | file_name | sha224 | ... |
+| ---------- | -------------------- | --------------- | --------- | ------ | --- |
+| 1          | [xxx] xxx [xxx] [123] | [xxx] xxx [xxx] | 001.jpg   | 1ab... | ... |
+| 37         | A long name          | 456             | 1.png     | a8f... | ... |
 
-    | db_file_id | gallery_title        | gallery_name    | file_name | sha224 | ... |
-    | ---------- | -------------------- | --------------- | --------- | ------ | --- |
-    | 1          | [xxx] xxx [xxx] [123] | [xxx] xxx [xxx] | 001.jpg   | 1ab... | ... |
-    | 37         | A long name          | 456             | 1.png     | a8f... | ... |
-
-#### Gallery Information
+#### Gallery Information Detail Tables
 
 | Name                   | Description                                                                                   |
 | :---------------------- | :----------------------------------------------------------------------------------------- |
@@ -84,7 +84,7 @@ There are two SQL views in the database:
 | `pending_gallery_removals_no_tag` | The value of the tag `[category]` in `galleryinfo.txt` is empty. For example, `:group`. |
 | `pending_gallery_removals_tags_[category]` | The value of the tag `[category]` in `galleryinfo.txt`. For example, `artist:alice`. |
 
-#### Files in the Gallery's Folder
+#### File Hash Tables
 
 | Name                   | Description                                                                                   |
 | ---------------------- | ----------------------------------------------------------------------------------------- |
@@ -94,7 +94,7 @@ There are two SQL views in the database:
 
 ### Examples
 
-Here is an example of how to use the `h2hdb` package to add gallery information and removed gallery GIDs to the database.
+Here is an example of how you can use the `h2hdb` package to insert gallery information and removed gallery GIDs to the database.
 ```python
     import os
 
