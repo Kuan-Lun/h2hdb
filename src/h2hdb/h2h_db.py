@@ -554,7 +554,7 @@ class ComaicDBGalleriesGIDs(ComaicDBDBGalleriesIDs, H2HDBAbstract, metaclass=ABC
                       FROM {table_name}
                      WHERE db_gallery_id = %s
                 """
-        
+
         data = (gallery_name_id,)
         query_result = self.connector.fetch_one(select_query, data)
         if query_result is None:
@@ -1349,6 +1349,12 @@ class H2HDB(
             self.delete_pending_gallery_removal(gallery_name)
 
     def delete_gallery_image(self, gallery_name: str) -> None:
+        try:
+            self._select_gallery_name_id(gallery_name)
+        except DatabaseKeyError:
+            logger.warning(f"Gallery '{gallery_name}' does not exist.")
+            return
+
         match self.sql_type:
             case "mysql":
                 select_table_name_query = f"""
@@ -1381,10 +1387,18 @@ class H2HDB(
 
         gallery_name_parts = split_gallery_name(gallery_name)
         for table_name in table_names:
-            self.connector.execute(get_delete_image_id_query(table_name), tuple(gallery_name_parts))
+            self.connector.execute(
+                get_delete_image_id_query(table_name), tuple(gallery_name_parts)
+            )
         logger.info(f"Gallery images for '{gallery_name}' deleted.")
 
     def delete_gallery(self, gallery_name: str) -> None:
+        try:
+            self._select_gallery_name_id(gallery_name)
+        except DatabaseKeyError:
+            logger.warning(f"Gallery '{gallery_name}' does not exist.")
+            return
+
         match self.sql_type:
             case "mysql":
                 select_table_name_query = f"""
@@ -1395,7 +1409,8 @@ class H2HDB(
                        AND REFERENCED_COLUMN_NAME = 'db_gallery_id'
                 """
                 column_name_parts, _ = mysql_split_gallery_name_based_on_limit("name")
-                get_delete_gallery_id_query = lambda x: f"""
+                get_delete_gallery_id_query = (
+                    lambda x: f"""
                     DELETE FROM {x}
                      WHERE db_gallery_id = (
                             SELECT db_gallery_id
@@ -1403,6 +1418,7 @@ class H2HDB(
                             WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
                            )
                 """
+                )
 
         table_names = self.connector.fetch_all(select_table_name_query)
         table_names = [t[0] for t in table_names]
@@ -1410,8 +1426,12 @@ class H2HDB(
 
         gallery_name_parts = split_gallery_name(gallery_name)
         for table_name in table_names:
-            self.connector.execute(get_delete_gallery_id_query(table_name), tuple(gallery_name_parts))
-        self.connector.execute(get_delete_gallery_id_query("galleries_names"), tuple(gallery_name_parts))
+            self.connector.execute(
+                get_delete_gallery_id_query(table_name), tuple(gallery_name_parts)
+            )
+        self.connector.execute(
+            get_delete_gallery_id_query("galleries_names"), tuple(gallery_name_parts)
+        )
         logger.info(f"Gallery '{gallery_name}' deleted.")
 
     def create_main_tables(self) -> None:
@@ -1534,6 +1554,3 @@ class H2HDB(
         for root, _, files in os.walk(config_loader.h2h.download_path):
             if GALLERY_INFO_FILE_NAME in files:
                 self.insert_gallery_info(root)
-
-
-

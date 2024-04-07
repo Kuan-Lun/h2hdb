@@ -6,8 +6,6 @@ H2HDB is a database for managing gallery collections from H@H. It allows users t
 ## Features
 
 - [x] Add new galleries to the database
-    - 123
-    - 456
 - [] Edit existing gallery details
 - [] View a list of all galleries in the collection
 - [] Delete galleries from the database
@@ -15,6 +13,13 @@ H2HDB is a database for managing gallery collections from H@H. It allows users t
 - [] Backup and restore the database
 - [] Export the database to a CSV file
 - [] Import a database from a CSV file
+
+### Tables
+
+| Name            | Comment                         |
+| :-------------- | :------------------------------ |
+| galleries_names | The downloaded gallery from H@H |
+|
 
 ## Installation
 
