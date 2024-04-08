@@ -1,4 +1,4 @@
-__all__ = ["H2HDB"]
+__all__ = ["H2HDB", "GALLERY_INFO_FILE_NAME", "_insert_h2h_download"]
 
 
 import re
@@ -1531,47 +1531,37 @@ class H2HDB(
         self.delete_pending_gallery_removal(gallery_info_params.gallery_name)
         self.connector.commit()
 
-    def insert_gallery_info(self, gallery_folder: str) -> None:
-        # Check if the gallery info file hash is the same as the original hash value.
-        def check_gallery_info_file_hash() -> bool:
-            try:
-                gallery_info_file_id = self._select_gallery_file_id(
-                    gallery_name_id, GALLERY_INFO_FILE_NAME
-                )
-                absolute_file_path = os.path.join(
-                    gallery_info_params.gallery_folder, GALLERY_INFO_FILE_NAME
-                )
-                with open(absolute_file_path, "rb") as f:
-                    gallery_info_file_content = f.read()
-                issame = True
-                for algorithm in HASH_ALGORITHMS:
-                    original_hash_value = self._select_gallery_file_hash(
-                        gallery_info_file_id, algorithm
-                    )
-                    current_hash_value = hash_function(
-                        gallery_info_file_content, algorithm
-                    )
-                    if original_hash_value != current_hash_value:
-                        issame &= False
-                        break
-            except DatabaseKeyError:
-                issame = False
-            return issame
-
-        gallery_info_params = parse_gallery_info(gallery_folder)
-
+    def _check_gallery_info_file_hash(
+        self, gallery_info_params: GalleryInfoParser
+    ) -> bool:
         try:
             gallery_name_id = self._select_gallery_name_id(
                 gallery_info_params.gallery_name
             )
-            logger.debug(
-                f"Gallery '{gallery_info_params.gallery_name}' already exists."
+            gallery_info_file_id = self._select_gallery_file_id(
+                gallery_name_id, GALLERY_INFO_FILE_NAME
             )
-            isthesame = check_gallery_info_file_hash()
-            if isthesame is False:
-                logger.warning("Gallery info file hash is different. Re-inserting...")
+            absolute_file_path = os.path.join(
+                gallery_info_params.gallery_folder, GALLERY_INFO_FILE_NAME
+            )
+            with open(absolute_file_path, "rb") as f:
+                gallery_info_file_content = f.read()
+            issame = True
+            for algorithm in HASH_ALGORITHMS:
+                original_hash_value = self._select_gallery_file_hash(
+                    gallery_info_file_id, algorithm
+                )
+                current_hash_value = hash_function(gallery_info_file_content, algorithm)
+                if original_hash_value != current_hash_value:
+                    issame &= False
+                    break
         except DatabaseKeyError:
-            isthesame = False
+            issame = False
+        return issame
+
+    def insert_gallery_info(self, gallery_folder: str) -> None:
+        gallery_info_params = parse_gallery_info(gallery_folder)
+        isthesame = self._check_gallery_info_file_hash(gallery_info_params)
         if isthesame is False:
             self.delete_gallery_image(gallery_info_params.gallery_name)
             self.delete_gallery(gallery_info_params.gallery_name)
@@ -1583,3 +1573,8 @@ class H2HDB(
         for root, _, files in os.walk(self.config.h2h.download_path):
             if GALLERY_INFO_FILE_NAME in files:
                 self.insert_gallery_info(root)
+
+def _insert_h2h_download(config: Config, gallery_paths: list) -> None:
+    with H2HDB(config=config) as connector:
+        for gallery_path in gallery_paths:
+            connector.insert_gallery_info(gallery_path)

@@ -5,25 +5,6 @@ import argparse
 import json
 
 
-DEFAULT_CONFIG = dict[str, dict](
-    h2h=dict[str, str](download_path="download"),
-    database=dict[str, str](
-        sql_type="mysql",
-        host="localhost",
-        port="3306",
-        user="root",
-        database="h2h",
-        password="password",
-    ),
-    logger=dict[str, str | bool | int](
-        level="INFO",
-        display_on_screen=False,
-        max_log_entry_length=-1,
-        write_to_file="",
-    ),
-)
-
-
 class ConfigError(Exception):
     """
     Exception raised for errors in the configuration.
@@ -142,27 +123,65 @@ class H2HConfig:
         return self.__repr__()
 
 
+class MultiProcessConfig:
+    __slots__ = ["num_processes"]
+
+    def __init__(self, num_processes: int) -> None:
+        self.num_processes = num_processes
+
+        if type(num_processes) is not int:
+            raise ConfigError("num_processes must be an integer")
+
+        if num_processes < 1:
+            raise ConfigError("num_processes must be at least 1")
+
+
 class Config:
-    __slots__ = ["h2h", "database", "logger"]
+    __slots__ = ["h2h", "database", "logger", "multiprocess"]
 
     def __init__(
         self,
         h2h_config: H2HConfig,
         database_config: DatabaseConfig,
         logger_config: LoggerConfig,
+        multiprocess_config: MultiProcessConfig,
     ) -> None:
         self.h2h = h2h_config
         self.database = database_config
         self.logger = logger_config
+        self.multiprocess = multiprocess_config
 
     def __repr__(self) -> str:
-        return f"Config(h2h={self.h2h}, database_config={self.database}, logger_config={self.logger})"
+        return f"Config(h2h={self.h2h}, database_config={self.database}, logger_config={self.logger}, multiprocess_config={self.multiprocess})"
 
     def __str__(self) -> str:
         return self.__repr__()
 
 
+def set_default_config() -> dict[str, dict]:
+    return dict[str, dict](
+        h2h=dict[str, str](download_path="download"),
+        database=dict[str, str](
+            sql_type="mysql",
+            host="localhost",
+            port="3306",
+            user="root",
+            database="h2h",
+            password="password",
+        ),
+        logger=dict[str, str | bool | int](
+            level="INFO",
+            display_on_screen=False,
+            max_log_entry_length=-1,
+            write_to_file="",
+        ),
+        multiprocess=dict[str, int](number=1),
+    )
+
+
 def load_config(config_path: str = "") -> Config:
+    default_config = set_default_config()
+
     if config_path != "":
         with open(config_path, "r") as f:
             user_config = json.load(f)
@@ -172,10 +191,22 @@ def load_config(config_path: str = "") -> Config:
         args = parser.parse_args()
 
         if args.config is None:
-            user_config = DEFAULT_CONFIG
+            user_config = default_config
         else:
             with open(args.config, "r") as f:
                 user_config = json.load(f)
+
+    num_processes = user_config["multiprocess"]["number"]
+
+    if num_processes > 1:
+        user_config["logger"] = default_config["logger"]
+
+    user_config["multiprocess"].pop("number")
+    if len(user_config["multiprocess"]) > 0:
+        raise ConfigError("Invalid configuration for multiprocess")
+    user_config.pop("multiprocess")
+
+    multiprocess_config = MultiProcessConfig(num_processes)
 
     # Validate the h2h configuration
     download_path = user_config["h2h"]["download_path"]
@@ -207,6 +238,8 @@ def load_config(config_path: str = "") -> Config:
         user_config.pop("database")
 
     # Validate the logger configuration
+    if "logger" not in user_config or user_config["logger"] == {}:
+        user_config["logger"] = default_config["logger"]
     level = user_config["logger"]["level"]
     user_config["logger"].pop("level")
 
@@ -224,9 +257,6 @@ def load_config(config_path: str = "") -> Config:
     else:
         user_config.pop("logger")
 
-    if len(user_config) > 0:
-        raise ConfigError("Invalid configuration for the entire config")
-
     logger_config = LoggerConfig(
         level=level,
         display_on_screen=display_on_screen,
@@ -234,4 +264,7 @@ def load_config(config_path: str = "") -> Config:
         max_log_entry_length=max_log_entry_length,
     )
 
-    return Config(h2h_config, database_config, logger_config)
+    if len(user_config) > 0:
+        raise ConfigError("Invalid configuration for the entire config")
+
+    return Config(h2h_config, database_config, logger_config, multiprocess_config)

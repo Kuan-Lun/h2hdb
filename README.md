@@ -43,6 +43,9 @@ H2HDB is a comprehensive database for organising and managing H@H comic collecti
         "user": "[str]", // The default is `root`.
         "password": "[str]" // The default is `password`.
     },
+    "multiprocess": {
+        "number": "[int]" // If it is not 1, the logger will not be used.
+    },
     "logger": {
         "level": "[str]", // One of NOTSET, DEBUG, INFO, WARNING, ERROR, CRITICAL.
         "display_on_screen": "[bool]", // The default is `false`.
