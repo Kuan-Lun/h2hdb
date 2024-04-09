@@ -21,7 +21,10 @@ setup(
     keywords=["H@H", "h2h", "database", "h2hdb"],
     packages=["h2hdb"],
     install_requires=[],
-    extras_require={"MySQL": ["mysql-connector-python>=8.3.0,<9.0.0"]},
+    extras_require={
+        "mysql": ["mysql-connector-python>=8.3.0,<9.0.0"],
+        "cbz": ["pillow>=10.3.0,<11.0.0"],
+    },
     package_dir={"": "src"},
     python_requires=">=3.12, <4",
     classifiers=[

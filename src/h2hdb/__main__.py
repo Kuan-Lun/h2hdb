@@ -51,7 +51,7 @@ if __name__ == "__main__":
                 if GALLERY_INFO_FILE_NAME in files:
                     gallery_paths.append(root)
 
-    if len(gallery_paths) > 0:
+    if config.multiprocess.num_processes > 1 and len(gallery_paths) > 0:
         gallery_groups = random_split_list(
             gallery_paths, config.multiprocess.num_processes
         )

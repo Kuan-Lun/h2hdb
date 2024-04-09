@@ -443,27 +443,56 @@ class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
 
 class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
     def _create_galleries_names_table(self) -> None:
-        table_name = "galleries_names"
+        table_name = "galleries_dbids"
         match self.config.database.sql_type.lower():
             case "mysql":
                 column_name = "name"
                 column_name_parts, create_gallery_name_parts_sql = (
                     self.mysql_split_gallery_name_based_on_limit(column_name)
                 )
-                query = f"""
+                id_query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
                         PRIMARY KEY (db_gallery_id),
                         db_gallery_id INT  UNSIGNED AUTO_INCREMENT,
                         {create_gallery_name_parts_sql},
-                        UNIQUE real_primay_key ({", ".join(column_name_parts)}),
+                        UNIQUE real_primay_key ({", ".join(column_name_parts)})
+                    )
+                """
+        self.connector.execute(id_query)
+
+        table_name = "galleries_names"
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                name_query = f"""
+                    CREATE TABLE IF NOT EXISTS {table_name} (
+                        PRIMARY KEY (db_gallery_id),
+                        FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id),
+                        db_gallery_id INT  UNSIGNED NOT NULL,
                         full_name     TEXT          NOT NULL,
                         FULLTEXT (full_name)
                     )
                 """
-        self.connector.execute(query)
+        self.connector.execute(name_query)
         logger.info(f"{table_name} table created.")
 
     def _insert_gallery_name(self, gallery_name: str) -> None:
+        table_name = "galleries_dbids"
+        gallery_name_parts = self._split_gallery_name(gallery_name)
+
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                column_name_parts, _ = self.mysql_split_gallery_name_based_on_limit(
+                    "name"
+                )
+                insert_query = f"""
+                    INSERT INTO {table_name}
+                        ({", ".join(column_name_parts)})
+                    VALUES ({", ".join(["%s" for _ in column_name_parts])})
+                """
+        self.connector.execute(insert_query, tuple(gallery_name_parts))
+
+        db_gallery_id = self._select_gallery_name_id(gallery_name)
+
         table_name = "galleries_names"
         gallery_name_parts = self._split_gallery_name(gallery_name)
 
@@ -474,13 +503,13 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
                 )
                 insert_query = f"""
                     INSERT INTO {table_name}
-                        ({", ".join(column_name_parts)}, full_name)
-                    VALUES ({", ".join(["%s" for _ in column_name_parts])}, %s)
+                        (db_gallery_id, full_name)
+                    VALUES (%s, %s)
                 """
-        self.connector.execute(insert_query, (*tuple(gallery_name_parts), gallery_name))
+        self.connector.execute(insert_query, (db_gallery_id, gallery_name))
 
     def _select_gallery_name_id(self, gallery_name: str) -> int:
-        table_name = "galleries_names"
+        table_name = "galleries_dbids"
         gallery_name_parts = self._split_gallery_name(gallery_name)
 
         match self.config.database.sql_type.lower():
@@ -528,7 +557,7 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
                         PRIMARY KEY (db_gallery_id),
-                        FOREIGN KEY (db_gallery_id) REFERENCES galleries_names(db_gallery_id),
+                        FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id),
                         db_gallery_id INT UNSIGNED NOT NULL,
                         gid           INT UNSIGNED NOT NULL,
                         INDEX (gid)
@@ -580,7 +609,7 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
                         PRIMARY KEY (db_gallery_id),
-                        FOREIGN KEY (db_gallery_id) REFERENCES galleries_names(db_gallery_id),
+                        FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id),
                         db_gallery_id INT UNSIGNED NOT NULL,
                         time          DATETIME     NOT NULL,
                         INDEX (time)
@@ -663,7 +692,7 @@ class H2HDBGalleriesTitles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
                         PRIMARY KEY (db_gallery_id),
-                        FOREIGN KEY (db_gallery_id) REFERENCES galleries_names(db_gallery_id),
+                        FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id),
                         db_gallery_id INT UNSIGNED NOT NULL,
                         title         TEXT         NOT NULL,
                         FULLTEXT (title)
@@ -714,7 +743,7 @@ class H2HDBUploadAccounts(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
                         PRIMARY KEY (db_gallery_id),
-                        FOREIGN KEY (db_gallery_id) REFERENCES galleries_names(db_gallery_id),
+                        FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id),
                         db_gallery_id INT UNSIGNED                      NOT NULL,
                         account       CHAR({self.innodb_index_prefix_limit}) NOT NULL,
                         INDEX (account)
@@ -804,7 +833,7 @@ class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
                         PRIMARY KEY (db_gallery_id),
-                        FOREIGN KEY (db_gallery_id) REFERENCES galleries_names(db_gallery_id),
+                        FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id),
                         db_gallery_id INT UNSIGNED NOT NULL,
                         comment       TEXT         NOT NULL,
                         FULLTEXT (Comment)
@@ -865,7 +894,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
                         PRIMARY KEY (db_gallery_id),
-                        FOREIGN KEY (db_gallery_id) REFERENCES galleries_names(db_gallery_id),
+                        FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id),
                         db_gallery_id INT UNSIGNED                      NOT NULL,
                         tag           CHAR({self.innodb_index_prefix_limit}) NOT NULL,
                         INDEX (tag)
@@ -923,7 +952,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
 class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_files_names_table(self) -> None:
-        table_name = f"files_names"
+        table_name = f"files_dbids"
         match self.config.database.sql_type.lower():
             case "mysql":
                 column_name = "name"
@@ -935,10 +964,23 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         PRIMARY KEY (db_file_id),
                         db_file_id    INT UNSIGNED AUTO_INCREMENT,
                         db_gallery_id INT UNSIGNED NOT NULL,
-                        FOREIGN KEY (db_gallery_id) REFERENCES galleries_names(db_gallery_id),
+                        FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id),
                         {create_gallery_name_parts_sql},
-                        UNIQUE real_primay_key (db_gallery_id, {", ".join(column_name_parts)}),
-                        full_name     TEXT         NOT NULL,
+                        UNIQUE real_primay_key (db_gallery_id, {", ".join(column_name_parts)})
+                    )
+                """
+        self.connector.execute(query)
+        logger.info(f"{table_name} table created.")
+
+        table_name = f"files_names"
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                query = f"""
+                    CREATE TABLE IF NOT EXISTS {table_name} (
+                        PRIMARY KEY (db_file_id),
+                        FOREIGN KEY (db_file_id) REFERENCES files_dbids(db_file_id),
+                        db_file_id  INT UNSIGNED NOT NULL,
+                        full_name   TEXT         NOT NULL,
                         FULLTEXT (full_name)
                     )
                 """
@@ -946,7 +988,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         logger.info(f"{table_name} table created.")
 
     def _insert_gallery_file(self, gallery_name_id: int, file_name: str) -> None:
-        table_name = "files_names"
+        
         if len(file_name) > FILE_NAME_LENGTH_LIMIT:
             logger.error(
                 f"File name '{file_name}' is too long. Must be {FILE_NAME_LENGTH_LIMIT} characters or less."
@@ -954,19 +996,34 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             raise ValueError("File name is too long.")
         file_name_parts = self._split_gallery_name(file_name)
 
+        table_name = "files_dbids"
         match self.config.database.sql_type.lower():
             case "mysql":
                 column_name_parts, _ = self.mysql_split_file_name_based_on_limit("name")
                 insert_query = f"""
                     INSERT INTO {table_name}
-                        (db_gallery_id, {", ".join(column_name_parts)}, full_name)
-                    VALUES (%s, {", ".join(["%s" for _ in column_name_parts])}, %s)
+                        (db_gallery_id, {", ".join(column_name_parts)})
+                    VALUES (%s, {", ".join(["%s" for _ in column_name_parts])})
                 """
-        data = (gallery_name_id, *file_name_parts, file_name)
+        data = (gallery_name_id, *file_name_parts)
+        self.connector.execute(insert_query, data)
+
+        db_file_id = self._select_gallery_file_id(gallery_name_id, file_name)
+
+        table_name = "files_names"
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                column_name_parts, _ = self.mysql_split_file_name_based_on_limit("name")
+                insert_query = f"""
+                    INSERT INTO {table_name}
+                        (db_file_id, full_name)
+                    VALUES (%s, %s)
+                """
+        data = (db_file_id, file_name)
         self.connector.execute(insert_query, data)
 
     def _select_gallery_file_id(self, gallery_name_id: int, file_name: str) -> int:
-        table_name = "files_names"
+        table_name = "files_dbids"
         file_name_parts = self._split_gallery_name(file_name)
         match self.config.database.sql_type.lower():
             case "mysql":
@@ -1016,7 +1073,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
                         PRIMARY KEY (db_file_id),
-                        FOREIGN KEY (db_file_id) REFERENCES files_names(db_file_id),
+                        FOREIGN KEY (db_file_id) REFERENCES files_dbids(db_file_id),
                         db_file_id INT UNSIGNED       NOT NULL,
                         hash_value BINARY({output_bits/8}) NOT NULL,
                         INDEX (hash_value)
@@ -1095,6 +1152,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                            files_hashs_blake2b.hash_value  AS blake2b,
                            files_hashs_blake2s.hash_value  AS blake2s
                       FROM files_names
+                           LEFT JOIN files_dbids          USING (db_file_id)
                            LEFT JOIN galleries_titles     USING (db_gallery_id)
                            LEFT JOIN galleries_names      USING (db_gallery_id)
                            LEFT JOIN files_hashs_sha224   USING (db_file_id)
