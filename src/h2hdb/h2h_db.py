@@ -1648,6 +1648,7 @@ class H2HDB(
                     cbz_directory = os.path.join(self.config.h2h.cbz_path, str(upload_time.year), str(upload_time.month), str(upload_time.day))
                 case "flat":
                     cbz_directory = self.config.h2h.cbz_path
+            tmp_directory = self.config.h2h.cbz_path
             
             cbz_path = os.path.join(cbz_directory, gallery_info_params.gallery_name + ".cbz")
             if os.path.exists(cbz_path):
@@ -1658,10 +1659,10 @@ class H2HDB(
                 )
                 cbz_hash_value = calculate_hash_of_file_in_cbz(cbz_path, GALLERY_INFO_FILE_NAME, COMPARISON_HASH_ALGORITHM)
                 if original_hash_value != cbz_hash_value:
-                    compress_images_and_create_cbz(gallery_folder, cbz_directory, self.config.h2h.cbz_max_size)
+                    compress_images_and_create_cbz(gallery_folder, cbz_directory, tmp_directory,self.config.h2h.cbz_max_size)
                     logger.info(f"Gallery '{gallery_info_params.gallery_name}' updated.")
             else:
-                compress_images_and_create_cbz(gallery_folder, cbz_directory, self.config.h2h.cbz_max_size)
+                compress_images_and_create_cbz(gallery_folder, cbz_directory, tmp_directory, self.config.h2h.cbz_max_size)
                 logger.info(f"Gallery '{gallery_info_params.gallery_name}' updated.")
 
     def insert_h2h_download(self) -> None:

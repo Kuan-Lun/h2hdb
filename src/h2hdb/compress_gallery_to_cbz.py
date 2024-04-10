@@ -33,13 +33,13 @@ def create_cbz(directory, output_path):
             cbz.write(os.path.join(directory, filename), filename)
 
 # Compress images and create a CBZ file
-def compress_images_and_create_cbz(input_directory:str, output_directory: str, max_size: int) -> None:
-    if len(set([input_directory, output_directory])) < 2:
+def compress_images_and_create_cbz(input_directory:str, output_directory: str, tmp_directory: str, max_size: int) -> None:
+    if len(set([input_directory, output_directory, tmp_directory])) < 2:
         raise ValueError("Input and output directories cannot be the same.")
 
     # Create the output directory
     gallery_name = os.path.basename(input_directory)
-    tmp_main_directory = os.path.join(output_directory, "tmp")
+    tmp_main_directory = os.path.join(tmp_directory, "tmp")
     tmp_cbz_directory = os.path.join(tmp_main_directory, gallery_name)
     if os.path.exists(tmp_main_directory):
         shutil.rmtree(tmp_main_directory)
