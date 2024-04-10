@@ -1640,29 +1640,29 @@ class H2HDB(
             self._insert_gallery_info(gallery_info_params)
             logger.info(f"Gallery '{gallery_info_params.gallery_name}' inserted.")
         
-        # if self.config.h2h.cbz_path != "":
-        #     from .compress_gallery_to_cbz import compress_images_and_create_cbz, calculate_hash_of_file_in_cbz
-        #     match self.config.h2h.cbz_grouping:
-        #         case "date":
-        #             upload_time = self.select_upload_time(gallery_info_params.gallery_name)
-        #             cbz_directory = os.path.join(self.config.h2h.cbz_path, str(upload_time.year), str(upload_time.month), str(upload_time.day))
-        #         case "flat":
-        #             cbz_directory = self.config.h2h.cbz_path
+        if self.config.h2h.cbz_path != "":
+            from .compress_gallery_to_cbz import compress_images_and_create_cbz, calculate_hash_of_file_in_cbz
+            match self.config.h2h.cbz_grouping:
+                case "date":
+                    upload_time = self.select_upload_time(gallery_info_params.gallery_name)
+                    cbz_directory = os.path.join(self.config.h2h.cbz_path, str(upload_time.year), str(upload_time.month), str(upload_time.day))
+                case "flat":
+                    cbz_directory = self.config.h2h.cbz_path
             
-        #     cbz_path = os.path.join(cbz_directory, gallery_info_params.gallery_name + ".cbz")
-        #     if os.path.exists(cbz_path):
-        #         gallery_name_id = self._select_gallery_name_id(gallery_info_params.gallery_name)
-        #         gallery_info_file_id = self._select_gallery_file_id(gallery_name_id, GALLERY_INFO_FILE_NAME)
-        #         original_hash_value = self._select_gallery_file_hash(
-        #             gallery_info_file_id, COMPARISON_HASH_ALGORITHM
-        #         )
-        #         cbz_hash_value = calculate_hash_of_file_in_cbz(cbz_path, GALLERY_INFO_FILE_NAME, COMPARISON_HASH_ALGORITHM)
-        #         if original_hash_value != cbz_hash_value:
-        #             compress_images_and_create_cbz(gallery_folder, cbz_directory, self.config.h2h.cbz_max_size)
-        #             logger.info(f"Gallery '{gallery_info_params.gallery_name}' updated.")
-        #     else:
-        #         compress_images_and_create_cbz(gallery_folder, cbz_directory, self.config.h2h.cbz_max_size)
-        #         logger.info(f"Gallery '{gallery_info_params.gallery_name}' updated.")
+            cbz_path = os.path.join(cbz_directory, gallery_info_params.gallery_name + ".cbz")
+            if os.path.exists(cbz_path):
+                gallery_name_id = self._select_gallery_name_id(gallery_info_params.gallery_name)
+                gallery_info_file_id = self._select_gallery_file_id(gallery_name_id, GALLERY_INFO_FILE_NAME)
+                original_hash_value = self._select_gallery_file_hash(
+                    gallery_info_file_id, COMPARISON_HASH_ALGORITHM
+                )
+                cbz_hash_value = calculate_hash_of_file_in_cbz(cbz_path, GALLERY_INFO_FILE_NAME, COMPARISON_HASH_ALGORITHM)
+                if original_hash_value != cbz_hash_value:
+                    compress_images_and_create_cbz(gallery_folder, cbz_directory, self.config.h2h.cbz_max_size)
+                    logger.info(f"Gallery '{gallery_info_params.gallery_name}' updated.")
+            else:
+                compress_images_and_create_cbz(gallery_folder, cbz_directory, self.config.h2h.cbz_max_size)
+                logger.info(f"Gallery '{gallery_info_params.gallery_name}' updated.")
 
     def insert_h2h_download(self) -> None:
         self.delete_pending_gallery_removals()
