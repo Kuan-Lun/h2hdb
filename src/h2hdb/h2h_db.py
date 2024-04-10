@@ -1643,11 +1643,19 @@ class H2HDB(
         if self.config.h2h.cbz_path != "":
             from .compress_gallery_to_cbz import compress_images_and_create_cbz, calculate_hash_of_file_in_cbz
             match self.config.h2h.cbz_grouping:
-                case "date":
+                case "date-yyyy":
+                    upload_time = self.select_upload_time(gallery_info_params.gallery_name)
+                    cbz_directory = os.path.join(self.config.h2h.cbz_path, str(upload_time.year))
+                case "date-yyyy-mm":
+                    upload_time = self.select_upload_time(gallery_info_params.gallery_name)
+                    cbz_directory = os.path.join(self.config.h2h.cbz_path, str(upload_time.year), str(upload_time.month))
+                case "date-yyyy-mm-dd":
                     upload_time = self.select_upload_time(gallery_info_params.gallery_name)
                     cbz_directory = os.path.join(self.config.h2h.cbz_path, str(upload_time.year), str(upload_time.month), str(upload_time.day))
                 case "flat":
                     cbz_directory = self.config.h2h.cbz_path
+                case _:
+                    raise ValueError(f"Invalid cbz_grouping value: {self.config.h2h.cbz_grouping}")
             tmp_directory = os.path.join(self.config.h2h.cbz_path, "tmp")
             
             cbz_path = os.path.join(cbz_directory, gallery_info_params.gallery_name + ".cbz")

@@ -127,9 +127,6 @@ class H2HConfig:
         
         if type(cbz_grouping) is not str:
             raise ConfigError("cbz_grouping must be a string")
-        
-        if cbz_grouping not in ["date", "flat"]:
-            raise ConfigError(f"{cbz_grouping} is invalid. cbz_grouping must be either 'date' or 'flat'. 'date' groups by date, 'flat' does not group.")
 
     def __repr__(self) -> str:
         return f"H2HConfig(download_path={self.download_path}, cbz_path={self.cbz_path}, cbz_max_size={self.cbz_max_size})"
