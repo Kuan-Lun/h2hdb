@@ -110,7 +110,9 @@ class LoggerConfig:
 class H2HConfig:
     __slots__ = ["download_path", "cbz_path", "cbz_max_size", "cbz_grouping"]
 
-    def __init__(self, download_path: str, cbz_path: str, cbz_max_size: int, cbz_grouping: str) -> None:
+    def __init__(
+        self, download_path: str, cbz_path: str, cbz_max_size: int, cbz_grouping: str
+    ) -> None:
         self.download_path = download_path
         self.cbz_path = cbz_path
         self.cbz_max_size = cbz_max_size
@@ -118,13 +120,13 @@ class H2HConfig:
 
         if type(download_path) is not str:
             raise ConfigError("download_path must be a string")
-        
+
         if type(cbz_path) is not str:
             raise ConfigError("cbz_path must be a string")
-        
+
         if type(cbz_max_size) is not int:
             raise ConfigError("cbz_max_size must be an integer")
-        
+
         if type(cbz_grouping) is not str:
             raise ConfigError("cbz_grouping must be a string")
 
@@ -148,8 +150,30 @@ class MultiProcessConfig:
             raise ConfigError("num_processes must be at least 1")
 
 
+class KomgaConfig:
+    __slots__ = ["base_url", "api_username", "api_password", "library_id"]
+
+    def __init__(
+        self, base_url: str, api_username: str, api_password: str, library_id: str
+    ) -> None:
+        self.base_url = base_url
+        self.api_username = api_username
+        self.api_password = api_password
+        self.library_id = library_id
+
+
+class MediaServer:
+    __slots__ = ["server_type", "server_config"]
+
+    def __init__(
+        self, server_type: str, server_config: KomgaConfig | dict[str, str]
+    ) -> None:
+        self.server_type = server_type
+        self.server_config = server_config
+
+
 class Config:
-    __slots__ = ["h2h", "database", "logger", "multiprocess"]
+    __slots__ = ["h2h", "database", "logger", "multiprocess", "media_server"]
 
     def __init__(
         self,
@@ -157,14 +181,16 @@ class Config:
         database_config: DatabaseConfig,
         logger_config: LoggerConfig,
         multiprocess_config: MultiProcessConfig,
+        media_server_config: MediaServer,
     ) -> None:
         self.h2h = h2h_config
         self.database = database_config
         self.logger = logger_config
         self.multiprocess = multiprocess_config
+        self.media_server = media_server_config
 
     def __repr__(self) -> str:
-        return f"Config(h2h={self.h2h}, database_config={self.database}, logger_config={self.logger}, multiprocess_config={self.multiprocess})"
+        return f"Config(h2h={self.h2h}, database_config={self.database}, logger_config={self.logger}, multiprocess_config={self.multiprocess}, media_server_config={self.media_server})"
 
     def __str__(self) -> str:
         return self.__repr__()
@@ -172,12 +198,12 @@ class Config:
 
 def set_default_config() -> dict[str, dict]:
     return dict[str, dict](
-        h2h=dict[str, str](
+        h2h=dict[str, str | int](
             download_path="download",
             cbz_path="",
             cbz_max_size=768,
             cbz_grouping="flat",
-            ),
+        ),
         database=dict[str, str](
             sql_type="mysql",
             host="localhost",
@@ -193,6 +219,9 @@ def set_default_config() -> dict[str, dict]:
             write_to_file="",
         ),
         multiprocess=dict[str, int](number=1),
+        media_server=dict[str, str | dict[str, str]](
+            server_type="", server_config=dict[str, str]()
+        ),
     )
 
 
@@ -287,7 +316,36 @@ def load_config(config_path: str = "") -> Config:
         max_log_entry_length=max_log_entry_length,
     )
 
+    media_server_type = user_config["media_server"]["server_type"]
+    user_config["media_server"].pop("server_type")
+    media_server_config = user_config["media_server"]["server_config"]
+    match media_server_type:
+        case "komga":
+            media_server_config = KomgaConfig(
+                base_url=media_server_config["base_url"],
+                api_username=media_server_config["api_username"],
+                api_password=media_server_config["api_password"],
+                library_id=media_server_config["library_id"],
+            )
+            user_config["media_server"].pop("server_config")
+        case _:
+            raise ConfigError("Invalid media server type")
+    if len(user_config["media_server"]) > 0:
+        raise ConfigError("Invalid configuration for media_server")
+
+    media_server_config = MediaServer(
+        server_type=media_server_type,
+        server_config=media_server_config,
+    )
+    user_config.pop("media_server")
+
     if len(user_config) > 0:
         raise ConfigError("Invalid configuration for the entire config")
 
-    return Config(h2h_config, database_config, logger_config, multiprocess_config)
+    return Config(
+        h2h_config,
+        database_config,
+        logger_config,
+        multiprocess_config,
+        media_server_config,
+    )

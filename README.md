@@ -63,6 +63,15 @@ H2HDB is a comprehensive database for organising and managing H@H comic collecti
         "display_on_screen": "[bool]", // The default is `false`.
         "max_log_entry_length": "[int]", // Maximum length of log entries.
         "write_to_file": "[str]" // Path to write log entries to.
+    },
+    "media_server": {
+        "server_type": "[str]", // Now only supports `komga`. The defult is ``.
+        "server_config": {
+            "base_url": "[url]", // The media server's base url.
+            "api_username": "[str]", // The media server's administrator.
+            "api_password": "[str]", // The password of the media server's adimistrator.
+            "library_id": "[str]" // The libary ID for komga.
+        } // The defult is `{}`.
     }
 }
 ```
