@@ -39,10 +39,9 @@ def compress_images_and_create_cbz(input_directory:str, output_directory: str, t
 
     # Create the output directory
     gallery_name = os.path.basename(input_directory)
-    tmp_main_directory = os.path.join(tmp_directory, "tmp")
-    tmp_cbz_directory = os.path.join(tmp_main_directory, gallery_name)
-    if os.path.exists(tmp_main_directory):
-        shutil.rmtree(tmp_main_directory)
+    tmp_cbz_directory = os.path.join(tmp_directory, gallery_name)
+    if os.path.exists(tmp_cbz_directory):
+        shutil.rmtree(tmp_cbz_directory)
     os.makedirs(tmp_cbz_directory)
 
     # Compress the images
@@ -59,7 +58,7 @@ def compress_images_and_create_cbz(input_directory:str, output_directory: str, t
     # Create the CBZ file
     cbzfile = os.path.join(output_directory, gallery_name+".cbz")
     create_cbz(tmp_cbz_directory, cbzfile)
-    shutil.rmtree(tmp_main_directory)
+    shutil.rmtree(tmp_cbz_directory)
 
 def calculate_hash_of_file_in_cbz(cbz_path: str, file_name: str, algorithm: str) -> bytes:
     with zipfile.ZipFile(cbz_path, 'r') as myzip:
