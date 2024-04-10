@@ -108,16 +108,31 @@ class LoggerConfig:
 
 
 class H2HConfig:
-    __slots__ = ["download_path"]
+    __slots__ = ["download_path", "cbz_path", "cbz_max_size", "cbz_grouping"]
 
-    def __init__(self, download_path: str) -> None:
+    def __init__(self, download_path: str, cbz_path: str, cbz_max_size: int, cbz_grouping: str) -> None:
         self.download_path = download_path
+        self.cbz_path = cbz_path
+        self.cbz_max_size = cbz_max_size
+        self.cbz_grouping = cbz_grouping
 
         if type(download_path) is not str:
             raise ConfigError("download_path must be a string")
+        
+        if type(cbz_path) is not str:
+            raise ConfigError("cbz_path must be a string")
+        
+        if type(cbz_max_size) is not int:
+            raise ConfigError("cbz_max_size must be an integer")
+        
+        if type(cbz_grouping) is not str:
+            raise ConfigError("cbz_grouping must be a string")
+        
+        if cbz_grouping not in ["date", "flat"]:
+            raise ConfigError(f"{cbz_grouping} is invalid. cbz_grouping must be either 'date' or 'flat'. 'date' groups by date, 'flat' does not group.")
 
     def __repr__(self) -> str:
-        return f"H2HConfig(download_path={self.download_path})"
+        return f"H2HConfig(download_path={self.download_path}, cbz_path={self.cbz_path}, cbz_max_size={self.cbz_max_size})"
 
     def __str__(self) -> str:
         return self.__repr__()
@@ -160,7 +175,12 @@ class Config:
 
 def set_default_config() -> dict[str, dict]:
     return dict[str, dict](
-        h2h=dict[str, str](download_path="download"),
+        h2h=dict[str, str](
+            download_path="download",
+            cbz_path="",
+            cbz_max_size=768,
+            cbz_grouping="flat",
+            ),
         database=dict[str, str](
             sql_type="mysql",
             host="localhost",
@@ -211,7 +231,13 @@ def load_config(config_path: str = "") -> Config:
     # Validate the h2h configuration
     download_path = user_config["h2h"]["download_path"]
     user_config["h2h"].pop("download_path")
-    h2h_config = H2HConfig(download_path)
+    cbz_path = user_config["h2h"]["cbz_path"]
+    user_config["h2h"].pop("cbz_path")
+    cbz_max_size = user_config["h2h"]["cbz_max_size"]
+    user_config["h2h"].pop("cbz_max_size")
+    cbz_grouping = user_config["h2h"]["cbz_grouping"]
+    user_config["h2h"].pop("cbz_grouping")
+    h2h_config = H2HConfig(download_path, cbz_path, cbz_max_size, cbz_grouping)
     if len(user_config["h2h"]) > 0:
         raise ConfigError("Invalid configuration for h2h")
     else:

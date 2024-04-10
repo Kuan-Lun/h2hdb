@@ -32,7 +32,11 @@ H2HDB is a comprehensive database for organising and managing H@H comic collecti
     rm -rf ./h2hdb/ # Remove the downloaded 'h2hdb' folder.
     ```
 
-4. Run the script by running `./.venv/Scripts/python -m h2hdb --config [json-path]`.
+4. Run the script.
+
+    ```bash
+    ./.venv/Scripts/python -m h2hdb --config [json-path]
+    ```
 
 ### Config
 
@@ -40,6 +44,9 @@ H2HDB is a comprehensive database for organising and managing H@H comic collecti
 {
     "h2h": {
         "download_path": "[str]", // The download path of H@H. The default is `download`.
+        "cbz_path": "[str]", // The cbz in this path.
+        "cbz_max_size": "[int]", // The maxinum of the mininum of width and height height. The default is `768`.
+        "cbz_grouping": "[str]" // `date` or `flat`. The default is `flat`.
     },
     "database": {
         "sql_type": "[str]", // Now only supports `mysql`. The default is `mysql`.

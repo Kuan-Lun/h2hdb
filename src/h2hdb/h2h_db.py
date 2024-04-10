@@ -6,6 +6,7 @@ import hashlib
 import os
 from abc import ABCMeta, abstractmethod
 import math
+import datetime
 
 from .gallery_info_parser import parse_gallery_info, GalleryInfoParser
 from .config_loader import Config
@@ -33,6 +34,7 @@ HASH_ALGORITHMS = [
     "sha3_512",
     "sha512",
 ]
+COMPARISON_HASH_ALGORITHM = "sha512"
 
 
 def hash_function(x: bytes, algorithm: str) -> bytes:
@@ -628,7 +630,7 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         data = (gallery_name_id, time)
         self.connector.execute(insert_query, data)
 
-    def _select_time(self, table_name: str, gallery_name_id: int) -> str:
+    def _select_time(self, table_name: str, gallery_name_id: int) -> datetime.datetime:
         match self.config.database.sql_type.lower():
             case "mysql":
                 select_query = f"""
@@ -666,6 +668,10 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
     def _insert_upload_time(self, gallery_name_id: int, time: str) -> None:
         self._insert_time("galleries_upload_times", gallery_name_id, time)
+
+    def select_upload_time(self, gallery_name: str) -> datetime.datetime:
+        gallery_name_id = self._select_gallery_name_id(gallery_name)
+        return self._select_time("galleries_upload_times", gallery_name_id)
 
     def _create_galleries_modified_times_table(self) -> None:
         self._create_times_table("galleries_modified_times")
@@ -966,7 +972,8 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         db_gallery_id INT UNSIGNED NOT NULL,
                         FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id),
                         {create_gallery_name_parts_sql},
-                        UNIQUE real_primay_key (db_gallery_id, {", ".join(column_name_parts)})
+                        UNIQUE real_primay_key (db_gallery_id, {", ".join(column_name_parts)}),
+                        INDEX full_name ({", ".join(column_name_parts)})
                     )
                 """
         self.connector.execute(query)
@@ -1604,15 +1611,22 @@ class H2HDB(
             )
             with open(absolute_file_path, "rb") as f:
                 gallery_info_file_content = f.read()
-            issame = True
-            for algorithm in HASH_ALGORITHMS:
-                original_hash_value = self._select_gallery_file_hash(
-                    gallery_info_file_id, algorithm
+            ## Check if the hash of the gallery info file is the same as the original hash value.
+            # issame = True
+            # for algorithm in HASH_ALGORITHMS:
+            #     original_hash_value = self._select_gallery_file_hash(
+            #         gallery_info_file_id, algorithm
+            #     )
+            #     current_hash_value = hash_function(gallery_info_file_content, algorithm)
+            #     if original_hash_value != current_hash_value:
+            #         issame &= False
+            #         break
+            COMPARISON_HASH_ALGORITHM = "sha512"
+            original_hash_value = self._select_gallery_file_hash(
+                    gallery_info_file_id, COMPARISON_HASH_ALGORITHM
                 )
-                current_hash_value = hash_function(gallery_info_file_content, algorithm)
-                if original_hash_value != current_hash_value:
-                    issame &= False
-                    break
+            current_hash_value = hash_function(gallery_info_file_content, COMPARISON_HASH_ALGORITHM)
+            issame = original_hash_value == current_hash_value
         except DatabaseKeyError:
             issame = False
         return issame
@@ -1625,6 +1639,30 @@ class H2HDB(
             self.delete_gallery(gallery_info_params.gallery_name)
             self._insert_gallery_info(gallery_info_params)
             logger.info(f"Gallery '{gallery_info_params.gallery_name}' inserted.")
+        
+        # if self.config.h2h.cbz_path != "":
+        #     from .compress_gallery_to_cbz import compress_images_and_create_cbz, calculate_hash_of_file_in_cbz
+        #     match self.config.h2h.cbz_grouping:
+        #         case "date":
+        #             upload_time = self.select_upload_time(gallery_info_params.gallery_name)
+        #             cbz_directory = os.path.join(self.config.h2h.cbz_path, str(upload_time.year), str(upload_time.month), str(upload_time.day))
+        #         case "flat":
+        #             cbz_directory = self.config.h2h.cbz_path
+            
+        #     cbz_path = os.path.join(cbz_directory, gallery_info_params.gallery_name + ".cbz")
+        #     if os.path.exists(cbz_path):
+        #         gallery_name_id = self._select_gallery_name_id(gallery_info_params.gallery_name)
+        #         gallery_info_file_id = self._select_gallery_file_id(gallery_name_id, GALLERY_INFO_FILE_NAME)
+        #         original_hash_value = self._select_gallery_file_hash(
+        #             gallery_info_file_id, COMPARISON_HASH_ALGORITHM
+        #         )
+        #         cbz_hash_value = calculate_hash_of_file_in_cbz(cbz_path, GALLERY_INFO_FILE_NAME, COMPARISON_HASH_ALGORITHM)
+        #         if original_hash_value != cbz_hash_value:
+        #             compress_images_and_create_cbz(gallery_folder, cbz_directory, self.config.h2h.cbz_max_size)
+        #             logger.info(f"Gallery '{gallery_info_params.gallery_name}' updated.")
+        #     else:
+        #         compress_images_and_create_cbz(gallery_folder, cbz_directory, self.config.h2h.cbz_max_size)
+        #         logger.info(f"Gallery '{gallery_info_params.gallery_name}' updated.")
 
     def insert_h2h_download(self) -> None:
         self.delete_pending_gallery_removals()

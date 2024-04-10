@@ -25,6 +25,12 @@ setup(
         "mysql": ["mysql-connector-python>=8.3.0,<9.0.0"],
         "cbz": ["pillow>=10.3.0,<11.0.0"],
     },
+    entry_points={
+        "console_scripts": [
+            "h2hdb-sql = h2hdb.__main__:h2hdb_sql",
+            "h2hdb-cbz = h2hdb.__main__:h2hdb_cbz"
+        ],
+    },
     package_dir={"": "src"},
     python_requires=">=3.12, <4",
     classifiers=[

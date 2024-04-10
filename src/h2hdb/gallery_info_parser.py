@@ -110,9 +110,12 @@ def parse_gallery_info(gallery_folder: str) -> GalleryInfoParser:
                     for tag in value.split(","):
                         if ":" in tag:
                             tag_key, tag_value = tag.split(":", 1)
-                            tags[tag_key.strip()] = tag_value.strip()
+                            if tag_key != "":
+                                tags[tag_key.strip()] = tag_value.strip()
+                            else:
+                                tags["untagged"] = tag_value.strip()
                         else:
-                            tags["no_tag"] = tag.strip()
+                            tags["untagged"] = tag.strip()
                 case "Title":
                     title = value
                 case "Upload Time":
