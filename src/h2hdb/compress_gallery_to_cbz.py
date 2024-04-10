@@ -56,6 +56,7 @@ def compress_images_and_create_cbz(input_directory:str, output_directory: str, t
             shutil.copy(os.path.join(input_directory, filename), os.path.join(tmp_cbz_directory, filename))
 
     # Create the CBZ file
+    os.makedirs(output_directory, exist_ok=True)
     cbzfile = os.path.join(output_directory, gallery_name+".cbz")
     create_cbz(tmp_cbz_directory, cbzfile)
     shutil.rmtree(tmp_cbz_directory)
