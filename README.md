@@ -106,8 +106,6 @@ This table contains information about the files in the galleries. It contains co
 | `galleries_[other]`                        | The values of `[other]` are the flollowing: <ul><li>`download_times`</li><li>`upload_accounts`</li><li>`upload_times`</li><li>`titles`</li></ul> The above tables's data extracted from `galleryinfo.txt`. |
 | `removed_galleries_gids`                   | Record the GID of the removed gallery. |
 | `pending_gallery_removals`                 | All gallery names in this table will be deleted from all tables in the database after `python -m h2hdb --config [json-path]`. When the deletion is complete, the value in this table will be removed. |
-| `pending_gallery_removals_no_tag`          | The value of the tag `[category]` in `galleryinfo.txt` is empty. For example, `:group`. |
-| `pending_gallery_removals_tags_[category]` | The value of the tag `[category]` in `galleryinfo.txt`. For example, `artist:alice`. |
 
 #### File Hash Tables
 
