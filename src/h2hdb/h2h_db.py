@@ -7,6 +7,7 @@ import os
 from abc import ABCMeta, abstractmethod
 import math
 import datetime
+from itertools import islice
 
 from .gallery_info_parser import parse_gallery_info, GalleryInfoParser
 from .config_loader import Config
@@ -1791,7 +1792,10 @@ class H2HDB(
                 current_galleries_names.append(gallery_name)
                 gallery_name_parts = self._split_gallery_name(gallery_name)
                 data.append(tuple(gallery_name_parts))
-        self.connector.execute_many(insert_query, data)
+        group_size = 5000
+        it = iter(data)
+        for _ in range(0, len(data), group_size):
+            self.connector.execute_many(insert_query, list(islice(it, group_size)))
 
         match self.config.database.sql_type.lower():
             case "mysql":
@@ -1823,6 +1827,8 @@ class H2HDB(
                 for root, dirs, files in os.walk(
                     self.config.h2h.cbz_path, topdown=False
                 ):
+                    if root == self.config.h2h.cbz_path:
+                        continue
                     if max([len(dirs), len(files)]) == 0:
                         directory_removed = True
                         os.rmdir(root)
