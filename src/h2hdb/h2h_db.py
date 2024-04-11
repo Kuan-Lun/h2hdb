@@ -922,7 +922,8 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         tag_name       CHAR({self.innodb_index_prefix_limit}) NOT NULL,
                         FOREIGN KEY (tag_name) REFERENCES {tag_name_table_name}(tag_name),
                         tag_value      CHAR({self.innodb_index_prefix_limit}) NOT NULL,
-                        UNIQUE (tag_name, tag_value)
+                        UNIQUE (tag_name, tag_value),
+                        INDEX (tag_value)
                     )
                 """
         self.connector.execute(query)
