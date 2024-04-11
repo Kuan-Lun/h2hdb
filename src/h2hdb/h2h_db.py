@@ -21,19 +21,19 @@ from .settings import FOLDER_NAME_LENGTH_LIMIT, FILE_NAME_LENGTH_LIMIT
 
 
 GALLERY_INFO_FILE_NAME = "galleryinfo.txt"
-HASH_ALGORITHMS = [
-    "blake2b",
-    "blake2s",
-    "sha1",
-    "sha224",
-    "sha256",
-    "sha384",
-    "sha3_224",
-    "sha3_256",
-    "sha3_384",
-    "sha3_512",
-    "sha512",
-]
+HASH_ALGORITHMS = dict[str, int](
+    sha224=224,
+    sha256=256,
+    sha384=384,
+    sha1=160,
+    sha512=512,
+    sha3_224=224,
+    sha3_256=256,
+    sha3_384=384,
+    sha3_512=512,
+    blake2b=512,
+    blake2s=256,
+)
 COMPARISON_HASH_ALGORITHM = "sha512"
 
 
@@ -65,14 +65,14 @@ class H2HDBAbstract(metaclass=ABCMeta):
         check_database_collation: Checks the collation of the database.
         create_main_tables: Creates the main tables for the comic database.
         insert_gallery_info: Inserts the gallery information into the database.
-        select_gallery_gid: Selects the gallery GID from the database.
-        select_gallery_title: Selects the gallery title from the database.
+        get_gid_by_gallery_name: Selects the gallery GID from the database.
+        get_title_by_gallery_name: Selects the gallery title from the database.
         update_access_time: Updates the access time for the gallery in the database.
-        select_gallery_upload_account: Selects the gallery upload account from the database.
-        select_gallery_comment: Selects the gallery comment from the database.
+        get_upload_account_by_gallery_name: Selects the gallery upload account from the database.
+        get_comment_by_gallery_name: Selects the gallery comment from the database.
         insert_gallery_tag: Inserts the gallery tag into the database.
-        select_gallery_tag: Selects the gallery tag from the database.
-        select_gallery_file: Selects the gallery files from the database.
+        get_tag_value_by_gallery_name_and_tag_name: Selects the gallery tag from the database.
+        get_files_by_gallery_name: Selects the gallery files from the database.
         delete_gallery_image: Deletes the gallery image from the database.
         delete_gallery: Deletes the gallery from the database.
 
@@ -215,7 +215,7 @@ class H2HDBAbstract(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def select_gallery_gid(self, gallery_name: str) -> int:
+    def get_gid_by_gallery_name(self, gallery_name: str) -> int:
         """
         Selects the gallery GID from the database.
 
@@ -228,7 +228,7 @@ class H2HDBAbstract(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def select_gallery_title(self, gallery_name: str) -> str:
+    def get_title_by_gallery_name(self, gallery_name: str) -> str:
         """
         Selects the gallery title from the database.
 
@@ -252,7 +252,7 @@ class H2HDBAbstract(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def select_gallery_upload_account(self, gallery_name: str) -> str:
+    def get_upload_account_by_gallery_name(self, gallery_name: str) -> str:
         """
         Selects the gallery upload account from the database.
 
@@ -265,7 +265,7 @@ class H2HDBAbstract(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def select_gallery_comment(self, gallery_name: str) -> str:
+    def get_comment_by_gallery_name(self, gallery_name: str) -> str:
         """
         Selects the gallery comment from the database.
 
@@ -292,7 +292,9 @@ class H2HDBAbstract(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def select_gallery_tag(self, gallery_name: str, tag_name: str) -> str:
+    def get_tag_value_by_gallery_name_and_tag_name(
+        self, gallery_name: str, tag_name: str
+    ) -> str:
         """
         Selects the gallery tag from the database.
 
@@ -306,7 +308,7 @@ class H2HDBAbstract(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def select_gallery_file(self, gallery_name: str) -> list[str]:
+    def get_files_by_gallery_name(self, gallery_name: str) -> list[str]:
         """
         Selects the gallery files from the database.
 
@@ -359,7 +361,7 @@ class H2HDBAbstract(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def select_pending_gallery_removals(self) -> list[str]:
+    def get_pending_gallery_removals(self) -> list[str]:
         """
         Selects the pending gallery removals from the database.
 
@@ -382,6 +384,23 @@ class H2HDBAbstract(metaclass=ABCMeta):
     def delete_pending_gallery_removals(self) -> None:
         """
         Deletes all pending gallery removals from the database.
+        """
+        pass
+
+    @abstractmethod
+    def scan_current_galleries_folders(self) -> list[str]:
+        """
+        Scans the current galleries folders.
+
+        Returns:
+            list[str]: The list of current galleries folders.
+        """
+        pass
+
+    @abstractmethod
+    def refresh_current_files_hashs(self) -> None:
+        """
+        Refreshes the current files hashes in the database.
         """
         pass
 
@@ -493,7 +512,7 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
                 """
         self.connector.execute(insert_query, tuple(gallery_name_parts))
 
-        db_gallery_id = self._select_gallery_name_id(gallery_name)
+        db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
 
         table_name = "galleries_names"
         gallery_name_parts = self._split_gallery_name(gallery_name)
@@ -510,7 +529,7 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
                 """
         self.connector.execute(insert_query, (db_gallery_id, gallery_name))
 
-    def _select_gallery_name_id(self, gallery_name: str) -> int:
+    def _get_db_gallery_id_by_gallery_name(self, gallery_name: str) -> int:
         table_name = "galleries_dbids"
         gallery_name_parts = self._split_gallery_name(gallery_name)
 
@@ -548,8 +567,7 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     Methods:
         _create_galleries_gids_table: Creates the galleries_gids table.
         _insert_gallery_gid: Inserts the GID for the gallery name ID into the galleries_gids table.
-        _select_gallery_gid: Selects the GID for the gallery name ID from the galleries_gids table.
-        select_gallery_gid: Selects the GID for the gallery name from the database.
+        get_gid_by_gallery_name: Selects the GID for the gallery name from the database.
     """
 
     def _create_galleries_gids_table(self) -> None:
@@ -579,7 +597,7 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         data = (gallery_name_id, gid)
         self.connector.execute(insert_query, data)
 
-    def _select_gallery_gid(self, gallery_name_id: int) -> int:
+    def _get_gid_by_db_gallery_id(self, gallery_name_id: int) -> int:
         table_name = "galleries_gids"
         match self.config.database.sql_type.lower():
             case "mysql":
@@ -599,9 +617,9 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             gid = query_result[0]
         return gid
 
-    def select_gallery_gid(self, gallery_name: str) -> int:
-        gallery_name_id = self._select_gallery_name_id(gallery_name)
-        return self._select_gallery_gid(gallery_name_id)
+    def get_gid_by_gallery_name(self, gallery_name: str) -> int:
+        gallery_name_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
+        return self._get_gid_by_db_gallery_id(gallery_name_id)
 
 
 class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
@@ -669,8 +687,8 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _insert_upload_time(self, gallery_name_id: int, time: str) -> None:
         self._insert_time("galleries_upload_times", gallery_name_id, time)
 
-    def select_upload_time(self, gallery_name: str) -> datetime.datetime:
-        gallery_name_id = self._select_gallery_name_id(gallery_name)
+    def get_upload_time_by_gallery_name(self, gallery_name: str) -> datetime.datetime:
+        gallery_name_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
         return self._select_time("galleries_upload_times", gallery_name_id)
 
     def _create_galleries_modified_times_table(self) -> None:
@@ -686,7 +704,7 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self._insert_time("galleries_access_times", gallery_name_id, time)
 
     def update_access_time(self, gallery_name: str, time: str) -> None:
-        gallery_name_id = self._select_gallery_name_id(gallery_name)
+        gallery_name_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
         self._update_time("galleries_access_times", gallery_name_id, time)
 
 
@@ -717,7 +735,7 @@ class H2HDBGalleriesTitles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         data = (gallery_name_id, title)
         self.connector.execute(insert_query, data)
 
-    def _select_gallery_title(self, gallery_name_id: int) -> str:
+    def _get_title_by_gallery_name(self, gallery_name_id: int) -> str:
         table_name = "galleries_titles"
         match self.config.database.sql_type.lower():
             case "mysql":
@@ -736,9 +754,9 @@ class H2HDBGalleriesTitles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             title = query_result[0]
         return title
 
-    def select_gallery_title(self, gallery_name: str) -> str:
-        gallery_name_id = self._select_gallery_name_id(gallery_name)
-        return self._select_gallery_title(gallery_name_id)
+    def get_title_by_gallery_name(self, gallery_name: str) -> str:
+        gallery_name_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
+        return self._get_title_by_gallery_name(gallery_name_id)
 
 
 class H2HDBUploadAccounts(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
@@ -791,8 +809,8 @@ class H2HDBUploadAccounts(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             account = query_result[0]
         return account
 
-    def select_gallery_upload_account(self, gallery_name: str) -> str:
-        gallery_name_id = self._select_gallery_name_id(gallery_name)
+    def get_upload_account_by_gallery_name(self, gallery_name: str) -> str:
+        gallery_name_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
         return self._select_gallery_upload_account(gallery_name_id)
 
 
@@ -887,8 +905,8 @@ class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
             comment = query_result[0]
         return comment
 
-    def select_gallery_comment(self, gallery_name: str) -> str:
-        gallery_name_id = self._select_gallery_name_id(gallery_name)
+    def get_comment_by_gallery_name(self, gallery_name: str) -> str:
+        gallery_name_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
         return self._select_gallery_comment(gallery_name_id)
 
 
@@ -928,7 +946,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def insert_gallery_tag(
         self, gallery_name: str, tag_name: str, tag_value: str
     ) -> None:
-        gallery_name_id = self._select_gallery_name_id(gallery_name)
+        gallery_name_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
         self._insert_gallery_tag(gallery_name_id, tag_name, tag_value)
 
     def _select_gallery_tag(self, gallery_name_id: int, tag_name: str) -> str:
@@ -951,8 +969,10 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             tag = query_result[0]
         return tag
 
-    def select_gallery_tag(self, gallery_name: str, tag_name: str) -> str:
-        gallery_name_id = self._select_gallery_name_id(gallery_name)
+    def get_tag_value_by_gallery_name_and_tag_name(
+        self, gallery_name: str, tag_name: str
+    ) -> str:
+        gallery_name_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
         return self._select_gallery_tag(gallery_name_id, tag_name)
 
 
@@ -995,7 +1015,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         logger.info(f"{table_name} table created.")
 
     def _insert_gallery_file(self, gallery_name_id: int, file_name: str) -> None:
-        
+
         if len(file_name) > FILE_NAME_LENGTH_LIMIT:
             logger.error(
                 f"File name '{file_name}' is too long. Must be {FILE_NAME_LENGTH_LIMIT} characters or less."
@@ -1015,7 +1035,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         data = (gallery_name_id, *file_name_parts)
         self.connector.execute(insert_query, data)
 
-        db_file_id = self._select_gallery_file_id(gallery_name_id, file_name)
+        db_file_id = self._get_db_file_id(gallery_name_id, file_name)
 
         table_name = "files_names"
         match self.config.database.sql_type.lower():
@@ -1029,7 +1049,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         data = (db_file_id, file_name)
         self.connector.execute(insert_query, data)
 
-    def _select_gallery_file_id(self, gallery_name_id: int, file_name: str) -> int:
+    def _get_db_file_id(self, gallery_name_id: int, file_name: str) -> int:
         table_name = "files_dbids"
         file_name_parts = self._split_gallery_name(file_name)
         match self.config.database.sql_type.lower():
@@ -1051,8 +1071,8 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             gallery_image_id = query_result[0]
         return gallery_image_id
 
-    def select_gallery_file(self, gallery_name: str) -> list[str]:
-        gallery_name_id = self._select_gallery_name_id(gallery_name)
+    def get_files_by_gallery_name(self, gallery_name: str) -> list[str]:
+        gallery_name_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
         table_name = "files_names"
         match self.config.database.sql_type.lower():
             case "mysql":
@@ -1074,6 +1094,20 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_galleries_files_hashs_table(
         self, algorithm: str, output_bits: int
     ) -> None:
+        dbids_table_name = "files_hashs_%s_dbids" % algorithm.lower()
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                query = f"""
+                    CREATE TABLE IF NOT EXISTS {dbids_table_name} (
+                        PRIMARY KEY (db_hash_id),
+                        db_hash_id INT UNSIGNED AUTO_INCREMENT,
+                        hash_value BINARY({output_bits/8}) NOT NULL,
+                        INDEX (hash_value)
+                    )
+                """
+        self.connector.execute(query)
+        logger.info(f"{dbids_table_name} table created.")
+
         table_name = "files_hashs_%s" % algorithm.lower()
         match self.config.database.sql_type.lower():
             case "mysql":
@@ -1081,60 +1115,19 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                     CREATE TABLE IF NOT EXISTS {table_name} (
                         PRIMARY KEY (db_file_id),
                         FOREIGN KEY (db_file_id) REFERENCES files_dbids(db_file_id),
-                        db_file_id INT UNSIGNED       NOT NULL,
-                        hash_value BINARY({output_bits/8}) NOT NULL,
-                        INDEX (hash_value)
+                        db_file_id INT UNSIGNED NOT NULL,
+                        FOREIGN KEY (db_hash_id) REFERENCES {dbids_table_name}(db_hash_id),
+                        db_hash_id INT UNSIGNED NOT NULL,
+                        INDEX (db_hash_id)
                     )
                 """
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
-    def _create_galleries_files_sha224_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha224", output_bits=224)
-
-    def _create_galleries_files_sha256_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha256", output_bits=256)
-
-    def _create_galleries_files_sha384_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha384", output_bits=384)
-
-    def _create_galleries_files_sha1_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha1", output_bits=160)
-
-    def _create_galleries_files_sha512_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha512", output_bits=512)
-
-    def _create_galleries_files_sha3_224_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha3_224", output_bits=224)
-
-    def _create_galleries_files_sha3_256_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha3_256", output_bits=256)
-
-    def _create_galleries_files_sha3_384_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha3_384", output_bits=384)
-
-    def _create_galleries_files_sha3_512_table(self) -> None:
-        self._create_galleries_files_hashs_table("sha3_512", output_bits=512)
-
-    def _create_galleries_files_blake2b_table(self) -> None:
-        self._create_galleries_files_hashs_table("blake2b", output_bits=512)
-
-    def _create_galleries_files_blake2s_table(self) -> None:
-        self._create_galleries_files_hashs_table("blake2s", output_bits=256)
-
     def _create_galleries_files_hashs_tables(self) -> None:
         logger.debug("Creating gallery image hash tables...")
-        self._create_galleries_files_sha224_table()
-        self._create_galleries_files_sha256_table()
-        self._create_galleries_files_sha384_table()
-        self._create_galleries_files_sha1_table()
-        self._create_galleries_files_sha512_table()
-        self._create_galleries_files_sha3_224_table()
-        self._create_galleries_files_sha3_256_table()
-        self._create_galleries_files_sha3_384_table()
-        self._create_galleries_files_sha3_512_table()
-        self._create_galleries_files_blake2b_table()
-        self._create_galleries_files_blake2s_table()
+        for algorithm, output_bits in HASH_ALGORITHMS.items():
+            self._create_galleries_files_hashs_table(algorithm, output_bits)
         logger.info("Gallery image hash tables created.")
 
     def _create_gallery_image_hash_view(self) -> None:
@@ -1143,127 +1136,129 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             case "mysql":
                 query = f"""
                     CREATE VIEW IF NOT EXISTS {table_name} AS
-                    SELECT files_names.db_file_id          AS db_file_id,
-                           galleries_titles.title          AS gallery_title,
-                           galleries_names.full_name       AS gallery_name,
-                           files_names.full_name           AS file_name,
-                           files_hashs_sha224.hash_value   AS sha224,
-                           files_hashs_sha256.hash_value   AS sha256,
-                           files_hashs_sha384.hash_value   AS sha384,
-                           files_hashs_sha1.hash_value     AS sha1,
-                           files_hashs_sha512.hash_value   AS sha512,
-                           files_hashs_sha3_224.hash_value AS sha3_224,
-                           files_hashs_sha3_256.hash_value AS sha3_256,
-                           files_hashs_sha3_384.hash_value AS sha3_384,
-                           files_hashs_sha3_512.hash_value AS sha3_512,
-                           files_hashs_blake2b.hash_value  AS blake2b,
-                           files_hashs_blake2s.hash_value  AS blake2s
+                    SELECT files_names.db_file_id               AS db_file_id,
+                           galleries_titles.title               AS gallery_title,
+                           galleries_names.full_name            AS gallery_name,
+                           files_names.full_name                AS file_name,
+                           files_hashs_sha512_dbids.hash_value  AS sha512
                       FROM files_names
-                           LEFT JOIN files_dbids          USING (db_file_id)
-                           LEFT JOIN galleries_titles     USING (db_gallery_id)
-                           LEFT JOIN galleries_names      USING (db_gallery_id)
-                           LEFT JOIN files_hashs_sha224   USING (db_file_id)
-                           LEFT JOIN files_hashs_sha256   USING (db_file_id)
-                           LEFT JOIN files_hashs_sha384   USING (db_file_id)
-                           LEFT JOIN files_hashs_sha1     USING (db_file_id)
-                           LEFT JOIN files_hashs_sha512   USING (db_file_id)
-                           LEFT JOIN files_hashs_sha3_224 USING (db_file_id)
-                           LEFT JOIN files_hashs_sha3_256 USING (db_file_id)
-                           LEFT JOIN files_hashs_sha3_384 USING (db_file_id)
-                           LEFT JOIN files_hashs_sha3_512 USING (db_file_id)
-                           LEFT JOIN files_hashs_blake2b  USING (db_file_id)
-                           LEFT JOIN files_hashs_blake2s  USING (db_file_id)
+                           LEFT JOIN files_dbids                USING (db_file_id)
+                           LEFT JOIN galleries_titles           USING (db_gallery_id)
+                           LEFT JOIN galleries_names            USING (db_gallery_id)
+                           LEFT JOIN files_hashs_sha512         USING (db_file_id)
+                           LEFT JOIN files_hashs_sha512_dbids   USING (db_hash_id)
                 """
         self.connector.execute(query)
         logger.info(f"{table_name} view created.")
 
     def _insert_gallery_file_hash(
-        self, file_id: int, file_content: bytes, algorithm: str
+        self, db_file_id: int, file_content: bytes, algorithm: str
     ) -> None:
-        table_name = f"files_hashs_{algorithm.lower()}"
-        match self.config.database.sql_type.lower():
-            case "mysql":
-                insert_query = f"""
-                    INSERT INTO {table_name} (db_file_id, hash_value) VALUES (%s, %s)
-                """
-        hash_value = hash_function(file_content, algorithm)
-        data = (file_id, hash_value)
 
         try:
-            original_hash_value = self._select_gallery_file_hash(file_id, algorithm)
-            logger.warning(
-                f"Image hash for image ID {file_id} already exists. Updating..."
-            )
-            if original_hash_value != hash_value:
-                logger.warning(
-                    f"Original hash value '{original_hash_value.decode('utf-8')}' is different from new hash value '{hash_value.decode('utf-8')}'."
+            current_hash_value = hash_function(file_content, algorithm)
+            original_hash_value = self.get_hash_value_by_file_id(db_file_id, algorithm)
+            if original_hash_value != current_hash_value:
+                db_hash_id = self.get_db_hash_id_by_hash_value(
+                    current_hash_value, algorithm
                 )
-                self._update_gallery_file_hash(file_id, data[1], algorithm)
+                self._update_gallery_file_hash_by_db_hash_id(
+                    db_file_id, db_hash_id, algorithm
+                )
         except DatabaseKeyError:
-            self.connector.execute(insert_query, data)
+            try:
+                db_hash_id = self.get_db_hash_id_by_hash_value(
+                    current_hash_value, algorithm
+                )
+            except DatabaseKeyError:
+                table_name = f"files_hashs_{algorithm.lower()}_dbids"
+                match self.config.database.sql_type.lower():
+                    case "mysql":
+                        insert_hash_value_query = f"""
+                            INSERT INTO {table_name} (hash_value) VALUES (%s)
+                        """
+                hash_value = hash_function(file_content, algorithm)
+                self.connector.execute(insert_hash_value_query, (hash_value,))
+                db_hash_id = self.get_db_hash_id_by_hash_value(hash_value, algorithm)
+            finally:
+                table_name = f"files_hashs_{algorithm.lower()}"
+                match self.config.database.sql_type.lower():
+                    case "mysql":
+                        insert_db_hash_id_query = f"""
+                            INSERT INTO {table_name} (db_file_id, db_hash_id) VALUES (%s, %s)
+                        """
+                self.connector.execute(
+                    insert_db_hash_id_query, (db_file_id, db_hash_id)
+                )
 
-    def _select_gallery_file_hash(self, file_id: int, algorithm: str) -> bytes:
-        table_name = f"files_hashs_{algorithm.lower()}"
+    def get_db_hash_id_by_hash_value(self, hash_value: bytes, algorithm: str) -> int:
+        table_name = f"files_hashs_{algorithm.lower()}_dbids"
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                select_query = f"""
+                    SELECT db_hash_id
+                      FROM {table_name}
+                     WHERE hash_value = %s
+                """
+        data = (hash_value,)
+
+        query_result = self.connector.fetch_one(select_query, data)
+        if query_result is None:
+            msg = f"Image hash for image ID {hash_value} does not exist."
+            raise DatabaseKeyError(msg)
+        else:
+            db_hash_id = query_result[0]
+        return db_hash_id
+
+    def get_hash_value_by_db_hash_id(self, db_hash_id: int, algorithm: str) -> bytes:
+        table_name = f"files_hashs_{algorithm.lower()}_dbids"
         match self.config.database.sql_type.lower():
             case "mysql":
                 select_query = f"""
                     SELECT hash_value
                       FROM {table_name}
-                     WHERE db_file_id = %s
+                     WHERE db_hash_id = %s
                 """
-        data = (file_id,)
+        data = (db_hash_id,)
 
         query_result = self.connector.fetch_one(select_query, data)
         if query_result is None:
-            msg = f"Image hash for image ID {file_id} does not exist."
+            msg = f"Image hash for image ID {db_hash_id} does not exist."
             raise DatabaseKeyError(msg)
         else:
             hash_value = query_result[0]
         return hash_value
 
-    def _insert_gallery_file_sha224(self, file_id: int, file_content: bytes) -> None:
-        self._insert_gallery_file_hash(file_id, file_content, "sha224")
+    def get_hash_value_by_file_id(self, db_file_id: int, algorithm: str) -> bytes:
+        table_name = f"files_hashs_{algorithm.lower()}"
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                select_query = f"""
+                    SELECT db_hash_id
+                      FROM {table_name}
+                     WHERE db_file_id = %s
+                """
+        data = (db_file_id,)
 
-    def _insert_gallery_file_sha256(self, file_id: int, file_content: bytes) -> None:
-        self._insert_gallery_file_hash(file_id, file_content, "sha256")
+        query_result = self.connector.fetch_one(select_query, data)
+        if query_result is None:
+            msg = f"Image hash for image ID {db_file_id} does not exist."
+            raise DatabaseKeyError(msg)
+        else:
+            db_hash_id = query_result[0]
 
-    def _insert_gallery_file_sha384(self, file_id: int, file_content: bytes) -> None:
-        self._insert_gallery_file_hash(file_id, file_content, "sha384")
+        return self.get_hash_value_by_db_hash_id(db_hash_id, algorithm)
 
-    def _insert_gallery_file_sha1(self, file_id: int, file_content: bytes) -> None:
-        self._insert_gallery_file_hash(file_id, file_content, "sha1")
-
-    def _insert_gallery_file_sha512(self, file_id: int, file_content: bytes) -> None:
-        self._insert_gallery_file_hash(file_id, file_content, "sha512")
-
-    def _insert_gallery_file_sha3_224(self, file_id: int, file_content: bytes) -> None:
-        self._insert_gallery_file_hash(file_id, file_content, "sha3_224")
-
-    def _insert_gallery_file_sha3_256(self, file_id: int, file_content: bytes) -> None:
-        self._insert_gallery_file_hash(file_id, file_content, "sha3_256")
-
-    def _insert_gallery_file_sha3_384(self, file_id: int, file_content: bytes) -> None:
-        self._insert_gallery_file_hash(file_id, file_content, "sha3_384")
-
-    def _insert_gallery_file_sha3_512(self, file_id: int, file_content: bytes) -> None:
-        self._insert_gallery_file_hash(file_id, file_content, "sha3_512")
-
-    def _insert_gallery_file_blake2b(self, file_id: int, file_content: bytes) -> None:
-        self._insert_gallery_file_hash(file_id, file_content, "blake2b")
-
-    def _insert_gallery_file_blake2s(self, file_id: int, file_content: bytes) -> None:
-        self._insert_gallery_file_hash(file_id, file_content, "blake2s")
-
-    def _update_gallery_file_hash(
-        self, file_id: int, hash_value: bytes, algorithm: str
+    def _update_gallery_file_hash_by_db_hash_id(
+        self, db_file_id: int, db_hash_id: int, algorithm: str
     ) -> None:
         table_name = f"files_hashs_{algorithm.lower()}"
         match self.config.database.sql_type.lower():
             case "mysql":
                 update_query = f"""
-                    UPDATE {table_name} SET hash_value = %s WHERE db_file_id = %s
+                    UPDATE {table_name} SET db_hash_id = %s WHERE db_file_id = %s
                 """
-        data = (hash_value, file_id)
+        data = (db_hash_id, db_file_id)
         self.connector.execute(update_query, data)
 
 
@@ -1385,7 +1380,7 @@ class H2HDB(
         query_result = self.connector.fetch_one(select_query, data)
         return query_result is not None
 
-    def select_pending_gallery_removals(self) -> list[str]:
+    def get_pending_gallery_removals(self) -> list[str]:
         table_name = "pending_gallery_removals"
         match self.config.database.sql_type.lower():
             case "mysql":
@@ -1413,16 +1408,15 @@ class H2HDB(
         self.connector.execute(delete_query, tuple(gallery_name_parts))
 
     def delete_pending_gallery_removals(self) -> None:
-        pending_gallery_removals = self.select_pending_gallery_removals()
+        pending_gallery_removals = self.get_pending_gallery_removals()
         for gallery_name in pending_gallery_removals:
             self.delete_gallery_image(gallery_name)
             self.delete_gallery(gallery_name)
-            logger.info(f"Gallery '{gallery_name}' deleted.")
             self.delete_pending_gallery_removal(gallery_name)
 
     def delete_gallery_image(self, gallery_name: str) -> None:
         try:
-            self._select_gallery_name_id(gallery_name)
+            self._get_db_gallery_id_by_gallery_name(gallery_name)
         except DatabaseKeyError:
             logger.debug(f"Gallery '{gallery_name}' does not exist.")
             return
@@ -1433,7 +1427,7 @@ class H2HDB(
                     SELECT TABLE_NAME
                       FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
                      WHERE REFERENCED_TABLE_SCHEMA = '{self.config.database.database}'
-                       AND REFERENCED_TABLE_NAME = 'files_names'
+                       AND REFERENCED_TABLE_NAME = 'files_dbids'
                        AND REFERENCED_COLUMN_NAME = 'db_file_id'
                 """
                 column_name_parts, _ = self.mysql_split_gallery_name_based_on_limit(
@@ -1445,10 +1439,10 @@ class H2HDB(
                     WHERE
                         db_file_id IN (
                             SELECT db_file_id
-                            FROM files_names
+                            FROM files_dbids
                             WHERE db_gallery_id = (
                                 SELECT db_gallery_id
-                                FROM galleries_names
+                                FROM galleries_dbids
                                 WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
                             )
                         )
@@ -1456,7 +1450,7 @@ class H2HDB(
                 )
 
         table_names = self.connector.fetch_all(select_table_name_query)
-        table_names = [t[0] for t in table_names] + ["files_names"]
+        table_names = [t[0] for t in table_names]
         logger.debug(f"Table names: {table_names}")
 
         gallery_name_parts = self._split_gallery_name(gallery_name)
@@ -1468,7 +1462,7 @@ class H2HDB(
 
     def delete_gallery(self, gallery_name: str) -> None:
         try:
-            self._select_gallery_name_id(gallery_name)
+            self._get_db_gallery_id_by_gallery_name(gallery_name)
         except DatabaseKeyError:
             logger.debug(f"Gallery '{gallery_name}' does not exist.")
             return
@@ -1479,7 +1473,7 @@ class H2HDB(
                     SELECT TABLE_NAME
                       FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
                      WHERE REFERENCED_TABLE_SCHEMA = '{self.config.database.database}'
-                       AND REFERENCED_TABLE_NAME = 'galleries_names'
+                       AND REFERENCED_TABLE_NAME = 'galleries_dbids'
                        AND REFERENCED_COLUMN_NAME = 'db_gallery_id'
                 """
                 column_name_parts, _ = self.mysql_split_gallery_name_based_on_limit(
@@ -1490,14 +1484,14 @@ class H2HDB(
                     DELETE FROM {x}
                      WHERE db_gallery_id = (
                             SELECT db_gallery_id
-                            FROM galleries_names
+                            FROM galleries_dbids
                             WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
                            )
-                """
+                    """
                 )
 
         table_names = self.connector.fetch_all(select_table_name_query)
-        table_names = [t[0] for t in table_names]
+        table_names = [t[0] for t in table_names] + ["galleries_dbids"]
         logger.debug(f"Table names: {table_names}")
 
         gallery_name_parts = self._split_gallery_name(gallery_name)
@@ -1553,7 +1547,9 @@ class H2HDB(
         self.connector.commit()
 
         self._insert_gallery_name(gallery_info_params.gallery_name)
-        gallery_name_id = self._select_gallery_name_id(gallery_info_params.gallery_name)
+        gallery_name_id = self._get_db_gallery_id_by_gallery_name(
+            gallery_info_params.gallery_name
+        )
 
         self._insert_gallery_gid(gallery_name_id, gallery_info_params.gid)
         self._insert_gallery_title(gallery_name_id, gallery_info_params.title)
@@ -1569,24 +1565,15 @@ class H2HDB(
         self._insert_modified_time(gallery_name_id, gallery_info_params.modified_time)
         for file_path in gallery_info_params.files_path:
             self._insert_gallery_file(gallery_name_id, file_path)
-            file_id = self._select_gallery_file_id(gallery_name_id, file_path)
+            db_file_id = self._get_db_file_id(gallery_name_id, file_path)
             absolute_file_path = os.path.join(
                 gallery_info_params.gallery_folder, file_path
             )
             with open(absolute_file_path, "rb") as f:
                 file_content = f.read()
-            image_hash_insert_params = (file_id, file_content)
-            self._insert_gallery_file_sha224(*image_hash_insert_params)
-            self._insert_gallery_file_sha256(*image_hash_insert_params)
-            self._insert_gallery_file_sha384(*image_hash_insert_params)
-            self._insert_gallery_file_sha1(*image_hash_insert_params)
-            self._insert_gallery_file_sha512(*image_hash_insert_params)
-            self._insert_gallery_file_sha3_224(*image_hash_insert_params)
-            self._insert_gallery_file_sha3_256(*image_hash_insert_params)
-            self._insert_gallery_file_sha3_384(*image_hash_insert_params)
-            self._insert_gallery_file_sha3_512(*image_hash_insert_params)
-            self._insert_gallery_file_blake2b(*image_hash_insert_params)
-            self._insert_gallery_file_blake2s(*image_hash_insert_params)
+            image_hash_insert_params = (db_file_id, file_content)
+            for algorithm in HASH_ALGORITHMS.keys():
+                self._insert_gallery_file_hash(*image_hash_insert_params, algorithm)
 
         # When the corresponding Tag_{tag_name} table does not exist, a table creation operation will be performed.
         # This will commit and create a new TRANSACTION.
@@ -1600,10 +1587,10 @@ class H2HDB(
         self, gallery_info_params: GalleryInfoParser
     ) -> bool:
         try:
-            gallery_name_id = self._select_gallery_name_id(
+            gallery_name_id = self._get_db_gallery_id_by_gallery_name(
                 gallery_info_params.gallery_name
             )
-            gallery_info_file_id = self._select_gallery_file_id(
+            gallery_info_file_id = self._get_db_file_id(
                 gallery_name_id, GALLERY_INFO_FILE_NAME
             )
             absolute_file_path = os.path.join(
@@ -1611,21 +1598,12 @@ class H2HDB(
             )
             with open(absolute_file_path, "rb") as f:
                 gallery_info_file_content = f.read()
-            ## Check if the hash of the gallery info file is the same as the original hash value.
-            # issame = True
-            # for algorithm in HASH_ALGORITHMS:
-            #     original_hash_value = self._select_gallery_file_hash(
-            #         gallery_info_file_id, algorithm
-            #     )
-            #     current_hash_value = hash_function(gallery_info_file_content, algorithm)
-            #     if original_hash_value != current_hash_value:
-            #         issame &= False
-            #         break
-            COMPARISON_HASH_ALGORITHM = "sha512"
-            original_hash_value = self._select_gallery_file_hash(
-                    gallery_info_file_id, COMPARISON_HASH_ALGORITHM
-                )
-            current_hash_value = hash_function(gallery_info_file_content, COMPARISON_HASH_ALGORITHM)
+            original_hash_value = self.get_hash_value_by_file_id(
+                gallery_info_file_id, COMPARISON_HASH_ALGORITHM
+            )
+            current_hash_value = hash_function(
+                gallery_info_file_content, COMPARISON_HASH_ALGORITHM
+            )
             issame = original_hash_value == current_hash_value
         except DatabaseKeyError:
             issame = False
@@ -1639,45 +1617,189 @@ class H2HDB(
             self.delete_gallery(gallery_info_params.gallery_name)
             self._insert_gallery_info(gallery_info_params)
             logger.info(f"Gallery '{gallery_info_params.gallery_name}' inserted.")
-        
+
         if self.config.h2h.cbz_path != "":
-            from .compress_gallery_to_cbz import compress_images_and_create_cbz, calculate_hash_of_file_in_cbz
+            from .compress_gallery_to_cbz import (
+                compress_images_and_create_cbz,
+                calculate_hash_of_file_in_cbz,
+            )
+
             match self.config.h2h.cbz_grouping:
                 case "date-yyyy":
-                    upload_time = self.select_upload_time(gallery_info_params.gallery_name)
-                    cbz_directory = os.path.join(self.config.h2h.cbz_path, str(upload_time.year))
+                    upload_time = self.get_upload_time_by_gallery_name(
+                        gallery_info_params.gallery_name
+                    )
+                    cbz_directory = os.path.join(
+                        self.config.h2h.cbz_path, str(upload_time.year)
+                    )
                 case "date-yyyy-mm":
-                    upload_time = self.select_upload_time(gallery_info_params.gallery_name)
-                    cbz_directory = os.path.join(self.config.h2h.cbz_path, str(upload_time.year), str(upload_time.month))
+                    upload_time = self.get_upload_time_by_gallery_name(
+                        gallery_info_params.gallery_name
+                    )
+                    cbz_directory = os.path.join(
+                        self.config.h2h.cbz_path,
+                        str(upload_time.year),
+                        str(upload_time.month),
+                    )
                 case "date-yyyy-mm-dd":
-                    upload_time = self.select_upload_time(gallery_info_params.gallery_name)
-                    cbz_directory = os.path.join(self.config.h2h.cbz_path, str(upload_time.year), str(upload_time.month), str(upload_time.day))
+                    upload_time = self.get_upload_time_by_gallery_name(
+                        gallery_info_params.gallery_name
+                    )
+                    cbz_directory = os.path.join(
+                        self.config.h2h.cbz_path,
+                        str(upload_time.year),
+                        str(upload_time.month),
+                        str(upload_time.day),
+                    )
                 case "flat":
                     cbz_directory = self.config.h2h.cbz_path
                 case _:
-                    raise ValueError(f"Invalid cbz_grouping value: {self.config.h2h.cbz_grouping}")
+                    raise ValueError(
+                        f"Invalid cbz_grouping value: {self.config.h2h.cbz_grouping}"
+                    )
             tmp_directory = os.path.join(self.config.h2h.cbz_path, "tmp")
-            
-            cbz_path = os.path.join(cbz_directory, gallery_info_params.gallery_name + ".cbz")
+
+            cbz_path = os.path.join(
+                cbz_directory, gallery_info_params.gallery_name + ".cbz"
+            )
             if os.path.exists(cbz_path):
-                gallery_name_id = self._select_gallery_name_id(gallery_info_params.gallery_name)
-                gallery_info_file_id = self._select_gallery_file_id(gallery_name_id, GALLERY_INFO_FILE_NAME)
-                original_hash_value = self._select_gallery_file_hash(
+                gallery_name_id = self._get_db_gallery_id_by_gallery_name(
+                    gallery_info_params.gallery_name
+                )
+                gallery_info_file_id = self._get_db_file_id(
+                    gallery_name_id, GALLERY_INFO_FILE_NAME
+                )
+                original_hash_value = self.get_hash_value_by_file_id(
                     gallery_info_file_id, COMPARISON_HASH_ALGORITHM
                 )
-                cbz_hash_value = calculate_hash_of_file_in_cbz(cbz_path, GALLERY_INFO_FILE_NAME, COMPARISON_HASH_ALGORITHM)
+                cbz_hash_value = calculate_hash_of_file_in_cbz(
+                    cbz_path, GALLERY_INFO_FILE_NAME, COMPARISON_HASH_ALGORITHM
+                )
                 if original_hash_value != cbz_hash_value:
-                    compress_images_and_create_cbz(gallery_folder, cbz_directory, tmp_directory,self.config.h2h.cbz_max_size)
-                    logger.info(f"Gallery '{gallery_info_params.gallery_name}' updated.")
+                    compress_images_and_create_cbz(
+                        gallery_folder,
+                        cbz_directory,
+                        tmp_directory,
+                        self.config.h2h.cbz_max_size,
+                    )
+                    logger.info(
+                        f"Gallery '{gallery_info_params.gallery_name}' updated."
+                    )
             else:
-                compress_images_and_create_cbz(gallery_folder, cbz_directory, tmp_directory, self.config.h2h.cbz_max_size)
+                compress_images_and_create_cbz(
+                    gallery_folder,
+                    cbz_directory,
+                    tmp_directory,
+                    self.config.h2h.cbz_max_size,
+                )
                 logger.info(f"Gallery '{gallery_info_params.gallery_name}' updated.")
+
+    def scan_current_galleries_folders(self) -> list[str]:
+        tmp_table_name = "tmp_current_galleries"
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                column_name = "name"
+                column_name_parts, create_gallery_name_parts_sql = (
+                    self.mysql_split_gallery_name_based_on_limit(column_name)
+                )
+                query = f"""
+                    CREATE TEMPORARY TABLE IF NOT EXISTS {tmp_table_name} (
+                        PRIMARY KEY ({", ".join(column_name_parts)}),
+                        {create_gallery_name_parts_sql}
+                    )
+                """
+        self.connector.execute(query)
+        logger.info(f"{tmp_table_name} table created.")
+
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                column_name_parts, _ = self.mysql_split_gallery_name_based_on_limit(
+                    "name"
+                )
+                insert_query = f"""
+                    INSERT INTO {tmp_table_name}
+                        ({", ".join(column_name_parts)})
+                    VALUES ({", ".join(["%s" for _ in column_name_parts])})
+                """
+
+        data = list[tuple]()
+        current_galleries_folders = list[str]()
+        current_galleries_names = list[str]()
+        for root, _, files in os.walk(self.config.h2h.download_path):
+            if GALLERY_INFO_FILE_NAME in files:
+                current_galleries_folders.append(root)
+                gallery_name = os.path.basename(current_galleries_folders[-1])
+                current_galleries_names.append(gallery_name)
+                gallery_name_parts = self._split_gallery_name(gallery_name)
+                data.append(tuple(gallery_name_parts))
+        self.connector.execute_many(insert_query, data)
+
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                fetch_query = f"""
+                    SELECT CONCAT({",".join(["galleries_dbids."+column_name for column_name in column_name_parts])})
+                    FROM galleries_dbids
+                    LEFT JOIN {tmp_table_name} USING ({",".join(column_name_parts)})
+                    WHERE {tmp_table_name}.{column_name_parts[0]} IS NULL
+                """
+        removed_galleries = self.connector.fetch_all(fetch_query)
+        if len(removed_galleries) > 0:
+            removed_galleries = [gallery[0] for gallery in removed_galleries]
+
+        for removed_gallery in removed_galleries:
+            self.insert_pending_gallery_removal(removed_gallery)
+
+        self.delete_pending_gallery_removals()
+
+        if self.config.h2h.cbz_path != "":
+            current_cbzs = dict[str, str]()
+            for root, _, files in os.walk(self.config.h2h.cbz_path):
+                for file in files:
+                    current_cbzs[file] = os.path.splitext(root)[0]
+            for key in set(current_cbzs.keys()) - set(current_galleries_names):
+                os.remove(os.path.join(current_cbzs[key], key))
+                logger.info(f"CBZ '{key}' removed.")
+            while True:
+                directory_removed = False
+                for root, dirs, files in os.walk(
+                    self.config.h2h.cbz_path, topdown=False
+                ):
+                    if max([len(dirs), len(files)]) == 0:
+                        directory_removed = True
+                        os.rmdir(root)
+                        logger.info(f"Directory '{root}' removed.")
+                if not directory_removed:
+                    break
+        return current_galleries_folders
+
+    def refresh_current_files_hashs(self):
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                get_delete_db_hash_id_query = (
+                    lambda x, y: f"""
+                    DELETE FROM {y}
+                     WHERE db_hash_id IN (
+                            SELECT db_hash_id
+                            FROM {x}
+                            RIGHT JOIN {y} USING (db_hash_id)
+                            WHERE {x}.db_hash_id IS NULL
+                           )
+                    """
+                )
+        for algorithm in HASH_ALGORITHMS.keys():
+            hash_table_name = f"files_hashs_{algorithm.lower()}"
+            db_table_name = f"files_hashs_{algorithm.lower()}_dbids"
+            self.connector.execute(
+                get_delete_db_hash_id_query(hash_table_name, db_table_name)
+            )
 
     def insert_h2h_download(self) -> None:
         self.delete_pending_gallery_removals()
-        for root, _, files in os.walk(self.config.h2h.download_path):
-            if GALLERY_INFO_FILE_NAME in files:
-                self.insert_gallery_info(root)
+        current_galleries_folders = self.scan_current_galleries_folders()
+        for gallery_name in current_galleries_folders:
+            self.insert_gallery_info(gallery_name)
+        self.refresh_current_files_hashs()
+
 
 def _insert_h2h_download(config: Config, gallery_paths: list) -> None:
     with H2HDB(config=config) as connector:

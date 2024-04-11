@@ -50,7 +50,7 @@ def split_message_with_cjk(message: str, max_log_entry_length: int) -> list[str]
 def log_message(
     logger: logging.Logger, level: int, max_log_entry_length: int, message: str
 ) -> None:
-    frame = sys._getframe(2)
+    frame = sys._getframe(3)
     message = re.sub(" +", " ", message.replace("\n", " ")).strip()
     chunks = split_message_with_cjk(message, max_log_entry_length)
     for chunk in chunks:
