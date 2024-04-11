@@ -96,7 +96,7 @@ This table contains information about the files in the galleries. It contains co
 | 1          | [xxx] xxx [xxx] [123] | [xxx] xxx [xxx] | 001.jpg   | 1ab... | ... |
 | 37         | A long name           | 456             | 1.png     | a8f... | ... |
 
-#### Gallery Information Detail Tables
+#### Gallery Information Detail Tables [TODO]
 
 | Name                                       | Description |
 | :----------------------------------------- | :-- |
@@ -104,7 +104,6 @@ This table contains information about the files in the galleries. It contains co
 | `galleries_names`                          | The folder name of the gallery downloaded from H@H. |
 | `galleries_gids`                           | The GID of the gallery. This value is parsed from the folder of the downloaded gallery. |
 | `galleries_[other]`                        | The values of `[other]` are the flollowing: <ul><li>`download_times`</li><li>`upload_accounts`</li><li>`upload_times`</li><li>`titles`</li></ul> The above tables's data extracted from `galleryinfo.txt`. |
-| `galleries_tags_[category]`                | The value of the `[category]` tag in `galleryinfo.txt`. For example, `galleries_tags_artist` can be the name of a table that collects `artist:alice` as `alice`.<ul><li>The `galleries_tags_` collects the tag value from `galleryinfo.txt` without specifying the category name. For example `group`.</li><li>The `galleries_tags_no_tag` gets the tag value if the value of the `[category]` tag in `galleryinfo.txt` is empty. For example `:group`.</li><ul> |
 | `removed_galleries_gids`                   | Record the GID of the removed gallery. |
 | `pending_gallery_removals`                 | All gallery names in this table will be deleted from all tables in the database after `python -m h2hdb --config [json-path]`. When the deletion is complete, the value in this table will be removed. |
 | `pending_gallery_removals_no_tag`          | The value of the tag `[category]` in `galleryinfo.txt` is empty. For example, `:group`. |

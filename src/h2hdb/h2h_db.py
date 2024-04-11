@@ -246,7 +246,7 @@ class H2HDBAbstract(metaclass=ABCMeta):
         Updates the access time for the gallery in the database.
 
         Args:
-            gallery_name_id (int): The ID of the gallery.
+            gallery_name (str): The name of the gallery.
             time (str): The access time.
         """
         pass
@@ -549,8 +549,8 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
             logger.debug(f"Gallery name '{gallery_name}' does not exist.")
             raise DatabaseKeyError(f"Gallery name '{gallery_name}' does not exist.")
         else:
-            gallery_name_id = query_result[0]
-        return gallery_name_id
+            db_gallery_id = query_result[0]
+        return db_gallery_id
 
 
 class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
@@ -587,17 +587,16 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
-    def _insert_gallery_gid(self, gallery_name_id: int, gid: int) -> None:
+    def _insert_gallery_gid(self, db_gallery_id: int, gid: int) -> None:
         table_name = "galleries_gids"
         match self.config.database.sql_type.lower():
             case "mysql":
                 insert_query = f"""
                     INSERT INTO {table_name} (db_gallery_id, gid) VALUES (%s, %s)
                 """
-        data = (gallery_name_id, gid)
-        self.connector.execute(insert_query, data)
+        self.connector.execute(insert_query, (db_gallery_id, gid))
 
-    def _get_gid_by_db_gallery_id(self, gallery_name_id: int) -> int:
+    def _get_gid_by_db_gallery_id(self, db_gallery_id: int) -> int:
         table_name = "galleries_gids"
         match self.config.database.sql_type.lower():
             case "mysql":
@@ -607,10 +606,9 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                      WHERE db_gallery_id = %s
                 """
 
-        data = (gallery_name_id,)
-        query_result = self.connector.fetch_one(select_query, data)
+        query_result = self.connector.fetch_one(select_query, (db_gallery_id,))
         if query_result is None:
-            msg = f"GID for gallery name ID {gallery_name_id} does not exist."
+            msg = f"GID for gallery name ID {db_gallery_id} does not exist."
             logger.error(msg)
             raise DatabaseKeyError(msg)
         else:
@@ -618,8 +616,8 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         return gid
 
     def get_gid_by_gallery_name(self, gallery_name: str) -> int:
-        gallery_name_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
-        return self._get_gid_by_db_gallery_id(gallery_name_id)
+        db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
+        return self._get_gid_by_db_gallery_id(db_gallery_id)
 
 
 class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
@@ -639,16 +637,15 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
-    def _insert_time(self, table_name: str, gallery_name_id: int, time: str) -> None:
+    def _insert_time(self, table_name: str, db_gallery_id: int, time: str) -> None:
         match self.config.database.sql_type.lower():
             case "mysql":
                 insert_query = f"""
                     INSERT INTO {table_name} (db_gallery_id, time) VALUES (%s, %s)
                 """
-        data = (gallery_name_id, time)
-        self.connector.execute(insert_query, data)
+        self.connector.execute(insert_query, (db_gallery_id, time))
 
-    def _select_time(self, table_name: str, gallery_name_id: int) -> datetime.datetime:
+    def _select_time(self, table_name: str, db_gallery_id: int) -> datetime.datetime:
         match self.config.database.sql_type.lower():
             case "mysql":
                 select_query = f"""
@@ -656,56 +653,54 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                       FROM {table_name}
                      WHERE db_gallery_id = %s
                 """
-        data = (gallery_name_id,)
-        query_result = self.connector.fetch_one(select_query, data)
+        query_result = self.connector.fetch_one(select_query, (db_gallery_id,))
         if query_result is None:
-            msg = f"Time for gallery name ID {gallery_name_id} does not exist in table '{table_name}'."
+            msg = f"Time for gallery name ID {db_gallery_id} does not exist in table '{table_name}'."
             logger.error(msg)
             raise DatabaseKeyError(msg)
         else:
             time = query_result[0]
         return time
 
-    def _update_time(self, table_name: str, gallery_name_id: int, time: str) -> None:
+    def _update_time(self, table_name: str, db_gallery_id: int, time: str) -> None:
         match self.config.database.sql_type.lower():
             case "mysql":
                 update_query = f"""
                     UPDATE {table_name} SET time = %s WHERE db_gallery_id = %s
                 """
-        data = (time, gallery_name_id)
-        self.connector.execute(update_query, data)
+        self.connector.execute(update_query, (time, db_gallery_id))
 
     def _create_galleries_download_times_table(self) -> None:
         self._create_times_table("galleries_download_times")
 
-    def _insert_download_time(self, gallery_name_id: int, time: str) -> None:
-        self._insert_time("galleries_download_times", gallery_name_id, time)
+    def _insert_download_time(self, db_gallery_id: int, time: str) -> None:
+        self._insert_time("galleries_download_times", db_gallery_id, time)
 
     def _create_galleries_upload_times_table(self) -> None:
         self._create_times_table("galleries_upload_times")
 
-    def _insert_upload_time(self, gallery_name_id: int, time: str) -> None:
-        self._insert_time("galleries_upload_times", gallery_name_id, time)
+    def _insert_upload_time(self, db_gallery_id: int, time: str) -> None:
+        self._insert_time("galleries_upload_times", db_gallery_id, time)
 
     def get_upload_time_by_gallery_name(self, gallery_name: str) -> datetime.datetime:
-        gallery_name_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
-        return self._select_time("galleries_upload_times", gallery_name_id)
+        db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
+        return self._select_time("galleries_upload_times", db_gallery_id)
 
     def _create_galleries_modified_times_table(self) -> None:
         self._create_times_table("galleries_modified_times")
 
-    def _insert_modified_time(self, gallery_name_id: int, time: str) -> None:
-        self._insert_time("galleries_modified_times", gallery_name_id, time)
+    def _insert_modified_time(self, db_gallery_id: int, time: str) -> None:
+        self._insert_time("galleries_modified_times", db_gallery_id, time)
 
     def _create_galleries_access_times_table(self) -> None:
         self._create_times_table("galleries_access_times")
 
-    def _insert_access_time(self, gallery_name_id: int, time: str) -> None:
-        self._insert_time("galleries_access_times", gallery_name_id, time)
+    def _insert_access_time(self, db_gallery_id: int, time: str) -> None:
+        self._insert_time("galleries_access_times", db_gallery_id, time)
 
     def update_access_time(self, gallery_name: str, time: str) -> None:
-        gallery_name_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
-        self._update_time("galleries_access_times", gallery_name_id, time)
+        db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
+        self._update_time("galleries_access_times", db_gallery_id, time)
 
 
 class H2HDBGalleriesTitles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
@@ -725,17 +720,16 @@ class H2HDBGalleriesTitles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
-    def _insert_gallery_title(self, gallery_name_id: int, title: str) -> None:
+    def _insert_gallery_title(self, db_gallery_id: int, title: str) -> None:
         table_name = "galleries_titles"
         match self.config.database.sql_type.lower():
             case "mysql":
                 insert_query = f"""
                     INSERT INTO {table_name} (db_gallery_id, title) VALUES (%s, %s)
                 """
-        data = (gallery_name_id, title)
-        self.connector.execute(insert_query, data)
+        self.connector.execute(insert_query, (db_gallery_id, title))
 
-    def _get_title_by_gallery_name(self, gallery_name_id: int) -> str:
+    def _get_title_by_gallery_name(self, db_gallery_id: int) -> str:
         table_name = "galleries_titles"
         match self.config.database.sql_type.lower():
             case "mysql":
@@ -744,10 +738,9 @@ class H2HDBGalleriesTitles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                       FROM {table_name}
                      WHERE db_gallery_id = %s
                 """
-        data = (gallery_name_id,)
-        query_result = self.connector.fetch_one(select_query, data)
+        query_result = self.connector.fetch_one(select_query, (db_gallery_id,))
         if query_result is None:
-            msg = f"Title for gallery name ID {gallery_name_id} does not exist."
+            msg = f"Title for gallery name ID {db_gallery_id} does not exist."
             logger.error(msg)
             raise DatabaseKeyError(msg)
         else:
@@ -755,8 +748,8 @@ class H2HDBGalleriesTitles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         return title
 
     def get_title_by_gallery_name(self, gallery_name: str) -> str:
-        gallery_name_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
-        return self._get_title_by_gallery_name(gallery_name_id)
+        db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
+        return self._get_title_by_gallery_name(db_gallery_id)
 
 
 class H2HDBUploadAccounts(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
@@ -776,19 +769,16 @@ class H2HDBUploadAccounts(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
-    def _insert_gallery_upload_account(
-        self, gallery_name_id: int, account: str
-    ) -> None:
+    def _insert_gallery_upload_account(self, db_gallery_id: int, account: str) -> None:
         table_name = "galleries_upload_accounts"
         match self.config.database.sql_type.lower():
             case "mysql":
                 insert_query = f"""
                     INSERT INTO {table_name} (db_gallery_id, account) VALUES (%s, %s)
                 """
-        data = (gallery_name_id, account)
-        self.connector.execute(insert_query, data)
+        self.connector.execute(insert_query, (db_gallery_id, account))
 
-    def _select_gallery_upload_account(self, gallery_name_id: int) -> str:
+    def _select_gallery_upload_account(self, db_gallery_id: int) -> str:
         table_name = "galleries_upload_accounts"
         match self.config.database.sql_type.lower():
             case "mysql":
@@ -797,12 +787,10 @@ class H2HDBUploadAccounts(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                       FROM {table_name}
                      WHERE db_gallery_id = %s
                 """
-        data = (gallery_name_id,)
+        data = (db_gallery_id,)
         query_result = self.connector.fetch_one(select_query, data)
         if query_result is None:
-            msg = (
-                f"Upload account for gallery name ID {gallery_name_id} does not exist."
-            )
+            msg = f"Upload account for gallery name ID {db_gallery_id} does not exist."
             logger.error(msg)
             raise DatabaseKeyError(msg)
         else:
@@ -810,8 +798,8 @@ class H2HDBUploadAccounts(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         return account
 
     def get_upload_account_by_gallery_name(self, gallery_name: str) -> str:
-        gallery_name_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
-        return self._select_gallery_upload_account(gallery_name_id)
+        db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
+        return self._select_gallery_upload_account(db_gallery_id)
 
 
 class H2HDBGalleriesInfos(
@@ -866,27 +854,25 @@ class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
-    def _insert_gallery_comment(self, gallery_name_id: int, comment: str) -> None:
+    def _insert_gallery_comment(self, db_gallery_id: int, comment: str) -> None:
         table_name = "galleries_comments"
         match self.config.database.sql_type.lower():
             case "mysql":
                 insert_query = f"""
                     INSERT INTO {table_name} (db_gallery_id, comment) VALUES (%s, %s)
                 """
-        data = (gallery_name_id, comment)
-        self.connector.execute(insert_query, data)
+        self.connector.execute(insert_query, (db_gallery_id, comment))
 
-    def _update_gallery_comment(self, gallery_name_id: int, comment: str) -> None:
+    def _update_gallery_comment(self, db_gallery_id: int, comment: str) -> None:
         table_name = "galleries_comments"
         match self.config.database.sql_type.lower():
             case "mysql":
                 update_query = f"""
                     UPDATE {table_name} SET Comment = %s WHERE db_gallery_id = %s
                 """
-        data = (comment, gallery_name_id)
-        self.connector.execute(update_query, data)
+        self.connector.execute(update_query, (comment, db_gallery_id))
 
-    def _select_gallery_comment(self, gallery_name_id: int) -> str:
+    def _select_gallery_comment(self, db_gallery_id: int) -> str:
         table_name = "galleries_comments"
         match self.config.database.sql_type.lower():
             case "mysql":
@@ -895,10 +881,11 @@ class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
                       FROM {table_name}
                      WHERE db_gallery_id = %s
                 """
-        data = (gallery_name_id,)
-        query_result = self.connector.fetch_one(select_query, data)
+        query_result = self.connector.fetch_one(select_query, (db_gallery_id,))
         if query_result is None:
-            msg = f"Uploader comment for gallery name ID {gallery_name_id} does not exist."
+            msg = (
+                f"Uploader comment for gallery name ID {db_gallery_id} does not exist."
+            )
             logger.error(msg)
             raise DatabaseKeyError(msg)
         else:
@@ -906,50 +893,123 @@ class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
         return comment
 
     def get_comment_by_gallery_name(self, gallery_name: str) -> str:
-        gallery_name_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
-        return self._select_gallery_comment(gallery_name_id)
+        db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
+        return self._select_gallery_comment(db_gallery_id)
 
 
 class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
-    def _create_galleries_tags_table(self, tag_name: str) -> None:
-        table_name = f"galleries_tags_{tag_name}"
+    def _create_galleries_tags_table(self) -> None:
+        tag_name_table_name = f"galleries_tags_names"
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                query = f"""
+                    CREATE TABLE IF NOT EXISTS {tag_name_table_name} (
+                        PRIMARY KEY (tag_name),
+                        tag_name CHAR({self.innodb_index_prefix_limit}) NOT NULL
+                    )
+                """
+        self.connector.execute(query)
+        logger.info(f"{tag_name_table_name} table created.")
+
+        tag_pairs_table_name = f"galleries_tag_pairs_dbids"
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                query = f"""
+                    CREATE TABLE IF NOT EXISTS {tag_pairs_table_name} (
+                        PRIMARY KEY (db_tag_pair_id),
+                        db_tag_pair_id INT UNSIGNED                           AUTO_INCREMENT,
+                        tag_name       CHAR({self.innodb_index_prefix_limit}) NOT NULL,
+                        FOREIGN KEY (tag_name) REFERENCES {tag_name_table_name}(tag_name),
+                        tag_value      CHAR({self.innodb_index_prefix_limit}) NOT NULL,
+                        UNIQUE (tag_name, tag_value)
+                    )
+                """
+        self.connector.execute(query)
+        logger.info(f"{tag_pairs_table_name} table created.")
+
+        table_name = f"galleries_tags"
         match self.config.database.sql_type.lower():
             case "mysql":
                 query = f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
-                        PRIMARY KEY (db_gallery_id),
+                        PRIMARY KEY (db_gallery_id, db_tag_pair_id),
+                        db_gallery_id  INT UNSIGNED NOT NULL,
                         FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id),
-                        db_gallery_id INT UNSIGNED                      NOT NULL,
-                        tag           CHAR({self.innodb_index_prefix_limit}) NOT NULL,
-                        INDEX (tag)
+                        db_tag_pair_id INT UNSIGNED NOT NULL,
+                        FOREIGN KEY (db_tag_pair_id) REFERENCES {tag_pairs_table_name}(db_tag_pair_id),
+                        INDEX (db_tag_pair_id)
                     )
                 """
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
+    def _get_db_tag_pair_id(self, tag_name: str, tag_value: str) -> int:
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                select_query = f"""
+                    SELECT db_tag_pair_id
+                      FROM galleries_tag_pairs_dbids
+                     WHERE tag_name = %s AND tag_value = %s
+                """
+        query_result = self.connector.fetch_one(select_query, (tag_name, tag_value))
+        if query_result is None:
+            logger.debug(f"Tag '{tag_value}' does not exist.")
+            raise DatabaseKeyError(f"Tag '{tag_value}' does not exist.")
+        else:
+            db_tag_id = query_result[0]
+        return db_tag_id
+
+    def _check_gallery_tag_name(self, tag_name: str) -> bool:
+        table_name = f"galleries_tags_names"
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                select_query = f"""
+                    SELECT tag_name
+                      FROM {table_name}
+                     WHERE tag_name = %s
+                """
+        query_result = self.connector.fetch_one(select_query, (tag_name,))
+        return query_result is not None
+
     def _insert_gallery_tag(
-        self, gallery_name_id: int, tag_name: str, tag_value: str
+        self, db_gallery_id: int, tag_name: str, tag_value: str
     ) -> None:
-        table_name = f"galleries_tags_{tag_name}"
+        try:
+            db_tag_pair_id = self._get_db_tag_pair_id(tag_name, tag_value)
+        except DatabaseKeyError:
+            if not self._check_gallery_tag_name(tag_name):
+                tag_name_table_name = f"galleries_tags_names"
+                match self.config.database.sql_type.lower():
+                    case "mysql":
+                        insert_query = f"""
+                            INSERT INTO {tag_name_table_name} (tag_name) VALUES (%s)
+                        """
+                self.connector.execute(insert_query, (tag_name,))
+
+            tag_pairs_table_name = f"galleries_tag_pairs_dbids"
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    insert_query = f"""
+                        INSERT INTO {tag_pairs_table_name} (tag_name, tag_value) VALUES (%s, %s)
+                    """
+            self.connector.execute(insert_query, (tag_name, tag_value))
+            db_tag_pair_id = self._get_db_tag_pair_id(tag_name, tag_value)
+
+        table_name = f"galleries_tags"
         match self.config.database.sql_type.lower():
             case "mysql":
                 insert_query = f"""
-                    INSERT INTO {table_name} (db_gallery_id, tag) VALUES (%s, %s)
+                    INSERT INTO {table_name} (db_gallery_id, db_tag_pair_id) VALUES (%s, %s)
                 """
-        data = (gallery_name_id, tag_value)
-
-        if self.connector.check_table_exists(table_name) is False:
-            logger.debug(f"Table '{table_name}' does not exist. Creating table...")
-            self._create_galleries_tags_table(tag_name)
-        self.connector.execute(insert_query, data)
+        self.connector.execute(insert_query, (db_gallery_id, db_tag_pair_id))
 
     def insert_gallery_tag(
         self, gallery_name: str, tag_name: str, tag_value: str
     ) -> None:
-        gallery_name_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
-        self._insert_gallery_tag(gallery_name_id, tag_name, tag_value)
+        db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
+        self._insert_gallery_tag(db_gallery_id, tag_name, tag_value)
 
-    def _select_gallery_tag(self, gallery_name_id: int, tag_name: str) -> str:
+    def _select_gallery_tag(self, db_gallery_id: int, tag_name: str) -> str:
         table_name = f"galleries_tags_{tag_name}"
         match self.config.database.sql_type.lower():
             case "mysql":
@@ -958,7 +1018,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                       FROM {table_name}
                      WHERE db_gallery_id = %s
                 """
-        data = (gallery_name_id,)
+        data = (db_gallery_id,)
 
         query_result = self.connector.fetch_one(select_query, data)
         if query_result is None:
@@ -972,8 +1032,8 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def get_tag_value_by_gallery_name_and_tag_name(
         self, gallery_name: str, tag_name: str
     ) -> str:
-        gallery_name_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
-        return self._select_gallery_tag(gallery_name_id, tag_name)
+        db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
+        return self._select_gallery_tag(db_gallery_id, tag_name)
 
 
 class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
@@ -1014,7 +1074,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
-    def _insert_gallery_file(self, gallery_name_id: int, file_name: str) -> None:
+    def _insert_gallery_file(self, db_gallery_id: int, file_name: str) -> None:
 
         if len(file_name) > FILE_NAME_LENGTH_LIMIT:
             logger.error(
@@ -1032,10 +1092,9 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         (db_gallery_id, {", ".join(column_name_parts)})
                     VALUES (%s, {", ".join(["%s" for _ in column_name_parts])})
                 """
-        data = (gallery_name_id, *file_name_parts)
-        self.connector.execute(insert_query, data)
+        self.connector.execute(insert_query, (db_gallery_id, *file_name_parts))
 
-        db_file_id = self._get_db_file_id(gallery_name_id, file_name)
+        db_file_id = self._get_db_file_id(db_gallery_id, file_name)
 
         table_name = "files_names"
         match self.config.database.sql_type.lower():
@@ -1049,7 +1108,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         data = (db_file_id, file_name)
         self.connector.execute(insert_query, data)
 
-    def _get_db_file_id(self, gallery_name_id: int, file_name: str) -> int:
+    def _get_db_file_id(self, db_gallery_id: int, file_name: str) -> int:
         table_name = "files_dbids"
         file_name_parts = self._split_gallery_name(file_name)
         match self.config.database.sql_type.lower():
@@ -1061,10 +1120,10 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                      WHERE db_gallery_id = %s
                        AND {" AND ".join([f"{part} = %s" for part in column_name_parts])}
                 """
-        data = (gallery_name_id, *file_name_parts)
+        data = (db_gallery_id, *file_name_parts)
         query_result = self.connector.fetch_one(select_query, data)
         if query_result is None:
-            msg = f"Image ID for gallery name ID {gallery_name_id} and file '{file_name}' does not exist."
+            msg = f"Image ID for gallery name ID {db_gallery_id} and file '{file_name}' does not exist."
             logger.error(msg)
             raise DatabaseKeyError(msg)
         else:
@@ -1072,7 +1131,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         return gallery_image_id
 
     def get_files_by_gallery_name(self, gallery_name: str) -> list[str]:
-        gallery_name_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
+        db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
         table_name = "files_names"
         match self.config.database.sql_type.lower():
             case "mysql":
@@ -1081,10 +1140,9 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         FROM {table_name}
                           WHERE db_gallery_id = %s
                 """
-        data = (gallery_name_id,)
-        query_result = self.connector.fetch_all(select_query, data)
+        query_result = self.connector.fetch_all(select_query, (db_gallery_id,))
         if len(query_result) == 0:
-            msg = f"Files for gallery name ID {gallery_name_id} do not exist."
+            msg = f"Files for gallery name ID {db_gallery_id} do not exist."
             logger.error(msg)
             raise DatabaseKeyError(msg)
         else:
@@ -1540,6 +1598,7 @@ class H2HDB(
         self._create_galleries_files_hashs_tables()
         self._create_gallery_image_hash_view()
         self._create_removed_galleries_gids_table()
+        self._create_galleries_tags_table()
         logger.info("Main tables created.")
 
     def _insert_gallery_info(self, gallery_info_params: GalleryInfoParser) -> None:
@@ -1547,25 +1606,25 @@ class H2HDB(
         self.connector.commit()
 
         self._insert_gallery_name(gallery_info_params.gallery_name)
-        gallery_name_id = self._get_db_gallery_id_by_gallery_name(
+        db_gallery_id = self._get_db_gallery_id_by_gallery_name(
             gallery_info_params.gallery_name
         )
 
-        self._insert_gallery_gid(gallery_name_id, gallery_info_params.gid)
-        self._insert_gallery_title(gallery_name_id, gallery_info_params.title)
-        self._insert_upload_time(gallery_name_id, gallery_info_params.upload_time)
+        self._insert_gallery_gid(db_gallery_id, gallery_info_params.gid)
+        self._insert_gallery_title(db_gallery_id, gallery_info_params.title)
+        self._insert_upload_time(db_gallery_id, gallery_info_params.upload_time)
         self._insert_gallery_comment(
-            gallery_name_id, gallery_info_params.galleries_comments
+            db_gallery_id, gallery_info_params.galleries_comments
         )
         self._insert_gallery_upload_account(
-            gallery_name_id, gallery_info_params.upload_account
+            db_gallery_id, gallery_info_params.upload_account
         )
-        self._insert_download_time(gallery_name_id, gallery_info_params.download_time)
-        self._insert_access_time(gallery_name_id, gallery_info_params.download_time)
-        self._insert_modified_time(gallery_name_id, gallery_info_params.modified_time)
+        self._insert_download_time(db_gallery_id, gallery_info_params.download_time)
+        self._insert_access_time(db_gallery_id, gallery_info_params.download_time)
+        self._insert_modified_time(db_gallery_id, gallery_info_params.modified_time)
         for file_path in gallery_info_params.files_path:
-            self._insert_gallery_file(gallery_name_id, file_path)
-            db_file_id = self._get_db_file_id(gallery_name_id, file_path)
+            self._insert_gallery_file(db_gallery_id, file_path)
+            db_file_id = self._get_db_file_id(db_gallery_id, file_path)
             absolute_file_path = os.path.join(
                 gallery_info_params.gallery_folder, file_path
             )
@@ -1578,7 +1637,7 @@ class H2HDB(
         # When the corresponding Tag_{tag_name} table does not exist, a table creation operation will be performed.
         # This will commit and create a new TRANSACTION.
         for tag_name, tag_value in gallery_info_params.tags.items():
-            self._insert_gallery_tag(gallery_name_id, tag_name, tag_value)
+            self._insert_gallery_tag(db_gallery_id, tag_name, tag_value)
 
         self.delete_pending_gallery_removal(gallery_info_params.gallery_name)
         self.connector.commit()
@@ -1587,11 +1646,11 @@ class H2HDB(
         self, gallery_info_params: GalleryInfoParser
     ) -> bool:
         try:
-            gallery_name_id = self._get_db_gallery_id_by_gallery_name(
+            db_gallery_id = self._get_db_gallery_id_by_gallery_name(
                 gallery_info_params.gallery_name
             )
             gallery_info_file_id = self._get_db_file_id(
-                gallery_name_id, GALLERY_INFO_FILE_NAME
+                db_gallery_id, GALLERY_INFO_FILE_NAME
             )
             absolute_file_path = os.path.join(
                 gallery_info_params.gallery_folder, GALLERY_INFO_FILE_NAME
@@ -1663,11 +1722,11 @@ class H2HDB(
                 cbz_directory, gallery_info_params.gallery_name + ".cbz"
             )
             if os.path.exists(cbz_path):
-                gallery_name_id = self._get_db_gallery_id_by_gallery_name(
+                db_gallery_id = self._get_db_gallery_id_by_gallery_name(
                     gallery_info_params.gallery_name
                 )
                 gallery_info_file_id = self._get_db_file_id(
-                    gallery_name_id, GALLERY_INFO_FILE_NAME
+                    db_gallery_id, GALLERY_INFO_FILE_NAME
                 )
                 original_hash_value = self.get_hash_value_by_file_id(
                     gallery_info_file_id, COMPARISON_HASH_ALGORITHM
