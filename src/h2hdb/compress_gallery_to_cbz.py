@@ -1,10 +1,12 @@
 __all__ = ["compress_images_and_create_cbz", "calculate_hash_of_file_in_cbz"]
 
 import os
-from PIL import Image # type: ignore
+from PIL import Image  # type: ignore
 import zipfile
 import shutil
 import hashlib
+
+Image.MAX_IMAGE_PIXELS = None
 
 
 def compress_image(image_path: str, output_path: str, max_size: int) -> None:
@@ -32,8 +34,11 @@ def create_cbz(directory, output_path):
         for filename in os.listdir(directory):
             cbz.write(os.path.join(directory, filename), filename)
 
+
 # Compress images and create a CBZ file
-def compress_images_and_create_cbz(input_directory:str, output_directory: str, tmp_directory: str, max_size: int) -> None:
+def compress_images_and_create_cbz(
+    input_directory: str, output_directory: str, tmp_directory: str, max_size: int
+) -> None:
     if len(set([input_directory, output_directory, tmp_directory])) < 2:
         raise ValueError("Input and output directories cannot be the same.")
 
@@ -50,24 +55,31 @@ def compress_images_and_create_cbz(input_directory:str, output_directory: str, t
             compress_image(
                 os.path.join(input_directory, filename),
                 os.path.join(tmp_cbz_directory, filename),
-                max_size
+                max_size,
             )
         else:
-            shutil.copy(os.path.join(input_directory, filename), os.path.join(tmp_cbz_directory, filename))
+            shutil.copy(
+                os.path.join(input_directory, filename),
+                os.path.join(tmp_cbz_directory, filename),
+            )
 
     # Create the CBZ file
     os.makedirs(output_directory, exist_ok=True)
-    cbzfile = os.path.join(output_directory, gallery_name+".cbz")
+    cbzfile = os.path.join(output_directory, gallery_name + ".cbz")
     create_cbz(tmp_cbz_directory, cbzfile)
     shutil.rmtree(tmp_cbz_directory)
 
-def calculate_hash_of_file_in_cbz(cbz_path: str, file_name: str, algorithm: str) -> bytes:
-    with zipfile.ZipFile(cbz_path, 'r') as myzip:
+
+def calculate_hash_of_file_in_cbz(
+    cbz_path: str, file_name: str, algorithm: str
+) -> bytes:
+    with zipfile.ZipFile(cbz_path, "r") as myzip:
         with myzip.open(file_name) as myfile:
             file_content = myfile.read()
             hash_object = hashlib.new(algorithm)
             hash_object.update(file_content)
             return hash_object.digest()
+
 
 # 使用方式
 # cbz_path = 'path_to_your_cbz_file'
