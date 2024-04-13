@@ -9,6 +9,8 @@ import hashlib
 Image.MAX_IMAGE_PIXELS = None
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
+from .settings import FILE_NAME_LENGTH_LIMIT
+
 
 def compress_image(image_path: str, output_path: str, max_size: int) -> None:
     """Compress an image, saving it to the output path."""
@@ -66,6 +68,8 @@ def compress_images_and_create_cbz(
 
     # Create the CBZ file
     os.makedirs(output_directory, exist_ok=True)
+    while (len(gallery_name.encode("utf-8")) + 4) > FILE_NAME_LENGTH_LIMIT:
+        gallery_name = gallery_name[1:]
     cbzfile = os.path.join(output_directory, gallery_name + ".cbz")
     create_cbz(tmp_cbz_directory, cbzfile)
     shutil.rmtree(tmp_cbz_directory)

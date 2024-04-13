@@ -5,6 +5,18 @@ from requests.auth import HTTPBasicAuth  # type: ignore
 from .logger import logger
 
 
+def retry_request(request, *args, **kwargs):
+    def wrapper(*args, **kwargs):
+        while True:
+            try:
+                return request(*args, **kwargs)
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Error while making request: {e}")
+
+    return wrapper
+
+
+@retry_request
 def get_series_ids(
     library_id: str, base_url: str, api_username: str, api_password: str
 ) -> list[str]:
@@ -27,7 +39,8 @@ def get_series_ids(
     return series_ids
 
 
-def get_books_ids(
+@retry_request
+def get_books_ids_in_series_id(
     series_id: str, base_url: str, api_username: str, api_password: str
 ) -> list[str]:
     books_informations = list[tuple[str, str]]()
@@ -47,6 +60,31 @@ def get_books_ids(
     return books_ids
 
 
+@retry_request
+def get_books_ids_in_all_libraries(
+    base_url: str, api_username: str, api_password: str
+) -> list[str]:
+    books_informations = list[tuple[str, str]]()
+    page_num = 0
+    while True:
+        logger.debug(f"Getting books page {page_num} for all libraries")
+        url = f"{base_url}/api/v1/books?page={page_num}&size=100"
+        response = requests.get(url, auth=HTTPBasicAuth(api_username, api_password))
+        response.raise_for_status()
+        response_json = response.json()
+        if len(response_json["content"]) == 0:
+            break
+        for book in response_json["content"]:
+            books_informations.append((book["id"], book["fileLastModified"]))
+        page_num += 1
+    # Sort by fileLastModified in descending order
+    books_ids = list(
+        {b[0] for b in sorted(books_informations, key=lambda x: x[1], reverse=True)}
+    )
+    return books_ids
+
+
+@retry_request
 def get_book(book_id: str, base_url: str, api_username: str, api_password: str) -> dict:
     url = f"{base_url}/api/v1/books/{book_id}"
     response = requests.get(url, auth=HTTPBasicAuth(api_username, api_password))
@@ -54,6 +92,7 @@ def get_book(book_id: str, base_url: str, api_username: str, api_password: str) 
     return response.json()
 
 
+@retry_request
 def patch_book_metadata(
     metadata: dict, book_id: str, base_url: str, api_username: str, api_password: str
 ) -> None:
@@ -63,14 +102,10 @@ def patch_book_metadata(
         json=metadata,
         auth=HTTPBasicAuth(api_username, api_password),
     )
-    try:
-        response.raise_for_status()
-    except requests.exceptions.HTTPError as e:
-        print(response.content)
-        logger.error(f"Error while patching book metadata: {e} {book_id}")
-        patch_book_metadata(metadata, book_id, base_url, api_username, api_password)
+    response.raise_for_status()
 
 
+@retry_request
 def download_book(
     book_id: str, base_url: str, api_username: str, api_password: str
 ) -> bytes:
@@ -80,6 +115,16 @@ def download_book(
     return response.content
 
 
+@retry_request
+def scan_library(
+    library_id: str, base_url: str, api_username: str, api_password: str
+) -> None:
+    url = f"{base_url}/api/v1/libraries/{library_id}/scan"
+    response = requests.post(url, auth=HTTPBasicAuth(api_username, api_password))
+    response.raise_for_status()
+
+
+@retry_request
 def get_series(
     series_id: str, base_url: str, api_username: str, api_password: str
 ) -> dict:
@@ -89,6 +134,7 @@ def get_series(
     return response.json()
 
 
+@retry_request
 def patch_series_metadata(
     metadata: dict, series_id: str, base_url: str, api_username: str, api_password: str
 ) -> None:
@@ -98,9 +144,4 @@ def patch_series_metadata(
         json=metadata,
         auth=HTTPBasicAuth(api_username, api_password),
     )
-    try:
-        response.raise_for_status()
-    except requests.exceptions.HTTPError as e:
-        print(response.content)
-        logger.error(f"Error while patching series metadata: {e} {series_id}")
-        patch_series_metadata(metadata, series_id, base_url, api_username, api_password)
+    response.raise_for_status()
