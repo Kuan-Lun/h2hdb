@@ -1,5 +1,6 @@
 __all__ = ["DatabaseConfig", "LoggerConfig", "H2HConfig", "Config", "load_config"]
 
+import os
 
 import argparse
 import json
@@ -108,7 +109,13 @@ class LoggerConfig:
 
 
 class H2HConfig:
-    __slots__ = ["download_path", "cbz_path", "cbz_max_size", "cbz_grouping"]
+    __slots__ = [
+        "download_path",
+        "cbz_path",
+        "cbz_max_size",
+        "cbz_grouping",
+        "cbz_tmp_directory",
+    ]
 
     def __init__(
         self, download_path: str, cbz_path: str, cbz_max_size: int, cbz_grouping: str
@@ -130,8 +137,10 @@ class H2HConfig:
         if type(cbz_grouping) is not str:
             raise ConfigError("cbz_grouping must be a string")
 
+        self.cbz_tmp_directory = os.path.join(self.cbz_path, "tmp")
+
     def __repr__(self) -> str:
-        return f"H2HConfig(download_path={self.download_path}, cbz_path={self.cbz_path}, cbz_max_size={self.cbz_max_size})"
+        return f"H2HConfig(download_path={self.download_path}, cbz_path={self.cbz_path}, cbz_max_size={self.cbz_max_size}, cbz_grouping={self.cbz_grouping}, cbz_tmp_directory={self.cbz_tmp_directory})"
 
     def __str__(self) -> str:
         return self.__repr__()
@@ -165,9 +174,7 @@ class KomgaConfig:
 class MediaServer:
     __slots__ = ["server_type", "server_config"]
 
-    def __init__(
-        self, server_type: str, server_config: KomgaConfig | dict[str, str]
-    ) -> None:
+    def __init__(self, server_type: str, server_config: KomgaConfig) -> None:
         self.server_type = server_type
         self.server_config = server_config
 

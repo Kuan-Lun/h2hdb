@@ -48,7 +48,7 @@ class GalleryInfoParser:
         galleries_comments: str,
         upload_account: str,
         download_time: str,
-        tags: dict[str, str],
+        tags: list[tuple[str, str]],
     ) -> None:
         self.gallery_folder = gallery_folder
         self.gallery_name = gallery_name
@@ -106,16 +106,16 @@ def parse_gallery_info(gallery_folder: str) -> GalleryInfoParser:
             value = value.strip()
             match key:
                 case "Tags":
-                    tags = dict[str, str]()
+                    tags = list[tuple[str, str]]()
                     for tag in value.split(","):
                         if ":" in tag:
                             tag_key, tag_value = tag.split(":", 1)
                             if tag_key.strip() != "":
-                                tags[tag_key.strip()] = tag_value.strip()
+                                tags.append((tag_key.strip(), tag_value.strip()))
                             else:
-                                tags["untagged"] = tag_value.strip()
+                                tags.append(("untagged", tag_value.strip()))
                         else:
-                            tags["untagged"] = tag.strip()
+                            tags.append(("untagged", tag.strip()))
                 case "Title":
                     title = value
                 case "Upload Time":

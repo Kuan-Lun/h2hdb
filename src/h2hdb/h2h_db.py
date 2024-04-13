@@ -123,9 +123,9 @@ class H2HDBAbstract(metaclass=ABCMeta):
             H2HDBAbstract: The initialized H2HDBAbstract object.
         """
         self.connector.connect()
-        match self.config.database.sql_type.lower():
-            case "mysql":
-                self.connector.execute("START TRANSACTION")
+        # match self.config.database.sql_type.lower():
+        #     case "mysql":
+        #         self.connector.execute("START TRANSACTION")
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
@@ -402,6 +402,19 @@ class H2HDBAbstract(metaclass=ABCMeta):
     def refresh_current_files_hashs(self) -> None:
         """
         Refreshes the current files hashes in the database.
+        """
+        pass
+
+    @abstractmethod
+    def get_komga_metadata(self, gallery_name: str) -> dict:
+        """
+        Selects the Komga metadata from the database.
+
+        Args:
+            gallery_name (str): The name of the gallery.
+
+        Returns:
+            dict: The Komga metadata.
         """
         pass
 
@@ -730,7 +743,7 @@ class H2HDBGalleriesTitles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                 """
         self.connector.execute(insert_query, (db_gallery_id, title))
 
-    def _get_title_by_gallery_name(self, db_gallery_id: int) -> str:
+    def _get_title_by_db_gallery_id(self, db_gallery_id: int) -> str:
         table_name = "galleries_titles"
         match self.config.database.sql_type.lower():
             case "mysql":
@@ -750,7 +763,7 @@ class H2HDBGalleriesTitles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
     def get_title_by_gallery_name(self, gallery_name: str) -> str:
         db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
-        return self._get_title_by_gallery_name(db_gallery_id)
+        return self._get_title_by_db_gallery_id(db_gallery_id)
 
 
 class H2HDBUploadAccounts(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
@@ -912,6 +925,18 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self.connector.execute(query)
         logger.info(f"{tag_name_table_name} table created.")
 
+        tag_value_table_name = f"galleries_tags_values"
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                query = f"""
+                    CREATE TABLE IF NOT EXISTS {tag_value_table_name} (
+                        PRIMARY KEY (tag_value),
+                        tag_value CHAR({self.innodb_index_prefix_limit}) NOT NULL
+                    )
+                """
+        self.connector.execute(query)
+        logger.info(f"{tag_name_table_name} table created.")
+
         tag_pairs_table_name = f"galleries_tag_pairs_dbids"
         match self.config.database.sql_type.lower():
             case "mysql":
@@ -922,6 +947,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         tag_name       CHAR({self.innodb_index_prefix_limit}) NOT NULL,
                         FOREIGN KEY (tag_name) REFERENCES {tag_name_table_name}(tag_name),
                         tag_value      CHAR({self.innodb_index_prefix_limit}) NOT NULL,
+                        FOREIGN KEY (tag_value) REFERENCES {tag_value_table_name}(tag_value),
                         UNIQUE (tag_name, tag_value),
                         INDEX (tag_value)
                     )
@@ -973,6 +999,18 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         query_result = self.connector.fetch_one(select_query, (tag_name,))
         return query_result is not None
 
+    def _check_gallery_tag_value(self, tag_value: str) -> bool:
+        table_name = f"galleries_tags_values"
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                select_query = f"""
+                    SELECT tag_value
+                      FROM {table_name}
+                     WHERE tag_value = %s
+                """
+        query_result = self.connector.fetch_one(select_query, (tag_value,))
+        return query_result is not None
+
     def _insert_gallery_tag(
         self, db_gallery_id: int, tag_name: str, tag_value: str
     ) -> None:
@@ -987,6 +1025,15 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                             INSERT INTO {tag_name_table_name} (tag_name) VALUES (%s)
                         """
                 self.connector.execute(insert_query, (tag_name,))
+
+            if not self._check_gallery_tag_value(tag_value):
+                tag_name_table_name = f"galleries_tags_values"
+                match self.config.database.sql_type.lower():
+                    case "mysql":
+                        insert_query = f"""
+                            INSERT INTO {tag_name_table_name} (tag_value) VALUES (%s)
+                        """
+                self.connector.execute(insert_query, (tag_value,))
 
             tag_pairs_table_name = f"galleries_tag_pairs_dbids"
             match self.config.database.sql_type.lower():
@@ -1036,6 +1083,44 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     ) -> str:
         db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
         return self._select_gallery_tag(db_gallery_id, tag_name)
+
+    def get_tag_pairs_by_gallery_name(self, gallery_name: str) -> list[tuple[str, str]]:
+        db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
+        db_tag_pair_ids = self._get_db_tag_pair_id_by_db_gallery_id(db_gallery_id)
+        return [
+            self._get_tag_pairs_by_db_tag_pair_id(db_tag_pair_id)
+            for db_tag_pair_id in db_tag_pair_ids
+        ]
+
+    def _get_db_tag_pair_id_by_db_gallery_id(self, db_gallery_id: int) -> list[int]:
+        table_name = "galleries_tags"
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                select_query = f"""
+                    SELECT db_tag_pair_id
+                      FROM {table_name}
+                     WHERE db_gallery_id = %s
+                """
+        query_result = self.connector.fetch_all(select_query, (db_gallery_id,))
+        return [query[0] for query in query_result]
+
+    def _get_tag_pairs_by_db_tag_pair_id(self, db_tag_pair_id: int) -> tuple[str, str]:
+        table_name = "galleries_tag_pairs_dbids"
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                select_query = f"""
+                    SELECT tag_name, tag_value
+                      FROM {table_name}
+                     WHERE db_tag_pair_id = %s
+                """
+        query_result = self.connector.fetch_one(select_query, (db_tag_pair_id,))
+        if query_result is None:
+            msg = f"Tag pair ID {db_tag_pair_id} does not exist."
+            logger.error(msg)
+            raise DatabaseKeyError(msg)
+        else:
+            tag_name, tag_value = query_result
+        return tag_name, tag_value
 
 
 class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
@@ -1638,8 +1723,8 @@ class H2HDB(
 
         # When the corresponding Tag_{tag_name} table does not exist, a table creation operation will be performed.
         # This will commit and create a new TRANSACTION.
-        for tag_name, tag_value in gallery_info_params.tags.items():
-            self._insert_gallery_tag(db_gallery_id, tag_name, tag_value)
+        for tag in gallery_info_params.tags:
+            self._insert_gallery_tag(db_gallery_id, tag[0], tag[1])
 
         self.delete_pending_gallery_removal(gallery_info_params.gallery_name)
         self.connector.commit()
@@ -1718,7 +1803,7 @@ class H2HDB(
                     raise ValueError(
                         f"Invalid cbz_grouping value: {self.config.h2h.cbz_grouping}"
                     )
-            tmp_directory = os.path.join(self.config.h2h.cbz_path, "tmp")
+            cbz_tmp_directory = os.path.join(self.config.h2h.cbz_path, "tmp")
 
             cbz_path = os.path.join(
                 cbz_directory, gallery_info_params.gallery_name + ".cbz"
@@ -1740,7 +1825,7 @@ class H2HDB(
                     compress_images_and_create_cbz(
                         gallery_folder,
                         cbz_directory,
-                        tmp_directory,
+                        cbz_tmp_directory,
                         self.config.h2h.cbz_max_size,
                     )
                     logger.info(
@@ -1750,7 +1835,7 @@ class H2HDB(
                 compress_images_and_create_cbz(
                     gallery_folder,
                     cbz_directory,
-                    tmp_directory,
+                    cbz_tmp_directory,
                     self.config.h2h.cbz_max_size,
                 )
                 logger.info(f"Gallery '{gallery_info_params.gallery_name}' updated.")
@@ -1819,9 +1904,9 @@ class H2HDB(
             current_cbzs = dict[str, str]()
             for root, _, files in os.walk(self.config.h2h.cbz_path):
                 for file in files:
-                    current_cbzs[file] = os.path.splitext(root)[0]
+                    current_cbzs[os.path.splitext(file)[0]] = root
             for key in set(current_cbzs.keys()) - set(current_galleries_names):
-                os.remove(os.path.join(current_cbzs[key], key))
+                os.remove(os.path.join(current_cbzs[key], key + ".cbz"))
                 logger.info(f"CBZ '{key}' removed.")
             while True:
                 directory_removed = False
@@ -1865,6 +1950,25 @@ class H2HDB(
         for gallery_name in current_galleries_folders:
             self.insert_gallery_info(gallery_name)
         self.refresh_current_files_hashs()
+
+    def get_komga_metadata(self, gallery_name: str) -> dict:
+        metadata = dict[str, str | list[dict[str, str]]]()
+        metadata["title"] = self.get_title_by_gallery_name(gallery_name)
+        try:
+            metadata["summary"] = self.get_comment_by_gallery_name(gallery_name)
+        except DatabaseKeyError:
+            metadata["summary"] = ""
+        upload_time = self.get_upload_time_by_gallery_name(gallery_name)
+        metadata["releaseDate"] = "-".join(
+            [
+                str(upload_time.year),
+                "{m:02d}".format(m=upload_time.month),
+                "{d:02d}".format(d=upload_time.day),
+            ]
+        )
+        tags = self.get_tag_pairs_by_gallery_name(gallery_name)
+        metadata["authors"] = [{"name": value, "role": key} for key, value in tags]
+        return metadata
 
 
 def _insert_h2h_download(config: Config, gallery_paths: list) -> None:

@@ -1,11 +1,23 @@
 from multiprocessing import Pool
-import os
 import random
+import shutil
+import os
 
+from .logger import logger
 from h2hdb import H2HDB
 from .h2h_db import GALLERY_INFO_FILE_NAME
-from .config_loader import load_config
+from .config_loader import load_config, Config
 from .h2h_db import _insert_h2h_download
+from .komga import (
+    get_series_ids,
+    get_books_ids,
+    get_book,
+    patch_book_metadata,
+    get_series,
+    patch_series_metadata,
+    download_book,
+)
+from .sql_connector import DatabaseKeyError
 
 
 def random_split_list(input_list: list, num_groups: int) -> list[list]:
@@ -32,8 +44,94 @@ def random_split_list(input_list: list, num_groups: int) -> list[list]:
     return groups
 
 
+def scan_komga_library(config: Config) -> None:
+    library_id = config.media_server.server_config.library_id
+    base_url = config.media_server.server_config.base_url
+    api_username = config.media_server.server_config.api_username
+    api_password = config.media_server.server_config.api_password
+    series_ids = get_series_ids(library_id, base_url, api_username, api_password)
+    with H2HDB(config=config) as connector:
+        for n, series_id in enumerate(series_ids):
+            logger.info(
+                f"Scanning series {(n+1)}/{len(series_ids)}={(n+1)/len(series_ids):.2%} ({series_id})"
+            )
+            books_ids = get_books_ids(series_id, base_url, api_username, api_password)
+            ischecktitle = False
+            for book_id in books_ids:
+                komga_metadata = get_book(book_id, base_url, api_username, api_password)
+                try:
+                    current_metadata = connector.get_komga_metadata(
+                        komga_metadata["name"]
+                    )
+                    ischecktitle = True
+                except DatabaseKeyError:
+                    # import io
+                    # import os
+                    # import zipfile
+
+                    # if not os.path.exists(
+                    #     os.path.join(
+                    #         ".",
+                    #         ".tmp",
+                    #         "download",
+                    #         komga_metadata["name"],
+                    #         GALLERY_INFO_FILE_NAME,
+                    #     )
+                    # ):
+                    #     logger.info(f"Download book {komga_metadata['name']}")
+                    #     cbz_io = io.BytesIO(
+                    #         download_book(book_id, base_url, api_username, api_password)
+                    #     )
+                    #     with zipfile.ZipFile(cbz_io, "r") as zip_ref:
+                    #         # 檢查每一個檔案是否為 'abc.txt'
+                    #         for filename in zip_ref.namelist():
+                    #             if filename == GALLERY_INFO_FILE_NAME:
+                    #                 # 如果是，則讀取並寫入到檔案
+                    #                 os.makedirs(
+                    #                     os.path.join(
+                    #                         ".",
+                    #                         ".tmp",
+                    #                         "download",
+                    #                         komga_metadata["name"],
+                    #                     )
+                    #                 )
+                    #                 with open(
+                    #                     os.path.join(
+                    #                         ".",
+                    #                         ".tmp",
+                    #                         "download",
+                    #                         komga_metadata["name"],
+                    #                         filename,
+                    #                     ),
+                    #                     "wb",
+                    #                 ) as f:
+                    #                     f.write(zip_ref.read(filename))
+                    continue
+
+                if not (current_metadata.items() <= komga_metadata.items()):
+                    patch_book_metadata(
+                        current_metadata, book_id, base_url, api_username, api_password
+                    )
+            if not ischecktitle:
+                continue
+            series_title = get_series(series_id, base_url, api_username, api_password)[
+                "metadata"
+            ]["title"]
+            if series_title != current_metadata["releaseDate"]:
+                patch_series_metadata(
+                    {"title": current_metadata["releaseDate"]},
+                    series_id,
+                    base_url,
+                    api_username,
+                    api_password,
+                )
+
+
 if __name__ == "__main__":
     config = load_config()
+    if os.path.exists(config.h2h.cbz_tmp_directory):
+        shutil.rmtree(config.h2h.cbz_tmp_directory)
+    os.makedirs(config.h2h.cbz_tmp_directory)
     with H2HDB(config=config) as connector:
         # Check the database character set and collation
         connector.check_database_character_set()
@@ -60,3 +158,4 @@ if __name__ == "__main__":
 
     with H2HDB(config=config) as connector:
         connector.refresh_current_files_hashs()
+    scan_komga_library(config)

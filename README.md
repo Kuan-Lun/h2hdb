@@ -28,7 +28,7 @@ H2HDB is a comprehensive database for organising and managing H@H comic collecti
     ```bash
     python -m venv .venv # Create a virtual environment.
     ./.venv/Scripts/python -m pip install -r ./h2hdb/requirements.txt # Install the required packages.
-    ./.venv/Scripts/python -m pip install -e ./h2hdb/[mysal, cbz] # Install the h2hdb packages.
+    ./.venv/Scripts/python -m pip install -e ./h2hdb/[mysal,cbz,lomga] # Install the h2hdb packages.
     rm -rf ./h2hdb/ # Remove the downloaded 'h2hdb' folder.
     ```
 
@@ -129,6 +129,10 @@ Here is an example of how you can use the `h2hdb` package to insert gallery info
         connector.insert_gallery_info("Gallery folder path") # Insert gallery information to database
         connector.insert_removed_gallery_gid(123) # Insert removed gallery GID
 ```
+
+## Q & A
+
+- When will other databases be supported? Later, we will refactor using an ORM framework.
 
 ## Credits
 
