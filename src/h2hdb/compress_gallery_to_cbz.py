@@ -1,12 +1,13 @@
 __all__ = ["compress_images_and_create_cbz", "calculate_hash_of_file_in_cbz"]
 
 import os
-from PIL import Image  # type: ignore
+from PIL import Image, ImageFile  # type: ignore
 import zipfile
 import shutil
 import hashlib
 
 Image.MAX_IMAGE_PIXELS = None
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 def compress_image(image_path: str, output_path: str, max_size: int) -> None:

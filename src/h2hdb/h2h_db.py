@@ -1829,7 +1829,7 @@ class H2HDB(
                         self.config.h2h.cbz_max_size,
                     )
                     logger.info(
-                        f"Gallery '{gallery_info_params.gallery_name}' updated."
+                        f"CBZ '{gallery_info_params.gallery_name}.cbz' updated."
                     )
             else:
                 compress_images_and_create_cbz(
@@ -1838,7 +1838,7 @@ class H2HDB(
                     cbz_tmp_directory,
                     self.config.h2h.cbz_max_size,
                 )
-                logger.info(f"Gallery '{gallery_info_params.gallery_name}' updated.")
+                logger.info(f"CBZ '{gallery_info_params.gallery_name}.cbz' updated.")
 
     def scan_current_galleries_folders(self) -> list[str]:
         tmp_table_name = "tmp_current_galleries"
