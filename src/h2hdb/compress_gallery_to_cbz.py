@@ -30,7 +30,7 @@ def compress_image(image_path: str, output_path: str, max_size: int) -> None:
         try:
             image.thumbnail((max_width, max_height))
         except ValueError:
-            image.thumbnail((max_width, max_height), resample=Image.NEAREST)
+            image.thumbnail((max_width, max_height), resample=Image.NEAREST)  # type: ignore
         image.save(output_path, image.format)
 
 
@@ -71,11 +71,18 @@ def compress_images_and_create_cbz(
 
     # Create the CBZ file
     os.makedirs(output_directory, exist_ok=True)
-    while (len(gallery_name.encode("utf-8")) + 4) > FILE_NAME_LENGTH_LIMIT:
-        gallery_name = gallery_name[1:]
-    cbzfile = os.path.join(output_directory, gallery_name + ".cbz")
+    cbzfile = os.path.join(
+        output_directory, gallery_name_to_cbz_file_name(gallery_name)
+    )
     create_cbz(tmp_cbz_directory, cbzfile)
     shutil.rmtree(tmp_cbz_directory)
+
+
+def gallery_name_to_cbz_file_name(gallery_name: str) -> str:
+    """Convert a gallery name to a CBZ file name."""
+    while (len(gallery_name.encode("utf-8")) + 4) > FILE_NAME_LENGTH_LIMIT:
+        gallery_name = gallery_name[1:]
+    return gallery_name + ".cbz"
 
 
 def calculate_hash_of_file_in_cbz(

@@ -1,6 +1,7 @@
 # swagger-ui/index.html
 import requests  # type: ignore
 from requests.auth import HTTPBasicAuth  # type: ignore
+import time
 
 from .logger import logger
 
@@ -12,6 +13,7 @@ def retry_request(request, *args, **kwargs):
                 return request(*args, **kwargs)
             except requests.exceptions.RequestException as e:
                 logger.error(f"Error while making request: {e}")
+                time.sleep(60)
 
     return wrapper
 
@@ -48,6 +50,29 @@ def get_books_ids_in_series_id(
     while True:
         logger.debug(f"Getting books page {page_num} for series {series_id}")
         url = f"{base_url}/api/v1/series/{series_id}/books?page={page_num}&size=100"
+        response = requests.get(url, auth=HTTPBasicAuth(api_username, api_password))
+        response.raise_for_status()
+        response_json = response.json()
+        if len(response_json["content"]) == 0:
+            break
+        for book in response_json["content"]:
+            books_informations.append((book["id"], book["fileLastModified"]))
+        page_num += 1
+    books_ids = list({b[0] for b in sorted(books_informations, key=lambda x: x[1])})
+    return books_ids
+
+
+@retry_request
+def get_books_ids_in_library_id(
+    library_id: str, base_url: str, api_username: str, api_password: str
+) -> list[str]:
+    books_informations = list[tuple[str, str]]()
+    page_num = 0
+    while True:
+        logger.debug(f"Getting books page {page_num} for library {library_id}")
+        url = (
+            f"{base_url}/api/v1/books?library_id={library_id}&page={page_num}&size=100"
+        )
         response = requests.get(url, auth=HTTPBasicAuth(api_username, api_password))
         response.raise_for_status()
         response_json = response.json()

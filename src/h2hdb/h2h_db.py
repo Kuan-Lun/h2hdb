@@ -1,25 +1,24 @@
 __all__ = ["H2HDB", "GALLERY_INFO_FILE_NAME", "_insert_h2h_download"]
 
 
+from abc import ABCMeta, abstractmethod
+import datetime
 import re
 import hashlib
 import os
-from abc import ABCMeta, abstractmethod
 import math
-import datetime
 from itertools import islice
 
 from .gallery_info_parser import parse_gallery_info, GalleryInfoParser
 from .config_loader import Config
 from .logger import logger
 from .sql_connector import (
-    MySQLConnector,
     SQLConnectorParams,
     DatabaseConfigurationError,
     DatabaseKeyError,
 )
-from .settings import FOLDER_NAME_LENGTH_LIMIT, FILE_NAME_LENGTH_LIMIT
 
+from .settings import FOLDER_NAME_LENGTH_LIMIT, FILE_NAME_LENGTH_LIMIT
 
 GALLERY_INFO_FILE_NAME = "galleryinfo.txt"
 HASH_ALGORITHMS = dict[str, int](
@@ -40,13 +39,6 @@ COMPARISON_HASH_ALGORITHM = "sha512"
 
 def hash_function(x: bytes, algorithm: str) -> bytes:
     return getattr(hashlib, algorithm.lower())(x).digest()
-
-
-def sql_type_to_name(sql_type: str) -> str:
-    match sql_type.lower():
-        case "mysql":
-            name = "MySQL"
-    return name
 
 
 class H2HDBAbstract(metaclass=ABCMeta):
@@ -74,7 +66,7 @@ class H2HDBAbstract(metaclass=ABCMeta):
         insert_gallery_tag: Inserts the gallery tag into the database.
         get_tag_value_by_gallery_name_and_tag_name: Selects the gallery tag from the database.
         get_files_by_gallery_name: Selects the gallery files from the database.
-        delete_gallery_image: Deletes the gallery image from the database.
+        delete_gallery_file: Deletes the gallery image from the database.
         delete_gallery: Deletes the gallery from the database.
 
     Methods:
@@ -109,11 +101,12 @@ class H2HDBAbstract(metaclass=ABCMeta):
         # Set the appropriate connector based on the SQL type
         match self.config.database.sql_type.lower():
             case "mysql":
+                from .mysql_connector import MySQLConnector
+
                 self.connector = MySQLConnector(**self.sql_connection_params)
                 self.innodb_index_prefix_limit = 191
             case _:
                 raise ValueError("Unsupported SQL type")
-        logger.info("Connector set.")
 
     def __enter__(self) -> "H2HDBAbstract":
         """
@@ -139,8 +132,8 @@ class H2HDBAbstract(metaclass=ABCMeta):
         """
         if exc_type is None:
             self.connector.commit()
-        else:
-            self.connector.rollback()
+        # else:
+        #     self.connector.rollback()
         self.connector.close()
 
     def _split_gallery_name(self, gallery_name: str) -> list[str]:
@@ -322,7 +315,7 @@ class H2HDBAbstract(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def delete_gallery_image(self, gallery_name: str) -> None:
+    def delete_gallery_file(self, gallery_name: str) -> None:
         """
         Deletes the gallery image from the database.
 
@@ -450,7 +443,7 @@ class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
         charset_result = self.connector.fetch_one(query)[1]
         is_charset_valid = charset_result == charset
         if not is_charset_valid:
-            message = f"Invalid database character set. Must be '{charset}' for {sql_type_to_name(self.config.database.sql_type.lower())} but is '{charset_result}'"
+            message = f"Invalid database character set. Must be '{charset}' but is '{charset_result}'."
             logger.error(message)
             raise DatabaseConfigurationError(message)
         logger.info("Database character set is valid.")
@@ -470,7 +463,7 @@ class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
         collation_result = self.connector.fetch_one(query)[1]
         is_collation_valid = collation_result == collation
         if not is_collation_valid:
-            message = f"Invalid database collation. Must be '{collation}' for {sql_type_to_name(self.config.database.sql_type.lower())} but is '{collation_result}'"
+            message = f"Invalid database collation. Must be '{collation}' but is '{collation_result}'."
             logger.error(message)
             raise DatabaseConfigurationError(message)
         logger.info("Database character set and collation are valid.")
@@ -1554,13 +1547,15 @@ class H2HDB(
 
     def delete_pending_gallery_removals(self) -> None:
         pending_gallery_removals = self.get_pending_gallery_removals()
-        for gallery_name in pending_gallery_removals:
-            self.delete_gallery_image(gallery_name)
+        for n, gallery_name in enumerate(pending_gallery_removals):
+            self.delete_gallery_file(gallery_name)
             self.delete_gallery(gallery_name)
             self.delete_pending_gallery_removal(gallery_name)
-            self.connector.commit()
+            if n % 100 == 0:
+                self.connector.commit()
+        self.connector.commit()
 
-    def delete_gallery_image(self, gallery_name: str) -> None:
+    def delete_gallery_file(self, gallery_name: str) -> None:
         try:
             self._get_db_gallery_id_by_gallery_name(gallery_name)
         except DatabaseKeyError:
@@ -1722,8 +1717,6 @@ class H2HDB(
             for algorithm in HASH_ALGORITHMS.keys():
                 self._insert_gallery_file_hash(*image_hash_insert_params, algorithm)
 
-        # When the corresponding Tag_{tag_name} table does not exist, a table creation operation will be performed.
-        # This will commit and create a new TRANSACTION.
         for tag in gallery_info_params.tags:
             self._insert_gallery_tag(db_gallery_id, tag[0], tag[1])
 
@@ -1760,7 +1753,7 @@ class H2HDB(
         gallery_info_params = parse_gallery_info(gallery_folder)
         isthesame = self._check_gallery_info_file_hash(gallery_info_params)
         if isthesame is False:
-            self.delete_gallery_image(gallery_info_params.gallery_name)
+            self.delete_gallery_file(gallery_info_params.gallery_name)
             self.delete_gallery(gallery_info_params.gallery_name)
             self._insert_gallery_info(gallery_info_params)
             logger.info(f"Gallery '{gallery_info_params.gallery_name}' inserted.")
@@ -1902,12 +1895,16 @@ class H2HDB(
         self.delete_pending_gallery_removals()
 
         if self.config.h2h.cbz_path != "":
+            from .compress_gallery_to_cbz import gallery_name_to_cbz_file_name
+
             current_cbzs = dict[str, str]()
             for root, _, files in os.walk(self.config.h2h.cbz_path):
                 for file in files:
-                    current_cbzs[os.path.splitext(file)[0]] = root
-            for key in set(current_cbzs.keys()) - set(current_galleries_names):
-                os.remove(os.path.join(current_cbzs[key], key + ".cbz"))
+                    current_cbzs[file] = root
+            for key in set(current_cbzs.keys()) - set(
+                gallery_name_to_cbz_file_name(name) for name in current_galleries_names
+            ):
+                os.remove(os.path.join(current_cbzs[key], key))
                 logger.info(f"CBZ '{key}' removed.")
             while True:
                 directory_removed = False
