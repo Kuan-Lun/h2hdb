@@ -1558,6 +1558,7 @@ class H2HDB(
             self.delete_gallery_image(gallery_name)
             self.delete_gallery(gallery_name)
             self.delete_pending_gallery_removal(gallery_name)
+            self.connector.commit()
 
     def delete_gallery_image(self, gallery_name: str) -> None:
         try:
@@ -1967,7 +1968,9 @@ class H2HDB(
             ]
         )
         tags = self.get_tag_pairs_by_gallery_name(gallery_name)
-        metadata["authors"] = [{"name": value, "role": key} for key, value in tags]
+        metadata["authors"] = [
+            {"name": value, "role": key} for key, value in tags if value != ""
+        ]
         return metadata
 
 
