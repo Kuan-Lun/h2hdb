@@ -8,6 +8,8 @@ import hashlib
 import os
 import math
 from itertools import islice
+from threading import Thread
+from functools import partial
 
 from .gallery_info_parser import parse_gallery_info, GalleryInfoParser
 from .config_loader import Config
@@ -382,7 +384,7 @@ class H2HDBAbstract(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def scan_current_galleries_folders(self) -> list[str]:
+    def scan_current_galleries_folders(self) -> tuple[list[str], list[str]]:
         """
         Scans the current galleries folders.
 
@@ -1834,7 +1836,7 @@ class H2HDB(
                 )
                 logger.info(f"CBZ '{gallery_info_params.gallery_name}.cbz' updated.")
 
-    def scan_current_galleries_folders(self) -> list[str]:
+    def scan_current_galleries_folders(self) -> tuple[list[str], list[str]]:
         tmp_table_name = "tmp_current_galleries"
         match self.config.database.sql_type.lower():
             case "mysql":
@@ -1894,32 +1896,31 @@ class H2HDB(
 
         self.delete_pending_gallery_removals()
 
-        if self.config.h2h.cbz_path != "":
-            from .compress_gallery_to_cbz import gallery_name_to_cbz_file_name
+        return (current_galleries_folders, current_galleries_names)
 
-            current_cbzs = dict[str, str]()
-            for root, _, files in os.walk(self.config.h2h.cbz_path):
-                for file in files:
-                    current_cbzs[file] = root
-            for key in set(current_cbzs.keys()) - set(
-                gallery_name_to_cbz_file_name(name) for name in current_galleries_names
-            ):
-                os.remove(os.path.join(current_cbzs[key], key))
-                logger.info(f"CBZ '{key}' removed.")
-            while True:
-                directory_removed = False
-                for root, dirs, files in os.walk(
-                    self.config.h2h.cbz_path, topdown=False
-                ):
-                    if root == self.config.h2h.cbz_path:
-                        continue
-                    if max([len(dirs), len(files)]) == 0:
-                        directory_removed = True
-                        os.rmdir(root)
-                        logger.info(f"Directory '{root}' removed.")
-                if not directory_removed:
-                    break
-        return current_galleries_folders
+    def _refresh_current_cbz_files(self, current_galleries_names) -> None:
+        from .compress_gallery_to_cbz import gallery_name_to_cbz_file_name
+
+        current_cbzs = dict[str, str]()
+        for root, _, files in os.walk(self.config.h2h.cbz_path):
+            for file in files:
+                current_cbzs[file] = root
+        for key in set(current_cbzs.keys()) - set(
+            gallery_name_to_cbz_file_name(name) for name in current_galleries_names
+        ):
+            os.remove(os.path.join(current_cbzs[key], key))
+            logger.info(f"CBZ '{key}' removed.")
+        while True:
+            directory_removed = False
+            for root, dirs, files in os.walk(self.config.h2h.cbz_path, topdown=False):
+                if root == self.config.h2h.cbz_path:
+                    continue
+                if max([len(dirs), len(files)]) == 0:
+                    directory_removed = True
+                    os.rmdir(root)
+                    logger.info(f"Directory '{root}' removed.")
+            if not directory_removed:
+                break
 
     def refresh_current_files_hashs(self):
         match self.config.database.sql_type.lower():
@@ -1944,10 +1945,25 @@ class H2HDB(
 
     def insert_h2h_download(self) -> None:
         self.delete_pending_gallery_removals()
-        current_galleries_folders = self.scan_current_galleries_folders()
-        for gallery_name in current_galleries_folders:
-            self.insert_gallery_info(gallery_name)
-        self.refresh_current_files_hashs()
+        current_galleries_folders, current_galleries_names = (
+            self.scan_current_galleries_folders()
+        )
+
+        def refresh_h2hdb():
+            for gallery_name in current_galleries_folders:
+                self.insert_gallery_info(gallery_name)
+            self.refresh_current_files_hashs()
+
+        refresh_cbz = partial(self._refresh_current_cbz_files, current_galleries_names)
+
+        threads = list[Thread]()
+        threads.append(Thread(target=refresh_h2hdb))
+        if self.config.h2h.cbz_path != "":
+            threads.append(Thread(target=refresh_cbz))
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
 
     def get_komga_metadata(self, gallery_name: str) -> dict:
         metadata = dict[str, str | list[dict[str, str]]]()
