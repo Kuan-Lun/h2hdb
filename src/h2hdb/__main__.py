@@ -193,12 +193,12 @@ class UpdateH2HDB:
         os.makedirs(config.h2h.cbz_tmp_directory)
 
     def __enter__(self):
-        # self.thread = Thread(target=scan_komga_library, args=(config,))
-        # self.thread.start()
+        self.thread = Thread(target=scan_komga_library, args=(config,))
+        self.thread.start()
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        # self.thread.join()
+        self.thread.join()
         pass
 
     def update_h2hdb(self):

@@ -7,8 +7,6 @@ import re
 import os
 import math
 from itertools import islice
-from threading import Thread
-from functools import partial
 
 from .gallery_info_parser import parse_gallery_info, GalleryInfoParser
 from .config_loader import Config
