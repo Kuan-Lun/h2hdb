@@ -960,7 +960,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id),
                         db_tag_pair_id INT UNSIGNED NOT NULL,
                         FOREIGN KEY (db_tag_pair_id) REFERENCES {tag_pairs_table_name}(db_tag_pair_id),
-                        INDEX (db_tag_pair_id)
+                        UNIQUE (db_tag_pair_id, db_gallery_id)
                     )
                 """
         self.connector.execute(query)
@@ -1135,7 +1135,8 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id),
                         {create_gallery_name_parts_sql},
                         UNIQUE real_primay_key (db_gallery_id, {", ".join(column_name_parts)}),
-                        INDEX full_name ({", ".join(column_name_parts)})
+                        INDEX full_name ({", ".join(column_name_parts)}),
+                        UNIQUE db_file_to_gallery_id (db_file_id, db_gallery_id)
                     )
                 """
         self.connector.execute(query)
@@ -1258,7 +1259,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         db_file_id INT UNSIGNED NOT NULL,
                         FOREIGN KEY (db_hash_id) REFERENCES {dbids_table_name}(db_hash_id),
                         db_hash_id INT UNSIGNED NOT NULL,
-                        INDEX (db_hash_id)
+                        UNIQUE db_hash_id (db_hash_id, db_file_id)
                     )
                 """
         self.connector.execute(query)
