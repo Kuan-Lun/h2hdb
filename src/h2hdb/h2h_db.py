@@ -1909,7 +1909,7 @@ class H2HDB(
                 self.config.h2h.cbz_max_size,
                 self._get_duplicated_hash_values_by_count_artist_ratio(),
             )
-            logger.info(f"CBZ '{gallery_info_params.gallery_name}.cbz' updated.")
+            logger.info(f"CBZ '{gallery_info_params.gallery_name}.cbz' created.")
 
     def scan_current_galleries_folders(self) -> tuple[list[str], list[str]]:
         tmp_table_name = "tmp_current_galleries"
@@ -2028,18 +2028,15 @@ class H2HDB(
 
         if self.config.h2h.cbz_path != "":
             logger.info("Compressing galleries to CBZ...")
-            compress_galleries_folders_in_background = list[str]()
             for gallery_name in current_galleries_folders:
                 gallery_info_params = parse_gallery_info(gallery_name)
                 try:
                     self._get_db_gallery_id_by_gallery_name(
                         gallery_info_params.gallery_name
                     )
-                    compress_galleries_folders_in_background.append(gallery_name)
+                    self.compress_gallery_to_cbz(gallery_name)
                 except DatabaseKeyError:
                     pass
-            for gallery_name in compress_galleries_folders_in_background:
-                self.compress_gallery_to_cbz(gallery_name)
 
         logger.info("Inserting galleries...")
         for gallery_name in current_galleries_folders:
