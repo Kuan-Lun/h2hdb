@@ -28,7 +28,7 @@ H2HDB is a comprehensive database for organising and managing H@H comic collecti
     ```bash
     python -m venv .venv # Create a virtual environment.
     ./.venv/Scripts/python -m pip install -r ./h2hdb/requirements.txt # Install the required packages.
-    ./.venv/Scripts/python -m pip install -e ./h2hdb/[mysal,cbz,lomga] # Install the h2hdb packages.
+    ./.venv/Scripts/python -m pip install -e ./h2hdb/[mysal,cbz,komga] # Install the h2hdb packages.
     rm -rf ./h2hdb/ # Remove the downloaded 'h2hdb' folder.
     ```
 
@@ -75,64 +75,6 @@ H2HDB is a comprehensive database for organising and managing H@H comic collecti
     }
 }
 ```
-
-### Views and Tables
-
-#### Gallery Information View `galleries_infos`
-
-This table contains information about the files in the galleries. It contains columns like `db_file_id`, `gallery_title`, `gallery_name`, `file_name`, `sha224` and more. Here is an example of the table:
-
-| `db_gallery_id` | `name`                | `title`         | `gid` | `upload_account` | `upload_time`       | `download_time`     | `modified_time`     | `access_time`       |
-| :-------------- | :-------------------- | :-------------- | :---- | :--------------- | :------------------ | :------------------ | :------------------ | :------------------ |
-| 1               | [xxx] xxx [xxx] [123] | [xxx] xxx [xxx] | 123   | alice            | 2019-08-03 06:16:00 | 2023-02-09 11:26:00 | 2023-02-09 19:26:05 | 2023-02-09 11:26:00 |
-| 2               | 456                   | A long name     | 456   | bob              | 2019-08-30 16:01:00 | 2020-10-15 17:15:00 | 2020-10-16 01:16:47 | 2020-10-15 17:15:00 |
-
-#### File Hash Views `files_hashs`
-
-This table contains information about the files in the galleries. It contains columns like `db_file_id`, `gallery_title`, `gallery_name`, `file_name`, `sha224` and more. Here is an example of the table:
-
-| db_file_id | gallery_title         | gallery_name    | file_name | sha224 | ... |
-| :--------- | :-------------------- | :-------------- | :-------- | :----- | :-- |
-| 1          | [xxx] xxx [xxx] [123] | [xxx] xxx [xxx] | 001.jpg   | 1ab... | ... |
-| 37         | A long name           | 456             | 1.png     | a8f... | ... |
-
-#### Gallery Information Detail Tables [TODO]
-
-| Name                                       | Description |
-| :----------------------------------------- | :-- |
-| `galleries_dbids` | Record the gallery's id in H2HDB.  |
-| `galleries_names`                          | The folder name of the gallery downloaded from H@H. |
-| `galleries_gids`                           | The GID of the gallery. This value is parsed from the folder of the downloaded gallery. |
-| `galleries_[other]`                        | The values of `[other]` are the flollowing: <ul><li>`download_times`</li><li>`upload_accounts`</li><li>`upload_times`</li><li>`titles`</li></ul> The above tables's data extracted from `galleryinfo.txt`. |
-| `removed_galleries_gids`                   | Record the GID of the removed gallery. |
-| `pending_gallery_removals`                 | All gallery names in this table will be deleted from all tables in the database after `python -m h2hdb --config [json-path]`. When the deletion is complete, the value in this table will be removed. |
-
-#### File Hash Tables
-
-| Name                      | Description |
-| :------------------------ | :-- |
-| `files_dbids` | Record the file's id in H2HDB.  |
-| `files_names`             | The file name in the folder name of the download gallery is H@H. |
-| `files_hashs_[algorithm]` | The values of the hash algorithm `[algorithm]` are `blake2b`, `blake2s`, `sha1`, `sha224`, `sha256`, `sha384`, `sha3_224`, `sha3_256`, `sha3_384`, `sha3_512`, `sha512`. |
-
-### Examples
-
-Here is an example of how you can use the `h2hdb` package to insert gallery information and removed gallery GIDs to the database.
-
-```python
-    import os
-
-    from h2hdb import H2HDB, load_config
-    
-    config = load_config(os.path.join("Your config path"))
-    with H2HDB(config) as connector:
-        connector.insert_gallery_info("Gallery folder path") # Insert gallery information to database
-        connector.insert_removed_gallery_gid(123) # Insert removed gallery GID
-```
-
-## Q & A
-
-- When will other databases be supported? Later, we will refactor using an ORM framework.
 
 ## Credits
 

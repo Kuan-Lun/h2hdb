@@ -4,7 +4,6 @@ __all__ = ["H2HDB", "GALLERY_INFO_FILE_NAME", "_insert_h2h_download"]
 from abc import ABCMeta, abstractmethod
 import datetime
 import re
-import hashlib
 import os
 import math
 from itertools import islice
@@ -19,10 +18,15 @@ from .sql_connector import (
     DatabaseConfigurationError,
     DatabaseKeyError,
 )
+from .settings import hash_function
 
-from .settings import FOLDER_NAME_LENGTH_LIMIT, FILE_NAME_LENGTH_LIMIT
+from .settings import (
+    FOLDER_NAME_LENGTH_LIMIT,
+    FILE_NAME_LENGTH_LIMIT,
+    COMPARISON_HASH_ALGORITHM,
+    GALLERY_INFO_FILE_NAME,
+)
 
-GALLERY_INFO_FILE_NAME = "galleryinfo.txt"
 HASH_ALGORITHMS = dict[str, int](
     sha224=224,
     sha256=256,
@@ -36,11 +40,6 @@ HASH_ALGORITHMS = dict[str, int](
     blake2b=512,
     blake2s=256,
 )
-COMPARISON_HASH_ALGORITHM = "sha512"
-
-
-def hash_function(x: bytes, algorithm: str) -> bytes:
-    return getattr(hashlib, algorithm.lower())(x).digest()
 
 
 class H2HDBAbstract(metaclass=ABCMeta):
@@ -1480,6 +1479,69 @@ class H2HDB(
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
+    def _create_duplicated_galleries_tables(self) -> None:
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                query = """
+                    CREATE VIEW IF NOT EXISTS duplicated_files_hashs_sha512 AS 
+                        SELECT db_file_id, db_hash_id
+                        FROM files_hashs_sha512
+                        GROUP BY db_hash_id
+                        HAVING COUNT(*) >= 3;
+                    """
+        self.connector.execute(query)
+
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                query = """
+                    CREATE VIEW IF NOT EXISTS duplicated_db_dbids AS 
+                        SELECT
+                            galleries_dbids.db_gallery_id AS db_gallery_id,
+                            files_dbids.db_file_id AS db_file_id,
+                            duplicated_files_hashs_sha512.db_hash_id AS db_hash_id,
+                            galleries_tag_pairs_dbids.tag_value AS artist_value
+                        FROM duplicated_files_hashs_sha512
+                        LEFT JOIN files_hashs_sha512
+                            ON duplicated_files_hashs_sha512.db_hash_id = files_hashs_sha512.db_hash_id
+                        LEFT JOIN files_dbids
+                            ON files_hashs_sha512.db_file_id = files_dbids.db_file_id
+                        LEFT JOIN galleries_dbids
+                            ON files_dbids.db_gallery_id = galleries_dbids.db_gallery_id
+                        LEFT JOIN galleries_tags
+                            ON galleries_dbids.db_gallery_id = galleries_tags.db_gallery_id
+                        LEFT JOIN galleries_tag_pairs_dbids
+                            ON galleries_tags.db_tag_pair_id = galleries_tag_pairs_dbids.db_tag_pair_id
+                        WHERE galleries_tag_pairs_dbids.tag_name = 'artist';
+                    """
+        self.connector.execute(query)
+
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                query = """
+                    CREATE VIEW IF NOT EXISTS duplicated_count_artists_by_db_gallery_id AS
+                        SELECT
+                            COUNT(DISTINCT artist_value) AS artist_count,
+                            db_gallery_id
+                        FROM duplicated_db_dbids
+                        GROUP BY db_gallery_id
+                    """
+        self.connector.execute(query)
+
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                query = """
+                    CREATE VIEW IF NOT EXISTS duplicated_hash_values_by_count_artist_ratio AS
+                        SELECT files_hashs_sha512_dbids.hash_value AS hash_value
+                        FROM duplicated_db_dbids
+                        LEFT JOIN duplicated_count_artists_by_db_gallery_id
+                            ON duplicated_db_dbids.db_gallery_id = duplicated_count_artists_by_db_gallery_id.db_gallery_id
+                        LEFT JOIN files_hashs_sha512_dbids
+                            ON duplicated_db_dbids.db_hash_id = files_hashs_sha512_dbids.db_hash_id
+                        GROUP BY duplicated_db_dbids.db_hash_id
+                        HAVING COUNT(DISTINCT duplicated_db_dbids.artist_value)/MAX(duplicated_count_artists_by_db_gallery_id.artist_count) > 1
+                    """
+        self.connector.execute(query)
+
     def insert_pending_gallery_removal(self, gallery_name: str) -> None:
         if self.check_pending_gallery_removal(gallery_name) is False:
             table_name = "pending_gallery_removals"
@@ -1685,6 +1747,7 @@ class H2HDB(
         self._create_gallery_image_hash_view()
         self._create_removed_galleries_gids_table()
         self._create_galleries_tags_table()
+        self._create_duplicated_galleries_tables()
         logger.info("Main tables created.")
 
     def _insert_gallery_info(self, gallery_info_params: GalleryInfoParser) -> None:
@@ -1752,6 +1815,18 @@ class H2HDB(
             issame = False
         return issame
 
+    def _get_duplicated_hash_values_by_count_artist_ratio(self) -> list[bytes]:
+        table_name = "duplicated_hash_values_by_count_artist_ratio"
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                select_query = f"""
+                    SELECT hash_value
+                      FROM {table_name}
+                """
+
+        query_result = self.connector.fetch_all(select_query)
+        return [query[0] for query in query_result]
+
     def insert_gallery_info(self, gallery_folder: str) -> None:
         gallery_info_params = parse_gallery_info(gallery_folder)
         isthesame = self._check_gallery_info_file_hash(gallery_info_params)
@@ -1761,81 +1836,82 @@ class H2HDB(
             self._insert_gallery_info(gallery_info_params)
             logger.info(f"Gallery '{gallery_info_params.gallery_name}' inserted.")
 
-        if self.config.h2h.cbz_path != "":
-            from .compress_gallery_to_cbz import (
-                compress_images_and_create_cbz,
-                calculate_hash_of_file_in_cbz,
-            )
+    def compress_gallery_to_cbz(self, gallery_folder: str) -> None:
+        from .compress_gallery_to_cbz import (
+            compress_images_and_create_cbz,
+            calculate_hash_of_file_in_cbz,
+        )
 
-            match self.config.h2h.cbz_grouping:
-                case "date-yyyy":
-                    upload_time = self.get_upload_time_by_gallery_name(
-                        gallery_info_params.gallery_name
-                    )
-                    cbz_directory = os.path.join(
-                        self.config.h2h.cbz_path, str(upload_time.year)
-                    )
-                case "date-yyyy-mm":
-                    upload_time = self.get_upload_time_by_gallery_name(
-                        gallery_info_params.gallery_name
-                    )
-                    cbz_directory = os.path.join(
-                        self.config.h2h.cbz_path,
-                        str(upload_time.year),
-                        str(upload_time.month),
-                    )
-                case "date-yyyy-mm-dd":
-                    upload_time = self.get_upload_time_by_gallery_name(
-                        gallery_info_params.gallery_name
-                    )
-                    cbz_directory = os.path.join(
-                        self.config.h2h.cbz_path,
-                        str(upload_time.year),
-                        str(upload_time.month),
-                        str(upload_time.day),
-                    )
-                case "flat":
-                    cbz_directory = self.config.h2h.cbz_path
-                case _:
-                    raise ValueError(
-                        f"Invalid cbz_grouping value: {self.config.h2h.cbz_grouping}"
-                    )
-            cbz_tmp_directory = os.path.join(self.config.h2h.cbz_path, "tmp")
-
-            cbz_path = os.path.join(
-                cbz_directory, gallery_info_params.gallery_name + ".cbz"
-            )
-            if os.path.exists(cbz_path):
-                db_gallery_id = self._get_db_gallery_id_by_gallery_name(
+        gallery_info_params = parse_gallery_info(gallery_folder)
+        match self.config.h2h.cbz_grouping:
+            case "date-yyyy":
+                upload_time = self.get_upload_time_by_gallery_name(
                     gallery_info_params.gallery_name
                 )
-                gallery_info_file_id = self._get_db_file_id(
-                    db_gallery_id, GALLERY_INFO_FILE_NAME
+                cbz_directory = os.path.join(
+                    self.config.h2h.cbz_path, str(upload_time.year)
                 )
-                original_hash_value = self.get_hash_value_by_file_id(
-                    gallery_info_file_id, COMPARISON_HASH_ALGORITHM
+            case "date-yyyy-mm":
+                upload_time = self.get_upload_time_by_gallery_name(
+                    gallery_info_params.gallery_name
                 )
-                cbz_hash_value = calculate_hash_of_file_in_cbz(
-                    cbz_path, GALLERY_INFO_FILE_NAME, COMPARISON_HASH_ALGORITHM
+                cbz_directory = os.path.join(
+                    self.config.h2h.cbz_path,
+                    str(upload_time.year),
+                    str(upload_time.month),
                 )
-                if original_hash_value != cbz_hash_value:
-                    compress_images_and_create_cbz(
-                        gallery_folder,
-                        cbz_directory,
-                        cbz_tmp_directory,
-                        self.config.h2h.cbz_max_size,
-                    )
-                    logger.info(
-                        f"CBZ '{gallery_info_params.gallery_name}.cbz' updated."
-                    )
-            else:
+            case "date-yyyy-mm-dd":
+                upload_time = self.get_upload_time_by_gallery_name(
+                    gallery_info_params.gallery_name
+                )
+                cbz_directory = os.path.join(
+                    self.config.h2h.cbz_path,
+                    str(upload_time.year),
+                    str(upload_time.month),
+                    str(upload_time.day),
+                )
+            case "flat":
+                cbz_directory = self.config.h2h.cbz_path
+            case _:
+                raise ValueError(
+                    f"Invalid cbz_grouping value: {self.config.h2h.cbz_grouping}"
+                )
+        cbz_tmp_directory = os.path.join(self.config.h2h.cbz_path, "tmp")
+
+        cbz_path = os.path.join(
+            cbz_directory, gallery_info_params.gallery_name + ".cbz"
+        )
+        if os.path.exists(cbz_path):
+            db_gallery_id = self._get_db_gallery_id_by_gallery_name(
+                gallery_info_params.gallery_name
+            )
+            gallery_info_file_id = self._get_db_file_id(
+                db_gallery_id, GALLERY_INFO_FILE_NAME
+            )
+            original_hash_value = self.get_hash_value_by_file_id(
+                gallery_info_file_id, COMPARISON_HASH_ALGORITHM
+            )
+            cbz_hash_value = calculate_hash_of_file_in_cbz(
+                cbz_path, GALLERY_INFO_FILE_NAME, COMPARISON_HASH_ALGORITHM
+            )
+            if original_hash_value != cbz_hash_value:
                 compress_images_and_create_cbz(
                     gallery_folder,
                     cbz_directory,
                     cbz_tmp_directory,
                     self.config.h2h.cbz_max_size,
+                    self._get_duplicated_hash_values_by_count_artist_ratio(),
                 )
                 logger.info(f"CBZ '{gallery_info_params.gallery_name}.cbz' updated.")
+        else:
+            compress_images_and_create_cbz(
+                gallery_folder,
+                cbz_directory,
+                cbz_tmp_directory,
+                self.config.h2h.cbz_max_size,
+                self._get_duplicated_hash_values_by_count_artist_ratio(),
+            )
+            logger.info(f"CBZ '{gallery_info_params.gallery_name}.cbz' updated.")
 
     def scan_current_galleries_folders(self) -> tuple[list[str], list[str]]:
         tmp_table_name = "tmp_current_galleries"
@@ -1950,21 +2026,13 @@ class H2HDB(
             self.scan_current_galleries_folders()
         )
 
-        def refresh_h2hdb():
-            for gallery_name in current_galleries_folders:
-                self.insert_gallery_info(gallery_name)
-            self.refresh_current_files_hashs()
+        for gallery_name in current_galleries_folders:
+            self.insert_gallery_info(gallery_name)
+            if self.config.h2h.cbz_path != "":
+                self.compress_gallery_to_cbz(gallery_name)
+        self.refresh_current_files_hashs()
 
-        refresh_cbz = partial(self._refresh_current_cbz_files, current_galleries_names)
-
-        threads = list[Thread]()
-        threads.append(Thread(target=refresh_h2hdb))
-        if self.config.h2h.cbz_path != "":
-            threads.append(Thread(target=refresh_cbz))
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
+        self._refresh_current_cbz_files(current_galleries_names)
 
     def get_komga_metadata(self, gallery_name: str) -> dict:
         metadata = dict[str, str | list[dict[str, str]]]()

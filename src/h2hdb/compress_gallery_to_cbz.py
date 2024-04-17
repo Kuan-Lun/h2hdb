@@ -9,7 +9,8 @@ import hashlib
 Image.MAX_IMAGE_PIXELS = None
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
-from .settings import FILE_NAME_LENGTH_LIMIT
+from .settings import FILE_NAME_LENGTH_LIMIT, COMPARISON_HASH_ALGORITHM
+from .settings import hash_function
 
 
 def compress_image(image_path: str, output_path: str, max_size: int) -> None:
@@ -43,7 +44,11 @@ def create_cbz(directory, output_path):
 
 # Compress images and create a CBZ file
 def compress_images_and_create_cbz(
-    input_directory: str, output_directory: str, tmp_directory: str, max_size: int
+    input_directory: str,
+    output_directory: str,
+    tmp_directory: str,
+    max_size: int,
+    exclude_hashs: list,
 ) -> None:
     if len(set([input_directory, output_directory, tmp_directory])) < 2:
         raise ValueError("Input and output directories cannot be the same.")
@@ -57,17 +62,21 @@ def compress_images_and_create_cbz(
 
     # Compress the images
     for filename in os.listdir(input_directory):
-        if filename.lower().endswith((".jpg", ".jpeg", ".png", ".gif")):
-            compress_image(
-                os.path.join(input_directory, filename),
-                os.path.join(tmp_cbz_directory, filename),
-                max_size,
-            )
-        else:
-            shutil.copy(
-                os.path.join(input_directory, filename),
-                os.path.join(tmp_cbz_directory, filename),
-            )
+        with open(os.path.join(input_directory, filename), "rb") as file:
+            file_content = file.read()
+        file_hash = hash_function(file_content, COMPARISON_HASH_ALGORITHM)
+        if file_hash not in exclude_hashs:
+            if filename.lower().endswith((".jpg", ".jpeg", ".png", ".gif")):
+                compress_image(
+                    os.path.join(input_directory, filename),
+                    os.path.join(tmp_cbz_directory, filename),
+                    max_size,
+                )
+            else:
+                shutil.copy(
+                    os.path.join(input_directory, filename),
+                    os.path.join(tmp_cbz_directory, filename),
+                )
 
     # Create the CBZ file
     os.makedirs(output_directory, exist_ok=True)
