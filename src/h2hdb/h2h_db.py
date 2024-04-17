@@ -2026,18 +2026,6 @@ class H2HDB(
             self.scan_current_galleries_folders()
         )
 
-        if self.config.h2h.cbz_path != "":
-            logger.info("Compressing galleries to CBZ...")
-            for gallery_name in current_galleries_folders:
-                gallery_info_params = parse_gallery_info(gallery_name)
-                try:
-                    self._get_db_gallery_id_by_gallery_name(
-                        gallery_info_params.gallery_name
-                    )
-                    self.compress_gallery_to_cbz(gallery_name)
-                except DatabaseKeyError:
-                    pass
-
         logger.info("Inserting galleries...")
         for gallery_name in current_galleries_folders:
             self.insert_gallery_info(gallery_name)
