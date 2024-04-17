@@ -1985,6 +1985,7 @@ class H2HDB(
         ):
             os.remove(os.path.join(current_cbzs[key], key))
             logger.info(f"CBZ '{key}' removed.")
+        logger.info("CBZ files refreshed.")
         while True:
             directory_removed = False
             for root, dirs, files in os.walk(self.config.h2h.cbz_path, topdown=False):
@@ -1996,6 +1997,7 @@ class H2HDB(
                     logger.info(f"Directory '{root}' removed.")
             if not directory_removed:
                 break
+        logger.info("Empty directories removed.")
 
     def refresh_current_files_hashs(self):
         match self.config.database.sql_type.lower():
@@ -2025,6 +2027,7 @@ class H2HDB(
         )
 
         if self.config.h2h.cbz_path != "":
+            logger.info("Compressing galleries to CBZ...")
             compress_galleries_folders_in_background = list[str]()
             for gallery_name in current_galleries_folders:
                 gallery_info_params = parse_gallery_info(gallery_name)
@@ -2038,10 +2041,13 @@ class H2HDB(
             for gallery_name in compress_galleries_folders_in_background:
                 self.compress_gallery_to_cbz(gallery_name)
 
+        logger.info("Inserting galleries...")
         for gallery_name in current_galleries_folders:
             self.insert_gallery_info(gallery_name)
             if self.config.h2h.cbz_path != "":
                 self.compress_gallery_to_cbz(gallery_name)
+
+        logger.info("Cleaning up database...")
         self.refresh_current_files_hashs()
 
         self._refresh_current_cbz_files(current_galleries_names)
