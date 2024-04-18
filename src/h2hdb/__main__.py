@@ -7,7 +7,6 @@ import os
 from .threading_tools import add_semaphore_control
 from .logger import logger
 from h2hdb import H2HDB
-from .h2h_db import GALLERY_INFO_FILE_NAME
 from .config_loader import load_config, Config
 
 # from .h2h_db import _insert_h2h_download
@@ -18,7 +17,6 @@ from .komga import (
     patch_book_metadata,
     get_series,
     patch_series_metadata,
-    download_book,
     scan_library,
     get_books_ids_in_library_id,
 )
@@ -74,44 +72,6 @@ def update_komga_book_metadata(config: Config, book_id: str) -> None:
                 f"Book {komga_metadata['name']} already exists in the database."
             )
     except DatabaseKeyError:
-        # import io
-        # import os
-        # import zipfile
-
-        # logger.info(f"Download book {komga_metadata['name']}")
-        # cbz_io = io.BytesIO(
-        #     download_book(book_id, base_url, api_username, api_password)
-        # )
-        # download_dir_num = 0
-        # while True:
-        #     downloadpath = os.path.join(
-        #         ".",
-        #         ".tmp",
-        #         "download",
-        #         "{n:03d}".format(n=download_dir_num),
-        #     )
-        #     if not os.path.exists(downloadpath):
-        #         os.makedirs(downloadpath)
-        #         break
-        #     if count_directories(downloadpath) < 300:
-        #         break
-        #     download_dir_num += 1
-        # try:
-        #     with zipfile.ZipFile(cbz_io, "r") as zip_ref:
-        #         # 檢查每一個檔案是否為 'abc.txt'
-        #         for filename in zip_ref.namelist():
-        #             if filename == GALLERY_INFO_FILE_NAME:
-        #                 # 如果是，則讀取並寫入到檔案
-        #                 os.makedirs(os.path.join(downloadpath, komga_metadata["name"]))
-        #                 with open(
-        #                     os.path.join(
-        #                         downloadpath, komga_metadata["name"], filename
-        #                     ),
-        #                     "wb",
-        #                 ) as f:
-        #                     f.write(zip_ref.read(filename))
-        # except FileExistsError:
-        #     pass
         pass
 
 
@@ -199,7 +159,6 @@ class UpdateH2HDB:
 
     def __exit__(self, exc_type, exc_value, traceback):
         self.thread.join()
-        pass
 
     def update_h2hdb(self):
         with H2HDB(config=config) as connector:
@@ -219,30 +178,3 @@ if __name__ == "__main__":
     config = load_config()
     with UpdateH2HDB(config) as update:
         update.update_h2hdb()
-
-    # with H2HDB(config=config) as connector:
-    #     # Check the database character set and collation
-    #     connector.check_database_character_set()
-    #     connector.check_database_collation()
-    #     # Create the main tables
-    #     connector.create_main_tables()
-
-    #     # Insert the H2H download
-    #     if config.multiprocess.num_processes == 1:
-    #         connector.insert_h2h_download()
-    #     else:
-    #         connector.delete_pending_gallery_removals()
-    #         current_galleries_folders = connector.scan_current_galleries_folders()
-
-    # if config.multiprocess.num_processes > 1 and len(current_galleries_folders) > 0:
-    #     gallery_groups = random_split_list(
-    #         current_galleries_folders, config.multiprocess.num_processes
-    #     )
-    #     with Pool(config.multiprocess.num_processes) as pool:
-    #         pool.starmap(
-    #             _insert_h2h_download,
-    #             [(config, gallery_group) for gallery_group in gallery_groups],
-    #         )
-
-    # with H2HDB(config=config) as connector:
-    #     connector.refresh_current_files_hashs()
