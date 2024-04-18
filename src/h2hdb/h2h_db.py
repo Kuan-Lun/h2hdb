@@ -1834,7 +1834,7 @@ class H2HDB(
             self._insert_gallery_info(gallery_info_params)
             logger.info(f"Gallery '{gallery_info_params.gallery_name}' inserted.")
 
-    def compress_gallery_to_cbz(self, gallery_folder: str) -> None:
+    def compress_gallery_to_cbz(self, gallery_folder: str, exclude_hashs: list[bytes]) -> None:
         from .compress_gallery_to_cbz import (
             compress_images_and_create_cbz,
             calculate_hash_of_file_in_cbz,
@@ -1898,7 +1898,7 @@ class H2HDB(
                     cbz_directory,
                     cbz_tmp_directory,
                     self.config.h2h.cbz_max_size,
-                    self._get_duplicated_hash_values_by_count_artist_ratio(),
+                    exclude_hashs,
                 )
                 logger.info(f"CBZ '{gallery_info_params.gallery_name}.cbz' updated.")
         else:
@@ -1907,7 +1907,7 @@ class H2HDB(
                 cbz_directory,
                 cbz_tmp_directory,
                 self.config.h2h.cbz_max_size,
-                self._get_duplicated_hash_values_by_count_artist_ratio(),
+                exclude_hashs,
             )
             logger.info(f"CBZ '{gallery_info_params.gallery_name}.cbz' created.")
 
@@ -2034,8 +2034,11 @@ class H2HDB(
         )
         for gallery_name in current_galleries_folders:
             self.insert_gallery_info(gallery_name)
-            if self.config.h2h.cbz_path != "":
-                self.compress_gallery_to_cbz(gallery_name)
+
+        exclude_hashs = self._get_duplicated_hash_values_by_count_artist_ratio()
+        if self.config.h2h.cbz_path != "":
+            for gallery_name in current_galleries_folders:
+                self.compress_gallery_to_cbz(gallery_name, exclude_hashs)
 
         logger.info("Cleaning up database...")
         self.refresh_current_files_hashs()
