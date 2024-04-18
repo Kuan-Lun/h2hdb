@@ -1,6 +1,6 @@
 import threading
 
-SEMAPHORE = threading.Semaphore(10)
+SEMAPHORE = threading.Semaphore(5)
 
 
 def add_semaphore_control(fun, *args, **kwargs):

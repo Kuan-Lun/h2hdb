@@ -2,28 +2,30 @@
 
 ## Description
 
-H2HDB is a comprehensive database for organising and managing H@H comic collections. It offers a streamlined way to catalogue your comics, providing key information such as GID (Gallery ID), title, tags and more, ensuring your collection is always organised and accessible.
+The `H2HDB` is a comprehensive database for organising and managing H@H comic collections. It offers a streamlined way to catalogue your comics, providing key information such as GID (Gallery ID), title, tags and more, ensuring your collection is always organised and accessible.
+
+---
 
 ## Features
 
 - [x] Add new galleries to the database
-- [ ] Edit existing gallery details
-- [ ] View a list of all galleries in the collection
-  - [x] `select_[tablename]` functions
-  - [ ] Write document
-- [ ] Delete galleries from the database
+- [x] Comporess H@H's galleries to a folder
+- [x] Add the galleries' tags to Komga
 - [x] Record the removed GIDs in a separate list
+- [ ] Write document (need?)
+
+---
 
 ## Installation and Usage
 
 1. Install Python 3.12 or higher from [python.org](https://www.python.org/downloads/).
-2. Clone the repository.
+1. Clone the repository.
 
     ```bash
-    git clone [uri] # It will download a folder 'h2hdb'.
+    git clone https://github.com/Kuan-Lun/h2hdb.git # It will download a folder 'h2hdb'.
     ```
 
-3. Install the required packages.
+1. Install the required packages.
 
     ```bash
     python -m venv .venv # Create a virtual environment.
@@ -32,7 +34,7 @@ H2HDB is a comprehensive database for organising and managing H@H comic collecti
     rm -rf ./h2hdb/ # Remove the downloaded 'h2hdb' folder.
     ```
 
-4. Run the script.
+1. Run the script.
 
     ```bash
     ./.venv/Scripts/python -m h2hdb --config [json-path]
@@ -55,9 +57,6 @@ H2HDB is a comprehensive database for organising and managing H@H comic collecti
         "user": "[str]", // The default is `root`.
         "password": "[str]" // The default is `password`.
     },
-    "multiprocess": {
-        "number": "[int]" // If it is not 1, the logger will not be used.
-    },
     "logger": {
         "level": "[str]", // One of NOTSET, DEBUG, INFO, WARNING, ERROR, CRITICAL.
         "display_on_screen": "[bool]", // The default is `false`.
@@ -71,14 +70,37 @@ H2HDB is a comprehensive database for organising and managing H@H comic collecti
             "api_username": "[str]", // The media server's administrator.
             "api_password": "[str]", // The password of the media server's adimistrator.
             "library_id": "[str]" // The libary ID for komga.
-        } // The defult is `{}`.
+        } // The defult is null.
     }
 }
 ```
 
+---
+
+## Q & A
+
+- How to use Komga?
+See [Rainie's article](https://home.gamer.com.tw/artwork.php?sn=5659465).
+
+- How to find library IDs in Komga?
+To find your library ID, log into komga's library. Look at the URL in your browser’s address bar, which will be formatted like this: `[base_url]/libraries/[library_id]/series`. In this URL, the `[library_id]` part is your library ID.
+
+- Why aren't the tags for CBZ-files in Komga updated?
+When you first run `H2HDB`, it generates CBZ-files. These CBZ-files are not immediately visible in Komga's library. To update them, you have two options: you can either click the 'scan library files' button in Komga, or you can run `H2HDB` twice. The first run scans the library, and the second run updates the tags.
+
+- Why are some images missing from the CBZ-files?
+`H2HDB` does not compress images that are considered spam according to certain rules. If you encounter any images that you believe should have been included, please report the issue.
+
+- Why are some images in some CBZ files and not in other CBZ-files?
+`H2HDB` learns the spam rule from the previous CBZ files. If you kill the CBZ files containing these images, the new CBZ files will not contain these images.
+
+---
+
 ## Credits
 
 The project was created by [Kuan-Lun Wang](https://www.klwang.tw/home/).
+
+---
 
 ## License
 
