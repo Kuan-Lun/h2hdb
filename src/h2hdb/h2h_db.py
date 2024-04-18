@@ -2027,6 +2027,11 @@ class H2HDB(
         )
 
         logger.info("Inserting galleries...")
+        current_galleries_folders = sorted(
+            current_galleries_folders,
+            key=lambda x: parse_gallery_info(x).upload_time,
+            reverse=True,
+        )
         for gallery_name in current_galleries_folders:
             self.insert_gallery_info(gallery_name)
             if self.config.h2h.cbz_path != "":
