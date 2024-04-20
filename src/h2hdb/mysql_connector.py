@@ -2,6 +2,18 @@ from .logger import logger
 from .sql_connector import SQLConnector
 
 
+class Cursor:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def __enter__(self):
+        self.cursor = self.connection.cursor()
+        return self.cursor
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.cursor.close()
+
+
 class MySQLConnector(SQLConnector):
     """
     MySQLConnector is a concrete subclass of SQLConnector that provides an implementation for connecting to a MySQL database.
@@ -44,11 +56,11 @@ class MySQLConnector(SQLConnector):
             database=self.database,
         )
         logger.debug("MySQL connection established.")
-        self._cursor = self.connection.cursor()
+        # self._cursor = self.connection.cursor()
 
     def close(self) -> None:
         logger.debug("Closing MySQL connection...")
-        self._cursor.close()
+        # self._cursor.close()
         self.connection.close()
         logger.debug("MySQL connection closed.")
 
@@ -70,20 +82,24 @@ class MySQLConnector(SQLConnector):
 
     def execute(self, query: str, data: tuple = ()) -> None:
         logger.debug(f"Executing MySQL query: {query}")
-        self._cursor.execute(query, data)
+        with Cursor(self.connection) as cursor:
+            cursor.execute(query, data)
 
     def execute_many(self, query: str, data: list[tuple]) -> None:
         logger.debug(f"Executing multiple MySQL queries: {query}")
-        self._cursor.executemany(query, data)
+        with Cursor(self.connection) as cursor:
+            cursor.executemany(query, data)
 
     def fetch_one(self, query: str, data: tuple = ()) -> tuple:
         logger.debug(f"Fetching result for MySQL query: {query}")
-        self._cursor.execute(query, data)
-        vlist = self._cursor.fetchone()
+        with Cursor(self.connection) as cursor:
+            cursor.execute(query, data)
+            vlist = cursor.fetchone()
         return vlist  # type: ignore
 
     def fetch_all(self, query: str, data: tuple = ()) -> list:
         logger.debug(f"Fetching results for MySQL query: {query}")
-        self._cursor.execute(query, data)
-        vlist = self._cursor.fetchall()
+        with Cursor(self.connection) as cursor:
+            cursor.execute(query, data)
+            vlist = cursor.fetchall()
         return vlist

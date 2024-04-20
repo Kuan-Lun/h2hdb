@@ -5,7 +5,9 @@ import os
 
 def read_version():
     script_dir = os.path.dirname(os.path.realpath(__file__))
-    with open(os.path.join(script_dir, "src", "h2hdb", "__init__.py")) as f:
+    with open(
+        os.path.join(script_dir, "src", "h2hdb", "__init__.py"), encoding="utf-8"
+    ) as f:
         return re.search(r"^__version__ = ['\"]([^'\"]*)['\"]", f.read(), re.M).group(1)
 
 
@@ -16,7 +18,7 @@ setup(
     author_email="kuan-lun@klwang.tw",
     description="A simple H@H database",
     license="GNU Affero General Public License",
-    long_description=open("README.md").read(),
+    long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
     keywords=["H@H", "h2h", "database", "h2hdb"],
     packages=["h2hdb"],
