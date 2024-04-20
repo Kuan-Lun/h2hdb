@@ -1477,6 +1477,17 @@ class H2HDB(
         self.connector.execute(query)
         logger.info(f"{table_name} table created.")
 
+    def _count_duplicated_files_hashs_sha512(self) -> int:
+        table_name = "duplicated_files_hashs_sha512"
+        match self.config.database.sql_type.lower():
+            case "mysql":
+                query = f"""
+                    SELECT COUNT(*)
+                      FROM {table_name}
+                """
+        query_result = self.connector.fetch_one(query)
+        return query_result[0]
+
     def _create_duplicated_galleries_tables(self) -> None:
         match self.config.database.sql_type.lower():
             case "mysql":
@@ -1834,7 +1845,9 @@ class H2HDB(
             self._insert_gallery_info(gallery_info_params)
             logger.info(f"Gallery '{gallery_info_params.gallery_name}' inserted.")
 
-    def compress_gallery_to_cbz(self, gallery_folder: str, exclude_hashs: list[bytes]) -> None:
+    def compress_gallery_to_cbz(
+        self, gallery_folder: str, exclude_hashs: list[bytes]
+    ) -> None:
         from .compress_gallery_to_cbz import (
             compress_images_and_create_cbz,
             calculate_hash_of_file_in_cbz,
@@ -2032,12 +2045,23 @@ class H2HDB(
             key=lambda x: parse_gallery_info(x).upload_time,
             reverse=True,
         )
-        for gallery_name in current_galleries_folders:
-            self.insert_gallery_info(gallery_name)
 
         exclude_hashs = self._get_duplicated_hash_values_by_count_artist_ratio()
-        if self.config.h2h.cbz_path != "":
-            for gallery_name in current_galleries_folders:
+        previously_count_duplicated_files = self._count_duplicated_files_hashs_sha512()
+        for gallery_name in current_galleries_folders:
+            self.insert_gallery_info(gallery_name)
+            if self.config.h2h.cbz_path != "":
+                current_count_duplicated_files = (
+                    self._count_duplicated_files_hashs_sha512()
+                )
+                if current_count_duplicated_files > previously_count_duplicated_files:
+                    logger.info("Duplicated files found.")
+                    previously_count_duplicated_files = current_count_duplicated_files
+                    logger.info("Updating excluded hash values...")
+                    exclude_hashs = (
+                        self._get_duplicated_hash_values_by_count_artist_ratio()
+                    )
+                    logger.info("Excluded hash values updated.")
                 self.compress_gallery_to_cbz(gallery_name, exclude_hashs)
 
         logger.info("Cleaning up database...")
