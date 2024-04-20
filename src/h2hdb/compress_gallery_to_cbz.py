@@ -5,9 +5,10 @@ from PIL import Image, ImageFile  # type: ignore
 import zipfile
 import shutil
 import hashlib
-from threading import Thread
 
-from .threading_tools import add_semaphore_control
+# from threading import Thread
+
+# from .threading_tools import add_semaphore_control
 
 Image.MAX_IMAGE_PIXELS = None
 ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -63,11 +64,12 @@ def compress_images_and_create_cbz(
         shutil.rmtree(tmp_cbz_directory)
     os.makedirs(tmp_cbz_directory)
 
-    @add_semaphore_control
+    # @add_semaphore_control
     def hash_and_process_file(filename: str) -> None:
         with open(os.path.join(input_directory, filename), "rb") as file:
             file_content = file.read()
         file_hash = hash_function(file_content, COMPARISON_HASH_ALGORITHM)
+
         if file_hash not in exclude_hashs:
             if filename.lower().endswith((".jpg", ".jpeg", ".png", ".gif")):
                 compress_image(
@@ -81,14 +83,17 @@ def compress_images_and_create_cbz(
                     os.path.join(tmp_cbz_directory, filename),
                 )
 
-    # Compress the images
-    threads = list[Thread]()
     for filename in os.listdir(input_directory):
-        thread = Thread(target=hash_and_process_file, args=(filename,))
-        thread.start()
-        threads.append(thread)
-    for thread in threads:
-        thread.join()
+        hash_and_process_file(filename)
+
+    # Compress the images
+    # threads = list[Thread]()
+    # for filename in os.listdir(input_directory):
+    #     thread = Thread(target=hash_and_process_file, args=(filename,))
+    #     thread.start()
+    #     threads.append(thread)
+    # for thread in threads:
+    #     thread.join()
 
     # Create the CBZ file
     os.makedirs(output_directory, exist_ok=True)

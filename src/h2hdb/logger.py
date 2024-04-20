@@ -8,6 +8,7 @@ from functools import partial
 import unicodedata
 import re
 
+
 from .config_loader import load_config
 
 CONFIG_LOADER = load_config()
@@ -288,3 +289,12 @@ logger = setup_logger(
     CONFIG_LOADER.logger.write_to_file,
     CONFIG_LOADER.logger.max_log_entry_length,
 )
+
+
+# import os
+# import psutil  # type: ignore
+
+# process = psutil.Process(os.getpid())
+# displayram = lambda x: logger.info(
+#     f"{x}: Memory usage is  {process.memory_info().rss / 1024**2} MB."
+# )

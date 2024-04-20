@@ -25,7 +25,7 @@ setup(
     install_requires=[],
     extras_require={
         "mysql": ["mysql-connector-python>=8.3.0,<9.0.0"],
-        "cbz": ["pillow>=10.3.0,<11.0.0"],
+        "cbz": ["pillow>=10.3.0,<11.0.0"],  # , "psutil>=5.9.8,<6.0.0"
         "komga": ["requests>=2.31.0,<3.0.0"],
     },
     entry_points={
@@ -35,7 +35,7 @@ setup(
         ],
     },
     package_dir={"": "src"},
-    python_requires=">=3.12, <4",
+    python_requires=">=3.12.3, <4",
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",
