@@ -47,28 +47,7 @@ class DatabaseTableError(Exception):
 
 
 class SQLConnectorParams(dict):
-    """
-    SQLConnectorParams is a subclass of the built-in Python dictionary (dict) class. It is designed to store parameters for SQL database connections.
-
-    The parameters include 'host', 'port', 'user', 'password', and 'database'. Each of these parameters is a string (str) that provides the necessary information to establish a connection to an SQL database.
-
-    'host': The hostname or IP address of the database server.
-    'port': The port number the database server is listening on.
-    'user': The username to authenticate with the database.
-    'password': The password to authenticate with the database.
-    'database': The specific database to connect to on the server.
-
-    By subclassing dict, SQLConnectorParams inherits all the methods of a dictionary, and can be used wherever a dictionary would be used. This includes indexing, iteration, and membership tests using 'in'.
-
-    Additional methods or attributes can be added to this class if there are specific behaviors you want for your SQL connection parameters.
-    """
-
-    def __init__(
-        self, host: str, port: str, user: str, password: str, database: str
-    ) -> None:
-        super().__init__(
-            host=host, port=port, user=user, password=password, database=database
-        )
+    pass
 
 
 class SQLConnector(metaclass=ABCMeta):
@@ -101,27 +80,9 @@ class SQLConnector(metaclass=ABCMeta):
     The 'rollback' method is designed to roll back the current transaction in the database. It doesn't take any parameters.
     """
 
-    def __init__(
-        self, host: str, port: str, user: str, password: str, database: str
-    ) -> None:
-        """
-        Initializes a SQLConnector object.
-
-        Args:
-            host (str): The host name or IP address of the database server.
-            port (str): The port number to connect to the database server.
-            user (str): The username to authenticate with the database server.
-            password (str): The password to authenticate with the database server.
-            database (str): The name of the database to connect to.
-
-        Returns:
-            None
-        """
-        self.host = host
-        self.port = port
-        self.user = user
-        self.password = password
-        self.database = database
+    @abstractmethod
+    def __init__(self) -> None:
+        pass
 
     @abstractmethod
     def connect(self) -> None:
@@ -206,7 +167,6 @@ class SQLConnector(metaclass=ABCMeta):
             exc_value (Exception): The exception raised, if any.
             traceback (traceback): The traceback object associated with the exception, if any.
         """
-        self.commit()
         self.close()
 
     @abstractmethod
