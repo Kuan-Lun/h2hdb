@@ -3,6 +3,7 @@ import random
 import shutil
 from threading import Thread
 import os
+from functools import partial
 
 from .threading_tools import add_semaphore_control
 from .logger import logger
@@ -153,13 +154,18 @@ class UpdateH2HDB:
         os.makedirs(config.h2h.cbz_tmp_directory)
 
     def __enter__(self):
-        self.thread = Thread(target=scan_komga_library, args=(self.config,))
+        match self.config.media_server.server_type:
+            case "komga":
+                self.thread_target = partial(scan_komga_library, self.config)
+            case _:
+                self.thread_target = lambda: None
+        self.thread = Thread(target=self.thread_target)
         self.thread.start()
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
         self.thread.join()
-        scan_komga_library(self.config)
+        self.thread_target()
 
     def update_h2hdb(self):
         with H2HDB(config=config) as connector:

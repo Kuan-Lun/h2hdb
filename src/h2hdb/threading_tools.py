@@ -4,7 +4,7 @@ import threading
 # import psutil  # type: ignore
 # import time
 
-from .logger import logger
+# from .logger import logger
 
 SEMAPHORE = threading.Semaphore(5)
 

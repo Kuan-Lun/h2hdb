@@ -323,28 +323,31 @@ def load_config(config_path: str = "") -> Config:
         max_log_entry_length=max_log_entry_length,
     )
 
-    media_server_type = user_config["media_server"]["server_type"]
-    user_config["media_server"].pop("server_type")
-    media_server_config = user_config["media_server"]["server_config"]
-    match media_server_type:
-        case "komga":
-            media_server_config = KomgaConfig(
-                base_url=media_server_config["base_url"],
-                api_username=media_server_config["api_username"],
-                api_password=media_server_config["api_password"],
-                library_id=media_server_config["library_id"],
-            )
-            user_config["media_server"].pop("server_config")
-        case _:
-            raise ConfigError("Invalid media server type")
-    if len(user_config["media_server"]) > 0:
-        raise ConfigError("Invalid configuration for media_server")
+    if "media_server" in user_config:
+        media_server_type = user_config["media_server"]["server_type"]
+        user_config["media_server"].pop("server_type")
+        media_server_config = user_config["media_server"]["server_config"]
+        match media_server_type:
+            case "komga":
+                media_server_config = KomgaConfig(
+                    base_url=media_server_config["base_url"],
+                    api_username=media_server_config["api_username"],
+                    api_password=media_server_config["api_password"],
+                    library_id=media_server_config["library_id"],
+                )
+                user_config["media_server"].pop("server_config")
+            case _:
+                raise ConfigError("Invalid media server type")
+        if len(user_config["media_server"]) > 0:
+            raise ConfigError("Invalid configuration for media_server")
 
-    media_server_config = MediaServer(
-        server_type=media_server_type,
-        server_config=media_server_config,
-    )
-    user_config.pop("media_server")
+        media_server_config = MediaServer(
+            server_type=media_server_type,
+            server_config=media_server_config,
+        )
+        user_config.pop("media_server")
+    else:
+        media_server_config = MediaServer("", KomgaConfig("", "", "", ""))
 
     if len(user_config) > 0:
         raise ConfigError("Invalid configuration for the entire config")
