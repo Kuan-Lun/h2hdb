@@ -8,12 +8,10 @@ from .logger import logger
 
 def retry_request(request, *args, **kwargs):
     def wrapper(*args, **kwargs):
-        while True:
-            try:
-                return request(*args, **kwargs)
-            except requests.exceptions.RequestException as e:
-                logger.error(f"Error while making request: {e}")
-                time.sleep(60)
+        try:
+            return request(*args, **kwargs)
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error while making request: {e}")
 
     return wrapper
 
