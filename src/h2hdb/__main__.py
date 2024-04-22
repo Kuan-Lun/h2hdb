@@ -6,7 +6,7 @@ import os
 from functools import partial
 from time import sleep
 
-from .threading_tools import add_semaphore_control
+from .threading_tools import KomgaThread
 from .logger import logger
 from h2hdb import H2HDB
 from .config_loader import load_config, Config
@@ -55,7 +55,6 @@ def count_directories(path: str) -> int:
     )
 
 
-@add_semaphore_control
 def update_komga_book_metadata(config: Config, book_id: str) -> None:
     base_url = config.media_server.server_config.base_url
     api_username = config.media_server.server_config.api_username
@@ -77,7 +76,6 @@ def update_komga_book_metadata(config: Config, book_id: str) -> None:
         pass
 
 
-@add_semaphore_control
 def update_komga_series_metadata(config: Config, series_id: str) -> None:
     base_url = config.media_server.server_config.base_url
     api_username = config.media_server.server_config.api_username
@@ -128,9 +126,9 @@ def scan_komga_library(config: Config) -> None:
         library_id, base_url, api_username, api_password
     )
 
-    threads = list[Thread]()
+    threads = list[KomgaThread]()
     for book_id in books_ids:
-        thread = Thread(target=update_komga_book_metadata, args=(config, book_id))
+        thread = KomgaThread(target=update_komga_book_metadata, args=(config, book_id))
         thread.start()
         threads.append(thread)
     for thread in threads:
@@ -138,9 +136,11 @@ def scan_komga_library(config: Config) -> None:
 
     series_ids = get_series_ids(library_id, base_url, api_username, api_password)
 
-    threads = list[Thread]()
+    threads = list[KomgaThread]()
     for series_id in series_ids:
-        thread = Thread(target=update_komga_series_metadata, args=(config, series_id))
+        thread = KomgaThread(
+            target=update_komga_series_metadata, args=(config, series_id)
+        )
         thread.start()
         threads.append(thread)
     for thread in threads:

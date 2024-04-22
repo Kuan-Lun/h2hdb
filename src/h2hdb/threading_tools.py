@@ -7,20 +7,44 @@ from threading import Thread
 
 # from .logger import logger
 
-SEMAPHORE = threading.Semaphore(5)
+CBZ_SEMAPHORE = threading.Semaphore(1)
+KOMGA_SEMAPHORE = threading.Semaphore(5)
 SQL_SEMAPHORE = threading.Semaphore(5)
 
 
-def add_semaphore_control(fun, *args, **kwargs):
+def add_semaphore_control_to_cbz_compression_operation(fun):
     def wrapper(*args, **kwargs):
-        SEMAPHORE.acquire()
+        CBZ_SEMAPHORE.acquire()
         fun(*args, **kwargs)
-        SEMAPHORE.release()
+        CBZ_SEMAPHORE.release()
 
     return wrapper
 
 
-def add_semaphore_control_for_SQL(fun, *args, **kwargs):
+class CBZThread(Thread):
+    def __init__(self, target, args):
+        super().__init__(
+            target=add_semaphore_control_to_cbz_compression_operation(target), args=args
+        )
+
+
+def add_semaphore_control_to_komga_operation(fun):
+    def wrapper(*args, **kwargs):
+        KOMGA_SEMAPHORE.acquire()
+        fun(*args, **kwargs)
+        KOMGA_SEMAPHORE.release()
+
+    return wrapper
+
+
+class KomgaThread(Thread):
+    def __init__(self, target, args):
+        super().__init__(
+            target=add_semaphore_control_to_komga_operation(target), args=args
+        )
+
+
+def add_semaphore_control_to_SQL_operation(fun):
     def wrapper(*args, **kwargs):
         SQL_SEMAPHORE.acquire()
         fun(*args, **kwargs)
@@ -31,4 +55,6 @@ def add_semaphore_control_for_SQL(fun, *args, **kwargs):
 
 class SQLThread(Thread):
     def __init__(self, target, args):
-        super().__init__(target=add_semaphore_control_for_SQL(target), args=args)
+        super().__init__(
+            target=add_semaphore_control_to_SQL_operation(target), args=args
+        )

@@ -8,13 +8,12 @@ import os
 import math
 from itertools import islice
 from functools import partial
-from threading import Thread
 
 from .gallery_info_parser import parse_gallery_info, GalleryInfoParser
 from .config_loader import Config
 from .logger import logger
 from .sql_connector import DatabaseConfigurationError, DatabaseKeyError, SQLConnector
-from .threading_tools import add_semaphore_control, SQLThread
+from .threading_tools import SQLThread, CBZThread
 
 from .settings import hash_function
 
@@ -2146,6 +2145,7 @@ class H2HDB(
             reverse=True,
         )
 
+        cbzthreads = list[CBZThread]()
         exclude_hashs = self._get_duplicated_hash_values_by_count_artist_ratio()
         previously_count_duplicated_files = self._count_duplicated_files_hashs_sha512()
         for gallery_name in current_galleries_folders:
@@ -2162,7 +2162,14 @@ class H2HDB(
                         self._get_duplicated_hash_values_by_count_artist_ratio()
                     )
                     logger.info("Excluded hash values updated.")
-                self.compress_gallery_to_cbz(gallery_name, exclude_hashs)
+                thread = CBZThread(
+                    target=self.compress_gallery_to_cbz,
+                    args=(gallery_name, exclude_hashs),
+                )
+                thread.start()
+                cbzthreads.append(thread)
+        for thread in cbzthreads:
+            thread.join()
 
         logger.info("Cleaning up database...")
         self.refresh_current_files_hashs()

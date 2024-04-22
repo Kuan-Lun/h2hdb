@@ -1,7 +1,6 @@
 # swagger-ui/index.html
 import requests  # type: ignore
 from requests.auth import HTTPBasicAuth  # type: ignore
-import time
 
 from .logger import logger
 
