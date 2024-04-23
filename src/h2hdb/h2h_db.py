@@ -1657,7 +1657,7 @@ class H2HDB(
 
     def delete_pending_gallery_removals(self) -> None:
         pending_gallery_removals = self.get_pending_gallery_removals()
-        for n, gallery_name in enumerate(pending_gallery_removals):
+        for gallery_name in pending_gallery_removals:
             self.delete_gallery_file(gallery_name)
             self.delete_gallery(gallery_name)
             self.delete_pending_gallery_removal(gallery_name)

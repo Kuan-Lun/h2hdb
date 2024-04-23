@@ -5,7 +5,7 @@ from threading import Thread
 # import psutil  # type: ignore
 # import time
 
-# from .logger import logger
+from .logger import logger
 
 CBZ_SEMAPHORE = threading.Semaphore(1)
 KOMGA_SEMAPHORE = threading.Semaphore(5)
@@ -31,7 +31,10 @@ class CBZThread(Thread):
 def add_semaphore_control_to_komga_operation(fun):
     def wrapper(*args, **kwargs):
         KOMGA_SEMAPHORE.acquire()
-        fun(*args, **kwargs)
+        try:
+            fun(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"Error in Komga operation: {e}")
         KOMGA_SEMAPHORE.release()
 
     return wrapper
