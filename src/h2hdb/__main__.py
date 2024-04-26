@@ -126,25 +126,29 @@ def scan_komga_library(config: Config) -> None:
         library_id, base_url, api_username, api_password
     )
 
-    threads = list[KomgaThread]()
-    for book_id in books_ids:
-        thread = KomgaThread(target=update_komga_book_metadata, args=(config, book_id))
-        thread.start()
-        threads.append(thread)
-    for thread in threads:
-        thread.join()
+    if books_ids is not None:
+        threads = list[KomgaThread]()
+        for book_id in books_ids:
+            thread = KomgaThread(
+                target=update_komga_book_metadata, args=(config, book_id)
+            )
+            thread.start()
+            threads.append(thread)
+        for thread in threads:
+            thread.join()
 
     series_ids = get_series_ids(library_id, base_url, api_username, api_password)
 
-    threads = list[KomgaThread]()
-    for series_id in series_ids:
-        thread = KomgaThread(
-            target=update_komga_series_metadata, args=(config, series_id)
-        )
-        thread.start()
-        threads.append(thread)
-    for thread in threads:
-        thread.join()
+    if series_ids is not None:
+        threads = list[KomgaThread]()
+        for series_id in series_ids:
+            thread = KomgaThread(
+                target=update_komga_series_metadata, args=(config, series_id)
+            )
+            thread.start()
+            threads.append(thread)
+        for thread in threads:
+            thread.join()
 
 
 class UpdateH2HDB:
