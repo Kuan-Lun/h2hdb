@@ -195,6 +195,8 @@ def setup_synochat_webhook_logger(
                     self.msg2synochat(s, url, retry=retry - 1)
             except ConnectionError:
                 print("連不上 Chat")
+            except Exception as e:
+                print(e)
 
     webhook_logger = logging.getLogger("webhook_url")
     webhook_logger.setLevel(level)
