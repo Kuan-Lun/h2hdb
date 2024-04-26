@@ -30,7 +30,7 @@ The `H2HDB` is a comprehensive database for organising and managing H@H comic co
     ```bash
     python -m venv .venv # Create a virtual environment.
     ./.venv/Scripts/python -m pip install -r ./h2hdb/requirements.txt # Install the required packages.
-    ./.venv/Scripts/python -m pip install -e ./h2hdb/[mysal,cbz,komga] # Install the h2hdb packages.
+    ./.venv/Scripts/python -m pip install -e ./h2hdb/[mysal,cbz,komga,synochat] # Install the h2hdb packages.
     rm -rf ./h2hdb/ # Remove the downloaded 'h2hdb' folder.
     ```
 
@@ -61,7 +61,8 @@ The `H2HDB` is a comprehensive database for organising and managing H@H comic co
         "level": "[str]", // One of NOTSET, DEBUG, INFO, WARNING, ERROR, CRITICAL.
         "display_on_screen": "[bool]", // The default is `false`.
         "max_log_entry_length": "[int]", // Maximum length of log entries.
-        "write_to_file": "[str]" // Path to write log entries to.
+        "write_to_file": "[str]", // Path to write log entries to.
+        "synochat_webhook": "[str]" // The default is empty str.
     },
     "media_server": {
         "server_type": "[str]", // Now only supports `komga`. The defult is ``.

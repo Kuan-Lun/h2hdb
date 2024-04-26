@@ -7,11 +7,37 @@ import sys
 from functools import partial
 import unicodedata
 import re
+from urllib.parse import urlparse
+from urllib.parse import parse_qs
+from time import sleep
 
 
-from .config_loader import load_config
+from .config_loader import load_config, SynoChatConfig
 
 CONFIG_LOADER = load_config()
+
+
+def parse_uri(uri: str) -> dict:
+    parsed_uri = urlparse(uri)
+
+    scheme = parsed_uri.scheme
+    authority = parsed_uri.netloc
+    path = parsed_uri.path
+    query = parse_qs(parsed_uri.query)
+    fragment = parsed_uri.fragment
+
+    # 將 query 字典中的值從列表轉換為單一值
+    for key, value in query.items():
+        if len(value) == 1:
+            query[key] = value[0]  # type: ignore
+
+    return {
+        "scheme": scheme,
+        "authority": authority,
+        "path": path,
+        "query": query,
+        "fragment": fragment,
+    }
 
 
 def split_message_with_cjk(message: str, max_log_entry_length: int) -> list[str]:
@@ -139,6 +165,54 @@ def setup_file_logger(write_to_file: str, level: int) -> logging.Logger:
     return file_logger
 
 
+def setup_synochat_webhook_logger(
+    webhook_url: SynoChatConfig, level: int
+) -> logging.Logger:
+    from requests.exceptions import ConnectionError
+    from synochat.webhooks import IncomingWebhook  # type: ignore
+    from synochat.exceptions import RateLimitError  # type: ignore
+
+    class SynoChatHandler(logging.Handler):
+        def __init__(self, synochat_config: SynoChatConfig, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.synochat_config = synochat_config
+
+        def emit(self, record):
+            log_entry = self.format(record)
+            self.msg2synochat(log_entry, self.synochat_config.webhook_url)
+
+        def msg2synochat(self, s: str, url: str, retry: int = 1) -> None:
+            uri = url
+            uridict = parse_uri(uri)
+            authority = uridict["authority"]
+            token = uridict["query"]["token"]
+            try:
+                webhook = IncomingWebhook(authority, token)
+                webhook.send(s)
+            except RateLimitError:
+                if retry > 0:
+                    sleep(60)
+                    self.msg2synochat(s, url, retry=retry - 1)
+            except ConnectionError:
+                print("連不上 Chat")
+
+    webhook_logger = logging.getLogger("webhook_url")
+    webhook_logger.setLevel(level)
+
+    handler = SynoChatHandler(webhook_url)
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    handler.setFormatter(formatter)
+
+    webhook_logger.addHandler(handler)
+
+    for level_name, level_value in LOG_CONFIG.items():
+        if level_value < level:
+            continue
+        partial_log_message = partial(log_message, webhook_logger, level_value, -1)
+        setattr(webhook_logger, level_name, partial_log_message)
+    return webhook_logger
+
+
 class HentaiDBLogger:
     """
     The HentaiDBLogger class provides a custom logging interface for the HentaiDB application.
@@ -184,6 +258,7 @@ class HentaiDBLogger:
         display_on_screen: bool,
         write_to_file: str,
         max_log_entry_length: int,
+        synochat_webhook: SynoChatConfig,
     ):
         logging_level = LOG_CONFIG[level.lower()]
         self.display_on_screen = display_on_screen
@@ -196,6 +271,11 @@ class HentaiDBLogger:
         if self.write_to_file != "":
             self.file_logger = setup_file_logger(write_to_file, logging_level)
 
+        if synochat_webhook != "":
+            self.synochat_webhook = setup_synochat_webhook_logger(
+                synochat_webhook, logging_level
+            )
+
     def hasHandlers(self) -> bool:
         return self.screen_logger.hasHandlers() or self.file_logger.hasHandlers()
 
@@ -203,48 +283,62 @@ class HentaiDBLogger:
         while self.hasHandlers():
             self.screen_logger.removeHandler(self.screen_logger.handlers[0])
             self.file_logger.removeHandler(self.file_logger.handlers[0])
+            self.synochat_webhook.removeHandler(self.synochat_webhook.handlers[0])
 
     def addHandler(self, handler: logging.Handler) -> None:
         if self.display_on_screen:
             self.screen_logger.addHandler(handler)
         if self.write_to_file != "":
             self.file_logger.addHandler(handler)
+        if self.synochat_webhook != "":
+            self.synochat_webhook.addHandler(handler)
 
     def debug(self, message: str) -> None:
         if self.display_on_screen:
             self.screen_logger.debug(message)
         if self.write_to_file != "":
             self.file_logger.debug(message)
+        if self.synochat_webhook != "":
+            self.synochat_webhook.debug(message)
 
     def info(self, message: str) -> None:
         if self.display_on_screen:
             self.screen_logger.info(message)
         if self.write_to_file != "":
             self.file_logger.info(message)
+        if self.synochat_webhook != "":
+            self.synochat_webhook.info(message)
 
     def warning(self, message: str) -> None:
         if self.display_on_screen:
             self.screen_logger.warning(message)
         if self.write_to_file != "":
             self.file_logger.warning(message)
+        if self.synochat_webhook != "":
+            self.synochat_webhook.warning(message)
 
     def error(self, message: str) -> None:
         if self.display_on_screen:
             self.screen_logger.error(message)
         if self.write_to_file != "":
             self.file_logger.error(message)
+        if self.synochat_webhook != "":
+            self.synochat_webhook.error(message)
 
     def critical(self, message: str) -> None:
         if self.display_on_screen:
             self.screen_logger.critical(message)
         if self.write_to_file != "":
             self.file_logger.critical(message)
+        if self.synochat_webhook != "":
+            self.synochat_webhook.critical(message)
 
 
 def setup_logger(
     level: str,
     display_on_screen: bool,
     write_to_file: str,
+    synochat_webhook: SynoChatConfig,
     max_log_entry_length: int = -1,
 ) -> HentaiDBLogger:
     """
@@ -261,7 +355,13 @@ def setup_logger(
     Returns:
     logging.Logger: The configured logger.
     """
-    return HentaiDBLogger(level, display_on_screen, write_to_file, max_log_entry_length)
+    return HentaiDBLogger(
+        level=level,
+        display_on_screen=display_on_screen,
+        write_to_file=write_to_file,
+        max_log_entry_length=max_log_entry_length,
+        synochat_webhook=synochat_webhook,
+    )
 
 
 def reset_logger(logger: HentaiDBLogger) -> None:
@@ -287,6 +387,7 @@ logger = setup_logger(
     CONFIG_LOADER.logger.level,
     CONFIG_LOADER.logger.display_on_screen,
     CONFIG_LOADER.logger.write_to_file,
+    CONFIG_LOADER.logger.synochat_webhook,
     CONFIG_LOADER.logger.max_log_entry_length,
 )
 

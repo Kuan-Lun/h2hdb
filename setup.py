@@ -25,13 +25,12 @@ setup(
     install_requires=[],
     extras_require={
         "mysql": ["mysql-connector-python>=8.3.0,<9.0.0"],
-        "cbz": ["pillow>=10.3.0,<11.0.0"],  # , "psutil>=5.9.8,<6.0.0"
+        "cbz": ["pillow>=10.3.0,<11.0.0"],
         "komga": ["requests>=2.31.0,<3.0.0"],
-    },
-    entry_points={
-        "console_scripts": [
-            "h2hdb-sql = h2hdb.__main__:h2hdb_sql",
-            "h2hdb-cbz = h2hdb.__main__:h2hdb_cbz",
+        "synochat": [
+            "synochat>=1.0.4,<2.0.0",
+            "requests>=2.31.0,<3.0.0",
+            "types-requests>=2.31.0.20240406,<3.0.0",
         ],
     },
     package_dir={"": "src"},

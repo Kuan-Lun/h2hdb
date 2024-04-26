@@ -19,6 +19,19 @@ class ConfigError(Exception):
         super().__init__(self.message)
 
 
+class SynoChatConfig:
+    __slots__ = ["webhook_url"]
+
+    def __init__(self, webhook_url: str) -> None:
+        self.webhook_url = webhook_url
+
+        if type(webhook_url) is not str:
+            raise ConfigError("webhook_url must be a string")
+
+        if not webhook_url.startswith("https://"):
+            raise ConfigError("webhook_url must start with https://")
+
+
 class DatabaseConfig:
     __slots__ = ["sql_type", "host", "port", "user", "database", "password"]
 
@@ -64,7 +77,13 @@ class DatabaseConfig:
 
 
 class LoggerConfig:
-    __slots__ = ["level", "display_on_screen", "write_to_file", "max_log_entry_length"]
+    __slots__ = [
+        "level",
+        "display_on_screen",
+        "write_to_file",
+        "max_log_entry_length",
+        "synochat_webhook",
+    ]
 
     def __init__(
         self,
@@ -72,11 +91,13 @@ class LoggerConfig:
         display_on_screen: bool,
         write_to_file: str,
         max_log_entry_length: int,
+        synochat_webhook: SynoChatConfig,
     ) -> None:
         self.level = level
         self.display_on_screen = display_on_screen
         self.write_to_file = write_to_file
         self.max_log_entry_length = max_log_entry_length
+        self.synochat_webhook = synochat_webhook
 
         match level.lower():
             case "notset" | "debug" | "info" | "warning" | "error" | "critical":
@@ -102,7 +123,7 @@ class LoggerConfig:
             )
 
     def __repr__(self) -> str:
-        return f"LoggerConfig(level={self.level}, display_on_screen={self.display_on_screen}, write_to_file={self.write_to_file}, max_log_entry_length={self.max_log_entry_length})"
+        return f"LoggerConfig(level={self.level}, display_on_screen={self.display_on_screen}, write_to_file={self.write_to_file}, max_log_entry_length={self.max_log_entry_length}, synochat_webhook={self.synochat_webhook})"
 
     def __str__(self) -> str:
         return self.__repr__()
@@ -180,7 +201,13 @@ class MediaServer:
 
 
 class Config:
-    __slots__ = ["h2h", "database", "logger", "multiprocess", "media_server"]
+    __slots__ = [
+        "h2h",
+        "database",
+        "logger",
+        "multiprocess",
+        "media_server",
+    ]
 
     def __init__(
         self,
@@ -224,6 +251,7 @@ def set_default_config() -> dict[str, dict]:
             display_on_screen=False,
             max_log_entry_length=-1,
             write_to_file="",
+            synochat_webhook="",
         ),
         multiprocess=dict[str, int](number=1),
         media_server=dict[str, str | dict[str, str]](
@@ -311,6 +339,13 @@ def load_config(config_path: str = "") -> Config:
     write_to_file = user_config["logger"]["write_to_file"]
     user_config["logger"].pop("write_to_file")
 
+    if "synochat_webhook" in user_config["logger"]:
+        synochat_config = user_config["logger"]["synochat_webhook"]
+        user_config["logger"].pop("synochat_webhook")
+        synochat_config = SynoChatConfig(synochat_config)
+    else:
+        synochat_config = SynoChatConfig(default_config["logger"]["synochat_webhook"])
+
     if len(user_config["logger"]) > 0:
         raise ConfigError("Invalid configuration for logger")
     else:
@@ -321,6 +356,7 @@ def load_config(config_path: str = "") -> Config:
         display_on_screen=display_on_screen,
         write_to_file=write_to_file,
         max_log_entry_length=max_log_entry_length,
+        synochat_webhook=synochat_config,
     )
 
     if "media_server" in user_config:
@@ -353,9 +389,9 @@ def load_config(config_path: str = "") -> Config:
         raise ConfigError("Invalid configuration for the entire config")
 
     return Config(
-        h2h_config,
-        database_config,
-        logger_config,
-        multiprocess_config,
-        media_server_config,
+        h2h_config=h2h_config,
+        database_config=database_config,
+        logger_config=logger_config,
+        multiprocess_config=multiprocess_config,
+        media_server_config=media_server_config,
     )
