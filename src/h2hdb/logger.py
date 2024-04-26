@@ -171,6 +171,7 @@ def setup_synochat_webhook_logger(
     from requests.exceptions import ConnectionError
     from synochat.webhooks import IncomingWebhook  # type: ignore
     from synochat.exceptions import RateLimitError  # type: ignore
+    from synochat.exceptions import UnknownApiError  # type: ignore
 
     class SynoChatHandler(logging.Handler):
         def __init__(self, synochat_config: SynoChatConfig, *args, **kwargs):
@@ -193,8 +194,8 @@ def setup_synochat_webhook_logger(
                 if retry > 0:
                     sleep(60)
                     self.msg2synochat(s, url, retry=retry - 1)
-            except ConnectionError:
-                print("連不上 Chat")
+            except (ConnectionError, UnknownApiError) as e:
+                print(e)
             except Exception as e:
                 print(e)
 
