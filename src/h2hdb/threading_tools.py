@@ -33,7 +33,7 @@ def add_semaphore_control_to_komga_operation(fun):
         KOMGA_SEMAPHORE.acquire()
         try:
             fun(*args, **kwargs)
-        except Exception as e:
+        except BaseException as e:
             logger.error(f"Error in Komga operation: {e}")
         KOMGA_SEMAPHORE.release()
 

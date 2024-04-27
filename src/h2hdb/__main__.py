@@ -167,13 +167,9 @@ class UpdateH2HDB:
                 self.thread_underlying_target = lambda: None
 
         def loop_target():
-            # n = 0
             while self.thread_running:
-                # logger.notset(f"Media server metadata update iteration {n}.")
                 self.thread_underlying_target()
                 sleep(1)
-                # n += 1
-            # logger.notset("Media server metadata updated.")
 
         self.thread = Thread(target=loop_target)
         self.thread.start()
