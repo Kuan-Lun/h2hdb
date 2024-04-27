@@ -60,20 +60,21 @@ def update_komga_book_metadata(config: Config, book_id: str) -> None:
     api_username = config.media_server.server_config.api_username
     api_password = config.media_server.server_config.api_password
     komga_metadata = get_book(book_id, base_url, api_username, api_password)
-    try:
-        with H2HDB(config=config) as connector:
-            current_metadata = connector.get_komga_metadata(komga_metadata["name"])
-        if not (current_metadata.items() <= komga_metadata.items()):
-            patch_book_metadata(
-                current_metadata, book_id, base_url, api_username, api_password
-            )
-            logger.debug(f"Book {komga_metadata['name']} updated in the database.")
-        else:
-            logger.debug(
-                f"Book {komga_metadata['name']} already exists in the database."
-            )
-    except DatabaseKeyError:
-        pass
+    if komga_metadata is not None:
+        try:
+            with H2HDB(config=config) as connector:
+                current_metadata = connector.get_komga_metadata(komga_metadata["name"])
+            if not (current_metadata.items() <= komga_metadata.items()):
+                patch_book_metadata(
+                    current_metadata, book_id, base_url, api_username, api_password
+                )
+                logger.debug(f"Book {komga_metadata['name']} updated in the database.")
+            else:
+                logger.debug(
+                    f"Book {komga_metadata['name']} already exists in the database."
+                )
+        except DatabaseKeyError:
+            pass
 
 
 def update_komga_series_metadata(config: Config, series_id: str) -> None:
@@ -88,13 +89,16 @@ def update_komga_series_metadata(config: Config, series_id: str) -> None:
     ischecktitle = False
     for book_id in books_ids:
         komga_metadata = get_book(book_id, base_url, api_username, api_password)
-        try:
-            with H2HDB(config=config) as connector:
-                current_metadata = connector.get_komga_metadata(komga_metadata["name"])
-            ischecktitle = True
-            break
-        except DatabaseKeyError:
-            continue
+        if komga_metadata is not None:
+            try:
+                with H2HDB(config=config) as connector:
+                    current_metadata = connector.get_komga_metadata(
+                        komga_metadata["name"]
+                    )
+                ischecktitle = True
+                break
+            except DatabaseKeyError:
+                continue
 
     if ischecktitle:
         series_title = get_series(series_id, base_url, api_username, api_password)[
