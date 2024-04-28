@@ -1,16 +1,29 @@
 # swagger-ui/index.html
 import requests  # type: ignore
 from requests.auth import HTTPBasicAuth  # type: ignore
+from time import sleep
 
 from .logger import logger
 
 
-def retry_request(request, *args, **kwargs):
+def retry_request(request, retries: int = 3):
     def wrapper(*args, **kwargs):
-        try:
-            return request(*args, **kwargs)
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error while making request: {e}")
+        if retries < 0:
+            logger.error("Exceeded maximum retries. Aborting.")
+            return
+        else:
+            try:
+                return request(*args, **kwargs)
+            except requests.exceptions.SSLError:
+                logger.error("SSL error while making request. Need to update certifi.")
+            except requests.exceptions.RequestException as e:
+                if "504" in str(e) or "429" in str(e):
+                    logger.warning(
+                        f"Encountered error {str(e)}. Retrying in 5 seconds."
+                    )
+                    sleep(5)
+                    return retry_request(request, retries - 1)(*args, **kwargs)
+                logger.error(f"Error while making request: {e}")
 
     return wrapper
 
