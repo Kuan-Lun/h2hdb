@@ -17,13 +17,24 @@ def retry_request(request, retries: int = 3):
             except requests.exceptions.SSLError:
                 logger.error("SSL error while making request. Need to update certifi.")
             except requests.exceptions.RequestException as e:
-                if "504" in str(e) or "429" in str(e):
+                retry_codes = [
+                    "500",
+                    "504",
+                    "429",
+                ]  # Add more codes to this list as needed
+                if any(code in str(e) for code in retry_codes):
                     logger.warning(
                         f"Encountered error {str(e)}. Retrying in 5 seconds."
                     )
                     sleep(5)
                     return retry_request(request, retries - 1)(*args, **kwargs)
+                elif "401" in str(e):
+                    logger.error(
+                        f"Unauthorized error while making request. Check your credentials."
+                    )
+                    return  # Don't retry
                 logger.error(f"Error while making request: {e}")
+                return  # Don't retry
 
     return wrapper
 
