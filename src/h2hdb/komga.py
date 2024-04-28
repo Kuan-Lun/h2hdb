@@ -33,8 +33,9 @@ def retry_request(request, retries: int = 3):
                         f"Unauthorized error while making request. Check your credentials."
                     )
                     return  # Don't retry
-                logger.error(f"Error while making request: {e}")
-                return  # Don't retry
+                else:
+                    logger.error(f"Error while making request: {e}")
+                    return  # Don't retry
 
     return wrapper
 
