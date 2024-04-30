@@ -3,10 +3,20 @@ import requests  # type: ignore
 from requests.auth import HTTPBasicAuth  # type: ignore
 from time import sleep
 
-from .logger import logger
+from .logger import logger, HentaiDBLogger
 
 
 def retry_request(request, retries: int = 3):
+    def log_and_return(
+        logger: HentaiDBLogger, retries: int, error_message: str, level: str
+    ) -> None:
+        if retries == 0:
+            if level == "error":
+                logger.error(error_message)
+            elif level == "warning":
+                logger.warning(error_message)
+        return
+
     def wrapper(*args, **kwargs):
         if retries < 0:
             logger.error("Exceeded maximum retries. Aborting.")
@@ -23,18 +33,29 @@ def retry_request(request, retries: int = 3):
                     "429",
                 ]  # Add more codes to this list as needed
                 if any(code in str(e) for code in retry_codes):
-                    logger.warning(
-                        f"Encountered error {str(e)}. Retrying in 5 seconds."
+                    log_and_return(
+                        logger,
+                        retries,
+                        f"Encountered error {str(e)}. Retrying in 5 seconds.",
+                        "warning",
                     )
                     sleep(5)
                     return retry_request(request, retries - 1)(*args, **kwargs)
                 elif "401" in str(e):
-                    logger.error(
-                        f"Unauthorized error while making request. Check your credentials."
+                    log_and_return(
+                        logger,
+                        retries,
+                        f"Unauthorized error while making request. Check your credentials.",
+                        "error",
                     )
                     return  # Don't retry
                 else:
-                    logger.error(f"Error while making request: {e}")
+                    log_and_return(
+                        logger,
+                        retries,
+                        f"Error while making request: {e}",
+                        "error",
+                    )
                     return  # Don't retry
 
     return wrapper
