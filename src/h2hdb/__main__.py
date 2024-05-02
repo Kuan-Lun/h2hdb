@@ -5,32 +5,12 @@ from threading import Thread
 import os
 from functools import partial
 from time import sleep
-from threading import Lock
 
-from .threading_tools import KomgaThread
-from .logger import logger
 from h2hdb import H2HDB
 from .config_loader import load_config, Config
 
 # from .h2h_db import _insert_h2h_download
-from .komga import (
-    get_series_ids,
-    get_books_ids_in_series_id,
-    get_book,
-    patch_book_metadata,
-    get_series,
-    patch_series_metadata,
-    scan_library,
-    get_books_ids_in_library_id,
-)
-from .sql_connector import DatabaseKeyError
-
-
-exclude_book_ids = set[str]()
-exclude_book_ids_lock = Lock()
-
-exclude_series_ids = set[str]()
-exclude_series_ids_lock = Lock()
+from .komga import scan_komga_library
 
 
 def random_split_list(input_list: list, num_groups: int) -> list[list]:
@@ -61,117 +41,6 @@ def count_directories(path: str) -> int:
     return len(
         [name for name in os.listdir(path) if os.path.isdir(os.path.join(path, name))]
     )
-
-
-def update_komga_book_metadata(config: Config, book_id: str) -> None:
-    base_url = config.media_server.server_config.base_url
-    api_username = config.media_server.server_config.api_username
-    api_password = config.media_server.server_config.api_password
-    if book_id not in exclude_book_ids:
-        komga_metadata = get_book(book_id, base_url, api_username, api_password)
-        if komga_metadata is not None:
-            try:
-                with H2HDB(config=config) as connector:
-                    current_metadata = connector.get_komga_metadata(
-                        komga_metadata["name"]
-                    )
-                if not (current_metadata.items() <= komga_metadata.items()):
-                    patch_book_metadata(
-                        current_metadata, book_id, base_url, api_username, api_password
-                    )
-                    logger.debug(
-                        f"Book {komga_metadata['name']} updated in the database."
-                    )
-                else:
-                    with exclude_book_ids_lock:
-                        exclude_book_ids.add(book_id)
-                    logger.debug(
-                        f"Book {komga_metadata['name']} already exists in the database."
-                    )
-            except DatabaseKeyError:
-                pass
-
-
-def update_komga_series_metadata(config: Config, series_id: str) -> None:
-    base_url = config.media_server.server_config.base_url
-    api_username = config.media_server.server_config.api_username
-    api_password = config.media_server.server_config.api_password
-
-    books_ids = get_books_ids_in_series_id(
-        series_id, base_url, api_username, api_password
-    )
-
-    ischecktitle = False
-    for book_id in books_ids:
-        komga_metadata = get_book(book_id, base_url, api_username, api_password)
-        if komga_metadata is not None:
-            try:
-                with H2HDB(config=config) as connector:
-                    current_metadata = connector.get_komga_metadata(
-                        komga_metadata["name"]
-                    )
-                ischecktitle = True
-                break
-            except DatabaseKeyError:
-                continue
-
-    if series_id not in exclude_series_ids:
-        if ischecktitle:
-            series_title = get_series(series_id, base_url, api_username, api_password)[
-                "metadata"
-            ]["title"]
-            if series_title == current_metadata["releaseDate"]:
-                with exclude_series_ids_lock:
-                    exclude_series_ids.add(series_id)
-            else:
-                patch_series_metadata(
-                    {"title": current_metadata["releaseDate"]},
-                    series_id,
-                    base_url,
-                    api_username,
-                    api_password,
-                )
-            logger.debug(f"Series_id {series_id} updated in the database.")
-        else:
-            logger.debug(f"Series_id {series_id} already exists in the database.")
-
-
-def scan_komga_library(config: Config) -> None:
-    library_id = config.media_server.server_config.library_id
-    base_url = config.media_server.server_config.base_url
-    api_username = config.media_server.server_config.api_username
-    api_password = config.media_server.server_config.api_password
-
-    scan_library(library_id, base_url, api_username, api_password)
-
-    # books_ids = get_books_ids_in_all_libraries(base_url, api_username, api_password)
-    books_ids = get_books_ids_in_library_id(
-        library_id, base_url, api_username, api_password
-    )
-
-    if books_ids is not None:
-        threads = list[KomgaThread]()
-        for book_id in books_ids:
-            thread = KomgaThread(
-                target=update_komga_book_metadata, args=(config, book_id)
-            )
-            thread.start()
-            threads.append(thread)
-        for thread in threads:
-            thread.join()
-
-    series_ids = get_series_ids(library_id, base_url, api_username, api_password)
-
-    if series_ids is not None:
-        threads = list[KomgaThread]()
-        for series_id in series_ids:
-            thread = KomgaThread(
-                target=update_komga_series_metadata, args=(config, series_id)
-            )
-            thread.start()
-            threads.append(thread)
-        for thread in threads:
-            thread.join()
 
 
 class UpdateH2HDB:

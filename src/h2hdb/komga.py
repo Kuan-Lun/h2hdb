@@ -1,9 +1,22 @@
+__all__ = ["scan_komga_library"]
+
 # swagger-ui/index.html
 import requests  # type: ignore
 from requests.auth import HTTPBasicAuth  # type: ignore
 from time import sleep
+from threading import Lock
 
 from .logger import logger, HentaiDBLogger
+from .threading_tools import KomgaThread
+from .config_loader import Config
+from .sql_connector import DatabaseKeyError
+from .h2h_db import H2HDB
+
+exclude_book_ids = set[str]()
+exclude_book_ids_lock = Lock()
+
+exclude_series_ids = set[str]()
+exclude_series_ids_lock = Lock()
 
 
 def retry_request(request, retries: int = 3):
@@ -64,7 +77,7 @@ def retry_request(request, retries: int = 3):
 @retry_request
 def get_series_ids(
     library_id: str, base_url: str, api_username: str, api_password: str
-) -> list[str]:
+) -> set[str]:
     series_informations = list[tuple[str, str]]()
     page_num = 0
     while True:
@@ -80,14 +93,14 @@ def get_series_ids(
         for series in response_json["content"]:
             series_informations.append((series["id"], series["fileLastModified"]))
         page_num += 1
-    series_ids = list({s[0] for s in sorted(series_informations, key=lambda x: x[1])})
+    series_ids = {s[0] for s in sorted(series_informations, key=lambda x: x[1])}
     return series_ids
 
 
 @retry_request
 def get_books_ids_in_series_id(
     series_id: str, base_url: str, api_username: str, api_password: str
-) -> list[str]:
+) -> set[str]:
     books_informations = list[tuple[str, str]]()
     page_num = 0
     while True:
@@ -101,14 +114,14 @@ def get_books_ids_in_series_id(
         for book in response_json["content"]:
             books_informations.append((book["id"], book["fileLastModified"]))
         page_num += 1
-    books_ids = list({b[0] for b in sorted(books_informations, key=lambda x: x[1])})
+    books_ids = {b[0] for b in sorted(books_informations, key=lambda x: x[1])}
     return books_ids
 
 
 @retry_request
 def get_books_ids_in_library_id(
     library_id: str, base_url: str, api_username: str, api_password: str
-) -> list[str]:
+) -> set[str]:
     books_informations = list[tuple[str, str]]()
     page_num = 0
     while True:
@@ -124,14 +137,14 @@ def get_books_ids_in_library_id(
         for book in response_json["content"]:
             books_informations.append((book["id"], book["fileLastModified"]))
         page_num += 1
-    books_ids = list({b[0] for b in sorted(books_informations, key=lambda x: x[1])})
+    books_ids = {b[0] for b in sorted(books_informations, key=lambda x: x[1])}
     return books_ids
 
 
 @retry_request
 def get_books_ids_in_all_libraries(
     base_url: str, api_username: str, api_password: str
-) -> list[str]:
+) -> set[str]:
     books_informations = list[tuple[str, str]]()
     page_num = 0
     while True:
@@ -146,9 +159,9 @@ def get_books_ids_in_all_libraries(
             books_informations.append((book["id"], book["fileLastModified"]))
         page_num += 1
     # Sort by fileLastModified in descending order
-    books_ids = list(
-        {b[0] for b in sorted(books_informations, key=lambda x: x[1], reverse=True)}
-    )
+    books_ids = {
+        b[0] for b in sorted(books_informations, key=lambda x: x[1], reverse=True)
+    }
     return books_ids
 
 
@@ -213,3 +226,128 @@ def patch_series_metadata(
         auth=HTTPBasicAuth(api_username, api_password),
     )
     response.raise_for_status()
+
+
+def update_komga_book_metadata(config: Config, book_id: str) -> None:
+    global exclude_book_ids
+
+    base_url = config.media_server.server_config.base_url
+    api_username = config.media_server.server_config.api_username
+    api_password = config.media_server.server_config.api_password
+
+    if book_id not in exclude_book_ids:
+        komga_metadata = get_book(book_id, base_url, api_username, api_password)
+        if komga_metadata is not None:
+            try:
+                with H2HDB(config=config) as connector:
+                    current_metadata = connector.get_komga_metadata(
+                        komga_metadata["name"]
+                    )
+                if not (current_metadata.items() <= komga_metadata.items()):
+                    patch_book_metadata(
+                        current_metadata, book_id, base_url, api_username, api_password
+                    )
+                    logger.debug(
+                        f"Book {komga_metadata['name']} updated in the database."
+                    )
+                else:
+                    with exclude_book_ids_lock:
+                        exclude_book_ids.add(book_id)
+                    logger.debug(
+                        f"Book {komga_metadata['name']} already exists in the database."
+                    )
+            except DatabaseKeyError:
+                pass
+
+
+def update_komga_series_metadata(config: Config, series_id: str) -> None:
+    global exclude_series_ids
+
+    base_url = config.media_server.server_config.base_url
+    api_username = config.media_server.server_config.api_username
+    api_password = config.media_server.server_config.api_password
+
+    books_ids = get_books_ids_in_series_id(
+        series_id, base_url, api_username, api_password
+    )
+
+    ischecktitle = False
+    for book_id in books_ids:
+        komga_metadata = get_book(book_id, base_url, api_username, api_password)
+        if komga_metadata is not None:
+            try:
+                with H2HDB(config=config) as connector:
+                    current_metadata = connector.get_komga_metadata(
+                        komga_metadata["name"]
+                    )
+                ischecktitle = True
+                break
+            except DatabaseKeyError:
+                continue
+
+    if series_id not in exclude_series_ids:
+        if ischecktitle:
+            series_title = get_series(series_id, base_url, api_username, api_password)[
+                "metadata"
+            ]["title"]
+            if series_title == current_metadata["releaseDate"]:
+                with exclude_series_ids_lock:
+                    exclude_series_ids.add(series_id)
+            else:
+                patch_series_metadata(
+                    {"title": current_metadata["releaseDate"]},
+                    series_id,
+                    base_url,
+                    api_username,
+                    api_password,
+                )
+            logger.debug(f"Series_id {series_id} updated in the database.")
+        else:
+            logger.debug(f"Series_id {series_id} already exists in the database.")
+
+
+isscan = True
+isscan_lock = Lock()
+
+
+def scan_komga_library(config: Config) -> None:
+    library_id = config.media_server.server_config.library_id
+    base_url = config.media_server.server_config.base_url
+    api_username = config.media_server.server_config.api_username
+    api_password = config.media_server.server_config.api_password
+
+    scan_library(library_id, base_url, api_username, api_password)
+
+    # books_ids = get_books_ids_in_all_libraries(base_url, api_username, api_password)
+    books_ids = get_books_ids_in_library_id(
+        library_id, base_url, api_username, api_password
+    )
+
+    if (books_ids is not None) and (books_ids != exclude_book_ids):
+        threads = list[KomgaThread]()
+        for book_id in books_ids:
+            thread = KomgaThread(
+                target=update_komga_book_metadata, args=(config, book_id)
+            )
+            thread.start()
+            threads.append(thread)
+        for thread in threads:
+            thread.join()
+
+    series_ids = get_series_ids(library_id, base_url, api_username, api_password)
+
+    if (series_ids is not None) and (series_ids != exclude_series_ids):
+        threads = list[KomgaThread]()
+        for series_id in series_ids:
+            thread = KomgaThread(
+                target=update_komga_series_metadata, args=(config, series_id)
+            )
+            thread.start()
+            threads.append(thread)
+        for thread in threads:
+            thread.join()
+
+    if (books_ids == exclude_book_ids) and (series_ids == exclude_series_ids):
+        with isscan_lock:
+            global isscan
+            isscan = False
