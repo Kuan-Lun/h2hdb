@@ -120,10 +120,3 @@ def calculate_hash_of_file_in_cbz(
             hash_object = hashlib.new(algorithm)
             hash_object.update(file_content)
             return hash_object.digest()
-
-
-# 使用方式
-# cbz_path = 'path_to_your_cbz_file'
-# file_name = 'name_of_the_file_in_cbz'
-# hash_value = calculate_hash_of_file_in_cbz(cbz_path, file_name)
-# print(hash_value)

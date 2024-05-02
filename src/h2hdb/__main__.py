@@ -5,6 +5,7 @@ from threading import Thread
 import os
 from functools import partial
 from time import sleep
+from threading import Lock
 
 from .threading_tools import KomgaThread
 from .logger import logger
@@ -23,6 +24,13 @@ from .komga import (
     get_books_ids_in_library_id,
 )
 from .sql_connector import DatabaseKeyError
+
+
+exclude_book_ids = set[str]()
+exclude_book_ids_lock = Lock()
+
+exclude_series_ids = set[str]()
+exclude_series_ids_lock = Lock()
 
 
 def random_split_list(input_list: list, num_groups: int) -> list[list]:
@@ -59,22 +67,29 @@ def update_komga_book_metadata(config: Config, book_id: str) -> None:
     base_url = config.media_server.server_config.base_url
     api_username = config.media_server.server_config.api_username
     api_password = config.media_server.server_config.api_password
-    komga_metadata = get_book(book_id, base_url, api_username, api_password)
-    if komga_metadata is not None:
-        try:
-            with H2HDB(config=config) as connector:
-                current_metadata = connector.get_komga_metadata(komga_metadata["name"])
-            if not (current_metadata.items() <= komga_metadata.items()):
-                patch_book_metadata(
-                    current_metadata, book_id, base_url, api_username, api_password
-                )
-                logger.debug(f"Book {komga_metadata['name']} updated in the database.")
-            else:
-                logger.debug(
-                    f"Book {komga_metadata['name']} already exists in the database."
-                )
-        except DatabaseKeyError:
-            pass
+    if book_id not in exclude_book_ids:
+        komga_metadata = get_book(book_id, base_url, api_username, api_password)
+        if komga_metadata is not None:
+            try:
+                with H2HDB(config=config) as connector:
+                    current_metadata = connector.get_komga_metadata(
+                        komga_metadata["name"]
+                    )
+                if not (current_metadata.items() <= komga_metadata.items()):
+                    patch_book_metadata(
+                        current_metadata, book_id, base_url, api_username, api_password
+                    )
+                    logger.debug(
+                        f"Book {komga_metadata['name']} updated in the database."
+                    )
+                else:
+                    with exclude_book_ids_lock:
+                        exclude_book_ids.add(book_id)
+                    logger.debug(
+                        f"Book {komga_metadata['name']} already exists in the database."
+                    )
+            except DatabaseKeyError:
+                pass
 
 
 def update_komga_series_metadata(config: Config, series_id: str) -> None:
@@ -100,21 +115,25 @@ def update_komga_series_metadata(config: Config, series_id: str) -> None:
             except DatabaseKeyError:
                 continue
 
-    if ischecktitle:
-        series_title = get_series(series_id, base_url, api_username, api_password)[
-            "metadata"
-        ]["title"]
-        if series_title != current_metadata["releaseDate"]:
-            patch_series_metadata(
-                {"title": current_metadata["releaseDate"]},
-                series_id,
-                base_url,
-                api_username,
-                api_password,
-            )
-        logger.debug(f"Series_id {series_id} updated in the database.")
-    else:
-        logger.debug(f"Series_id {series_id} already exists in the database.")
+    if series_id not in exclude_series_ids:
+        if ischecktitle:
+            series_title = get_series(series_id, base_url, api_username, api_password)[
+                "metadata"
+            ]["title"]
+            if series_title == current_metadata["releaseDate"]:
+                with exclude_series_ids_lock:
+                    exclude_series_ids.add(series_id)
+            else:
+                patch_series_metadata(
+                    {"title": current_metadata["releaseDate"]},
+                    series_id,
+                    base_url,
+                    api_username,
+                    api_password,
+                )
+            logger.debug(f"Series_id {series_id} updated in the database.")
+        else:
+            logger.debug(f"Series_id {series_id} already exists in the database.")
 
 
 def scan_komga_library(config: Config) -> None:
