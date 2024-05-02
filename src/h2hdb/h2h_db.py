@@ -25,17 +25,11 @@ from .settings import (
 )
 
 HASH_ALGORITHMS = dict[str, int](
-    sha224=224,
-    sha256=256,
     sha384=384,
-    sha1=160,
     sha512=512,
-    sha3_224=224,
-    sha3_256=256,
     sha3_384=384,
     sha3_512=512,
     blake2b=512,
-    blake2s=256,
 )
 
 
