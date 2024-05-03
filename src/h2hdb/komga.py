@@ -316,7 +316,9 @@ def scan_komga_library(config: Config) -> None:
     api_username = config.media_server.server_config.api_username
     api_password = config.media_server.server_config.api_password
 
-    scan_library(library_id, base_url, api_username, api_password)
+    global isscan
+    if isscan:
+        scan_library(library_id, base_url, api_username, api_password)
 
     # books_ids = get_books_ids_in_all_libraries(base_url, api_username, api_password)
     books_ids = get_books_ids_in_library_id(
@@ -349,5 +351,4 @@ def scan_komga_library(config: Config) -> None:
 
     if (books_ids == exclude_book_ids) and (series_ids == exclude_series_ids):
         with isscan_lock:
-            global isscan
             isscan = False
