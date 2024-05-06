@@ -182,7 +182,7 @@ class H2HDBAbstract(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def insert_gallery_info(self, gallery_path: str) -> None:
+    def insert_gallery_info(self, gallery_path: str) -> bool:
         """
         Inserts the gallery information into the database.
 
@@ -1924,14 +1924,16 @@ class H2HDB(
             query_result = connector.fetch_all(select_query)
         return [query[0] for query in query_result]
 
-    def insert_gallery_info(self, gallery_folder: str) -> None:
+    def insert_gallery_info(self, gallery_folder: str) -> bool:
         gallery_info_params = parse_gallery_info(gallery_folder)
-        isthesame = self._check_gallery_info_file_hash(gallery_info_params)
-        if isthesame is False:
+        is_thesame = self._check_gallery_info_file_hash(gallery_info_params)
+        is_insert = is_thesame is False
+        if is_insert:
             self.delete_gallery_file(gallery_info_params.gallery_name)
             self.delete_gallery(gallery_info_params.gallery_name)
             self._insert_gallery_info(gallery_info_params)
             logger.info(f"Gallery '{gallery_info_params.gallery_name}' inserted.")
+        return is_insert
 
     def compress_gallery_to_cbz(
         self, gallery_folder: str, exclude_hashs: list[bytes]
@@ -2089,6 +2091,7 @@ class H2HDB(
             os.remove(os.path.join(current_cbzs[key], key))
             logger.info(f"CBZ '{key}' removed.")
         logger.info("CBZ files refreshed.")
+
         while True:
             directory_removed = False
             for root, dirs, files in os.walk(self.config.h2h.cbz_path, topdown=False):
@@ -2140,8 +2143,11 @@ class H2HDB(
         cbzthreads = list[CBZThread]()
         exclude_hashs = self._get_duplicated_hash_values_by_count_artist_ratio()
         previously_count_duplicated_files = self._count_duplicated_files_hashs_sha512()
+        num_inserts = 0
         for gallery_name in current_galleries_folders:
-            self.insert_gallery_info(gallery_name)
+            is_insert = self.insert_gallery_info(gallery_name)
+            if is_insert:
+                num_inserts += 1
             if self.config.h2h.cbz_path != "":
                 current_count_duplicated_files = (
                     self._count_duplicated_files_hashs_sha512()
@@ -2160,6 +2166,9 @@ class H2HDB(
                 )
                 thread.start()
                 cbzthreads.append(thread)
+            is_insert_limit_reached = num_inserts >= 100
+            if is_insert_limit_reached:
+                break
         for thread in cbzthreads:
             thread.join()
 
@@ -2167,6 +2176,9 @@ class H2HDB(
         self.refresh_current_files_hashs()
 
         self._refresh_current_cbz_files(current_galleries_names)
+
+        if is_insert_limit_reached:
+            return self.insert_h2h_download()
 
     def get_komga_metadata(self, gallery_name: str) -> dict:
         metadata = dict[str, str | list[dict[str, str]]]()
