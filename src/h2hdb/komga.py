@@ -352,3 +352,4 @@ def scan_komga_library(config: Config) -> None:
     if (books_ids == exclude_book_ids) and (series_ids == exclude_series_ids):
         with isscan_lock:
             isscan = False
+        logger.info("All books and series have been scanned.")
