@@ -25,8 +25,8 @@ class SynoChatConfig:
     def __init__(self, webhook_url: str) -> None:
         self.webhook_url = webhook_url
 
-        if type(webhook_url) is not str:
-            raise ConfigError("webhook_url must be a string")
+        if not isinstance(webhook_url, str):
+            raise TypeError("webhook_url must be a string")
 
         if not webhook_url.startswith("https://"):
             raise ConfigError("webhook_url must start with https://")
@@ -54,20 +54,20 @@ class DatabaseConfig:
         if sql_type not in ["mysql"]:
             raise ConfigError("Invalid SQL type")
 
-        if type(host) is not str:
-            raise ConfigError("host must be a string")
+        if not isinstance(host, str):
+            raise TypeError("host must be a string")
 
-        if type(port) is not str:
-            raise ConfigError("port must be a string")
+        if not isinstance(port, str):
+            raise TypeError("port must be a string")
 
-        if type(user) is not str:
-            raise ConfigError("user must be a string")
+        if not isinstance(user, str):
+            raise TypeError("user must be a string")
 
-        if type(database) is not str:
-            raise ConfigError("database must be a string")
+        if not isinstance(database, str):
+            raise TypeError("database must be a string")
 
-        if type(password) is not str:
-            raise ConfigError("password must be a string")
+        if not isinstance(password, str):
+            raise TypeError("password must be a string")
 
     def __repr__(self) -> str:
         return f"DatabaseConfig(sql_type={self.sql_type}, host={self.host}, port={self.port}, user={self.user}, database={self.database}, password={self.password})"
@@ -107,19 +107,22 @@ class LoggerConfig:
                     f"Invalid log level {level} (must be one of NOTSET, DEBUG, INFO, WARNING, ERROR, CRITICAL)"
                 )
 
-        if type(display_on_screen) is not bool:
-            raise ConfigError(
+        if not isinstance(display_on_screen, bool):
+            raise TypeError(
                 f"Incorrect type for display_on_screen: {type(display_on_screen)}"
             )
 
-        if type(write_to_file) is not str:
-            raise ConfigError(
-                f"Incorrect type for write_to_file: {type(write_to_file)}"
+        if not isinstance(write_to_file, str):
+            raise TypeError(f"Incorrect type for write_to_file: {type(write_to_file)}")
+
+        if not isinstance(max_log_entry_length, int):
+            raise TypeError(
+                f"Incorrect type for max_log_entry_length: {type(max_log_entry_length)}"
             )
 
-        if type(max_log_entry_length) is not int:
-            raise ConfigError(
-                f"Incorrect type for max_log_entry_length: {type(max_log_entry_length)}"
+        if not isinstance(synochat_webhook, SynoChatConfig):
+            raise TypeError(
+                f"Incorrect type for synochat_webhook: {type(synochat_webhook)}"
             )
 
     def __repr__(self) -> str:
@@ -146,17 +149,17 @@ class H2HConfig:
         self.cbz_max_size = cbz_max_size
         self.cbz_grouping = cbz_grouping
 
-        if type(download_path) is not str:
-            raise ConfigError("download_path must be a string")
+        if not isinstance(download_path, str):
+            raise TypeError("download_path must be a string")
 
-        if type(cbz_path) is not str:
-            raise ConfigError("cbz_path must be a string")
+        if not isinstance(cbz_path, str):
+            raise TypeError("cbz_path must be a string")
 
-        if type(cbz_max_size) is not int:
-            raise ConfigError("cbz_max_size must be an integer")
+        if not isinstance(cbz_max_size, int):
+            raise TypeError("cbz_max_size must be an integer")
 
-        if type(cbz_grouping) is not str:
-            raise ConfigError("cbz_grouping must be a string")
+        if not isinstance(cbz_grouping, str):
+            raise TypeError("cbz_grouping must be a string")
 
         self.cbz_tmp_directory = os.path.join(self.cbz_path, "tmp")
 
@@ -173,11 +176,11 @@ class MultiProcessConfig:
     def __init__(self, num_processes: int) -> None:
         self.num_processes = num_processes
 
-        if type(num_processes) is not int:
-            raise ConfigError("num_processes must be an integer")
+        if not isinstance(num_processes, int):
+            raise TypeError("num_processes must be an integer")
 
         if num_processes < 1:
-            raise ConfigError("num_processes must be at least 1")
+            raise ValueError("num_processes must be at least 1")
 
 
 class KomgaConfig:
