@@ -1,9 +1,6 @@
 import threading
 from threading import Thread
 
-# import os
-# import psutil  # type: ignore
-# import time
 
 from .logger import logger
 

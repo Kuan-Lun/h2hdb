@@ -6,10 +6,6 @@ import zipfile
 import shutil
 import hashlib
 
-# from threading import Thread
-
-# from .threading_tools import add_semaphore_control
-
 Image.MAX_IMAGE_PIXELS = None
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -85,15 +81,6 @@ def compress_images_and_create_cbz(
 
     for filename in os.listdir(input_directory):
         hash_and_process_file(filename)
-
-    # Compress the images
-    # threads = list[Thread]()
-    # for filename in os.listdir(input_directory):
-    #     thread = Thread(target=hash_and_process_file, args=(filename,))
-    #     thread.start()
-    #     threads.append(thread)
-    # for thread in threads:
-    #     thread.join()
 
     # Create the CBZ file
     os.makedirs(output_directory, exist_ok=True)

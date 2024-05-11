@@ -1,5 +1,3 @@
-# from multiprocessing import Pool
-import random
 import shutil
 from threading import Thread
 import os
@@ -8,39 +6,7 @@ from time import sleep
 
 from h2hdb import H2HDB
 from .config_loader import load_config, Config
-
-# from .h2h_db import _insert_h2h_download
 from .komga import scan_komga_library
-
-
-def random_split_list(input_list: list, num_groups: int) -> list[list]:
-    # Randomly shuffle the input list
-    random.shuffle(input_list)
-
-    # Calculate the size of each group
-    group_size = len(input_list) // num_groups
-
-    # Create the groups
-    if group_size == 0:
-        groups = [input_list]
-    else:
-        groups = [
-            input_list[i : i + group_size]
-            for i in range(0, len(input_list), group_size)
-        ]
-
-        # Distribute the remainder
-        remainder = len(input_list) % num_groups
-        for i in range(remainder):
-            groups[i].append(input_list[-(i + 1)])
-
-    return groups
-
-
-def count_directories(path: str) -> int:
-    return len(
-        [name for name in os.listdir(path) if os.path.isdir(os.path.join(path, name))]
-    )
 
 
 class UpdateH2HDB:

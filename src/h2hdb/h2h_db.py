@@ -12,11 +12,10 @@ from functools import partial
 from .gallery_info_parser import parse_gallery_info, GalleryInfoParser
 from .config_loader import Config
 from .logger import logger
-from .sql_connector import DatabaseConfigurationError, DatabaseKeyError, SQLConnector
+from .sql_connector import DatabaseConfigurationError, DatabaseKeyError
 from .threading_tools import SQLThread, CBZThread
 
 from .settings import hash_function
-
 from .settings import (
     FOLDER_NAME_LENGTH_LIMIT,
     FILE_NAME_LENGTH_LIMIT,

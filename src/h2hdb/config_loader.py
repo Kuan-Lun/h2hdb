@@ -1,7 +1,6 @@
 __all__ = ["DatabaseConfig", "LoggerConfig", "H2HConfig", "Config", "load_config"]
 
 import os
-
 import argparse
 import json
 

@@ -393,12 +393,3 @@ logger = setup_logger(
     CONFIG_LOADER.logger.synochat_webhook,
     CONFIG_LOADER.logger.max_log_entry_length,
 )
-
-
-# import os
-# import psutil  # type: ignore
-
-# process = psutil.Process(os.getpid())
-# displayram = lambda x: logger.info(
-#     f"{x}: Memory usage is  {process.memory_info().rss / 1024**2} MB."
-# )
