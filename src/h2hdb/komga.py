@@ -7,7 +7,7 @@ from time import sleep
 from threading import Lock
 
 from .logger import logger, HentaiDBLogger
-from .threading_tools import KomgaThread
+from .threading_tools import KomgaThreadsList
 from .config_loader import Config
 from .sql_connector import DatabaseKeyError
 from .h2h_db import H2HDB
@@ -326,28 +326,20 @@ def scan_komga_library(config: Config) -> None:
     )
 
     if (books_ids is not None) and (books_ids != exclude_book_ids):
-        threads = list[KomgaThread]()
-        for book_id in books_ids:
-            thread = KomgaThread(
-                target=update_komga_book_metadata, args=(config, book_id)
-            )
-            thread.start()
-            threads.append(thread)
-        for thread in threads:
-            thread.join()
+        with KomgaThreadsList() as threads:
+            for book_id in books_ids:
+                threads.append(
+                    target=update_komga_book_metadata, args=(config, book_id)
+                )
 
     series_ids = get_series_ids(library_id, base_url, api_username, api_password)
 
     if (series_ids is not None) and (series_ids != exclude_series_ids):
-        threads = list[KomgaThread]()
-        for series_id in series_ids:
-            thread = KomgaThread(
-                target=update_komga_series_metadata, args=(config, series_id)
-            )
-            thread.start()
-            threads.append(thread)
-        for thread in threads:
-            thread.join()
+        with KomgaThreadsList() as threads:
+            for series_id in series_ids:
+                threads.append(
+                    target=update_komga_series_metadata, args=(config, series_id)
+                )
 
     if (books_ids == exclude_book_ids) and (series_ids == exclude_series_ids):
         with isscan_lock:

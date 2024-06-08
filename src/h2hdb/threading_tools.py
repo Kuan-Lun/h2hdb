@@ -1,60 +1,65 @@
 import threading
 from threading import Thread
+from abc import ABCMeta, abstractmethod
 
 
 from .logger import logger
 
-CBZ_SEMAPHORE = threading.Semaphore(1)
+CBZ_SEMAPHORE = threading.Semaphore(2)
 KOMGA_SEMAPHORE = threading.Semaphore(5)
 SQL_SEMAPHORE = threading.Semaphore(5)
 
 
-def add_semaphore_control_to_cbz_compression_operation(fun):
-    def wrapper(*args, **kwargs):
-        CBZ_SEMAPHORE.acquire()
-        fun(*args, **kwargs)
-        CBZ_SEMAPHORE.release()
+class ThreadsList(list, metaclass=ABCMeta):
+    @property
+    @abstractmethod
+    def semaphore(self):
+        pass
 
-    return wrapper
+    class BackgroundTaskThread(Thread, metaclass=ABCMeta):
 
+        @staticmethod
+        def add_semaphore_control_to_operation(fun):
+            def wrapper(*args, **kwargs):
+                ThreadsList.semaphore.acquire()
+                try:
+                    fun(*args, **kwargs)
+                except BaseException as e:
+                    logger.error(f"Error in background task: {e}")
+                ThreadsList.semaphore.release()
 
-class CBZThread(Thread):
-    def __init__(self, target, args):
-        super().__init__(
-            target=add_semaphore_control_to_cbz_compression_operation(target), args=args
-        )
+            return wrapper
 
+    def start_all(self: list[BackgroundTaskThread]):
+        for thread in self:
+            thread.start()
 
-def add_semaphore_control_to_komga_operation(fun):
-    def wrapper(*args, **kwargs):
-        KOMGA_SEMAPHORE.acquire()
-        try:
-            fun(*args, **kwargs)
-        except BaseException as e:
-            logger.error(f"Error in Komga operation: {e}")
-        KOMGA_SEMAPHORE.release()
+    def join_all(self: list[BackgroundTaskThread]):
+        for thread in self:
+            thread.join()
+        del self
 
-    return wrapper
+    def append(self, target, args):
+        super().append(self.BackgroundTaskThread(target=target, args=args))
 
+    def __enter__(self):
+        return self
 
-class KomgaThread(Thread):
-    def __init__(self, target, args):
-        super().__init__(
-            target=add_semaphore_control_to_komga_operation(target), args=args
-        )
-
-
-def add_semaphore_control_to_SQL_operation(fun):
-    def wrapper(*args, **kwargs):
-        SQL_SEMAPHORE.acquire()
-        fun(*args, **kwargs)
-        SQL_SEMAPHORE.release()
-
-    return wrapper
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.start_all()
+        self.join_all()
 
 
-class SQLThread(Thread):
-    def __init__(self, target, args):
-        super().__init__(
-            target=add_semaphore_control_to_SQL_operation(target), args=args
-        )
+class CBZThreadsList(ThreadsList):
+    def semaphore(self):
+        return CBZ_SEMAPHORE
+
+
+class KomgaThreadsList(ThreadsList):
+    def semaphore(self):
+        return KOMGA_SEMAPHORE
+
+
+class SQLThreadsList(ThreadsList):
+    def semaphore(self):
+        return SQL_SEMAPHORE

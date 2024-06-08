@@ -13,7 +13,7 @@ from .gallery_info_parser import parse_gallery_info, GalleryInfoParser
 from .config_loader import Config
 from .logger import logger
 from .sql_connector import DatabaseConfigurationError, DatabaseKeyError
-from .threading_tools import SQLThread, CBZThread
+from .threading_tools import SQLThreadsList, CBZThreadsList
 
 from .settings import hash_function
 from .settings import (
@@ -1795,89 +1795,59 @@ class H2HDB(
             gallery_info_params.gallery_name
         )
 
-        threads = list[SQLThread]()
-        threads.append(
-            SQLThread(
+        with SQLThreadsList() as threads:
+            threads.append(
                 target=self._insert_gallery_gid,
                 args=(db_gallery_id, gallery_info_params.gid),
             )
-        )
-        threads.append(
-            SQLThread(
+            threads.append(
                 target=self._insert_gallery_title,
                 args=(db_gallery_id, gallery_info_params.title),
             )
-        )
-        threads.append(
-            SQLThread(
+            threads.append(
                 target=self._insert_upload_time,
                 args=(db_gallery_id, gallery_info_params.upload_time),
             )
-        )
 
-        threads.append(
-            SQLThread(
+            threads.append(
                 target=self._insert_gallery_comment,
                 args=(db_gallery_id, gallery_info_params.galleries_comments),
             )
-        )
-        threads.append(
-            SQLThread(
+            threads.append(
                 target=self._insert_gallery_upload_account,
                 args=(db_gallery_id, gallery_info_params.upload_account),
             )
-        )
-        threads.append(
-            SQLThread(
+            threads.append(
                 target=self._insert_download_time,
                 args=(db_gallery_id, gallery_info_params.download_time),
             )
-        )
-        threads.append(
-            SQLThread(
+            threads.append(
                 target=self._insert_access_time,
                 args=(db_gallery_id, gallery_info_params.download_time),
             )
-        )
-        threads.append(
-            SQLThread(
+            threads.append(
                 target=self._insert_modified_time,
                 args=(db_gallery_id, gallery_info_params.modified_time),
             )
-        )
-        for file_path in gallery_info_params.files_path:
-            threads.append(
-                SQLThread(
+            for file_path in gallery_info_params.files_path:
+                threads.append(
                     target=self._insert_gallery_file,
                     args=(db_gallery_id, file_path),
                 )
-            )
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-        del threads
 
-        for file_path in gallery_info_params.files_path:
-            threads = list[SQLThread]()
-            db_file_id = self._get_db_file_id(db_gallery_id, file_path)
-            absolute_file_path = os.path.join(
-                gallery_info_params.gallery_folder, file_path
-            )
-            with open(absolute_file_path, "rb") as f:
-                file_content = f.read()
-            for algorithm in HASH_ALGORITHMS.keys():
-                threads.append(
-                    SQLThread(
+        with SQLThreadsList() as threads:
+            for file_path in gallery_info_params.files_path:
+                db_file_id = self._get_db_file_id(db_gallery_id, file_path)
+                absolute_file_path = os.path.join(
+                    gallery_info_params.gallery_folder, file_path
+                )
+                with open(absolute_file_path, "rb") as f:
+                    file_content = f.read()
+                for algorithm in HASH_ALGORITHMS.keys():
+                    threads.append(
                         target=self._insert_gallery_file_hash,
                         args=(db_file_id, file_content, algorithm),
                     )
-                )
-            for thread in threads:
-                thread.start()
-            for thread in threads:
-                thread.join()
-            del threads
 
         for tag in gallery_info_params.tags:
             self._insert_gallery_tag(db_gallery_id, tag[0], tag[1])
@@ -2139,37 +2109,40 @@ class H2HDB(
             reverse=True,
         )
 
-        cbzthreads = list[CBZThread]()
         exclude_hashs = self._get_duplicated_hash_values_by_count_artist_ratio()
-        previously_count_duplicated_files = self._count_duplicated_files_hashs_sha512()
-        num_inserts = 0
-        for gallery_name in current_galleries_folders:
-            is_insert = self.insert_gallery_info(gallery_name)
-            if is_insert:
-                num_inserts += 1
-            if self.config.h2h.cbz_path != "":
-                current_count_duplicated_files = (
-                    self._count_duplicated_files_hashs_sha512()
-                )
-                if current_count_duplicated_files > previously_count_duplicated_files:
-                    logger.info("Duplicated files found.")
-                    previously_count_duplicated_files = current_count_duplicated_files
-                    logger.info("Updating excluded hash values...")
-                    exclude_hashs = (
-                        self._get_duplicated_hash_values_by_count_artist_ratio()
+        previously_count_duplicated_files = (
+                self._count_duplicated_files_hashs_sha512()
+            )
+        with CBZThreadsList() as cbzthreads:
+            num_inserts = 0
+            for gallery_name in current_galleries_folders:
+                is_insert = self.insert_gallery_info(gallery_name)
+                if is_insert:
+                    num_inserts += 1
+                if self.config.h2h.cbz_path != "":
+                    current_count_duplicated_files = (
+                        self._count_duplicated_files_hashs_sha512()
                     )
-                    logger.info("Excluded hash values updated.")
-                thread = CBZThread(
-                    target=self.compress_gallery_to_cbz,
-                    args=(gallery_name, exclude_hashs),
-                )
-                thread.start()
-                cbzthreads.append(thread)
-            is_insert_limit_reached = num_inserts >= 100
-            if is_insert_limit_reached:
-                break
-        for thread in cbzthreads:
-            thread.join()
+                    if (
+                        current_count_duplicated_files
+                        > previously_count_duplicated_files
+                    ):
+                        logger.info("Duplicated files found.")
+                        previously_count_duplicated_files = (
+                            current_count_duplicated_files
+                        )
+                        logger.info("Updating excluded hash values...")
+                        exclude_hashs = (
+                            self._get_duplicated_hash_values_by_count_artist_ratio()
+                        )
+                        logger.info("Excluded hash values updated.")
+                    cbzthreads.append(
+                        target=self.compress_gallery_to_cbz,
+                        args=(gallery_name, exclude_hashs),
+                    )
+                is_insert_limit_reached = num_inserts >= 100
+                if is_insert_limit_reached:
+                    break
 
         logger.info("Cleaning up database...")
         self.refresh_current_files_hashs()
