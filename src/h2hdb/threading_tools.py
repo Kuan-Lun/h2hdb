@@ -5,7 +5,7 @@ from abc import ABCMeta, abstractmethod
 
 from .logger import logger
 
-CBZ_SEMAPHORE = threading.Semaphore(2)
+IMZGE_SEMAPHORE = threading.Semaphore(5)
 KOMGA_SEMAPHORE = threading.Semaphore(5)
 SQL_SEMAPHORE = threading.Semaphore(5)
 
@@ -50,9 +50,9 @@ class ThreadsList(list, metaclass=ABCMeta):
         self.join_all()
 
 
-class CBZThreadsList(ThreadsList):
+class ImageThreadsList(ThreadsList):
     def semaphore(self):
-        return CBZ_SEMAPHORE
+        return IMZGE_SEMAPHORE
 
 
 class KomgaThreadsList(ThreadsList):

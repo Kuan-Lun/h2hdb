@@ -138,15 +138,22 @@ class H2HConfig:
         "cbz_max_size",
         "cbz_grouping",
         "cbz_tmp_directory",
+        "cbz_sort",
     ]
 
     def __init__(
-        self, download_path: str, cbz_path: str, cbz_max_size: int, cbz_grouping: str
+        self,
+        download_path: str,
+        cbz_path: str,
+        cbz_max_size: int,
+        cbz_grouping: str,
+        cbz_sort: str,
     ) -> None:
         self.download_path = download_path
         self.cbz_path = cbz_path
         self.cbz_max_size = cbz_max_size
         self.cbz_grouping = cbz_grouping
+        self.cbz_sort = cbz_sort
 
         if not isinstance(download_path, str):
             raise TypeError("download_path must be a string")
@@ -159,6 +166,9 @@ class H2HConfig:
 
         if not isinstance(cbz_grouping, str):
             raise TypeError("cbz_grouping must be a string")
+
+        if not isinstance(cbz_sort, str):
+            raise TypeError("cbz_sort must be a string")
 
         self.cbz_tmp_directory = os.path.join(self.cbz_path, "tmp")
 
@@ -239,6 +249,7 @@ def set_default_config() -> dict[str, dict]:
             cbz_path="",
             cbz_max_size=768,
             cbz_grouping="flat",
+            cbz_sort="upload_time",
         ),
         database=dict[str, str](
             sql_type="mysql",
@@ -300,7 +311,11 @@ def load_config(config_path: str = "") -> Config:
     user_config["h2h"].pop("cbz_max_size")
     cbz_grouping = user_config["h2h"]["cbz_grouping"]
     user_config["h2h"].pop("cbz_grouping")
-    h2h_config = H2HConfig(download_path, cbz_path, cbz_max_size, cbz_grouping)
+    cbz_sort = user_config["h2h"]["cbz_sort"]
+    user_config["h2h"].pop("cbz_sort")
+    h2h_config = H2HConfig(
+        download_path, cbz_path, cbz_max_size, cbz_grouping, cbz_sort
+    )
     if len(user_config["h2h"]) > 0:
         raise ConfigError("Invalid configuration for h2h")
     else:

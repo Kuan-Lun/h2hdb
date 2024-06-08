@@ -5,6 +5,16 @@ import os
 import datetime
 
 
+def count_files_in_directory(directory_path) -> int:
+    return len(
+        [
+            f
+            for f in os.listdir(directory_path)
+            if os.path.isfile(os.path.join(directory_path, f))
+        ]
+    )
+
+
 class GalleryInfoParser:
     """
     A class that represents a parser for gallery information.
@@ -20,6 +30,7 @@ class GalleryInfoParser:
         upload_account (str): The account used to upload the gallery.
         download_time (str): The download time of the gallery.
         tags (dict[str, str]): The tags associated with the gallery.
+        pages (int): The number of pages in the gallery.
     """
 
     __slots__ = [
@@ -34,6 +45,7 @@ class GalleryInfoParser:
         "upload_account",
         "download_time",
         "tags",
+        "pages",
     ]
 
     def __init__(
@@ -49,6 +61,7 @@ class GalleryInfoParser:
         upload_account: str,
         download_time: str,
         tags: list[tuple[str, str]],
+        pages: int,
     ) -> None:
         self.gallery_folder = gallery_folder
         self.gallery_name = gallery_name
@@ -61,6 +74,7 @@ class GalleryInfoParser:
         self.upload_account = upload_account
         self.download_time = download_time
         self.tags = tags
+        self.pages = pages
 
     def __repr__(self) -> str:
         return f"GalleryInfoParser(gallery_name={self.gallery_name}, gid={self.gid}, files_path={self.files_path}, modified_time={self.modified_time}, title={self.title}, upload_time={self.upload_time}, galleries_comments={self.galleries_comments}, upload_account={self.upload_account}, download_time={self.download_time}, tags={self.tags})"
@@ -139,4 +153,5 @@ def parse_gallery_info(gallery_folder: str) -> GalleryInfoParser:
         upload_account=upload_account,
         download_time=download_time,
         tags=tags,
+        pages=count_files_in_directory(gallery_folder) - 1,
     )

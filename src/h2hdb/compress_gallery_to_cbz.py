@@ -11,10 +11,7 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 from .settings import FILE_NAME_LENGTH_LIMIT, COMPARISON_HASH_ALGORITHM
 from .settings import hash_function
-from .threading_tools import (
-    add_semaphore_control_to_cbz_compression_operation,
-    CBZThreadsList,
-)
+from .threading_tools import ImageThreadsList
 
 
 def compress_image(image_path: str, output_path: str, max_size: int) -> None:
@@ -82,7 +79,7 @@ def compress_images_and_create_cbz(
                     os.path.join(tmp_cbz_directory, filename),
                 )
 
-    with CBZThreadsList() as threads:
+    with ImageThreadsList() as threads:
         for filename in os.listdir(input_directory):
             threads.append(target=hash_and_process_file, args=(filename,))
 
