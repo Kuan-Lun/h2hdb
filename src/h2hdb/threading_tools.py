@@ -20,15 +20,14 @@ class BackgroundTaskThread(Thread, metaclass=ABCMeta):
             target=self.add_semaphore_control_to_operation(target), args=args
         )
 
-    @classmethod
-    def add_semaphore_control_to_operation(cls, fun):
+    def add_semaphore_control_to_operation(self, fun):
         def wrapper(*args, **kwargs):
-            cls.semaphore.acquire()
+            self.semaphore().acquire()
             try:
                 fun(*args, **kwargs)
             except BaseException as e:
                 logger.error(f"Error in background task: {e}")
-            cls.semaphore.release()
+            self.semaphore().release()
 
         return wrapper
 
@@ -36,9 +35,6 @@ class BackgroundTaskThread(Thread, metaclass=ABCMeta):
 class ThreadsList(list, metaclass=ABCMeta):
     class LocalBackgroundTaskThread(BackgroundTaskThread, metaclass=ABCMeta):
         pass
-
-    def create_local_background_task_thread(self, target, args):
-        return self.LocalBackgroundTaskThread(target=target, args=args)
 
     def start_all(self: list[BackgroundTaskThread]):
         for thread in self:
@@ -49,9 +45,7 @@ class ThreadsList(list, metaclass=ABCMeta):
             thread.join()
 
     def append(self, target, args):
-        super().append(
-            self.create_local_background_task_thread(target=target, args=args)
-        )
+        super().append(self.LocalBackgroundTaskThread(target=target, args=args))
 
     def __enter__(self):
         return self

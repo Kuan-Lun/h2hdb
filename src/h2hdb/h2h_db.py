@@ -935,7 +935,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         )
                     """
             connector.execute(query)
-            logger.info(f"{tag_name_table_name} table created.")
+            logger.info(f"{tag_value_table_name} table created.")
 
             tag_pairs_table_name = f"galleries_tag_pairs_dbids"
             match self.config.database.sql_type.lower():
@@ -1835,14 +1835,14 @@ class H2HDB(
                     args=(db_gallery_id, file_path),
                 )
 
-        for file_path in gallery_info_params.files_path:
-            db_file_id = self._get_db_file_id(db_gallery_id, file_path)
-            absolute_file_path = os.path.join(
-                gallery_info_params.gallery_folder, file_path
-            )
-            with open(absolute_file_path, "rb") as f:
-                file_content = f.read()
-            with ImageThreadsList() as threads:
+        with ImageThreadsList() as threads:
+            for file_path in gallery_info_params.files_path:
+                db_file_id = self._get_db_file_id(db_gallery_id, file_path)
+                absolute_file_path = os.path.join(
+                    gallery_info_params.gallery_folder, file_path
+                )
+                with open(absolute_file_path, "rb") as f:
+                    file_content = f.read()
                 for algorithm in HASH_ALGORITHMS.keys():
                     threads.append(
                         target=self._insert_gallery_file_hash,
