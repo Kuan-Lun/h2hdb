@@ -13,7 +13,7 @@ from .gallery_info_parser import parse_gallery_info, GalleryInfoParser
 from .config_loader import Config
 from .logger import logger
 from .sql_connector import DatabaseConfigurationError, DatabaseKeyError
-from .threading_tools import SQLThreadsList, ImageThreadsList
+from .threading_tools import SQLThreadsList, HashThreadsList, CBZTaskThreadsList
 
 from .settings import hash_function
 from .settings import (
@@ -1835,7 +1835,7 @@ class H2HDB(
                     args=(db_gallery_id, file_path),
                 )
 
-        with ImageThreadsList() as threads:
+        with HashThreadsList() as threads:
             for file_path in gallery_info_params.files_path:
                 db_file_id = self._get_db_file_id(db_gallery_id, file_path)
                 absolute_file_path = os.path.join(
@@ -2124,7 +2124,7 @@ class H2HDB(
 
         exclude_hashs = self._get_duplicated_hash_values_by_count_artist_ratio()
         previously_count_duplicated_files = self._count_duplicated_files_hashs_sha512()
-        with ImageThreadsList() as cbzthreads:
+        with CBZTaskThreadsList() as cbzthreads:
             num_inserts = 0
             for gallery_name in current_galleries_folders:
                 is_insert = self.insert_gallery_info(gallery_name)
