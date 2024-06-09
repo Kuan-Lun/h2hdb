@@ -1835,14 +1835,14 @@ class H2HDB(
                     args=(db_gallery_id, file_path),
                 )
 
-        with ImageThreadsList() as threads:
-            for file_path in gallery_info_params.files_path:
-                db_file_id = self._get_db_file_id(db_gallery_id, file_path)
-                absolute_file_path = os.path.join(
-                    gallery_info_params.gallery_folder, file_path
-                )
-                with open(absolute_file_path, "rb") as f:
-                    file_content = f.read()
+        for file_path in gallery_info_params.files_path:
+            db_file_id = self._get_db_file_id(db_gallery_id, file_path)
+            absolute_file_path = os.path.join(
+                gallery_info_params.gallery_folder, file_path
+            )
+            with open(absolute_file_path, "rb") as f:
+                file_content = f.read()
+            with ImageThreadsList() as threads:
                 for algorithm in HASH_ALGORITHMS.keys():
                     threads.append(
                         target=self._insert_gallery_file_hash,
