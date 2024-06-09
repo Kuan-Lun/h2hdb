@@ -11,9 +11,8 @@ SQL_SEMAPHORE = threading.Semaphore(5)
 
 
 class BackgroundTaskThread(Thread, metaclass=ABCMeta):
-    @property
     @abstractmethod
-    def semaphore(self):
+    def semaphore(self) -> threading.Semaphore:
         pass
 
     def __init__(self, target, args) -> None:
@@ -35,10 +34,11 @@ class BackgroundTaskThread(Thread, metaclass=ABCMeta):
 
 
 class ThreadsList(list, metaclass=ABCMeta):
-    @property
-    @abstractmethod
-    def LocalBackgroundTaskThread(self):
+    class LocalBackgroundTaskThread(BackgroundTaskThread, metaclass=ABCMeta):
         pass
+
+    def create_local_background_task_thread(self, target, args):
+        return self.LocalBackgroundTaskThread(target=target, args=args)
 
     def start_all(self: list[BackgroundTaskThread]):
         for thread in self:
@@ -49,7 +49,9 @@ class ThreadsList(list, metaclass=ABCMeta):
             thread.join()
 
     def append(self, target, args):
-        super().append(self.LocalBackgroundTaskThread(target=target, args=args))
+        super().append(
+            self.create_local_background_task_thread(target=target, args=args)
+        )
 
     def __enter__(self):
         return self
@@ -61,17 +63,17 @@ class ThreadsList(list, metaclass=ABCMeta):
 
 class ImageThreadsList(ThreadsList):
     class LocalBackgroundTaskThread(BackgroundTaskThread):
-        def semaphore(self):
+        def semaphore(self) -> threading.Semaphore:
             return IMZGE_SEMAPHORE
 
 
 class KomgaThreadsList(ThreadsList):
     class LocalBackgroundTaskThread(BackgroundTaskThread):
-        def semaphore(self):
+        def semaphore(self) -> threading.Semaphore:
             return KOMGA_SEMAPHORE
 
 
 class SQLThreadsList(ThreadsList):
     class LocalBackgroundTaskThread(BackgroundTaskThread):
-        def semaphore(self):
+        def semaphore(self) -> threading.Semaphore:
             return SQL_SEMAPHORE
