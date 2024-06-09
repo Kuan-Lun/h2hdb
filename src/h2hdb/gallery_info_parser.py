@@ -46,7 +46,6 @@ class GalleryInfoParser:
         "download_time",
         "tags",
         "_pages",
-        "pages",
     ]
 
     def __init__(
