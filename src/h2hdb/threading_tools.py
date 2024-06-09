@@ -10,25 +10,35 @@ KOMGA_SEMAPHORE = threading.Semaphore(5)
 SQL_SEMAPHORE = threading.Semaphore(5)
 
 
-class ThreadsList(list, metaclass=ABCMeta):
+class BackgroundTaskThread(Thread, metaclass=ABCMeta):
     @property
     @abstractmethod
     def semaphore(self):
         pass
 
-    class BackgroundTaskThread(Thread, metaclass=ABCMeta):
+    def __init__(self, target, args) -> None:
+        super().__init__(
+            target=self.add_semaphore_control_to_operation(target), args=args
+        )
 
-        @staticmethod
-        def add_semaphore_control_to_operation(fun):
-            def wrapper(*args, **kwargs):
-                ThreadsList.semaphore.acquire()
-                try:
-                    fun(*args, **kwargs)
-                except BaseException as e:
-                    logger.error(f"Error in background task: {e}")
-                ThreadsList.semaphore.release()
+    @classmethod
+    def add_semaphore_control_to_operation(cls, fun):
+        def wrapper(*args, **kwargs):
+            cls.semaphore.acquire()
+            try:
+                fun(*args, **kwargs)
+            except BaseException as e:
+                logger.error(f"Error in background task: {e}")
+            cls.semaphore.release()
 
-            return wrapper
+        return wrapper
+
+
+class ThreadsList(list, metaclass=ABCMeta):
+    @property
+    @abstractmethod
+    def LocalBackgroundTaskThread(self):
+        pass
 
     def start_all(self: list[BackgroundTaskThread]):
         for thread in self:
@@ -37,10 +47,9 @@ class ThreadsList(list, metaclass=ABCMeta):
     def join_all(self: list[BackgroundTaskThread]):
         for thread in self:
             thread.join()
-        del self
 
     def append(self, target, args):
-        super().append(self.BackgroundTaskThread(target=target, args=args))
+        super().append(self.LocalBackgroundTaskThread(target=target, args=args))
 
     def __enter__(self):
         return self
@@ -51,15 +60,18 @@ class ThreadsList(list, metaclass=ABCMeta):
 
 
 class ImageThreadsList(ThreadsList):
-    def semaphore(self):
-        return IMZGE_SEMAPHORE
+    class LocalBackgroundTaskThread(BackgroundTaskThread):
+        def semaphore(self):
+            return IMZGE_SEMAPHORE
 
 
 class KomgaThreadsList(ThreadsList):
-    def semaphore(self):
-        return KOMGA_SEMAPHORE
+    class LocalBackgroundTaskThread(BackgroundTaskThread):
+        def semaphore(self):
+            return KOMGA_SEMAPHORE
 
 
 class SQLThreadsList(ThreadsList):
-    def semaphore(self):
-        return SQL_SEMAPHORE
+    class LocalBackgroundTaskThread(BackgroundTaskThread):
+        def semaphore(self):
+            return SQL_SEMAPHORE
