@@ -63,13 +63,13 @@ class ThreadsList(list, metaclass=ABCMeta):
 class HashThreadsList(ThreadsList):
     class LocalBackgroundTaskThread(BackgroundTaskThread):
         def get_semaphores(self) -> list[threading.Semaphore]:
-            return [MAX_IO_SEMAPHORE, HASH_IO_SEMAPHORE]
+            return [HASH_IO_SEMAPHORE, MAX_IO_SEMAPHORE]
 
 
 class CBZThreadsList(ThreadsList):
     class LocalBackgroundTaskThread(BackgroundTaskThread):
         def get_semaphores(self) -> list[threading.Semaphore]:
-            return [MAX_IO_SEMAPHORE, CBZ_IO_SEMAPHORE]
+            return [CBZ_IO_SEMAPHORE, MAX_IO_SEMAPHORE]
 
 
 class CBZTaskThreadsList(ThreadsList):
