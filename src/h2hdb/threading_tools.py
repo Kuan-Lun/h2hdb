@@ -41,22 +41,18 @@ class ThreadsList(list, metaclass=ABCMeta):
     class LocalBackgroundTaskThread(BackgroundTaskThread, metaclass=ABCMeta):
         pass
 
-    def start_all(self: list[BackgroundTaskThread]):
-        for thread in self:
-            thread.start()
-
     def join_all(self: list[BackgroundTaskThread]):
         for thread in self:
             thread.join()
 
     def append(self, target, args):
         super().append(self.LocalBackgroundTaskThread(target=target, args=args))
+        super()[-1].start()
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        self.start_all()
         self.join_all()
 
 
