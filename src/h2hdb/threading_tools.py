@@ -46,8 +46,9 @@ class ThreadsList(list, metaclass=ABCMeta):
             thread.join()
 
     def append(self, target, args):
-        super().append(self.LocalBackgroundTaskThread(target=target, args=args))
-        super()[-1].start()
+        thread = self.LocalBackgroundTaskThread(target=target, args=args)
+        thread.start()
+        super().append(thread)
 
     def __enter__(self):
         return self
