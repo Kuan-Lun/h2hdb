@@ -1914,15 +1914,12 @@ class H2HDB(
                 upload_time = self.get_upload_time_by_gallery_name(
                     gallery_info_params.gallery_name
                 )
-                cbz_directory = os.path.join(
-                    self.config.h2h.cbz_path, str(upload_time.year)
-                )
+                relative_cbz_directory = str(upload_time.year)
             case "date-yyyy-mm":
                 upload_time = self.get_upload_time_by_gallery_name(
                     gallery_info_params.gallery_name
                 )
-                cbz_directory = os.path.join(
-                    self.config.h2h.cbz_path,
+                relative_cbz_directory = os.path.join(
                     str(upload_time.year),
                     str(upload_time.month),
                 )
@@ -1930,20 +1927,24 @@ class H2HDB(
                 upload_time = self.get_upload_time_by_gallery_name(
                     gallery_info_params.gallery_name
                 )
-                cbz_directory = os.path.join(
-                    self.config.h2h.cbz_path,
+                relative_cbz_directory = os.path.join(
                     str(upload_time.year),
                     str(upload_time.month),
                     str(upload_time.day),
                 )
             case "flat":
-                cbz_directory = self.config.h2h.cbz_path
+                relative_cbz_directory = ""
             case _:
                 raise ValueError(
                     f"Invalid cbz_grouping value: {self.config.h2h.cbz_grouping}"
                 )
+        cbz_directory = os.path.join(self.config.h2h.cbz_path, relative_cbz_directory)
+        cbz_log_directory = os.path.join("cbz_path", relative_cbz_directory)
         cbz_tmp_directory = os.path.join(self.config.h2h.cbz_path, "tmp")
 
+        cbz_log_path = os.path.join(
+            cbz_log_directory, gallery_info_params.gallery_name + ".cbz"
+        )
         cbz_path = os.path.join(
             cbz_directory, gallery_info_params.gallery_name + ".cbz"
         )
@@ -1968,7 +1969,7 @@ class H2HDB(
                     self.config.h2h.cbz_max_size,
                     exclude_hashs,
                 )
-                logger.info(f"CBZ '{gallery_info_params.gallery_name}.cbz' updated.")
+                logger.info(f"CBZ '{cbz_log_path}' updated.")
         else:
             compress_images_and_create_cbz(
                 gallery_folder,
@@ -1977,7 +1978,7 @@ class H2HDB(
                 self.config.h2h.cbz_max_size,
                 exclude_hashs,
             )
-            logger.info(f"CBZ '{gallery_info_params.gallery_name}.cbz' created.")
+            logger.info(f"CBZ '{cbz_log_path}' created.")
 
     def scan_current_galleries_folders(self) -> tuple[list[str], list[str]]:
         with self.SQLConnector() as connector:
