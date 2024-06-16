@@ -2110,7 +2110,7 @@ class H2HDB(
             current_galleries_folders = sorted(
                 current_galleries_folders,
                 key=lambda x: abs(
-                    getattr(parse_gallery_info(x), self.config.h2h.cbz_sort) - 50
+                    getattr(parse_gallery_info(x), self.config.h2h.cbz_sort) - 20
                 ),
             )
         else:
