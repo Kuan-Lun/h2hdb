@@ -2148,7 +2148,7 @@ class H2HDB(
                         target=self.compress_gallery_to_cbz,
                         args=(gallery_name, exclude_hashs),
                     )
-                is_insert_limit_reached = num_inserts >= 100
+                is_insert_limit_reached = num_inserts >= 1000
                 if is_insert_limit_reached:
                     break
 
