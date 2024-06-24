@@ -29,7 +29,7 @@ def compress_image(image_path: str, output_path: str, max_size: int) -> None:
             else:
                 max_width = image.width
                 max_height = image.height
-        resample = Image.LANCZOS if image.format == "JPEG" else Image.BICUBIC  # type: ignore
+        resample = Image.BICUBIC if image.format == "JPEG" else Image.BILINEAR  # type: ignore
         image.thumbnail((max_width, max_height), resample=resample)
         image.save(output_path, image.format)
 
