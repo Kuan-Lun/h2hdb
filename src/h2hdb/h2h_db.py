@@ -2101,27 +2101,34 @@ class H2HDB(
 
         logger.info("Inserting galleries...")
         if self.config.h2h.cbz_sort in ["upload_time", "download_time"]:
+            logger.info(f"Sorting by {self.config.h2h.cbz_sort}...")
             current_galleries_folders = sorted(
                 current_galleries_folders,
                 key=lambda x: getattr(parse_gallery_info(x), self.config.h2h.cbz_sort),
                 reverse=True,
             )
         elif "pages" in self.config.h2h.cbz_sort:
-            zero_level = self.config.h2h.cbz_sort.split("+")[-1]
-            current_galleries_folders = sorted(
-                current_galleries_folders,
-                key=lambda x: abs(
-                    getattr(parse_gallery_info(x), self.config.h2h.cbz_sort)
-                    - zero_level
-                ),
-            )
-        elif self.config.h2h.cbz_sort in ["pages"]:
-            current_galleries_folders = sorted(
-                current_galleries_folders,
-                key=lambda x: abs(
-                    getattr(parse_gallery_info(x), self.config.h2h.cbz_sort) - 20
-                ),
-            )
+            if "+" in self.config.h2h.cbz_sort:
+                logger.info(
+                    "Sorting by pages with adjustment based on a specified zero level..."
+                )
+                zero_level = self.config.h2h.cbz_sort.split("+")[-1]
+                current_galleries_folders = sorted(
+                    current_galleries_folders,
+                    key=lambda x: abs(
+                        getattr(parse_gallery_info(x), self.config.h2h.cbz_sort)
+                        - zero_level
+                    ),
+                )
+            else:
+                self.config.h2h.cbz_sort in ["pages"]
+                logger.info("Sorting by pages...")
+                current_galleries_folders = sorted(
+                    current_galleries_folders,
+                    key=lambda x: abs(
+                        getattr(parse_gallery_info(x), self.config.h2h.cbz_sort) - 20
+                    ),
+                )
         else:
             current_galleries_folders = sorted(
                 current_galleries_folders,
