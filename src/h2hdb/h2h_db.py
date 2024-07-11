@@ -2109,10 +2109,10 @@ class H2HDB(
             )
         elif "pages" in self.config.h2h.cbz_sort:
             if "+" in self.config.h2h.cbz_sort:
+                zero_level = max(int(self.config.h2h.cbz_sort.split("+")[-1]), 1)
                 logger.info(
-                    "Sorting by pages with adjustment based on a specified zero level..."
+                    f"Sorting by pages with adjustment based on {zero_level}..."
                 )
-                zero_level = self.config.h2h.cbz_sort.split("+")[-1]
                 current_galleries_folders = sorted(
                     current_galleries_folders,
                     key=lambda x: abs(
