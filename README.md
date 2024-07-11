@@ -48,7 +48,8 @@ The `H2HDB` is a comprehensive database for organising and managing H@H comic co
         "download_path": "[str]", // The download path of H@H. The default is `download`.
         "cbz_path": "[str]", // The cbz in this path.
         "cbz_max_size": "[int]", // The maxinum of the mininum of width and height height. The default is `768`.
-        "cbz_grouping": "[str]" // `flat`, `date-yyyy`, `date-yyyy-mm`, or `date-yyyy-mm-dd`. The default is `flat`.
+        "cbz_grouping": "[str]", // `flat`, `date-yyyy`, `date-yyyy-mm`, or `date-yyyy-mm-dd`. The default is `flat`.
+        "cbz_sort": "[str]" // `upload_time`, `download_time`, `pages`, or `pages+[num]`. The default is `upload_time`.
     },
     "database": {
         "sql_type": "[str]", // Now only supports `mysql`. The default is `mysql`.
