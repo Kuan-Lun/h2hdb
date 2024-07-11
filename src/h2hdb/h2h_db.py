@@ -2110,25 +2110,18 @@ class H2HDB(
         elif "pages" in self.config.h2h.cbz_sort:
             if "+" in self.config.h2h.cbz_sort:
                 zero_level = max(int(self.config.h2h.cbz_sort.split("+")[-1]), 1)
-                logger.info(
-                    f"Sorting by pages with adjustment based on {zero_level}..."
-                )
-                current_galleries_folders = sorted(
-                    current_galleries_folders,
-                    key=lambda x: abs(
-                        getattr(parse_gallery_info(x), self.config.h2h.cbz_sort)
-                        - zero_level
-                    ),
-                )
             else:
-                self.config.h2h.cbz_sort in ["pages"]
-                logger.info("Sorting by pages...")
-                current_galleries_folders = sorted(
-                    current_galleries_folders,
-                    key=lambda x: abs(
-                        getattr(parse_gallery_info(x), self.config.h2h.cbz_sort) - 20
-                    ),
-                )
+                zero_level = 20
+            logger.info(
+                f"Sorting by pages with adjustment based on {zero_level} pages..."
+            )
+            current_galleries_folders = sorted(
+                current_galleries_folders,
+                key=lambda x: abs(
+                    getattr(parse_gallery_info(x), self.config.h2h.cbz_sort)
+                    - zero_level
+                ),
+            )
         else:
             current_galleries_folders = sorted(
                 current_galleries_folders,
