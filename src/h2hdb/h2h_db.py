@@ -2115,6 +2115,7 @@ class H2HDB(
                 reverse=True,
             )
         elif "pages" in self.config.h2h.cbz_sort:
+            logger.info("Sorting by pages...")
             zero_level = get_sorting_base_level(current_galleries_folders[0])
             logger.info(
                 f"Sorting by pages with adjustment based on {zero_level} pages..."
