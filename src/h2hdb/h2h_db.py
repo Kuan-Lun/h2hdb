@@ -2095,6 +2095,11 @@ class H2HDB(
 
     def insert_h2h_download(self) -> None:
         def get_sorting_base_level(x: str) -> int:
+            if type(x) is not str:
+                raise ValueError(f"Invalid type. Must be str. Got {type(x)}.")
+            if "pages" not in self.config.h2h.cbz_sort:
+                raise ValueError(f"Invalid sorting. Must contain 'pages'. Got {self.config.h2h.cbz_sort}.")
+            
             if "+" in self.config.h2h.cbz_sort:
                 zero_level = max(int(x.split("+")[-1]), 1)
             else:
