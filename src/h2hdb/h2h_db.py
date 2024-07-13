@@ -2094,6 +2094,13 @@ class H2HDB(
                 )
 
     def insert_h2h_download(self) -> None:
+        def get_sorting_base_level(x: str) -> int:
+            if "+" in self.config.h2h.cbz_sort:
+                zero_level = max(int(x.split("+")[-1]), 1)
+            else:
+                zero_level = 20
+            return zero_level
+
         self.delete_pending_gallery_removals()
         current_galleries_folders, current_galleries_names = (
             self.scan_current_galleries_folders()
@@ -2108,10 +2115,7 @@ class H2HDB(
                 reverse=True,
             )
         elif "pages" in self.config.h2h.cbz_sort:
-            if "+" in self.config.h2h.cbz_sort:
-                zero_level = max(int(self.config.h2h.cbz_sort.split("+")[-1]), 1)
-            else:
-                zero_level = 20
+            zero_level = get_sorting_base_level(current_galleries_folders[0])
             logger.info(
                 f"Sorting by pages with adjustment based on {zero_level} pages..."
             )
