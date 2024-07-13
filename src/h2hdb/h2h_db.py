@@ -26,6 +26,11 @@ from .settings import (
 HASH_ALGORITHMS = dict[str, int](sha512=512, sha3_512=512, blake2b=512)
 
 
+def get_sorting_base_level(x: int = 20) -> int:
+    zero_level = max(x, 1)
+    return zero_level
+
+
 class H2HDBAbstract(metaclass=ABCMeta):
     """
     A class representing the initialization of an SQL connector for the comic database.
@@ -2094,18 +2099,6 @@ class H2HDB(
                 )
 
     def insert_h2h_download(self) -> None:
-        def get_sorting_base_level(x: str) -> int:
-            if type(x) is not str:
-                raise ValueError(f"Invalid type. Must be str. Got {type(x)}.")
-            if "pages" not in self.config.h2h.cbz_sort:
-                raise ValueError(f"Invalid sorting. Must contain 'pages'. Got {self.config.h2h.cbz_sort}.")
-            
-            if "+" in self.config.h2h.cbz_sort:
-                zero_level = max(int(x.split("+")[-1]), 1)
-            else:
-                zero_level = 20
-            return zero_level
-
         self.delete_pending_gallery_removals()
         current_galleries_folders, current_galleries_names = (
             self.scan_current_galleries_folders()
@@ -2121,7 +2114,11 @@ class H2HDB(
             )
         elif "pages" in self.config.h2h.cbz_sort:
             logger.info("Sorting by pages...")
-            zero_level = get_sorting_base_level(current_galleries_folders[0])
+            zero_level = (
+                max(1, int(current_galleries_folders[0].split("+")[-1]))
+                if "+" in current_galleries_folders[0]
+                else 20
+            )
             logger.info(
                 f"Sorting by pages with adjustment based on {zero_level} pages..."
             )
