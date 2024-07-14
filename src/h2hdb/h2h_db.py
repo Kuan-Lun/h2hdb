@@ -2135,9 +2135,13 @@ class H2HDB(
                 current_galleries_folders,
                 key=lambda x: getattr(parse_gallery_info(x), self.config.h2h.cbz_sort),
             )
+        logger.info("Galleries sorted.")
 
+        logger.info("Getting excluded hash values...")
         exclude_hashs = self._get_duplicated_hash_values_by_count_artist_ratio()
         previously_count_duplicated_files = self._count_duplicated_files_hashs_sha512()
+        logger.info("Excluded hash values obtained.")
+
         with CBZTaskThreadsList() as cbzthreads:
             num_inserts = 0
             for gallery_name in current_galleries_folders:
