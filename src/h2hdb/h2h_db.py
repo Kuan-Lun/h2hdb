@@ -2114,9 +2114,10 @@ class H2HDB(
             )
         elif "pages" in self.config.h2h.cbz_sort:
             logger.info("Sorting by pages...")
+            # get_sorting_base_level
             zero_level = (
-                max(1, int(current_galleries_folders[0].split("+")[-1]))
-                if "+" in current_galleries_folders[0]
+                max(1, int(self.config.h2h.cbz_sort.split("+")[-1]))
+                if "+" in self.config.h2h.cbz_sort
                 else 20
             )
             logger.info(
