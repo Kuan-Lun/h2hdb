@@ -2125,15 +2125,12 @@ class H2HDB(
             )
             current_galleries_folders = sorted(
                 current_galleries_folders,
-                key=lambda x: abs(
-                    getattr(parse_gallery_info(x), self.config.h2h.cbz_sort)
-                    - zero_level
-                ),
+                key=lambda x: abs(getattr(parse_gallery_info(x), "pages") - zero_level),
             )
         else:
             current_galleries_folders = sorted(
                 current_galleries_folders,
-                key=lambda x: getattr(parse_gallery_info(x), self.config.h2h.cbz_sort),
+                key=lambda x: getattr(parse_gallery_info(x), "pages"),
             )
         logger.info("Galleries sorted.")
 
