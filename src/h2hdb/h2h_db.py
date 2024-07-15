@@ -895,7 +895,9 @@ class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
                     """
             connector.execute(update_query, (comment, db_gallery_id))
 
-    def _select_gallery_comment(self, db_gallery_id: int) -> str:
+    def __get_gallery_comment_by_db_gallery_id(
+        self, db_gallery_id: int
+    ) -> tuple | None:
         with self.SQLConnector() as connector:
             table_name = "galleries_comments"
             match self.config.database.sql_type.lower():
@@ -906,12 +908,28 @@ class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
                         WHERE db_gallery_id = %s
                     """
             query_result = connector.fetch_one(select_query, (db_gallery_id,))
-            if query_result is None:
-                msg = f"Uploader comment for gallery name ID {db_gallery_id} does not exist."
-                logger.error(msg)
-                raise DatabaseKeyError(msg)
-            else:
-                comment = query_result[0]
+        return query_result
+
+    def _check_gallery_comment_by_db_gallery_id(self, db_gallery_id: int) -> bool:
+        query_result = self.__get_gallery_comment_by_db_gallery_id(db_gallery_id)
+        return query_result is not None
+
+    def _check_gallery_comment_by_gallery_name(self, gallery_name: str) -> bool:
+        if not self._check_galleries_dbids_by_gallery_name(gallery_name):
+            return False
+        db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
+        return self._check_gallery_comment_by_db_gallery_id(db_gallery_id)
+
+    def _select_gallery_comment(self, db_gallery_id: int) -> str:
+        query_result = self.__get_gallery_comment_by_db_gallery_id(db_gallery_id)
+        if query_result is None:
+            msg = (
+                f"Uploader comment for gallery name ID {db_gallery_id} does not exist."
+            )
+            logger.error(msg)
+            raise DatabaseKeyError(msg)
+        else:
+            comment = query_result[0]
         return comment
 
     def get_comment_by_gallery_name(self, gallery_name: str) -> str:
@@ -980,7 +998,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             connector.execute(query)
             logger.info(f"{table_name} table created.")
 
-    def _get_db_tag_pair_id(self, tag_name: str, tag_value: str) -> int:
+    def __get_db_tag_pair_id(self, tag_name: str, tag_value: str) -> tuple | None:
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
                 case "mysql":
@@ -990,11 +1008,19 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         WHERE tag_name = %s AND tag_value = %s
                     """
             query_result = connector.fetch_one(select_query, (tag_name, tag_value))
-            if query_result is None:
-                logger.debug(f"Tag '{tag_value}' does not exist.")
-                raise DatabaseKeyError(f"Tag '{tag_value}' does not exist.")
-            else:
-                db_tag_id = query_result[0]
+        return query_result
+
+    def _check_db_tag_pair_id(self, tag_name: str, tag_value: str) -> bool:
+        query_result = self.__get_db_tag_pair_id(tag_name, tag_value)
+        return query_result is not None
+
+    def _get_db_tag_pair_id(self, tag_name: str, tag_value: str) -> int:
+        query_result = self.__get_db_tag_pair_id(tag_name, tag_value)
+        if query_result is None:
+            logger.debug(f"Tag '{tag_value}' does not exist.")
+            raise DatabaseKeyError(f"Tag '{tag_value}' does not exist.")
+        else:
+            db_tag_id = query_result[0]
         return db_tag_id
 
     def _check_gallery_tag_name(self, tag_name: str) -> bool:
@@ -1027,9 +1053,9 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self, db_gallery_id: int, tag_name: str, tag_value: str
     ) -> None:
         with self.SQLConnector() as connector:
-            try:
+            if self._check_db_tag_pair_id(tag_name, tag_value):
                 db_tag_pair_id = self._get_db_tag_pair_id(tag_name, tag_value)
-            except DatabaseKeyError:
+            else:
                 if not self._check_gallery_tag_name(tag_name):
                     tag_name_table_name = f"galleries_tags_names"
                     match self.config.database.sql_type.lower():
@@ -1333,25 +1359,34 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _insert_gallery_file_hash(
         self, db_file_id: int, file_content: bytes, algorithm: str
     ) -> None:
+        is_insert = False
         with self.SQLConnector() as connector:
             current_hash_value = hash_function(file_content, algorithm)
-            try:
+            if self._check_hash_value_by_file_id(db_file_id, algorithm):
                 original_hash_value = self.get_hash_value_by_file_id(
                     db_file_id, algorithm
                 )
                 if original_hash_value != current_hash_value:
+                    if self._check_db_hash_id_by_hash_value(
+                        current_hash_value, algorithm
+                    ):
+                        db_hash_id = self.get_db_hash_id_by_hash_value(
+                            current_hash_value, algorithm
+                        )
+                        self._update_gallery_file_hash_by_db_hash_id(
+                            db_file_id, db_hash_id, algorithm
+                        )
+                    else:
+                        is_insert |= True
+            else:
+                is_insert |= True
+
+            if is_insert:
+                if self._check_db_hash_id_by_hash_value(current_hash_value, algorithm):
                     db_hash_id = self.get_db_hash_id_by_hash_value(
                         current_hash_value, algorithm
                     )
-                    self._update_gallery_file_hash_by_db_hash_id(
-                        db_file_id, db_hash_id, algorithm
-                    )
-            except DatabaseKeyError:
-                try:
-                    db_hash_id = self.get_db_hash_id_by_hash_value(
-                        current_hash_value, algorithm
-                    )
-                except DatabaseKeyError:
+                else:
                     table_name = f"files_hashs_{algorithm.lower()}_dbids"
                     match self.config.database.sql_type.lower():
                         case "mysql":
@@ -1363,16 +1398,18 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                     db_hash_id = self.get_db_hash_id_by_hash_value(
                         hash_value, algorithm
                     )
-                finally:
-                    table_name = f"files_hashs_{algorithm.lower()}"
-                    match self.config.database.sql_type.lower():
-                        case "mysql":
-                            insert_db_hash_id_query = f"""
-                                INSERT INTO {table_name} (db_file_id, db_hash_id) VALUES (%s, %s)
-                            """
-                    connector.execute(insert_db_hash_id_query, (db_file_id, db_hash_id))
 
-    def get_db_hash_id_by_hash_value(self, hash_value: bytes, algorithm: str) -> int:
+                table_name = f"files_hashs_{algorithm.lower()}"
+                match self.config.database.sql_type.lower():
+                    case "mysql":
+                        insert_db_hash_id_query = f"""
+                            INSERT INTO {table_name} (db_file_id, db_hash_id) VALUES (%s, %s)
+                        """
+                connector.execute(insert_db_hash_id_query, (db_file_id, db_hash_id))
+
+    def __get_db_hash_id_by_hash_value(
+        self, hash_value: bytes, algorithm: str
+    ) -> tuple | None:
         with self.SQLConnector() as connector:
             table_name = f"files_hashs_{algorithm.lower()}_dbids"
             match self.config.database.sql_type.lower():
@@ -1383,11 +1420,21 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         WHERE hash_value = %s
                     """
             query_result = connector.fetch_one(select_query, (hash_value,))
-            if query_result is None:
-                msg = f"Image hash for image ID {hash_value} does not exist."
-                raise DatabaseKeyError(msg)
-            else:
-                db_hash_id = query_result[0]
+        return query_result
+
+    def _check_db_hash_id_by_hash_value(
+        self, hash_value: bytes, algorithm: str
+    ) -> bool:
+        query_result = self.__get_db_hash_id_by_hash_value(hash_value, algorithm)
+        return query_result is not None
+
+    def get_db_hash_id_by_hash_value(self, hash_value: bytes, algorithm: str) -> int:
+        query_result = self.__get_db_hash_id_by_hash_value(hash_value, algorithm)
+        if query_result is None:
+            msg = f"Image hash for image ID {hash_value!r} does not exist."
+            raise DatabaseKeyError(msg)
+        else:
+            db_hash_id = query_result[0]
         return db_hash_id
 
     def get_hash_value_by_db_hash_id(self, db_hash_id: int, algorithm: str) -> bytes:
@@ -1408,7 +1455,9 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                 hash_value = query_result[0]
         return hash_value
 
-    def get_hash_value_by_file_id(self, db_file_id: int, algorithm: str) -> bytes:
+    def __get_hash_value_by_file_id(
+        self, db_file_id: int, algorithm: str
+    ) -> tuple | None:
         with self.SQLConnector() as connector:
             table_name = f"files_hashs_{algorithm.lower()}"
             match self.config.database.sql_type.lower():
@@ -1419,11 +1468,19 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         WHERE db_file_id = %s
                     """
             query_result = connector.fetch_one(select_query, (db_file_id,))
-            if query_result is None:
-                msg = f"Image hash for image ID {db_file_id} does not exist."
-                raise DatabaseKeyError(msg)
-            else:
-                db_hash_id = query_result[0]
+        return query_result
+
+    def _check_hash_value_by_file_id(self, db_file_id: int, algorithm: str) -> bool:
+        query_result = self.__get_hash_value_by_file_id(db_file_id, algorithm)
+        return query_result is not None
+
+    def get_hash_value_by_file_id(self, db_file_id: int, algorithm: str) -> bytes:
+        query_result = self.__get_hash_value_by_file_id(db_file_id, algorithm)
+        if query_result is None:
+            msg = f"Image hash for image ID {db_file_id} does not exist."
+            raise DatabaseKeyError(msg)
+        else:
+            db_hash_id = query_result[0]
 
         return self.get_hash_value_by_db_hash_id(db_hash_id, algorithm)
 
@@ -1463,13 +1520,12 @@ class H2HDBRemovedGalleries(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta)
                     insert_query = f"""
                         INSERT INTO {table_name} (gid) VALUES (%s)
                     """
-            try:
-                self.select_removed_gallery_gid(gid)
+            if self._check_removed_gallery_gid(gid):
                 logger.warning(f"Removed gallery GID {gid} already exists.")
-            except DatabaseKeyError:
+            else:
                 connector.execute(insert_query, (gid,))
 
-    def select_removed_gallery_gid(self, gid: int) -> int:
+    def __get_removed_gallery_gid(self, gid: int) -> tuple | None:
         with self.SQLConnector() as connector:
             table_name = "removed_galleries_gids"
             match self.config.database.sql_type.lower():
@@ -1480,13 +1536,21 @@ class H2HDBRemovedGalleries(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta)
                         WHERE gid = %s
                     """
             query_result = connector.fetch_one(select_query, (gid,))
-            if query_result is None:
-                msg = f"Removed gallery GID {gid} does not exist."
-                logger.error(msg)
-                raise DatabaseKeyError(msg)
-            else:
-                gid = query_result[0]
-                logger.warning(f"Removed gallery GID {gid} exists.")
+        return query_result
+
+    def _check_removed_gallery_gid(self, gid: int) -> bool:
+        query_result = self.__get_removed_gallery_gid(gid)
+        return query_result is not None
+
+    def select_removed_gallery_gid(self, gid: int) -> int:
+        query_result = self.__get_removed_gallery_gid(gid)
+        if query_result is None:
+            msg = f"Removed gallery GID {gid} does not exist."
+            logger.error(msg)
+            raise DatabaseKeyError(msg)
+        else:
+            gid = query_result[0]
+            logger.warning(f"Removed gallery GID {gid} exists.")
         return gid
 
 
@@ -1889,16 +1953,17 @@ class H2HDB(
         with open(absolute_file_path, "rb") as f:
             gallery_info_file_content = f.read()
 
-        try:
-            original_hash_value = self.get_hash_value_by_file_id(
-                gallery_info_file_id, COMPARISON_HASH_ALGORITHM
-            )
-            current_hash_value = hash_function(
-                gallery_info_file_content, COMPARISON_HASH_ALGORITHM
-            )
-            issame = original_hash_value == current_hash_value
-        except DatabaseKeyError:
-            issame = False
+        if not self._check_hash_value_by_file_id(
+            gallery_info_file_id, COMPARISON_HASH_ALGORITHM
+        ):
+            return False
+        original_hash_value = self.get_hash_value_by_file_id(
+            gallery_info_file_id, COMPARISON_HASH_ALGORITHM
+        )
+        current_hash_value = hash_function(
+            gallery_info_file_content, COMPARISON_HASH_ALGORITHM
+        )
+        issame = original_hash_value == current_hash_value
         return issame
 
     def _get_duplicated_hash_values_by_count_artist_ratio(self) -> list[bytes]:
@@ -2201,9 +2266,9 @@ class H2HDB(
     def get_komga_metadata(self, gallery_name: str) -> dict:
         metadata = dict[str, str | list[dict[str, str]]]()
         metadata["title"] = self.get_title_by_gallery_name(gallery_name)
-        try:
+        if self._check_gallery_comment_by_gallery_name(gallery_name):
             metadata["summary"] = self.get_comment_by_gallery_name(gallery_name)
-        except DatabaseKeyError:
+        else:
             metadata["summary"] = ""
         upload_time = self.get_upload_time_by_gallery_name(gallery_name)
         metadata["releaseDate"] = "-".join(
