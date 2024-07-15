@@ -530,7 +530,7 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
                     """
             connector.execute(insert_query, (db_gallery_id, gallery_name))
 
-    def __get_db_gallery_id_by_gallery_name(self, gallery_name: str) -> tuple:
+    def __get_db_gallery_id_by_gallery_name(self, gallery_name: str) -> tuple | None:
         with self.SQLConnector() as connector:
             table_name = "galleries_dbids"
             gallery_name_parts = self._split_gallery_name(gallery_name)
@@ -1215,7 +1215,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                     """
             connector.execute(insert_query, (db_file_id, file_name))
 
-    def _get_db_file_id(self, db_gallery_id: int, file_name: str) -> int:
+    def __get_db_file_id(self, db_gallery_id: int, file_name: str) -> tuple | None:
         with self.SQLConnector() as connector:
             table_name = "files_dbids"
             file_name_parts = self._split_gallery_name(file_name)
@@ -1232,12 +1232,20 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                     """
             data = (db_gallery_id, *file_name_parts)
             query_result = connector.fetch_one(select_query, data)
-            if query_result is None:
-                msg = f"Image ID for gallery name ID {db_gallery_id} and file '{file_name}' does not exist."
-                logger.error(msg)
-                raise DatabaseKeyError(msg)
-            else:
-                gallery_image_id = query_result[0]
+        return query_result
+
+    def _check_db_file_id(self, db_gallery_id: int, file_name: str) -> bool:
+        query_result = self.__get_db_file_id(db_gallery_id, file_name)
+        return query_result is not None
+
+    def _get_db_file_id(self, db_gallery_id: int, file_name: str) -> int:
+        query_result = self.__get_db_file_id(db_gallery_id, file_name)
+        if query_result is None:
+            msg = f"Image ID for gallery name ID {db_gallery_id} and file '{file_name}' does not exist."
+            logger.error(msg)
+            raise DatabaseKeyError(msg)
+        else:
+            gallery_image_id = query_result[0]
         return gallery_image_id
 
     def get_files_by_gallery_name(self, gallery_name: str) -> list[str]:
@@ -1326,8 +1334,8 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self, db_file_id: int, file_content: bytes, algorithm: str
     ) -> None:
         with self.SQLConnector() as connector:
+            current_hash_value = hash_function(file_content, algorithm)
             try:
-                current_hash_value = hash_function(file_content, algorithm)
                 original_hash_value = self.get_hash_value_by_file_id(
                     db_file_id, algorithm
                 )
@@ -1870,15 +1878,18 @@ class H2HDB(
             gallery_info_params.gallery_name
         )
 
+        if not self._check_db_file_id(db_gallery_id, GALLERY_INFO_FILE_NAME):
+            return False
+        gallery_info_file_id = self._get_db_file_id(
+            db_gallery_id, GALLERY_INFO_FILE_NAME
+        )
+        absolute_file_path = os.path.join(
+            gallery_info_params.gallery_folder, GALLERY_INFO_FILE_NAME
+        )
+        with open(absolute_file_path, "rb") as f:
+            gallery_info_file_content = f.read()
+
         try:
-            gallery_info_file_id = self._get_db_file_id(
-                db_gallery_id, GALLERY_INFO_FILE_NAME
-            )
-            absolute_file_path = os.path.join(
-                gallery_info_params.gallery_folder, GALLERY_INFO_FILE_NAME
-            )
-            with open(absolute_file_path, "rb") as f:
-                gallery_info_file_content = f.read()
             original_hash_value = self.get_hash_value_by_file_id(
                 gallery_info_file_id, COMPARISON_HASH_ALGORITHM
             )
