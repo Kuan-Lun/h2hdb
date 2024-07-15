@@ -530,7 +530,7 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
                     """
             connector.execute(insert_query, (db_gallery_id, gallery_name))
 
-    def _get_db_gallery_id_by_gallery_name(self, gallery_name: str) -> int:
+    def __get_db_gallery_id_by_gallery_name(self, gallery_name: str) -> tuple:
         with self.SQLConnector() as connector:
             table_name = "galleries_dbids"
             gallery_name_parts = self._split_gallery_name(gallery_name)
@@ -547,11 +547,19 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
                     """
 
             query_result = connector.fetch_one(select_query, tuple(gallery_name_parts))
-            if query_result is None:
-                logger.debug(f"Gallery name '{gallery_name}' does not exist.")
-                raise DatabaseKeyError(f"Gallery name '{gallery_name}' does not exist.")
-            else:
-                db_gallery_id = query_result[0]
+        return query_result
+
+    def _check_galleries_dbids_by_gallery_name(self, gallery_name: str) -> bool:
+        query_result = self.__get_db_gallery_id_by_gallery_name(gallery_name)
+        return query_result is not None
+
+    def _get_db_gallery_id_by_gallery_name(self, gallery_name: str) -> int:
+        query_result = self.__get_db_gallery_id_by_gallery_name(gallery_name)
+        if query_result is None:
+            logger.debug(f"Gallery name '{gallery_name}' does not exist.")
+            raise DatabaseKeyError(f"Gallery name '{gallery_name}' does not exist.")
+        else:
+            db_gallery_id = query_result[0]
         return db_gallery_id
 
 
@@ -1656,9 +1664,7 @@ class H2HDB(
 
     def delete_gallery_file(self, gallery_name: str) -> None:
         with self.SQLConnector() as connector:
-            try:
-                self._get_db_gallery_id_by_gallery_name(gallery_name)
-            except DatabaseKeyError:
+            if not self._check_galleries_dbids_by_gallery_name(gallery_name):
                 logger.debug(f"Gallery '{gallery_name}' does not exist.")
                 return
 
@@ -1703,9 +1709,7 @@ class H2HDB(
 
     def delete_gallery(self, gallery_name: str) -> None:
         with self.SQLConnector() as connector:
-            try:
-                self._get_db_gallery_id_by_gallery_name(gallery_name)
-            except DatabaseKeyError:
+            if not self._check_galleries_dbids_by_gallery_name(gallery_name):
                 logger.debug(f"Gallery '{gallery_name}' does not exist.")
                 return
 
@@ -1858,10 +1862,15 @@ class H2HDB(
     def _check_gallery_info_file_hash(
         self, gallery_info_params: GalleryInfoParser
     ) -> bool:
+        if not self._check_galleries_dbids_by_gallery_name(
+            gallery_info_params.gallery_name
+        ):
+            return False
+        db_gallery_id = self._get_db_gallery_id_by_gallery_name(
+            gallery_info_params.gallery_name
+        )
+
         try:
-            db_gallery_id = self._get_db_gallery_id_by_gallery_name(
-                gallery_info_params.gallery_name
-            )
             gallery_info_file_id = self._get_db_file_id(
                 db_gallery_id, GALLERY_INFO_FILE_NAME
             )
