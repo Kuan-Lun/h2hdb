@@ -5,6 +5,7 @@ from PIL import Image, ImageFile  # type: ignore
 import zipfile
 import shutil
 import hashlib
+from multiprocessing import cpu_count, Pool
 
 Image.MAX_IMAGE_PIXELS = None
 ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -47,7 +48,7 @@ def compress_images_and_create_cbz(
     output_directory: str,
     tmp_directory: str,
     max_size: int,
-    exclude_hashs: list,
+    exclude_hashs: list[bytes],
 ) -> None:
     if len(set([input_directory, output_directory, tmp_directory])) < 2:
         raise ValueError("Input and output directories cannot be the same.")
@@ -77,9 +78,15 @@ def compress_images_and_create_cbz(
                     os.path.join(tmp_cbz_directory, filename),
                 )
 
-    with CBZThreadsList() as threads:
-        for filename in os.listdir(input_directory):
-            threads.append(target=hash_and_process_file, args=(filename,))
+    filenamelist = [filename for filename in os.listdir(input_directory)]
+    processes = max(cpu_count() - 2, 1)
+    if int(len(filenamelist) / processes) <= 5:
+        with CBZThreadsList() as threads:
+            for filename in filenamelist:
+                threads.append(target=hash_and_process_file, args=(filename,))
+    else:
+        with Pool(processes) as pool:
+            pool.map(hash_and_process_file, filenamelist)
 
     # Create the CBZ file
     os.makedirs(output_directory, exist_ok=True)
