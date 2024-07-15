@@ -42,6 +42,31 @@ def create_cbz(directory, output_path):
             cbz.write(os.path.join(directory, filename), filename)
 
 
+def hash_and_process_file(
+    input_directory: str,
+    tmp_cbz_directory: str,
+    filename: str,
+    exclude_hashs: list[bytes],
+    max_size: int,
+) -> None:
+    with open(os.path.join(input_directory, filename), "rb") as file:
+        file_content = file.read()
+    file_hash = hash_function(file_content, COMPARISON_HASH_ALGORITHM)
+
+    if file_hash not in exclude_hashs:
+        if filename.lower().endswith((".jpg", ".jpeg", ".png", ".gif")):
+            compress_image(
+                os.path.join(input_directory, filename),
+                os.path.join(tmp_cbz_directory, filename),
+                max_size,
+            )
+        else:
+            shutil.copy(
+                os.path.join(input_directory, filename),
+                os.path.join(tmp_cbz_directory, filename),
+            )
+
+
 # Compress images and create a CBZ file
 def compress_images_and_create_cbz(
     input_directory: str,
@@ -60,33 +85,18 @@ def compress_images_and_create_cbz(
         shutil.rmtree(tmp_cbz_directory)
     os.makedirs(tmp_cbz_directory)
 
-    def hash_and_process_file(filename: str) -> None:
-        with open(os.path.join(input_directory, filename), "rb") as file:
-            file_content = file.read()
-        file_hash = hash_function(file_content, COMPARISON_HASH_ALGORITHM)
-
-        if file_hash not in exclude_hashs:
-            if filename.lower().endswith((".jpg", ".jpeg", ".png", ".gif")):
-                compress_image(
-                    os.path.join(input_directory, filename),
-                    os.path.join(tmp_cbz_directory, filename),
-                    max_size,
-                )
-            else:
-                shutil.copy(
-                    os.path.join(input_directory, filename),
-                    os.path.join(tmp_cbz_directory, filename),
-                )
-
-    filenamelist = [filename for filename in os.listdir(input_directory)]
+    hpf_inputs = [
+        (input_directory, tmp_cbz_directory, filename, exclude_hashs, max_size)
+        for filename in os.listdir(input_directory)
+    ]
     processes = max(cpu_count() - 2, 1)
-    if int(len(filenamelist) / processes) <= 5:
+    if int(len(hpf_inputs) / processes) <= 5:
         with CBZThreadsList() as threads:
-            for filename in filenamelist:
-                threads.append(target=hash_and_process_file, args=(filename,))
+            for hpf_input in hpf_inputs:
+                threads.append(target=hash_and_process_file, args=(hpf_input,))
     else:
         with Pool(processes) as pool:
-            pool.map(hash_and_process_file, filenamelist)
+            pool.starmap(hash_and_process_file, hpf_inputs)
 
     # Create the CBZ file
     os.makedirs(output_directory, exist_ok=True)
