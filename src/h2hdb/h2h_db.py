@@ -1357,8 +1357,11 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             logger.info(f"{table_name} view created.")
 
     def _insert_gallery_file_hash(
-        self, db_file_id: int, file_content: bytes, algorithm: str
+        self, db_file_id: int, absolute_file_path: str, algorithm: str
     ) -> None:
+        with open(absolute_file_path, "rb") as f:
+            file_content = f.read()
+
         is_insert = False
         with self.SQLConnector() as connector:
             current_hash_value = hash_function(file_content, algorithm)
@@ -1924,12 +1927,14 @@ class H2HDB(
 
         with HashThreadsList() as threads:
             for pair in file_pairs:
-                with open(pair["absolute_file_path"], "rb") as f:
-                    file_content = f.read()
                 for algorithm in HASH_ALGORITHMS.keys():
                     threads.append(
                         target=self._insert_gallery_file_hash,
-                        args=(pair["db_file_id"], file_content, algorithm),
+                        args=(
+                            pair["db_file_id"],
+                            pair["absolute_file_path"],
+                            algorithm,
+                        ),
                     )
 
         for tag in gallery_info_params.tags:
