@@ -1912,18 +1912,24 @@ class H2HDB(
                     args=(db_gallery_id, file_path),
                 )
 
+        file_pairs = list[dict[str, int | str]]()
+        for file_path in gallery_info_params.files_path:
+            db_file_id = self._get_db_file_id(db_gallery_id, file_path)
+            absolute_file_path = os.path.join(
+                gallery_info_params.gallery_folder, file_path
+            )
+            file_pairs.append(
+                dict(db_file_id=db_file_id, absolute_file_path=absolute_file_path)
+            )
+
         with HashThreadsList() as threads:
-            for file_path in gallery_info_params.files_path:
-                db_file_id = self._get_db_file_id(db_gallery_id, file_path)
-                absolute_file_path = os.path.join(
-                    gallery_info_params.gallery_folder, file_path
-                )
-                with open(absolute_file_path, "rb") as f:
+            for pair in file_pairs:
+                with open(pair["absolute_file_path"], "rb") as f:
                     file_content = f.read()
                 for algorithm in HASH_ALGORITHMS.keys():
                     threads.append(
                         target=self._insert_gallery_file_hash,
-                        args=(db_file_id, file_content, algorithm),
+                        args=(pair["db_file_id"], file_content, algorithm),
                     )
 
         for tag in gallery_info_params.tags:

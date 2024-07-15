@@ -6,11 +6,11 @@ from abc import ABCMeta, abstractmethod
 from .logger import logger
 
 MAX_IO_SEMAPHORE = threading.Semaphore(5)
-HASH_IO_SEMAPHORE = threading.Semaphore(3)
+HASH_IO_SEMAPHORE = threading.Semaphore(10)
 CBZ_IO_SEMAPHORE = threading.Semaphore(3)
 CBZ_TASKS_SEMAPHORE = threading.Semaphore(1)
 KOMGA_SEMAPHORE = threading.Semaphore(5)
-SQL_SEMAPHORE = threading.Semaphore(5)
+SQL_SEMAPHORE = threading.Semaphore(10)
 
 
 class BackgroundTaskThread(Thread, metaclass=ABCMeta):
