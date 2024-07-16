@@ -14,6 +14,7 @@ from .config_loader import Config
 from .logger import logger
 from .sql_connector import DatabaseConfigurationError, DatabaseKeyError
 from .threading_tools import SQLThreadsList, HashThreadsList, CBZTaskThreadsList
+from multiprocessing import cpu_count, Pool
 
 from .settings import hash_function
 from .settings import (
@@ -1357,58 +1358,61 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             logger.info(f"{table_name} view created.")
 
     def _insert_gallery_file_hash(
-        self, db_file_id: int, absolute_file_path: str, algorithm: str
+        self, db_file_id: int, absolute_file_path: str
     ) -> None:
         with open(absolute_file_path, "rb") as f:
             file_content = f.read()
 
-        is_insert = False
-        with self.SQLConnector() as connector:
-            current_hash_value = hash_function(file_content, algorithm)
-            if self._check_hash_value_by_file_id(db_file_id, algorithm):
-                original_hash_value = self.get_hash_value_by_file_id(
-                    db_file_id, algorithm
-                )
-                if original_hash_value != current_hash_value:
+        for algorithm in HASH_ALGORITHMS.keys():
+            is_insert = False
+            with self.SQLConnector() as connector:
+                current_hash_value = hash_function(file_content, algorithm)
+                if self._check_hash_value_by_file_id(db_file_id, algorithm):
+                    original_hash_value = self.get_hash_value_by_file_id(
+                        db_file_id, algorithm
+                    )
+                    if original_hash_value != current_hash_value:
+                        if self._check_db_hash_id_by_hash_value(
+                            current_hash_value, algorithm
+                        ):
+                            db_hash_id = self.get_db_hash_id_by_hash_value(
+                                current_hash_value, algorithm
+                            )
+                            self._update_gallery_file_hash_by_db_hash_id(
+                                db_file_id, db_hash_id, algorithm
+                            )
+                        else:
+                            is_insert |= True
+                else:
+                    is_insert |= True
+
+                if is_insert:
                     if self._check_db_hash_id_by_hash_value(
                         current_hash_value, algorithm
                     ):
                         db_hash_id = self.get_db_hash_id_by_hash_value(
                             current_hash_value, algorithm
                         )
-                        self._update_gallery_file_hash_by_db_hash_id(
-                            db_file_id, db_hash_id, algorithm
-                        )
                     else:
-                        is_insert |= True
-            else:
-                is_insert |= True
+                        table_name = f"files_hashs_{algorithm.lower()}_dbids"
+                        match self.config.database.sql_type.lower():
+                            case "mysql":
+                                insert_hash_value_query = f"""
+                                    INSERT INTO {table_name} (hash_value) VALUES (%s)
+                                """
+                        hash_value = hash_function(file_content, algorithm)
+                        connector.execute(insert_hash_value_query, (hash_value,))
+                        db_hash_id = self.get_db_hash_id_by_hash_value(
+                            hash_value, algorithm
+                        )
 
-            if is_insert:
-                if self._check_db_hash_id_by_hash_value(current_hash_value, algorithm):
-                    db_hash_id = self.get_db_hash_id_by_hash_value(
-                        current_hash_value, algorithm
-                    )
-                else:
-                    table_name = f"files_hashs_{algorithm.lower()}_dbids"
+                    table_name = f"files_hashs_{algorithm.lower()}"
                     match self.config.database.sql_type.lower():
                         case "mysql":
-                            insert_hash_value_query = f"""
-                                INSERT INTO {table_name} (hash_value) VALUES (%s)
+                            insert_db_hash_id_query = f"""
+                                INSERT INTO {table_name} (db_file_id, db_hash_id) VALUES (%s, %s)
                             """
-                    hash_value = hash_function(file_content, algorithm)
-                    connector.execute(insert_hash_value_query, (hash_value,))
-                    db_hash_id = self.get_db_hash_id_by_hash_value(
-                        hash_value, algorithm
-                    )
-
-                table_name = f"files_hashs_{algorithm.lower()}"
-                match self.config.database.sql_type.lower():
-                    case "mysql":
-                        insert_db_hash_id_query = f"""
-                            INSERT INTO {table_name} (db_file_id, db_hash_id) VALUES (%s, %s)
-                        """
-                connector.execute(insert_db_hash_id_query, (db_file_id, db_hash_id))
+                    connector.execute(insert_db_hash_id_query, (db_file_id, db_hash_id))
 
     def __get_db_hash_id_by_hash_value(
         self, hash_value: bytes, algorithm: str
@@ -1924,18 +1928,26 @@ class H2HDB(
             file_pairs.append(
                 dict(db_file_id=db_file_id, absolute_file_path=absolute_file_path)
             )
-
-        with HashThreadsList() as threads:
-            for pair in file_pairs:
-                for algorithm in HASH_ALGORITHMS.keys():
+        processes = max(cpu_count() - 2, 1)
+        if int(len(file_pairs) / processes) <= 5:
+            with HashThreadsList() as threads:
+                for pair in file_pairs:
                     threads.append(
                         target=self._insert_gallery_file_hash,
                         args=(
                             pair["db_file_id"],
                             pair["absolute_file_path"],
-                            algorithm,
                         ),
                     )
+        else:
+            with Pool(processes=processes) as pool:
+                pool.starmap(
+                    self._insert_gallery_file_hash,
+                    [
+                        (pair["db_file_id"], pair["absolute_file_path"])
+                        for pair in file_pairs
+                    ],
+                )
 
         for tag in gallery_info_params.tags:
             self._insert_gallery_tag(db_gallery_id, tag[0], tag[1])
