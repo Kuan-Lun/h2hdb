@@ -8,6 +8,7 @@ import os
 import math
 from itertools import islice
 from functools import partial
+from random import shuffle
 
 from .gallery_info_parser import parse_gallery_info, GalleryInfoParser
 from .config_loader import Config
@@ -1363,7 +1364,9 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with open(absolute_file_path, "rb") as f:
             file_content = f.read()
 
-        for algorithm in HASH_ALGORITHMS.keys():
+        algorithmlist = list(HASH_ALGORITHMS.keys())
+        shuffle(algorithmlist)
+        for algorithm in algorithmlist:
             is_insert = False
             with self.SQLConnector() as connector:
                 current_hash_value = hash_function(file_content, algorithm)
