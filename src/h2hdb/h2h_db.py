@@ -1484,10 +1484,11 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                                 insert_hash_value_query = f"""
                                     INSERT INTO {table_name} (hash_value) VALUES (%s)
                                 """
-                        hash_value = hash_function(file_content, algorithm)
-                        connector.execute(insert_hash_value_query, (hash_value,))
+                        connector.execute(
+                            insert_hash_value_query, (current_hash_value,)
+                        )
                         db_hash_id = self.get_db_hash_id_by_hash_value(
-                            hash_value, algorithm
+                            current_hash_value, algorithm
                         )
 
                     table_name = f"files_hashs_{algorithm.lower()}"
