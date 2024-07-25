@@ -6,7 +6,7 @@ import datetime
 import re
 import os
 import math
-from itertools import islice
+from itertools import islice, chain
 from functools import partial
 from random import shuffle
 
@@ -1243,6 +1243,87 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                     """
             connector.execute(insert_query, (db_file_id, file_name))
 
+    def _insert_gallery_files(
+        self, db_gallery_id: int, file_names_list: list[str]
+    ) -> None:
+        with self.SQLConnector() as connector:
+
+            file_name_parts_list = list[list[str]]()
+            for file_name in file_names_list:
+                if len(file_name) > FILE_NAME_LENGTH_LIMIT:
+                    logger.error(
+                        f"File name '{file_name}' is too long. Must be {FILE_NAME_LENGTH_LIMIT} characters or less."
+                    )
+                    raise ValueError("File name is too long.")
+                file_name_parts_list.append(self._split_gallery_name(file_name))
+
+            table_name = "files_dbids"
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    column_name_parts, _ = self.mysql_split_file_name_based_on_limit(
+                        "name"
+                    )
+                    insert_query_header = f"""
+                        INSERT INTO {table_name}
+                            (db_gallery_id, {", ".join(column_name_parts)})
+                    """  # VALUES (%s, {", ".join(["%s" for _ in column_name_parts])})
+                    insert_query_values = " ".join(
+                        [
+                            "VALUES",
+                            ", ".join(
+                                [
+                                    f"(%s, {", ".join(["%s"   for _ in column_name_parts])})"
+                                    for _ in file_names_list
+                                ]
+                            ),
+                        ]
+                    )
+                    insert_query = f"{insert_query_header} {insert_query_values}"
+            insert_parameter = tuple(
+                chain(
+                    *[
+                        (db_gallery_id, *file_name_parts_list[n])
+                        for n in range(len(file_name_parts_list))
+                    ]
+                )
+            )
+            connector.execute(
+                insert_query,
+                insert_parameter,
+            )
+
+            db_file_id_list = [
+                self._get_db_file_id(db_gallery_id, file_name)
+                for file_name in file_names_list
+            ]
+
+            table_name = "files_names"
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    column_name_parts, _ = self.mysql_split_file_name_based_on_limit(
+                        "name"
+                    )
+                    insert_query_header = f"""
+                        INSERT INTO {table_name}
+                            (db_file_id, full_name)
+                    """
+                    insert_query_values = " ".join(
+                        ["VALUES", ", ".join(["(%s, %s)" for _ in file_names_list])]
+                    )
+            insert_query = f"{insert_query_header} {insert_query_values}"
+
+            connector.execute(
+                insert_query,
+                tuple(
+                    chain(
+                        *[
+                            (db_file_id_list[n], file_names_list[n])
+                            for n in range(len(file_names_list))
+                        ]
+                    )
+                ),
+            )
+
     def __get_db_file_id(self, db_gallery_id: int, file_name: str) -> tuple | None:
         with self.SQLConnector() as connector:
             table_name = "files_dbids"
@@ -1368,8 +1449,8 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         shuffle(algorithmlist)
         for algorithm in algorithmlist:
             is_insert = False
+            current_hash_value = hash_function(file_content, algorithm)
             with self.SQLConnector() as connector:
-                current_hash_value = hash_function(file_content, algorithm)
                 if self._check_hash_value_by_file_id(db_file_id, algorithm):
                     original_hash_value = self.get_hash_value_by_file_id(
                         db_file_id, algorithm
@@ -1916,11 +1997,15 @@ class H2HDB(
                 target=self._insert_modified_time,
                 args=(db_gallery_id, gallery_info_params.modified_time),
             )
-            for file_path in gallery_info_params.files_path:
-                threads.append(
-                    target=self._insert_gallery_file,
-                    args=(db_gallery_id, file_path),
-                )
+            threads.append(
+                target=self._insert_gallery_files,
+                args=(db_gallery_id, gallery_info_params.files_path),
+            )
+            # for file_path in gallery_info_params.files_path:
+            #     threads.append(
+            #         target=self._insert_gallery_file,
+            #         args=(db_gallery_id, file_path),
+            #     )
 
         file_pairs = list[dict[str, int | str]]()
         for file_path in gallery_info_params.files_path:
