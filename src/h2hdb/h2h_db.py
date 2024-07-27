@@ -15,9 +15,8 @@ from .config_loader import Config
 from .logger import logger
 from .sql_connector import DatabaseConfigurationError, DatabaseKeyError
 from .threading_tools import SQLThreadsList, HashThreadsList, CBZTaskThreadsList
-from multiprocessing import cpu_count, Pool
 
-from .settings import hash_function
+from .settings import hash_function_by_file
 from .settings import (
     FOLDER_NAME_LENGTH_LIMIT,
     FILE_NAME_LENGTH_LIMIT,
@@ -1442,14 +1441,12 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _insert_gallery_file_hash(
         self, db_file_id: int, absolute_file_path: str
     ) -> None:
-        with open(absolute_file_path, "rb") as f:
-            file_content = f.read()
 
         algorithmlist = list(HASH_ALGORITHMS.keys())
         shuffle(algorithmlist)
         for algorithm in algorithmlist:
             is_insert = False
-            current_hash_value = hash_function(file_content, algorithm)
+            current_hash_value = hash_function_by_file(absolute_file_path, algorithm)
             with self.SQLConnector() as connector:
                 if self._check_hash_value_by_file_id(db_file_id, algorithm):
                     original_hash_value = self.get_hash_value_by_file_id(
@@ -2017,25 +2014,14 @@ class H2HDB(
             file_pairs.append(
                 dict(db_file_id=db_file_id, absolute_file_path=absolute_file_path)
             )
-        processes = max(cpu_count() - 2, 1)
-        if int(len(file_pairs) / processes) <= 5:
-            with HashThreadsList() as threads:
-                for pair in file_pairs:
-                    threads.append(
-                        target=self._insert_gallery_file_hash,
-                        args=(
-                            pair["db_file_id"],
-                            pair["absolute_file_path"],
-                        ),
-                    )
-        else:
-            with Pool(processes=processes) as pool:
-                pool.starmap(
-                    self._insert_gallery_file_hash,
-                    [
-                        (pair["db_file_id"], pair["absolute_file_path"])
-                        for pair in file_pairs
-                    ],
+        with HashThreadsList() as threads:
+            for pair in file_pairs:
+                threads.append(
+                    target=self._insert_gallery_file_hash,
+                    args=(
+                        pair["db_file_id"],
+                        pair["absolute_file_path"],
+                    ),
                 )
 
         for tag in gallery_info_params.tags:
@@ -2062,8 +2048,6 @@ class H2HDB(
         absolute_file_path = os.path.join(
             gallery_info_params.gallery_folder, GALLERY_INFO_FILE_NAME
         )
-        with open(absolute_file_path, "rb") as f:
-            gallery_info_file_content = f.read()
 
         if not self._check_hash_value_by_file_id(
             gallery_info_file_id, COMPARISON_HASH_ALGORITHM
@@ -2072,8 +2056,8 @@ class H2HDB(
         original_hash_value = self.get_hash_value_by_file_id(
             gallery_info_file_id, COMPARISON_HASH_ALGORITHM
         )
-        current_hash_value = hash_function(
-            gallery_info_file_content, COMPARISON_HASH_ALGORITHM
+        current_hash_value = hash_function_by_file(
+            absolute_file_path, COMPARISON_HASH_ALGORITHM
         )
         issame = original_hash_value == current_hash_value
         return issame
