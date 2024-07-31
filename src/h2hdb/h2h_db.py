@@ -16,7 +16,7 @@ from .logger import logger
 from .sql_connector import DatabaseConfigurationError, DatabaseKeyError
 from .threading_tools import SQLThreadsList, HashThreadsList, CBZTaskThreadsList
 
-from .settings import hash_function_by_file
+from .settings import hash_function_by_file, hash_function
 from .settings import (
     FOLDER_NAME_LENGTH_LIMIT,
     FILE_NAME_LENGTH_LIMIT,
@@ -30,6 +30,35 @@ HASH_ALGORITHMS = dict[str, int](sha512=512, sha3_512=512, blake2b=512)
 def get_sorting_base_level(x: int = 20) -> int:
     zero_level = max(x, 1)
     return zero_level
+
+
+class FileInformation:
+    def __init__(self, absolute_path: str, db_file_id: int) -> None:
+        self.absolute_path = absolute_path
+        self.db_file_id = db_file_id
+        self.issethash = False
+        self.db_hash_id = dict[str, int]()
+
+    def sethash(self) -> None:
+        if not self.issethash:
+            with open(self.absolute_path, "rb") as file:
+                file_content = file.read()
+            algorithmlist = list(HASH_ALGORITHMS.keys())
+            for algorithm in algorithmlist:
+                setattr(self, algorithm, hash_function(file_content, algorithm))
+            self.issethash = True
+
+    def setdb_hash_id(self, algorithm: str, db_hash_id: int) -> None:
+        self.db_hash_id[algorithm] = db_hash_id
+
+
+class TagInformation:
+    def __init__(self, tag_name: str, tag_value: str) -> None:
+        self.tag_name = tag_name
+        self.tag_value = tag_value
+
+    def setdb_tag_id(self, db_tag_id: int) -> None:
+        self.db_tag_id = db_tag_id
 
 
 class H2HDBAbstract(metaclass=ABCMeta):
@@ -54,7 +83,6 @@ class H2HDBAbstract(metaclass=ABCMeta):
         update_access_time: Updates the access time for the gallery in the database.
         get_upload_account_by_gallery_name: Selects the gallery upload account from the database.
         get_comment_by_gallery_name: Selects the gallery comment from the database.
-        insert_gallery_tag: Inserts the gallery tag into the database.
         get_tag_value_by_gallery_name_and_tag_name: Selects the gallery tag from the database.
         get_files_by_gallery_name: Selects the gallery files from the database.
         delete_gallery_file: Deletes the gallery image from the database.
@@ -259,20 +287,6 @@ class H2HDBAbstract(metaclass=ABCMeta):
 
         Returns:
             str: The gallery comment.
-        """
-        pass
-
-    @abstractmethod
-    def insert_gallery_tag(
-        self, gallery_name: str, tag_name: str, tag_value: str
-    ) -> None:
-        """
-        Inserts the gallery tag into the database.
-
-        Args:
-            gallery_name (str): The name of the gallery.
-            tag_name (str): The name of the tag.
-            tag_value (str): The value of the tag.
         """
         pass
 
@@ -1050,53 +1064,104 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             query_result = connector.fetch_one(select_query, (tag_value,))
         return query_result is not None
 
-    def _insert_gallery_tag(
-        self, db_gallery_id: int, tag_name: str, tag_value: str
-    ) -> None:
+    def _insert_tag_names(self, tag_names: list[str]) -> None:
+        if len(tag_names) == 0:
+            return
         with self.SQLConnector() as connector:
-            if self._check_db_tag_pair_id(tag_name, tag_value):
-                db_tag_pair_id = self._get_db_tag_pair_id(tag_name, tag_value)
-            else:
-                if not self._check_gallery_tag_name(tag_name):
-                    tag_name_table_name = f"galleries_tags_names"
-                    match self.config.database.sql_type.lower():
-                        case "mysql":
-                            insert_query = f"""
-                                INSERT INTO {tag_name_table_name} (tag_name) VALUES (%s)
-                            """
-                    connector.execute(insert_query, (tag_name,))
+            table_name = f"galleries_tags_names"
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    insert_query_header = f"""
+                        INSERT INTO {table_name} (tag_name)
+                    """
+                    insert_query_values = " ".join(
+                        ["VALUES", ", ".join(["(%s)" for _ in tag_names])]
+                    )
+                    insert_query = f"{insert_query_header} {insert_query_values}"
+            connector.execute(insert_query, tuple(tag_names))
 
-                if not self._check_gallery_tag_value(tag_value):
-                    tag_name_table_name = f"galleries_tags_values"
-                    match self.config.database.sql_type.lower():
-                        case "mysql":
-                            insert_query = f"""
-                                INSERT INTO {tag_name_table_name} (tag_value) VALUES (%s)
-                            """
-                    connector.execute(insert_query, (tag_value,))
+    def _insert_tag_values(self, tag_values: list[str]) -> None:
+        if len(tag_values) == 0:
+            return
+        with self.SQLConnector() as connector:
+            table_name = f"galleries_tags_values"
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    insert_query_header = f"""
+                        INSERT INTO {table_name} (tag_value)
+                    """
+                    insert_query_values = " ".join(
+                        ["VALUES", ", ".join(["(%s)" for _ in tag_values])]
+                    )
+                    insert_query = f"{insert_query_header} {insert_query_values}"
+            connector.execute(insert_query, tuple(tag_values))
 
-                tag_pairs_table_name = f"galleries_tag_pairs_dbids"
-                match self.config.database.sql_type.lower():
-                    case "mysql":
-                        insert_query = f"""
-                            INSERT INTO {tag_pairs_table_name} (tag_name, tag_value) VALUES (%s, %s)
-                        """
-                connector.execute(insert_query, (tag_name, tag_value))
-                db_tag_pair_id = self._get_db_tag_pair_id(tag_name, tag_value)
+    def _insert_tag_pairs_dbids(self, tags: list[TagInformation]) -> None:
+        if len(tags) == 0:
+            return
+        with self.SQLConnector() as connector:
+            tag_pairs_table_name = f"galleries_tag_pairs_dbids"
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    insert_query_header = f"""
+                        INSERT INTO {tag_pairs_table_name} (tag_name, tag_value)
+                    """
+                    insert_query_values = " ".join(
+                        ["VALUES", ", ".join(["(%s, %s)" for _ in tags])]
+                    )
+                    insert_query = f"{insert_query_header} {insert_query_values}"
+            parameter = list[str]()
+            for tag in tags:
+                parameter.extend([tag.tag_name, tag.tag_value])
+            connector.execute(insert_query, tuple(parameter))
 
+    def _insert_gallery_tags(
+        self, db_gallery_id: int, tags: list[TagInformation]
+    ) -> None:
+        if len(tags) == 0:
+            return
+
+        toinsert_db_tag_pair_id = list[TagInformation]()
+        for tag in tags:
+            if not self._check_db_tag_pair_id(tag.tag_name, tag.tag_value):
+                toinsert_db_tag_pair_id.append(tag)
+
+        toinsert_tag_name = list[str]()
+        toinsert_tag_value = list[str]()
+        for tag in toinsert_db_tag_pair_id:
+            if (tag.tag_name not in toinsert_tag_name) and (
+                not self._check_gallery_tag_name(tag.tag_name)
+            ):
+                toinsert_tag_name.append(tag.tag_name)
+            if (tag.tag_value not in toinsert_tag_value) and (
+                not self._check_gallery_tag_value(tag.tag_value)
+            ):
+                toinsert_tag_value.append(tag.tag_value)
+        self._insert_tag_names(toinsert_tag_name)
+        self._insert_tag_values(toinsert_tag_value)
+
+        self._insert_tag_pairs_dbids(toinsert_db_tag_pair_id)
+
+        db_tag_pair_ids = list[int]()
+        for tag in tags:
+            db_tag_pair_ids.append(
+                self._get_db_tag_pair_id(tag.tag_name, tag.tag_value)
+            )
+        with self.SQLConnector() as connector:
             table_name = f"galleries_tags"
             match self.config.database.sql_type.lower():
                 case "mysql":
-                    insert_query = f"""
-                        INSERT INTO {table_name} (db_gallery_id, db_tag_pair_id) VALUES (%s, %s)
+                    insert_query_header = f"""
+                        INSERT INTO {table_name} (db_gallery_id, db_tag_pair_id)
                     """
-            connector.execute(insert_query, (db_gallery_id, db_tag_pair_id))
-
-    def insert_gallery_tag(
-        self, gallery_name: str, tag_name: str, tag_value: str
-    ) -> None:
-        db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
-        self._insert_gallery_tag(db_gallery_id, tag_name, tag_value)
+                    insert_query_values = " ".join(
+                        ["VALUES", ", ".join(["(%s, %s)" for _ in db_tag_pair_ids])]
+                    )
+                    insert_query = f"{insert_query_header} {insert_query_values}"
+            parameter = list[int]()
+            for db_tag_pair_id in db_tag_pair_ids:
+                parameter.extend([db_gallery_id, db_tag_pair_id])
+            connector.execute(insert_query, tuple(parameter))
 
     def _select_gallery_tag(self, db_gallery_id: int, tag_name: str) -> str:
         with self.SQLConnector() as connector:
@@ -1203,44 +1268,6 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                     """
             connector.execute(query)
             logger.info(f"{table_name} table created.")
-
-    def _insert_gallery_file(self, db_gallery_id: int, file_name: str) -> None:
-        with self.SQLConnector() as connector:
-
-            if len(file_name) > FILE_NAME_LENGTH_LIMIT:
-                logger.error(
-                    f"File name '{file_name}' is too long. Must be {FILE_NAME_LENGTH_LIMIT} characters or less."
-                )
-                raise ValueError("File name is too long.")
-            file_name_parts = self._split_gallery_name(file_name)
-
-            table_name = "files_dbids"
-            match self.config.database.sql_type.lower():
-                case "mysql":
-                    column_name_parts, _ = self.mysql_split_file_name_based_on_limit(
-                        "name"
-                    )
-                    insert_query = f"""
-                        INSERT INTO {table_name}
-                            (db_gallery_id, {", ".join(column_name_parts)})
-                        VALUES (%s, {", ".join(["%s" for _ in column_name_parts])})
-                    """
-            connector.execute(insert_query, (db_gallery_id, *file_name_parts))
-
-            db_file_id = self._get_db_file_id(db_gallery_id, file_name)
-
-            table_name = "files_names"
-            match self.config.database.sql_type.lower():
-                case "mysql":
-                    column_name_parts, _ = self.mysql_split_file_name_based_on_limit(
-                        "name"
-                    )
-                    insert_query = f"""
-                        INSERT INTO {table_name}
-                            (db_file_id, full_name)
-                        VALUES (%s, %s)
-                    """
-            connector.execute(insert_query, (db_file_id, file_name))
 
     def _insert_gallery_files(
         self, db_gallery_id: int, file_names_list: list[str]
@@ -1438,6 +1465,41 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             connector.execute(query)
             logger.info(f"{table_name} view created.")
 
+    def _check_files_dbids_by_db_gallery_id(self, db_gallery_id: int) -> tuple | None:
+        with self.SQLConnector() as connector:
+            table_name = f"files_dbids"
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    select_query = f"""
+                        SELECT COUNT(*)
+                        FROM {table_name}
+                        WHERE db_gallery_id = %s
+                    """
+            query_result = connector.fetch_one(select_query, (db_gallery_id,))
+        return query_result[0] != 0
+
+    def _insert_gallery_file_hash_for_db_gallery_id(
+        self, fileinformations: list[FileInformation]
+    ) -> None:
+        algorithmlist = list(HASH_ALGORITHMS.keys())
+        for algorithm in algorithmlist:
+            toinsert = list[bytes]()
+            for n in range(len(fileinformations)):
+                fileinformations[n].sethash()
+                filehash = getattr(fileinformations[n], algorithm)
+                if not self._check_db_hash_id_by_hash_value(filehash, algorithm):
+                    toinsert.append(filehash)
+            if len(toinsert) > 0:
+                self.insert_db_hash_id_by_hash_values(toinsert, algorithm)
+            for n in range(len(fileinformations)):
+                fileinformations[n].setdb_hash_id(
+                    algorithm,
+                    self.get_db_hash_id_by_hash_value(
+                        getattr(fileinformations[n], algorithm), algorithm
+                    ),
+                )
+        self.insert_hash_value_by_db_hash_ids(fileinformations)
+
     def _insert_gallery_file_hash(
         self, db_file_id: int, absolute_file_path: str
     ) -> None:
@@ -1525,6 +1587,61 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         else:
             db_hash_id = query_result[0]
         return db_hash_id
+
+    def insert_hash_value_by_db_hash_ids(
+        self, fileinformations: list[FileInformation]
+    ) -> None:
+        algorithmlist = list(HASH_ALGORITHMS.keys())
+        for algorithm in algorithmlist:
+            with self.SQLConnector() as connector:
+                table_name = f"files_hashs_{algorithm.lower()}"
+                match self.config.database.sql_type.lower():
+                    case "mysql":
+                        insert_query_header = f"""
+                            INSERT INTO {table_name} (db_file_id, db_hash_id)
+                        """
+                        insert_query_values = " ".join(
+                            [
+                                "VALUES",
+                                ", ".join(["(%s, %s)" for _ in fileinformations]),
+                            ]
+                        )
+                insert_query = f"{insert_query_header} {insert_query_values}"
+                parameters = list[int]()
+                for fileinformation in fileinformations:
+                    parameters += [
+                        fileinformation.db_file_id,
+                        fileinformation.db_hash_id[algorithm],
+                    ]
+                connector.execute(insert_query, tuple(parameters))
+
+    def insert_db_hash_id_by_hash_value(
+        self, hash_value: bytes, algorithm: str
+    ) -> None:
+        with self.SQLConnector() as connector:
+            table_name = f"files_hashs_{algorithm.lower()}_dbids"
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    insert_query = f"""
+                        INSERT INTO {table_name} (hash_value) VALUES (%s)
+                    """
+            connector.execute(insert_query, (hash_value,))
+
+    def insert_db_hash_id_by_hash_values(
+        self, hash_values: list[bytes], algorithm: str
+    ) -> None:
+        with self.SQLConnector() as connector:
+            table_name = f"files_hashs_{algorithm.lower()}_dbids"
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    insert_query_header = f"""
+                        INSERT INTO {table_name} (hash_value)
+                    """
+                    insert_query_values = " ".join(
+                        ["VALUES", ", ".join(["(%s)" for _ in hash_values])]
+                    )
+            insert_query = f"{insert_query_header} {insert_query_values}"
+            connector.execute(insert_query, tuple(hash_values))
 
     def get_hash_value_by_db_hash_id(self, db_hash_id: int, algorithm: str) -> bytes:
         with self.SQLConnector() as connector:
@@ -1974,7 +2091,6 @@ class H2HDB(
                 target=self._insert_upload_time,
                 args=(db_gallery_id, gallery_info_params.upload_time),
             )
-
             threads.append(
                 target=self._insert_gallery_comment,
                 args=(db_gallery_id, gallery_info_params.galleries_comments),
@@ -1999,33 +2115,20 @@ class H2HDB(
                 target=self._insert_gallery_files,
                 args=(db_gallery_id, gallery_info_params.files_path),
             )
-            # for file_path in gallery_info_params.files_path:
-            #     threads.append(
-            #         target=self._insert_gallery_file,
-            #         args=(db_gallery_id, file_path),
-            #     )
 
-        file_pairs = list[dict[str, int | str]]()
+        file_pairs = list[FileInformation]()
         for file_path in gallery_info_params.files_path:
             db_file_id = self._get_db_file_id(db_gallery_id, file_path)
             absolute_file_path = os.path.join(
                 gallery_info_params.gallery_folder, file_path
             )
-            file_pairs.append(
-                dict(db_file_id=db_file_id, absolute_file_path=absolute_file_path)
-            )
-        with HashThreadsList() as threads:
-            for pair in file_pairs:
-                threads.append(
-                    target=self._insert_gallery_file_hash,
-                    args=(
-                        pair["db_file_id"],
-                        pair["absolute_file_path"],
-                    ),
-                )
+            file_pairs.append(FileInformation(absolute_file_path, db_file_id))
+        self._insert_gallery_file_hash_for_db_gallery_id(file_pairs)
 
+        taglist = list[TagInformation]()
         for tag in gallery_info_params.tags:
-            self._insert_gallery_tag(db_gallery_id, tag[0], tag[1])
+            taglist.append(TagInformation(tag[0], tag[1]))
+        self._insert_gallery_tags(db_gallery_id, taglist)
 
         self.delete_pending_gallery_removal(gallery_info_params.gallery_name)
 

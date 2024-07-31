@@ -93,7 +93,7 @@ def compress_images_and_create_cbz(
     if int(len(hpf_inputs) / processes) <= 5:
         with CBZThreadsList() as threads:
             for hpf_input in hpf_inputs:
-                threads.append(target=hash_and_process_file, args=(hpf_input,))
+                threads.append(target=hash_and_process_file, args=hpf_input)
     else:
         with Pool(processes) as pool:
             pool.starmap(hash_and_process_file, hpf_inputs)

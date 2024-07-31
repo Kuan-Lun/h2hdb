@@ -21,4 +21,5 @@ def hash_function(x: bytes, algorithm: str) -> bytes:
 
 def hash_function_by_file(file_path: str, algorithm: str) -> bytes:
     with open(file_path, "rb") as f:
-        return hash_function(f.read(), algorithm)
+        file_content = f.read()
+    return hash_function(file_content, algorithm)
