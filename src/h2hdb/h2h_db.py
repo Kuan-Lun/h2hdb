@@ -2446,6 +2446,7 @@ class H2HDB(
                             self._get_duplicated_hash_values_by_count_artist_ratio()
                         )
                         logger.info("Excluded hash values updated.")
+                    logger.info(f"Compressing gallery '{gallery_name}' to CBZ...")
                     cbzthreads.append(
                         target=self.compress_gallery_to_cbz,
                         args=(gallery_name, exclude_hashs),
