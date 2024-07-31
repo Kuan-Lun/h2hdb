@@ -2421,6 +2421,7 @@ class H2HDB(
         logger.info("Getting excluded hash values...")
         exclude_hashs = self._get_duplicated_hash_values_by_count_artist_ratio()
         previously_count_duplicated_files = self._count_duplicated_files_hashs_sha512()
+        current_count_duplicated_files = previously_count_duplicated_files
         logger.info("Excluded hash values obtained.")
 
         with CBZTaskThreadsList() as cbzthreads:
@@ -2429,10 +2430,10 @@ class H2HDB(
                 is_insert = self.insert_gallery_info(gallery_name)
                 if is_insert:
                     num_inserts += 1
-                if self.config.h2h.cbz_path != "":
                     current_count_duplicated_files = (
                         self._count_duplicated_files_hashs_sha512()
                     )
+                if self.config.h2h.cbz_path != "":
                     if (
                         current_count_duplicated_files
                         > previously_count_duplicated_files
