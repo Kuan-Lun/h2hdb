@@ -2183,6 +2183,7 @@ class H2HDB(
         is_thesame = self._check_gallery_info_file_hash(gallery_info_params)
         is_insert = is_thesame is False
         if is_insert:
+            logger.info(f"Inserting gallery '{gallery_info_params.gallery_name}'...")
             self.delete_gallery_file(gallery_info_params.gallery_name)
             self.delete_gallery(gallery_info_params.gallery_name)
             self._insert_gallery_info(gallery_info_params)
@@ -2203,23 +2204,23 @@ class H2HDB(
                 upload_time = self.get_upload_time_by_gallery_name(
                     gallery_info_params.gallery_name
                 )
-                relative_cbz_directory = str(upload_time.year)
+                relative_cbz_directory = str(upload_time.year).ljust(4, "0")
             case "date-yyyy-mm":
                 upload_time = self.get_upload_time_by_gallery_name(
                     gallery_info_params.gallery_name
                 )
                 relative_cbz_directory = os.path.join(
-                    str(upload_time.year),
-                    str(upload_time.month),
+                    str(upload_time.year).ljust(4, "0"),
+                    str(upload_time.month).ljust(2, "0"),
                 )
             case "date-yyyy-mm-dd":
                 upload_time = self.get_upload_time_by_gallery_name(
                     gallery_info_params.gallery_name
                 )
                 relative_cbz_directory = os.path.join(
-                    str(upload_time.year),
-                    str(upload_time.month),
-                    str(upload_time.day),
+                    str(upload_time.year).ljust(4, "0"),
+                    str(upload_time.month).ljust(2, "0"),
+                    str(upload_time.day).ljust(2, "0"),
                 )
             case "flat":
                 relative_cbz_directory = ""
@@ -2398,7 +2399,6 @@ class H2HDB(
             )
         elif "pages" in self.config.h2h.cbz_sort:
             logger.info("Sorting by pages...")
-            # get_sorting_base_level
             zero_level = (
                 max(1, int(self.config.h2h.cbz_sort.split("+")[-1]))
                 if "+" in self.config.h2h.cbz_sort
@@ -2433,7 +2433,6 @@ class H2HDB(
                     current_count_duplicated_files = (
                         self._count_duplicated_files_hashs_sha512()
                     )
-                if self.config.h2h.cbz_path != "":
                     if (
                         current_count_duplicated_files
                         > previously_count_duplicated_files
@@ -2447,6 +2446,7 @@ class H2HDB(
                             self._get_duplicated_hash_values_by_count_artist_ratio()
                         )
                         logger.info("Excluded hash values updated.")
+                if self.config.h2h.cbz_path != "":
                     logger.debug(f"Compressing gallery '{gallery_name}' to CBZ...")
                     cbzthreads.append(
                         target=self.compress_gallery_to_cbz,
