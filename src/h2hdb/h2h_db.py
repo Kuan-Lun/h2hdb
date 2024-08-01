@@ -1415,7 +1415,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                             PRIMARY KEY (db_hash_id),
                             db_hash_id INT UNSIGNED AUTO_INCREMENT,
                             hash_value BINARY({output_bits/8}) NOT NULL,
-                            INDEX (hash_value)
+                            UNIQUE (hash_value)
                         )
                     """
             connector.execute(query)
