@@ -10,7 +10,7 @@ __all__ = [
 ]
 __author__ = "Kuan-Lun Wang"
 
-__version__ = "0.6.63.0"
+__version__ = "0.6.63.1"
 __version_info__ = tuple(map(int, __version__.split(".")))
 
 
