@@ -1485,6 +1485,8 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         for algorithm in algorithmlist:
             toinsert = list[bytes]()
             for n in range(len(fileinformations)):
+                logger.info(f"Hashing image {n+1}/{len(fileinformations)}...")
+                logger.info(f"Hashing image {fileinformations[n].absolute_path!r}...")
                 fileinformations[n].sethash()
                 filehash = getattr(fileinformations[n], algorithm)
                 if not self._check_db_hash_id_by_hash_value(filehash, algorithm):
