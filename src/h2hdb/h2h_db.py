@@ -2204,23 +2204,23 @@ class H2HDB(
                 upload_time = self.get_upload_time_by_gallery_name(
                     gallery_info_params.gallery_name
                 )
-                relative_cbz_directory = str(upload_time.year).ljust(4, "0")
+                relative_cbz_directory = str(upload_time.year).rjust(4, "0")
             case "date-yyyy-mm":
                 upload_time = self.get_upload_time_by_gallery_name(
                     gallery_info_params.gallery_name
                 )
                 relative_cbz_directory = os.path.join(
-                    str(upload_time.year).ljust(4, "0"),
-                    str(upload_time.month).ljust(2, "0"),
+                    str(upload_time.year).rjust(4, "0"),
+                    str(upload_time.month).rjust(2, "0"),
                 )
             case "date-yyyy-mm-dd":
                 upload_time = self.get_upload_time_by_gallery_name(
                     gallery_info_params.gallery_name
                 )
                 relative_cbz_directory = os.path.join(
-                    str(upload_time.year).ljust(4, "0"),
-                    str(upload_time.month).ljust(2, "0"),
-                    str(upload_time.day).ljust(2, "0"),
+                    str(upload_time.year).rjust(4, "0"),
+                    str(upload_time.month).rjust(2, "0"),
+                    str(upload_time.day).rjust(2, "0"),
                 )
             case "flat":
                 relative_cbz_directory = ""
