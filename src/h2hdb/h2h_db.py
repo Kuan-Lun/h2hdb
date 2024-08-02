@@ -1485,13 +1485,13 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         for algorithm in algorithmlist:
             toinsert = list[bytes]()
             for n in range(len(fileinformations)):
-                logger.info(
-                    f"Hashing image {n+1}/{len(fileinformations)}...{fileinformations[n].absolute_path}"
-                )
                 fileinformations[n].sethash()
                 filehash = getattr(fileinformations[n], algorithm)
-                if not self._check_db_hash_id_by_hash_value(filehash, algorithm):
-                    toinsert.append(filehash)
+                if filehash in toinsert:
+                    continue
+                else:
+                    if not self._check_db_hash_id_by_hash_value(filehash, algorithm):
+                        toinsert.append(filehash)
             if len(toinsert) > 0:
                 self.insert_db_hash_id_by_hash_values(toinsert, algorithm)
             for n in range(len(fileinformations)):
