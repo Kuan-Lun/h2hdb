@@ -18,7 +18,7 @@ from .threading_tools import CBZThreadsList
 def compress_image(image_path: str, output_path: str, max_size: int) -> None:
     """Compress an image, saving it to the output path."""
     with Image.open(image_path) as image:
-        if image.mode not in ("RGB", "RGBA"):
+        if image.mode != "RGB":
             image = image.convert("RGB")
 
         if max_size >= 1:
