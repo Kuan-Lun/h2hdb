@@ -43,6 +43,7 @@ def retry_request(request, retries: int = 3):
                 retry_codes = [
                     "500",
                     "504",
+                    "407",
                     "429",
                 ]  # Add more codes to this list as needed
                 if any(code in str(e) for code in retry_codes):
@@ -59,6 +60,14 @@ def retry_request(request, retries: int = 3):
                         logger,
                         retries,
                         f"Unauthorized error while making request. Check your credentials.",
+                        "error",
+                    )
+                    return  # Don't retry
+                elif "407" in str(e):
+                    log_and_return(
+                        logger,
+                        retries,
+                        f"Proxy authentication error while making request. Check your proxy credentials.",
                         "error",
                     )
                     return  # Don't retry
@@ -83,7 +92,7 @@ def get_series_ids(
     while True:
         logger.debug(f"Getting series page {page_num} for library {library_id}")
         url = (
-            f"{base_url}/api/v1/series?library_id={library_id}&page={page_num}&size=100"
+            f"{base_url}/api/v1/series?library_id={library_id}&page={page_num}&size=200"
         )
         response = requests.get(url, auth=HTTPBasicAuth(api_username, api_password))
         response.raise_for_status()
@@ -105,7 +114,7 @@ def get_books_ids_in_series_id(
     page_num = 0
     while True:
         logger.debug(f"Getting books page {page_num} for series {series_id}")
-        url = f"{base_url}/api/v1/series/{series_id}/books?page={page_num}&size=100"
+        url = f"{base_url}/api/v1/series/{series_id}/books?page={page_num}&size=200"
         response = requests.get(url, auth=HTTPBasicAuth(api_username, api_password))
         response.raise_for_status()
         response_json = response.json()
