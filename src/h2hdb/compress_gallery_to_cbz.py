@@ -92,14 +92,17 @@ def compress_images_and_create_cbz(
         (input_directory, tmp_cbz_directory, filename, exclude_hashs, max_size)
         for filename in os.listdir(input_directory)
     ]
-    processes = max(cpu_count() - 2, 1)
-    if int(len(hpf_inputs) / processes) <= 5:
-        with CBZThreadsList() as threads:
-            for hpf_input in hpf_inputs:
-                threads.append(target=hash_and_process_file, args=hpf_input)
-    else:
-        with Pool(processes) as pool:
-            pool.starmap(hash_and_process_file, hpf_inputs)
+    with CBZThreadsList() as threads:
+        for hpf_input in hpf_inputs:
+            threads.append(target=hash_and_process_file, args=hpf_input)
+    # processes = max(cpu_count() - 2, 1)
+    # if int(len(hpf_inputs) / processes) <= 5:
+    #     with CBZThreadsList() as threads:
+    #         for hpf_input in hpf_inputs:
+    #             threads.append(target=hash_and_process_file, args=hpf_input)
+    # else:
+    #     with Pool(processes) as pool:
+    #         pool.starmap(hash_and_process_file, hpf_inputs)
 
     # Create the CBZ file
     os.makedirs(output_directory, exist_ok=True)
