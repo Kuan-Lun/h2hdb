@@ -11,7 +11,7 @@ Image.MAX_IMAGE_PIXELS = None
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 from .settings import FILE_NAME_LENGTH_LIMIT, COMPARISON_HASH_ALGORITHM
-from .settings import hash_function
+from .settings import hash_function_by_file
 from .threading_tools import CBZThreadsList
 
 
@@ -52,9 +52,9 @@ def hash_and_process_file(
     exclude_hashs: list[bytes],
     max_size: int,
 ) -> None:
-    with open(os.path.join(input_directory, filename), "rb") as file:
-        file_content = file.read()
-    file_hash = hash_function(file_content, COMPARISON_HASH_ALGORITHM)
+    file_hash = hash_function_by_file(
+        os.path.join(input_directory, filename), COMPARISON_HASH_ALGORITHM
+    )
 
     if file_hash not in exclude_hashs:
         if filename.lower().endswith((".jpg", ".jpeg", ".png", ".gif")):
