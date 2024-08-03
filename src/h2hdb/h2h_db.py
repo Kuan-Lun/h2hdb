@@ -14,7 +14,7 @@ from .gallery_info_parser import parse_gallery_info, GalleryInfoParser
 from .config_loader import Config
 from .logger import logger
 from .sql_connector import DatabaseConfigurationError, DatabaseKeyError
-from .threading_tools import SQLThreadsList, run_in_parallel
+from .threading_tools import SQLThreadsList, run_in_parallel, POOL_CPU_LIMIT
 
 from .settings import hash_function_by_file, hash_function
 from .settings import (
@@ -2427,12 +2427,14 @@ class H2HDB(
         current_count_duplicated_files = previously_count_duplicated_files
         logger.info("Excluded hash values obtained.")
 
-        num_inserts = 0
+        num_cbz_inserts = 0
+        is_insert_limit_reached = False
         poolinputs = list[str]()
         for gallery_name in current_galleries_folders:
             is_insert = self.insert_gallery_info(gallery_name)
             if is_insert:
-                num_inserts += 1
+                is_insert_limit_reached = True
+                num_cbz_inserts += 1
                 current_count_duplicated_files = (
                     self._count_duplicated_files_hashs_sha512()
                 )
@@ -2449,14 +2451,15 @@ class H2HDB(
                 # logger.debug(f"Compressing gallery '{gallery_name}' to CBZ...")
                 poolinputs.append(gallery_name)
                 # self.compress_gallery_to_cbz(gallery_name, exclude_hashs)
-            if len(poolinputs) >= 100:
+            if num_cbz_inserts == 1000 * POOL_CPU_LIMIT:
                 logger.info("Compressing galleries to CBZ...")
                 run_in_parallel(
                     self.compress_gallery_to_cbz,
                     [(x, exclude_hashs) for x in poolinputs],
                 )
                 poolinputs = list[str]()
-        if len(poolinputs) > 0:
+                num_cbz_inserts = 0
+        if num_cbz_inserts > 0:
             logger.info("Compressing galleries to CBZ...")
             run_in_parallel(
                 self.compress_gallery_to_cbz, [(x, exclude_hashs) for x in poolinputs]
@@ -2467,7 +2470,7 @@ class H2HDB(
 
         self._refresh_current_cbz_files(current_galleries_names)
 
-        if num_inserts > 0:
+        if is_insert_limit_reached:
             logger.info("Refreshing database...")
             return self.insert_h2h_download()
 
