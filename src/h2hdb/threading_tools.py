@@ -1,9 +1,12 @@
 import threading
 from threading import Thread
 from abc import ABCMeta, abstractmethod
-
+from multiprocessing import cpu_count
+from multiprocessing.pool import Pool
 
 from .logger import logger
+
+POOL_CPU_LIMIT = max(cpu_count() - 2, 1)
 
 # MAX_IO_SEMAPHORE = threading.Semaphore(5)
 # CBZ_IO_SEMAPHORE = threading.Semaphore(3)
@@ -71,3 +74,14 @@ class SQLThreadsList(ThreadsList):
     class LocalBackgroundTaskThread(BackgroundTaskThread):
         def get_semaphores(self) -> list[threading.Semaphore]:
             return [SQL_SEMAPHORE]
+
+
+def run_in_parallel(fun, args: list[tuple]):
+    if len(args) == 0:
+        return
+
+    with Pool(POOL_CPU_LIMIT) as pool:
+        if len(args[0]) > 1:
+            pool.starmap(fun, args)
+        else:
+            pool.map(fun, args)

@@ -14,7 +14,7 @@ from .gallery_info_parser import parse_gallery_info, GalleryInfoParser
 from .config_loader import Config
 from .logger import logger
 from .sql_connector import DatabaseConfigurationError, DatabaseKeyError
-from .threading_tools import SQLThreadsList
+from .threading_tools import SQLThreadsList, run_in_parallel
 
 from .settings import hash_function_by_file, hash_function
 from .settings import (
@@ -2428,6 +2428,7 @@ class H2HDB(
         logger.info("Excluded hash values obtained.")
 
         num_inserts = 0
+        poolinputs = list[str]()
         for gallery_name in current_galleries_folders:
             is_insert = self.insert_gallery_info(gallery_name)
             if is_insert:
@@ -2445,8 +2446,21 @@ class H2HDB(
                     )
                     logger.info("Excluded hash values updated.")
             if self.config.h2h.cbz_path != "":
-                logger.debug(f"Compressing gallery '{gallery_name}' to CBZ...")
-                self.compress_gallery_to_cbz(gallery_name, exclude_hashs)
+                # logger.debug(f"Compressing gallery '{gallery_name}' to CBZ...")
+                poolinputs.append(gallery_name)
+                # self.compress_gallery_to_cbz(gallery_name, exclude_hashs)
+            if len(poolinputs) >= 100:
+                logger.info("Compressing galleries to CBZ...")
+                run_in_parallel(
+                    self.compress_gallery_to_cbz,
+                    [(x, exclude_hashs) for x in poolinputs],
+                )
+                poolinputs = list[str]()
+        if len(poolinputs) > 0:
+            logger.info("Compressing galleries to CBZ...")
+            run_in_parallel(
+                self.compress_gallery_to_cbz, [(x, exclude_hashs) for x in poolinputs]
+            )
 
         logger.info("Cleaning up database...")
         self.refresh_current_files_hashs()
