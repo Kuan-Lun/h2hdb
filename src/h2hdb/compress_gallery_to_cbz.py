@@ -5,14 +5,12 @@ from PIL import Image, ImageFile  # type: ignore
 import zipfile
 import shutil
 import hashlib
-from multiprocessing import cpu_count, Pool
 
 Image.MAX_IMAGE_PIXELS = None
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 from .settings import FILE_NAME_LENGTH_LIMIT, COMPARISON_HASH_ALGORITHM
 from .settings import hash_function_by_file
-from .threading_tools import CBZThreadsList
 
 
 def compress_image(image_path: str, output_path: str, max_size: int) -> None:
@@ -88,21 +86,10 @@ def compress_images_and_create_cbz(
         shutil.rmtree(tmp_cbz_directory)
     os.makedirs(tmp_cbz_directory)
 
-    hpf_inputs = [
-        (input_directory, tmp_cbz_directory, filename, exclude_hashs, max_size)
-        for filename in os.listdir(input_directory)
-    ]
-    with CBZThreadsList() as threads:
-        for hpf_input in hpf_inputs:
-            threads.append(target=hash_and_process_file, args=hpf_input)
-    # processes = max(cpu_count() - 2, 1)
-    # if int(len(hpf_inputs) / processes) <= 5:
-    #     with CBZThreadsList() as threads:
-    #         for hpf_input in hpf_inputs:
-    #             threads.append(target=hash_and_process_file, args=hpf_input)
-    # else:
-    #     with Pool(processes) as pool:
-    #         pool.starmap(hash_and_process_file, hpf_inputs)
+    for filename in os.listdir(input_directory):
+        hash_and_process_file(
+            input_directory, tmp_cbz_directory, filename, exclude_hashs, max_size
+        )
 
     # Create the CBZ file
     os.makedirs(output_directory, exist_ok=True)

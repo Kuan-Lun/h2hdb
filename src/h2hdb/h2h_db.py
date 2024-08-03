@@ -14,7 +14,7 @@ from .gallery_info_parser import parse_gallery_info, GalleryInfoParser
 from .config_loader import Config
 from .logger import logger
 from .sql_connector import DatabaseConfigurationError, DatabaseKeyError
-from .threading_tools import SQLThreadsList, HashThreadsList, CBZTaskThreadsList
+from .threading_tools import SQLThreadsList
 
 from .settings import hash_function_by_file, hash_function
 from .settings import (
@@ -2427,55 +2427,19 @@ class H2HDB(
         current_count_duplicated_files = previously_count_duplicated_files
         logger.info("Excluded hash values obtained.")
 
-        # with CBZTaskThreadsList() as cbzthreads:
-        #     num_inserts = 0
-        #     for gallery_name in current_galleries_folders:
-        #         is_insert = self.insert_gallery_info(gallery_name)
-        #         if is_insert:
-        #             num_inserts += 1
-        #             current_count_duplicated_files = (
-        #                 self._count_duplicated_files_hashs_sha512()
-        #             )
-        #             if (
-        #                 current_count_duplicated_files
-        #                 > previously_count_duplicated_files
-        #             ):
-        #                 logger.info(
-        #                     "Duplicated files found. Updating excluded hash values..."
-        #                 )
-        #                 previously_count_duplicated_files = (
-        #                     current_count_duplicated_files
-        #                 )
-        #                 exclude_hashs = (
-        #                     self._get_duplicated_hash_values_by_count_artist_ratio()
-        #                 )
-        #                 logger.info("Excluded hash values updated.")
-        #         if self.config.h2h.cbz_path != "":
-        #             logger.debug(f"Compressing gallery '{gallery_name}' to CBZ...")
-        #             cbzthreads.append(
-        #                 target=self.compress_gallery_to_cbz,
-        #                 args=(gallery_name, exclude_hashs),
-        #             )
-        #         is_insert_limit_reached = num_inserts >= 1000
-        #         if is_insert_limit_reached:
-        #             break
-
+        num_inserts = 0
         for gallery_name in current_galleries_folders:
             is_insert = self.insert_gallery_info(gallery_name)
             if is_insert:
+                num_inserts += 1
                 current_count_duplicated_files = (
                     self._count_duplicated_files_hashs_sha512()
                 )
-                if (
-                    current_count_duplicated_files
-                    > previously_count_duplicated_files
-                ):
+                if current_count_duplicated_files > previously_count_duplicated_files:
                     logger.info(
                         "Duplicated files found. Updating excluded hash values..."
                     )
-                    previously_count_duplicated_files = (
-                        current_count_duplicated_files
-                    )
+                    previously_count_duplicated_files = current_count_duplicated_files
                     exclude_hashs = (
                         self._get_duplicated_hash_values_by_count_artist_ratio()
                     )
@@ -2489,8 +2453,9 @@ class H2HDB(
 
         self._refresh_current_cbz_files(current_galleries_names)
 
-        # if is_insert_limit_reached:
-        #     return self.insert_h2h_download()
+        if num_inserts > 0:
+            logger.info("Refreshing database...")
+            return self.insert_h2h_download()
 
     def get_komga_metadata(self, gallery_name: str) -> dict:
         metadata = dict[str, str | list[dict[str, str]]]()

@@ -5,10 +5,8 @@ from abc import ABCMeta, abstractmethod
 
 from .logger import logger
 
-MAX_IO_SEMAPHORE = threading.Semaphore(5)
-HASH_IO_SEMAPHORE = threading.Semaphore(5)
-CBZ_IO_SEMAPHORE = threading.Semaphore(3)
-CBZ_TASKS_SEMAPHORE = threading.Semaphore(1)
+# MAX_IO_SEMAPHORE = threading.Semaphore(5)
+# CBZ_IO_SEMAPHORE = threading.Semaphore(3)
 KOMGA_SEMAPHORE = threading.Semaphore(5)
 SQL_SEMAPHORE = threading.Semaphore(10)
 
@@ -57,22 +55,10 @@ class ThreadsList(list, metaclass=ABCMeta):
         self.join_all()
 
 
-class HashThreadsList(ThreadsList):
-    class LocalBackgroundTaskThread(BackgroundTaskThread):
-        def get_semaphores(self) -> list[threading.Semaphore]:
-            return [HASH_IO_SEMAPHORE, MAX_IO_SEMAPHORE]
-
-
-class CBZThreadsList(ThreadsList):
-    class LocalBackgroundTaskThread(BackgroundTaskThread):
-        def get_semaphores(self) -> list[threading.Semaphore]:
-            return [CBZ_IO_SEMAPHORE, MAX_IO_SEMAPHORE]
-
-
-class CBZTaskThreadsList(ThreadsList):
-    class LocalBackgroundTaskThread(BackgroundTaskThread):
-        def get_semaphores(self) -> list[threading.Semaphore]:
-            return [CBZ_TASKS_SEMAPHORE]
+# class CBZThreadsList(ThreadsList):
+#     class LocalBackgroundTaskThread(BackgroundTaskThread):
+#         def get_semaphores(self) -> list[threading.Semaphore]:
+#             return [CBZ_IO_SEMAPHORE, MAX_IO_SEMAPHORE]
 
 
 class KomgaThreadsList(ThreadsList):
