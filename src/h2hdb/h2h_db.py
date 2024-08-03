@@ -2451,7 +2451,7 @@ class H2HDB(
                 # logger.debug(f"Compressing gallery '{gallery_name}' to CBZ...")
                 poolinputs.append(gallery_name)
                 # self.compress_gallery_to_cbz(gallery_name, exclude_hashs)
-            if num_cbz_inserts == 1000 * POOL_CPU_LIMIT:
+            if num_cbz_inserts == 100 * POOL_CPU_LIMIT:
                 logger.info("Compressing galleries to CBZ...")
                 run_in_parallel(
                     self.compress_gallery_to_cbz,
