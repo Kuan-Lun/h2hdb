@@ -2186,7 +2186,7 @@ class H2HDB(
         is_thesame = self._check_gallery_info_file_hash(gallery_info_params)
         is_insert = is_thesame is False
         if is_insert:
-            logger.info(f"Inserting gallery '{gallery_info_params.gallery_name}'...")
+            logger.debug(f"Inserting gallery '{gallery_info_params.gallery_name}'...")
             self.delete_gallery_file(gallery_info_params.gallery_name)
             self.delete_gallery(gallery_info_params.gallery_name)
             self._insert_gallery_info(gallery_info_params)
