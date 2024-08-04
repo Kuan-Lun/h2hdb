@@ -2427,6 +2427,21 @@ class H2HDB(
         current_count_duplicated_files = previously_count_duplicated_files
         logger.info("Excluded hash values obtained.")
 
+        def calculate_exclude_hashs(
+            previously_count_duplicated_files, exclude_hashs
+        ) -> tuple[int, list[bytes]]:
+            logger.debug("Checking for duplicated files...")
+            current_count_duplicated_files = self._count_duplicated_files_hashs_sha512()
+            new_exclude_hashs = exclude_hashs
+            if current_count_duplicated_files > previously_count_duplicated_files:
+                logger.debug("Duplicated files found. Updating excluded hash values...")
+                previously_count_duplicated_files = current_count_duplicated_files
+                new_exclude_hashs = (
+                    self._get_duplicated_hash_values_by_count_artist_ratio()
+                )
+                logger.info("Excluded hash values updated.")
+            return previously_count_duplicated_files, new_exclude_hashs
+
         num_cbz_inserts = 0
         is_insert_limit_reached = False
         poolinputs = list[str]()
@@ -2435,23 +2450,14 @@ class H2HDB(
             if is_insert:
                 is_insert_limit_reached = True
                 num_cbz_inserts += 1
-                current_count_duplicated_files = (
-                    self._count_duplicated_files_hashs_sha512()
-                )
-                if current_count_duplicated_files > previously_count_duplicated_files:
-                    logger.info(
-                        "Duplicated files found. Updating excluded hash values..."
-                    )
-                    previously_count_duplicated_files = current_count_duplicated_files
-                    exclude_hashs = (
-                        self._get_duplicated_hash_values_by_count_artist_ratio()
-                    )
-                    logger.info("Excluded hash values updated.")
             if self.config.h2h.cbz_path != "":
-                # logger.debug(f"Compressing gallery '{gallery_name}' to CBZ...")
                 poolinputs.append(gallery_name)
-                # self.compress_gallery_to_cbz(gallery_name, exclude_hashs)
             if num_cbz_inserts == 100 * POOL_CPU_LIMIT:
+                previously_count_duplicated_files, exclude_hashs = (
+                    calculate_exclude_hashs(
+                        previously_count_duplicated_files, exclude_hashs
+                    )
+                )
                 logger.info("Compressing galleries to CBZ...")
                 run_in_parallel(
                     self.compress_gallery_to_cbz,
@@ -2460,6 +2466,9 @@ class H2HDB(
                 poolinputs = list[str]()
                 num_cbz_inserts = 0
         if num_cbz_inserts > 0:
+            previously_count_duplicated_files, exclude_hashs = calculate_exclude_hashs(
+                previously_count_duplicated_files, exclude_hashs
+            )
             logger.info("Compressing galleries to CBZ...")
             run_in_parallel(
                 self.compress_gallery_to_cbz, [(x, exclude_hashs) for x in poolinputs]
