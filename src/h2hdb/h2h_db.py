@@ -1247,7 +1247,6 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                             FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id),
                             {create_gallery_name_parts_sql},
                             UNIQUE real_primay_key (db_gallery_id, {", ".join(column_name_parts)}),
-                            INDEX full_name ({", ".join(column_name_parts)}),
                             UNIQUE db_file_to_gallery_id (db_file_id, db_gallery_id)
                         )
                     """
@@ -2424,7 +2423,6 @@ class H2HDB(
         logger.info("Getting excluded hash values...")
         exclude_hashs = self._get_duplicated_hash_values_by_count_artist_ratio()
         previously_count_duplicated_files = self._count_duplicated_files_hashs_sha512()
-        current_count_duplicated_files = previously_count_duplicated_files
         logger.info("Excluded hash values obtained.")
 
         def calculate_exclude_hashs(
