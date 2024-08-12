@@ -2389,9 +2389,12 @@ class H2HDB(
 
     def insert_h2h_download(self) -> None:
         self.delete_pending_gallery_removals()
+
         current_galleries_folders, current_galleries_names = (
             self.scan_current_galleries_folders()
         )
+
+        self._refresh_current_cbz_files(current_galleries_names)
 
         logger.info("Inserting galleries...")
         if self.config.h2h.cbz_sort in ["upload_time", "download_time"]:
@@ -2476,8 +2479,6 @@ class H2HDB(
 
         logger.info("Cleaning up database...")
         self.refresh_current_files_hashs()
-
-        self._refresh_current_cbz_files(current_galleries_names)
 
         if is_insert_limit_reached:
             logger.info("Refreshing database...")
