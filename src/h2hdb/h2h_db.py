@@ -2273,6 +2273,8 @@ class H2HDB(
             logger.info(f"CBZ '{cbz_log_path}' created.")
 
     def scan_current_galleries_folders(self) -> tuple[list[str], list[str]]:
+        self.delete_pending_gallery_removals()
+
         with self.SQLConnector() as connector:
             tmp_table_name = "tmp_current_galleries"
             match self.config.database.sql_type.lower():
@@ -2329,10 +2331,10 @@ class H2HDB(
             if len(removed_galleries) > 0:
                 removed_galleries = [gallery[0] for gallery in removed_galleries]
 
-            for removed_gallery in removed_galleries:
-                self.insert_pending_gallery_removal(removed_gallery)
+        for removed_gallery in removed_galleries:
+            self.insert_pending_gallery_removal(removed_gallery)
 
-            self.delete_pending_gallery_removals()
+        self.delete_pending_gallery_removals()
 
         return (current_galleries_folders, current_galleries_names)
 
