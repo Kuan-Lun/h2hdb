@@ -502,7 +502,9 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
                     name_query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
                             PRIMARY KEY (db_gallery_id),
-                            FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id),
+                            FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id)
+                                ON UPDATE CASCADE
+                                ON DELETE CASCADE,
                             db_gallery_id INT  UNSIGNED NOT NULL,
                             full_name     TEXT          NOT NULL,
                             FULLTEXT (full_name)
@@ -603,7 +605,9 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
                             PRIMARY KEY (db_gallery_id),
-                            FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id),
+                            FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id)
+                                ON UPDATE CASCADE
+                                ON DELETE CASCADE,
                             db_gallery_id INT UNSIGNED NOT NULL,
                             gid           INT UNSIGNED NOT NULL,
                             INDEX (gid)
@@ -654,7 +658,9 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
                             PRIMARY KEY (db_gallery_id),
-                            FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id),
+                            FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id)
+                                ON UPDATE CASCADE
+                                ON DELETE CASCADE,
                             db_gallery_id INT UNSIGNED NOT NULL,
                             time          DATETIME     NOT NULL,
                             INDEX (time)
@@ -741,7 +747,9 @@ class H2HDBGalleriesTitles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
                             PRIMARY KEY (db_gallery_id),
-                            FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id),
+                            FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id)
+                                ON UPDATE CASCADE
+                                ON DELETE CASCADE,
                             db_gallery_id INT UNSIGNED NOT NULL,
                             title         TEXT         NOT NULL,
                             FULLTEXT (title)
@@ -793,7 +801,9 @@ class H2HDBUploadAccounts(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
                             PRIMARY KEY (db_gallery_id),
-                            FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id),
+                            FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id)
+                                ON UPDATE CASCADE
+                                ON DELETE CASCADE,
                             db_gallery_id INT UNSIGNED                      NOT NULL,
                             account       CHAR({self.innodb_index_prefix_limit}) NOT NULL,
                             INDEX (account)
@@ -881,7 +891,9 @@ class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
                             PRIMARY KEY (db_gallery_id),
-                            FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id),
+                            FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id)
+                                ON UPDATE CASCADE
+                                ON DELETE CASCADE,
                             db_gallery_id INT UNSIGNED NOT NULL,
                             comment       TEXT         NOT NULL,
                             FULLTEXT (Comment)
@@ -987,9 +999,13 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                             PRIMARY KEY (db_tag_pair_id),
                             db_tag_pair_id INT UNSIGNED                           AUTO_INCREMENT,
                             tag_name       CHAR({self.innodb_index_prefix_limit}) NOT NULL,
-                            FOREIGN KEY (tag_name) REFERENCES {tag_name_table_name}(tag_name),
+                            FOREIGN KEY (tag_name) REFERENCES {tag_name_table_name}(tag_name)
+                                ON UPDATE CASCADE
+                                ON DELETE CASCADE,
                             tag_value      CHAR({self.innodb_index_prefix_limit}) NOT NULL,
-                            FOREIGN KEY (tag_value) REFERENCES {tag_value_table_name}(tag_value),
+                            FOREIGN KEY (tag_value) REFERENCES {tag_value_table_name}(tag_value)
+                                ON UPDATE CASCADE
+                                ON DELETE CASCADE,
                             UNIQUE (tag_name, tag_value),
                             INDEX (tag_value)
                         )
@@ -1004,9 +1020,13 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         CREATE TABLE IF NOT EXISTS {table_name} (
                             PRIMARY KEY (db_gallery_id, db_tag_pair_id),
                             db_gallery_id  INT UNSIGNED NOT NULL,
-                            FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id),
+                            FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id)
+                                ON UPDATE CASCADE
+                                ON DELETE CASCADE,
                             db_tag_pair_id INT UNSIGNED NOT NULL,
-                            FOREIGN KEY (db_tag_pair_id) REFERENCES {tag_pairs_table_name}(db_tag_pair_id),
+                            FOREIGN KEY (db_tag_pair_id) REFERENCES {tag_pairs_table_name}(db_tag_pair_id)
+                                ON UPDATE CASCADE
+                                ON DELETE CASCADE,
                             UNIQUE (db_tag_pair_id, db_gallery_id)
                         )
                     """
@@ -1244,7 +1264,9 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                             PRIMARY KEY (db_file_id),
                             db_file_id    INT UNSIGNED AUTO_INCREMENT,
                             db_gallery_id INT UNSIGNED NOT NULL,
-                            FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id),
+                            FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id)
+                                ON UPDATE CASCADE
+                                ON DELETE CASCADE,
                             {create_gallery_name_parts_sql},
                             UNIQUE real_primay_key (db_gallery_id, {", ".join(column_name_parts)}),
                             UNIQUE db_file_to_gallery_id (db_file_id, db_gallery_id)
@@ -1259,7 +1281,9 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
                             PRIMARY KEY (db_file_id),
-                            FOREIGN KEY (db_file_id) REFERENCES files_dbids(db_file_id),
+                            FOREIGN KEY (db_file_id) REFERENCES files_dbids(db_file_id)
+                                ON UPDATE CASCADE
+                                ON DELETE CASCADE,
                             db_file_id  INT UNSIGNED NOT NULL,
                             full_name   TEXT         NOT NULL,
                             FULLTEXT (full_name)
@@ -1426,9 +1450,12 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
                             PRIMARY KEY (db_file_id),
-                            FOREIGN KEY (db_file_id) REFERENCES files_dbids(db_file_id),
+                            FOREIGN KEY (db_file_id) REFERENCES files_dbids(db_file_id)
+                                ON UPDATE CASCADE
+                                ON DELETE CASCADE,
                             db_file_id INT UNSIGNED NOT NULL,
-                            FOREIGN KEY (db_hash_id) REFERENCES {dbids_table_name}(db_hash_id),
+                            FOREIGN KEY (db_hash_id) REFERENCES {dbids_table_name}(db_hash_id)
+                                ON UPDATE CASCADE,
                             db_hash_id INT UNSIGNED NOT NULL,
                             UNIQUE db_hash_id (db_hash_id, db_file_id)
                         )
@@ -1943,49 +1970,7 @@ class H2HDB(
             self.delete_pending_gallery_removal(gallery_name)
 
     def delete_gallery_file(self, gallery_name: str) -> None:
-        with self.SQLConnector() as connector:
-            if not self._check_galleries_dbids_by_gallery_name(gallery_name):
-                logger.debug(f"Gallery '{gallery_name}' does not exist.")
-                return
-
-            match self.config.database.sql_type.lower():
-                case "mysql":
-                    select_table_name_query = f"""
-                        SELECT TABLE_NAME
-                        FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
-                        WHERE REFERENCED_TABLE_SCHEMA = '{self.config.database.database}'
-                        AND REFERENCED_TABLE_NAME = 'files_dbids'
-                        AND REFERENCED_COLUMN_NAME = 'db_file_id'
-                    """
-                    column_name_parts, _ = self.mysql_split_gallery_name_based_on_limit(
-                        "name"
-                    )
-                    get_delete_image_id_query = (
-                        lambda x: f"""
-                        DELETE FROM {x}
-                        WHERE
-                            db_file_id IN (
-                                SELECT db_file_id
-                                FROM files_dbids
-                                WHERE db_gallery_id = (
-                                    SELECT db_gallery_id
-                                    FROM galleries_dbids
-                                    WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
-                                )
-                            )
-                    """
-                    )
-
-            table_names = connector.fetch_all(select_table_name_query)
-            table_names = [t[0] for t in table_names]
-            logger.debug(f"Table names: {table_names}")
-
-            gallery_name_parts = self._split_gallery_name(gallery_name)
-            for table_name in table_names:
-                connector.execute(
-                    get_delete_image_id_query(table_name), tuple(gallery_name_parts)
-                )
-            logger.info(f"Gallery images for '{gallery_name}' deleted.")
+        logger.info(f"Gallery images for '{gallery_name}' deleted.")
 
     def delete_gallery(self, gallery_name: str) -> None:
         with self.SQLConnector() as connector:
@@ -1995,40 +1980,16 @@ class H2HDB(
 
             match self.config.database.sql_type.lower():
                 case "mysql":
-                    select_table_name_query = f"""
-                        SELECT TABLE_NAME
-                        FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
-                        WHERE REFERENCED_TABLE_SCHEMA = '{self.config.database.database}'
-                        AND REFERENCED_TABLE_NAME = 'galleries_dbids'
-                        AND REFERENCED_COLUMN_NAME = 'db_gallery_id'
-                    """
                     column_name_parts, _ = self.mysql_split_gallery_name_based_on_limit(
                         "name"
                     )
-                    get_delete_gallery_id_query = (
-                        lambda x: f"""
-                        DELETE FROM {x}
-                        WHERE db_gallery_id = (
-                                SELECT db_gallery_id
-                                FROM galleries_dbids
-                                WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
-                            )
+                    get_delete_gallery_id_query = f"""
+                        DELETE FROM galleries_dbids
+                        WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
                         """
-                    )
-
-            table_names = connector.fetch_all(select_table_name_query)
-            table_names = [t[0] for t in table_names] + ["galleries_dbids"]
-            logger.debug(f"Table names: {table_names}")
 
             gallery_name_parts = self._split_gallery_name(gallery_name)
-            for table_name in table_names:
-                connector.execute(
-                    get_delete_gallery_id_query(table_name), tuple(gallery_name_parts)
-                )
-            connector.execute(
-                get_delete_gallery_id_query("galleries_names"),
-                tuple(gallery_name_parts),
-            )
+            connector.execute(get_delete_gallery_id_query, tuple(gallery_name_parts))
             logger.info(f"Gallery '{gallery_name}' deleted.")
 
     def optimize_database(self) -> None:
