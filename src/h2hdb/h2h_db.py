@@ -1970,7 +1970,8 @@ class H2HDB(
             self.delete_pending_gallery_removal(gallery_name)
 
     def delete_gallery_file(self, gallery_name: str) -> None:
-        logger.info(f"Gallery images for '{gallery_name}' deleted.")
+        # logger.info(f"Gallery images for '{gallery_name}' deleted.")
+        pass
 
     def delete_gallery(self, gallery_name: str) -> None:
         with self.SQLConnector() as connector:
