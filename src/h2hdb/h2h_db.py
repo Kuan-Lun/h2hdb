@@ -2326,7 +2326,7 @@ class H2HDB(
                 break
         logger.info("Empty directories removed.")
 
-    def refresh_current_files_hashs(self):
+    def _refresh_current_files_hashs(self, algorithm: str) -> None:
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
                 case "mysql":
@@ -2341,11 +2341,18 @@ class H2HDB(
                             )
                         """
                     )
+            hash_table_name = f"files_hashs_{algorithm.lower()}"
+            db_table_name = f"files_hashs_{algorithm.lower()}_dbids"
+            connector.execute(
+                get_delete_db_hash_id_query(hash_table_name, db_table_name)
+            )
+
+    def refresh_current_files_hashs(self):
+        with SQLThreadsList() as threads:
             for algorithm in HASH_ALGORITHMS.keys():
-                hash_table_name = f"files_hashs_{algorithm.lower()}"
-                db_table_name = f"files_hashs_{algorithm.lower()}_dbids"
-                connector.execute(
-                    get_delete_db_hash_id_query(hash_table_name, db_table_name)
+                threads.append(
+                    target=self._refresh_current_files_hashs,
+                    args=(algorithm),
                 )
 
     def insert_h2h_download(self) -> None:
