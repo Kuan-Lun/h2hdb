@@ -2414,17 +2414,15 @@ class H2HDB(
                 logger.info("Excluded hash values updated.")
             return previously_count_duplicated_files, new_exclude_hashs
 
-        num_cbz_inserts = 0
         is_insert_limit_reached = False
         poolinputs = list[str]()
-        for gallery_name in current_galleries_folders:
+        for n, gallery_name in enumerate(current_galleries_folders):
             is_insert = self.insert_gallery_info(gallery_name)
             if is_insert:
                 is_insert_limit_reached = True
-                num_cbz_inserts += 1
             if self.config.h2h.cbz_path != "":
                 poolinputs.append(gallery_name)
-            if num_cbz_inserts == 100 * POOL_CPU_LIMIT:
+            if (n + 1) % (100 * POOL_CPU_LIMIT) == 0:
                 previously_count_duplicated_files, exclude_hashs = (
                     calculate_exclude_hashs(
                         previously_count_duplicated_files, exclude_hashs
@@ -2436,8 +2434,7 @@ class H2HDB(
                     [(x, exclude_hashs) for x in poolinputs],
                 )
                 poolinputs = list[str]()
-                num_cbz_inserts = 0
-        if num_cbz_inserts > 0:
+        if (n + 1) % (100 * POOL_CPU_LIMIT) != 0:
             previously_count_duplicated_files, exclude_hashs = calculate_exclude_hashs(
                 previously_count_duplicated_files, exclude_hashs
             )
