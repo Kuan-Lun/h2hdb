@@ -2414,20 +2414,24 @@ class H2HDB(
                 logger.info("Excluded hash values updated.")
             return previously_count_duplicated_files, new_exclude_hashs
 
+        num_cbz_inserts = 0
         is_insert_limit_reached = False
         poolinputs = list[str]()
         for n, gallery_name in enumerate(current_galleries_folders):
             is_insert = self.insert_gallery_info(gallery_name)
             if is_insert:
                 is_insert_limit_reached = True
+                num_cbz_inserts += 1
             if self.config.h2h.cbz_path != "":
                 poolinputs.append(gallery_name)
             if (n + 1) % (100 * POOL_CPU_LIMIT) == 0:
-                previously_count_duplicated_files, exclude_hashs = (
-                    calculate_exclude_hashs(
-                        previously_count_duplicated_files, exclude_hashs
+                if num_cbz_inserts > 0:
+                    previously_count_duplicated_files, exclude_hashs = (
+                        calculate_exclude_hashs(
+                            previously_count_duplicated_files, exclude_hashs
+                        )
                     )
-                )
+                    num_cbz_inserts = 0
                 logger.info("Compressing galleries to CBZ...")
                 run_in_parallel(
                     self.compress_gallery_to_cbz,
@@ -2435,9 +2439,13 @@ class H2HDB(
                 )
                 poolinputs = list[str]()
         if (n + 1) % (100 * POOL_CPU_LIMIT) != 0:
-            previously_count_duplicated_files, exclude_hashs = calculate_exclude_hashs(
-                previously_count_duplicated_files, exclude_hashs
-            )
+            if num_cbz_inserts > 0:
+                previously_count_duplicated_files, exclude_hashs = (
+                    calculate_exclude_hashs(
+                        previously_count_duplicated_files, exclude_hashs
+                    )
+                )
+                num_cbz_inserts = 0
             logger.info("Compressing galleries to CBZ...")
             run_in_parallel(
                 self.compress_gallery_to_cbz, [(x, exclude_hashs) for x in poolinputs]
