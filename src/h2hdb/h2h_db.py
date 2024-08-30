@@ -2395,8 +2395,8 @@ class H2HDB(
         logger.info("Galleries sorted.")
 
         logger.info("Getting excluded hash values...")
-        exclude_hashs = self._get_duplicated_hash_values_by_count_artist_ratio()
-        previously_count_duplicated_files = self._count_duplicated_files_hashs_sha512()
+        exclude_hashs = list[bytes]()
+        previously_count_duplicated_files = 0
         logger.info("Excluded hash values obtained.")
 
         def calculate_exclude_hashs(
