@@ -2359,7 +2359,7 @@ class H2HDB(
             for algorithm in algorithmlist:
                 threads.append(
                     target=self._refresh_current_files_hashs,
-                    args=(algorithm),
+                    args=(algorithm,),
                 )
 
     def insert_h2h_download(self) -> None:
