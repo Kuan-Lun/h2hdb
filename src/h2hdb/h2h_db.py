@@ -2328,6 +2328,11 @@ class H2HDB(
         logger.info("Empty directories removed.")
 
     def _refresh_current_files_hashs(self, algorithm: str) -> None:
+        if algorithm not in HASH_ALGORITHMS:
+            raise ValueError(
+                f"Invalid hash algorithm: {algorithm} not in {HASH_ALGORITHMS}"
+            )
+
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
                 case "mysql":
@@ -2349,8 +2354,9 @@ class H2HDB(
             )
 
     def refresh_current_files_hashs(self):
+        algorithmlist = list(HASH_ALGORITHMS.keys())
         with SQLThreadsList() as threads:
-            for algorithm in HASH_ALGORITHMS.keys():
+            for algorithm in algorithmlist:
                 threads.append(
                     target=self._refresh_current_files_hashs,
                     args=(algorithm),
