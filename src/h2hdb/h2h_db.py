@@ -130,16 +130,6 @@ class H2HDBAbstract(metaclass=ABCMeta):
                 raise ValueError("Unsupported SQL type")
 
     def __enter__(self) -> "H2HDBAbstract":
-        """
-        Establishes the SQL connection and starts a transaction.
-
-        Returns:
-            H2HDBAbstract: The initialized H2HDBAbstract object.
-        """
-        # self.connector.connect()
-        # match self.config.database.sql_type.lower():
-        #     case "mysql":
-        #         self.connector.execute("START TRANSACTION")
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
@@ -708,8 +698,15 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_galleries_download_times_table(self) -> None:
         self._create_times_table("galleries_download_times")
 
+    def _create_galleries_redownload_times_table(self) -> None:
+        self._create_times_table("galleries_redownload_times")
+
     def _insert_download_time(self, db_gallery_id: int, time: str) -> None:
         self._insert_time("galleries_download_times", db_gallery_id, time)
+        self._insert_time("galleries_redownload_times", db_gallery_id, time)
+
+    def update_redownload_time(self, db_gallery_id: int, time: str) -> None:
+        self._update_time("galleries_redownload_times", db_gallery_id, time)
 
     def _create_galleries_upload_times_table(self) -> None:
         self._create_times_table("galleries_upload_times")
@@ -2019,6 +2016,7 @@ class H2HDB(
         self._create_galleries_names_table()
         self._create_galleries_gids_table()
         self._create_galleries_download_times_table()
+        self._create_galleries_redownload_times_table()
         self._create_galleries_upload_times_table()
         self._create_galleries_modified_times_table()
         self._create_galleries_access_times_table()
