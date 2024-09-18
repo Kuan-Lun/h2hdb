@@ -2010,8 +2010,80 @@ class H2HDB(
                 connector.execute(get_optimize_query(table_name))
             logger.info("Database optimized.")
 
+    def _create_todownload_gids_table(self) -> None:
+        with self.SQLConnector() as connector:
+            table_name = "todownload_gids"
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    query = f"""
+                        CREATE TABLE IF NOT EXISTS {table_name} (
+                            PRIMARY KEY (gid),
+                            gid          INT UNSIGNED NOT NULL,
+                            url          CHAR({self.innodb_index_prefix_limit}) NOT NULL
+                        )
+                    """
+            connector.execute(query)
+            logger.info(f"{table_name} table created.")
+
+    def check_todownload_gid(self, gid: int, url: str) -> bool:
+        with self.SQLConnector() as connector:
+            table_name = "todownload_gids"
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    if url != "":
+                        select_query = f"""
+                            SELECT gid
+                            FROM {table_name}
+                            WHERE gid = %s AND url = %s
+                        """
+                        query_result = connector.fetch_one(select_query, (gid, url))
+                    else:
+                        select_query = f"""
+                            SELECT gid
+                            FROM {table_name}
+                            WHERE gid = %s
+                        """
+                        query_result = connector.fetch_one(select_query, (gid,))
+        return query_result is not None
+
+    def insert_todownload_gid(self, gid: int, url: str) -> None:
+        if not self.check_todownload_gid(gid, ""):
+            with self.SQLConnector() as connector:
+                table_name = "todownload_gids"
+                match self.config.database.sql_type.lower():
+                    case "mysql":
+                        insert_query = f"""
+                            INSERT INTO {table_name} (gid, url) VALUES (%s, %s)
+                        """
+                connector.execute(insert_query, (gid, url))
+        else:
+            if url != "":
+                if not self.check_todownload_gid(gid, url):
+                    self.update_todownload_gid(gid, url)
+
+    def update_todownload_gid(self, gid: int, url: str) -> None:
+        with self.SQLConnector() as connector:
+            table_name = "todownload_gids"
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    update_query = f"""
+                        UPDATE {table_name} SET url = %s WHERE gid = %s
+                    """
+            connector.execute(update_query, (url, gid))
+
+    def remove_todownload_gid(self, gid: int) -> None:
+        with self.SQLConnector() as connector:
+            table_name = "todownload_gids"
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    delete_query = f"""
+                        DELETE FROM {table_name} WHERE gid = %s
+                    """
+            connector.execute(delete_query, (gid,))
+
     def create_main_tables(self) -> None:
         logger.debug("Creating main tables...")
+        self._create_todownload_gids_table()
         self._create_pending_gallery_removals_table()
         self._create_galleries_names_table()
         self._create_galleries_gids_table()
