@@ -16,7 +16,7 @@ from .logger import logger
 from .sql_connector import DatabaseConfigurationError, DatabaseKeyError
 from .threading_tools import SQLThreadsList, run_in_parallel, POOL_CPU_LIMIT
 
-from .settings import hash_function_by_file, hash_function
+from .settings import hash_function_by_file, hash_function, chunk_list
 from .settings import (
     FOLDER_NAME_LENGTH_LIMIT,
     FILE_NAME_LENGTH_LIMIT,
@@ -2490,42 +2490,33 @@ class H2HDB(
                 logger.info("Excluded hash values updated.")
             return previously_count_duplicated_files, new_exclude_hashs
 
-        num_cbz_inserts = 0
         is_insert_limit_reached = False
         poolinputs = list[str]()
-        for n, gallery_name in enumerate(current_galleries_folders):
-            is_insert = self.insert_gallery_info(gallery_name)
-            if is_insert:
-                is_insert_limit_reached = True
-                num_cbz_inserts += 1
-            if self.config.h2h.cbz_path != "":
-                poolinputs.append(gallery_name)
-            if (n + 1) % (100 * POOL_CPU_LIMIT) == 0:
-                if num_cbz_inserts > 0:
-                    previously_count_duplicated_files, exclude_hashs = (
-                        calculate_exclude_hashs(
-                            previously_count_duplicated_files, exclude_hashs
-                        )
-                    )
-                    num_cbz_inserts = 0
+        chunked_galleries_folders = chunk_list(
+            current_galleries_folders, 100 * POOL_CPU_LIMIT
+        )
+        for gallery_chunk in chunked_galleries_folders:
+            is_insert_list = run_in_parallel(
+                self.insert_gallery_info,
+                [(x,) for x in gallery_chunk],
+            )
+            if any(is_insert_list):
+                is_insert_limit_reached |= True
+            poolinputs += [x for n, x in enumerate(gallery_chunk) if is_insert_list[n]]
+            if (len(poolinputs) >= 100 * POOL_CPU_LIMIT) or (
+                gallery_chunk == chunked_galleries_folders[-1]
+            ):
                 logger.info("Compressing galleries to CBZ...")
-                run_in_parallel(
-                    self.compress_gallery_to_cbz,
-                    [(x, exclude_hashs) for x in poolinputs],
-                )
-                poolinputs = list[str]()
-        if (n + 1) % (100 * POOL_CPU_LIMIT) != 0:
-            if num_cbz_inserts > 0:
                 previously_count_duplicated_files, exclude_hashs = (
                     calculate_exclude_hashs(
                         previously_count_duplicated_files, exclude_hashs
                     )
                 )
-                num_cbz_inserts = 0
-            logger.info("Compressing galleries to CBZ...")
-            run_in_parallel(
-                self.compress_gallery_to_cbz, [(x, exclude_hashs) for x in poolinputs]
-            )
+                run_in_parallel(
+                    self.compress_gallery_to_cbz,
+                    [(x, exclude_hashs) for x in poolinputs],
+                )
+                poolinputs = list[str]()
 
         logger.info("Cleaning up database...")
         self.refresh_current_files_hashs()

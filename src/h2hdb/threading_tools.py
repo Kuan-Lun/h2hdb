@@ -76,12 +76,13 @@ class SQLThreadsList(ThreadsList):
             return [SQL_SEMAPHORE]
 
 
-def run_in_parallel(fun, args: list[tuple]):
+def run_in_parallel(fun, args: list[tuple]) -> list:
     if len(args) == 0:
-        return
+        return list()
 
     with Pool(POOL_CPU_LIMIT) as pool:
         if len(args[0]) > 1:
-            pool.starmap(fun, args)
+            results = pool.starmap(fun, args)
         else:
-            pool.map(fun, args)
+            results = pool.map(fun, args)
+    return results
