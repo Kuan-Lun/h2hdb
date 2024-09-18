@@ -84,5 +84,5 @@ def run_in_parallel(fun, args: list[tuple]) -> list:
         if len(args[0]) > 1:
             results = pool.starmap(fun, args)
         else:
-            results = pool.map(fun, args)
+            results = pool.map(fun, [arg[0] for arg in args])
     return results

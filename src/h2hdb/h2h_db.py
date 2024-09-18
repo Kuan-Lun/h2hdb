@@ -2496,7 +2496,10 @@ class H2HDB(
             current_galleries_folders, 100 * POOL_CPU_LIMIT
         )
         for gallery_chunk in chunked_galleries_folders:
-            is_insert_list = run_in_parallel(self.insert_gallery_info, gallery_chunk)
+            is_insert_list = run_in_parallel(
+                self.insert_gallery_info,
+                [(x,) for x in gallery_chunk],
+            )
             if any(is_insert_list):
                 is_insert_limit_reached |= True
             poolinputs += [x for n, x in enumerate(gallery_chunk) if is_insert_list[n]]
