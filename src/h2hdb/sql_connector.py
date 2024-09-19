@@ -34,6 +34,18 @@ class DatabaseKeyError(Exception):
         super().__init__(self.message)
 
 
+class DatabaseDuplicateKeyError(Exception):
+    """
+    Custom exception class for database duplicate key errors.
+
+    This class inherits from the built-in Python Exception class. You can add additional methods or attributes if needed.
+    """
+
+    def __init__(self, message):
+        self.message = message
+        super().__init__(self.message)
+
+
 class DatabaseTableError(Exception):
     """
     Custom exception class for database table errors.

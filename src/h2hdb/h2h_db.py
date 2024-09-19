@@ -13,7 +13,11 @@ from random import shuffle
 from .gallery_info_parser import parse_gallery_info, GalleryInfoParser
 from .config_loader import Config
 from .logger import logger
-from .sql_connector import DatabaseConfigurationError, DatabaseKeyError
+from .sql_connector import (
+    DatabaseConfigurationError,
+    DatabaseKeyError,
+    DatabaseDuplicateKeyError,
+)
 from .threading_tools import SQLThreadsList, run_in_parallel, POOL_CPU_LIMIT
 
 from .settings import hash_function_by_file, hash_function, chunk_list
@@ -1095,7 +1099,12 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         ["VALUES", ", ".join(["(%s)" for _ in tag_names])]
                     )
                     insert_query = f"{insert_query_header} {insert_query_values}"
-            connector.execute(insert_query, tuple(tag_names))
+            try:
+                connector.execute(insert_query, tuple(tag_names))
+            except DatabaseDuplicateKeyError:
+                pass
+            except Exception as e:
+                raise e
 
     def _insert_tag_values(self, tag_values: list[str]) -> None:
         if len(tag_values) == 0:
@@ -1111,7 +1120,12 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         ["VALUES", ", ".join(["(%s)" for _ in tag_values])]
                     )
                     insert_query = f"{insert_query_header} {insert_query_values}"
-            connector.execute(insert_query, tuple(tag_values))
+            try:
+                connector.execute(insert_query, tuple(tag_values))
+            except DatabaseDuplicateKeyError:
+                pass
+            except Exception as e:
+                raise e
 
     def _insert_tag_pairs_dbids(self, tags: list[TagInformation]) -> None:
         if len(tags) == 0:
@@ -1130,7 +1144,16 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             parameter = list[str]()
             for tag in tags:
                 parameter.extend([tag.tag_name, tag.tag_value])
-            connector.execute(insert_query, tuple(parameter))
+            try:
+                connector.execute(insert_query, tuple(parameter))
+            except DatabaseDuplicateKeyError:
+                toinsert_db_tag_pair_id = list[TagInformation]()
+                for tag in tags:
+                    if not self._check_db_tag_pair_id(tag.tag_name, tag.tag_value):
+                        toinsert_db_tag_pair_id.append(tag)
+                self._insert_tag_pairs_dbids(toinsert_db_tag_pair_id)
+            except Exception as e:
+                raise e
 
     def _insert_gallery_tags(
         self, db_gallery_id: int, tags: list[TagInformation]
@@ -1527,7 +1550,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self.insert_hash_value_by_db_hash_ids(fileinformations)
 
     def _insert_gallery_file_hash(
-        self, db_file_id: int, absolute_file_path: str
+        self, db_file_id: int, absolute_file_path: str, retry: int = 3
     ) -> None:
 
         algorithmlist = list(HASH_ALGORITHMS.keys())
@@ -1569,9 +1592,17 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                                 insert_hash_value_query = f"""
                                     INSERT INTO {table_name} (hash_value) VALUES (%s)
                                 """
-                        connector.execute(
-                            insert_hash_value_query, (current_hash_value,)
-                        )
+
+                        try:
+                            connector.execute(
+                                insert_hash_value_query, (current_hash_value,)
+                            )
+                        except DatabaseDuplicateKeyError:
+                            logger.warning(
+                                f"Hash value {current_hash_value!r} already exists in the database."
+                            )
+                        except Exception as e:
+                            raise e
                         db_hash_id = self.get_db_hash_id_by_hash_value(
                             current_hash_value, algorithm
                         )

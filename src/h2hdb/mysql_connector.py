@@ -1,11 +1,24 @@
 from mysql.connector.pooling import PooledMySQLConnection
 from mysql.connector.abstracts import MySQLConnectionAbstract
 from mysql.connector import connect as SQLConnect
+from mysql.connector.errors import IntegrityError
 
 from .logger import logger
-from .sql_connector import SQLConnectorParams, SQLConnector
+from .sql_connector import SQLConnectorParams, SQLConnector, DatabaseDuplicateKeyError
 
 AUTO_COMMIT_KEYS = ["INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER"]
+
+
+class MySQLDuplicateKeyError(DatabaseDuplicateKeyError):
+    """
+    Custom exception class for MySQL duplicate key errors.
+
+    This class inherits from the MySQL Connector/Python IntegrityError class.
+    """
+
+    def __init__(self, message):
+        self.message = message
+        super().__init__(self.message)
 
 
 class MySQLConnectorParams(SQLConnectorParams):
@@ -96,7 +109,10 @@ class MySQLConnector(SQLConnector):
     def execute(self, query: str, data: tuple = ()) -> None:
         logger.debug(f"Executing MySQL query: {query}")
         with MySQLCursor(self.connection) as cursor:
-            cursor.execute(query, data)
+            try:
+                cursor.execute(query, data)
+            except IntegrityError as e:
+                raise MySQLDuplicateKeyError(str(e))
         if any(key in query.upper() for key in AUTO_COMMIT_KEYS):
             self.commit()
 
