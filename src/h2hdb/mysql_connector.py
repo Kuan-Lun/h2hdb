@@ -119,7 +119,10 @@ class MySQLConnector(SQLConnector):
     def execute_many(self, query: str, data: list[tuple]) -> None:
         logger.debug(f"Executing multiple MySQL queries: {query}")
         with MySQLCursor(self.connection) as cursor:
-            cursor.executemany(query, data)
+            try:
+                cursor.executemany(query, data)
+            except IntegrityError as e:
+                raise MySQLDuplicateKeyError(str(e))
         if any(key in query.upper() for key in AUTO_COMMIT_KEYS):
             self.commit()
 

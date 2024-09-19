@@ -1550,7 +1550,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self.insert_hash_value_by_db_hash_ids(fileinformations)
 
     def _insert_gallery_file_hash(
-        self, db_file_id: int, absolute_file_path: str, retry: int = 3
+        self, db_file_id: int, absolute_file_path: str
     ) -> None:
 
         algorithmlist = list(HASH_ALGORITHMS.keys())
@@ -1696,7 +1696,16 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         ["VALUES", ", ".join(["(%s)" for _ in hash_values])]
                     )
             insert_query = f"{insert_query_header} {insert_query_values}"
-            connector.execute(insert_query, tuple(hash_values))
+            try:
+                connector.execute(insert_query, tuple(hash_values))
+            except DatabaseDuplicateKeyError:
+                toinsert = list[bytes]()
+                for hash_value in hash_values:
+                    if not self._check_db_hash_id_by_hash_value(hash_value, algorithm):
+                        toinsert.append(hash_value)
+                self.insert_db_hash_id_by_hash_values(toinsert, algorithm)
+            except Exception as e:
+                raise e
 
     def get_hash_value_by_db_hash_id(self, db_hash_id: int, algorithm: str) -> bytes:
         with self.SQLConnector() as connector:
