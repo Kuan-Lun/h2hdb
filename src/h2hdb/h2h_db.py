@@ -1940,7 +1940,6 @@ class H2HDB(
                             INSERT INTO {table_name} ({", ".join(column_name_parts)}, full_name)
                             VALUES ({", ".join(["%s" for _ in column_name_parts])}, %s)
                         """
-                print(insert_query, gallery_name_parts, gallery_name)
                 connector.execute(
                     insert_query, (*tuple(gallery_name_parts), gallery_name)
                 )
