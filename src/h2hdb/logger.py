@@ -189,6 +189,8 @@ def setup_synochat_webhook_logger(
             token = uridict["query"]["token"]
             try:
                 webhook = IncomingWebhook(authority, token)
+                for key, value in {"&": "%26", "+": "%2B"}.items():
+                    s = s.replace(key, value)
                 webhook.send(s)
             except RateLimitError:
                 if retry > 0:
