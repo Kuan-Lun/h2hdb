@@ -21,8 +21,13 @@ class UpdateH2HDB:
         match self.config.media_server.server_type:
             case "komga":
                 self.thread_underlying_target = partial(scan_komga_library, self.config)
-            case _:
+            case "":
+                print("No media server type specified. Exiting.")
                 self.thread_underlying_target = lambda: None
+            case _:
+                raise ValueError(
+                    f"Unsupported media server type: {self.config.media_server.server_type}"
+                )
 
         def loop_target():
             while self.thread_running:
