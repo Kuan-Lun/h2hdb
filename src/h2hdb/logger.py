@@ -194,8 +194,10 @@ def setup_synochat_webhook_logger(
                 webhook.send(s)
             except RateLimitError:
                 if retry > 0:
-                    sleep(60)
+                    sleep(5)
                     self.msg2synochat(s, url, retry=retry - 1)
+                else:
+                    print(f'Rate limit exceeded. Unable to send message "{s}".')
             except (ConnectionError, UnknownApiError) as e:
                 print(e)
             except Exception as e:

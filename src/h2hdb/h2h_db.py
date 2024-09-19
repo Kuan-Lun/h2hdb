@@ -2491,7 +2491,6 @@ class H2HDB(
             return previously_count_duplicated_files, new_exclude_hashs
 
         is_insert_limit_reached = False
-        poolinputs = list[str]()
         chunked_galleries_folders = chunk_list(
             current_galleries_folders, 100 * POOL_CPU_LIMIT
         )
@@ -2502,21 +2501,16 @@ class H2HDB(
             )
             if any(is_insert_list):
                 is_insert_limit_reached |= True
-            poolinputs += [x for n, x in enumerate(gallery_chunk) if is_insert_list[n]]
-            if (len(poolinputs) >= 100 * POOL_CPU_LIMIT) or (
-                gallery_chunk == chunked_galleries_folders[-1]
-            ):
                 logger.info("Compressing galleries to CBZ...")
                 previously_count_duplicated_files, exclude_hashs = (
                     calculate_exclude_hashs(
                         previously_count_duplicated_files, exclude_hashs
                     )
                 )
-                run_in_parallel(
-                    self.compress_gallery_to_cbz,
-                    [(x, exclude_hashs) for x in poolinputs],
-                )
-                poolinputs = list[str]()
+            run_in_parallel(
+                self.compress_gallery_to_cbz,
+                [(x, exclude_hashs) for x in gallery_chunk],
+            )
 
         logger.info("Cleaning up database...")
         self.refresh_current_files_hashs()
