@@ -1558,41 +1558,38 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         for algorithm in algorithmlist:
             is_insert = False
             current_hash_value = hash_function_by_file(absolute_file_path, algorithm)
-            with self.SQLConnector() as connector:
-                if self._check_hash_value_by_file_id(db_file_id, algorithm):
-                    original_hash_value = self.get_hash_value_by_file_id(
-                        db_file_id, algorithm
-                    )
-                    if original_hash_value != current_hash_value:
-                        if self._check_db_hash_id_by_hash_value(
-                            current_hash_value, algorithm
-                        ):
-                            db_hash_id = self.get_db_hash_id_by_hash_value(
-                                current_hash_value, algorithm
-                            )
-                            self._update_gallery_file_hash_by_db_hash_id(
-                                db_file_id, db_hash_id, algorithm
-                            )
-                        else:
-                            is_insert |= True
-                else:
-                    is_insert |= True
-
-                if is_insert:
+            if self._check_hash_value_by_file_id(db_file_id, algorithm):
+                original_hash_value = self.get_hash_value_by_file_id(
+                    db_file_id, algorithm
+                )
+                if original_hash_value != current_hash_value:
                     if self._check_db_hash_id_by_hash_value(
                         current_hash_value, algorithm
                     ):
                         db_hash_id = self.get_db_hash_id_by_hash_value(
                             current_hash_value, algorithm
                         )
+                        self._update_gallery_file_hash_by_db_hash_id(
+                            db_file_id, db_hash_id, algorithm
+                        )
                     else:
+                        is_insert |= True
+            else:
+                is_insert |= True
+
+            if is_insert:
+                if self._check_db_hash_id_by_hash_value(current_hash_value, algorithm):
+                    db_hash_id = self.get_db_hash_id_by_hash_value(
+                        current_hash_value, algorithm
+                    )
+                else:
+                    with self.SQLConnector() as connector:
                         table_name = f"files_hashs_{algorithm.lower()}_dbids"
                         match self.config.database.sql_type.lower():
                             case "mysql":
                                 insert_hash_value_query = f"""
                                     INSERT INTO {table_name} (hash_value) VALUES (%s)
                                 """
-
                         try:
                             connector.execute(
                                 insert_hash_value_query, (current_hash_value,)
@@ -1603,10 +1600,11 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                             )
                         except Exception as e:
                             raise e
-                        db_hash_id = self.get_db_hash_id_by_hash_value(
-                            current_hash_value, algorithm
-                        )
+                    db_hash_id = self.get_db_hash_id_by_hash_value(
+                        current_hash_value, algorithm
+                    )
 
+                with self.SQLConnector() as connector:
                     table_name = f"files_hashs_{algorithm.lower()}"
                     match self.config.database.sql_type.lower():
                         case "mysql":
