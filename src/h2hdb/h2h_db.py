@@ -2221,12 +2221,12 @@ class H2HDB(
             self.delete_gallery_file(gallery_info_params.gallery_name)
             self.delete_gallery(gallery_info_params.gallery_name)
             self._insert_gallery_info(gallery_info_params)
-            logger.info(f"Gallery '{gallery_info_params.gallery_name}' inserted.")
+            logger.debug(f"Gallery '{gallery_info_params.gallery_name}' inserted.")
         return is_insert
 
     def compress_gallery_to_cbz(
         self, gallery_folder: str, exclude_hashs: list[bytes]
-    ) -> None:
+    ) -> bool:
         from .compress_gallery_to_cbz import (
             compress_images_and_create_cbz,
             calculate_hash_of_file_in_cbz,
@@ -2293,7 +2293,10 @@ class H2HDB(
                     self.config.h2h.cbz_max_size,
                     exclude_hashs,
                 )
-                logger.info(f"CBZ '{cbz_log_path}' updated.")
+                logger.debug(f"CBZ '{cbz_log_path}' updated.")
+                result = True
+            else:
+                result = False
         else:
             compress_images_and_create_cbz(
                 gallery_folder,
@@ -2302,7 +2305,9 @@ class H2HDB(
                 self.config.h2h.cbz_max_size,
                 exclude_hashs,
             )
-            logger.info(f"CBZ '{cbz_log_path}' created.")
+            logger.debug(f"CBZ '{cbz_log_path}' created.")
+            result = True
+        return result
 
     def scan_current_galleries_folders(self) -> tuple[list[str], list[str]]:
         self.delete_pending_gallery_removals()
@@ -2490,29 +2495,43 @@ class H2HDB(
                 logger.info("Excluded hash values updated.")
             return previously_count_duplicated_files, new_exclude_hashs
 
+        total_inserted_in_database = 0
+        total_created_cbz = 0
         is_insert_limit_reached = False
         chunked_galleries_folders = chunk_list(
             current_galleries_folders, 100 * POOL_CPU_LIMIT
         )
+        logger.info("Inserting galleries in parallel...")
         for gallery_chunk in chunked_galleries_folders:
+            # Insert gallery info to database
             is_insert_list = run_in_parallel(
                 self.insert_gallery_info,
                 [(x,) for x in gallery_chunk],
             )
             if any(is_insert_list):
+                logger.info("There are new galleries inserted in database.")
                 is_insert_limit_reached |= True
-                if self.config.h2h.cbz_path != "":
+                total_inserted_in_database += sum(is_insert_list)
+
+            # Compress gallery to CBZ file
+            if self.config.h2h.cbz_path != "":
+                if any(is_insert_list):
                     previously_count_duplicated_files, exclude_hashs = (
                         calculate_exclude_hashs(
                             previously_count_duplicated_files, exclude_hashs
                         )
                     )
-            if self.config.h2h.cbz_path != "":
-                logger.info("Compressing galleries to CBZ...")
-                run_in_parallel(
+                is_new_list = run_in_parallel(
                     self.compress_gallery_to_cbz,
                     [(x, exclude_hashs) for x in gallery_chunk],
                 )
+                if any(is_new_list):
+                    logger.info("There are new CBZ files created.")
+                    total_created_cbz += sum(is_new_list)
+        logger.info(
+            "Total galleries inserted in database: {total_inserted_in_database}"
+        )
+        logger.info("Total CBZ files created: {total_created_cbz}")
 
         logger.info("Cleaning up database...")
         self.refresh_current_files_hashs()
