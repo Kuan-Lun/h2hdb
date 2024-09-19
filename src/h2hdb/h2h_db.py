@@ -171,8 +171,8 @@ class H2HDBAbstract(metaclass=ABCMeta):
             name_parts.append(
                 f"{name}_part{num_parts} CHAR({name_length_limit % self.innodb_index_prefix_limit}) NOT NULL"
             )
-        create_name_parts_sql = ", ".join(name_parts)
         column_name_parts = [f"{name}_part{i}" for i in range(1, num_parts + 1)]
+        create_name_parts_sql = ", ".join(name_parts)
         return column_name_parts, create_name_parts_sql
 
     def mysql_split_gallery_name_based_on_limit(
@@ -1940,6 +1940,7 @@ class H2HDB(
                             INSERT INTO {table_name} ({", ".join(column_name_parts)}, full_name)
                             VALUES ({", ".join(["%s" for _ in column_name_parts])}, %s)
                         """
+                print(insert_query, gallery_name_parts, gallery_name)
                 connector.execute(
                     insert_query, (*tuple(gallery_name_parts), gallery_name)
                 )
