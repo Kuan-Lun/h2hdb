@@ -2502,13 +2502,13 @@ class H2HDB(
             if any(is_insert_list):
                 is_insert_limit_reached |= True
                 if self.config.h2h.cbz_path != "":
-                    logger.info("Compressing galleries to CBZ...")
                     previously_count_duplicated_files, exclude_hashs = (
                         calculate_exclude_hashs(
                             previously_count_duplicated_files, exclude_hashs
                         )
                     )
             if self.config.h2h.cbz_path != "":
+                logger.info("Compressing galleries to CBZ...")
                 run_in_parallel(
                     self.compress_gallery_to_cbz,
                     [(x, exclude_hashs) for x in gallery_chunk],
