@@ -91,6 +91,9 @@ class H2HDBAbstract(metaclass=ABCMeta):
         get_files_by_gallery_name: Selects the gallery files from the database.
         delete_gallery_file: Deletes the gallery image from the database.
         delete_gallery: Deletes the gallery from the database.
+        insert_todownload_gid: Inserts the GID to be downloaded into the database.
+        check_todownload_gid: Checks if the GID is to be downloaded.
+        get_todownload_gids: Selects the GIDs to be downloaded from the database.
 
     Methods:
         __init__: Initializes the H2HDBAbstract object.
@@ -407,6 +410,40 @@ class H2HDBAbstract(metaclass=ABCMeta):
 
         Returns:
             dict: The Komga metadata.
+        """
+        pass
+
+    @abstractmethod
+    def check_todownload_gid(self, gid: int, url: str) -> bool:
+        """
+        Checks if the GID is to be downloaded.
+
+        Args:
+            gid (int): The gallery GID.
+            url (str): The gallery URL.
+
+        Returns:
+            bool: True if the GID is to be downloaded, False otherwise.
+        """
+        pass
+
+    @abstractmethod
+    def get_todownload_gids(self) -> list[tuple[int, str]]:
+        """
+        Selects the GIDs to be downloaded from the database.
+
+        Returns:
+            list[tuple[int, str]]: The list of GIDs to be downloaded.
+        """
+        pass
+
+    @abstractmethod
+    def remove_todownload_gid(self, gid: int) -> None:
+        """
+        Removes the GID to be downloaded from the database.
+
+        Args:
+            gid (int): The gallery GID.
         """
         pass
 
