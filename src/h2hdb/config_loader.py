@@ -27,7 +27,7 @@ class SynoChatConfig:
         if not isinstance(webhook_url, str):
             raise TypeError("webhook_url must be a string")
 
-        if not webhook_url.startswith("https://"):
+        if (webhook_url != "") and (not webhook_url.startswith("https://")):
             raise ConfigError("webhook_url must start with https://")
 
 
