@@ -2413,7 +2413,7 @@ class H2HDB(
 
         return (current_galleries_folders, current_galleries_names)
 
-    def _refresh_current_cbz_files(self, current_galleries_names) -> None:
+    def _refresh_current_cbz_files(self, current_galleries_names: list[str]) -> None:
         from .compress_gallery_to_cbz import gallery_name_to_cbz_file_name
 
         current_cbzs = dict[str, str]()
@@ -2519,7 +2519,7 @@ class H2HDB(
         logger.info("Excluded hash values obtained.")
 
         def calculate_exclude_hashs(
-            previously_count_duplicated_files, exclude_hashs
+            previously_count_duplicated_files: int, exclude_hashs: list[bytes]
         ) -> tuple[int, list[bytes]]:
             logger.debug("Checking for duplicated files...")
             current_count_duplicated_files = self._count_duplicated_files_hashs_sha512()

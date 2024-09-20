@@ -36,7 +36,7 @@ def compress_image(image_path: str, output_path: str, max_size: int) -> None:
         image.save(output_path, image.format)
 
 
-def create_cbz(directory, output_path):
+def create_cbz(directory, output_path) -> None:
     """Create a CBZ file from all images in a directory."""
     with zipfile.ZipFile(output_path, "w") as cbz:
         for filename in os.listdir(directory):

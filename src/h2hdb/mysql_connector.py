@@ -16,7 +16,7 @@ class MySQLDuplicateKeyError(DatabaseDuplicateKeyError):
     This class inherits from the MySQL Connector/Python IntegrityError class.
     """
 
-    def __init__(self, message):
+    def __init__(self, message) -> None:
         self.message = message
         super().__init__(self.message)
 
@@ -47,7 +47,9 @@ class MySQLConnectorParams(SQLConnectorParams):
 
 
 class MySQLCursor:
-    def __init__(self, connection: PooledMySQLConnection | MySQLConnectionAbstract):
+    def __init__(
+        self, connection: PooledMySQLConnection | MySQLConnectionAbstract
+    ) -> None:
         self.connection = connection
 
     def __enter__(self):

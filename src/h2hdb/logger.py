@@ -174,11 +174,11 @@ def setup_synochat_webhook_logger(
     from synochat.exceptions import UnknownApiError  # type: ignore
 
     class SynoChatHandler(logging.Handler):
-        def __init__(self, synochat_config: SynoChatConfig, *args, **kwargs):
+        def __init__(self, synochat_config: SynoChatConfig, *args, **kwargs) -> None:
             super().__init__(*args, **kwargs)
             self.synochat_config = synochat_config
 
-        def emit(self, record):
+        def emit(self, record) -> None:
             log_entry = self.format(record)
             self.msg2synochat(log_entry, self.synochat_config.webhook_url)
 
@@ -266,7 +266,7 @@ class HentaiDBLogger:
         write_to_file: str,
         max_log_entry_length: int,
         synochat_webhook: SynoChatConfig,
-    ):
+    ) -> None:
         logging_level = LOG_CONFIG[level.lower()]
         self.display_on_screen = display_on_screen
         if self.display_on_screen:
