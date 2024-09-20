@@ -2119,6 +2119,19 @@ class H2HDB(
                     """
             connector.execute(delete_query, (gid,))
 
+    def get_todownload_gids(self) -> list[tuple[int, str]]:
+        with self.SQLConnector() as connector:
+            table_name = "todownload_gids"
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    select_query = f"""
+                        SELECT gid, url
+                        FROM {table_name}
+                    """
+            query_result = connector.fetch_all(select_query)
+        todownload_gids = [(query[0], query[1]) for query in query_result]
+        return todownload_gids
+
     def create_main_tables(self) -> None:
         logger.debug("Creating main tables...")
         self._create_todownload_gids_table()
