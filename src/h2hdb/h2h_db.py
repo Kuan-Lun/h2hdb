@@ -2381,7 +2381,7 @@ class H2HDB(
                     self.config.h2h.cbz_max_size,
                     exclude_hashs,
                 )
-                logger.debug(f"CBZ '{cbz_log_path}' updated.")
+                logger.info(f"CBZ '{cbz_log_path}' updated.")
                 result = True
             else:
                 result = False
@@ -2393,7 +2393,7 @@ class H2HDB(
                 self.config.h2h.cbz_max_size,
                 exclude_hashs,
             )
-            logger.debug(f"CBZ '{cbz_log_path}' created.")
+            logger.info(f"CBZ '{cbz_log_path}' created.")
             result = True
         return result
 
