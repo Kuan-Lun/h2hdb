@@ -2357,9 +2357,14 @@ class H2HDB(
         cbz_log_path = os.path.join(
             cbz_log_directory, gallery_info_params.gallery_name + ".cbz"
         )
+
+        def gallery_name2cbz_file_name(gallery_name: str) -> str:
+            while (len(gallery_name.encode("utf-8")) + 4) > FILE_NAME_LENGTH_LIMIT:
+                gallery_name = gallery_name[1:]
+            return gallery_name + ".cbz"
+
         cbz_path = os.path.join(
-            cbz_directory,
-            (gallery_info_params.gallery_name + ".cbz")[-FILE_NAME_LENGTH_LIMIT:],
+            cbz_directory, gallery_name2cbz_file_name(gallery_info_params.gallery_name)
         )
         if os.path.exists(cbz_path):
             db_gallery_id = self._get_db_gallery_id_by_gallery_name(
