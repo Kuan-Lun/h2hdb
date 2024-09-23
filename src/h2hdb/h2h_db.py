@@ -2617,9 +2617,9 @@ class H2HDB(
                     logger.info("There are new CBZ files created.")
                     total_created_cbz += sum(is_new_list)
         logger.info(
-            "Total galleries inserted in database: {total_inserted_in_database}"
+            f"Total galleries inserted in database: {total_inserted_in_database}"
         )
-        logger.info("Total CBZ files created: {total_created_cbz}")
+        logger.info(f"Total CBZ files created: {total_created_cbz}")
 
         logger.info("Cleaning up database...")
         self.refresh_current_files_hashs()
