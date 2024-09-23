@@ -428,6 +428,17 @@ class H2HDBAbstract(metaclass=ABCMeta):
         pass
 
     @abstractmethod
+    def insert_todownload_gid(self, gid: int, url: str) -> None:
+        """
+        Inserts the GID to be downloaded into the database.
+
+        Args:
+            gid (int): The gallery GID.
+            url (str): The gallery URL.
+        """
+        pass
+    
+    @abstractmethod
     def get_todownload_gids(self) -> list[tuple[int, str]]:
         """
         Selects the GIDs to be downloaded from the database.
