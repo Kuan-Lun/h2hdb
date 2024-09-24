@@ -9,6 +9,7 @@ import math
 from itertools import islice, chain
 from functools import partial
 from random import shuffle
+from time import sleep
 
 from .gallery_info_parser import parse_gallery_info, GalleryInfoParser
 from .config_loader import Config
@@ -437,7 +438,7 @@ class H2HDBAbstract(metaclass=ABCMeta):
             url (str): The gallery URL.
         """
         pass
-    
+
     @abstractmethod
     def get_todownload_gids(self) -> list[tuple[int, str]]:
         """
@@ -2642,6 +2643,8 @@ class H2HDB(
         self.refresh_current_files_hashs()
 
         if is_insert_limit_reached:
+            logger.info("Sleeping for 30 minutes...")
+            sleep(1800)
             logger.info("Refreshing database...")
             return self.insert_h2h_download()
 
