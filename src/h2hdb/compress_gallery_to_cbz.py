@@ -16,24 +16,30 @@ from .settings import hash_function_by_file
 def compress_image(image_path: str, output_path: str, max_size: int) -> None:
     """Compress an image, saving it to the output path."""
     with Image.open(image_path) as image:
+        if image.mode in ("RGBA", "LA"):
+            image = image.convert("RGBA")
+            white_bg = Image.new("RGBA", image.size, (255, 255, 255, 255))
+            image = Image.alpha_composite(white_bg, image)
+            image = image.convert("RGB")
         if image.mode != "RGB":
             image = image.convert("RGB")
 
         if max_size >= 1:
-            if image.height > image.width:
+            if image.height >= image.width:
                 max_width = max_size
                 scale = max_size / image.width
                 max_height = int(image.height * scale)
-            elif image.width > image.height:
+            else:
                 max_height = max_size
                 scale = max_size / image.height
                 max_width = int(image.width * scale)
-            else:
-                max_width = image.width
-                max_height = image.height
-        resample = Image.BICUBIC if image.format == "JPEG" else Image.BILINEAR  # type: ignore
-        image.thumbnail((max_width, max_height), resample=resample)
-        image.save(output_path, image.format)
+
+        unsuitable_formats = ["GIF", "TIFF", "ICO"]
+        image.thumbnail((max_width, max_height), resample=Image.LANCZOS)
+        if image.format in unsuitable_formats:
+            image.save(output_path, image.format)
+        else:
+            image.save(output_path, "JPEG")
 
 
 def create_cbz(directory, output_path) -> None:
@@ -53,9 +59,17 @@ def hash_and_process_file(
     file_hash = hash_function_by_file(
         os.path.join(input_directory, filename), COMPARISON_HASH_ALGORITHM
     )
-
+    base, ext = os.path.splitext(filename)
+    filename = base + ext.lower()
     if file_hash not in exclude_hashs:
-        if filename.lower().endswith((".jpg", ".jpeg", ".png", ".gif")):
+        if filename.endswith((".jpg", ".jpeg", ".png", "bmp")):
+            filename = base + ".jpg"
+            compress_image(
+                os.path.join(input_directory, filename),
+                os.path.join(tmp_cbz_directory, filename),
+                max_size,
+            )
+        elif filename.endswith(".gif"):
             compress_image(
                 os.path.join(input_directory, filename),
                 os.path.join(tmp_cbz_directory, filename),
