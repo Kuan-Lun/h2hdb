@@ -59,10 +59,9 @@ def hash_and_process_file(
     file_hash = hash_function_by_file(
         os.path.join(input_directory, filename), COMPARISON_HASH_ALGORITHM
     )
-    base, ext = os.path.splitext(filename)
     if file_hash not in exclude_hashs:
         if filename.lower().endswith((".jpg", ".jpeg", ".png", "bmp")):
-            new_filename = base + ".jpg"
+            new_filename = os.path.splitext(filename)[0] + ".jpg"
             compress_image(
                 os.path.join(input_directory, filename),
                 os.path.join(tmp_cbz_directory, new_filename),
