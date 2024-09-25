@@ -60,16 +60,15 @@ def hash_and_process_file(
         os.path.join(input_directory, filename), COMPARISON_HASH_ALGORITHM
     )
     base, ext = os.path.splitext(filename)
-    filename = base + ext.lower()
     if file_hash not in exclude_hashs:
-        if filename.endswith((".jpg", ".jpeg", ".png", "bmp")):
-            filename = base + ".jpg"
+        if filename.lower().endswith((".jpg", ".jpeg", ".png", "bmp")):
+            new_filename = base + ".jpg"
             compress_image(
                 os.path.join(input_directory, filename),
-                os.path.join(tmp_cbz_directory, filename),
+                os.path.join(tmp_cbz_directory, new_filename),
                 max_size,
             )
-        elif filename.endswith(".gif"):
+        elif filename.lower().endswith(".gif"):
             compress_image(
                 os.path.join(input_directory, filename),
                 os.path.join(tmp_cbz_directory, filename),
