@@ -11,6 +11,8 @@ from .threading_tools import KomgaThreadsList
 from .config_loader import Config
 from .sql_connector import DatabaseKeyError
 from .h2h_db import H2HDB
+from .settings import chunk_list
+from .threading_tools import POOL_CPU_LIMIT
 
 exclude_book_ids = set[str]()
 exclude_book_ids_lock = Lock()
@@ -329,26 +331,21 @@ def scan_komga_library(config: Config) -> None:
     if isscan:
         scan_library(library_id, base_url, api_username, api_password)
 
-    # books_ids = get_books_ids_in_all_libraries(base_url, api_username, api_password)
+    def update_metadata(vset: set[str], exclude_set: set[str], update_fun) -> None:
+        if (vset is not None) and (vset != exclude_set):
+            chunked_vlist = chunk_list(list(vset), 100 * POOL_CPU_LIMIT)
+            for chunk in chunked_vlist:
+                with KomgaThreadsList() as threads:
+                    for v in chunk:
+                        threads.append(target=update_fun, args=(config, v))
+
     books_ids = get_books_ids_in_library_id(
         library_id, base_url, api_username, api_password
     )
-
-    if (books_ids is not None) and (books_ids != exclude_book_ids):
-        with KomgaThreadsList() as threads:
-            for book_id in books_ids:
-                threads.append(
-                    target=update_komga_book_metadata, args=(config, book_id)
-                )
+    update_metadata(books_ids, exclude_book_ids, update_komga_book_metadata)
 
     series_ids = get_series_ids(library_id, base_url, api_username, api_password)
-
-    if (series_ids is not None) and (series_ids != exclude_series_ids):
-        with KomgaThreadsList() as threads:
-            for series_id in series_ids:
-                threads.append(
-                    target=update_komga_series_metadata, args=(config, series_id)
-                )
+    update_metadata(series_ids, exclude_series_ids, update_komga_book_metadata)
 
     if (books_ids == exclude_book_ids) and (series_ids == exclude_series_ids):
         with isscan_lock:
