@@ -1972,7 +1972,7 @@ class H2HDB(
                             LEFT JOIN files_hashs_sha512_dbids
                                 ON duplicated_db_dbids.db_hash_id = files_hashs_sha512_dbids.db_hash_id
                             GROUP BY duplicated_db_dbids.db_hash_id
-                            HAVING COUNT(DISTINCT duplicated_db_dbids.artist_value)/MAX(duplicated_count_artists_by_db_gallery_id.artist_count) > 1
+                            HAVING COUNT(DISTINCT duplicated_db_dbids.artist_value)/MAX(duplicated_count_artists_by_db_gallery_id.artist_count) > 2
                         """
             connector.execute(query)
 
