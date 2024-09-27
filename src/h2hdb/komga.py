@@ -333,11 +333,11 @@ def scan_komga_library(config: Config) -> None:
 
     def update_metadata(vset: set[str], exclude_set: set[str], update_fun) -> None:
         if (vset is not None) and (vset != exclude_set):
-            chunked_vlist = chunk_list(list(vset), 100 * POOL_CPU_LIMIT)
-            for chunk in chunked_vlist:
-                with KomgaThreadsList() as threads:
-                    for v in chunk:
-                        threads.append(target=update_fun, args=(config, v))
+            # chunked_vlist = chunk_list(list(vset), 100 * POOL_CPU_LIMIT)
+            # for chunk in chunked_vlist:
+            with KomgaThreadsList() as threads:
+                for v in vset:
+                    threads.append(target=update_fun, args=(config, v))
 
     books_ids = get_books_ids_in_library_id(
         library_id, base_url, api_username, api_password

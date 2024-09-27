@@ -3,6 +3,7 @@ from threading import Thread
 from abc import ABCMeta, abstractmethod
 from multiprocessing import cpu_count
 from multiprocessing.pool import Pool
+from contextlib import ExitStack
 
 from .logger import logger
 
@@ -26,14 +27,13 @@ class BackgroundTaskThread(Thread, metaclass=ABCMeta):
 
     def add_semaphore_control_to_operation(self, fun):
         def wrapper(*args, **kwargs):
-            for semaphore in self.get_semaphores():
-                semaphore.acquire()
-            try:
-                fun(*args, **kwargs)
-            except BaseException as e:
-                logger.error(f"Error in background task: {e}")
-            for semaphore in self.get_semaphores():
-                semaphore.release()
+            with ExitStack() as stack:
+                for semaphore in self.get_semaphores():
+                    stack.enter_context(semaphore)
+                try:
+                    fun(*args, **kwargs)
+                except BaseException as e:
+                    logger.error(f"Error in background task: {e}")
 
         return wrapper
 
