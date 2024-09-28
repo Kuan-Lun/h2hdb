@@ -201,6 +201,7 @@ def setup_synochat_webhook_logger(
             except (ConnectionError, UnknownApiError) as e:
                 print(e)
             except Exception as e:
+                print(s)
                 print(e)
 
     webhook_logger = logging.getLogger("webhook_url")
