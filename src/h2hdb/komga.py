@@ -1,24 +1,17 @@
 __all__ = ["scan_komga_library"]
 
 # swagger-ui/index.html
+from time import sleep
+from typing import Callable
+
 import requests  # type: ignore
 from requests.auth import HTTPBasicAuth  # type: ignore
-from time import sleep
-from threading import Lock
 
 from .logger import logger, HentaiDBLogger
 from .threading_tools import KomgaThreadsList
 from .config_loader import Config
 from .sql_connector import DatabaseKeyError
 from .h2h_db import H2HDB
-from .settings import chunk_list
-from .threading_tools import POOL_CPU_LIMIT
-
-exclude_book_ids = set[str]()
-exclude_book_ids_lock = Lock()
-
-exclude_series_ids = set[str]()
-exclude_series_ids_lock = Lock()
 
 
 def retry_request(request, retries: int = 3):
@@ -116,7 +109,7 @@ def get_books_ids_in_series_id(
     page_num = 0
     while True:
         logger.debug(f"Getting books page {page_num} for series {series_id}")
-        url = f"{base_url}/api/v1/series/{series_id}/books?page={page_num}&size=200"
+        url = f"{base_url}/api/v1/series/{series_id}/books?page={page_num}&size=500"
         response = requests.get(url, auth=HTTPBasicAuth(api_username, api_password))
         response.raise_for_status()
         response_json = response.json()
@@ -138,7 +131,7 @@ def get_books_ids_in_library_id(
     while True:
         logger.debug(f"Getting books page {page_num} for library {library_id}")
         url = (
-            f"{base_url}/api/v1/books?library_id={library_id}&page={page_num}&size=100"
+            f"{base_url}/api/v1/books?library_id={library_id}&page={page_num}&size=500"
         )
         response = requests.get(url, auth=HTTPBasicAuth(api_username, api_password))
         response.raise_for_status()
@@ -240,40 +233,29 @@ def patch_series_metadata(
 
 
 def update_komga_book_metadata(config: Config, book_id: str) -> None:
-    global exclude_book_ids
-
     base_url = config.media_server.server_config.base_url
     api_username = config.media_server.server_config.api_username
     api_password = config.media_server.server_config.api_password
 
-    if book_id not in exclude_book_ids:
-        komga_metadata = get_book(book_id, base_url, api_username, api_password)
-        if komga_metadata is not None:
-            try:
-                with H2HDB(config=config) as connector:
-                    current_metadata = connector.get_komga_metadata(
-                        komga_metadata["name"]
-                    )
-                if not (current_metadata.items() <= komga_metadata.items()):
-                    patch_book_metadata(
-                        current_metadata, book_id, base_url, api_username, api_password
-                    )
-                    logger.debug(
-                        f"Book {komga_metadata['name']} updated in the database."
-                    )
-                else:
-                    with exclude_book_ids_lock:
-                        exclude_book_ids.add(book_id)
-                    logger.debug(
-                        f"Book {komga_metadata['name']} already exists in the database."
-                    )
-            except DatabaseKeyError:
-                pass
+    komga_metadata = get_book(book_id, base_url, api_username, api_password)
+    if komga_metadata is not None:
+        try:
+            with H2HDB(config=config) as connector:
+                current_metadata = connector.get_komga_metadata(komga_metadata["name"])
+            if not (current_metadata.items() <= komga_metadata.items()):
+                patch_book_metadata(
+                    current_metadata, book_id, base_url, api_username, api_password
+                )
+                logger.debug(f"Book {komga_metadata['name']} updated in the database.")
+            else:
+                logger.debug(
+                    f"Book {komga_metadata['name']} already exists in the database."
+                )
+        except DatabaseKeyError:
+            pass
 
 
 def update_komga_series_metadata(config: Config, series_id: str) -> None:
-    global exclude_series_ids
-
     base_url = config.media_server.server_config.base_url
     api_username = config.media_server.server_config.api_username
     api_password = config.media_server.server_config.api_password
@@ -296,58 +278,57 @@ def update_komga_series_metadata(config: Config, series_id: str) -> None:
             except DatabaseKeyError:
                 continue
 
-    if series_id not in exclude_series_ids:
-        if ischecktitle:
-            series_title = get_series(series_id, base_url, api_username, api_password)[
-                "metadata"
-            ]["title"]
-            if series_title == current_metadata["releaseDate"]:
-                with exclude_series_ids_lock:
-                    exclude_series_ids.add(series_id)
-            else:
-                patch_series_metadata(
-                    {"title": current_metadata["releaseDate"]},
-                    series_id,
-                    base_url,
-                    api_username,
-                    api_password,
-                )
-            logger.debug(f"Series_id {series_id} updated in the database.")
+    if ischecktitle:
+        series_title = get_series(series_id, base_url, api_username, api_password)[
+            "metadata"
+        ]["title"]
+        if series_title == current_metadata["releaseDate"]:
+            pass
         else:
-            logger.debug(f"Series_id {series_id} already exists in the database.")
+            patch_series_metadata(
+                {"title": current_metadata["releaseDate"]},
+                series_id,
+                base_url,
+                api_username,
+                api_password,
+            )
+        logger.debug(f"Series_id {series_id} updated in the database.")
+    else:
+        logger.debug(f"Series_id {series_id} already exists in the database.")
 
 
-isscan = True
-isscan_lock = Lock()
-
-
-def scan_komga_library(config: Config) -> None:
+def scan_komga_library(
+    config: Config,
+    previously_book_ids=set[str](),
+    previously_series_ids=set[str](),
+) -> None:
     library_id = config.media_server.server_config.library_id
     base_url = config.media_server.server_config.base_url
     api_username = config.media_server.server_config.api_username
     api_password = config.media_server.server_config.api_password
 
-    global isscan
-    if isscan:
-        scan_library(library_id, base_url, api_username, api_password)
+    scan_library(library_id, base_url, api_username, api_password)
 
-    def update_metadata(vset: set[str], exclude_set: set[str], update_fun) -> None:
-        if (vset is not None) and (vset != exclude_set):
-            # chunked_vlist = chunk_list(list(vset), 100 * POOL_CPU_LIMIT)
-            # for chunk in chunked_vlist:
-            with KomgaThreadsList() as threads:
-                for v in vset:
-                    threads.append(target=update_fun, args=(config, v))
+    def update_metadata(
+        vset: set[str],
+        exclude_vset: set[str],
+        update_fun: Callable[[Config, str], None],
+    ) -> None:
+        vset = vset - exclude_vset
+        with KomgaThreadsList() as threads:
+            for v in vset:
+                threads.append(target=update_fun, args=(config, v))
 
     books_ids = get_books_ids_in_library_id(
         library_id, base_url, api_username, api_password
     )
-    update_metadata(books_ids, exclude_book_ids, update_komga_book_metadata)
+    update_metadata(books_ids, previously_book_ids, update_komga_book_metadata)
 
     series_ids = get_series_ids(library_id, base_url, api_username, api_password)
-    update_metadata(series_ids, exclude_series_ids, update_komga_book_metadata)
+    update_metadata(series_ids, previously_series_ids, update_komga_book_metadata)
 
-    if (books_ids == exclude_book_ids) and (series_ids == exclude_series_ids):
-        with isscan_lock:
-            isscan = False
-        logger.info("All books and series have been scanned.")
+    if (books_ids == previously_book_ids) and (series_ids == previously_series_ids):
+        logger.info("No new books or series have been scanned.")
+    else:
+        logger.info("Some books or series have been scanned. Re-scanning.")
+        scan_komga_library(config, books_ids, series_ids)
