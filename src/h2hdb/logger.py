@@ -199,9 +199,10 @@ def setup_synochat_webhook_logger(
                 else:
                     print(f'Rate limit exceeded. Unable to send message "{s}".')
             except (ConnectionError, UnknownApiError) as e:
+                print(f"Error sending message: {s}")
                 print(e)
             except Exception as e:
-                print(s)
+                print(f"Error sending message: {s}")
                 print(e)
 
     webhook_logger = logging.getLogger("webhook_url")
