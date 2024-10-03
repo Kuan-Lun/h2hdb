@@ -30,8 +30,9 @@ class UpdateH2HDB:
 
         def loop_target():
             while self.thread_running:
+                print("Creating the thread for media server")
                 self.thread_underlying_target()
-                sleep(1)
+                sleep(600)
 
         self.thread = Thread(target=loop_target)
         self.thread.start()
