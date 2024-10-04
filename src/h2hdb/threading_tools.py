@@ -3,12 +3,10 @@ from threading import Thread
 from abc import ABCMeta, abstractmethod
 from multiprocessing import cpu_count
 from multiprocessing.pool import Pool
-from contextlib import ExitStack
 
 POOL_CPU_LIMIT = max(cpu_count() - 2, 1)
 
 MAX_THREADS = threading.Semaphore(2 * POOL_CPU_LIMIT)
-KOMGA_SEMAPHORE = threading.Semaphore(POOL_CPU_LIMIT)
 SQL_SEMAPHORE = threading.Semaphore(POOL_CPU_LIMIT)
 
 
@@ -51,11 +49,6 @@ class ThreadsList(list, metaclass=ABCMeta):
             thread.start()
         for thread in self:
             thread.join()
-
-
-class KomgaThreadsList(ThreadsList):
-    def get_semaphores(self) -> list[threading.Semaphore]:
-        return [KOMGA_SEMAPHORE]
 
 
 class SQLThreadsList(ThreadsList):

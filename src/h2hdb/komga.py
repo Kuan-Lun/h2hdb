@@ -8,7 +8,6 @@ import requests  # type: ignore
 from requests.auth import HTTPBasicAuth  # type: ignore
 
 from .logger import logger, HentaiDBLogger
-from .threading_tools import KomgaThreadsList
 from .config_loader import Config
 from .sql_connector import DatabaseKeyError
 from .h2h_db import H2HDB
@@ -315,9 +314,8 @@ def scan_komga_library(
         update_fun: Callable[[Config, str], None],
     ) -> None:
         vset = vset - exclude_vset
-        with KomgaThreadsList() as threads:
-            for v in vset:
-                threads.append(target=update_fun, args=(config, v))
+        for v in vset:
+            update_fun(config, v)
 
     books_ids = get_books_ids_in_library_id(
         library_id, base_url, api_username, api_password
