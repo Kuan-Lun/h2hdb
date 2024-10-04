@@ -9,8 +9,8 @@ POOL_CPU_LIMIT = max(cpu_count() - 2, 1)
 
 # MAX_IO_SEMAPHORE = threading.Semaphore(5)
 # CBZ_IO_SEMAPHORE = threading.Semaphore(3)
-KOMGA_SEMAPHORE = threading.Semaphore(5)
-SQL_SEMAPHORE = threading.Semaphore(10)
+KOMGA_SEMAPHORE = threading.Semaphore(POOL_CPU_LIMIT)
+SQL_SEMAPHORE = threading.Semaphore(POOL_CPU_LIMIT)
 
 
 def wrap_thread_target_with_semaphores(target, get_semaphores):
@@ -40,10 +40,9 @@ class ThreadsList(list, metaclass=ABCMeta):
 
     def __exit__(self, exc_type, exc_value, traceback):
         for thread in self:
-            with ExitStack() as stack:
-                for semaphore in self.get_semaphores():
-                    stack.enter_context(semaphore)
-                thread.start()
+            thread.start()
+        for thread in self:
+            thread.join()
 
 
 # class CBZThreadsList(ThreadsList):
