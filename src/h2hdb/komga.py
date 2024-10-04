@@ -3,6 +3,7 @@ __all__ = ["scan_komga_library"]
 # swagger-ui/index.html
 from time import sleep
 from typing import Callable
+from threading import Thread, Semaphore
 
 import requests  # type: ignore
 from requests.auth import HTTPBasicAuth  # type: ignore
@@ -11,6 +12,8 @@ from .logger import logger, HentaiDBLogger
 from .config_loader import Config
 from .sql_connector import DatabaseKeyError
 from .h2h_db import H2HDB
+
+SEMAPHORE = Semaphore(10)
 
 
 def retry_request(request, retries: int = 3):
@@ -86,7 +89,7 @@ def get_series_ids(
     while True:
         logger.debug(f"Getting series page {page_num} for library {library_id}")
         url = (
-            f"{base_url}/api/v1/series?library_id={library_id}&page={page_num}&size=200"
+            f"{base_url}/api/v1/series?library_id={library_id}&page={page_num}&size=500"
         )
         response = requests.get(url, auth=HTTPBasicAuth(api_username, api_password))
         response.raise_for_status()
@@ -108,7 +111,7 @@ def get_books_ids_in_series_id(
     page_num = 0
     while True:
         logger.debug(f"Getting books page {page_num} for series {series_id}")
-        url = f"{base_url}/api/v1/series/{series_id}/books?page={page_num}&size=500"
+        url = f"{base_url}/api/v1/series/{series_id}/books?page={page_num}&size=1000"
         response = requests.get(url, auth=HTTPBasicAuth(api_username, api_password))
         response.raise_for_status()
         response_json = response.json()
@@ -231,6 +234,17 @@ def patch_series_metadata(
     response.raise_for_status()
 
 
+def update_fun_with_semaphore(
+    update_fun: Callable[[Config, str], None]
+) -> Callable[[Config, str], None]:
+    def wrapper(config: Config, v: str) -> None:
+        with SEMAPHORE:
+            update_fun(config, v)
+
+    return wrapper
+
+
+@update_fun_with_semaphore
 def update_komga_book_metadata(config: Config, book_id: str) -> None:
     base_url = config.media_server.server_config.base_url
     api_username = config.media_server.server_config.api_username
@@ -254,6 +268,7 @@ def update_komga_book_metadata(config: Config, book_id: str) -> None:
             pass
 
 
+@update_fun_with_semaphore
 def update_komga_series_metadata(config: Config, series_id: str) -> None:
     base_url = config.media_server.server_config.base_url
     api_username = config.media_server.server_config.api_username
@@ -313,9 +328,14 @@ def scan_komga_library(
         exclude_vset: set[str],
         update_fun: Callable[[Config, str], None],
     ) -> None:
+        threads = list[Thread]()
         vset = vset - exclude_vset
         for v in vset:
-            update_fun(config, v)
+            thread = Thread(target=update_fun, args=(config, v))
+            thread.start()
+            threads.append(thread)
+        for thread in threads:
+            thread.join()
 
     books_ids = get_books_ids_in_library_id(
         library_id, base_url, api_username, api_password
