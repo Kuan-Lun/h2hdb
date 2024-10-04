@@ -12,8 +12,7 @@ from .logger import logger, HentaiDBLogger
 from .config_loader import Config
 from .sql_connector import DatabaseKeyError
 from .h2h_db import H2HDB
-
-MAX_THREADS = 10
+from .threading_tools import KomgaThreadsList
 
 
 def retry_request(request, retries: int = 3):
@@ -316,25 +315,10 @@ def scan_komga_library(
         exclude_vset: set[str],
         update_fun: Callable[[Config, str], None],
     ) -> None:
-        all_threads = list[Thread]()
         vset = vset - exclude_vset
-        for v in vset:
-            thread = Thread(target=update_fun, args=(config, v))
-            all_threads.append(thread)
-
-        todo_threads = [t for t in all_threads]
-        runing_threads = list[Thread]()
-        while todo_threads:
-            todo_threads[0].start()
-            runing_threads.append(todo_threads[0])
-            todo_threads = todo_threads[1:]
-            while (
-                len(runing_threads := [t for t in runing_threads if t.is_alive()])
-                >= MAX_THREADS
-            ):
-                sleep(1)
-        for t in runing_threads:
-            t.join()
+        with KomgaThreadsList() as threads:
+            for v in vset:
+                threads.append(update_fun, (config, v))
 
     books_ids = get_books_ids_in_library_id(
         library_id, base_url, api_username, api_password
