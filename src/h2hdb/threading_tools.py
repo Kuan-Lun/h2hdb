@@ -7,18 +7,26 @@ from contextlib import ExitStack
 
 POOL_CPU_LIMIT = max(cpu_count() - 2, 1)
 
-# MAX_IO_SEMAPHORE = threading.Semaphore(5)
-# CBZ_IO_SEMAPHORE = threading.Semaphore(3)
+MAX_THREADS = threading.Semaphore(2 * POOL_CPU_LIMIT)
 KOMGA_SEMAPHORE = threading.Semaphore(POOL_CPU_LIMIT)
 SQL_SEMAPHORE = threading.Semaphore(POOL_CPU_LIMIT)
 
 
-def wrap_thread_target_with_semaphores(target, get_semaphores):
+def wrap_thread_target_with_semaphores(target, semaphores: list[threading.Semaphore]):
     def wrapper(*args, **kwargs):
-        with ExitStack() as stack:
-            for semaphore in get_semaphores():
-                stack.enter_context(semaphore)
+        MAX_THREADS.acquire(MAX_THREADS)
+        for semaphore in semaphores:
+            semaphore.acquire(semaphore)
+
+        try:
             target(*args, **kwargs)
+        except Exception as e:
+            print(f"Thread target raised an exception: {e}")
+            raise e
+        finally:
+            for semaphore in semaphores:
+                semaphore.release()
+            MAX_THREADS.release()
 
     return wrapper
 
@@ -30,7 +38,7 @@ class ThreadsList(list, metaclass=ABCMeta):
 
     def append(self, target, args):
         thread = Thread(
-            target=wrap_thread_target_with_semaphores(target, self.get_semaphores),
+            target=wrap_thread_target_with_semaphores(target, self.get_semaphores()),
             args=args,
         )
         super().append(thread)
@@ -43,11 +51,6 @@ class ThreadsList(list, metaclass=ABCMeta):
             thread.start()
         for thread in self:
             thread.join()
-
-
-# class CBZThreadsList(ThreadsList):
-#     def get_semaphores(self) -> list[threading.Semaphore]:
-#         return [CBZ_IO_SEMAPHORE, MAX_IO_SEMAPHORE]
 
 
 class KomgaThreadsList(ThreadsList):
