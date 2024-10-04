@@ -20,22 +20,14 @@ class BackgroundTaskThread(Thread, metaclass=ABCMeta):
     def get_semaphores(self) -> list[threading.Semaphore]:
         pass
 
-    def __init__(self, target, args) -> None:
-        super().__init__(
-            target=self.add_semaphore_control_to_operation(target), args=args
-        )
-
-    def add_semaphore_control_to_operation(self, fun):
-        def wrapper(*args, **kwargs):
-            with ExitStack() as stack:
-                for semaphore in self.get_semaphores():
-                    stack.enter_context(semaphore)
-                try:
-                    fun(*args, **kwargs)
-                except BaseException as e:
-                    logger.error(f"Error in background task: {e}")
-
-        return wrapper
+    def start(self) -> None:
+        with ExitStack() as stack:
+            for semaphore in self.get_semaphores():
+                stack.enter_context(semaphore)
+            try:
+                super().start()
+            except BaseException as e:
+                logger.error(f"Error in background task: {e}")
 
 
 class ThreadsList(list, metaclass=ABCMeta):
