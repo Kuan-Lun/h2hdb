@@ -3,7 +3,7 @@ __all__ = ["scan_komga_library"]
 # swagger-ui/index.html
 from time import sleep
 from typing import Callable
-from threading import Thread, Semaphore
+from threading import Thread
 
 import requests  # type: ignore
 from requests.auth import HTTPBasicAuth  # type: ignore
@@ -13,7 +13,7 @@ from .config_loader import Config
 from .sql_connector import DatabaseKeyError
 from .h2h_db import H2HDB
 
-SEMAPHORE = Semaphore(10)
+MAX_THREADS = 10
 
 
 def retry_request(request, retries: int = 3):
@@ -234,17 +234,6 @@ def patch_series_metadata(
     response.raise_for_status()
 
 
-def update_fun_with_semaphore(
-    update_fun: Callable[[Config, str], None]
-) -> Callable[[Config, str], None]:
-    def wrapper(config: Config, v: str) -> None:
-        with SEMAPHORE:
-            update_fun(config, v)
-
-    return wrapper
-
-
-@update_fun_with_semaphore
 def update_komga_book_metadata(config: Config, book_id: str) -> None:
     base_url = config.media_server.server_config.base_url
     api_username = config.media_server.server_config.api_username
@@ -268,7 +257,6 @@ def update_komga_book_metadata(config: Config, book_id: str) -> None:
             pass
 
 
-@update_fun_with_semaphore
 def update_komga_series_metadata(config: Config, series_id: str) -> None:
     base_url = config.media_server.server_config.base_url
     api_username = config.media_server.server_config.api_username
@@ -328,14 +316,25 @@ def scan_komga_library(
         exclude_vset: set[str],
         update_fun: Callable[[Config, str], None],
     ) -> None:
-        threads = list[Thread]()
+        all_threads = list[Thread]()
         vset = vset - exclude_vset
         for v in vset:
             thread = Thread(target=update_fun, args=(config, v))
-            thread.start()
-            threads.append(thread)
-        for thread in threads:
-            thread.join()
+            all_threads.append(thread)
+
+        todo_threads = [t for t in all_threads]
+        runing_threads = list[Thread]()
+        while todo_threads:
+            todo_threads[0].start()
+            runing_threads.append(todo_threads[0])
+            todo_threads = todo_threads[1:]
+            while (
+                len(runing_threads := [t for t in runing_threads if t.is_alive()])
+                >= MAX_THREADS
+            ):
+                sleep(1)
+        for t in runing_threads:
+            t.join()
 
     books_ids = get_books_ids_in_library_id(
         library_id, base_url, api_username, api_password
