@@ -6,9 +6,10 @@ from multiprocessing import cpu_count
 from multiprocessing.pool import Pool
 from contextlib import ExitStack
 
-POOL_CPU_LIMIT = max(cpu_count() - 2, 1)
+CPU_NUM = cpu_count()
+POOL_CPU_LIMIT = max(CPU_NUM - 2, 1)
 
-MAX_THREADS = threading.Semaphore(2 * POOL_CPU_LIMIT)
+MAX_THREADS = 2 * CPU_NUM
 SQL_SEMAPHORE = threading.Semaphore(POOL_CPU_LIMIT)
 KOMGA_SEMAPHORE = threading.Semaphore(10)
 
