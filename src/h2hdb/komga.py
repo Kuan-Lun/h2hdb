@@ -211,6 +211,15 @@ def scan_library(
 
 
 @retry_request
+def analyze_library(
+    library_id: str, base_url: str, api_username: str, api_password: str
+) -> None:
+    url = f"{base_url}/api/v1/libraries/{library_id}/analyze"
+    response = requests.post(url, auth=HTTPBasicAuth(api_username, api_password))
+    response.raise_for_status()
+
+
+@retry_request
 def get_series(
     series_id: str, base_url: str, api_username: str, api_password: str
 ) -> dict:
@@ -309,6 +318,7 @@ def scan_komga_library(
     api_password = config.media_server.server_config.api_password
 
     scan_library(library_id, base_url, api_username, api_password)
+    analyze_library(library_id, base_url, api_username, api_password)
 
     def update_metadata(
         vset: set[str],
