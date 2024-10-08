@@ -34,7 +34,7 @@ setup(
         ],
     },
     package_dir={"": "src"},
-    python_requires=">=3.13.0, <4",
+    python_requires=">=3.12.0, <4",
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",
