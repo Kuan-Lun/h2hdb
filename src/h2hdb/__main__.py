@@ -20,6 +20,7 @@ class UpdateH2HDB:
         self.thread_running = True
         match self.config.media_server.server_type:
             case "komga":
+                print("Creating the thread for media server")
                 self.thread_underlying_target = partial(scan_komga_library, self.config)
             case "":
                 self.thread_underlying_target = lambda: None
@@ -30,7 +31,6 @@ class UpdateH2HDB:
 
         def loop_target():
             while self.thread_running:
-                print("Creating the thread for media server")
                 self.thread_underlying_target()
                 sleep(1)
 

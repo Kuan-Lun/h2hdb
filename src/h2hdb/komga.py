@@ -3,7 +3,6 @@ __all__ = ["scan_komga_library"]
 # swagger-ui/index.html
 from time import sleep
 from typing import Callable
-from threading import Thread
 
 import requests  # type: ignore
 from requests.auth import HTTPBasicAuth  # type: ignore

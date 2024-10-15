@@ -168,7 +168,7 @@ def setup_file_logger(write_to_file: str, level: int) -> logging.Logger:
 def setup_synochat_webhook_logger(
     webhook_url: SynoChatConfig, level: int
 ) -> logging.Logger:
-    from requests.exceptions import ConnectionError
+    from requests.exceptions import ConnectionError  # type: ignore
     from synochat.webhooks import IncomingWebhook  # type: ignore
     from synochat.exceptions import RateLimitError  # type: ignore
     from synochat.exceptions import UnknownApiError  # type: ignore
