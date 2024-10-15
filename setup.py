@@ -22,7 +22,7 @@ setup(
     long_description_content_type="text/markdown",
     keywords=["H@H", "h2h", "database", "h2hdb"],
     packages=["h2hdb"],
-    install_requires=[],
+    install_requires=["h2h-galleryinfo-parser>=0.1.3"],
     extras_require={
         "mysql": ["mysql-connector-python>=9.0.0,<10.0.0"],
         "cbz": ["pillow>=10.4.0,<11.0.0"],
@@ -41,6 +41,6 @@ setup(
         "Operating System :: OS Independent",
         "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.12",
     ],
 )

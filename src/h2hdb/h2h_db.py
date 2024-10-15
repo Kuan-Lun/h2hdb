@@ -11,7 +11,8 @@ from functools import partial
 from random import shuffle
 from time import sleep
 
-from .gallery_info_parser import parse_gallery_info, GalleryInfoParser
+from h2h_galleryinfo_parser import parse_galleryinfo, GalleryInfoParser
+
 from .config_loader import Config
 from .logger import logger
 from .sql_connector import (
@@ -20,7 +21,6 @@ from .sql_connector import (
     DatabaseDuplicateKeyError,
 )
 from .threading_tools import SQLThreadsList, run_in_parallel, POOL_CPU_LIMIT
-
 from .settings import hash_function_by_file, hash_function, chunk_list
 from .settings import (
     FOLDER_NAME_LENGTH_LIMIT,
@@ -953,14 +953,15 @@ class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
             logger.info(f"{table_name} table created.")
 
     def _insert_gallery_comment(self, db_gallery_id: int, comment: str) -> None:
-        with self.SQLConnector() as connector:
-            table_name = "galleries_comments"
-            match self.config.database.sql_type.lower():
-                case "mysql":
-                    insert_query = f"""
-                        INSERT INTO {table_name} (db_gallery_id, comment) VALUES (%s, %s)
-                    """
-            connector.execute(insert_query, (db_gallery_id, comment))
+        if comment != "":
+            with self.SQLConnector() as connector:
+                table_name = "galleries_comments"
+                match self.config.database.sql_type.lower():
+                    case "mysql":
+                        insert_query = f"""
+                            INSERT INTO {table_name} (db_gallery_id, comment) VALUES (%s, %s)
+                        """
+                connector.execute(insert_query, (db_gallery_id, comment))
 
     def _update_gallery_comment(self, db_gallery_id: int, comment: str) -> None:
         with self.SQLConnector() as connector:
@@ -2204,77 +2205,77 @@ class H2HDB(
         self._create_duplicated_galleries_tables()
         logger.info("Main tables created.")
 
-    def _insert_gallery_info(self, gallery_info_params: GalleryInfoParser) -> None:
-        self.insert_pending_gallery_removal(gallery_info_params.gallery_name)
+    def _insert_gallery_info(self, galleryinfo_params: GalleryInfoParser) -> None:
+        self.insert_pending_gallery_removal(galleryinfo_params.gallery_name)
 
-        self._insert_gallery_name(gallery_info_params.gallery_name)
+        self._insert_gallery_name(galleryinfo_params.gallery_name)
         db_gallery_id = self._get_db_gallery_id_by_gallery_name(
-            gallery_info_params.gallery_name
+            galleryinfo_params.gallery_name
         )
 
         with SQLThreadsList() as threads:
             threads.append(
                 target=self._insert_gallery_gid,
-                args=(db_gallery_id, gallery_info_params.gid),
+                args=(db_gallery_id, galleryinfo_params.gid),
             )
             threads.append(
                 target=self._insert_gallery_title,
-                args=(db_gallery_id, gallery_info_params.title),
+                args=(db_gallery_id, galleryinfo_params.title),
             )
             threads.append(
                 target=self._insert_upload_time,
-                args=(db_gallery_id, gallery_info_params.upload_time),
+                args=(db_gallery_id, galleryinfo_params.upload_time),
             )
             threads.append(
                 target=self._insert_gallery_comment,
-                args=(db_gallery_id, gallery_info_params.galleries_comments),
+                args=(db_gallery_id, galleryinfo_params.galleries_comments),
             )
             threads.append(
                 target=self._insert_gallery_upload_account,
-                args=(db_gallery_id, gallery_info_params.upload_account),
+                args=(db_gallery_id, galleryinfo_params.upload_account),
             )
             threads.append(
                 target=self._insert_download_time,
-                args=(db_gallery_id, gallery_info_params.download_time),
+                args=(db_gallery_id, galleryinfo_params.download_time),
             )
             threads.append(
                 target=self._insert_access_time,
-                args=(db_gallery_id, gallery_info_params.download_time),
+                args=(db_gallery_id, galleryinfo_params.download_time),
             )
             threads.append(
                 target=self._insert_modified_time,
-                args=(db_gallery_id, gallery_info_params.modified_time),
+                args=(db_gallery_id, galleryinfo_params.modified_time),
             )
             threads.append(
                 target=self._insert_gallery_files,
-                args=(db_gallery_id, gallery_info_params.files_path),
+                args=(db_gallery_id, galleryinfo_params.files_path),
             )
 
         file_pairs = list[FileInformation]()
-        for file_path in gallery_info_params.files_path:
+        for file_path in galleryinfo_params.files_path:
             db_file_id = self._get_db_file_id(db_gallery_id, file_path)
             absolute_file_path = os.path.join(
-                gallery_info_params.gallery_folder, file_path
+                galleryinfo_params.gallery_folder, file_path
             )
             file_pairs.append(FileInformation(absolute_file_path, db_file_id))
         self._insert_gallery_file_hash_for_db_gallery_id(file_pairs)
 
         taglist = list[TagInformation]()
-        for tag in gallery_info_params.tags:
+        for tag in galleryinfo_params.tags:
             taglist.append(TagInformation(tag[0], tag[1]))
         self._insert_gallery_tags(db_gallery_id, taglist)
 
-        self.delete_pending_gallery_removal(gallery_info_params.gallery_name)
+        self.delete_pending_gallery_removal(galleryinfo_params.gallery_name)
 
     def _check_gallery_info_file_hash(
-        self, gallery_info_params: GalleryInfoParser
+        self, galleryinfo_params: GalleryInfoParser
     ) -> bool:
         if not self._check_galleries_dbids_by_gallery_name(
-            gallery_info_params.gallery_name
+            galleryinfo_params.gallery_name
         ):
             return False
         db_gallery_id = self._get_db_gallery_id_by_gallery_name(
-            gallery_info_params.gallery_name
+            galleryinfo_params.gallery_name
         )
 
         if not self._check_db_file_id(db_gallery_id, GALLERY_INFO_FILE_NAME):
@@ -2283,7 +2284,7 @@ class H2HDB(
             db_gallery_id, GALLERY_INFO_FILE_NAME
         )
         absolute_file_path = os.path.join(
-            gallery_info_params.gallery_folder, GALLERY_INFO_FILE_NAME
+            galleryinfo_params.gallery_folder, GALLERY_INFO_FILE_NAME
         )
 
         if not self._check_hash_value_by_file_id(
@@ -2313,15 +2314,15 @@ class H2HDB(
         return [query[0] for query in query_result]
 
     def insert_gallery_info(self, gallery_folder: str) -> bool:
-        gallery_info_params = parse_gallery_info(gallery_folder)
-        is_thesame = self._check_gallery_info_file_hash(gallery_info_params)
+        galleryinfo_params = parse_galleryinfo(gallery_folder)
+        is_thesame = self._check_gallery_info_file_hash(galleryinfo_params)
         is_insert = is_thesame is False
         if is_insert:
-            logger.debug(f"Inserting gallery '{gallery_info_params.gallery_name}'...")
-            self.delete_gallery_file(gallery_info_params.gallery_name)
-            self.delete_gallery(gallery_info_params.gallery_name)
-            self._insert_gallery_info(gallery_info_params)
-            logger.debug(f"Gallery '{gallery_info_params.gallery_name}' inserted.")
+            logger.debug(f"Inserting gallery '{galleryinfo_params.gallery_name}'...")
+            self.delete_gallery_file(galleryinfo_params.gallery_name)
+            self.delete_gallery(galleryinfo_params.gallery_name)
+            self._insert_gallery_info(galleryinfo_params)
+            logger.debug(f"Gallery '{galleryinfo_params.gallery_name}' inserted.")
         return is_insert
 
     def compress_gallery_to_cbz(
@@ -2332,16 +2333,16 @@ class H2HDB(
             calculate_hash_of_file_in_cbz,
         )
 
-        gallery_info_params = parse_gallery_info(gallery_folder)
+        galleryinfo_params = parse_galleryinfo(gallery_folder)
         match self.config.h2h.cbz_grouping:
             case "date-yyyy":
                 upload_time = self.get_upload_time_by_gallery_name(
-                    gallery_info_params.gallery_name
+                    galleryinfo_params.gallery_name
                 )
                 relative_cbz_directory = str(upload_time.year).rjust(4, "0")
             case "date-yyyy-mm":
                 upload_time = self.get_upload_time_by_gallery_name(
-                    gallery_info_params.gallery_name
+                    galleryinfo_params.gallery_name
                 )
                 relative_cbz_directory = os.path.join(
                     str(upload_time.year).rjust(4, "0"),
@@ -2349,7 +2350,7 @@ class H2HDB(
                 )
             case "date-yyyy-mm-dd":
                 upload_time = self.get_upload_time_by_gallery_name(
-                    gallery_info_params.gallery_name
+                    galleryinfo_params.gallery_name
                 )
                 relative_cbz_directory = os.path.join(
                     str(upload_time.year).rjust(4, "0"),
@@ -2367,7 +2368,7 @@ class H2HDB(
         cbz_tmp_directory = os.path.join(self.config.h2h.cbz_path, "tmp")
 
         cbz_log_path = os.path.join(
-            cbz_log_directory, gallery_info_params.gallery_name + ".cbz"
+            cbz_log_directory, galleryinfo_params.gallery_name + ".cbz"
         )
 
         def gallery_name2cbz_file_name(gallery_name: str) -> str:
@@ -2376,11 +2377,11 @@ class H2HDB(
             return gallery_name + ".cbz"
 
         cbz_path = os.path.join(
-            cbz_directory, gallery_name2cbz_file_name(gallery_info_params.gallery_name)
+            cbz_directory, gallery_name2cbz_file_name(galleryinfo_params.gallery_name)
         )
         if os.path.exists(cbz_path):
             db_gallery_id = self._get_db_gallery_id_by_gallery_name(
-                gallery_info_params.gallery_name
+                galleryinfo_params.gallery_name
             )
             gallery_info_file_id = self._get_db_file_id(
                 db_gallery_id, GALLERY_INFO_FILE_NAME
@@ -2557,7 +2558,7 @@ class H2HDB(
             logger.info(f"Sorting by {self.config.h2h.cbz_sort}...")
             current_galleries_folders = sorted(
                 current_galleries_folders,
-                key=lambda x: getattr(parse_gallery_info(x), self.config.h2h.cbz_sort),
+                key=lambda x: getattr(parse_galleryinfo(x), self.config.h2h.cbz_sort),
                 reverse=True,
             )
         elif "pages" in self.config.h2h.cbz_sort:
@@ -2572,12 +2573,12 @@ class H2HDB(
             )
             current_galleries_folders = sorted(
                 current_galleries_folders,
-                key=lambda x: abs(getattr(parse_gallery_info(x), "pages") - zero_level),
+                key=lambda x: abs(getattr(parse_galleryinfo(x), "pages") - zero_level),
             )
         else:
             current_galleries_folders = sorted(
                 current_galleries_folders,
-                key=lambda x: getattr(parse_gallery_info(x), "pages"),
+                key=lambda x: getattr(parse_galleryinfo(x), "pages"),
             )
         logger.info("Galleries sorted.")
 
