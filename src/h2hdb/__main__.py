@@ -5,13 +5,15 @@ from functools import partial
 from time import sleep
 
 from h2hdb import H2HDB
+from .logger import setup_logger, HentaiDBLogger
 from .config_loader import load_config, Config
 from .komga import scan_komga_library
 
 
 class UpdateH2HDB:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, logger: HentaiDBLogger):
         self.config = config
+        self.logger = logger
         if os.path.exists(config.h2h.cbz_tmp_directory):
             shutil.rmtree(config.h2h.cbz_tmp_directory)
         os.makedirs(config.h2h.cbz_tmp_directory)
@@ -21,7 +23,9 @@ class UpdateH2HDB:
         match self.config.media_server.server_type:
             case "komga":
                 print("Creating the thread for media server")
-                self.thread_underlying_target = partial(scan_komga_library, self.config)
+                self.thread_underlying_target = partial(
+                    scan_komga_library, self.config, self.logger
+                )
             case "":
                 self.thread_underlying_target = lambda: None
             case _:
@@ -43,7 +47,7 @@ class UpdateH2HDB:
         self.thread.join()
 
     def update_h2hdb(self):
-        with H2HDB(config=config) as connector:
+        with H2HDB(config=config, logger=self.logger) as connector:
             # Check the database character set and collation
             connector.check_database_character_set()
             connector.check_database_collation()
@@ -58,5 +62,6 @@ class UpdateH2HDB:
 
 if __name__ == "__main__":
     config = load_config()
-    with UpdateH2HDB(config) as update:
+    logger = setup_logger(config.logger)
+    with UpdateH2HDB(config, logger) as update:
         update.update_h2hdb()

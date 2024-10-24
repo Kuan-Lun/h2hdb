@@ -12,7 +12,7 @@ from urllib.parse import parse_qs
 from time import sleep
 
 
-from .config_loader import SynoChatConfig, Config
+from .config_loader import SynoChatConfig, LoggerConfig
 
 
 def parse_uri(uri: str) -> dict:
@@ -178,9 +178,9 @@ def setup_synochat_webhook_logger(
 
         def emit(self, record) -> None:
             log_entry = self.format(record)
-            self.msg2synochat(log_entry, self.synochat_config.webhook_url)
+            self._msg2synochat(log_entry, self.synochat_config.webhook_url)
 
-        def msg2synochat(self, s: str, url: str, retry: int = 1) -> None:
+        def _msg2synochat(self, s: str, url: str, retry: int = 1) -> None:
             uri = url
             uridict = parse_uri(uri)
             authority = uridict["authority"]
@@ -193,7 +193,7 @@ def setup_synochat_webhook_logger(
             except RateLimitError:
                 if retry > 0:
                     sleep(5)
-                    self.msg2synochat(s, url, retry=retry - 1)
+                    self._msg2synochat(s, url, retry=retry - 1)
                 else:
                     print(f'Rate limit exceeded. Unable to send message "{s}".')
             except (ConnectionError, UnknownApiError) as e:
@@ -342,14 +342,14 @@ class HentaiDBLogger:
 
 
 def setup_logger(
-    config: Config,
+    logger_config: LoggerConfig,
 ) -> HentaiDBLogger:
     return HentaiDBLogger(
-        level=config.logger.level,
-        display_on_screen=config.logger.display_on_screen,
-        write_to_file=config.logger.write_to_file,
-        max_log_entry_length=config.logger.max_log_entry_length,
-        synochat_webhook=config.logger.synochat_webhook,
+        level=logger_config.level,
+        display_on_screen=logger_config.display_on_screen,
+        write_to_file=logger_config.write_to_file,
+        max_log_entry_length=logger_config.max_log_entry_length,
+        synochat_webhook=logger_config.synochat_webhook,
     )
 
 
