@@ -3,7 +3,6 @@ from mysql.connector.abstracts import MySQLConnectionAbstract
 from mysql.connector import connect as SQLConnect
 from mysql.connector.errors import IntegrityError
 
-from .logger import logger
 from .sql_connector import SQLConnectorParams, SQLConnector, DatabaseDuplicateKeyError
 
 AUTO_COMMIT_KEYS = ["INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER"]
@@ -96,7 +95,6 @@ class MySQLConnector(SQLConnector):
 
     def check_table_exists(self, table_name: str) -> bool:
         query = f"SHOW TABLES LIKE '{table_name}'"
-        logger.debug(f"Executing MySQL query: {query}")
         result = self.fetch_one(query)
         return result is not None
 
@@ -104,12 +102,9 @@ class MySQLConnector(SQLConnector):
         self.connection.commit()
 
     def rollback(self) -> None:
-        logger.debug("Rolling back MySQL transaction...")
         self.connection.rollback()
-        logger.debug("MySQL transaction rolled back.")
 
     def execute(self, query: str, data: tuple = ()) -> None:
-        logger.debug(f"Executing MySQL query: {query}")
         with MySQLCursor(self.connection) as cursor:
             try:
                 cursor.execute(query, data)
@@ -119,7 +114,6 @@ class MySQLConnector(SQLConnector):
             self.commit()
 
     def execute_many(self, query: str, data: list[tuple]) -> None:
-        logger.debug(f"Executing multiple MySQL queries: {query}")
         with MySQLCursor(self.connection) as cursor:
             try:
                 cursor.executemany(query, data)
@@ -129,14 +123,12 @@ class MySQLConnector(SQLConnector):
             self.commit()
 
     def fetch_one(self, query: str, data: tuple = ()) -> tuple:
-        logger.debug(f"Fetching result for MySQL query: {query}")
         with MySQLCursor(self.connection) as cursor:
             cursor.execute(query, data)
             vlist = cursor.fetchone()
         return vlist  # type: ignore
 
     def fetch_all(self, query: str, data: tuple = ()) -> list:
-        logger.debug(f"Fetching results for MySQL query: {query}")
         with MySQLCursor(self.connection) as cursor:
             cursor.execute(query, data)
             vlist = cursor.fetchall()

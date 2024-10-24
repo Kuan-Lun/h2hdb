@@ -12,9 +12,7 @@ from urllib.parse import parse_qs
 from time import sleep
 
 
-from .config_loader import load_config, SynoChatConfig
-
-CONFIG_LOADER = load_config()
+from .config_loader import SynoChatConfig, Config
 
 
 def parse_uri(uri: str) -> dict:
@@ -344,32 +342,14 @@ class HentaiDBLogger:
 
 
 def setup_logger(
-    level: str,
-    display_on_screen: bool,
-    write_to_file: str,
-    synochat_webhook: SynoChatConfig,
-    max_log_entry_length: int = -1,
+    config: Config,
 ) -> HentaiDBLogger:
-    """
-    Set up a logger with the specified logging level and maximum message length.
-
-    This function creates a logger, sets its level to the specified value, and modifies its behavior to split log messages into chunks if they exceed the maximum length.
-
-    Parameters:
-    level (str): The logging level as a string. Should be one of "DEBUG", "INFO", "WARNING", "ERROR", or "CRITICAL".
-    display_on_screen (bool): Whether to display log messages on the screen.
-    write_to_file (str): The path to the log file. If an empty string is provided, logging to a file is disabled.
-    max_log_entry_length (int, optional): The maximum length of a log message. If a message exceeds this length, it will be split into multiple chunks. Default is 30.
-
-    Returns:
-    logging.Logger: The configured logger.
-    """
     return HentaiDBLogger(
-        level=level,
-        display_on_screen=display_on_screen,
-        write_to_file=write_to_file,
-        max_log_entry_length=max_log_entry_length,
-        synochat_webhook=synochat_webhook,
+        level=config.logger.level,
+        display_on_screen=config.logger.display_on_screen,
+        write_to_file=config.logger.write_to_file,
+        max_log_entry_length=config.logger.max_log_entry_length,
+        synochat_webhook=config.logger.synochat_webhook,
     )
 
 
@@ -383,19 +363,3 @@ def reset_logger(logger: HentaiDBLogger) -> None:
         logger (logging.Logger): The logger to be reset.
     """
     logger.removeHandlers()
-
-
-"""
-Set up the logger using the configuration loaded from `CONFIG_LOADER`.
-The logging level is set to `CONFIG_LOADER["logger"]["level"]`.
-If `CONFIG_LOADER["logger"]["display_on_screen"]` is True, the logger will also output to the console.
-If `CONFIG_LOADER["logger"]["write_to_file"]` is not None, the logger will write logs to the specified file.
-The maximum length of a log message is set to `CONFIG_LOADER["logger"]["max_log_entry_length"]`. If a message exceeds this length, it will be split into multiple chunks.
-"""
-logger = setup_logger(
-    CONFIG_LOADER.logger.level,
-    CONFIG_LOADER.logger.display_on_screen,
-    CONFIG_LOADER.logger.write_to_file,
-    CONFIG_LOADER.logger.synochat_webhook,
-    CONFIG_LOADER.logger.max_log_entry_length,
-)

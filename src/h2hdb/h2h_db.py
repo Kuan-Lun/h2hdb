@@ -14,7 +14,7 @@ from time import sleep
 from h2h_galleryinfo_parser import parse_galleryinfo, GalleryInfoParser
 
 from .config_loader import Config
-from .logger import logger
+from .logger import setup_logger
 from .sql_connector import (
     DatabaseConfigurationError,
     DatabaseKeyError,
@@ -107,6 +107,7 @@ class H2HDBAbstract(metaclass=ABCMeta):
         "innodb_index_prefix_limit",
         "config",
         "SQLConnector",
+        "_logger",
     ]
 
     def __init__(self, config: Config) -> None:
@@ -117,6 +118,7 @@ class H2HDBAbstract(metaclass=ABCMeta):
             ValueError: If the SQL type is unsupported.
         """
         self.config = config
+        self._logger = setup_logger(self.config)
 
         # Set the appropriate connector based on the SQL type
         match self.config.database.sql_type.lower():
@@ -493,9 +495,9 @@ class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
             is_charset_valid = charset_result == charset
             if not is_charset_valid:
                 message = f"Invalid database character set. Must be '{charset}' but is '{charset_result}'."
-                logger.error(message)
+                self._logger.error(message)
                 raise DatabaseConfigurationError(message)
-            logger.info("Database character set is valid.")
+            self._logger.info("Database character set is valid.")
 
     def check_database_collation(self) -> None:
         """
@@ -514,9 +516,9 @@ class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
             is_collation_valid = collation_result == collation
             if not is_collation_valid:
                 message = f"Invalid database collation. Must be '{collation}' but is '{collation_result}'."
-                logger.error(message)
+                self._logger.error(message)
                 raise DatabaseConfigurationError(message)
-            logger.info("Database character set and collation are valid.")
+            self._logger.info("Database character set and collation are valid.")
 
 
 class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
@@ -554,7 +556,7 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
                         )
                     """
             connector.execute(name_query)
-            logger.info(f"{table_name} table created.")
+            self._logger.info(f"{table_name} table created.")
 
     def _insert_gallery_name(self, gallery_name: str) -> None:
         with self.SQLConnector() as connector:
@@ -616,7 +618,7 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
     def _get_db_gallery_id_by_gallery_name(self, gallery_name: str) -> int:
         query_result = self.__get_db_gallery_id_by_gallery_name(gallery_name)
         if query_result is None:
-            logger.debug(f"Gallery name '{gallery_name}' does not exist.")
+            self._logger.debug(f"Gallery name '{gallery_name}' does not exist.")
             raise DatabaseKeyError(f"Gallery name '{gallery_name}' does not exist.")
         else:
             db_gallery_id = query_result[0]
@@ -657,7 +659,7 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         )
                     """
             connector.execute(query)
-            logger.info(f"{table_name} table created.")
+            self._logger.info(f"{table_name} table created.")
 
     def _insert_gallery_gid(self, db_gallery_id: int, gid: int) -> None:
         with self.SQLConnector() as connector:
@@ -682,7 +684,7 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             query_result = connector.fetch_one(select_query, (db_gallery_id,))
             if query_result is None:
                 msg = f"GID for gallery name ID {db_gallery_id} does not exist."
-                logger.error(msg)
+                self._logger.error(msg)
                 raise DatabaseKeyError(msg)
             else:
                 gid = query_result[0]
@@ -710,7 +712,7 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         )
                     """
             connector.execute(query)
-            logger.info(f"{table_name} table created.")
+            self._logger.info(f"{table_name} table created.")
 
     def _insert_time(self, table_name: str, db_gallery_id: int, time: str) -> None:
         with self.SQLConnector() as connector:
@@ -733,7 +735,7 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             query_result = connector.fetch_one(select_query, (db_gallery_id,))
             if query_result is None:
                 msg = f"Time for gallery name ID {db_gallery_id} does not exist in table '{table_name}'."
-                logger.error(msg)
+                self._logger.error(msg)
                 raise DatabaseKeyError(msg)
             else:
                 time = query_result[0]
@@ -806,7 +808,7 @@ class H2HDBGalleriesTitles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         )
                     """
             connector.execute(query)
-            logger.info(f"{table_name} table created.")
+            self._logger.info(f"{table_name} table created.")
 
     def _insert_gallery_title(self, db_gallery_id: int, title: str) -> None:
         with self.SQLConnector() as connector:
@@ -831,7 +833,7 @@ class H2HDBGalleriesTitles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             query_result = connector.fetch_one(select_query, (db_gallery_id,))
             if query_result is None:
                 msg = f"Title for gallery name ID {db_gallery_id} does not exist."
-                logger.error(msg)
+                self._logger.error(msg)
                 raise DatabaseKeyError(msg)
             else:
                 title = query_result[0]
@@ -860,7 +862,7 @@ class H2HDBUploadAccounts(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         )
                     """
             connector.execute(query)
-            logger.info(f"{table_name} table created.")
+            self._logger.info(f"{table_name} table created.")
 
     def _insert_gallery_upload_account(self, db_gallery_id: int, account: str) -> None:
         with self.SQLConnector() as connector:
@@ -885,7 +887,7 @@ class H2HDBUploadAccounts(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             query_result = connector.fetch_one(select_query, (db_gallery_id,))
             if query_result is None:
                 msg = f"Upload account for gallery name ID {db_gallery_id} does not exist."
-                logger.error(msg)
+                self._logger.error(msg)
                 raise DatabaseKeyError(msg)
             else:
                 account = query_result[0]
@@ -929,7 +931,7 @@ class H2HDBGalleriesInfos(
                             LEFT JOIN galleries_access_times USING (db_gallery_id)
                     """
             connector.execute(query)
-            logger.info("galleries_infos view created.")
+            self._logger.info("galleries_infos view created.")
 
 
 class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
@@ -950,7 +952,7 @@ class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
                         )
                     """
             connector.execute(query)
-            logger.info(f"{table_name} table created.")
+            self._logger.info(f"{table_name} table created.")
 
     def _insert_gallery_comment(self, db_gallery_id: int, comment: str) -> None:
         if comment != "":
@@ -1004,7 +1006,7 @@ class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
             msg = (
                 f"Uploader comment for gallery name ID {db_gallery_id} does not exist."
             )
-            logger.error(msg)
+            self._logger.error(msg)
             raise DatabaseKeyError(msg)
         else:
             comment = query_result[0]
@@ -1028,7 +1030,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         )
                     """
             connector.execute(query)
-            logger.info(f"{tag_name_table_name} table created.")
+            self._logger.info(f"{tag_name_table_name} table created.")
 
             tag_value_table_name = f"galleries_tags_values"
             match self.config.database.sql_type.lower():
@@ -1040,7 +1042,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         )
                     """
             connector.execute(query)
-            logger.info(f"{tag_value_table_name} table created.")
+            self._logger.info(f"{tag_value_table_name} table created.")
 
             tag_pairs_table_name = f"galleries_tag_pairs_dbids"
             match self.config.database.sql_type.lower():
@@ -1062,7 +1064,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         )
                     """
             connector.execute(query)
-            logger.info(f"{tag_pairs_table_name} table created.")
+            self._logger.info(f"{tag_pairs_table_name} table created.")
 
             table_name = f"galleries_tags"
             match self.config.database.sql_type.lower():
@@ -1082,7 +1084,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         )
                     """
             connector.execute(query)
-            logger.info(f"{table_name} table created.")
+            self._logger.info(f"{table_name} table created.")
 
     def __get_db_tag_pair_id(self, tag_name: str, tag_value: str) -> tuple | None:
         with self.SQLConnector() as connector:
@@ -1103,7 +1105,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _get_db_tag_pair_id(self, tag_name: str, tag_value: str) -> int:
         query_result = self.__get_db_tag_pair_id(tag_name, tag_value)
         if query_result is None:
-            logger.debug(f"Tag '{tag_value}' does not exist.")
+            self._logger.debug(f"Tag '{tag_value}' does not exist.")
             raise DatabaseKeyError(f"Tag '{tag_value}' does not exist.")
         else:
             db_tag_id = query_result[0]
@@ -1266,7 +1268,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             query_result = connector.fetch_one(select_query, (db_gallery_id,))
             if query_result is None:
                 msg = f"Tag '{tag_name}' does not exist."
-                logger.error(msg)
+                self._logger.error(msg)
                 raise DatabaseKeyError(msg)
             else:
                 tag = query_result[0]
@@ -1312,7 +1314,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             query_result = connector.fetch_one(select_query, (db_tag_pair_id,))
             if query_result is None:
                 msg = f"Tag pair ID {db_tag_pair_id} does not exist."
-                logger.error(msg)
+                self._logger.error(msg)
                 raise DatabaseKeyError(msg)
             else:
                 tag_name, tag_value = query_result
@@ -1343,7 +1345,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         )
                     """
             connector.execute(query)
-            logger.info(f"{table_name} table created.")
+            self._logger.info(f"{table_name} table created.")
 
             table_name = f"files_names"
             match self.config.database.sql_type.lower():
@@ -1360,7 +1362,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         )
                     """
             connector.execute(query)
-            logger.info(f"{table_name} table created.")
+            self._logger.info(f"{table_name} table created.")
 
     def _insert_gallery_files(
         self, db_gallery_id: int, file_names_list: list[str]
@@ -1370,7 +1372,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             file_name_parts_list = list[list[str]]()
             for file_name in file_names_list:
                 if len(file_name) > FILE_NAME_LENGTH_LIMIT:
-                    logger.error(
+                    self._logger.error(
                         f"File name '{file_name}' is too long. Must be {FILE_NAME_LENGTH_LIMIT} characters or less."
                     )
                     raise ValueError("File name is too long.")
@@ -1470,7 +1472,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         query_result = self.__get_db_file_id(db_gallery_id, file_name)
         if query_result is None:
             msg = f"Image ID for gallery name ID {db_gallery_id} and file '{file_name}' does not exist."
-            logger.error(msg)
+            self._logger.error(msg)
             raise DatabaseKeyError(msg)
         else:
             gallery_image_id = query_result[0]
@@ -1490,7 +1492,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             query_result = connector.fetch_all(select_query, (db_gallery_id,))
             if len(query_result) == 0:
                 msg = f"Files for gallery name ID {db_gallery_id} do not exist."
-                logger.error(msg)
+                self._logger.error(msg)
                 raise DatabaseKeyError(msg)
             else:
                 files = [query[0] for query in query_result]
@@ -1512,7 +1514,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         )
                     """
             connector.execute(query)
-            logger.info(f"{dbids_table_name} table created.")
+            self._logger.info(f"{dbids_table_name} table created.")
 
             table_name = "files_hashs_%s" % algorithm.lower()
             match self.config.database.sql_type.lower():
@@ -1531,13 +1533,13 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         )
                     """
             connector.execute(query)
-            logger.info(f"{table_name} table created.")
+            self._logger.info(f"{table_name} table created.")
 
     def _create_galleries_files_hashs_tables(self) -> None:
-        logger.debug("Creating gallery image hash tables...")
+        self._logger.debug("Creating gallery image hash tables...")
         for algorithm, output_bits in HASH_ALGORITHMS.items():
             self._create_galleries_files_hashs_table(algorithm, output_bits)
-        logger.info("Gallery image hash tables created.")
+        self._logger.info("Gallery image hash tables created.")
 
     def _create_gallery_image_hash_view(self) -> None:
         with self.SQLConnector() as connector:
@@ -1559,7 +1561,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                             LEFT JOIN files_hashs_sha512_dbids   USING (db_hash_id)
                     """
             connector.execute(query)
-            logger.info(f"{table_name} view created.")
+            self._logger.info(f"{table_name} view created.")
 
     def _check_files_dbids_by_db_gallery_id(self, db_gallery_id: int) -> tuple | None:
         with self.SQLConnector() as connector:
@@ -1645,7 +1647,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                                 insert_hash_value_query, (current_hash_value,)
                             )
                         except DatabaseDuplicateKeyError:
-                            logger.warning(
+                            self._logger.warning(
                                 f"Hash value {current_hash_value!r} already exists in the database."
                             )
                         except Exception as e:
@@ -1830,7 +1832,7 @@ class H2HDBRemovedGalleries(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta)
                         )
                     """
             connector.execute(query)
-            logger.info(f"{table_name} table created.")
+            self._logger.info(f"{table_name} table created.")
 
     def insert_removed_gallery_gid(self, gid: int) -> None:
         with self.SQLConnector() as connector:
@@ -1841,7 +1843,7 @@ class H2HDBRemovedGalleries(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta)
                         INSERT INTO {table_name} (gid) VALUES (%s)
                     """
             if self._check_removed_gallery_gid(gid):
-                logger.warning(f"Removed gallery GID {gid} already exists.")
+                self._logger.warning(f"Removed gallery GID {gid} already exists.")
             else:
                 connector.execute(insert_query, (gid,))
 
@@ -1866,11 +1868,11 @@ class H2HDBRemovedGalleries(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta)
         query_result = self.__get_removed_gallery_gid(gid)
         if query_result is None:
             msg = f"Removed gallery GID {gid} does not exist."
-            logger.error(msg)
+            self._logger.error(msg)
             raise DatabaseKeyError(msg)
         else:
             gid = query_result[0]
-            logger.warning(f"Removed gallery GID {gid} exists.")
+            self._logger.warning(f"Removed gallery GID {gid} exists.")
         return gid
 
 
@@ -1899,7 +1901,7 @@ class H2HDB(
                         )
                     """
             connector.execute(query)
-            logger.info(f"{table_name} table created.")
+            self._logger.info(f"{table_name} table created.")
 
     def _count_duplicated_files_hashs_sha512(self) -> int:
         with self.SQLConnector() as connector:
@@ -1982,7 +1984,7 @@ class H2HDB(
             if self.check_pending_gallery_removal(gallery_name) is False:
                 table_name = "pending_gallery_removals"
                 if len(gallery_name) > FOLDER_NAME_LENGTH_LIMIT:
-                    logger.error(
+                    self._logger.error(
                         f"Gallery name '{gallery_name}' is too long. Must be {FOLDER_NAME_LENGTH_LIMIT} characters or less."
                     )
                     raise ValueError("Gallery name is too long.")
@@ -2055,13 +2057,13 @@ class H2HDB(
             self.delete_pending_gallery_removal(gallery_name)
 
     def delete_gallery_file(self, gallery_name: str) -> None:
-        # logger.info(f"Gallery images for '{gallery_name}' deleted.")
+        # self._logger.info(f"Gallery images for '{gallery_name}' deleted.")
         pass
 
     def delete_gallery(self, gallery_name: str) -> None:
         with self.SQLConnector() as connector:
             if not self._check_galleries_dbids_by_gallery_name(gallery_name):
-                logger.debug(f"Gallery '{gallery_name}' does not exist.")
+                self._logger.debug(f"Gallery '{gallery_name}' does not exist.")
                 return
 
             match self.config.database.sql_type.lower():
@@ -2076,7 +2078,7 @@ class H2HDB(
 
             gallery_name_parts = self._split_gallery_name(gallery_name)
             connector.execute(get_delete_gallery_id_query, tuple(gallery_name_parts))
-            logger.info(f"Gallery '{gallery_name}' deleted.")
+            self._logger.info(f"Gallery '{gallery_name}' deleted.")
 
     def optimize_database(self) -> None:
         with self.SQLConnector() as connector:
@@ -2096,7 +2098,7 @@ class H2HDB(
 
             for table_name in table_names:
                 connector.execute(get_optimize_query(table_name))
-            logger.info("Database optimized.")
+            self._logger.info("Database optimized.")
 
     def _create_todownload_gids_table(self) -> None:
         with self.SQLConnector() as connector:
@@ -2111,7 +2113,7 @@ class H2HDB(
                         )
                     """
             connector.execute(query)
-            logger.info(f"{table_name} table created.")
+            self._logger.info(f"{table_name} table created.")
 
     def check_todownload_gid(self, gid: int, url: str) -> bool:
         with self.SQLConnector() as connector:
@@ -2183,7 +2185,7 @@ class H2HDB(
         return todownload_gids
 
     def create_main_tables(self) -> None:
-        logger.debug("Creating main tables...")
+        self._logger.debug("Creating main tables...")
         self._create_todownload_gids_table()
         self._create_pending_gallery_removals_table()
         self._create_galleries_names_table()
@@ -2203,7 +2205,7 @@ class H2HDB(
         self._create_removed_galleries_gids_table()
         self._create_galleries_tags_table()
         self._create_duplicated_galleries_tables()
-        logger.info("Main tables created.")
+        self._logger.info("Main tables created.")
 
     def _insert_gallery_info(self, galleryinfo_params: GalleryInfoParser) -> None:
         self.insert_pending_gallery_removal(galleryinfo_params.gallery_name)
@@ -2318,11 +2320,11 @@ class H2HDB(
         is_thesame = self._check_gallery_info_file_hash(galleryinfo_params)
         is_insert = is_thesame is False
         if is_insert:
-            logger.debug(f"Inserting gallery '{galleryinfo_params.gallery_name}'...")
+            self._logger.debug(f"Inserting gallery '{galleryinfo_params.gallery_name}'...")
             self.delete_gallery_file(galleryinfo_params.gallery_name)
             self.delete_gallery(galleryinfo_params.gallery_name)
             self._insert_gallery_info(galleryinfo_params)
-            logger.debug(f"Gallery '{galleryinfo_params.gallery_name}' inserted.")
+            self._logger.debug(f"Gallery '{galleryinfo_params.gallery_name}' inserted.")
         return is_insert
 
     def compress_gallery_to_cbz(
@@ -2400,7 +2402,7 @@ class H2HDB(
                     self.config.h2h.cbz_max_size,
                     exclude_hashs,
                 )
-                logger.info(f"CBZ '{cbz_log_path}' updated.")
+                self._logger.info(f"CBZ '{cbz_log_path}' updated.")
                 result = True
             else:
                 result = False
@@ -2412,7 +2414,7 @@ class H2HDB(
                 self.config.h2h.cbz_max_size,
                 exclude_hashs,
             )
-            logger.info(f"CBZ '{cbz_log_path}' created.")
+            self._logger.info(f"CBZ '{cbz_log_path}' created.")
             result = True
         return result
 
@@ -2435,7 +2437,7 @@ class H2HDB(
                     """
 
             connector.execute(query)
-            logger.info(f"{tmp_table_name} table created.")
+            self._logger.info(f"{tmp_table_name} table created.")
 
             match self.config.database.sql_type.lower():
                 case "mysql":
@@ -2493,8 +2495,8 @@ class H2HDB(
             gallery_name_to_cbz_file_name(name) for name in current_galleries_names
         ):
             os.remove(os.path.join(current_cbzs[key], key))
-            logger.info(f"CBZ '{key}' removed.")
-        logger.info("CBZ files refreshed.")
+            self._logger.info(f"CBZ '{key}' removed.")
+        self._logger.info("CBZ files refreshed.")
 
         while True:
             directory_removed = False
@@ -2504,10 +2506,10 @@ class H2HDB(
                 if max([len(dirs), len(files)]) == 0:
                     directory_removed = True
                     os.rmdir(root)
-                    logger.info(f"Directory '{root}' removed.")
+                    self._logger.info(f"Directory '{root}' removed.")
             if not directory_removed:
                 break
-        logger.info("Empty directories removed.")
+        self._logger.info("Empty directories removed.")
 
     def _refresh_current_files_hashs(self, algorithm: str) -> None:
         if algorithm not in HASH_ALGORITHMS:
@@ -2553,22 +2555,22 @@ class H2HDB(
 
         self._refresh_current_cbz_files(current_galleries_names)
 
-        logger.info("Inserting galleries...")
+        self._logger.info("Inserting galleries...")
         if self.config.h2h.cbz_sort in ["upload_time", "download_time"]:
-            logger.info(f"Sorting by {self.config.h2h.cbz_sort}...")
+            self._logger.info(f"Sorting by {self.config.h2h.cbz_sort}...")
             current_galleries_folders = sorted(
                 current_galleries_folders,
                 key=lambda x: getattr(parse_galleryinfo(x), self.config.h2h.cbz_sort),
                 reverse=True,
             )
         elif "pages" in self.config.h2h.cbz_sort:
-            logger.info("Sorting by pages...")
+            self._logger.info("Sorting by pages...")
             zero_level = (
                 max(1, int(self.config.h2h.cbz_sort.split("+")[-1]))
                 if "+" in self.config.h2h.cbz_sort
                 else 20
             )
-            logger.info(
+            self._logger.info(
                 f"Sorting by pages with adjustment based on {zero_level} pages..."
             )
             current_galleries_folders = sorted(
@@ -2580,26 +2582,26 @@ class H2HDB(
                 current_galleries_folders,
                 key=lambda x: getattr(parse_galleryinfo(x), "pages"),
             )
-        logger.info("Galleries sorted.")
+        self._logger.info("Galleries sorted.")
 
-        logger.info("Getting excluded hash values...")
+        self._logger.info("Getting excluded hash values...")
         exclude_hashs = list[bytes]()
         previously_count_duplicated_files = 0
-        logger.info("Excluded hash values obtained.")
+        self._logger.info("Excluded hash values obtained.")
 
         def calculate_exclude_hashs(
             previously_count_duplicated_files: int, exclude_hashs: list[bytes]
         ) -> tuple[int, list[bytes]]:
-            logger.debug("Checking for duplicated files...")
+            self._logger.debug("Checking for duplicated files...")
             current_count_duplicated_files = self._count_duplicated_files_hashs_sha512()
             new_exclude_hashs = exclude_hashs
             if current_count_duplicated_files > previously_count_duplicated_files:
-                logger.debug("Duplicated files found. Updating excluded hash values...")
+                self._logger.debug("Duplicated files found. Updating excluded hash values...")
                 previously_count_duplicated_files = current_count_duplicated_files
                 new_exclude_hashs = (
                     self._get_duplicated_hash_values_by_count_artist_ratio()
                 )
-                logger.info("Excluded hash values updated.")
+                self._logger.info("Excluded hash values updated.")
             return previously_count_duplicated_files, new_exclude_hashs
 
         total_inserted_in_database = 0
@@ -2608,7 +2610,7 @@ class H2HDB(
         chunked_galleries_folders = chunk_list(
             current_galleries_folders, 100 * POOL_CPU_LIMIT
         )
-        logger.info("Inserting galleries in parallel...")
+        self._logger.info("Inserting galleries in parallel...")
         for gallery_chunk in chunked_galleries_folders:
             # Insert gallery info to database
             is_insert_list = run_in_parallel(
@@ -2616,7 +2618,7 @@ class H2HDB(
                 [(x,) for x in gallery_chunk],
             )
             if any(is_insert_list):
-                logger.info("There are new galleries inserted in database.")
+                self._logger.info("There are new galleries inserted in database.")
                 is_insert_limit_reached |= True
                 total_inserted_in_database += sum(is_insert_list)
 
@@ -2633,20 +2635,20 @@ class H2HDB(
                     [(x, exclude_hashs) for x in gallery_chunk],
                 )
                 if any(is_new_list):
-                    logger.info("There are new CBZ files created.")
+                    self._logger.info("There are new CBZ files created.")
                     total_created_cbz += sum(is_new_list)
-        logger.info(
+        self._logger.info(
             f"Total galleries inserted in database: {total_inserted_in_database}"
         )
-        logger.info(f"Total CBZ files created: {total_created_cbz}")
+        self._logger.info(f"Total CBZ files created: {total_created_cbz}")
 
-        logger.info("Cleaning up database...")
+        self._logger.info("Cleaning up database...")
         self.refresh_current_files_hashs()
 
         if is_insert_limit_reached:
-            logger.info("Sleeping for 30 minutes...")
+            self._logger.info("Sleeping for 30 minutes...")
             sleep(1800)
-            logger.info("Refreshing database...")
+            self._logger.info("Refreshing database...")
             return self.insert_h2h_download()
 
     def get_komga_metadata(self, gallery_name: str) -> dict:

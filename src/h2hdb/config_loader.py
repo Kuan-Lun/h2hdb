@@ -179,19 +179,6 @@ class H2HConfig:
         return self.__repr__()
 
 
-class MultiProcessConfig:
-    __slots__ = ["num_processes"]
-
-    def __init__(self, num_processes: int) -> None:
-        self.num_processes = num_processes
-
-        if not isinstance(num_processes, int):
-            raise TypeError("num_processes must be an integer")
-
-        if num_processes < 1:
-            raise ValueError("num_processes must be at least 1")
-
-
 class KomgaConfig:
     __slots__ = ["base_url", "api_username", "api_password", "library_id"]
 
@@ -226,17 +213,15 @@ class Config:
         h2h_config: H2HConfig,
         database_config: DatabaseConfig,
         logger_config: LoggerConfig,
-        multiprocess_config: MultiProcessConfig,
         media_server_config: MediaServer,
     ) -> None:
         self.h2h = h2h_config
         self.database = database_config
         self.logger = logger_config
-        self.multiprocess = multiprocess_config
         self.media_server = media_server_config
 
     def __repr__(self) -> str:
-        return f"Config(h2h={self.h2h}, database_config={self.database}, logger_config={self.logger}, multiprocess_config={self.multiprocess}, media_server_config={self.media_server})"
+        return f"Config(h2h={self.h2h}, database_config={self.database}, logger_config={self.logger}, media_server_config={self.media_server})"
 
     def __str__(self) -> str:
         return self.__repr__()
@@ -266,7 +251,6 @@ def set_default_config() -> dict[str, dict]:
             write_to_file="",
             synochat_webhook="",
         ),
-        multiprocess=dict[str, int](number=1),
         media_server=dict[str, str | dict[str, str]](
             server_type="", server_config=dict[str, str]()
         ),
@@ -299,8 +283,6 @@ def load_config(config_path: str = "") -> Config:
     if len(user_config["multiprocess"]) > 0:
         raise ConfigError("Invalid configuration for multiprocess")
     user_config.pop("multiprocess")
-
-    multiprocess_config = MultiProcessConfig(num_processes)
 
     # Validate the h2h configuration
     download_path = user_config["h2h"]["download_path"]
@@ -409,6 +391,5 @@ def load_config(config_path: str = "") -> Config:
         h2h_config=h2h_config,
         database_config=database_config,
         logger_config=logger_config,
-        multiprocess_config=multiprocess_config,
         media_server_config=media_server_config,
     )
