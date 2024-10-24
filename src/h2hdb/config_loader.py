@@ -274,16 +274,6 @@ def load_config(config_path: str = "") -> Config:
             with open(args.config, "r") as f:
                 user_config = json.load(f)
 
-    num_processes = user_config["multiprocess"]["number"]
-
-    if num_processes > 1:
-        user_config["logger"] = default_config["logger"]
-
-    user_config["multiprocess"].pop("number")
-    if len(user_config["multiprocess"]) > 0:
-        raise ConfigError("Invalid configuration for multiprocess")
-    user_config.pop("multiprocess")
-
     # Validate the h2h configuration
     download_path = user_config["h2h"]["download_path"]
     user_config["h2h"].pop("download_path")
