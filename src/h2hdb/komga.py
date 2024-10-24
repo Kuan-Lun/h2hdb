@@ -302,7 +302,7 @@ def update_komga_book_metadata(
     komga_metadata = get_book(book_id, base_url, api_username, api_password)
     if komga_metadata is not None:
         try:
-            with H2HDB(config=config) as connector:
+            with H2HDB(config=config, logger=logger) as connector:
                 current_metadata = connector.get_komga_metadata(komga_metadata["name"])
             if not (current_metadata.items() <= komga_metadata.items()):
                 patch_book_metadata(
@@ -333,7 +333,7 @@ def update_komga_series_metadata(
         komga_metadata = get_book(book_id, base_url, api_username, api_password)
         if komga_metadata is not None:
             try:
-                with H2HDB(config=config) as connector:
+                with H2HDB(config=config, logger=logger) as connector:
                     current_metadata = connector.get_komga_metadata(
                         komga_metadata["name"]
                     )
@@ -363,10 +363,10 @@ def update_komga_series_metadata(
 
 def scan_komga_library(
     config: Config,
+    logger: HentaiDBLogger,
     previously_book_ids=set[str](),
     previously_series_ids=set[str](),
 ) -> None:
-    logger = setup_logger(config)
     library_id = config.media_server.server_config.library_id
     base_url = config.media_server.server_config.base_url
     api_username = config.media_server.server_config.api_username
