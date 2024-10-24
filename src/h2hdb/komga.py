@@ -7,7 +7,7 @@ from typing import Callable
 import requests  # type: ignore
 from requests.auth import HTTPBasicAuth  # type: ignore
 
-from .logger import setup_logger, HentaiDBLogger
+from .logger import HentaiDBLogger
 from .config_loader import Config
 from .sql_connector import DatabaseKeyError
 from .h2h_db import H2HDB
@@ -372,8 +372,8 @@ def scan_komga_library(
     api_username = config.media_server.server_config.api_username
     api_password = config.media_server.server_config.api_password
 
-    scan_library(library_id, base_url, api_username, api_password)
-    analyze_library(library_id, base_url, api_username, api_password)
+    scan_library(library_id, base_url, api_username, api_password, logger)
+    analyze_library(library_id, base_url, api_username, api_password, logger)
 
     def update_metadata(
         vset: set[str],
