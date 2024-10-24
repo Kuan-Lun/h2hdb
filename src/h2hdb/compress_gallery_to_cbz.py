@@ -35,7 +35,7 @@ def compress_image(image_path: str, output_path: str, max_size: int) -> None:
                 max_width = int(image.width * scale)
 
         unsuitable_formats = ["GIF", "TIFF", "ICO"]
-        image.thumbnail((max_width, max_height), resample=Image.LANCZOS)
+        image.thumbnail((max_width, max_height), resample=Image.Resampling.LANCZOS)
         if image.format in unsuitable_formats:
             image.save(output_path, image.format)
         else:
