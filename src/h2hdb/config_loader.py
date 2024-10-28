@@ -71,10 +71,8 @@ class LoggerConfig:
     def __init__(
         self,
         level: str,
-        max_log_entry_length: int,
     ) -> None:
         self.level = level
-        self.max_log_entry_length = max_log_entry_length
 
         match level.lower():
             case "notset" | "debug" | "info" | "warning" | "error" | "critical":
@@ -84,13 +82,8 @@ class LoggerConfig:
                     f"Invalid log level {level} (must be one of NOTSET, DEBUG, INFO, WARNING, ERROR, CRITICAL)"
                 )
 
-        if not isinstance(max_log_entry_length, int):
-            raise TypeError(
-                f"Incorrect type for max_log_entry_length: {type(max_log_entry_length)}"
-            )
-
     def __repr__(self) -> str:
-        return f"LoggerConfig(level={self.level}, max_log_entry_length={self.max_log_entry_length})"
+        return f"LoggerConfig(level={self.level})"
 
     def __str__(self) -> str:
         return self.__repr__()
@@ -309,10 +302,7 @@ def load_config(config_path: str = "") -> Config:
     else:
         user_config.pop("logger")
 
-    logger_config = LoggerConfig(
-        level=level,
-        max_log_entry_length=max_log_entry_length,
-    )
+    logger_config = LoggerConfig(level=level)
 
     if "media_server" in user_config:
         media_server_type = user_config["media_server"]["server_type"]
