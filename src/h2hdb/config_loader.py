@@ -215,6 +215,23 @@ class Config:
         logger_config: LoggerConfig,
         media_server_config: MediaServer,
     ) -> None:
+
+        if not isinstance(h2h_config, H2HConfig):
+            raise TypeError(f"Incorrect type for h2h_config: {type(h2h_config)}")
+
+        if not isinstance(database_config, DatabaseConfig):
+            raise TypeError(
+                f"Incorrect type for database_config: {type(database_config)}"
+            )
+
+        if not isinstance(logger_config, LoggerConfig):
+            raise TypeError(f"Incorrect type for logger_config: {type(logger_config)}")
+
+        if not isinstance(media_server_config, MediaServer):
+            raise TypeError(
+                f"Incorrect type for media_server_config: {type(media_server_config)}"
+            )
+
         self.h2h = h2h_config
         self.database = database_config
         self.logger = logger_config
