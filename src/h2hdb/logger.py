@@ -43,7 +43,7 @@ def setup_file_logger(level: int) -> logging.Logger:
 
     # MemoryHandler with a capacity of x bytes
     memory_handler = MemoryHandler(
-        capacity=10240, target=file_handler, flushLevel=logging.ERROR
+        capacity=1024, target=file_handler, flushLevel=logging.ERROR
     )
     file_logger.addHandler(memory_handler)
 
@@ -57,9 +57,9 @@ class HentaiDBLogger:
         self.file_logger = setup_file_logger(logging_level)
 
         for level in ["debug", "info", "warning", "error", "critical"]:
-            setattr(self, level, partial(self.log_method, level))
+            setattr(self, level, partial(self._log_method, level))
 
-    def log_method(self, level: str, message: str) -> None:
+    def _log_method(self, level: str, message: str) -> None:
         log_method_screen = getattr(self.screen_logger, level)
         log_method_file = getattr(self.file_logger, level)
         log_method_screen(message)
