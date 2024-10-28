@@ -35,7 +35,7 @@ def setup_file_logger(level: int) -> logging.Logger:
     file_logger.setLevel(level)
 
     with open(log_filename, "w", encoding="utf-8") as f:
-        f.write('"time stamp","level","filename","line no.","message"\n')
+        f.write('"time stamp","level","message"\n')
 
     file_handler = logging.FileHandler(log_filename, mode="a+", encoding="utf-8")
     formatter = logging.Formatter('"%(asctime)s","%(levelname)-8s","%(message)s"')
