@@ -18,19 +18,6 @@ class ConfigError(Exception):
         super().__init__(self.message)
 
 
-class SynoChatConfig:
-    __slots__ = ["webhook_url"]
-
-    def __init__(self, webhook_url: str) -> None:
-        self.webhook_url = webhook_url
-
-        if not isinstance(webhook_url, str):
-            raise TypeError("webhook_url must be a string")
-
-        if (webhook_url != "") and (not webhook_url.startswith("https://")):
-            raise ConfigError("webhook_url must start with https://")
-
-
 class DatabaseConfig:
     __slots__ = ["sql_type", "host", "port", "user", "database", "password"]
 
@@ -78,25 +65,16 @@ class DatabaseConfig:
 class LoggerConfig:
     __slots__ = [
         "level",
-        "display_on_screen",
-        "write_to_file",
         "max_log_entry_length",
-        "synochat_webhook",
     ]
 
     def __init__(
         self,
         level: str,
-        display_on_screen: bool,
-        write_to_file: str,
         max_log_entry_length: int,
-        synochat_webhook: SynoChatConfig,
     ) -> None:
         self.level = level
-        self.display_on_screen = display_on_screen
-        self.write_to_file = write_to_file
         self.max_log_entry_length = max_log_entry_length
-        self.synochat_webhook = synochat_webhook
 
         match level.lower():
             case "notset" | "debug" | "info" | "warning" | "error" | "critical":
@@ -106,26 +84,13 @@ class LoggerConfig:
                     f"Invalid log level {level} (must be one of NOTSET, DEBUG, INFO, WARNING, ERROR, CRITICAL)"
                 )
 
-        if not isinstance(display_on_screen, bool):
-            raise TypeError(
-                f"Incorrect type for display_on_screen: {type(display_on_screen)}"
-            )
-
-        if not isinstance(write_to_file, str):
-            raise TypeError(f"Incorrect type for write_to_file: {type(write_to_file)}")
-
         if not isinstance(max_log_entry_length, int):
             raise TypeError(
                 f"Incorrect type for max_log_entry_length: {type(max_log_entry_length)}"
             )
 
-        if not isinstance(synochat_webhook, SynoChatConfig):
-            raise TypeError(
-                f"Incorrect type for synochat_webhook: {type(synochat_webhook)}"
-            )
-
     def __repr__(self) -> str:
-        return f"LoggerConfig(level={self.level}, display_on_screen={self.display_on_screen}, write_to_file={self.write_to_file}, max_log_entry_length={self.max_log_entry_length}, synochat_webhook={self.synochat_webhook})"
+        return f"LoggerConfig(level={self.level}, max_log_entry_length={self.max_log_entry_length})"
 
     def __str__(self) -> str:
         return self.__repr__()
@@ -336,21 +301,8 @@ def load_config(config_path: str = "") -> Config:
     level = user_config["logger"]["level"]
     user_config["logger"].pop("level")
 
-    display_on_screen = user_config["logger"]["display_on_screen"]
-    user_config["logger"].pop("display_on_screen")
-
     max_log_entry_length = user_config["logger"]["max_log_entry_length"]
     user_config["logger"].pop("max_log_entry_length")
-
-    write_to_file = user_config["logger"]["write_to_file"]
-    user_config["logger"].pop("write_to_file")
-
-    if "synochat_webhook" in user_config["logger"]:
-        synochat_config = user_config["logger"]["synochat_webhook"]
-        user_config["logger"].pop("synochat_webhook")
-        synochat_config = SynoChatConfig(synochat_config)
-    else:
-        synochat_config = SynoChatConfig(default_config["logger"]["synochat_webhook"])
 
     if len(user_config["logger"]) > 0:
         raise ConfigError("Invalid configuration for logger")
@@ -359,10 +311,7 @@ def load_config(config_path: str = "") -> Config:
 
     logger_config = LoggerConfig(
         level=level,
-        display_on_screen=display_on_screen,
-        write_to_file=write_to_file,
         max_log_entry_length=max_log_entry_length,
-        synochat_webhook=synochat_config,
     )
 
     if "media_server" in user_config:

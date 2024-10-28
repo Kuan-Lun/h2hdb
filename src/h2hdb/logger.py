@@ -2,94 +2,10 @@ __all__ = ["logger"]
 
 
 import logging
-import unicodedata
-import sys
+from logging.handlers import MemoryHandler
 from functools import partial
-import unicodedata
-import re
-from urllib.parse import urlparse
-from urllib.parse import parse_qs
-from time import sleep
 
-
-from .config_loader import SynoChatConfig, LoggerConfig
-
-
-def parse_uri(uri: str) -> dict:
-    parsed_uri = urlparse(uri)
-
-    scheme = parsed_uri.scheme
-    authority = parsed_uri.netloc
-    path = parsed_uri.path
-    query = parse_qs(parsed_uri.query)
-    fragment = parsed_uri.fragment
-
-    # 將 query 字典中的值從列表轉換為單一值
-    for key, value in query.items():
-        if len(value) == 1:
-            query[key] = value[0]  # type: ignore
-
-    return {
-        "scheme": scheme,
-        "authority": authority,
-        "path": path,
-        "query": query,
-        "fragment": fragment,
-    }
-
-
-def split_message_with_cjk(message: str, max_log_entry_length: int) -> list[str]:
-    """
-    Splits a message into chunks of a specified maximum length, taking into account the width of CJK characters.
-
-    Args:
-        message (str): The message to be split.
-        max_log_entry_length (int): The maximum length of each chunk. Note that CJK characters count as 2 towards this limit.
-
-    Returns:
-        list[str]: A list of chunks, where each chunk is a substring of the original message.
-    """
-    if max_log_entry_length < 0:
-        return [message]
-    else:
-        chunks = list()
-        chunk = str()
-        chunk_len = 0
-        for char in message:
-            char_len = 2 if "CJK UNIFIED" in unicodedata.name(char, str()) else 1
-            if chunk_len + char_len > max_log_entry_length:
-                if chunk and chunk[0] == " ":
-                    chunk = chunk[1:]
-                chunks.append(chunk)
-                chunk = str()
-                chunk_len = 0
-            chunk += char
-            chunk_len += char_len
-        if chunk:  # don't forget to append the last chunk
-            if chunk[0] == " ":
-                chunk = chunk[1:]
-            chunks.append(chunk)
-        return chunks
-
-
-def log_message(
-    logger: logging.Logger, level: int, max_log_entry_length: int, message: str
-) -> None:
-    frame = sys._getframe(3)
-    message = re.sub(" +", " ", message.replace("\n", " ")).strip()
-    chunks = split_message_with_cjk(message, max_log_entry_length)
-    for chunk in chunks:
-        record = logger.makeRecord(
-            logger.name,
-            level,
-            frame.f_code.co_filename,
-            frame.f_lineno,
-            chunk,
-            tuple(),
-            None,
-            frame.f_code.co_name,
-        )
-        logger.handle(record)
+from .config_loader import LoggerConfig
 
 
 LOG_CONFIG = {
@@ -102,17 +18,7 @@ LOG_CONFIG = {
 }
 
 
-def setup_screen_logger(level: int, max_log_entry_length: int) -> logging.Logger:
-    """
-    Set up a logger that displays log messages on the screen.
-
-    Args:
-        level (int): The logging level to set for the logger.
-        max_log_entry_length (int): The maximum length of log messages.
-
-    Returns:
-        logging.Logger: The configured logger instance.
-    """
+def setup_screen_logger(level: int) -> logging.Logger:
     screen_logger = logging.getLogger("display_on_screen")
     screen_logger.setLevel(level)
 
@@ -120,168 +26,44 @@ def setup_screen_logger(level: int, max_log_entry_length: int) -> logging.Logger
     formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
     handler.setFormatter(formatter)
     screen_logger.addHandler(handler)
-
-    for level_name, level_value in LOG_CONFIG.items():
-        if level_value < level:
-            continue
-        partial_log_message = partial(
-            log_message, screen_logger, level_value, max_log_entry_length
-        )
-        setattr(screen_logger, level_name, partial_log_message)
     return screen_logger
 
 
-def setup_file_logger(write_to_file: str, level: int) -> logging.Logger:
-    """
-    Set up a file logger with the specified log level and log file.
-
-    Args:
-        write_to_file (str): The path to the log file.
-        level (int): The log level to be set for the file logger.
-
-    Returns:
-        logging.Logger: The configured file logger.
-
-    """
+def setup_file_logger(level: int) -> logging.Logger:
+    log_filename = "h2hdb.log"
     file_logger = logging.getLogger("write_to_file")
     file_logger.setLevel(level)
 
-    with open(write_to_file, "w", encoding="utf-8") as f:
+    with open(log_filename, "w", encoding="utf-8") as f:
         f.write('"time stamp","level","filename","line no.","message"\n')
-    handler = logging.FileHandler(write_to_file, mode="a+", encoding="utf-8")
-    formatter = logging.Formatter(
-        '"%(asctime)s","%(levelname)-8s","%(filename)-10s","%(lineno)-3d","%(message)s"'
-    )
-    handler.setFormatter(formatter)
-    file_logger.addHandler(handler)
 
-    for level_name, level_value in LOG_CONFIG.items():
-        if level_value < level:
-            continue
-        partial_log_message = partial(log_message, file_logger, level_value, -1)
-        setattr(file_logger, level_name, partial_log_message)
+    file_handler = logging.FileHandler(log_filename, mode="a+", encoding="utf-8")
+    formatter = logging.Formatter('"%(asctime)s","%(levelname)-8s","%(message)s"')
+    file_handler.setFormatter(formatter)
+
+    # MemoryHandler with a capacity of x bytes
+    memory_handler = MemoryHandler(
+        capacity=10240, target=file_handler, flushLevel=logging.ERROR
+    )
+    file_logger.addHandler(memory_handler)
+
     return file_logger
 
 
-def setup_synochat_webhook_logger(
-    webhook_url: SynoChatConfig, level: int
-) -> logging.Logger:
-    from requests.exceptions import ConnectionError  # type: ignore
-    from synochat.webhooks import IncomingWebhook  # type: ignore
-    from synochat.exceptions import RateLimitError  # type: ignore
-    from synochat.exceptions import UnknownApiError  # type: ignore
-
-    class SynoChatHandler(logging.Handler):
-        def __init__(self, synochat_config: SynoChatConfig, *args, **kwargs) -> None:
-            super().__init__(*args, **kwargs)
-            self.synochat_config = synochat_config
-
-        def emit(self, record) -> None:
-            log_entry = self.format(record)
-            self._msg2synochat(log_entry, self.synochat_config.webhook_url)
-
-        def _msg2synochat(self, s: str, url: str, retry: int = 1) -> None:
-            uri = url
-            uridict = parse_uri(uri)
-            authority = uridict["authority"]
-            token = uridict["query"]["token"]
-            try:
-                webhook = IncomingWebhook(authority, token)
-                for key, value in {"&": "%26", "+": "%2B"}.items():
-                    s = s.replace(key, value)
-                webhook.send(s)
-            except RateLimitError:
-                if retry > 0:
-                    sleep(5)
-                    self._msg2synochat(s, url, retry=retry - 1)
-                else:
-                    print(f'Rate limit exceeded. Unable to send message "{s}".')
-            except (ConnectionError, UnknownApiError) as e:
-                print(f"Error sending message: {s}")
-                print(e)
-            except Exception as e:
-                print(f"Error sending message: {s}")
-                print(e)
-
-    webhook_logger = logging.getLogger("webhook_url")
-    webhook_logger.setLevel(level)
-
-    handler = SynoChatHandler(webhook_url)
-    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-    handler.setFormatter(formatter)
-
-    webhook_logger.addHandler(handler)
-
-    for level_name, level_value in LOG_CONFIG.items():
-        if level_value < level:
-            continue
-        partial_log_message = partial(log_message, webhook_logger, level_value, -1)
-        setattr(webhook_logger, level_name, partial_log_message)
-    return webhook_logger
-
-
 class HentaiDBLogger:
-    """
-    The HentaiDBLogger class provides a custom logging interface for the HentaiDB application.
-
-    Attributes:
-        level (str): The logging level. Can be one of 'debug', 'info', 'warning', 'error', 'critical'.
-        display_on_screen (bool): Whether to display the log messages on screen.
-        max_log_entry_length (int): The maximum length of the log messages. This only applies to messages logged to the file specified by `display_on_screen`.
-        write_to_file (str): The path to the log file. If an empty string is provided, logging to a file is disabled.
-
-    It allows logging messages at different levels (debug, info, warning, error, critical) to both the screen and a log file.
-    The logging level, whether to display on screen, the log file path, and the maximum log length can be configured upon initialization.
-
-    Methods:
-        hasHandlers() -> bool:
-            Checks if any handlers are attached to the logger.
-
-        removeHandlers() -> None:
-            Removes all handlers attached to the logger.
-
-        addHandler(handler: logging.Handler) -> None:
-            Adds a new handler to the logger.
-
-        debug(message: str) -> None:
-            Logs a debug message.
-
-        info(message: str) -> None:
-            Logs an info message.
-
-        warning(message: str) -> None:
-            Logs a warning message.
-
-        error(message: str) -> None:
-            Logs an error message.
-
-        critical(message: str) -> None:
-            Logs a critical message.
-    """
-
-    def __init__(
-        self,
-        level: str,
-        display_on_screen: bool,
-        write_to_file: str,
-        max_log_entry_length: int,
-        synochat_webhook: SynoChatConfig,
-    ) -> None:
+    def __init__(self, level: str) -> None:
         logging_level = LOG_CONFIG[level.lower()]
-        self.display_on_screen = display_on_screen
-        if self.display_on_screen:
-            self.screen_logger = setup_screen_logger(
-                logging_level, max_log_entry_length
-            )
+        self.screen_logger = setup_screen_logger(logging_level)
+        self.file_logger = setup_file_logger(logging_level)
 
-        self.write_to_file = write_to_file
-        if self.write_to_file != "":
-            self.file_logger = setup_file_logger(write_to_file, logging_level)
+        def log_method(level: str, message: str) -> None:
+            log_method_screen = getattr(self.screen_logger, level)
+            log_method_file = getattr(self.file_logger, level)
+            log_method_screen(message)
+            log_method_file(message)
 
-        if synochat_webhook != "":
-            self.synochat_webhook = setup_synochat_webhook_logger(
-                synochat_webhook, logging_level
-            )
+        for level in ["debug", "info", "warning", "error", "critical"]:
+            setattr(self, level, partial(log_method, level))
 
     def hasHandlers(self) -> bool:
         return self.screen_logger.hasHandlers() or self.file_logger.hasHandlers()
@@ -290,76 +72,13 @@ class HentaiDBLogger:
         while self.hasHandlers():
             self.screen_logger.removeHandler(self.screen_logger.handlers[0])
             self.file_logger.removeHandler(self.file_logger.handlers[0])
-            self.synochat_webhook.removeHandler(self.synochat_webhook.handlers[0])
 
     def addHandler(self, handler: logging.Handler) -> None:
-        if self.display_on_screen:
-            self.screen_logger.addHandler(handler)
-        if self.write_to_file != "":
-            self.file_logger.addHandler(handler)
-        if self.synochat_webhook != "":
-            self.synochat_webhook.addHandler(handler)
-
-    def debug(self, message: str) -> None:
-        if self.display_on_screen:
-            self.screen_logger.debug(message)
-        if self.write_to_file != "":
-            self.file_logger.debug(message)
-        if self.synochat_webhook != "":
-            self.synochat_webhook.debug(message)
-
-    def info(self, message: str) -> None:
-        if self.display_on_screen:
-            self.screen_logger.info(message)
-        if self.write_to_file != "":
-            self.file_logger.info(message)
-        if self.synochat_webhook != "":
-            self.synochat_webhook.info(message)
-
-    def warning(self, message: str) -> None:
-        if self.display_on_screen:
-            self.screen_logger.warning(message)
-        if self.write_to_file != "":
-            self.file_logger.warning(message)
-        if self.synochat_webhook != "":
-            self.synochat_webhook.warning(message)
-
-    def error(self, message: str) -> None:
-        if self.display_on_screen:
-            self.screen_logger.error(message)
-        if self.write_to_file != "":
-            self.file_logger.error(message)
-        if self.synochat_webhook != "":
-            self.synochat_webhook.error(message)
-
-    def critical(self, message: str) -> None:
-        if self.display_on_screen:
-            self.screen_logger.critical(message)
-        if self.write_to_file != "":
-            self.file_logger.critical(message)
-        if self.synochat_webhook != "":
-            self.synochat_webhook.critical(message)
+        self.screen_logger.addHandler(handler)
+        self.file_logger.addHandler(handler)
 
 
 def setup_logger(
     logger_config: LoggerConfig,
 ) -> HentaiDBLogger:
-    return HentaiDBLogger(
-        level=logger_config.level,
-        display_on_screen=logger_config.display_on_screen,
-        write_to_file=logger_config.write_to_file,
-        max_log_entry_length=logger_config.max_log_entry_length,
-        synochat_webhook=logger_config.synochat_webhook,
-    )
-
-
-def reset_logger(logger: HentaiDBLogger) -> None:
-    """
-    Resets the provided logger by removing all its handlers.
-
-    This function iteratively checks if the logger has any handlers, and if it does, it removes the first handler in the list. This process continues until the logger has no handlers left.
-
-    Args:
-        logger (logging.Logger): The logger to be reset.
-    """
-    logger.removeHandlers()
+    return HentaiDBLogger(level=logger_config.level)

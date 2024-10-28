@@ -59,11 +59,7 @@ The `H2HDB` is a comprehensive database for organising and managing H@H comic co
         "password": "[str]" // The default is `password`.
     },
     "logger": {
-        "level": "[str]", // One of NOTSET, DEBUG, INFO, WARNING, ERROR, CRITICAL.
-        "display_on_screen": "[bool]", // The default is `false`.
-        "max_log_entry_length": "[int]", // Maximum length of log entries.
-        "write_to_file": "[str]", // Path to write log entries to.
-        "synochat_webhook": "[str]" // The default is empty str.
+        "level": "[str]" // One of NOTSET, DEBUG, INFO, WARNING, ERROR, CRITICAL.
     },
     "media_server": {
         "server_type": "[str]", // Now only supports `komga`. The defult is ``.

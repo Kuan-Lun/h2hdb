@@ -27,11 +27,6 @@ setup(
         "mysql": ["mysql-connector-python>=9.0.0,<10.0.0"],
         "cbz": ["pillow>=10.4.0,<11.0.0"],
         "komga": ["requests>=2.32.3,<3.0.0"],
-        "synochat": [
-            "synochat>=1.0.4,<2.0.0",
-            "requests>=2.32.3,<3.0.0",
-            "types-requests>=2.32.0.20240914,<3.0.0",
-        ],
     },
     package_dir={"": "src"},
     python_requires=">=3.12.0, <4",
