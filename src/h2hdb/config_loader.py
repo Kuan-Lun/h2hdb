@@ -294,9 +294,6 @@ def load_config(config_path: str = "") -> Config:
     level = user_config["logger"]["level"]
     user_config["logger"].pop("level")
 
-    max_log_entry_length = user_config["logger"]["max_log_entry_length"]
-    user_config["logger"].pop("max_log_entry_length")
-
     if len(user_config["logger"]) > 0:
         raise ConfigError("Invalid configuration for logger")
     else:
