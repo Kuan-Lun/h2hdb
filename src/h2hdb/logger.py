@@ -1,6 +1,7 @@
 __all__ = ["logger"]
 
 
+from abc import ABCMeta, abstractmethod
 import logging
 from logging.handlers import MemoryHandler
 from functools import partial
@@ -50,14 +51,43 @@ def setup_file_logger(level: int) -> logging.Logger:
     return file_logger
 
 
-class HentaiDBLogger:
+class AbstractLogger(metaclass=ABCMeta):
+    @abstractmethod
+    def debug(self, message: str) -> None: ...
+
+    @abstractmethod
+    def info(self, message: str) -> None: ...
+
+    @abstractmethod
+    def warning(self, message: str) -> None: ...
+
+    @abstractmethod
+    def error(self, message: str) -> None: ...
+
+    @abstractmethod
+    def critical(self, message: str) -> None: ...
+
+
+class HentaiDBLogger(AbstractLogger):
     def __init__(self, level: str) -> None:
         logging_level = LOG_CONFIG[level.lower()]
         self.screen_logger = setup_screen_logger(logging_level)
         self.file_logger = setup_file_logger(logging_level)
 
-        for level in ["debug", "info", "warning", "error", "critical"]:
-            setattr(self, level, partial(self._log_method, level))
+    def debug(self, message: str) -> None:
+        self._log_method("debug", message)
+
+    def info(self, message: str) -> None:
+        self._log_method("info", message)
+
+    def warning(self, message: str) -> None:
+        self._log_method("warning", message)
+
+    def error(self, message: str) -> None:
+        self._log_method("error", message)
+
+    def critical(self, message: str) -> None:
+        self._log_method("critical", message)
 
     def _log_method(self, level: str, message: str) -> None:
         log_method_screen = getattr(self.screen_logger, level)

@@ -75,7 +75,7 @@ class H2HDBAbstract(metaclass=ABCMeta):
         "logger",
     ]
 
-    def __init__(self, config: Config, logger:HentaiDBLogger) -> None:
+    def __init__(self, config: Config, logger: HentaiDBLogger) -> None:
         """
         Initializes the H2HDBAbstract object.
 
@@ -2277,7 +2277,9 @@ class H2HDB(
         is_thesame = self._check_gallery_info_file_hash(galleryinfo_params)
         is_insert = is_thesame is False
         if is_insert:
-            self.logger.debug(f"Inserting gallery '{galleryinfo_params.gallery_name}'...")
+            self.logger.debug(
+                f"Inserting gallery '{galleryinfo_params.gallery_name}'..."
+            )
             self.delete_gallery_file(galleryinfo_params.gallery_name)
             self.delete_gallery(galleryinfo_params.gallery_name)
             self._insert_gallery_info(galleryinfo_params)
@@ -2359,7 +2361,6 @@ class H2HDB(
                     self.config.h2h.cbz_max_size,
                     exclude_hashs,
                 )
-                self.logger.info(f"CBZ '{cbz_log_path}' updated.")
                 result = True
             else:
                 result = False
@@ -2371,7 +2372,6 @@ class H2HDB(
                 self.config.h2h.cbz_max_size,
                 exclude_hashs,
             )
-            self.logger.info(f"CBZ '{cbz_log_path}' created.")
             result = True
         return result
 
@@ -2553,7 +2553,9 @@ class H2HDB(
             current_count_duplicated_files = self._count_duplicated_files_hashs_sha512()
             new_exclude_hashs = exclude_hashs
             if current_count_duplicated_files > previously_count_duplicated_files:
-                self.logger.debug("Duplicated files found. Updating excluded hash values...")
+                self.logger.debug(
+                    "Duplicated files found. Updating excluded hash values..."
+                )
                 previously_count_duplicated_files = current_count_duplicated_files
                 new_exclude_hashs = (
                     self._get_duplicated_hash_values_by_count_artist_ratio()
@@ -2628,4 +2630,3 @@ class H2HDB(
             {"name": value, "role": key} for key, value in tags if value != ""
         ]
         return metadata
-
