@@ -56,14 +56,14 @@ class HentaiDBLogger:
         self.screen_logger = setup_screen_logger(logging_level)
         self.file_logger = setup_file_logger(logging_level)
 
-        def log_method(level: str, message: str) -> None:
-            log_method_screen = getattr(self.screen_logger, level)
-            log_method_file = getattr(self.file_logger, level)
-            log_method_screen(message)
-            log_method_file(message)
-
         for level in ["debug", "info", "warning", "error", "critical"]:
-            setattr(self, level, partial(log_method, level))
+            setattr(self, level, partial(self.log_method, level))
+
+    def log_method(self, level: str, message: str) -> None:
+        log_method_screen = getattr(self.screen_logger, level)
+        log_method_file = getattr(self.file_logger, level)
+        log_method_screen(message)
+        log_method_file(message)
 
     def hasHandlers(self) -> bool:
         return self.screen_logger.hasHandlers() or self.file_logger.hasHandlers()
