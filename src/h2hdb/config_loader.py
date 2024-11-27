@@ -219,12 +219,8 @@ def set_default_config() -> dict[str, dict]:
             database="h2h",
             password="password",
         ),
-        logger=dict[str, str | bool | int](
+        logger=dict[str, str](
             level="INFO",
-            display_on_screen=False,
-            max_log_entry_length=-1,
-            write_to_file="",
-            synochat_webhook="",
         ),
         media_server=dict[str, str | dict[str, str]](
             server_type="", server_config=dict[str, str]()
@@ -313,6 +309,8 @@ def load_config(config_path: str = "") -> Config:
                     api_password=media_server_config["api_password"],
                     library_id=media_server_config["library_id"],
                 )
+                user_config["media_server"].pop("server_config")
+            case "":
                 user_config["media_server"].pop("server_config")
             case _:
                 raise ConfigError("Invalid media server type")
