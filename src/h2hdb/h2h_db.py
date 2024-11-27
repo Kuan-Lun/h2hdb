@@ -198,6 +198,16 @@ class H2HDBAbstract(metaclass=ABCMeta):
         pass
 
     @abstractmethod
+    def get_gids(self) -> list[int]:
+        """
+        Selects the GIDs from the database.
+
+        Returns:
+            list[int]: The list of GIDs.
+        """
+        pass
+
+    @abstractmethod
     def get_title_by_gallery_name(self, gallery_name: str) -> str:
         """
         Selects the gallery title from the database.
@@ -650,6 +660,19 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def get_gid_by_gallery_name(self, gallery_name: str) -> int:
         db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
         return self._get_gid_by_db_gallery_id(db_gallery_id)
+
+    def get_gids(self) -> list[int]:
+        with self.SQLConnector() as connector:
+            table_name = "galleries_gids"
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    select_query = f"""
+                        SELECT gid
+                        FROM {table_name}
+                    """
+            query_result = connector.fetch_all(select_query)
+            gids = [gid for gid, in query_result]
+        return gids
 
 
 class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
