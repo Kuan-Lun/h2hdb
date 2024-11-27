@@ -428,6 +428,16 @@ class H2HDBAbstract(metaclass=ABCMeta):
         """
         pass
 
+    @abstractmethod
+    def get_pending_download_gids(self) -> list[int]:
+        """
+        Selects the pending download GIDs from the database.
+
+        Returns:
+            list[int]: The list of pending download GIDs.
+        """
+        pass
+
 
 class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
     """
@@ -2080,6 +2090,37 @@ class H2HDB(
                 connector.execute(get_optimize_query(table_name))
             self.logger.info("Database optimized.")
 
+    def _create_pending_download_gids_view(self) -> None:
+        with self.SQLConnector() as connector:
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    query = """
+                        CREATE VIEW IF NOT EXISTS pending_download_gids AS
+                            SELECT gids.gid AS gid
+                            FROM galleries_redownload_times AS grt
+                            INNER JOIN galleries_upload_times AS gut
+                                ON grt.db_gallery_id = gut.db_gallery_id
+                            INNER JOIN galleries_gids AS gids
+                                ON grt.db_gallery_id = gids.db_gallery_id
+                            WHERE grt.time <= DATE_ADD(gut.time, INTERVAL 1 YEAR)
+                                AND DATE_ADD(grt.time, INTERVAL 7 DAY) <= NOW()
+                                AND DATE_ADD(gut.time, INTERVAL 7 DAY) <= NOW()
+                    """
+            connector.execute(query)
+            self.logger.info("pending_download_gids view created.")
+
+    def get_pending_download_gids(self) -> list[int]:
+        with self.SQLConnector() as connector:
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    query = """
+                        SELECT gid
+                        FROM pending_download_gids
+                    """
+            query_result = connector.fetch_all(query)
+            pending_download_gids = [query[0] for query in query_result]
+        return pending_download_gids
+
     def _create_todownload_gids_table(self) -> None:
         with self.SQLConnector() as connector:
             table_name = "todownload_gids"
@@ -2173,6 +2214,7 @@ class H2HDB(
         self._create_galleries_download_times_table()
         self._create_galleries_redownload_times_table()
         self._create_galleries_upload_times_table()
+        self._create_pending_download_gids_view()
         self._create_galleries_modified_times_table()
         self._create_galleries_access_times_table()
         self._create_galleries_titles_table()
