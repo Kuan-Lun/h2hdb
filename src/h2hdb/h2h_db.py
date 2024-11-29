@@ -448,6 +448,16 @@ class H2HDBAbstract(metaclass=ABCMeta):
         """
         pass
 
+    @abstractmethod
+    def insert_todelete_gid(self, gid: int) -> None:
+        """
+        Inserts the GID to be deleted into the database.
+
+        Args:
+            gid (int): The gallery GID.
+        """
+        pass
+
 
 class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
     """
@@ -2131,6 +2141,44 @@ class H2HDB(
             pending_download_gids = [query[0] for query in query_result]
         return pending_download_gids
 
+    def _create_todelete_gids_table(self) -> None:
+        with self.SQLConnector() as connector:
+            table_name = "todelete_gids"
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    query = f"""
+                        CREATE TABLE IF NOT EXISTS {table_name} (
+                            PRIMARY KEY (gid),
+                            gid          INT UNSIGNED NOT NULL
+                        )
+                    """
+            connector.execute(query)
+            self.logger.info(f"{table_name} table created.")
+
+    def check_todelete_gid(self, gid: int) -> bool:
+        with self.SQLConnector() as connector:
+            table_name = "todelete_gids"
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    select_query = f"""
+                        SELECT gid
+                        FROM {table_name}
+                        WHERE gid = %s
+                    """
+                    query_result = connector.fetch_one(select_query, (gid,))
+        return query_result is not None
+
+    def insert_todelete_gid(self, gid: int) -> None:
+        if not self.check_todelete_gid(gid):
+            with self.SQLConnector() as connector:
+                table_name = "todelete_gids"
+                match self.config.database.sql_type.lower():
+                    case "mysql":
+                        insert_query = f"""
+                            INSERT INTO {table_name} (gid) VALUES (%s)
+                        """
+                connector.execute(insert_query, (gid,))
+
     def _create_todownload_gids_table(self) -> None:
         with self.SQLConnector() as connector:
             table_name = "todownload_gids"
@@ -2218,6 +2266,7 @@ class H2HDB(
     def create_main_tables(self) -> None:
         self.logger.debug("Creating main tables...")
         self._create_todownload_gids_table()
+        self._create_todelete_gids_table()
         self._create_pending_gallery_removals_table()
         self._create_galleries_names_table()
         self._create_galleries_gids_table()
