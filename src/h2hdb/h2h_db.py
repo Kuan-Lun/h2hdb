@@ -438,6 +438,16 @@ class H2HDBAbstract(metaclass=ABCMeta):
         """
         pass
 
+    @abstractmethod
+    def insert_removed_gallery_gid(self, gid: int) -> None:
+        """
+        Inserts the removed gallery GID into the database.
+
+        Args:
+            gid (int): The gallery GID.
+        """
+        pass
+
 
 class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
     """
