@@ -208,6 +208,19 @@ class H2HDBAbstract(metaclass=ABCMeta):
         pass
 
     @abstractmethod
+    def check_gid_by_gid(self, gid: int) -> bool:
+        """
+        Checks if the GID exists in the database.
+
+        Args:
+            gid (int): The gallery GID.
+
+        Returns:
+            bool: True if the GID exists, False otherwise.
+        """
+        pass
+
+    @abstractmethod
     def get_title_by_gallery_name(self, gallery_name: str) -> str:
         """
         Selects the gallery title from the database.
@@ -703,6 +716,19 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             query_result = connector.fetch_all(select_query)
             gids = [gid for gid, in query_result]
         return gids
+
+    def check_gid_by_gid(self, gid: int) -> bool:
+        with self.SQLConnector() as connector:
+            table_name = "galleries_gids"
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    select_query = f"""
+                        SELECT gid
+                        FROM {table_name}
+                        WHERE gid = %s
+                    """
+            query_result = connector.fetch_one(select_query, (gid,))
+        return query_result is not None
 
 
 class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
