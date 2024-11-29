@@ -2118,6 +2118,8 @@ class H2HDB(
                         CREATE VIEW IF NOT EXISTS pending_download_gids AS
                             SELECT gids.gid AS gid
                             FROM galleries_redownload_times AS grt
+                            INNER JOIN galleries_download_times AS gdt
+                                on grt.db_gallery_id = gdt.db_gallery_id
                             INNER JOIN galleries_upload_times AS gut
                                 ON grt.db_gallery_id = gut.db_gallery_id
                             INNER JOIN galleries_gids AS gids
@@ -2125,6 +2127,7 @@ class H2HDB(
                             WHERE grt.time <= DATE_ADD(gut.time, INTERVAL 1 YEAR)
                                 AND DATE_ADD(grt.time, INTERVAL 7 DAY) <= NOW()
                                 AND DATE_ADD(gut.time, INTERVAL 7 DAY) <= NOW()
+                                OR DATE_ADD(gdt.time, INTERVAL 7 DAY) <= grt.time
                     """
             connector.execute(query)
             self.logger.info("pending_download_gids view created.")
