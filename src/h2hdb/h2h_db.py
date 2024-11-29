@@ -471,6 +471,16 @@ class H2HDBAbstract(metaclass=ABCMeta):
         """
         pass
 
+    @abstractmethod
+    def update_redownload_time_to_now_by_gid(self, gid: int) -> None:
+        """
+        Updates the redownload time to now by GID.
+
+        Args:
+            gid (int): The gallery GID.
+        """
+        pass
+
 
 class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
     """
@@ -632,6 +642,25 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
             raise DatabaseKeyError(f"Gallery name '{gallery_name}' does not exist.")
         else:
             db_gallery_id = query_result[0]
+        return db_gallery_id
+
+    def _get_db_gallery_id_by_gid(self, gid: int) -> int:
+        with self.SQLConnector() as connector:
+            table_name = "galleries_gids"
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    select_query = f"""
+                        SELECT db_gallery_id
+                        FROM {table_name}
+                        WHERE gid = %s
+                    """
+            query_result = connector.fetch_one(select_query, (gid,))
+            if query_result is None:
+                msg = f"Gallery name ID for GID {gid} does not exist."
+                self.logger.error(msg)
+                raise DatabaseKeyError(msg)
+            else:
+                db_gallery_id = query_result[0]
         return db_gallery_id
 
 
@@ -2316,6 +2345,17 @@ class H2HDB(
         self._create_galleries_tags_table()
         self._create_duplicated_galleries_tables()
         self.logger.info("Main tables created.")
+
+    def update_redownload_time_to_now_by_gid(self, gid: int) -> None:
+        db_gallery_id = self._get_db_gallery_id_by_gid(gid)
+        table_name = "galleries_redownload_times"
+        with self.SQLConnector() as connector:
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    update_query = f"""
+                        UPDATE {table_name} SET time = NOW() WHERE db_gallery_id = %s
+                    """
+            connector.execute(update_query, (db_gallery_id,))
 
     def _insert_gallery_info(self, galleryinfo_params: GalleryInfoParser) -> None:
         self.insert_pending_gallery_removal(galleryinfo_params.gallery_name)
