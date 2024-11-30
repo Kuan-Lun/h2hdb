@@ -756,8 +756,8 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         FROM {table_name}
                         WHERE gid = %s
                     """
-            query_result = connector.fetch_one(select_query, (gid,))
-        return query_result is not None
+            query_result = connector.fetch_all(select_query, (gid,))
+        return len(query_result) > 0
 
 
 class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
@@ -2183,6 +2183,7 @@ class H2HDB(
                                 AND DATE_ADD(grt.time, INTERVAL 7 DAY) <= NOW()
                                 AND DATE_ADD(gut.time, INTERVAL 7 DAY) <= NOW()
                                 OR DATE_ADD(gdt.time, INTERVAL 7 DAY) <= grt.time
+                                 ORDER BY gut.`time` DESC
                     """
             connector.execute(query)
             self.logger.info("pending_download_gids view created.")
