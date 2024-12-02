@@ -15,16 +15,6 @@ from .threading_tools import KomgaThreadsList
 
 
 def retry_request(request, retries: int = 3):
-    def log_and_return(
-        logger: HentaiDBLogger, retries: int, error_message: str, level: str
-    ) -> None:
-        if retries == 0:
-            if level == "error":
-                logger.error(error_message)
-            elif level == "warning":
-                logger.warning(error_message)
-        return
-
     def wrapper(*args, **kwargs):
         for arg in args:
             if isinstance(arg, HentaiDBLogger):
@@ -46,37 +36,16 @@ def retry_request(request, retries: int = 3):
                     "429",
                 ]  # Add more codes to this list as needed
                 if any(code in str(e) for code in retry_codes):
-                    log_and_return(
-                        logger,
-                        retries,
-                        f"Encountered error {str(e)}. Retrying in 5 seconds.",
-                        "warning",
-                    )
                     sleep(5)
                     return retry_request(request, retries - 1)(*args, **kwargs)
                 elif "401" in str(e):
-                    log_and_return(
-                        logger,
-                        retries,
-                        f"Unauthorized error while making request. Check your credentials.",
-                        "error",
-                    )
+                    print(e)
                     return  # Don't retry
                 elif "407" in str(e):
-                    log_and_return(
-                        logger,
-                        retries,
-                        f"Proxy authentication error while making request. Check your proxy credentials.",
-                        "error",
-                    )
+                    print(e)
                     return  # Don't retry
                 else:
-                    log_and_return(
-                        logger,
-                        retries,
-                        f"Error while making request: {e}",
-                        "error",
-                    )
+                    print(e)
                     return  # Don't retry
 
     return wrapper
@@ -88,12 +57,10 @@ def get_series_ids(
     base_url: str,
     api_username: str,
     api_password: str,
-    logger: HentaiDBLogger,
 ) -> set[str]:
     series_informations = list[tuple[str, str]]()
     page_num = 0
     while True:
-        logger.debug(f"Getting series page {page_num} for library {library_id}")
         url = (
             f"{base_url}/api/v1/series?library_id={library_id}&page={page_num}&size=500"
         )
@@ -115,12 +82,10 @@ def get_books_ids_in_series_id(
     base_url: str,
     api_username: str,
     api_password: str,
-    logger: HentaiDBLogger,
 ) -> set[str]:
     books_informations = list[tuple[str, str]]()
     page_num = 0
     while True:
-        logger.debug(f"Getting books page {page_num} for series {series_id}")
         url = f"{base_url}/api/v1/series/{series_id}/books?page={page_num}&size=1000"
         response = requests.get(url, auth=HTTPBasicAuth(api_username, api_password))
         response.raise_for_status()
@@ -140,12 +105,10 @@ def get_books_ids_in_library_id(
     base_url: str,
     api_username: str,
     api_password: str,
-    logger: HentaiDBLogger,
 ) -> set[str]:
     books_informations = list[tuple[str, str]]()
     page_num = 0
     while True:
-        logger.debug(f"Getting books page {page_num} for library {library_id}")
         url = (
             f"{base_url}/api/v1/books?library_id={library_id}&page={page_num}&size=500"
         )
@@ -194,7 +157,6 @@ def get_book(
     base_url: str,
     api_username: str,
     api_password: str,
-    logger: HentaiDBLogger,
 ) -> dict:
     url = f"{base_url}/api/v1/books/{book_id}"
     response = requests.get(url, auth=HTTPBasicAuth(api_username, api_password))
@@ -209,7 +171,6 @@ def patch_book_metadata(
     base_url: str,
     api_username: str,
     api_password: str,
-    logger: HentaiDBLogger,
 ) -> None:
     url = f"{base_url}/api/v1/books/{book_id}/metadata"
     response = requests.patch(
@@ -226,7 +187,6 @@ def download_book(
     base_url: str,
     api_username: str,
     api_password: str,
-    logger: HentaiDBLogger,
 ) -> bytes:
     url = f"{base_url}/api/v1/books/{book_id}/file"
     response = requests.get(url, auth=HTTPBasicAuth(api_username, api_password))
@@ -240,7 +200,6 @@ def scan_library(
     base_url: str,
     api_username: str,
     api_password: str,
-    logger: HentaiDBLogger,
 ) -> None:
     url = f"{base_url}/api/v1/libraries/{library_id}/scan"
     response = requests.post(url, auth=HTTPBasicAuth(api_username, api_password))
@@ -253,7 +212,6 @@ def analyze_library(
     base_url: str,
     api_username: str,
     api_password: str,
-    logger: HentaiDBLogger,
 ) -> None:
     url = f"{base_url}/api/v1/libraries/{library_id}/analyze"
     response = requests.post(url, auth=HTTPBasicAuth(api_username, api_password))
@@ -266,7 +224,6 @@ def get_series(
     base_url: str,
     api_username: str,
     api_password: str,
-    logger: HentaiDBLogger,
 ) -> dict:
     url = f"{base_url}/api/v1/series/{series_id}"
     response = requests.get(url, auth=HTTPBasicAuth(api_username, api_password))
@@ -281,7 +238,6 @@ def patch_series_metadata(
     base_url: str,
     api_username: str,
     api_password: str,
-    logger: HentaiDBLogger,
 ) -> None:
     url = f"{base_url}/api/v1/series/{series_id}/metadata"
     response = requests.patch(
@@ -372,8 +328,8 @@ def scan_komga_library(
     api_username = config.media_server.server_config.api_username
     api_password = config.media_server.server_config.api_password
 
-    scan_library(library_id, base_url, api_username, api_password, logger)
-    analyze_library(library_id, base_url, api_username, api_password, logger)
+    scan_library(library_id, base_url, api_username, api_password)
+    analyze_library(library_id, base_url, api_username, api_password)
 
     def update_metadata(
         vset: set[str],
@@ -386,13 +342,11 @@ def scan_komga_library(
                 threads.append(update_fun, (config, v, logger))
 
     books_ids = get_books_ids_in_library_id(
-        library_id, base_url, api_username, api_password, logger
+        library_id, base_url, api_username, api_password
     )
     update_metadata(books_ids, previously_book_ids, update_komga_book_metadata)
 
-    series_ids = get_series_ids(
-        library_id, base_url, api_username, api_password, logger
-    )
+    series_ids = get_series_ids(library_id, base_url, api_username, api_password)
     update_metadata(series_ids, previously_series_ids, update_komga_series_metadata)
 
     if (books_ids == previously_book_ids) and (series_ids == previously_series_ids):

@@ -11,7 +11,11 @@ from functools import partial
 from random import shuffle
 from time import sleep
 
-from h2h_galleryinfo_parser import parse_galleryinfo, GalleryInfoParser
+from h2h_galleryinfo_parser import (
+    parse_galleryinfo,
+    GalleryInfoParser,
+    GalleryURLParser,
+)
 
 from .config_loader import Config
 from .logger import HentaiDBLogger
@@ -58,6 +62,8 @@ class FileInformation:
 
 
 class TagInformation:
+    __slots__ = ["tag_name", "tag_value", "db_tag_id"]
+
     def __init__(self, tag_name: str, tag_value: str) -> None:
         self.tag_name = tag_name
         self.tag_value = tag_value
@@ -757,7 +763,8 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         WHERE gid = %s
                     """
             query_result = connector.fetch_one(select_query, (gid,))
-        return len(query_result) > 0
+            thecheck = query_result is not None
+        return thecheck
 
 
 class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
@@ -2275,19 +2282,28 @@ class H2HDB(
         return query_result is not None
 
     def insert_todownload_gid(self, gid: int, url: str) -> None:
-        if not self.check_todownload_gid(gid, ""):
-            with self.SQLConnector() as connector:
-                table_name = "todownload_gids"
-                match self.config.database.sql_type.lower():
-                    case "mysql":
-                        insert_query = f"""
-                            INSERT INTO {table_name} (gid, url) VALUES (%s, %s)
-                        """
-                connector.execute(insert_query, (gid, url))
-        else:
-            if url != "":
-                if not self.check_todownload_gid(gid, url):
-                    self.update_todownload_gid(gid, url)
+        if url != "":
+            gallery = GalleryURLParser(url)
+            gid = gallery.gid
+            if gallery.gid != gid and gid != 0:
+                raise ValueError(
+                    f"Gallery GID {gid} does not match URL GID {gallery.gid}."
+                )
+        elif gid <= 0:
+            raise ValueError("Gallery GID must be greater than zero.")
+
+        if not self.check_todownload_gid(gid, url):
+            if (url == "") or (not self.check_todownload_gid(gid, "")):
+                with self.SQLConnector() as connector:
+                    table_name = "todownload_gids"
+                    match self.config.database.sql_type.lower():
+                        case "mysql":
+                            insert_query = f"""
+                                INSERT INTO {table_name} (gid, url) VALUES (%s, %s)
+                            """
+                    connector.execute(insert_query, (gid, url))
+            else:
+                self.update_todownload_gid(gid, url)
 
     def update_todownload_gid(self, gid: int, url: str) -> None:
         with self.SQLConnector() as connector:
