@@ -756,7 +756,7 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         FROM {table_name}
                         WHERE gid = %s
                     """
-            query_result = connector.fetch_all(select_query, (gid,))
+            query_result = connector.fetch_one(select_query, (gid,))
         return len(query_result) > 0
 
 

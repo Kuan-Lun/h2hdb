@@ -52,7 +52,7 @@ class MySQLCursor:
         self.connection = connection
 
     def __enter__(self):
-        self.cursor = self.connection.cursor()
+        self.cursor = self.connection.cursor(buffered=True)
         return self.cursor
 
     def __exit__(self, exc_type, exc_val, exc_tb):
