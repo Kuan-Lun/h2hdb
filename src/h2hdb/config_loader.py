@@ -209,7 +209,7 @@ def set_default_config() -> dict[str, dict]:
             cbz_path="",
             cbz_max_size=768,
             cbz_grouping="flat",
-            cbz_sort="upload_time",
+            cbz_sort="no",
         ),
         database=dict[str, str](
             sql_type="mysql",
@@ -254,8 +254,11 @@ def load_config(config_path: str = "") -> Config:
     user_config["h2h"].pop("cbz_max_size")
     cbz_grouping = user_config["h2h"]["cbz_grouping"]
     user_config["h2h"].pop("cbz_grouping")
-    cbz_sort = user_config["h2h"]["cbz_sort"]
-    user_config["h2h"].pop("cbz_sort")
+    if "cbz_sort" in user_config["h2h"]:
+        cbz_sort = user_config["h2h"]["cbz_sort"]
+        user_config["h2h"].pop("cbz_sort")
+    else:
+        cbz_sort = default_config["h2h"]["cbz_sort"]
     h2h_config = H2HConfig(
         download_path, cbz_path, cbz_max_size, cbz_grouping, cbz_sort
     )

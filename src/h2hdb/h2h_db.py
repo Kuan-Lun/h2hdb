@@ -2723,13 +2723,16 @@ class H2HDB(
         self._refresh_current_cbz_files(current_galleries_names)
 
         self.logger.info("Inserting galleries...")
-        if self.config.h2h.cbz_sort in ["upload_time", "download_time"]:
+        if self.config.h2h.cbz_sort in ["upload_time", "download_time", "gid", "title"]:
             self.logger.info(f"Sorting by {self.config.h2h.cbz_sort}...")
             current_galleries_folders = sorted(
                 current_galleries_folders,
                 key=lambda x: getattr(parse_galleryinfo(x), self.config.h2h.cbz_sort),
                 reverse=True,
             )
+        elif "no" in self.config.h2h.cbz_sort:
+            self.logger.info("No sorting...")
+            pass
         elif "pages" in self.config.h2h.cbz_sort:
             self.logger.info("Sorting by pages...")
             zero_level = (
