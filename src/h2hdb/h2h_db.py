@@ -18,7 +18,7 @@ from h2h_galleryinfo_parser import (
 )
 
 from .config_loader import Config
-from .logger import HentaiDBLogger
+from .logger import setup_logger
 from .sql_connector import (
     DatabaseConfigurationError,
     DatabaseKeyError,
@@ -81,7 +81,7 @@ class H2HDBAbstract(metaclass=ABCMeta):
         "logger",
     ]
 
-    def __init__(self, config: Config, logger: HentaiDBLogger) -> None:
+    def __init__(self, config: Config) -> None:
         """
         Initializes the H2HDBAbstract object.
 
@@ -89,7 +89,7 @@ class H2HDBAbstract(metaclass=ABCMeta):
             ValueError: If the SQL type is unsupported.
         """
         self.config = config
-        self.logger = logger
+        self.logger = setup_logger(config.logger)
 
         # Set the appropriate connector based on the SQL type
         match self.config.database.sql_type.lower():

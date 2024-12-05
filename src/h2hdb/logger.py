@@ -4,7 +4,6 @@ __all__ = ["logger"]
 from abc import ABCMeta, abstractmethod
 import logging
 from logging.handlers import MemoryHandler
-from functools import partial
 
 from .config_loader import LoggerConfig
 
@@ -23,10 +22,11 @@ def setup_screen_logger(level: int) -> logging.Logger:
     screen_logger = logging.getLogger("display_on_screen")
     screen_logger.setLevel(level)
 
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-    handler.setFormatter(formatter)
-    screen_logger.addHandler(handler)
+    if not screen_logger.handlers:
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+        handler.setFormatter(formatter)
+        screen_logger.addHandler(handler)
     return screen_logger
 
 
@@ -35,18 +35,19 @@ def setup_file_logger(level: int) -> logging.Logger:
     file_logger = logging.getLogger("write_to_file")
     file_logger.setLevel(level)
 
-    with open(log_filename, "w", encoding="utf-8") as f:
-        f.write('"time stamp","level","message"\n')
+    if not file_logger.handlers:
+        with open(log_filename, "w", encoding="utf-8") as f:
+            f.write('"time stamp","level","message"\n')
 
-    file_handler = logging.FileHandler(log_filename, mode="a+", encoding="utf-8")
-    formatter = logging.Formatter('"%(asctime)s","%(levelname)-8s","%(message)s"')
-    file_handler.setFormatter(formatter)
+        file_handler = logging.FileHandler(log_filename, mode="a+", encoding="utf-8")
+        formatter = logging.Formatter('"%(asctime)s","%(levelname)-8s","%(message)s"')
+        file_handler.setFormatter(formatter)
 
-    # MemoryHandler with a capacity of x bytes
-    memory_handler = MemoryHandler(
-        capacity=1024, target=file_handler, flushLevel=logging.ERROR
-    )
-    file_logger.addHandler(memory_handler)
+        # MemoryHandler with a capacity of x bytes
+        memory_handler = MemoryHandler(
+            capacity=1024, target=file_handler, flushLevel=logging.ERROR
+        )
+        file_logger.addHandler(memory_handler)
 
     return file_logger
 

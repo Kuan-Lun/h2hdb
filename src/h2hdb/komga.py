@@ -7,7 +7,6 @@ from typing import Callable
 import requests  # type: ignore
 from requests.auth import HTTPBasicAuth  # type: ignore
 
-from .logger import HentaiDBLogger
 from .config_loader import Config
 from .sql_connector import DatabaseKeyError
 from .h2h_db import H2HDB
@@ -16,18 +15,13 @@ from .threading_tools import KomgaThreadsList
 
 def retry_request(request, retries: int = 3):
     def wrapper(*args, **kwargs):
-        for arg in args:
-            if isinstance(arg, HentaiDBLogger):
-                logger = arg
-                break
         if retries < 0:
-            logger.error("Exceeded maximum retries. Aborting.")
             return
         else:
             try:
                 return request(*args, **kwargs)
             except requests.exceptions.SSLError:
-                logger.error("SSL error while making request. Need to update certifi.")
+                pass
             except requests.exceptions.RequestException as e:
                 retry_codes = [
                     "500",
@@ -38,12 +32,6 @@ def retry_request(request, retries: int = 3):
                 if any(code in str(e) for code in retry_codes):
                     sleep(5)
                     return retry_request(request, retries - 1)(*args, **kwargs)
-                elif "401" in str(e):
-                    print(e)
-                    return  # Don't retry
-                elif "407" in str(e):
-                    print(e)
-                    return  # Don't retry
                 else:
                     print(e)
                     return  # Don't retry
@@ -126,15 +114,11 @@ def get_books_ids_in_library_id(
 
 @retry_request
 def get_books_ids_in_all_libraries(
-    base_url: str,
-    api_username: str,
-    api_password: str,
-    logger: HentaiDBLogger,
+    base_url: str, api_username: str, api_password: str
 ) -> set[str]:
     books_informations = list[tuple[str, str]]()
     page_num = 0
     while True:
-        logger.debug(f"Getting books page {page_num} for all libraries")
         url = f"{base_url}/api/v1/books?page={page_num}&size=100"
         response = requests.get(url, auth=HTTPBasicAuth(api_username, api_password))
         response.raise_for_status()
@@ -248,9 +232,7 @@ def patch_series_metadata(
     response.raise_for_status()
 
 
-def update_komga_book_metadata(
-    config: Config, book_id: str, logger: HentaiDBLogger
-) -> None:
+def update_komga_book_metadata(config: Config, book_id: str) -> None:
     base_url = config.media_server.server_config.base_url
     api_username = config.media_server.server_config.api_username
     api_password = config.media_server.server_config.api_password
@@ -258,30 +240,23 @@ def update_komga_book_metadata(
     komga_metadata = get_book(book_id, base_url, api_username, api_password)
     if komga_metadata is not None:
         try:
-            with H2HDB(config=config, logger=logger) as connector:
+            with H2HDB(config=config) as connector:
                 current_metadata = connector.get_komga_metadata(komga_metadata["name"])
             if not (current_metadata.items() <= komga_metadata.items()):
                 patch_book_metadata(
                     current_metadata, book_id, base_url, api_username, api_password
                 )
-                logger.debug(f"Book {komga_metadata['name']} updated in the database.")
-            else:
-                logger.debug(
-                    f"Book {komga_metadata['name']} already exists in the database."
-                )
         except DatabaseKeyError:
             pass
 
 
-def update_komga_series_metadata(
-    config: Config, series_id: str, logger: HentaiDBLogger
-) -> None:
+def update_komga_series_metadata(config: Config, series_id: str) -> None:
     base_url = config.media_server.server_config.base_url
     api_username = config.media_server.server_config.api_username
     api_password = config.media_server.server_config.api_password
 
     books_ids = get_books_ids_in_series_id(
-        series_id, base_url, api_username, api_password, logger
+        series_id, base_url, api_username, api_password
     )
 
     ischecktitle = False
@@ -289,7 +264,7 @@ def update_komga_series_metadata(
         komga_metadata = get_book(book_id, base_url, api_username, api_password)
         if komga_metadata is not None:
             try:
-                with H2HDB(config=config, logger=logger) as connector:
+                with H2HDB(config=config) as connector:
                     current_metadata = connector.get_komga_metadata(
                         komga_metadata["name"]
                     )
@@ -312,14 +287,10 @@ def update_komga_series_metadata(
                 api_username,
                 api_password,
             )
-        logger.debug(f"Series_id {series_id} updated in the database.")
-    else:
-        logger.debug(f"Series_id {series_id} already exists in the database.")
 
 
 def scan_komga_library(
     config: Config,
-    logger: HentaiDBLogger,
     previously_book_ids=set[str](),
     previously_series_ids=set[str](),
 ) -> None:
@@ -334,12 +305,12 @@ def scan_komga_library(
     def update_metadata(
         vset: set[str],
         exclude_vset: set[str],
-        update_fun: Callable[[Config, str, HentaiDBLogger], None],
+        update_fun: Callable[[Config, str], None],
     ) -> None:
         vset = vset - exclude_vset
         with KomgaThreadsList() as threads:
             for v in vset:
-                threads.append(update_fun, (config, v, logger))
+                threads.append(update_fun, (config, v))
 
     books_ids = get_books_ids_in_library_id(
         library_id, base_url, api_username, api_password
@@ -349,8 +320,5 @@ def scan_komga_library(
     series_ids = get_series_ids(library_id, base_url, api_username, api_password)
     update_metadata(series_ids, previously_series_ids, update_komga_series_metadata)
 
-    if (books_ids == previously_book_ids) and (series_ids == previously_series_ids):
-        logger.info("No new books or series have been scanned.")
-    else:
-        logger.info("Some books or series have been scanned. Re-scanning.")
+    if (books_ids != previously_book_ids) or (series_ids != previously_series_ids):
         scan_komga_library(config, books_ids, series_ids)
