@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "h2hdb"
+version = "0.6.68.56"
+description = "A simple H@H database"
+readme = "README.md"
+authors = [{ name = "Kuan-Lun Wang" }]
+license = { text = "GNU Affero General Public License v3" }
+dependencies = [
+    "h2h-galleryinfo-parser>=0.2.2",
+    "mysql-connector-python>=9.1.0,<10.0.0",
+    "pillow>=11.0.0,<12.0.0",
+    "requests>=2.32.3,<3.0.0",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Programming Language :: Python :: 3.13",
+]
+
+[project.urls]
+Homepage = "https://github.com/Kuan-Lun/h2hdb"
+Source = "https://github.com/Kuan-Lun/h2hdb"
+Tracker = "https://github.com/Kuan-Lun/h2hdb/issues"
+
+[tool.setuptools]
+packages = ["h2hdb"]
+package-dir = { h2hdb = "src/h2hdb" }
+package-data = { h2hdb = ["py.typed"] }
