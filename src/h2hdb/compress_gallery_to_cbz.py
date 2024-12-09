@@ -39,6 +39,8 @@ def compress_image(image_path: str, output_path: str, max_size: int) -> None:
         if image.format in unsuitable_formats:
             image.save(output_path, image.format)
         else:
+            if "xmp" in image.info:
+                del image.info["xmp"]
             image.save(output_path, "JPEG")
 
 
