@@ -72,7 +72,18 @@ def run_in_parallel(fun, args: list[tuple]) -> list:
 
     with Pool(POOL_CPU_LIMIT) as pool:
         if len(args[0]) > 1:
-            results = pool.starmap(fun, args)
+            try:
+                results = pool.starmap(fun, args)
+            except ValueError as e:
+                if "XMP data is too long" in str(e):
+                    results = list()
+                    for arg in args:
+                        try:
+                            results.append(fun(*arg))
+                        except Exception as inner_e:
+                            raise ValueError(inner_e)
+                else:
+                    raise ValueError(e)
         else:
             results = pool.map(fun, [arg[0] for arg in args])
     return results
