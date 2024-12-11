@@ -2215,8 +2215,26 @@ class H2HDB(
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
                             PRIMARY KEY (gid),
+                            FOREIGN KEY (gid) REFERENCES galleries_gids(gid)
+                                ON UPDATE CASCADE
+                                ON DELETE CASCADE,
                             gid          INT UNSIGNED NOT NULL
                         )
+                    """
+            connector.execute(query)
+            self.logger.info(f"{table_name} table created.")
+
+        with self.SQLConnector() as connector:
+            table_name = "todelete_names"
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    query = f"""
+                        CREATE VIEW IF NOT EXISTS {table_name} AS
+                            SELECT galleries_names.full_name FROM todelete_gids
+                            INNER JOIN galleries_gids
+                                ON galleries_gids.gid = todelete_gids.gid
+                            INNER JOIN galleries_names
+                                ON galleries_names.db_gallery_id = galleries_gids.db_gallery_id
                     """
             connector.execute(query)
             self.logger.info(f"{table_name} table created.")
