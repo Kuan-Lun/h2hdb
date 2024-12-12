@@ -835,6 +835,21 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def update_redownload_time(self, db_gallery_id: int, time: str) -> None:
         self._update_time("galleries_redownload_times", db_gallery_id, time)
 
+    def _reset_redownload_times(self) -> None:
+        table_name = "galleries_redownload_times"
+        with self.SQLConnector() as connector:
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    update_query = f"""
+                        UPDATE {table_name}
+                        JOIN galleries_download_times
+                        ON {table_name}.db_gallery_id = galleries_download_times.db_gallery_id
+                        SET {table_name}.time = galleries_download_times.time
+                        WHERE {table_name}.time <> galleries_download_times.time;
+
+                    """
+            connector.execute(update_query)
+
     def _create_galleries_upload_times_table(self) -> None:
         self._create_times_table("galleries_upload_times")
 
@@ -2843,6 +2858,8 @@ class H2HDB(
             sleep(1800)
             self.logger.info("Refreshing database...")
             return self.insert_h2h_download()
+
+        self._reset_redownload_times()
 
     def get_komga_metadata(self, gallery_name: str) -> dict:
         metadata = dict[str, str | list[dict[str, str]]]()
