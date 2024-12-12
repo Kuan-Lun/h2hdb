@@ -18,26 +18,17 @@ The `H2HDB` is a comprehensive database for organising and managing H@H comic co
 
 ## Installation and Usage
 
-1. Install Python 3.12 or higher from [python.org](https://www.python.org/downloads/).
-1. Clone the repository.
-
-    ```bash
-    git clone https://github.com/Kuan-Lun/h2hdb.git # It will download a folder 'h2hdb'.
-    ```
-
+1. Install Python 3.13 or higher from [python.org](https://www.python.org/downloads/).
 1. Install the required packages.
 
     ```bash
-    python -m venv .venv # Create a virtual environment.
-    ./.venv/Scripts/python -m pip install -r ./h2hdb/requirements.txt # Install the required packages.
-    ./.venv/Scripts/python -m pip install -e ./h2hdb/[mysal,cbz,komga,synochat] # Install the h2hdb packages.
-    rm -rf ./h2hdb/ # Remove the downloaded 'h2hdb' folder.
+    pip install h2hdb
     ```
 
 1. Run the script.
 
     ```bash
-    ./.venv/Scripts/python -m h2hdb --config [json-path]
+    python -m h2hdb --config [json-path]
     ```
 
 ### Config
@@ -49,7 +40,7 @@ The `H2HDB` is a comprehensive database for organising and managing H@H comic co
         "cbz_path": "[str]", // The cbz in this path.
         "cbz_max_size": "[int]", // The maxinum of the mininum of width and height height. The default is `768`.
         "cbz_grouping": "[str]", // `flat`, `date-yyyy`, `date-yyyy-mm`, or `date-yyyy-mm-dd`. The default is `flat`.
-        "cbz_sort": "[str]" // `upload_time`, `download_time`, `pages`, or `pages+[num]`. The default is `upload_time`.
+        "cbz_sort": "[str]" // `upload_time`, `download_time`, `pages`, or `pages+[num]`. The default is `no`.
     },
     "database": {
         "sql_type": "[str]", // Now only supports `mysql`. The default is `mysql`.
