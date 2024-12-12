@@ -2179,7 +2179,11 @@ class H2HDB(
                     query = """
                         CREATE VIEW IF NOT EXISTS pending_download_gids AS
                             SELECT gids.gid AS gid
-                            FROM galleries_redownload_times AS grt
+                            FROM (SELECT *
+                                FROM galleries_redownload_times AS grt0
+                                WHERE DATE_ADD(grt0.time, INTERVAL 7 DAY) <= NOW()
+                                )
+                                AS grt
                             INNER JOIN galleries_download_times AS gdt
                                 on grt.db_gallery_id = gdt.db_gallery_id
                             INNER JOIN galleries_upload_times AS gut
@@ -2187,7 +2191,6 @@ class H2HDB(
                             INNER JOIN galleries_gids AS gids
                                 ON grt.db_gallery_id = gids.db_gallery_id
                             WHERE grt.time <= DATE_ADD(gut.time, INTERVAL 1 YEAR)
-                                AND DATE_ADD(grt.time, INTERVAL 7 DAY) <= NOW()
                                 AND DATE_ADD(gut.time, INTERVAL 7 DAY) <= NOW()
                                 OR DATE_ADD(gdt.time, INTERVAL 7 DAY) <= grt.time
                                  ORDER BY gut.`time` DESC
