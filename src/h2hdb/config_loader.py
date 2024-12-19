@@ -1,4 +1,4 @@
-__all__ = ["DatabaseConfig", "LoggerConfig", "H2HConfig", "Config", "load_config"]
+__all__ = ["DatabaseConfig", "LoggerConfig", "H2HConfig", "H2HDBConfig", "load_config"]
 
 import os
 import argparse
@@ -55,12 +55,6 @@ class DatabaseConfig:
         if not isinstance(password, str):
             raise TypeError("password must be a string")
 
-    def __repr__(self) -> str:
-        return f"DatabaseConfig(sql_type={self.sql_type}, host={self.host}, port={self.port}, user={self.user}, database={self.database}, password={self.password})"
-
-    def __str__(self) -> str:
-        return self.__repr__()
-
 
 class LoggerConfig:
     __slots__ = [
@@ -81,12 +75,6 @@ class LoggerConfig:
                 raise ConfigError(
                     f"Invalid log level {level} (must be one of NOTSET, DEBUG, INFO, WARNING, ERROR, CRITICAL)"
                 )
-
-    def __repr__(self) -> str:
-        return f"LoggerConfig(level={self.level})"
-
-    def __str__(self) -> str:
-        return self.__repr__()
 
 
 class H2HConfig:
@@ -130,48 +118,15 @@ class H2HConfig:
 
         self.cbz_tmp_directory = os.path.join(self.cbz_path, "tmp")
 
-    def __repr__(self) -> str:
-        return f"H2HConfig(download_path={self.download_path}, cbz_path={self.cbz_path}, cbz_max_size={self.cbz_max_size}, cbz_grouping={self.cbz_grouping}, cbz_tmp_directory={self.cbz_tmp_directory})"
 
-    def __str__(self) -> str:
-        return self.__repr__()
-
-
-class KomgaConfig:
-    __slots__ = ["base_url", "api_username", "api_password", "library_id"]
-
-    def __init__(
-        self, base_url: str, api_username: str, api_password: str, library_id: str
-    ) -> None:
-        self.base_url = base_url
-        self.api_username = api_username
-        self.api_password = api_password
-        self.library_id = library_id
-
-
-class MediaServer:
-    __slots__ = ["server_type", "server_config"]
-
-    def __init__(self, server_type: str, server_config: KomgaConfig) -> None:
-        self.server_type = server_type
-        self.server_config = server_config
-
-
-class Config:
-    __slots__ = [
-        "h2h",
-        "database",
-        "logger",
-        "multiprocess",
-        "media_server",
-    ]
+class H2HDBConfig:
+    __slots__ = ["h2h", "database", "logger"]
 
     def __init__(
         self,
         h2h_config: H2HConfig,
         database_config: DatabaseConfig,
         logger_config: LoggerConfig,
-        media_server_config: MediaServer,
     ) -> None:
 
         if not isinstance(h2h_config, H2HConfig):
@@ -185,21 +140,9 @@ class Config:
         if not isinstance(logger_config, LoggerConfig):
             raise TypeError(f"Incorrect type for logger_config: {type(logger_config)}")
 
-        if not isinstance(media_server_config, MediaServer):
-            raise TypeError(
-                f"Incorrect type for media_server_config: {type(media_server_config)}"
-            )
-
         self.h2h = h2h_config
         self.database = database_config
         self.logger = logger_config
-        self.media_server = media_server_config
-
-    def __repr__(self) -> str:
-        return f"Config(h2h={self.h2h}, database_config={self.database}, logger_config={self.logger}, media_server_config={self.media_server})"
-
-    def __str__(self) -> str:
-        return self.__repr__()
 
 
 def set_default_config() -> dict[str, dict]:
@@ -222,13 +165,10 @@ def set_default_config() -> dict[str, dict]:
         logger=dict[str, str](
             level="INFO",
         ),
-        media_server=dict[str, str | dict[str, str]](
-            server_type="", server_config=dict[str, str]()
-        ),
     )
 
 
-def load_config(config_path: str = "") -> Config:
+def load_config(config_path: str = "") -> H2HDBConfig:
     default_config = set_default_config()
 
     if config_path != "":
@@ -300,40 +240,11 @@ def load_config(config_path: str = "") -> Config:
 
     logger_config = LoggerConfig(level=level)
 
-    if "media_server" in user_config:
-        media_server_type = user_config["media_server"]["server_type"]
-        user_config["media_server"].pop("server_type")
-        media_server_config = user_config["media_server"]["server_config"]
-        match media_server_type:
-            case "komga":
-                media_server_config = KomgaConfig(
-                    base_url=media_server_config["base_url"],
-                    api_username=media_server_config["api_username"],
-                    api_password=media_server_config["api_password"],
-                    library_id=media_server_config["library_id"],
-                )
-                user_config["media_server"].pop("server_config")
-            case "":
-                user_config["media_server"].pop("server_config")
-            case _:
-                raise ConfigError("Invalid media server type")
-        if len(user_config["media_server"]) > 0:
-            raise ConfigError("Invalid configuration for media_server")
-
-        media_server_config = MediaServer(
-            server_type=media_server_type,
-            server_config=media_server_config,
-        )
-        user_config.pop("media_server")
-    else:
-        media_server_config = MediaServer("", KomgaConfig("", "", "", ""))
-
     if len(user_config) > 0:
         raise ConfigError("Invalid configuration for the entire config")
 
-    return Config(
+    return H2HDBConfig(
         h2h_config=h2h_config,
         database_config=database_config,
         logger_config=logger_config,
-        media_server_config=media_server_config,
     )

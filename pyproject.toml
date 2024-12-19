@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "h2hdb"
-version = "0.6.68.63"
+version = "0.7.0.1"
 description = "A simple H@H database"
 readme = "README.md"
 authors = [{ name = "Kuan-Lun Wang" }]
@@ -13,7 +13,6 @@ dependencies = [
     "h2h-galleryinfo-parser>=0.2.2",
     "mysql-connector-python>=9.1.0,<10.0.0",
     "pillow>=11.0.0,<12.0.0",
-    "requests>=2.32.3,<3.0.0",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

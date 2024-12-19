@@ -17,7 +17,7 @@ from h2h_galleryinfo_parser import (
     GalleryURLParser,
 )
 
-from .config_loader import Config
+from .config_loader import H2HDBConfig
 from .logger import setup_logger
 from .sql_connector import (
     DatabaseConfigurationError,
@@ -81,7 +81,7 @@ class H2HDBAbstract(metaclass=ABCMeta):
         "logger",
     ]
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: H2HDBConfig) -> None:
         """
         Initializes the H2HDBAbstract object.
 

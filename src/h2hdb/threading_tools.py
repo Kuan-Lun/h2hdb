@@ -11,7 +11,6 @@ POOL_CPU_LIMIT = max(CPU_NUM - 2, 1)
 
 MAX_THREADS = 2 * CPU_NUM
 SQL_SEMAPHORE = threading.Semaphore(POOL_CPU_LIMIT)
-KOMGA_SEMAPHORE = threading.Semaphore(10)
 
 
 def wrap_thread_target_with_semaphores(
@@ -59,11 +58,6 @@ class ThreadsList(list[Thread], metaclass=ABCMeta):
 class SQLThreadsList(ThreadsList):
     def get_semaphores(self) -> list[threading.Semaphore]:
         return [SQL_SEMAPHORE]
-
-
-class KomgaThreadsList(ThreadsList):
-    def get_semaphores(self) -> list[threading.Semaphore]:
-        return [KOMGA_SEMAPHORE]
 
 
 def run_in_parallel(fun, args: list[tuple]) -> list:

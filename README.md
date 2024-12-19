@@ -10,7 +10,6 @@ The `H2HDB` is a comprehensive database for organising and managing H@H comic co
 
 - [x] Add new galleries to the database
 - [x] Comporess H@H's galleries to a folder
-- [x] Add the galleries' tags to Komga
 - [x] Record the removed GIDs in a separate list
 - [ ] Write document (need?)
 
@@ -51,15 +50,6 @@ The `H2HDB` is a comprehensive database for organising and managing H@H comic co
     },
     "logger": {
         "level": "[str]" // One of NOTSET, DEBUG, INFO, WARNING, ERROR, CRITICAL.
-    },
-    "media_server": {
-        "server_type": "[str]", // Now only supports `komga`. The defult is ``.
-        "server_config": {
-            "base_url": "[url]", // The media server's base url.
-            "api_username": "[str]", // The media server's administrator.
-            "api_password": "[str]", // The password of the media server's adimistrator.
-            "library_id": "[str]" // The libary ID for komga.
-        } // The defult is null.
     }
 }
 ```
@@ -70,9 +60,6 @@ The `H2HDB` is a comprehensive database for organising and managing H@H comic co
 
 - How to use Komga?
 See [Rainie's article](https://home.gamer.com.tw/artwork.php?sn=5659465).
-
-- How to find library IDs in Komga?
-To find your library ID, log into komga's library. Look at the URL in your browser’s address bar, which will be formatted like this: `[base_url]/libraries/[library_id]/series`. In this URL, the `[library_id]` part is your library ID.
 
 - Why aren't the tags for CBZ-files in Komga updated?
 When you first run `H2HDB`, it generates CBZ-files. These CBZ-files are not immediately visible in Komga's library. To update them, you have two options: you can either click the 'scan library files' button in Komga, or you can run `H2HDB` twice. The first run scans the library, and the second run updates the tags.
