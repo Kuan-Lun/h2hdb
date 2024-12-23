@@ -1020,6 +1020,51 @@ class H2HDBGalleriesInfos(
             connector.execute(query)
             self.logger.info("galleries_infos view created.")
 
+        with self.SQLConnector() as connector:
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    query = """
+                        CREATE VIEW IF NOT EXISTS duplicate_hash_in_gallery AS WITH Files AS (
+                            SELECT files_dbids.db_gallery_id AS db_gallery_id,
+                                files_hashs_sha512.db_hash_id AS hash_value
+                            FROM files_dbids
+                                JOIN files_hashs_sha512 ON files_dbids.db_file_id = files_hashs_sha512.db_file_id
+                        ),
+                        DuplicateCount AS (
+                            SELECT db_gallery_id,
+                                hash_value
+                            FROM Files
+                            GROUP BY db_gallery_id,
+                                hash_value
+                            HAVING COUNT(*) > 1
+                        ),
+                        TotalCount AS (
+                            SELECT db_gallery_id,
+                                COUNT(*) AS files_count
+                            FROM files_dbids
+                            GROUP BY db_gallery_id
+                        ),
+                        DuplicateGroupCount AS (
+                            SELECT db_gallery_id,
+                                COUNT(*) AS duplicate_groups
+                            FROM DuplicateCount
+                            GROUP BY db_gallery_id
+                        )
+                        SELECT tc.db_gallery_id AS db_gallery_id,
+                            gg.gid AS gid,
+                            gn.full_name AS gallery_name
+                        FROM TotalCount AS tc
+                            JOIN DuplicateGroupCount AS dg ON tc.db_gallery_id = dg.db_gallery_id
+                            JOIN galleries_gids AS gg ON tc.db_gallery_id = gg.db_gallery_id
+                            JOIN galleries_names AS gn ON gg.db_gallery_id = gn.db_gallery_id
+                        WHERE CAST(dg.duplicate_groups AS FLOAT) / (
+                                tc.files_count - CAST(dg.duplicate_groups AS FLOAT)
+                            ) > 0.9
+                        ORDER BY gid DESC;
+                    """
+            connector.execute(query)
+            self.logger.info("galleries_infos_upload view created.")
+
 
 class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_galleries_comments_table(self) -> None:
