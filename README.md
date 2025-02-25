@@ -58,12 +58,6 @@ The `H2HDB` is a comprehensive database for organising and managing H@H comic co
 
 ## Q & A
 
-- How to use Komga?
-See [Rainie's article](https://home.gamer.com.tw/artwork.php?sn=5659465).
-
-- Why aren't the tags for CBZ-files in Komga updated?
-When you first run `H2HDB`, it generates CBZ-files. These CBZ-files are not immediately visible in Komga's library. To update them, you have two options: you can either click the 'scan library files' button in Komga, or you can run `H2HDB` twice. The first run scans the library, and the second run updates the tags.
-
 - Why are some images missing from the CBZ-files?
 `H2HDB` does not compress images that are considered spam according to certain rules. If you encounter any images that you believe should have been included, please report the issue.
 
