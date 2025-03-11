@@ -2293,11 +2293,27 @@ class H2HDB(
                 case "mysql":
                     query = f"""
                         CREATE VIEW IF NOT EXISTS {table_name} AS
-                            SELECT galleries_names.full_name FROM todelete_gids
+                            SELECT full_name
+                            FROM 
+                            (SELECT galleries_names.full_name AS full_name
+                            FROM todelete_gids
                             INNER JOIN galleries_gids
                                 ON galleries_gids.gid = todelete_gids.gid
                             INNER JOIN galleries_names
-                                ON galleries_names.db_gallery_id = galleries_gids.db_gallery_id
+                                ON galleries_names.db_gallery_id = galleries_gids.db_gallery_id) AS todelete_names
+                            UNION
+                                SELECT full_name
+                                FROM (
+                                    SELECT gi.name AS full_name
+                                    FROM galleries_infos gi
+                                    JOIN (
+                                        SELECT gid, MAX(download_time) AS max_download_time
+                                        FROM galleries_infos
+                                        GROUP BY gid
+                                        HAVING COUNT(*) > 1
+                                    ) sub ON gi.gid = sub.gid
+                                    WHERE gi.download_time < sub.max_download_time
+                                    ) AS duplicated_gids_names
                     """
             connector.execute(query)
             self.logger.info(f"{table_name} table created.")
