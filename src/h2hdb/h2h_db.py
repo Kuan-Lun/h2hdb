@@ -2287,6 +2287,7 @@ class H2HDB(
             connector.execute(query)
             self.logger.info(f"{table_name} table created.")
 
+    def _create_todelete_names_view(self) -> None:
         with self.SQLConnector() as connector:
             table_name = "todelete_names"
             match self.config.database.sql_type.lower():
@@ -2452,6 +2453,7 @@ class H2HDB(
         self._create_upload_account_table()
         self._create_galleries_comments_table()
         self._create_galleries_infos_view()
+        self._create_todelete_names_view()
         self._create_files_names_table()
         self._create_galleries_files_hashs_tables()
         self._create_gallery_image_hash_view()
