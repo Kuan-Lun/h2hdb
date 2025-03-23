@@ -1,7 +1,10 @@
+from time import sleep
+from random import random
+
 from mysql.connector.pooling import PooledMySQLConnection
 from mysql.connector.abstracts import MySQLConnectionAbstract
 from mysql.connector import connect as SQLConnect
-from mysql.connector.errors import IntegrityError
+from mysql.connector.errors import IntegrityError, DatabaseError
 
 from .sql_connector import SQLConnectorParams, SQLConnector, DatabaseDuplicateKeyError
 
@@ -110,6 +113,10 @@ class MySQLConnector(SQLConnector):
                 cursor.execute(query, data)
             except IntegrityError as e:
                 raise MySQLDuplicateKeyError(str(e))
+            except DatabaseError:
+                sleeptime = random() * 5
+                sleep(sleeptime)
+                cursor.execute(query, data)
         if any(key in query.upper() for key in AUTO_COMMIT_KEYS):
             self.commit()
 

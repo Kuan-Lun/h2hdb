@@ -2061,7 +2061,7 @@ class H2HDB(
                             HAVING COUNT(*) >= 3
                             """
             connector.execute(query)
-        
+
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
                 case "mysql":
