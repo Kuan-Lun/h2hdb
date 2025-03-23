@@ -431,6 +431,15 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def insert_db_hash_id_by_hash_values(
         self, hash_values: list[bytes], algorithm: str
     ) -> None:
+        if len(hash_values) == 0:
+            return
+
+        toinsert = list[bytes]()
+        for hash_value in hash_values:
+            if not self._check_db_hash_id_by_hash_value(hash_value, algorithm):
+                toinsert.append(hash_value)
+
+        isretry = False
         with self.SQLConnector() as connector:
             table_name = f"files_hashs_{algorithm.lower()}_dbids"
             match self.config.database.sql_type.lower():
@@ -439,19 +448,17 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         INSERT INTO {table_name} (hash_value)
                     """
                     insert_query_values = " ".join(
-                        ["VALUES", ", ".join(["(%s)" for _ in hash_values])]
+                        ["VALUES", ", ".join(["(%s)" for _ in toinsert])]
                     )
             insert_query = f"{insert_query_header} {insert_query_values}"
             try:
-                connector.execute(insert_query, tuple(hash_values))
+                connector.execute(insert_query, tuple(toinsert))
             except DatabaseDuplicateKeyError:
-                toinsert = list[bytes]()
-                for hash_value in hash_values:
-                    if not self._check_db_hash_id_by_hash_value(hash_value, algorithm):
-                        toinsert.append(hash_value)
-                self.insert_db_hash_id_by_hash_values(toinsert, algorithm)
+                isretry = True
             except Exception as e:
                 raise e
+        if isretry:
+            self.insert_db_hash_id_by_hash_values(toinsert, algorithm)
 
     def get_hash_value_by_db_hash_id(self, db_hash_id: int, algorithm: str) -> bytes:
         with self.SQLConnector() as connector:
