@@ -1020,6 +1020,7 @@ class H2HDBGalleriesInfos(
             connector.execute(query)
             self.logger.info("galleries_infos view created.")
 
+    def _create_duplicate_hash_in_gallery_view(self) -> None:
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
                 case "mysql":
@@ -1063,7 +1064,7 @@ class H2HDBGalleriesInfos(
                         ORDER BY gid DESC;
                     """
             connector.execute(query)
-            self.logger.info("galleries_infos_upload view created.")
+            self.logger.info("duplicate_hash_in_gallery view created.")
 
 
 class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
@@ -2441,6 +2442,7 @@ class H2HDB(
         self._create_todelete_names_view()
         self._create_galleries_files_hashs_tables()
         self._create_gallery_image_hash_view()
+        self._create_duplicate_hash_in_gallery_view()
         self._create_removed_galleries_gids_table()
         self._create_galleries_tags_table()
         self._create_duplicated_galleries_tables()
