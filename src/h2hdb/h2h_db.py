@@ -2439,10 +2439,10 @@ class H2HDB(
     def create_main_tables(self) -> None:
         self.logger.debug("Creating main tables...")
         self._create_todownload_gids_table()
-        self._create_todelete_gids_table()
         self._create_pending_gallery_removals_table()
         self._create_galleries_names_table()
         self._create_galleries_gids_table()
+        self._create_todelete_gids_table()
         self._create_galleries_download_times_table()
         self._create_galleries_redownload_times_table()
         self._create_galleries_upload_times_table()
