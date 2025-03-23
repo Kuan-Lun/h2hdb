@@ -2078,12 +2078,6 @@ class H2HDB(
                                 db_gallery_id
                             FROM duplicated_db_dbids
                             GROUP BY db_gallery_id
-                        ),
-                        duplicated_count_artists_by_db_gallery_id AS(
-                            SELECT COUNT(DISTINCT artist_value) AS artist_count,
-                                db_gallery_id
-                            FROM duplicated_db_dbids
-                            GROUP BY db_gallery_id
                         )
                         SELECT files_hashs_sha512_dbids.hash_value AS hash_value
                         FROM duplicated_db_dbids
