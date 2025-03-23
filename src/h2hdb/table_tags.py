@@ -1,4 +1,5 @@
 from abc import ABCMeta
+from typing import Callable
 
 from .table_gids import H2HDBGalleriesIDs
 from .h2hdb_spec import H2HDBAbstract
@@ -129,53 +130,66 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             query_result = connector.fetch_one(select_query, (tag_value,))
         return query_result is not None
 
-    def _insert_tag_names(self, tag_names: list[str]) -> None:
-        if len(tag_names) == 0:
+    def __insert_tag_names_or_tag_values(
+        self, n_or_v: str, tag_nvs: list[str], check_fun: Callable[[str], bool]
+    ) -> None:
+        toinsert_tag_nvs = list[str]()
+        for tag_nv in tag_nvs:
+            if not check_fun(tag_nv):
+                toinsert_tag_nvs.append(tag_nv)
+
+        if len(toinsert_tag_nvs) == 0:
             return
+
+        isretry = False
         with self.SQLConnector() as connector:
-            table_name = f"galleries_tags_names"
+            match n_or_v.lower():
+                case "name":
+                    table_name = "galleries_tags_names"
+                    column_name = "tag_name"
+                case "value":
+                    table_name = "galleries_tags_values"
+                    column_name = "tag_value"
+
             match self.config.database.sql_type.lower():
                 case "mysql":
                     insert_query_header = f"""
-                        INSERT INTO {table_name} (tag_name)
+                        INSERT INTO {table_name} ({column_name})
                     """
                     insert_query_values = " ".join(
-                        ["VALUES", ", ".join(["(%s)" for _ in tag_names])]
+                        ["VALUES", ", ".join(["(%s)" for _ in toinsert_tag_nvs])]
                     )
                     insert_query = f"{insert_query_header} {insert_query_values}"
             try:
-                connector.execute(insert_query, tuple(tag_names))
+                connector.execute(insert_query, tuple(toinsert_tag_nvs))
             except DatabaseDuplicateKeyError:
-                pass
+                isretry = True
             except Exception as e:
                 raise e
+
+        if isretry:
+            self.__insert_tag_names_or_tag_values(n_or_v, toinsert_tag_nvs, check_fun)
+
+    def _insert_tag_names(self, tag_names: list[str]) -> None:
+        self.__insert_tag_names_or_tag_values(
+            "name", tag_names, self._check_gallery_tag_name
+        )
 
     def _insert_tag_values(self, tag_values: list[str]) -> None:
-        if len(tag_values) == 0:
-            return
-        with self.SQLConnector() as connector:
-            table_name = f"galleries_tags_values"
-            match self.config.database.sql_type.lower():
-                case "mysql":
-                    insert_query_header = f"""
-                        INSERT INTO {table_name} (tag_value)
-                    """
-                    insert_query_values = " ".join(
-                        ["VALUES", ", ".join(["(%s)" for _ in tag_values])]
-                    )
-                    insert_query = f"{insert_query_header} {insert_query_values}"
-            try:
-                connector.execute(insert_query, tuple(tag_values))
-            except DatabaseDuplicateKeyError:
-                pass
-            except Exception as e:
-                raise e
+        self.__insert_tag_names_or_tag_values(
+            "value", tag_values, self._check_gallery_tag_value
+        )
 
-    def _insert_tag_pairs_dbids(
-        self, tags: list[TagInformation], retry: int = 5
-    ) -> None:
-        if len(tags) == 0:
+    def _insert_tag_pairs_dbids(self, tags: list[TagInformation]) -> None:
+        toinsert_db_tag_pair_id = list[TagInformation]()
+        for tag in tags:
+            if not self._check_db_tag_pair_id(tag.tag_name, tag.tag_value):
+                toinsert_db_tag_pair_id.append(tag)
+
+        if len(toinsert_db_tag_pair_id) == 0:
             return
+
+        isretry = False
         with self.SQLConnector() as connector:
             tag_pairs_table_name = f"galleries_tag_pairs_dbids"
             match self.config.database.sql_type.lower():
@@ -184,53 +198,38 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         INSERT INTO {tag_pairs_table_name} (tag_name, tag_value)
                     """
                     insert_query_values = " ".join(
-                        ["VALUES", ", ".join(["(%s, %s)" for _ in tags])]
+                        [
+                            "VALUES",
+                            ", ".join(["(%s, %s)" for _ in toinsert_db_tag_pair_id]),
+                        ]
                     )
                     insert_query = f"{insert_query_header} {insert_query_values}"
             parameter = list[str]()
-            for tag in tags:
+            for tag in toinsert_db_tag_pair_id:
                 parameter.extend([tag.tag_name, tag.tag_value])
             try:
                 connector.execute(insert_query, tuple(parameter))
             except DatabaseDuplicateKeyError:
-                toinsert_db_tag_pair_id = list[TagInformation]()
-                for tag in tags:
-                    if not self._check_db_tag_pair_id(tag.tag_name, tag.tag_value):
-                        toinsert_db_tag_pair_id.append(tag)
-                try:
-                    self._insert_tag_pairs_dbids(toinsert_db_tag_pair_id)
-                except DatabaseDuplicateKeyError as e:
-                    if retry > 0:
-                        self._insert_tag_pairs_dbids(toinsert_db_tag_pair_id, retry - 1)
-                    else:
-                        raise e
+                isretry = True
             except Exception as e:
                 raise e
+
+        if isretry:
+            self._insert_tag_pairs_dbids(toinsert_db_tag_pair_id)
 
     def _insert_gallery_tags(
         self, db_gallery_id: int, tags: list[TagInformation]
     ) -> None:
-        if len(tags) == 0:
-            return
-
         toinsert_db_tag_pair_id = list[TagInformation]()
         for tag in tags:
             if not self._check_db_tag_pair_id(tag.tag_name, tag.tag_value):
                 toinsert_db_tag_pair_id.append(tag)
 
-        toinsert_tag_name = list[str]()
-        toinsert_tag_value = list[str]()
-        for tag in toinsert_db_tag_pair_id:
-            if (tag.tag_name not in toinsert_tag_name) and (
-                not self._check_gallery_tag_name(tag.tag_name)
-            ):
-                toinsert_tag_name.append(tag.tag_name)
-            if (tag.tag_value not in toinsert_tag_value) and (
-                not self._check_gallery_tag_value(tag.tag_value)
-            ):
-                toinsert_tag_value.append(tag.tag_value)
-        self._insert_tag_names(toinsert_tag_name)
-        self._insert_tag_values(toinsert_tag_value)
+        if len(toinsert_db_tag_pair_id) == 0:
+            return
+
+        self._insert_tag_names(list(set([tag.tag_name for tag in tags])))
+        self._insert_tag_values(list(set([tag.tag_value for tag in tags])))
 
         self._insert_tag_pairs_dbids(toinsert_db_tag_pair_id)
 
