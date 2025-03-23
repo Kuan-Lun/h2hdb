@@ -2053,14 +2053,20 @@ class H2HDB(
             match self.config.database.sql_type.lower():
                 case "mysql":
                     query = """
-                        CREATE VIEW IF NOT EXISTS duplicated_hash_values_by_count_artist_ratio AS WITH duplicated_files_hashs_sha512 AS (
+                            CREATE VIEW IF NOT EXISTS duplicated_files_hashs_sha512 AS
                             SELECT db_file_id,
                                 db_hash_id
                             FROM files_hashs_sha512
                             GROUP BY db_hash_id
                             HAVING COUNT(*) >= 3
-                        ),
-                        duplicated_db_dbids AS (
+                            """
+            connector.execute(query)
+        
+        with self.SQLConnector() as connector:
+            match self.config.database.sql_type.lower():
+                case "mysql":
+                    query = """
+                        CREATE VIEW IF NOT EXISTS duplicated_hash_values_by_count_artist_ratio AS WITH duplicated_db_dbids AS (
                             SELECT galleries_dbids.db_gallery_id AS db_gallery_id,
                                 files_dbids.db_file_id AS db_file_id,
                                 duplicated_files_hashs_sha512.db_hash_id AS db_hash_id,
