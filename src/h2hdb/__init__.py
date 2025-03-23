@@ -1,6 +1,4 @@
 __all__ = [
-    "__version__",
-    "__version_info__",
     "H2HDB",
     "DatabaseConfig",
     "LoggerConfig",
@@ -13,7 +11,7 @@ __all__ = [
 __author__ = "Kuan-Lun Wang"
 
 
-from .h2h_db import H2HDB
+from .h2hdb_h2hdb import H2HDB
 from .config_loader import (
     DatabaseConfig,
     LoggerConfig,

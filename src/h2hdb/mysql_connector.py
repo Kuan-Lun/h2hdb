@@ -107,16 +107,19 @@ class MySQLConnector(SQLConnector):
     def rollback(self) -> None:
         self.connection.rollback()
 
-    def execute(self, query: str, data: tuple = ()) -> None:
+    def execute(self, query: str, data: tuple = (), retry=5) -> None:
         with MySQLCursor(self.connection) as cursor:
             try:
                 cursor.execute(query, data)
             except IntegrityError as e:
                 raise MySQLDuplicateKeyError(str(e))
-            except DatabaseError:
-                sleeptime = random() * 5
-                sleep(sleeptime)
-                cursor.execute(query, data)
+            except DatabaseError as e:
+                if retry > 0:
+                    sleeptime = random() * 5
+                    sleep(sleeptime)
+                    self.execute(query, data, retry=retry - 1)
+                else:
+                    raise e
         if any(key in query.upper() for key in AUTO_COMMIT_KEYS):
             self.commit()
 
