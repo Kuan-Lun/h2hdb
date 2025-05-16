@@ -274,23 +274,23 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self, fileinformations: list[FileInformation]
     ) -> None:
         algorithmlist = list(HASH_ALGORITHMS.keys())
+        for finfo in fileinformations:
+            finfo.sethash()
+
         for algorithm in algorithmlist:
-            toinsert = list[bytes]()
-            for n in range(len(fileinformations)):
-                fileinformations[n].sethash()
-                filehash = getattr(fileinformations[n], algorithm)
-                if filehash in toinsert:
-                    continue
-                else:
-                    if not self._check_db_hash_id_by_hash_value(filehash, algorithm):
-                        toinsert.append(filehash)
-            if len(toinsert) > 0:
-                self.insert_db_hash_id_by_hash_values(toinsert, algorithm)
-            for n in range(len(fileinformations)):
-                fileinformations[n].setdb_hash_id(
+            toinsert: set[bytes] = set()
+            for finfo in fileinformations:
+                filehash = getattr(finfo, algorithm)
+                if not self._check_db_hash_id_by_hash_value(filehash, algorithm):
+                    toinsert.add(filehash)
+            self.insert_db_hash_id_by_hash_values(list(toinsert), algorithm)
+
+        for finfo in fileinformations:
+            for algorithm in algorithmlist:
+                finfo.setdb_hash_id(
                     algorithm,
                     self.get_db_hash_id_by_hash_value(
-                        getattr(fileinformations[n], algorithm), algorithm
+                        getattr(finfo, algorithm), algorithm
                     ),
                 )
         self.insert_hash_value_by_db_hash_ids(fileinformations)
@@ -457,10 +457,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             insert_query = (
                 f"{insert_query_header} {insert_query_values} {insert_query_ending}"
             )
-            try:
-                connector.execute(insert_query, tuple(toinsert))
-            except Exception as e:
-                raise e
+            connector.execute(insert_query, tuple(toinsert))
 
     def get_hash_value_by_db_hash_id(self, db_hash_id: int, algorithm: str) -> bytes:
         with self.SQLConnector() as connector:
