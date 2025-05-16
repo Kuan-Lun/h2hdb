@@ -894,10 +894,15 @@ class H2HDB(
         self.logger.info("Inserting galleries in parallel...")
         for gallery_chunk in chunked_galleries_folders:
             # Insert gallery info to database
-            is_insert_list = run_in_parallel(
-                self.insert_gallery_info,
-                [(x,) for x in gallery_chunk],
-            )
+            try:
+                is_insert_list = run_in_parallel(
+                    self.insert_gallery_info,
+                    [(x,) for x in gallery_chunk],
+                )
+            except Exception as e:
+                self.logger.error(f"Error inserting galleries: {e}")
+                self.logger.info("Retrying without parallel")
+                is_insert_list = [self.insert_gallery_info(x) for x in gallery_chunk]
             if any(is_insert_list):
                 self.logger.info("There are new galleries inserted in database.")
                 is_insert_limit_reached |= True
