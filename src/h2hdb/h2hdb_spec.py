@@ -1,5 +1,5 @@
-import re
 import math
+import re
 from abc import ABCMeta, abstractmethod
 from functools import partial
 
@@ -7,8 +7,8 @@ from functools import partial
 from .config_loader import H2HDBConfig
 from .logger import setup_logger
 from .settings import (
-    FOLDER_NAME_LENGTH_LIMIT,
     FILE_NAME_LENGTH_LIMIT,
+    FOLDER_NAME_LENGTH_LIMIT,
 )
 
 
@@ -37,14 +37,14 @@ class H2HDBAbstract(metaclass=ABCMeta):
                 from .mysql_connector import MySQLConnectorParams, MySQLConnector
 
                 self.sql_connection_params = MySQLConnectorParams(
-                    self.config.database.host,
-                    self.config.database.port,
-                    self.config.database.user,
-                    self.config.database.password,
-                    self.config.database.database,
+                    host=self.config.database.host,
+                    port=self.config.database.port,
+                    user=self.config.database.user,
+                    password=self.config.database.password,
+                    database=self.config.database.database,
                 )
                 self.SQLConnector = partial(
-                    MySQLConnector, **self.sql_connection_params
+                    MySQLConnector, **self.sql_connection_params.model_dump()
                 )
                 self.innodb_index_prefix_limit = 191
             case _:

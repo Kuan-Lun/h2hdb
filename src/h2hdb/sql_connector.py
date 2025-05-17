@@ -9,6 +9,8 @@ __all__ = [
 
 from abc import ABCMeta, abstractmethod
 
+from pydantic import BaseModel, ConfigDict
+
 
 class DatabaseConfigurationError(Exception):
     """
@@ -58,8 +60,8 @@ class DatabaseTableError(Exception):
         super().__init__(self.message)
 
 
-class SQLConnectorParams(dict):
-    pass
+class SQLConnectorParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
 class SQLConnector(metaclass=ABCMeta):

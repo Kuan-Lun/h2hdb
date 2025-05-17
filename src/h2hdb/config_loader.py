@@ -32,9 +32,6 @@ class ConfigModel(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    def __init__(self, **data) -> None:
-        super().__init__(**data)
-
 
 class DatabaseConfig(ConfigModel):
     sql_type: str = Field(

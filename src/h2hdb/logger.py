@@ -6,7 +6,6 @@ from abc import ABCMeta, abstractmethod
 from logging.handlers import MemoryHandler
 
 from .config_loader import LoggerConfig
-from .settings import LOG_LEVEL
 
 
 def setup_screen_logger(level: int) -> logging.Logger:
@@ -62,7 +61,6 @@ class AbstractLogger(metaclass=ABCMeta):
 
 class HentaiDBLogger(AbstractLogger):
     def __init__(self, level: int) -> None:
-        # logging_level = LOG_CONFIG[level.lower()]
         self.screen_logger = setup_screen_logger(level)
         self.file_logger = setup_file_logger(level)
 

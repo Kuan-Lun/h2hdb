@@ -3,7 +3,10 @@ from mysql.connector.abstracts import MySQLConnectionAbstract
 from mysql.connector.pooling import PooledMySQLConnection
 from mysql.connector.errors import IntegrityError
 
+from pydantic import Field, field_validator
+
 from .sql_connector import SQLConnectorParams, SQLConnector, DatabaseDuplicateKeyError
+
 
 AUTO_COMMIT_KEYS = ["INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER"]
 
@@ -37,12 +40,26 @@ class MySQLConnectorParams(SQLConnectorParams):
     The 'database' parameter is the name of the MySQL database to connect to.
     """
 
-    def __init__(
-        self, host: str, port: str, user: str, password: str, database: str
-    ) -> None:
-        super().__init__(
-            host=host, port=port, user=user, password=password, database=database
-        )
+    host: str = Field(
+        min_length=1,
+        description="Host of the MySQL database",
+    )
+    port: int = Field(
+        ge=1,
+        le=65535,
+        description="Port of the MySQL database",
+    )
+    user: str = Field(
+        min_length=1,
+        description="User for the MySQL database",
+    )
+    password: str = Field(
+        description="Password for the MySQL database",
+    )
+    database: str = Field(
+        min_length=1,
+        description="Database name for the MySQL database",
+    )
 
 
 class MySQLCursor:
@@ -83,12 +100,14 @@ class MySQLConnector(SQLConnector):
     """
 
     def __init__(
-        self, host: str, port: str, user: str, password: str, database: str
+        self, host: str, port: int, user: str, password: str, database: str
     ) -> None:
-        self.params = MySQLConnectorParams(host, port, user, password, database)
+        self.params = MySQLConnectorParams(
+            host=host, port=port, user=user, password=password, database=database
+        )
 
     def connect(self) -> None:
-        self.connection = SQLConnect(**self.params)
+        self.connection = SQLConnect(**self.params.model_dump())
 
     def close(self) -> None:
         self.connection.close()

@@ -6,25 +6,25 @@ from itertools import islice
 from time import sleep
 
 from h2h_galleryinfo_parser import (
-    parse_galleryinfo,
     GalleryInfoParser,
     GalleryURLParser,
+    parse_galleryinfo,
 )
 
 from .information import FileInformation, TagInformation
-from .settings import hash_function_by_file, chunk_list
+from .settings import chunk_list, hash_function_by_file
 from .table_comments import H2HDBGalleriesComments
 from .table_files_dbids import H2HDBFiles
 from .table_removed_gids import H2HDBRemovedGalleries
 from .table_tags import H2HDBGalleriesTags
-from .threading_tools import SQLThreadsList, run_in_parallel
+from .threading_tools import run_in_parallel, SQLThreadsList
 from .view_ginfo import H2HDBGalleriesInfos
 
 from .hash_dict import HASH_ALGORITHMS
 from .settings import (
+    COMPARISON_HASH_ALGORITHM,
     FOLDER_NAME_LENGTH_LIMIT,
     FILE_NAME_LENGTH_LIMIT,
-    COMPARISON_HASH_ALGORITHM,
     GALLERY_INFO_FILE_NAME,
 )
 from .threading_tools import POOL_CPU_LIMIT
