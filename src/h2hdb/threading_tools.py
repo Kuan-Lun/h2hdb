@@ -38,11 +38,16 @@ class ThreadsList(list[Thread], metaclass=ABCMeta):
         )
         super().append(thread)
 
-    def __enter__(self):
+    def __enter__(self) -> "ThreadsList":
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback):
-        running_threads = list[Thread]()
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: object | None,
+    ) -> None:
+        running_threads: list[Thread] = list()
         while self:
             self[0].start()
             running_threads.append(self.pop(0))
@@ -61,12 +66,11 @@ class SQLThreadsList(ThreadsList):
 
 
 def run_in_parallel(fun, args: list[tuple]) -> list:
-    if len(args) == 0:
-        return list()
-
-    with Pool(POOL_CPU_LIMIT) as pool:
-        if len(args[0]) > 1:
-            results = pool.starmap(fun, args)
-        else:
-            results = pool.map(fun, [arg[0] for arg in args])
+    results = list()
+    if args:
+        with Pool(POOL_CPU_LIMIT) as pool:
+            if len(args[0]) > 1:
+                results += pool.starmap(fun, args)
+            else:
+                results += pool.map(fun, [arg[0] for arg in args])
     return results

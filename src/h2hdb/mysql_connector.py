@@ -128,7 +128,10 @@ class MySQLConnector(SQLConnector):
         with MySQLCursor(self.connection) as cursor:
             cursor.execute(query, data)
             vlist = cursor.fetchone()
-        return vlist  # type: ignore
+        if isinstance(vlist, tuple):
+            return vlist
+        else:
+            return tuple()
 
     def fetch_all(self, query: str, data: tuple = ()) -> list:
         with MySQLCursor(self.connection) as cursor:

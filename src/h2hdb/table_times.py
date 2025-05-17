@@ -45,12 +45,12 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         WHERE db_gallery_id = %s
                     """
             query_result = connector.fetch_one(select_query, (db_gallery_id,))
-            if query_result is None:
-                msg = f"Time for gallery name ID {db_gallery_id} does not exist in table '{table_name}'."
-                self.logger.error(msg)
-                raise DatabaseKeyError(msg)
-            else:
-                time = query_result[0]
+        if query_result:
+            time = query_result[0]
+        else:
+            msg = f"Time for gallery name ID {db_gallery_id} does not exist in table '{table_name}'."
+            self.logger.error(msg)
+            raise DatabaseKeyError(msg)
         return time
 
     def _update_time(self, table_name: str, db_gallery_id: int, time: str) -> None:

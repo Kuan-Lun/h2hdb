@@ -47,12 +47,12 @@ class H2HDBGalleriesTitles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         WHERE db_gallery_id = %s
                     """
             query_result = connector.fetch_one(select_query, (db_gallery_id,))
-            if query_result is None:
-                msg = f"Title for gallery name ID {db_gallery_id} does not exist."
-                self.logger.error(msg)
-                raise DatabaseKeyError(msg)
-            else:
-                title = query_result[0]
+        if query_result:
+            title = query_result[0]
+        else:
+            msg = f"Title for gallery name ID {db_gallery_id} does not exist."
+            self.logger.error(msg)
+            raise DatabaseKeyError(msg)
         return title
 
     def get_title_by_gallery_name(self, gallery_name: str) -> str:

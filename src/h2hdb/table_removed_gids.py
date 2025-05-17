@@ -33,7 +33,7 @@ class H2HDBRemovedGalleries(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta)
             else:
                 connector.execute(insert_query, (gid,))
 
-    def __get_removed_gallery_gid(self, gid: int) -> tuple | None:
+    def __get_removed_gallery_gid(self, gid: int) -> tuple:
         with self.SQLConnector() as connector:
             table_name = "removed_galleries_gids"
             match self.config.database.sql_type.lower():
@@ -48,15 +48,15 @@ class H2HDBRemovedGalleries(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta)
 
     def _check_removed_gallery_gid(self, gid: int) -> bool:
         query_result = self.__get_removed_gallery_gid(gid)
-        return query_result is not None
+        return len(query_result) != 0
 
     def select_removed_gallery_gid(self, gid: int) -> int:
         query_result = self.__get_removed_gallery_gid(gid)
-        if query_result is None:
+        if query_result:
+            gid = query_result[0]
+            self.logger.warning(f"Removed gallery GID {gid} exists.")
+        else:
             msg = f"Removed gallery GID {gid} does not exist."
             self.logger.error(msg)
             raise DatabaseKeyError(msg)
-        else:
-            gid = query_result[0]
-            self.logger.warning(f"Removed gallery GID {gid} exists.")
         return gid

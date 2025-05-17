@@ -7,14 +7,13 @@ class FileInformation:
         self.absolute_path = absolute_path
         self.db_file_id = db_file_id
         self.issethash = False
-        self.db_hash_id = dict[str, int]()
+        self.db_hash_id: dict[str, int] = dict()
 
     def sethash(self) -> None:
         if not self.issethash:
             with open(self.absolute_path, "rb") as file:
                 file_content = file.read()
-            algorithmlist = list(HASH_ALGORITHMS.keys())
-            for algorithm in algorithmlist:
+            for algorithm in HASH_ALGORITHMS:
                 setattr(self, algorithm, hash_function(file_content, algorithm))
             self.issethash = True
 

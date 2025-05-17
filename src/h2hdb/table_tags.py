@@ -79,7 +79,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             connector.execute(query)
             self.logger.info(f"{table_name} table created.")
 
-    def __get_db_tag_pair_id(self, tag_name: str, tag_value: str) -> tuple | None:
+    def __get_db_tag_pair_id(self, tag_name: str, tag_value: str) -> tuple:
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
                 case "mysql":
@@ -93,15 +93,15 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
     def _check_db_tag_pair_id(self, tag_name: str, tag_value: str) -> bool:
         query_result = self.__get_db_tag_pair_id(tag_name, tag_value)
-        return query_result is not None
+        return len(query_result) != 0
 
     def _get_db_tag_pair_id(self, tag_name: str, tag_value: str) -> int:
         query_result = self.__get_db_tag_pair_id(tag_name, tag_value)
-        if query_result is None:
+        if query_result:
+            db_tag_id = query_result[0]
+        else:
             self.logger.debug(f"Tag '{tag_value}' does not exist.")
             raise DatabaseKeyError(f"Tag '{tag_value}' does not exist.")
-        else:
-            db_tag_id = query_result[0]
         return db_tag_id
 
     def _check_gallery_tag_name(self, tag_name: str) -> bool:
@@ -115,7 +115,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         WHERE tag_name = %s
                     """
             query_result = connector.fetch_one(select_query, (tag_name,))
-        return query_result is not None
+        return len(query_result) != 0
 
     def _check_gallery_tag_value(self, tag_value: str) -> bool:
         with self.SQLConnector() as connector:
@@ -128,7 +128,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         WHERE tag_value = %s
                     """
             query_result = connector.fetch_one(select_query, (tag_value,))
-        return query_result is not None
+        return len(query_result) != 0
 
     def __insert_tag_names_or_tag_values(
         self, n_or_v: str, tag_nvs: list[str], check_fun: Callable[[str], bool]
@@ -138,7 +138,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             if not check_fun(tag_nv):
                 toinsert_tag_nvs.append(tag_nv)
 
-        if len(toinsert_tag_nvs) == 0:
+        if not toinsert_tag_nvs:
             return
 
         isretry = False
@@ -186,7 +186,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             if not self._check_db_tag_pair_id(tag.tag_name, tag.tag_value):
                 toinsert_db_tag_pair_id.append(tag)
 
-        if len(toinsert_db_tag_pair_id) == 0:
+        if not toinsert_db_tag_pair_id:
             return
 
         isretry = False
@@ -225,11 +225,11 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             if not self._check_db_tag_pair_id(tag.tag_name, tag.tag_value):
                 toinsert_db_tag_pair_id.append(tag)
 
-        if len(toinsert_db_tag_pair_id) == 0:
+        if not toinsert_db_tag_pair_id:
             return
 
-        self._insert_tag_names(list(set([tag.tag_name for tag in tags])))
-        self._insert_tag_values(list(set([tag.tag_value for tag in tags])))
+        self._insert_tag_names(list({tag.tag_name for tag in tags}))
+        self._insert_tag_values(list({tag.tag_value for tag in tags}))
 
         self._insert_tag_pairs_dbids(toinsert_db_tag_pair_id)
 
@@ -266,12 +266,12 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         WHERE db_gallery_id = %s
                     """
             query_result = connector.fetch_one(select_query, (db_gallery_id,))
-            if query_result is None:
-                msg = f"Tag '{tag_name}' does not exist."
-                self.logger.error(msg)
-                raise DatabaseKeyError(msg)
-            else:
-                tag = query_result[0]
+        if query_result:
+            tag = query_result[0]
+        else:
+            msg = f"Tag '{tag_name}' does not exist."
+            self.logger.error(msg)
+            raise DatabaseKeyError(msg)
         return tag
 
     def get_tag_value_by_gallery_name_and_tag_name(
@@ -312,10 +312,10 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         WHERE db_tag_pair_id = %s
                     """
             query_result = connector.fetch_one(select_query, (db_tag_pair_id,))
-            if query_result is None:
-                msg = f"Tag pair ID {db_tag_pair_id} does not exist."
-                self.logger.error(msg)
-                raise DatabaseKeyError(msg)
-            else:
-                tag_name, tag_value = query_result
+        if query_result:
+            tag_name, tag_value = query_result
+        else:
+            msg = f"Tag pair ID {db_tag_pair_id} does not exist."
+            self.logger.error(msg)
+            raise DatabaseKeyError(msg)
         return tag_name, tag_value

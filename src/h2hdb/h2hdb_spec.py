@@ -53,7 +53,12 @@ class H2HDBAbstract(metaclass=ABCMeta):
     def __enter__(self) -> "H2HDBAbstract":
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: object | None,
+    ) -> None:
         if exc_type is None:
             with self.SQLConnector() as connector:
                 connector.commit()

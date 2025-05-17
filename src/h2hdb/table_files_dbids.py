@@ -63,7 +63,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     ) -> None:
         with self.SQLConnector() as connector:
 
-            file_name_parts_list = list[list[str]]()
+            file_name_parts_list: list[list[str]] = list()
             for file_name in file_names_list:
                 if len(file_name) > FILE_NAME_LENGTH_LIMIT:
                     self.logger.error(
@@ -139,7 +139,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                 ),
             )
 
-    def __get_db_file_id(self, db_gallery_id: int, file_name: str) -> tuple | None:
+    def __get_db_file_id(self, db_gallery_id: int, file_name: str) -> tuple:
         with self.SQLConnector() as connector:
             table_name = "files_dbids"
             file_name_parts = self._split_gallery_name(file_name)
@@ -160,16 +160,16 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
     def _check_db_file_id(self, db_gallery_id: int, file_name: str) -> bool:
         query_result = self.__get_db_file_id(db_gallery_id, file_name)
-        return query_result is not None
+        return len(query_result) != 0
 
     def _get_db_file_id(self, db_gallery_id: int, file_name: str) -> int:
         query_result = self.__get_db_file_id(db_gallery_id, file_name)
-        if query_result is None:
+        if query_result:
+            gallery_image_id = query_result[0]
+        else:
             msg = f"Image ID for gallery name ID {db_gallery_id} and file '{file_name}' does not exist."
             self.logger.error(msg)
             raise DatabaseKeyError(msg)
-        else:
-            gallery_image_id = query_result[0]
         return gallery_image_id
 
     def get_files_by_gallery_name(self, gallery_name: str) -> list[str]:
@@ -184,12 +184,12 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                             WHERE db_gallery_id = %s
                     """
             query_result = connector.fetch_all(select_query, (db_gallery_id,))
-            if len(query_result) == 0:
-                msg = f"Files for gallery name ID {db_gallery_id} do not exist."
-                self.logger.error(msg)
-                raise DatabaseKeyError(msg)
-            else:
-                files = [query[0] for query in query_result]
+        if query_result:
+            files = [query[0] for query in query_result]
+        else:
+            msg = f"Files for gallery name ID {db_gallery_id} do not exist."
+            self.logger.error(msg)
+            raise DatabaseKeyError(msg)
         return files
 
     def _create_galleries_files_hashs_table(
@@ -273,20 +273,19 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _insert_gallery_file_hash_for_db_gallery_id(
         self, fileinformations: list[FileInformation]
     ) -> None:
-        algorithmlist = list(HASH_ALGORITHMS.keys())
         for finfo in fileinformations:
             finfo.sethash()
 
-        for algorithm in algorithmlist:
+        for algorithm in HASH_ALGORITHMS:
             toinsert: set[bytes] = set()
             for finfo in fileinformations:
-                filehash = getattr(finfo, algorithm)
+                filehash: bytes = getattr(finfo, algorithm)
                 if not self._check_db_hash_id_by_hash_value(filehash, algorithm):
                     toinsert.add(filehash)
-            self.insert_db_hash_id_by_hash_values(list(toinsert), algorithm)
+            self.insert_db_hash_id_by_hash_values(toinsert, algorithm)
 
         for finfo in fileinformations:
-            for algorithm in algorithmlist:
+            for algorithm in HASH_ALGORITHMS:
                 finfo.setdb_hash_id(
                     algorithm,
                     self.get_db_hash_id_by_hash_value(
@@ -299,9 +298,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self, db_file_id: int, absolute_file_path: str
     ) -> None:
 
-        algorithmlist = list(HASH_ALGORITHMS.keys())
-        shuffle(algorithmlist)
-        for algorithm in algorithmlist:
+        for algorithm in HASH_ALGORITHMS:
             is_insert = False
             current_hash_value = hash_function_by_file(absolute_file_path, algorithm)
             if self._check_hash_value_by_file_id(db_file_id, algorithm):
@@ -361,7 +358,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
     def __get_db_hash_id_by_hash_value(
         self, hash_value: bytes, algorithm: str
-    ) -> tuple | None:
+    ) -> tuple:
         with self.SQLConnector() as connector:
             table_name = f"files_hashs_{algorithm.lower()}_dbids"
             match self.config.database.sql_type.lower():
@@ -378,22 +375,21 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self, hash_value: bytes, algorithm: str
     ) -> bool:
         query_result = self.__get_db_hash_id_by_hash_value(hash_value, algorithm)
-        return query_result is not None
+        return len(query_result) != 0
 
     def get_db_hash_id_by_hash_value(self, hash_value: bytes, algorithm: str) -> int:
         query_result = self.__get_db_hash_id_by_hash_value(hash_value, algorithm)
-        if query_result is None:
+        if query_result:
+            db_hash_id = query_result[0]
+        else:
             msg = f"Image hash for image ID {hash_value!r} does not exist."
             raise DatabaseKeyError(msg)
-        else:
-            db_hash_id = query_result[0]
         return db_hash_id
 
     def insert_hash_value_by_db_hash_ids(
         self, fileinformations: list[FileInformation]
     ) -> None:
-        algorithmlist = list(HASH_ALGORITHMS.keys())
-        for algorithm in algorithmlist:
+        for algorithm in HASH_ALGORITHMS:
             with self.SQLConnector() as connector:
                 table_name = f"files_hashs_{algorithm.lower()}"
                 match self.config.database.sql_type.lower():
@@ -402,13 +398,10 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                             INSERT INTO {table_name} (db_file_id, db_hash_id)
                         """
                         insert_query_values = " ".join(
-                            [
-                                "VALUES",
-                                ", ".join(["(%s, %s)" for _ in fileinformations]),
-                            ]
+                            ["VALUES", ", ".join(["(%s, %s)"] * len(fileinformations))]
                         )
                 insert_query = f"{insert_query_header} {insert_query_values}"
-                parameters = list[int]()
+                parameters: list[int] = list()
                 for fileinformation in fileinformations:
                     parameters += [
                         fileinformation.db_file_id,
@@ -429,15 +422,15 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             connector.execute(insert_query, (hash_value,))
 
     def insert_db_hash_id_by_hash_values(
-        self, hash_values: list[bytes], algorithm: str
+        self, hash_values: set[bytes], algorithm: str
     ) -> None:
         if not hash_values:
             return
 
-        toinsert = list[bytes]()
+        toinsert: set[bytes] = set()
         for hash_value in hash_values:
             if not self._check_db_hash_id_by_hash_value(hash_value, algorithm):
-                toinsert.append(hash_value)
+                toinsert.add(hash_value)
         if not toinsert:
             return
 
@@ -470,16 +463,14 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         WHERE db_hash_id = %s
                     """
             query_result = connector.fetch_one(select_query, (db_hash_id,))
-            if query_result is None:
-                msg = f"Image hash for image ID {db_hash_id} does not exist."
-                raise DatabaseKeyError(msg)
-            else:
-                hash_value = query_result[0]
+        if query_result:
+            hash_value = query_result[0]
+        else:
+            msg = f"Image hash for image ID {db_hash_id} does not exist."
+            raise DatabaseKeyError(msg)
         return hash_value
 
-    def __get_hash_value_by_file_id(
-        self, db_file_id: int, algorithm: str
-    ) -> tuple | None:
+    def __get_hash_value_by_file_id(self, db_file_id: int, algorithm: str) -> tuple:
         with self.SQLConnector() as connector:
             table_name = f"files_hashs_{algorithm.lower()}"
             match self.config.database.sql_type.lower():
@@ -494,16 +485,15 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
     def _check_hash_value_by_file_id(self, db_file_id: int, algorithm: str) -> bool:
         query_result = self.__get_hash_value_by_file_id(db_file_id, algorithm)
-        return query_result is not None
+        return len(query_result) != 0
 
     def get_hash_value_by_file_id(self, db_file_id: int, algorithm: str) -> bytes:
         query_result = self.__get_hash_value_by_file_id(db_file_id, algorithm)
-        if query_result is None:
+        if query_result:
+            db_hash_id = query_result[0]
+        else:
             msg = f"Image hash for image ID {db_file_id} does not exist."
             raise DatabaseKeyError(msg)
-        else:
-            db_hash_id = query_result[0]
-
         return self.get_hash_value_by_db_hash_id(db_hash_id, algorithm)
 
     def _update_gallery_file_hash_by_db_hash_id(

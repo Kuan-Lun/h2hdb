@@ -47,9 +47,7 @@ class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
                     """
             connector.execute(update_query, (comment, db_gallery_id))
 
-    def __get_gallery_comment_by_db_gallery_id(
-        self, db_gallery_id: int
-    ) -> tuple | None:
+    def __get_gallery_comment_by_db_gallery_id(self, db_gallery_id: int) -> tuple:
         with self.SQLConnector() as connector:
             table_name = "galleries_comments"
             match self.config.database.sql_type.lower():
@@ -64,24 +62,25 @@ class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
 
     def _check_gallery_comment_by_db_gallery_id(self, db_gallery_id: int) -> bool:
         query_result = self.__get_gallery_comment_by_db_gallery_id(db_gallery_id)
-        return query_result is not None
+        return len(query_result) != 0
 
     def _check_gallery_comment_by_gallery_name(self, gallery_name: str) -> bool:
-        if not self._check_galleries_dbids_by_gallery_name(gallery_name):
-            return False
-        db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
-        return self._check_gallery_comment_by_db_gallery_id(db_gallery_id)
+        ischeck = False
+        if self._check_galleries_dbids_by_gallery_name(gallery_name):
+            db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
+            ischeck = self._check_gallery_comment_by_db_gallery_id(db_gallery_id)
+        return ischeck
 
     def _select_gallery_comment(self, db_gallery_id: int) -> str:
         query_result = self.__get_gallery_comment_by_db_gallery_id(db_gallery_id)
-        if query_result is None:
+        if query_result:
+            comment = query_result[0]
+        else:
             msg = (
                 f"Uploader comment for gallery name ID {db_gallery_id} does not exist."
             )
             self.logger.error(msg)
             raise DatabaseKeyError(msg)
-        else:
-            comment = query_result[0]
         return comment
 
     def get_comment_by_gallery_name(self, gallery_name: str) -> str:

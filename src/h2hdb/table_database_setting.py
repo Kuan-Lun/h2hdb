@@ -33,8 +33,8 @@ class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
                     charset = "utf8mb4"
                     query = "SHOW VARIABLES LIKE 'character_set_database';"
 
-            charset_result = connector.fetch_one(query)[1]
-            is_charset_valid = charset_result == charset
+            charset_result: str = connector.fetch_one(query)[1]
+            is_charset_valid: bool = charset_result == charset
             if not is_charset_valid:
                 message = f"Invalid database character set. Must be '{charset}' but is '{charset_result}'."
                 self.logger.error(message)
@@ -54,8 +54,8 @@ class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
                     query = "SHOW VARIABLES LIKE 'collation_database';"
                     collation = "utf8mb4_bin"
 
-            collation_result = connector.fetch_one(query)[1]
-            is_collation_valid = collation_result == collation
+            collation_result: str = connector.fetch_one(query)[1]
+            is_collation_valid: bool = collation_result == collation
             if not is_collation_valid:
                 message = f"Invalid database collation. Must be '{collation}' but is '{collation_result}'."
                 self.logger.error(message)

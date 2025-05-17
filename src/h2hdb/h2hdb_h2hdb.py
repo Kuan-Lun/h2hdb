@@ -11,21 +11,23 @@ from h2h_galleryinfo_parser import (
     GalleryURLParser,
 )
 
-from .view_ginfo import H2HDBGalleriesInfos
-from .table_tags import H2HDBGalleriesTags
+from .information import FileInformation, TagInformation
+from .settings import hash_function_by_file, chunk_list
+from .table_comments import H2HDBGalleriesComments
 from .table_files_dbids import H2HDBFiles
 from .table_removed_gids import H2HDBRemovedGalleries
-from .table_comments import H2HDBGalleriesComments
-from .information import FileInformation, TagInformation
+from .table_tags import H2HDBGalleriesTags
+from .threading_tools import SQLThreadsList, run_in_parallel
+from .view_ginfo import H2HDBGalleriesInfos
+
 from .hash_dict import HASH_ALGORITHMS
-from .threading_tools import SQLThreadsList, run_in_parallel, POOL_CPU_LIMIT
-from .settings import hash_function_by_file, chunk_list
 from .settings import (
     FOLDER_NAME_LENGTH_LIMIT,
     FILE_NAME_LENGTH_LIMIT,
     COMPARISON_HASH_ALGORITHM,
     GALLERY_INFO_FILE_NAME,
 )
+from .threading_tools import POOL_CPU_LIMIT
 
 
 def get_sorting_base_level(x: int = 20) -> int:
@@ -159,7 +161,7 @@ class H2HDB(
                         WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
                     """
             query_result = connector.fetch_one(select_query, tuple(gallery_name_parts))
-            return query_result is not None
+            return len(query_result) != 0
 
     def get_pending_gallery_removals(self) -> list[str]:
         with self.SQLConnector() as connector:
@@ -339,7 +341,7 @@ class H2HDB(
                         WHERE gid = %s
                     """
                     query_result = connector.fetch_one(select_query, (gid,))
-        return query_result is not None
+        return len(query_result) != 0
 
     def insert_todelete_gid(self, gid: int) -> None:
         if not self.check_todelete_gid(gid):
@@ -386,7 +388,7 @@ class H2HDB(
                             WHERE gid = %s
                         """
                         query_result = connector.fetch_one(select_query, (gid,))
-        return query_result is not None
+        return len(query_result) != 0
 
     def insert_todownload_gid(self, gid: int, url: str) -> None:
         if url != "":
@@ -529,7 +531,7 @@ class H2HDB(
                 args=(db_gallery_id, galleryinfo_params.files_path),
             )
 
-        file_pairs = list[FileInformation]()
+        file_pairs: list[FileInformation] = list()
         for file_path in galleryinfo_params.files_path:
             db_file_id = self._get_db_file_id(db_gallery_id, file_path)
             absolute_file_path = os.path.join(
@@ -538,7 +540,7 @@ class H2HDB(
             file_pairs.append(FileInformation(absolute_file_path, db_file_id))
         self._insert_gallery_file_hash_for_db_gallery_id(file_pairs)
 
-        taglist = list[TagInformation]()
+        taglist: list[TagInformation] = list()
         for tag in galleryinfo_params.tags:
             taglist.append(TagInformation(tag[0], tag[1]))
         self._insert_gallery_tags(db_gallery_id, taglist)
@@ -644,12 +646,7 @@ class H2HDB(
                     f"Invalid cbz_grouping value: {self.config.h2h.cbz_grouping}"
                 )
         cbz_directory = os.path.join(self.config.h2h.cbz_path, relative_cbz_directory)
-        cbz_log_directory = os.path.join("cbz_path", relative_cbz_directory)
         cbz_tmp_directory = os.path.join(self.config.h2h.cbz_path, "tmp")
-
-        cbz_log_path = os.path.join(
-            cbz_log_directory, galleryinfo_params.gallery_name + ".cbz"
-        )
 
         def gallery_name2cbz_file_name(gallery_name: str) -> str:
             while (len(gallery_name.encode("utf-8")) + 4) > FILE_NAME_LENGTH_LIMIT:
@@ -726,9 +723,9 @@ class H2HDB(
                         VALUES ({", ".join(["%s" for _ in column_name_parts])})
                     """
 
-            data = list[tuple]()
-            current_galleries_folders = list[str]()
-            current_galleries_names = list[str]()
+            data: list[tuple] = list()
+            current_galleries_folders: list[str] = list()
+            current_galleries_names: list[str] = list()
             for root, _, files in os.walk(self.config.h2h.download_path):
                 if GALLERY_INFO_FILE_NAME in files:
                     current_galleries_folders.append(root)
@@ -763,7 +760,7 @@ class H2HDB(
     def _refresh_current_cbz_files(self, current_galleries_names: list[str]) -> None:
         from .compress_gallery_to_cbz import gallery_name_to_cbz_file_name
 
-        current_cbzs = dict[str, str]()
+        current_cbzs: dict[str, str] = dict()
         for root, _, files in os.walk(self.config.h2h.cbz_path):
             for file in files:
                 current_cbzs[file] = root
@@ -814,9 +811,8 @@ class H2HDB(
             )
 
     def refresh_current_files_hashs(self):
-        algorithmlist = list(HASH_ALGORITHMS.keys())
         with SQLThreadsList() as threads:
-            for algorithm in algorithmlist:
+            for algorithm in HASH_ALGORITHMS:
                 threads.append(
                     target=self._refresh_current_files_hashs,
                     args=(algorithm,),
@@ -940,7 +936,7 @@ class H2HDB(
         self._reset_redownload_times()
 
     def get_komga_metadata(self, gallery_name: str) -> dict:
-        metadata = dict[str, str | list[dict[str, str]]]()
+        metadata: dict[str, str | list[dict[str, str]]] = dict()
         metadata["title"] = self.get_title_by_gallery_name(gallery_name)
         if self._check_gallery_comment_by_gallery_name(gallery_name):
             metadata["summary"] = self.get_comment_by_gallery_name(gallery_name)

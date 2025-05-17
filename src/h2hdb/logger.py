@@ -1,21 +1,12 @@
 __all__ = ["logger"]
 
 
-from abc import ABCMeta, abstractmethod
 import logging
+from abc import ABCMeta, abstractmethod
 from logging.handlers import MemoryHandler
 
 from .config_loader import LoggerConfig
-
-
-LOG_CONFIG = {
-    "notset": logging.NOTSET,
-    "debug": logging.DEBUG,
-    "info": logging.INFO,
-    "warning": logging.WARNING,
-    "error": logging.ERROR,
-    "critical": logging.INFO,
-}
+from .settings import LOG_LEVEL
 
 
 def setup_screen_logger(level: int) -> logging.Logger:
@@ -70,10 +61,10 @@ class AbstractLogger(metaclass=ABCMeta):
 
 
 class HentaiDBLogger(AbstractLogger):
-    def __init__(self, level: str) -> None:
-        logging_level = LOG_CONFIG[level.lower()]
-        self.screen_logger = setup_screen_logger(logging_level)
-        self.file_logger = setup_file_logger(logging_level)
+    def __init__(self, level: int) -> None:
+        # logging_level = LOG_CONFIG[level.lower()]
+        self.screen_logger = setup_screen_logger(level)
+        self.file_logger = setup_file_logger(level)
 
     def debug(self, message: str) -> None:
         self._log_method("debug", message)
