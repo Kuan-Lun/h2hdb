@@ -60,7 +60,7 @@ class H2HDB(
                         )
                     """
             connector.execute(query)
-            self.logger.info(f"{table_name} table created.")
+        self.logger.info(f"{table_name} table created.")
 
     def _count_duplicated_files_hashs_sha512(self) -> int:
         with self.SQLConnector() as connector:
@@ -161,7 +161,7 @@ class H2HDB(
                         WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
                     """
             query_result = connector.fetch_one(select_query, tuple(gallery_name_parts))
-            return len(query_result) != 0
+        return len(query_result) != 0
 
     def get_pending_gallery_removals(self) -> list[str]:
         with self.SQLConnector() as connector:
@@ -221,7 +221,7 @@ class H2HDB(
 
             gallery_name_parts = self._split_gallery_name(gallery_name)
             connector.execute(get_delete_gallery_id_query, tuple(gallery_name_parts))
-            self.logger.info(f"Gallery '{gallery_name}' deleted.")
+        self.logger.info(f"Gallery '{gallery_name}' deleted.")
 
     def optimize_database(self) -> None:
         with self.SQLConnector() as connector:
@@ -241,7 +241,7 @@ class H2HDB(
 
             for table_name in table_names:
                 connector.execute(get_optimize_query(table_name))
-            self.logger.info("Database optimized.")
+        self.logger.info("Database optimized.")
 
     def _create_pending_download_gids_view(self) -> None:
         with self.SQLConnector() as connector:
@@ -267,7 +267,7 @@ class H2HDB(
                                  ORDER BY gut.`time` DESC
                     """
             connector.execute(query)
-            self.logger.info("pending_download_gids view created.")
+        self.logger.info("pending_download_gids view created.")
 
     def get_pending_download_gids(self) -> list[int]:
         with self.SQLConnector() as connector:
@@ -296,7 +296,7 @@ class H2HDB(
                         )
                     """
             connector.execute(query)
-            self.logger.info(f"{table_name} table created.")
+        self.logger.info(f"{table_name} table created.")
 
     def _create_todelete_names_view(self) -> None:
         with self.SQLConnector() as connector:
@@ -328,7 +328,7 @@ class H2HDB(
                                     ) AS duplicated_gids_names
                     """
             connector.execute(query)
-            self.logger.info(f"{table_name} table created.")
+        self.logger.info(f"{table_name} table created.")
 
     def check_todelete_gid(self, gid: int) -> bool:
         with self.SQLConnector() as connector:
@@ -367,7 +367,7 @@ class H2HDB(
                         )
                     """
             connector.execute(query)
-            self.logger.info(f"{table_name} table created.")
+        self.logger.info(f"{table_name} table created.")
 
     def check_todownload_gid(self, gid: int, url: str) -> bool:
         with self.SQLConnector() as connector:
