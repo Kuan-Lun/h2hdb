@@ -55,9 +55,6 @@ def chunk_list(input_list: list, chunk_size: int) -> list:
     if chunk_size <= 0:
         raise ValueError("Chunk size must be greater than 0.")
 
-    # 初始化結果列表
-    result = list()
-    # 使用列表切片來分組
-    for i in range(0, len(input_list), chunk_size):
-        result.append(input_list[i : i + chunk_size])
-    return result
+    return [
+        input_list[i : i + chunk_size] for i in range(0, len(input_list), chunk_size)
+    ]

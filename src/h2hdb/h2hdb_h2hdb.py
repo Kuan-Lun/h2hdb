@@ -174,7 +174,7 @@ class H2HDB(
                     """
 
             query_result = connector.fetch_all(select_query)
-            pending_gallery_removals = [query[0] for query in query_result]
+        pending_gallery_removals = [query[0] for query in query_result]
         return pending_gallery_removals
 
     def delete_pending_gallery_removal(self, gallery_name: str) -> None:
@@ -233,8 +233,9 @@ class H2HDB(
                         WHERE REFERENCED_TABLE_SCHEMA = '{self.config.database.database}'
                     """
             table_names = connector.fetch_all(select_table_name_query)
-            table_names = [t[0] for t in table_names]
+        table_names = [t[0] for t in table_names]
 
+        with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
                 case "mysql":
                     get_optimize_query = lambda x: "OPTIMIZE TABLE {x}".format(x=x)
@@ -890,15 +891,18 @@ class H2HDB(
         self.logger.info("Inserting galleries in parallel...")
         for gallery_chunk in chunked_galleries_folders:
             # Insert gallery info to database
+            is_insert_list: list[bool] = list()
             try:
-                is_insert_list = run_in_parallel(
+                is_insert_list += run_in_parallel(
                     self.insert_gallery_info,
                     [(x,) for x in gallery_chunk],
                 )
             except Exception as e:
                 self.logger.error(f"Error inserting galleries: {e}")
-                self.logger.info("Retrying without parallel")
-                is_insert_list = [self.insert_gallery_info(x) for x in gallery_chunk]
+                self.logger.error("Retrying without parallel")
+                for x in gallery_chunk:
+                    self.logger.error(f"Retrying gallery '{x}'...")
+                    is_insert_list.append(self.insert_gallery_info(x))
             if any(is_insert_list):
                 self.logger.info("There are new galleries inserted in database.")
                 is_insert_limit_reached |= True

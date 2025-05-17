@@ -1,10 +1,10 @@
 from abc import ABCMeta
 from itertools import chain
-from random import shuffle
 
 from .hash_dict import HASH_ALGORITHMS
 from .settings import FILE_NAME_LENGTH_LIMIT
 
+from .settings import chunk_list
 from .table_gids import H2HDBGalleriesIDs
 from .information import FileInformation
 from .h2hdb_spec import H2HDBAbstract
@@ -331,11 +331,11 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         match self.config.database.sql_type.lower():
                             case "mysql":
                                 insert_hash_value_query = f"""
-                                    INSERT INTO {table_name} (hash_value) VALUES (%s)
+                                    INSERT INTO {table_name} (hash_value) VALUES (UNHEX(%s))
                                 """
                         try:
                             connector.execute(
-                                insert_hash_value_query, (current_hash_value,)
+                                insert_hash_value_query, (current_hash_value.hex(),)
                             )
                         except DatabaseDuplicateKeyError:
                             self.logger.warning(
@@ -366,9 +366,9 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                     select_query = f"""
                         SELECT db_hash_id
                         FROM {table_name}
-                        WHERE hash_value = %s
+                        WHERE hash_value = UNHEX(%s)
                     """
-            query_result = connector.fetch_one(select_query, (hash_value,))
+            query_result = connector.fetch_one(select_query, (hash_value.hex(),))
         return query_result
 
     def _check_db_hash_id_by_hash_value(
@@ -382,7 +382,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         if query_result:
             db_hash_id = query_result[0]
         else:
-            msg = f"Image hash for image ID {hash_value!r} does not exist."
+            msg = f"Image hash for image ID 0x{hash_value.hex()} does not exist."
             raise DatabaseKeyError(msg)
         return db_hash_id
 
@@ -417,9 +417,9 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             match self.config.database.sql_type.lower():
                 case "mysql":
                     insert_query = f"""
-                        INSERT INTO {table_name} (hash_value) VALUES (%s)
+                        INSERT INTO {table_name} (hash_value) VALUES (UNHEX(%s))
                     """
-            connector.execute(insert_query, (hash_value,))
+            connector.execute(insert_query, (hash_value.hex(),))
 
     def insert_db_hash_id_by_hash_values(
         self, hash_values: set[bytes], algorithm: str
@@ -427,13 +427,16 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         if not hash_values:
             return
 
-        toinsert: set[bytes] = set()
+        toinsert: list[str] = list()
         for hash_value in hash_values:
-            if not self._check_db_hash_id_by_hash_value(hash_value, algorithm):
-                toinsert.add(hash_value)
+            if (hash_value not in toinsert) and (
+                not self._check_db_hash_id_by_hash_value(hash_value, algorithm)
+            ):
+                toinsert.append(hash_value.hex())
         if not toinsert:
             return
 
+        isretry = False
         with self.SQLConnector() as connector:
             table_name = f"files_hashs_{algorithm.lower()}_dbids"
             match self.config.database.sql_type.lower():
@@ -442,15 +445,23 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         INSERT INTO {table_name} (hash_value)
                     """
                     insert_query_values = " ".join(
-                        ["VALUES", ", ".join(["(%s)"] * len(toinsert))]
+                        ["VALUES", ", ".join(["(UNHEX(%s))"] * len(toinsert))]
                     )
-                    insert_query_ending = (
-                        "ON DUPLICATE KEY UPDATE db_hash_id = db_hash_id"
+            insert_query = f"{insert_query_header} {insert_query_values}"
+            try:
+                connector.execute(insert_query, tuple(toinsert))
+            except DatabaseDuplicateKeyError:
+                isretry = True
+
+        if isretry:
+            for hash_hex in toinsert:
+                if not self._check_db_hash_id_by_hash_value(hash_value, algorithm):
+                    self.logger.warning(
+                        f"Retrying to insert hash value 0x{hash_hex} into the database."
                     )
-            insert_query = (
-                f"{insert_query_header} {insert_query_values} {insert_query_ending}"
-            )
-            connector.execute(insert_query, tuple(toinsert))
+                    self.insert_db_hash_id_by_hash_values(
+                        {bytes.fromhex(hash_hex)}, algorithm
+                    )
 
     def get_hash_value_by_db_hash_id(self, db_hash_id: int, algorithm: str) -> bytes:
         with self.SQLConnector() as connector:
