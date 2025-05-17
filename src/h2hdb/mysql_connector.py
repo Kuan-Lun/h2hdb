@@ -1,9 +1,6 @@
-from time import sleep
-from random import random
-
-from mysql.connector.pooling import PooledMySQLConnection
-from mysql.connector.abstracts import MySQLConnectionAbstract
 from mysql.connector import connect as SQLConnect
+from mysql.connector.abstracts import MySQLConnectionAbstract
+from mysql.connector.pooling import PooledMySQLConnection
 from mysql.connector.errors import IntegrityError
 
 from .sql_connector import SQLConnectorParams, SQLConnector, DatabaseDuplicateKeyError
