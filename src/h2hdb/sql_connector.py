@@ -7,7 +7,7 @@ __all__ = [
 ]
 
 
-from abc import ABCMeta, abstractmethod
+from abc import ABC, abstractmethod
 
 from pydantic import BaseModel, ConfigDict
 
@@ -64,12 +64,12 @@ class SQLConnectorParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class SQLConnector(metaclass=ABCMeta):
+class SQLConnector(ABC):
     """
     SQLConnector is an abstract base class that provides a standard interface for SQL database connections.
     It is designed to be subclassed by specific types of SQL database connectors (e.g., MySQLConnector, PostgreSQLConnector).
 
-    The class uses the Abstract Base Classes (ABCMeta) metaclass to enforce that subclasses implement the 'connect', 'close', 'execute', 'fetch', 'execute_many', and 'commit' methods.
+    The class uses the Abstract Base Classes (ABC) metaclass to enforce that subclasses implement the 'connect', 'close', 'execute', 'fetch', 'execute_many', and 'commit' methods.
 
     The constructor takes in the necessary parameters to establish a database connection, such as host, port, user, password, and database.
 
