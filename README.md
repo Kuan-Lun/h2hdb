@@ -44,7 +44,7 @@ The `H2HDB` is a comprehensive database for organising and managing H@H comic co
     "database": {
         "sql_type": "[str]", // Now only supports `mysql`. The default is `mysql`.
         "host": "[str]", // The default is `localhost`.
-        "port": "[str]", // String, not Integer. The default is `3306`.
+        "port": "[int]", // The default is `3306`.
         "user": "[str]", // The default is `root`.
         "password": "[str]" // The default is `password`.
     },
