@@ -9,7 +9,7 @@ The `H2HDB` is a comprehensive database for organising and managing H@H comic co
 ## Features
 
 - [x] Add new galleries to the database
-- [x] Comporess H@H's galleries to a folder
+- [x] Compress H@H's galleries to a folder
 - [x] Record the removed GIDs in a separate list
 - [ ] Write document (need?)
 
@@ -37,7 +37,7 @@ The `H2HDB` is a comprehensive database for organising and managing H@H comic co
     "h2h": {
         "download_path": "[str]", // The download path of H@H. The default is `download`.
         "cbz_path": "[str]", // The cbz in this path.
-        "cbz_max_size": "[int]", // The maxinum of the mininum of width and height height. The default is `768`.
+        "cbz_max_size": "[int]", // The maximum of the minimum width and height. The default is `768`.
         "cbz_grouping": "[str]", // `flat`, `date-yyyy`, `date-yyyy-mm`, or `date-yyyy-mm-dd`. The default is `flat`.
         "cbz_sort": "[str]" // `upload_time`, `download_time`, `pages`, or `pages+[num]`. The default is `no`.
     },
