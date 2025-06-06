@@ -3,7 +3,7 @@ from mysql.connector.abstracts import MySQLConnectionAbstract
 from mysql.connector.pooling import PooledMySQLConnection
 from mysql.connector.errors import IntegrityError
 
-from pydantic import Field, field_validator
+from pydantic import Field
 
 from .sql_connector import SQLConnectorParams, SQLConnector, DatabaseDuplicateKeyError
 
