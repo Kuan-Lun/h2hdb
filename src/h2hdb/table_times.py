@@ -23,7 +23,24 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                             INDEX (time)
                         )
                     """
+                case "sqlite":
+                    query = f"""
+                        CREATE TABLE IF NOT EXISTS {table_name} (
+                            db_gallery_id INTEGER  NOT NULL PRIMARY KEY
+                                REFERENCES galleries_dbids(db_gallery_id)
+                                ON UPDATE CASCADE ON DELETE CASCADE,
+                            time          TIMESTAMP NOT NULL
+                        )
+                    """
             connector.execute(query)
+
+            match self.config.database.sql_type.lower():
+                case "sqlite":
+                    connector.execute(
+                        f"CREATE INDEX IF NOT EXISTS idx_{table_name}_time "
+                        f"ON {table_name}(time)"
+                    )
+
             self.logger.info(f"{table_name} table created.")
 
     def _insert_time(self, table_name: str, db_gallery_id: int, time: str) -> None:
@@ -81,6 +98,14 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         SET {table_name}.time = galleries_download_times.time
                         WHERE {table_name}.time <> galleries_download_times.time;
 
+                    """
+                case "sqlite":
+                    update_query = f"""
+                        UPDATE {table_name}
+                        SET time = galleries_download_times.time
+                        FROM galleries_download_times
+                        WHERE {table_name}.db_gallery_id = galleries_download_times.db_gallery_id
+                        AND {table_name}.time <> galleries_download_times.time
                     """
             connector.execute(update_query)
 

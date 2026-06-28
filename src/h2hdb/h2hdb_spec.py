@@ -10,7 +10,8 @@ from .settings import (
     FILE_NAME_LENGTH_LIMIT,
     FOLDER_NAME_LENGTH_LIMIT,
 )
-from .sql_connector import SQLConnector, SQLConnectorParams
+from .sql_connector import SQLConnector as AbstractSQLConnector
+from .sql_connector import SQLConnectorParams
 
 
 class H2HDBAbstract(metaclass=ABCMeta):
@@ -23,7 +24,7 @@ class H2HDBAbstract(metaclass=ABCMeta):
     ]
 
     sql_connection_params: SQLConnectorParams
-    SQLConnector: Callable[..., SQLConnector]
+    SQLConnector: Callable[..., AbstractSQLConnector]
 
     def __init__(self, config: H2HDBConfig) -> None:
         """
@@ -77,6 +78,17 @@ class H2HDBAbstract(metaclass=ABCMeta):
                 connector.commit()
 
     def _split_gallery_name(self, gallery_name: str) -> list[str]:
+        match self.config.database.sql_type.lower():
+            case "mariadb":
+                return self._mariadb_split_name_value(gallery_name)
+            case "sqlite":
+                # No indexed key-prefix length limit, so the value isn't split
+                # to match a multi-column schema -- it's stored in one column.
+                return [gallery_name]
+            case _:
+                raise ValueError("Unsupported SQL type")
+
+    def _mariadb_split_name_value(self, gallery_name: str) -> list[str]:
         size = FOLDER_NAME_LENGTH_LIMIT // self.mariadb_index_prefix_limit + (
             FOLDER_NAME_LENGTH_LIMIT % self.mariadb_index_prefix_limit > 0
         )
@@ -111,6 +123,52 @@ class H2HDBAbstract(metaclass=ABCMeta):
         self, name: str
     ) -> tuple[list[str], str]:
         return self._mariadb_split_name_based_on_limit(name, FILE_NAME_LENGTH_LIMIT)
+
+    def sqlite_name_columns(self, name: str) -> tuple[list[str], str]:
+        """
+        SQLite has no indexed key-prefix length limit (unlike MariaDB's InnoDB),
+        so long names don't need to be split across multiple fixed-width columns.
+        """
+        return [name], f"{name} TEXT NOT NULL"
+
+    def _create_sqlite_fts5_sync(
+        self,
+        connector: AbstractSQLConnector,
+        table_name: str,
+        column_name: str,
+        rowid_column: str,
+    ) -> None:
+        """
+        Creates an FTS5 external-content virtual table mirroring `table_name`, plus
+        triggers to keep it in sync. This is SQLite's equivalent of MariaDB's
+        `FULLTEXT` index -- a different mechanism, but the same searchable capability.
+        """
+        fts_table_name = f"{table_name}_fts"
+        connector.execute(f"""
+            CREATE VIRTUAL TABLE IF NOT EXISTS {fts_table_name} USING fts5(
+                {column_name}, content='{table_name}', content_rowid='{rowid_column}'
+            )
+            """)
+        connector.execute(f"""
+            CREATE TRIGGER IF NOT EXISTS {table_name}_ai AFTER INSERT ON {table_name} BEGIN
+                INSERT INTO {fts_table_name}(rowid, {column_name})
+                VALUES (new.{rowid_column}, new.{column_name});
+            END
+            """)
+        connector.execute(f"""
+            CREATE TRIGGER IF NOT EXISTS {table_name}_ad AFTER DELETE ON {table_name} BEGIN
+                INSERT INTO {fts_table_name}({fts_table_name}, rowid, {column_name})
+                VALUES ('delete', old.{rowid_column}, old.{column_name});
+            END
+            """)
+        connector.execute(f"""
+            CREATE TRIGGER IF NOT EXISTS {table_name}_au AFTER UPDATE ON {table_name} BEGIN
+                INSERT INTO {fts_table_name}({fts_table_name}, rowid, {column_name})
+                VALUES ('delete', old.{rowid_column}, old.{column_name});
+                INSERT INTO {fts_table_name}(rowid, {column_name})
+                VALUES (new.{rowid_column}, new.{column_name});
+            END
+            """)
 
     @abstractmethod
     def check_database_character_set(self) -> None:

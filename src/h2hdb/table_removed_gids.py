@@ -17,6 +17,12 @@ class H2HDBRemovedGalleries(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta)
                             gid INT UNSIGNED NOT NULL
                         )
                     """
+                case "sqlite":
+                    query = f"""
+                        CREATE TABLE IF NOT EXISTS {table_name} (
+                            gid INTEGER NOT NULL PRIMARY KEY
+                        )
+                    """
             connector.execute(query)
             self.logger.info(f"{table_name} table created.")
 

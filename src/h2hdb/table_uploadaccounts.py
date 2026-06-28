@@ -22,7 +22,24 @@ class H2HDBUploadAccounts(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                             INDEX (account)
                         )
                     """
+                case "sqlite":
+                    query = f"""
+                        CREATE TABLE IF NOT EXISTS {table_name} (
+                            db_gallery_id INTEGER NOT NULL PRIMARY KEY
+                                REFERENCES galleries_dbids(db_gallery_id)
+                                ON UPDATE CASCADE ON DELETE CASCADE,
+                            account TEXT NOT NULL
+                        )
+                    """
             connector.execute(query)
+
+            match self.config.database.sql_type.lower():
+                case "sqlite":
+                    connector.execute(
+                        f"CREATE INDEX IF NOT EXISTS idx_{table_name}_account "
+                        f"ON {table_name}(account)"
+                    )
+
             self.logger.info(f"{table_name} table created.")
 
     def _insert_gallery_upload_account(self, db_gallery_id: int, account: str) -> None:

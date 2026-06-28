@@ -1,9 +1,26 @@
+import datetime
 import sqlite3
 from typing import Any
 
 from pydantic import Field
 
 from .sql_connector import DatabaseDuplicateKeyError, SQLConnector, SQLConnectorParams
+
+
+def _adapt_datetime(value: datetime.datetime) -> str:
+    return value.isoformat(sep=" ")
+
+
+def _convert_timestamp(value: bytes) -> datetime.datetime:
+    return datetime.datetime.fromisoformat(value.decode())
+
+
+# Python 3.12 deprecated (and later removed) sqlite3's default datetime
+# adapter/converter. Registering our own keeps `TIMESTAMP` columns round-tripping
+# through `datetime.datetime`, matching the type mysql-connector-python returns
+# for MariaDB's DATETIME columns.
+sqlite3.register_adapter(datetime.datetime, _adapt_datetime)
+sqlite3.register_converter("TIMESTAMP", _convert_timestamp)
 
 
 class SQLiteDuplicateKeyError(DatabaseDuplicateKeyError):
@@ -65,7 +82,11 @@ class SQLiteConnector(SQLConnector):
         self.params = SQLiteConnectorParams(database=database)
 
     def connect(self) -> None:
-        self.connection = sqlite3.connect(self.params.database, isolation_level=None)
+        self.connection = sqlite3.connect(
+            self.params.database,
+            isolation_level=None,
+            detect_types=sqlite3.PARSE_DECLTYPES,
+        )
 
     def close(self) -> None:
         self.connection.close()

@@ -22,7 +22,23 @@ class H2HDBGalleriesTitles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                             FULLTEXT (title)
                         )
                     """
+                case "sqlite":
+                    query = f"""
+                        CREATE TABLE IF NOT EXISTS {table_name} (
+                            db_gallery_id INTEGER NOT NULL PRIMARY KEY
+                                REFERENCES galleries_dbids(db_gallery_id)
+                                ON UPDATE CASCADE ON DELETE CASCADE,
+                            title TEXT NOT NULL
+                        )
+                    """
             connector.execute(query)
+
+            match self.config.database.sql_type.lower():
+                case "sqlite":
+                    self._create_sqlite_fts5_sync(
+                        connector, table_name, "title", "db_gallery_id"
+                    )
+
             self.logger.info(f"{table_name} table created.")
 
     def _insert_gallery_title(self, db_gallery_id: int, title: str) -> None:

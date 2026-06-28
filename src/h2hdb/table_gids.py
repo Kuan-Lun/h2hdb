@@ -12,9 +12,8 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
             table_name = "galleries_dbids"
             match self.config.database.sql_type.lower():
                 case "mariadb":
-                    column_name = "name"
                     column_name_parts, create_gallery_name_parts_sql = (
-                        self.mariadb_split_gallery_name_based_on_limit(column_name)
+                        self.mariadb_split_gallery_name_based_on_limit("name")
                     )
                     id_query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
@@ -22,6 +21,17 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
                             db_gallery_id INT  UNSIGNED AUTO_INCREMENT,
                             {create_gallery_name_parts_sql},
                             UNIQUE real_primay_key ({", ".join(column_name_parts)})
+                        )
+                    """
+                case "sqlite":
+                    column_name_parts, create_gallery_name_parts_sql = (
+                        self.sqlite_name_columns("name")
+                    )
+                    id_query = f"""
+                        CREATE TABLE IF NOT EXISTS {table_name} (
+                            db_gallery_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            {create_gallery_name_parts_sql},
+                            UNIQUE ({", ".join(column_name_parts)})
                         )
                     """
             connector.execute(id_query)
@@ -40,7 +50,23 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
                             FULLTEXT (full_name)
                         )
                     """
+                case "sqlite":
+                    name_query = f"""
+                        CREATE TABLE IF NOT EXISTS {table_name} (
+                            db_gallery_id INTEGER NOT NULL PRIMARY KEY
+                                REFERENCES galleries_dbids(db_gallery_id)
+                                ON UPDATE CASCADE ON DELETE CASCADE,
+                            full_name TEXT NOT NULL
+                        )
+                    """
             connector.execute(name_query)
+
+            match self.config.database.sql_type.lower():
+                case "sqlite":
+                    self._create_sqlite_fts5_sync(
+                        connector, table_name, "full_name", "db_gallery_id"
+                    )
+
             self.logger.info(f"{table_name} table created.")
 
     def _insert_gallery_name(self, gallery_name: str) -> None:
@@ -53,28 +79,23 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
                     column_name_parts, _ = (
                         self.mariadb_split_gallery_name_based_on_limit("name")
                     )
-                    insert_query = f"""
-                        INSERT INTO {table_name}
-                            ({", ".join(column_name_parts)})
-                        VALUES ({", ".join(["%s" for _ in column_name_parts])})
-                    """
+                case "sqlite":
+                    column_name_parts, _ = self.sqlite_name_columns("name")
+            insert_query = f"""
+                INSERT INTO {table_name}
+                    ({", ".join(column_name_parts)})
+                VALUES ({", ".join(["%s" for _ in column_name_parts])})
+            """
             connector.execute(insert_query, tuple(gallery_name_parts))
 
             db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
 
             table_name = "galleries_names"
-            gallery_name_parts = self._split_gallery_name(gallery_name)
-
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    column_name_parts, _ = (
-                        self.mariadb_split_gallery_name_based_on_limit("name")
-                    )
-                    insert_query = f"""
-                        INSERT INTO {table_name}
-                            (db_gallery_id, full_name)
-                        VALUES (%s, %s)
-                    """
+            insert_query = f"""
+                INSERT INTO {table_name}
+                    (db_gallery_id, full_name)
+                VALUES (%s, %s)
+            """
             connector.execute(insert_query, (db_gallery_id, gallery_name))
 
     def __get_db_gallery_id_by_gallery_name(self, gallery_name: str) -> tuple[int, ...]:
@@ -87,11 +108,13 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
                     column_name_parts, _ = (
                         self.mariadb_split_gallery_name_based_on_limit("name")
                     )
-                    select_query = f"""
-                        SELECT db_gallery_id
-                        FROM {table_name}
-                        WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
-                    """
+                case "sqlite":
+                    column_name_parts, _ = self.sqlite_name_columns("name")
+            select_query = f"""
+                SELECT db_gallery_id
+                FROM {table_name}
+                WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
+            """
 
             query_result = connector.fetch_one(select_query, tuple(gallery_name_parts))
         return query_result
@@ -161,7 +184,24 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                             INDEX (gid)
                         )
                     """
+                case "sqlite":
+                    query = f"""
+                        CREATE TABLE IF NOT EXISTS {table_name} (
+                            db_gallery_id INTEGER NOT NULL PRIMARY KEY
+                                REFERENCES galleries_dbids(db_gallery_id)
+                                ON UPDATE CASCADE ON DELETE CASCADE,
+                            gid INTEGER NOT NULL
+                        )
+                    """
             connector.execute(query)
+
+            match self.config.database.sql_type.lower():
+                case "sqlite":
+                    connector.execute(
+                        f"CREATE INDEX IF NOT EXISTS idx_{table_name}_gid "
+                        f"ON {table_name}(gid)"
+                    )
+
             self.logger.info(f"{table_name} table created.")
 
     def _insert_gallery_gid(self, db_gallery_id: int, gid: int) -> None:
