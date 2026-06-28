@@ -10,7 +10,7 @@ class H2HDBUploadAccounts(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = "galleries_upload_accounts"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
                             PRIMARY KEY (db_gallery_id),
@@ -18,7 +18,7 @@ class H2HDBUploadAccounts(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                                 ON UPDATE CASCADE
                                 ON DELETE CASCADE,
                             db_gallery_id INT UNSIGNED                      NOT NULL,
-                            account       CHAR({self.innodb_index_prefix_limit}) NOT NULL,
+                            account       CHAR({self.mariadb_index_prefix_limit}) NOT NULL,
                             INDEX (account)
                         )
                     """
@@ -29,7 +29,7 @@ class H2HDBUploadAccounts(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = "galleries_upload_accounts"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     insert_query = f"""
                         INSERT INTO {table_name} (db_gallery_id, account) VALUES (%s, %s)
                     """
@@ -39,7 +39,7 @@ class H2HDBUploadAccounts(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = "galleries_upload_accounts"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_query = f"""
                         SELECT account
                         FROM {table_name}

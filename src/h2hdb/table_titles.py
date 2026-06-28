@@ -10,7 +10,7 @@ class H2HDBGalleriesTitles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = "galleries_titles"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
                             PRIMARY KEY (db_gallery_id),
@@ -29,7 +29,7 @@ class H2HDBGalleriesTitles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = "galleries_titles"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     insert_query = f"""
                         INSERT INTO {table_name} (db_gallery_id, title) VALUES (%s, %s)
                     """
@@ -39,7 +39,7 @@ class H2HDBGalleriesTitles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = "galleries_titles"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_query = f"""
                         SELECT title
                         FROM {table_name}

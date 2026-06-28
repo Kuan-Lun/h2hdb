@@ -14,7 +14,7 @@ from .settings import (
 class H2HDBAbstract(metaclass=ABCMeta):
     __slots__ = [
         "sql_connection_params",
-        "innodb_index_prefix_limit",
+        "mariadb_index_prefix_limit",
         "config",
         "SQLConnector",
         "logger",
@@ -32,10 +32,10 @@ class H2HDBAbstract(metaclass=ABCMeta):
 
         # Set the appropriate connector based on the SQL type
         match self.config.database.sql_type.lower():
-            case "mysql":
-                from .mysql_connector import MySQLConnector, MySQLConnectorParams
+            case "mariadb":
+                from .mariadb_connector import MariaDBConnector, MariaDBConnectorParams
 
-                self.sql_connection_params = MySQLConnectorParams(
+                self.sql_connection_params = MariaDBConnectorParams(
                     host=self.config.database.host,
                     port=self.config.database.port,
                     user=self.config.database.user,
@@ -43,9 +43,9 @@ class H2HDBAbstract(metaclass=ABCMeta):
                     database=self.config.database.database,
                 )
                 self.SQLConnector = partial(
-                    MySQLConnector, **self.sql_connection_params.model_dump()
+                    MariaDBConnector, **self.sql_connection_params.model_dump()
                 )
-                self.innodb_index_prefix_limit = 191
+                self.mariadb_index_prefix_limit = 191
             case _:
                 raise ValueError("Unsupported SQL type")
 
@@ -63,38 +63,40 @@ class H2HDBAbstract(metaclass=ABCMeta):
                 connector.commit()
 
     def _split_gallery_name(self, gallery_name: str) -> list[str]:
-        size = FOLDER_NAME_LENGTH_LIMIT // self.innodb_index_prefix_limit + (
-            FOLDER_NAME_LENGTH_LIMIT % self.innodb_index_prefix_limit > 0
+        size = FOLDER_NAME_LENGTH_LIMIT // self.mariadb_index_prefix_limit + (
+            FOLDER_NAME_LENGTH_LIMIT % self.mariadb_index_prefix_limit > 0
         )
         gallery_name_parts = re.findall(
-            f".{{1,{self.innodb_index_prefix_limit}}}", gallery_name
+            f".{{1,{self.mariadb_index_prefix_limit}}}", gallery_name
         )
         gallery_name_parts += [""] * (size - len(gallery_name_parts))
         return gallery_name_parts
 
-    def _mysql_split_name_based_on_limit(
+    def _mariadb_split_name_based_on_limit(
         self, name: str, name_length_limit: int
     ) -> tuple[list[str], str]:
-        num_parts = math.ceil(name_length_limit / self.innodb_index_prefix_limit)
+        num_parts = math.ceil(name_length_limit / self.mariadb_index_prefix_limit)
         name_parts = [
-            f"{name}_part{i} CHAR({self.innodb_index_prefix_limit}) NOT NULL"
-            for i in range(1, name_length_limit // self.innodb_index_prefix_limit + 1)
+            f"{name}_part{i} CHAR({self.mariadb_index_prefix_limit}) NOT NULL"
+            for i in range(1, name_length_limit // self.mariadb_index_prefix_limit + 1)
         ]
-        if name_length_limit % self.innodb_index_prefix_limit > 0:
+        if name_length_limit % self.mariadb_index_prefix_limit > 0:
             name_parts.append(
-                f"{name}_part{num_parts} CHAR({name_length_limit % self.innodb_index_prefix_limit}) NOT NULL"
+                f"{name}_part{num_parts} CHAR({name_length_limit % self.mariadb_index_prefix_limit}) NOT NULL"
             )
         column_name_parts = [f"{name}_part{i}" for i in range(1, num_parts + 1)]
         create_name_parts_sql = ", ".join(name_parts)
         return column_name_parts, create_name_parts_sql
 
-    def mysql_split_gallery_name_based_on_limit(
+    def mariadb_split_gallery_name_based_on_limit(
         self, name: str
     ) -> tuple[list[str], str]:
-        return self._mysql_split_name_based_on_limit(name, FOLDER_NAME_LENGTH_LIMIT)
+        return self._mariadb_split_name_based_on_limit(name, FOLDER_NAME_LENGTH_LIMIT)
 
-    def mysql_split_file_name_based_on_limit(self, name: str) -> tuple[list[str], str]:
-        return self._mysql_split_name_based_on_limit(name, FILE_NAME_LENGTH_LIMIT)
+    def mariadb_split_file_name_based_on_limit(
+        self, name: str
+    ) -> tuple[list[str], str]:
+        return self._mariadb_split_name_based_on_limit(name, FILE_NAME_LENGTH_LIMIT)
 
     @abstractmethod
     def check_database_character_set(self) -> None:

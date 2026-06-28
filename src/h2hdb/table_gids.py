@@ -11,10 +11,10 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = "galleries_dbids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     column_name = "name"
                     column_name_parts, create_gallery_name_parts_sql = (
-                        self.mysql_split_gallery_name_based_on_limit(column_name)
+                        self.mariadb_split_gallery_name_based_on_limit(column_name)
                     )
                     id_query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
@@ -28,7 +28,7 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
 
             table_name = "galleries_names"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     name_query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
                             PRIMARY KEY (db_gallery_id),
@@ -49,9 +49,9 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
             gallery_name_parts = self._split_gallery_name(gallery_name)
 
             match self.config.database.sql_type.lower():
-                case "mysql":
-                    column_name_parts, _ = self.mysql_split_gallery_name_based_on_limit(
-                        "name"
+                case "mariadb":
+                    column_name_parts, _ = (
+                        self.mariadb_split_gallery_name_based_on_limit("name")
                     )
                     insert_query = f"""
                         INSERT INTO {table_name}
@@ -66,9 +66,9 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
             gallery_name_parts = self._split_gallery_name(gallery_name)
 
             match self.config.database.sql_type.lower():
-                case "mysql":
-                    column_name_parts, _ = self.mysql_split_gallery_name_based_on_limit(
-                        "name"
+                case "mariadb":
+                    column_name_parts, _ = (
+                        self.mariadb_split_gallery_name_based_on_limit("name")
                     )
                     insert_query = f"""
                         INSERT INTO {table_name}
@@ -83,9 +83,9 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
             gallery_name_parts = self._split_gallery_name(gallery_name)
 
             match self.config.database.sql_type.lower():
-                case "mysql":
-                    column_name_parts, _ = self.mysql_split_gallery_name_based_on_limit(
-                        "name"
+                case "mariadb":
+                    column_name_parts, _ = (
+                        self.mariadb_split_gallery_name_based_on_limit("name")
                     )
                     select_query = f"""
                         SELECT db_gallery_id
@@ -113,7 +113,7 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = "galleries_gids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_query = f"""
                         SELECT db_gallery_id
                         FROM {table_name}
@@ -151,7 +151,7 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = "galleries_gids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
                             PRIMARY KEY (db_gallery_id),
@@ -170,7 +170,7 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = "galleries_gids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     insert_query = f"""
                         INSERT INTO {table_name} (db_gallery_id, gid) VALUES (%s, %s)
                     """
@@ -180,7 +180,7 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = "galleries_gids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_query = f"""
                         SELECT gid
                         FROM {table_name}
@@ -204,7 +204,7 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = "galleries_gids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_query = f"""
                         SELECT gid
                         FROM {table_name}
@@ -217,7 +217,7 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = "galleries_gids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_query = f"""
                         SELECT gid
                         FROM {table_name}

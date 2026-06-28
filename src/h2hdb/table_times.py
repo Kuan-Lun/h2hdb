@@ -11,7 +11,7 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_times_table(self, table_name: str) -> None:
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
                             PRIMARY KEY (db_gallery_id),
@@ -29,7 +29,7 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _insert_time(self, table_name: str, db_gallery_id: int, time: str) -> None:
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     insert_query = f"""
                         INSERT INTO {table_name} (db_gallery_id, time) VALUES (%s, %s)
                     """
@@ -38,7 +38,7 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _select_time(self, table_name: str, db_gallery_id: int) -> datetime.datetime:
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_query = f"""
                         SELECT time
                         FROM {table_name}
@@ -56,7 +56,7 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _update_time(self, table_name: str, db_gallery_id: int, time: str) -> None:
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     update_query = f"""
                         UPDATE {table_name} SET time = %s WHERE db_gallery_id = %s
                     """
@@ -79,7 +79,7 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         table_name = "galleries_redownload_times"
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     update_query = f"""
                         UPDATE {table_name}
                         JOIN galleries_download_times

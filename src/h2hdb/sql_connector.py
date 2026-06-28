@@ -68,7 +68,7 @@ class SQLConnectorParams(BaseModel):
 class SQLConnector(ABC):
     """
     SQLConnector is an abstract base class that provides a standard interface for SQL database connections.
-    It is designed to be subclassed by specific types of SQL database connectors (e.g., MySQLConnector, PostgreSQLConnector).
+    It is designed to be subclassed by specific types of SQL database connectors (e.g., MariaDBConnector, SQLiteConnector).
 
     The class uses the Abstract Base Classes (ABC) metaclass to enforce that subclasses implement the 'connect', 'close', 'execute', 'fetch', 'execute_many', and 'commit' methods.
 

@@ -10,7 +10,7 @@ class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
         with self.SQLConnector() as connector:
             table_name = "galleries_comments"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
                             PRIMARY KEY (db_gallery_id),
@@ -30,7 +30,7 @@ class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
             with self.SQLConnector() as connector:
                 table_name = "galleries_comments"
                 match self.config.database.sql_type.lower():
-                    case "mysql":
+                    case "mariadb":
                         insert_query = f"""
                             INSERT INTO {table_name} (db_gallery_id, comment) VALUES (%s, %s)
                         """
@@ -40,7 +40,7 @@ class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
         with self.SQLConnector() as connector:
             table_name = "galleries_comments"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     update_query = f"""
                         UPDATE {table_name} SET Comment = %s WHERE db_gallery_id = %s
                     """
@@ -52,7 +52,7 @@ class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
         with self.SQLConnector() as connector:
             table_name = "galleries_comments"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_query = f"""
                         SELECT Comment
                         FROM {table_name}

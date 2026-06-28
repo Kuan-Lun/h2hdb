@@ -48,7 +48,7 @@ def mariadb_config(mariadb_container: MySqlContainer) -> Iterator[H2HDBConfig]:
 
     config = H2HDBConfig(
         database=DatabaseConfig(
-            sql_type="mysql",
+            sql_type="mariadb",
             host=host,
             port=port,
             user=MARIADB_USER,

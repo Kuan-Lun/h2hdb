@@ -42,7 +42,7 @@ The `H2HDB` is a comprehensive database for organising and managing H@H comic co
         "cbz_sort": "[str]" // `upload_time`, `download_time`, `pages`, or `pages+[num]`. The default is `no`.
     },
     "database": {
-        "sql_type": "[str]", // Now only supports `mysql`. The default is `mysql`.
+        "sql_type": "[str]", // Now only supports `mariadb`. The default is `mariadb`. (Breaking change: previously `mysql` — existing config files must update this field.)
         "host": "[str]", // The default is `localhost`.
         "port": "[int]", // The default is `3306`.
         "user": "[str]", // The default is `root`.

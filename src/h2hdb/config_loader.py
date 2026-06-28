@@ -35,8 +35,8 @@ class ConfigModel(BaseModel):
 
 class DatabaseConfig(ConfigModel):
     sql_type: str = Field(
-        default="mysql",
-        description="Type of SQL database (e.g., mysql)",
+        default="mariadb",
+        description="Type of SQL database (e.g., mariadb)",
     )
     host: str = Field(
         default="localhost",

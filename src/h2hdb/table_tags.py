@@ -15,11 +15,11 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             tag_name_table_name = "galleries_tags_names"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {tag_name_table_name} (
                             PRIMARY KEY (tag_name),
-                            tag_name CHAR({self.innodb_index_prefix_limit}) NOT NULL
+                            tag_name CHAR({self.mariadb_index_prefix_limit}) NOT NULL
                         )
                     """
             connector.execute(query)
@@ -27,11 +27,11 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
             tag_value_table_name = "galleries_tags_values"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {tag_value_table_name} (
                             PRIMARY KEY (tag_value),
-                            tag_value CHAR({self.innodb_index_prefix_limit}) NOT NULL
+                            tag_value CHAR({self.mariadb_index_prefix_limit}) NOT NULL
                         )
                     """
             connector.execute(query)
@@ -39,16 +39,16 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
             tag_pairs_table_name = "galleries_tag_pairs_dbids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {tag_pairs_table_name} (
                             PRIMARY KEY (db_tag_pair_id),
                             db_tag_pair_id INT UNSIGNED                           AUTO_INCREMENT,
-                            tag_name       CHAR({self.innodb_index_prefix_limit}) NOT NULL,
+                            tag_name       CHAR({self.mariadb_index_prefix_limit}) NOT NULL,
                             FOREIGN KEY (tag_name) REFERENCES {tag_name_table_name}(tag_name)
                                 ON UPDATE CASCADE
                                 ON DELETE CASCADE,
-                            tag_value      CHAR({self.innodb_index_prefix_limit}) NOT NULL,
+                            tag_value      CHAR({self.mariadb_index_prefix_limit}) NOT NULL,
                             FOREIGN KEY (tag_value) REFERENCES {tag_value_table_name}(tag_value)
                                 ON UPDATE CASCADE
                                 ON DELETE CASCADE,
@@ -61,7 +61,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
             table_name = "galleries_tags"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
                             PRIMARY KEY (db_gallery_id, db_tag_pair_id),
@@ -82,7 +82,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def __get_db_tag_pair_id(self, tag_name: str, tag_value: str) -> tuple[int, ...]:
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_query = """
                         SELECT db_tag_pair_id
                         FROM galleries_tag_pairs_dbids
@@ -108,7 +108,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = "galleries_tags_names"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_query = f"""
                         SELECT tag_name
                         FROM {table_name}
@@ -121,7 +121,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = "galleries_tags_values"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_query = f"""
                         SELECT tag_value
                         FROM {table_name}
@@ -152,7 +152,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                     column_name = "tag_value"
 
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     insert_query_header = f"""
                         INSERT INTO {table_name} ({column_name})
                     """
@@ -193,7 +193,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             tag_pairs_table_name = "galleries_tag_pairs_dbids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     insert_query_header = f"""
                         INSERT INTO {tag_pairs_table_name} (tag_name, tag_value)
                     """
@@ -242,7 +242,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = "galleries_tags"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     insert_query_header = f"""
                         INSERT INTO {table_name} (db_gallery_id, db_tag_pair_id)
                     """
@@ -259,7 +259,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = f"galleries_tags_{tag_name}"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_query = f"""
                         SELECT tag
                         FROM {table_name}
@@ -292,7 +292,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = "galleries_tags"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_query = f"""
                         SELECT db_tag_pair_id
                         FROM {table_name}
@@ -305,7 +305,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = "galleries_tag_pairs_dbids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_query = f"""
                         SELECT tag_name, tag_value
                         FROM {table_name}

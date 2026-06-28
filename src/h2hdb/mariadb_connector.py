@@ -12,9 +12,9 @@ from .sql_connector import DatabaseDuplicateKeyError, SQLConnector, SQLConnector
 AUTO_COMMIT_KEYS = ["INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER"]
 
 
-class MySQLDuplicateKeyError(DatabaseDuplicateKeyError):
+class MariaDBDuplicateKeyError(DatabaseDuplicateKeyError):
     """
-    Custom exception class for MySQL duplicate key errors.
+    Custom exception class for MariaDB duplicate key errors.
 
     This class inherits from the MySQL Connector/Python IntegrityError class.
     """
@@ -24,46 +24,46 @@ class MySQLDuplicateKeyError(DatabaseDuplicateKeyError):
         super().__init__(self.message)
 
 
-class MySQLConnectorParams(SQLConnectorParams):
+class MariaDBConnectorParams(SQLConnectorParams):
     """
-    MySQLConnectorParams is a data class that holds the connection parameters required to connect to a MySQL database.
+    MariaDBConnectorParams is a data class that holds the connection parameters required to connect to a MariaDB database.
 
-    The class inherits from SQLConnectorParams and adds additional parameters specific to MySQL databases.
+    The class inherits from SQLConnectorParams and adds additional parameters specific to MariaDB databases.
 
-    The 'host' parameter is the host name or IP address of the MySQL database server.
+    The 'host' parameter is the host name or IP address of the MariaDB database server.
 
-    The 'port' parameter is the port number to connect to the MySQL database server.
+    The 'port' parameter is the port number to connect to the MariaDB database server.
 
-    The 'user' parameter is the username to authenticate with the MySQL database server.
+    The 'user' parameter is the username to authenticate with the MariaDB database server.
 
-    The 'password' parameter is the password to authenticate with the MySQL database server.
+    The 'password' parameter is the password to authenticate with the MariaDB database server.
 
-    The 'database' parameter is the name of the MySQL database to connect to.
+    The 'database' parameter is the name of the MariaDB database to connect to.
     """
 
     host: str = Field(
         min_length=1,
-        description="Host of the MySQL database",
+        description="Host of the MariaDB database",
     )
     port: int = Field(
         ge=1,
         le=65535,
-        description="Port of the MySQL database",
+        description="Port of the MariaDB database",
     )
     user: str = Field(
         min_length=1,
-        description="User for the MySQL database",
+        description="User for the MariaDB database",
     )
     password: str = Field(
-        description="Password for the MySQL database",
+        description="Password for the MariaDB database",
     )
     database: str = Field(
         min_length=1,
-        description="Database name for the MySQL database",
+        description="Database name for the MariaDB database",
     )
 
 
-class MySQLCursor:
+class MariaDBCursor:
     def __init__(
         self, connection: PooledMySQLConnection | MySQLConnectionAbstract
     ) -> None:
@@ -82,33 +82,33 @@ class MySQLCursor:
         self.cursor.close()
 
 
-class MySQLConnector(SQLConnector):
+class MariaDBConnector(SQLConnector):
     """
-    MySQLConnector is a concrete subclass of SQLConnector that provides an implementation for connecting to a MySQL database.
+    MariaDBConnector is a concrete subclass of SQLConnector that provides an implementation for connecting to a MariaDB database.
 
-    The class uses the MySQL Connector/Python library to establish a connection to a MySQL database.
+    The class uses the MySQL Connector/Python library (wire-protocol compatible with MariaDB) to establish a connection.
 
-    The 'connect' method establishes a connection to the MySQL database using the provided connection parameters.
+    The 'connect' method establishes a connection to the MariaDB database using the provided connection parameters.
 
-    The 'close' method closes the connection to the MySQL database.
+    The 'close' method closes the connection to the MariaDB database.
 
-    The 'execute' method executes a single SQL command on the MySQL database.
+    The 'execute' method executes a single SQL command on the MariaDB database.
 
-    The 'execute_many' method executes multiple SQL commands on the MySQL database.
+    The 'execute_many' method executes multiple SQL commands on the MariaDB database.
 
-    The 'fetch_one' method fetches a single result from the MySQL database.
+    The 'fetch_one' method fetches a single result from the MariaDB database.
 
-    The 'fetch_all' method fetches all results from the MySQL database.
+    The 'fetch_all' method fetches all results from the MariaDB database.
 
-    The 'commit' method commits the current transaction to the MySQL database.
+    The 'commit' method commits the current transaction to the MariaDB database.
 
-    The 'rollback' method rolls back the current transaction in the MySQL database.
+    The 'rollback' method rolls back the current transaction in the MariaDB database.
     """
 
     def __init__(
         self, host: str, port: int, user: str, password: str, database: str
     ) -> None:
-        self.params = MySQLConnectorParams(
+        self.params = MariaDBConnectorParams(
             host=host, port=port, user=user, password=password, database=database
         )
 
@@ -130,27 +130,27 @@ class MySQLConnector(SQLConnector):
         self.connection.rollback()
 
     def execute(self, query: str, data: tuple[Any, ...] = ()) -> None:
-        with MySQLCursor(self.connection) as cursor:
+        with MariaDBCursor(self.connection) as cursor:
             try:
                 cursor.execute(query, data)
             except IntegrityError as e:
-                raise MySQLDuplicateKeyError(str(e))
+                raise MariaDBDuplicateKeyError(str(e))
             except Exception as e:
                 raise e
         if any(key in query.upper() for key in AUTO_COMMIT_KEYS):
             self.commit()
 
     def execute_many(self, query: str, data: list[tuple[Any, ...]]) -> None:
-        with MySQLCursor(self.connection) as cursor:
+        with MariaDBCursor(self.connection) as cursor:
             try:
                 cursor.executemany(query, data)
             except IntegrityError as e:
-                raise MySQLDuplicateKeyError(str(e))
+                raise MariaDBDuplicateKeyError(str(e))
         if any(key in query.upper() for key in AUTO_COMMIT_KEYS):
             self.commit()
 
     def fetch_one(self, query: str, data: tuple[Any, ...] = ()) -> tuple[Any, ...]:
-        with MySQLCursor(self.connection) as cursor:
+        with MariaDBCursor(self.connection) as cursor:
             cursor.execute(query, data)
             vlist = cursor.fetchone()
         if isinstance(vlist, tuple):
@@ -161,7 +161,7 @@ class MySQLConnector(SQLConnector):
     def fetch_all(
         self, query: str, data: tuple[Any, ...] = ()
     ) -> list[tuple[Any, ...]]:
-        with MySQLCursor(self.connection) as cursor:
+        with MariaDBCursor(self.connection) as cursor:
             cursor.execute(query, data)
             vlist = cursor.fetchall()
         return cast(list[tuple[Any, ...]], vlist)

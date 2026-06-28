@@ -29,7 +29,7 @@ class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
         """
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     charset = "utf8mb4"
                     query = "SHOW VARIABLES LIKE 'character_set_database';"
 
@@ -50,7 +50,7 @@ class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
         """
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = "SHOW VARIABLES LIKE 'collation_database';"
                     collation = "utf8mb4_bin"
 

@@ -10,7 +10,7 @@ class H2HDBRemovedGalleries(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta)
         with self.SQLConnector() as connector:
             table_name = "removed_galleries_gids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
                             PRIMARY KEY (gid),
@@ -24,7 +24,7 @@ class H2HDBRemovedGalleries(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta)
         with self.SQLConnector() as connector:
             table_name = "removed_galleries_gids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     insert_query = f"""
                         INSERT INTO {table_name} (gid) VALUES (%s)
                     """
@@ -37,7 +37,7 @@ class H2HDBRemovedGalleries(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta)
         with self.SQLConnector() as connector:
             table_name = "removed_galleries_gids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_query = f"""
                         SELECT gid
                         FROM {table_name}

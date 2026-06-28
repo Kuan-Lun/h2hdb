@@ -18,10 +18,10 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = "files_dbids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     column_name = "name"
                     column_name_parts, create_gallery_name_parts_sql = (
-                        self.mysql_split_file_name_based_on_limit(column_name)
+                        self.mariadb_split_file_name_based_on_limit(column_name)
                     )
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
@@ -41,7 +41,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
             table_name = "files_names"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
                             PRIMARY KEY (db_file_id),
@@ -72,8 +72,8 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
             table_name = "files_dbids"
             match self.config.database.sql_type.lower():
-                case "mysql":
-                    column_name_parts, _ = self.mysql_split_file_name_based_on_limit(
+                case "mariadb":
+                    column_name_parts, _ = self.mariadb_split_file_name_based_on_limit(
                         "name"
                     )
                     insert_query_header = f"""
@@ -112,8 +112,8 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
             table_name = "files_names"
             match self.config.database.sql_type.lower():
-                case "mysql":
-                    column_name_parts, _ = self.mysql_split_file_name_based_on_limit(
+                case "mariadb":
+                    column_name_parts, _ = self.mariadb_split_file_name_based_on_limit(
                         "name"
                     )
                     insert_query_header = f"""
@@ -142,8 +142,8 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             table_name = "files_dbids"
             file_name_parts = self._split_gallery_name(file_name)
             match self.config.database.sql_type.lower():
-                case "mysql":
-                    column_name_parts, _ = self.mysql_split_file_name_based_on_limit(
+                case "mariadb":
+                    column_name_parts, _ = self.mariadb_split_file_name_based_on_limit(
                         "name"
                     )
                     select_query = f"""
@@ -175,7 +175,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
             table_name = "files_names"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_query = f"""
                         SELECT full_name
                             FROM {table_name}
@@ -196,7 +196,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             dbids_table_name = f"files_hashs_{algorithm.lower()}_dbids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {dbids_table_name} (
                             PRIMARY KEY (db_hash_id),
@@ -210,7 +210,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
             table_name = f"files_hashs_{algorithm.lower()}"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
                             PRIMARY KEY (db_file_id),
@@ -237,7 +237,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = "files_hashs"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = f"""
                         CREATE VIEW IF NOT EXISTS {table_name} AS
                         SELECT files_names.db_file_id               AS db_file_id,
@@ -259,7 +259,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = "files_dbids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_query = f"""
                         SELECT COUNT(*)
                         FROM {table_name}
@@ -327,7 +327,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                     with self.SQLConnector() as connector:
                         table_name = f"files_hashs_{algorithm.lower()}_dbids"
                         match self.config.database.sql_type.lower():
-                            case "mysql":
+                            case "mariadb":
                                 insert_hash_value_query = f"""
                                     INSERT INTO {table_name} (hash_value) VALUES (UNHEX(%s))
                                 """
@@ -348,7 +348,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                 with self.SQLConnector() as connector:
                     table_name = f"files_hashs_{algorithm.lower()}"
                     match self.config.database.sql_type.lower():
-                        case "mysql":
+                        case "mariadb":
                             insert_db_hash_id_query = f"""
                                 INSERT INTO {table_name} (db_file_id, db_hash_id) VALUES (%s, %s)
                             """
@@ -360,7 +360,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = f"files_hashs_{algorithm.lower()}_dbids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_query = f"""
                         SELECT db_hash_id
                         FROM {table_name}
@@ -391,7 +391,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             with self.SQLConnector() as connector:
                 table_name = f"files_hashs_{algorithm.lower()}"
                 match self.config.database.sql_type.lower():
-                    case "mysql":
+                    case "mariadb":
                         insert_query_header = f"""
                             INSERT INTO {table_name} (db_file_id, db_hash_id)
                         """
@@ -413,7 +413,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = f"files_hashs_{algorithm.lower()}_dbids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     insert_query = f"""
                         INSERT INTO {table_name} (hash_value) VALUES (UNHEX(%s))
                     """
@@ -436,7 +436,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = f"files_hashs_{algorithm.lower()}_dbids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     insert_query_header = f"""
                         INSERT INTO {table_name} (hash_value)
                     """
@@ -463,7 +463,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = f"files_hashs_{algorithm.lower()}_dbids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_query = f"""
                         SELECT hash_value
                         FROM {table_name}
@@ -483,7 +483,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = f"files_hashs_{algorithm.lower()}"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_query = f"""
                         SELECT db_hash_id
                         FROM {table_name}
@@ -511,7 +511,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = f"files_hashs_{algorithm.lower()}"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     update_query = f"""
                         UPDATE {table_name} SET db_hash_id = %s WHERE db_file_id = %s
                     """

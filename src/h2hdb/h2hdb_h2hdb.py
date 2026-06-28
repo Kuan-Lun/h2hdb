@@ -46,10 +46,10 @@ class H2HDB(
         with self.SQLConnector() as connector:
             table_name = "pending_gallery_removals"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     column_name = "name"
                     column_name_parts, create_gallery_name_parts_sql = (
-                        self.mysql_split_gallery_name_based_on_limit(column_name)
+                        self.mariadb_split_gallery_name_based_on_limit(column_name)
                     )
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
@@ -66,7 +66,7 @@ class H2HDB(
         with self.SQLConnector() as connector:
             table_name = "duplicated_files_hashs_sha512"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = f"""
                         SELECT COUNT(*)
                         FROM {table_name}
@@ -77,7 +77,7 @@ class H2HDB(
     def _create_duplicated_galleries_tables(self) -> None:
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = """
                             CREATE VIEW IF NOT EXISTS duplicated_files_hashs_sha512 AS
                             SELECT db_file_id,
@@ -90,7 +90,7 @@ class H2HDB(
 
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = """
                         CREATE VIEW IF NOT EXISTS duplicated_hash_values_by_count_artist_ratio AS WITH duplicated_db_dbids AS (
                             SELECT galleries_dbids.db_gallery_id AS db_gallery_id,
@@ -134,9 +134,9 @@ class H2HDB(
                 gallery_name_parts = self._split_gallery_name(gallery_name)
 
                 match self.config.database.sql_type.lower():
-                    case "mysql":
+                    case "mariadb":
                         column_name_parts, _ = (
-                            self.mysql_split_gallery_name_based_on_limit("name")
+                            self.mariadb_split_gallery_name_based_on_limit("name")
                         )
                         insert_query = f"""
                             INSERT INTO {table_name} ({", ".join(column_name_parts)}, full_name)
@@ -151,9 +151,9 @@ class H2HDB(
             table_name = "pending_gallery_removals"
             gallery_name_parts = self._split_gallery_name(gallery_name)
             match self.config.database.sql_type.lower():
-                case "mysql":
-                    column_name_parts, _ = self.mysql_split_gallery_name_based_on_limit(
-                        "name"
+                case "mariadb":
+                    column_name_parts, _ = (
+                        self.mariadb_split_gallery_name_based_on_limit("name")
                     )
                     select_query = f"""
                         SELECT full_name
@@ -167,7 +167,7 @@ class H2HDB(
         with self.SQLConnector() as connector:
             table_name = "pending_gallery_removals"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_query = f"""
                         SELECT full_name
                         FROM {table_name}
@@ -181,9 +181,9 @@ class H2HDB(
         with self.SQLConnector() as connector:
             table_name = "pending_gallery_removals"
             match self.config.database.sql_type.lower():
-                case "mysql":
-                    column_name_parts, _ = self.mysql_split_gallery_name_based_on_limit(
-                        "name"
+                case "mariadb":
+                    column_name_parts, _ = (
+                        self.mariadb_split_gallery_name_based_on_limit("name")
                     )
                     delete_query = f"""
                         DELETE FROM {table_name} WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
@@ -210,9 +210,9 @@ class H2HDB(
                 return
 
             match self.config.database.sql_type.lower():
-                case "mysql":
-                    column_name_parts, _ = self.mysql_split_gallery_name_based_on_limit(
-                        "name"
+                case "mariadb":
+                    column_name_parts, _ = (
+                        self.mariadb_split_gallery_name_based_on_limit("name")
                     )
                     get_delete_gallery_id_query = f"""
                         DELETE FROM galleries_dbids
@@ -226,7 +226,7 @@ class H2HDB(
     def optimize_database(self) -> None:
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_table_name_query = f"""
                         SELECT TABLE_NAME
                         FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
@@ -237,7 +237,7 @@ class H2HDB(
 
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
 
                     def get_optimize_query(x: str) -> str:
                         return f"OPTIMIZE TABLE {x}"
@@ -249,7 +249,7 @@ class H2HDB(
     def _create_pending_download_gids_view(self) -> None:
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = """
                         CREATE VIEW IF NOT EXISTS pending_download_gids AS
                             SELECT gids.gid AS gid
@@ -275,7 +275,7 @@ class H2HDB(
     def get_pending_download_gids(self) -> list[int]:
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = """
                         SELECT gid
                         FROM pending_download_gids
@@ -288,7 +288,7 @@ class H2HDB(
         with self.SQLConnector() as connector:
             table_name = "todelete_gids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
                             PRIMARY KEY (gid),
@@ -305,7 +305,7 @@ class H2HDB(
         with self.SQLConnector() as connector:
             table_name = "todelete_names"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = f"""
                         CREATE VIEW IF NOT EXISTS {table_name} AS
                             SELECT full_name
@@ -337,7 +337,7 @@ class H2HDB(
         with self.SQLConnector() as connector:
             table_name = "todelete_gids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_query = f"""
                         SELECT gid
                         FROM {table_name}
@@ -351,7 +351,7 @@ class H2HDB(
             with self.SQLConnector() as connector:
                 table_name = "todelete_gids"
                 match self.config.database.sql_type.lower():
-                    case "mysql":
+                    case "mariadb":
                         insert_query = f"""
                             INSERT INTO {table_name} (gid) VALUES (%s)
                         """
@@ -361,12 +361,12 @@ class H2HDB(
         with self.SQLConnector() as connector:
             table_name = "todownload_gids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
                             PRIMARY KEY (gid),
                             gid          INT UNSIGNED NOT NULL,
-                            url          CHAR({self.innodb_index_prefix_limit}) NOT NULL
+                            url          CHAR({self.mariadb_index_prefix_limit}) NOT NULL
                         )
                     """
             connector.execute(query)
@@ -376,7 +376,7 @@ class H2HDB(
         with self.SQLConnector() as connector:
             table_name = "todownload_gids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     if url != "":
                         select_query = f"""
                             SELECT gid
@@ -409,7 +409,7 @@ class H2HDB(
                 with self.SQLConnector() as connector:
                     table_name = "todownload_gids"
                     match self.config.database.sql_type.lower():
-                        case "mysql":
+                        case "mariadb":
                             insert_query = f"""
                                 INSERT INTO {table_name} (gid, url) VALUES (%s, %s)
                             """
@@ -421,7 +421,7 @@ class H2HDB(
         with self.SQLConnector() as connector:
             table_name = "todownload_gids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     update_query = f"""
                         UPDATE {table_name} SET url = %s WHERE gid = %s
                     """
@@ -431,7 +431,7 @@ class H2HDB(
         with self.SQLConnector() as connector:
             table_name = "todownload_gids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     delete_query = f"""
                         DELETE FROM {table_name} WHERE gid = %s
                     """
@@ -441,7 +441,7 @@ class H2HDB(
         with self.SQLConnector() as connector:
             table_name = "todownload_gids"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_query = f"""
                         SELECT gid, url
                         FROM {table_name}
@@ -482,7 +482,7 @@ class H2HDB(
         table_name = "galleries_redownload_times"
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     update_query = f"""
                         UPDATE {table_name} SET time = NOW() WHERE db_gallery_id = %s
                     """
@@ -587,7 +587,7 @@ class H2HDB(
         with self.SQLConnector() as connector:
             table_name = "duplicated_hash_values_by_count_artist_ratio"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     select_query = f"""
                         SELECT hash_value
                         FROM {table_name}
@@ -700,10 +700,10 @@ class H2HDB(
         with self.SQLConnector() as connector:
             tmp_table_name = "tmp_current_galleries"
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     column_name = "name"
                     column_name_parts, create_gallery_name_parts_sql = (
-                        self.mysql_split_gallery_name_based_on_limit(column_name)
+                        self.mariadb_split_gallery_name_based_on_limit(column_name)
                     )
                     query = f"""
                         CREATE TEMPORARY TABLE IF NOT EXISTS {tmp_table_name} (
@@ -716,9 +716,9 @@ class H2HDB(
             self.logger.info(f"{tmp_table_name} table created.")
 
             match self.config.database.sql_type.lower():
-                case "mysql":
-                    column_name_parts, _ = self.mysql_split_gallery_name_based_on_limit(
-                        "name"
+                case "mariadb":
+                    column_name_parts, _ = (
+                        self.mariadb_split_gallery_name_based_on_limit("name")
                     )
                     insert_query = f"""
                         INSERT INTO {tmp_table_name}
@@ -742,7 +742,7 @@ class H2HDB(
                 connector.execute_many(insert_query, list(islice(it, group_size)))
 
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     fetch_query = f"""
                         SELECT CONCAT({",".join(["galleries_dbids."+column_name for column_name in column_name_parts])})
                         FROM galleries_dbids
@@ -796,7 +796,7 @@ class H2HDB(
 
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
 
                     def get_delete_db_hash_id_query(x: str, y: str) -> str:
                         return f"""

@@ -16,7 +16,7 @@ class H2HDBGalleriesInfos(
     def _create_galleries_infos_view(self) -> None:
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = """
                         CREATE VIEW IF NOT EXISTS galleries_infos AS
                         SELECT galleries_names.db_gallery_id AS db_gallery_id,
@@ -43,7 +43,7 @@ class H2HDBGalleriesInfos(
     def _create_duplicate_hash_in_gallery_view(self) -> None:
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
-                case "mysql":
+                case "mariadb":
                     query = """
                         CREATE VIEW IF NOT EXISTS duplicate_hash_in_gallery AS WITH Files AS (
                             SELECT files_dbids.db_gallery_id AS db_gallery_id,
