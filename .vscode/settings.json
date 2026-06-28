@@ -27,7 +27,14 @@
   "editor.rulers": [
     88
   ],
+  "flake8.args": [
+    "--max-line-length=88",
+    "--ignore=E203,E226,E501,W503,E704"
+  ],
   // --- mypy 擴充套件 ---
   // 使用專案虛擬環境中的 mypy，確保 IDE 與 CLI (uv run mypy) 結果一致。
-  "mypy-type-checker.importStrategy": "fromEnvironment"
+  "mypy-type-checker.importStrategy": "fromEnvironment",
+  "mypy-type-checker.args": [
+    "--config-file=mypy.ini"
+  ]
 }
