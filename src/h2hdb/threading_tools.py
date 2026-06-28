@@ -1,7 +1,7 @@
 import threading
 from threading import Thread
 from abc import ABCMeta, abstractmethod
-from typing import Callable
+from typing import Any, Callable
 from multiprocessing import cpu_count
 from multiprocessing.pool import Pool
 from contextlib import ExitStack
@@ -14,10 +14,10 @@ SQL_SEMAPHORE = threading.Semaphore(POOL_CPU_LIMIT)
 
 
 def wrap_thread_target_with_semaphores(
-    target: Callable,
+    target: Callable[..., Any],
     semaphores: list[threading.Semaphore],
-) -> Callable:
-    def wrapper(*args, **kwargs) -> None:
+) -> Callable[..., None]:
+    def wrapper(*args: Any, **kwargs: Any) -> None:
         with ExitStack() as stack:
             for semaphore in semaphores:
                 stack.enter_context(semaphore)
@@ -31,7 +31,7 @@ class ThreadsList(list[Thread], metaclass=ABCMeta):
     def get_semaphores(self) -> list[threading.Semaphore]:
         pass
 
-    def append(self, target, args):
+    def append(self, target: Callable[..., Any], args: tuple[Any, ...]) -> None:  # type: ignore[override]
         thread = Thread(
             target=wrap_thread_target_with_semaphores(target, self.get_semaphores()),
             args=args,
@@ -65,8 +65,8 @@ class SQLThreadsList(ThreadsList):
         return [SQL_SEMAPHORE]
 
 
-def run_in_parallel(fun, args: list[tuple]) -> list:
-    results = list()
+def run_in_parallel(fun: Callable[..., Any], args: list[tuple[Any, ...]]) -> list[Any]:
+    results: list[Any] = list()
     if args:
         with Pool(POOL_CPU_LIMIT) as pool:
             if len(args[0]) > 1:

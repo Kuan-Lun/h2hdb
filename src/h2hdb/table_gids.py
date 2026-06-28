@@ -1,6 +1,7 @@
 __all__ = ["H2HDBGalleriesIDs", "H2HDBGalleriesGIDs"]
 
 from abc import ABCMeta
+from typing import Any
 
 from .h2hdb_spec import H2HDBAbstract
 from .sql_connector import DatabaseKeyError
@@ -77,7 +78,7 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
                     """
             connector.execute(insert_query, (db_gallery_id, gallery_name))
 
-    def __get_db_gallery_id_by_gallery_name(self, gallery_name: str) -> tuple:
+    def __get_db_gallery_id_by_gallery_name(self, gallery_name: str) -> tuple[Any, ...]:
         with self.SQLConnector() as connector:
             table_name = "galleries_dbids"
             gallery_name_parts = self._split_gallery_name(gallery_name)
@@ -103,7 +104,7 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
     def _get_db_gallery_id_by_gallery_name(self, gallery_name: str) -> int:
         query_result = self.__get_db_gallery_id_by_gallery_name(gallery_name)
         if query_result:
-            db_gallery_id = query_result[0]
+            db_gallery_id = int(query_result[0])
         else:
             self.logger.debug(f"Gallery name '{gallery_name}' does not exist.")
             raise DatabaseKeyError(f"Gallery name '{gallery_name}' does not exist.")
@@ -122,7 +123,7 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
             query_result = connector.fetch_one(select_query, (gid,))
 
         if query_result:
-            db_gallery_id = query_result[0]
+            db_gallery_id = int(query_result[0])
         else:
             msg = f"Gallery name ID for GID {gid} does not exist."
             self.logger.error(msg)
@@ -189,7 +190,7 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             query_result = connector.fetch_one(select_query, (db_gallery_id,))
 
         if query_result:
-            gid = query_result[0]
+            gid = int(query_result[0])
         else:
             msg = f"GID for gallery name ID {db_gallery_id} does not exist."
             self.logger.error(msg)

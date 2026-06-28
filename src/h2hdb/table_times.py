@@ -1,4 +1,5 @@
 from abc import ABCMeta
+from typing import cast
 import datetime
 
 
@@ -46,7 +47,7 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                     """
             query_result = connector.fetch_one(select_query, (db_gallery_id,))
         if query_result:
-            time = query_result[0]
+            time = cast(datetime.datetime, query_result[0])
         else:
             msg = f"Time for gallery name ID {db_gallery_id} does not exist in table '{table_name}'."
             self.logger.error(msg)

@@ -1,5 +1,5 @@
 from abc import ABCMeta
-from typing import Callable
+from typing import Any, Callable
 
 from .table_gids import H2HDBGalleriesIDs
 from .h2hdb_spec import H2HDBAbstract
@@ -79,7 +79,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             connector.execute(query)
             self.logger.info(f"{table_name} table created.")
 
-    def __get_db_tag_pair_id(self, tag_name: str, tag_value: str) -> tuple:
+    def __get_db_tag_pair_id(self, tag_name: str, tag_value: str) -> tuple[Any, ...]:
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
                 case "mysql":
@@ -98,7 +98,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _get_db_tag_pair_id(self, tag_name: str, tag_value: str) -> int:
         query_result = self.__get_db_tag_pair_id(tag_name, tag_value)
         if query_result:
-            db_tag_id = query_result[0]
+            db_tag_id = int(query_result[0])
         else:
             self.logger.debug(f"Tag '{tag_value}' does not exist.")
             raise DatabaseKeyError(f"Tag '{tag_value}' does not exist.")
@@ -267,7 +267,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                     """
             query_result = connector.fetch_one(select_query, (db_gallery_id,))
         if query_result:
-            tag = query_result[0]
+            tag = str(query_result[0])
         else:
             msg = f"Tag '{tag_name}' does not exist."
             self.logger.error(msg)

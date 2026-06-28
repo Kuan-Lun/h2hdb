@@ -47,7 +47,7 @@ class H2HDBUploadAccounts(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                     """
             query_result = connector.fetch_one(select_query, (db_gallery_id,))
         if query_result:
-            account = query_result[0]
+            account = str(query_result[0])
         else:
             msg = f"Upload account for gallery name ID {db_gallery_id} does not exist."
             self.logger.error(msg)

@@ -1,4 +1,5 @@
 from abc import ABCMeta
+from typing import Any
 
 
 from .table_gids import H2HDBGalleriesIDs
@@ -47,7 +48,9 @@ class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
                     """
             connector.execute(update_query, (comment, db_gallery_id))
 
-    def __get_gallery_comment_by_db_gallery_id(self, db_gallery_id: int) -> tuple:
+    def __get_gallery_comment_by_db_gallery_id(
+        self, db_gallery_id: int
+    ) -> tuple[Any, ...]:
         with self.SQLConnector() as connector:
             table_name = "galleries_comments"
             match self.config.database.sql_type.lower():
@@ -74,7 +77,7 @@ class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
     def _select_gallery_comment(self, db_gallery_id: int) -> str:
         query_result = self.__get_gallery_comment_by_db_gallery_id(db_gallery_id)
         if query_result:
-            comment = query_result[0]
+            comment = str(query_result[0])
         else:
             msg = (
                 f"Uploader comment for gallery name ID {db_gallery_id} does not exist."

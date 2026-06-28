@@ -335,7 +335,9 @@ class H2HDBAbstract(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def get_komga_metadata(self, gallery_name: str) -> dict:
+    def get_komga_metadata(
+        self, gallery_name: str
+    ) -> dict[str, str | list[dict[str, str]]]:
         """
         Selects the Komga metadata from the database.
 

@@ -48,7 +48,7 @@ class H2HDBGalleriesTitles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                     """
             query_result = connector.fetch_one(select_query, (db_gallery_id,))
         if query_result:
-            title = query_result[0]
+            title = str(query_result[0])
         else:
             msg = f"Title for gallery name ID {db_gallery_id} does not exist."
             self.logger.error(msg)

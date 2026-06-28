@@ -8,6 +8,7 @@ __all__ = [
 
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -19,7 +20,7 @@ class DatabaseConfigurationError(Exception):
     This class inherits from the built-in Python Exception class. You can add additional methods or attributes if needed.
     """
 
-    def __init__(self, message):
+    def __init__(self, message: str) -> None:
         self.message = message
         super().__init__(self.message)
 
@@ -31,7 +32,7 @@ class DatabaseKeyError(Exception):
     This class inherits from the built-in Python Exception class. You can add additional methods or attributes if needed.
     """
 
-    def __init__(self, message):
+    def __init__(self, message: str) -> None:
         self.message = message
         super().__init__(self.message)
 
@@ -43,7 +44,7 @@ class DatabaseDuplicateKeyError(Exception):
     This class inherits from the built-in Python Exception class. You can add additional methods or attributes if needed.
     """
 
-    def __init__(self, message):
+    def __init__(self, message: str) -> None:
         self.message = message
         super().__init__(self.message)
 
@@ -55,7 +56,7 @@ class DatabaseTableError(Exception):
     This class inherits from the built-in Python Exception class. You can add additional methods or attributes if needed.
     """
 
-    def __init__(self, message):
+    def __init__(self, message: str) -> None:
         self.message = message
         super().__init__(self.message)
 
@@ -172,7 +173,12 @@ class SQLConnector(ABC):
         """
         pass
 
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: object | None,
+    ) -> None:
         """
         Performs necessary cleanup operations when exiting a context manager.
 
@@ -184,7 +190,7 @@ class SQLConnector(ABC):
         self.close()
 
     @abstractmethod
-    def execute(self, query: str, data: tuple = ()) -> None:
+    def execute(self, query: str, data: tuple[Any, ...] = ()) -> None:
         """
         Executes the given SQL query with optional data parameters.
 
@@ -198,7 +204,7 @@ class SQLConnector(ABC):
         pass
 
     @abstractmethod
-    def execute_many(self, query: str, data: list[tuple]) -> None:
+    def execute_many(self, query: str, data: list[tuple[Any, ...]]) -> None:
         """
         Executes a SQL query multiple times with different sets of data.
 
@@ -212,7 +218,7 @@ class SQLConnector(ABC):
         pass
 
     @abstractmethod
-    def fetch_one(self, query: str, data: tuple = ()) -> tuple:
+    def fetch_one(self, query: str, data: tuple[Any, ...] = ()) -> tuple[Any, ...]:
         """
         Executes the given SQL query and returns the first row of the result set.
 
@@ -227,7 +233,9 @@ class SQLConnector(ABC):
         pass
 
     @abstractmethod
-    def fetch_all(self, query: str, data: tuple = ()) -> list:
+    def fetch_all(
+        self, query: str, data: tuple[Any, ...] = ()
+    ) -> list[tuple[Any, ...]]:
         """
         Executes the given SQL query and fetches all the rows from the result set.
 

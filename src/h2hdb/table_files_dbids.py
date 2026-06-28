@@ -1,5 +1,6 @@
 from abc import ABCMeta
 from itertools import chain
+from typing import Any, cast
 
 from .hash_dict import HASH_ALGORITHMS
 from .settings import FILE_NAME_LENGTH_LIMIT
@@ -138,7 +139,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                 ),
             )
 
-    def __get_db_file_id(self, db_gallery_id: int, file_name: str) -> tuple:
+    def __get_db_file_id(self, db_gallery_id: int, file_name: str) -> tuple[Any, ...]:
         with self.SQLConnector() as connector:
             table_name = "files_dbids"
             file_name_parts = self._split_gallery_name(file_name)
@@ -164,7 +165,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _get_db_file_id(self, db_gallery_id: int, file_name: str) -> int:
         query_result = self.__get_db_file_id(db_gallery_id, file_name)
         if query_result:
-            gallery_image_id = query_result[0]
+            gallery_image_id = int(query_result[0])
         else:
             msg = f"Image ID for gallery name ID {db_gallery_id} and file '{file_name}' does not exist."
             self.logger.error(msg)
@@ -256,7 +257,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             connector.execute(query)
             self.logger.info(f"{table_name} view created.")
 
-    def _check_files_dbids_by_db_gallery_id(self, db_gallery_id: int) -> tuple | None:
+    def _check_files_dbids_by_db_gallery_id(self, db_gallery_id: int) -> bool:
         with self.SQLConnector() as connector:
             table_name = "files_dbids"
             match self.config.database.sql_type.lower():
@@ -267,7 +268,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         WHERE db_gallery_id = %s
                     """
             query_result = connector.fetch_one(select_query, (db_gallery_id,))
-        return query_result[0] != 0
+        return bool(query_result[0] != 0)
 
     def _insert_gallery_file_hash_for_db_gallery_id(
         self, fileinformations: list[FileInformation]
@@ -357,7 +358,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
     def __get_db_hash_id_by_hash_value(
         self, hash_value: bytes, algorithm: str
-    ) -> tuple:
+    ) -> tuple[Any, ...]:
         with self.SQLConnector() as connector:
             table_name = f"files_hashs_{algorithm.lower()}_dbids"
             match self.config.database.sql_type.lower():
@@ -379,7 +380,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def get_db_hash_id_by_hash_value(self, hash_value: bytes, algorithm: str) -> int:
         query_result = self.__get_db_hash_id_by_hash_value(hash_value, algorithm)
         if query_result:
-            db_hash_id = query_result[0]
+            db_hash_id = int(query_result[0])
         else:
             msg = f"Image hash for image ID 0x{hash_value.hex()} does not exist."
             raise DatabaseKeyError(msg)
@@ -428,9 +429,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
         toinsert: list[str] = list()
         for hash_value in hash_values:
-            if (hash_value not in toinsert) and (
-                not self._check_db_hash_id_by_hash_value(hash_value, algorithm)
-            ):
+            if not self._check_db_hash_id_by_hash_value(hash_value, algorithm):
                 toinsert.append(hash_value.hex())
         if not toinsert:
             return
@@ -474,13 +473,15 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                     """
             query_result = connector.fetch_one(select_query, (db_hash_id,))
         if query_result:
-            hash_value = query_result[0]
+            hash_value = cast(bytes, query_result[0])
         else:
             msg = f"Image hash for image ID {db_hash_id} does not exist."
             raise DatabaseKeyError(msg)
         return hash_value
 
-    def __get_hash_value_by_file_id(self, db_file_id: int, algorithm: str) -> tuple:
+    def __get_hash_value_by_file_id(
+        self, db_file_id: int, algorithm: str
+    ) -> tuple[Any, ...]:
         with self.SQLConnector() as connector:
             table_name = f"files_hashs_{algorithm.lower()}"
             match self.config.database.sql_type.lower():
@@ -500,7 +501,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def get_hash_value_by_file_id(self, db_file_id: int, algorithm: str) -> bytes:
         query_result = self.__get_hash_value_by_file_id(db_file_id, algorithm)
         if query_result:
-            db_hash_id = query_result[0]
+            db_hash_id = int(query_result[0])
         else:
             msg = f"Image hash for image ID {db_file_id} does not exist."
             raise DatabaseKeyError(msg)

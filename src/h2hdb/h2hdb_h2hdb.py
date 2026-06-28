@@ -4,6 +4,7 @@ __all__ = ["H2HDB", "GALLERY_INFO_FILE_NAME"]
 import os
 from itertools import islice
 from time import sleep
+from typing import Any
 
 from h2h_galleryinfo_parser import (
     GalleryInfoParser,
@@ -72,7 +73,7 @@ class H2HDB(
                         FROM {table_name}
                     """
             query_result = connector.fetch_one(query)
-        return query_result[0]
+        return int(query_result[0])
 
     def _create_duplicated_galleries_tables(self) -> None:
         with self.SQLConnector() as connector:
@@ -232,8 +233,8 @@ class H2HDB(
                         FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
                         WHERE REFERENCED_TABLE_SCHEMA = '{self.config.database.database}'
                     """
-            table_names = connector.fetch_all(select_table_name_query)
-        table_names = [t[0] for t in table_names]
+            raw_table_names = connector.fetch_all(select_table_name_query)
+        table_names = [str(t[0]) for t in raw_table_names]
 
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
@@ -726,7 +727,7 @@ class H2HDB(
                         VALUES ({", ".join(["%s" for _ in column_name_parts])})
                     """
 
-            data: list[tuple] = list()
+            data: list[tuple[Any, ...]] = list()
             current_galleries_folders: list[str] = list()
             current_galleries_names: list[str] = list()
             for root, _, files in os.walk(self.config.h2h.download_path):
@@ -749,11 +750,12 @@ class H2HDB(
                         LEFT JOIN {tmp_table_name} USING ({",".join(column_name_parts)})
                         WHERE {tmp_table_name}.{column_name_parts[0]} IS NULL
                     """
-            removed_galleries = connector.fetch_all(fetch_query)
-            if len(removed_galleries) > 0:
-                removed_galleries = [gallery[0] for gallery in removed_galleries]
+            raw_removed_galleries = connector.fetch_all(fetch_query)
+            removed_gallery_names = [
+                str(gallery[0]) for gallery in raw_removed_galleries
+            ]
 
-        for removed_gallery in removed_galleries:
+        for removed_gallery in removed_gallery_names:
             self.insert_pending_gallery_removal(removed_gallery)
 
         self.delete_pending_gallery_removals()
@@ -814,7 +816,7 @@ class H2HDB(
                 get_delete_db_hash_id_query(hash_table_name, db_table_name)
             )
 
-    def refresh_current_files_hashs(self):
+    def refresh_current_files_hashs(self) -> None:
         with SQLThreadsList() as threads:
             for algorithm in HASH_ALGORITHMS:
                 threads.append(
@@ -942,7 +944,9 @@ class H2HDB(
 
         self._reset_redownload_times()
 
-    def get_komga_metadata(self, gallery_name: str) -> dict:
+    def get_komga_metadata(
+        self, gallery_name: str
+    ) -> dict[str, str | list[dict[str, str]]]:
         metadata: dict[str, str | list[dict[str, str]]] = dict()
         metadata["title"] = self.get_title_by_gallery_name(gallery_name)
         if self._check_gallery_comment_by_gallery_name(gallery_name):

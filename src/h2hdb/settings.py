@@ -10,6 +10,7 @@ __all__ = [
 import logging
 import hashlib
 from enum import Enum
+from typing import TypeVar
 
 FOLDER_NAME_LENGTH_LIMIT = 255
 FILE_NAME_LENGTH_LIMIT = 255
@@ -42,7 +43,7 @@ class CBZ_SORT(str, Enum):
 
 
 def hash_function(x: bytes, algorithm: str) -> bytes:
-    return getattr(hashlib, algorithm.lower())(x).digest()
+    return hashlib.new(algorithm.lower(), x).digest()
 
 
 def hash_function_by_file(file_path: str, algorithm: str) -> bytes:
@@ -51,7 +52,10 @@ def hash_function_by_file(file_path: str, algorithm: str) -> bytes:
     return hash_function(file_content, algorithm)
 
 
-def chunk_list(input_list: list, chunk_size: int) -> list:
+T = TypeVar("T")
+
+
+def chunk_list(input_list: list[T], chunk_size: int) -> list[list[T]]:
     if chunk_size <= 0:
         raise ValueError("Chunk size must be greater than 0.")
 

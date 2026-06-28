@@ -1,5 +1,8 @@
+from types import TracebackType
+from typing import Any, cast
+
 from mysql.connector import connect as SQLConnect
-from mysql.connector.abstracts import MySQLConnectionAbstract
+from mysql.connector.abstracts import MySQLConnectionAbstract, MySQLCursorAbstract
 from mysql.connector.pooling import PooledMySQLConnection
 from mysql.connector.errors import IntegrityError
 
@@ -17,7 +20,7 @@ class MySQLDuplicateKeyError(DatabaseDuplicateKeyError):
     This class inherits from the MySQL Connector/Python IntegrityError class.
     """
 
-    def __init__(self, message) -> None:
+    def __init__(self, message: str) -> None:
         self.message = message
         super().__init__(self.message)
 
@@ -67,11 +70,16 @@ class MySQLCursor:
     ) -> None:
         self.connection = connection
 
-    def __enter__(self):
+    def __enter__(self) -> MySQLCursorAbstract:
         self.cursor = self.connection.cursor(buffered=True)
         return self.cursor
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         self.cursor.close()
 
 
@@ -122,7 +130,7 @@ class MySQLConnector(SQLConnector):
     def rollback(self) -> None:
         self.connection.rollback()
 
-    def execute(self, query: str, data: tuple = ()) -> None:
+    def execute(self, query: str, data: tuple[Any, ...] = ()) -> None:
         with MySQLCursor(self.connection) as cursor:
             try:
                 cursor.execute(query, data)
@@ -133,7 +141,7 @@ class MySQLConnector(SQLConnector):
         if any(key in query.upper() for key in AUTO_COMMIT_KEYS):
             self.commit()
 
-    def execute_many(self, query: str, data: list[tuple]) -> None:
+    def execute_many(self, query: str, data: list[tuple[Any, ...]]) -> None:
         with MySQLCursor(self.connection) as cursor:
             try:
                 cursor.executemany(query, data)
@@ -142,7 +150,7 @@ class MySQLConnector(SQLConnector):
         if any(key in query.upper() for key in AUTO_COMMIT_KEYS):
             self.commit()
 
-    def fetch_one(self, query: str, data: tuple = ()) -> tuple:
+    def fetch_one(self, query: str, data: tuple[Any, ...] = ()) -> tuple[Any, ...]:
         with MySQLCursor(self.connection) as cursor:
             cursor.execute(query, data)
             vlist = cursor.fetchone()
@@ -151,8 +159,10 @@ class MySQLConnector(SQLConnector):
         else:
             return tuple()
 
-    def fetch_all(self, query: str, data: tuple = ()) -> list:
+    def fetch_all(
+        self, query: str, data: tuple[Any, ...] = ()
+    ) -> list[tuple[Any, ...]]:
         with MySQLCursor(self.connection) as cursor:
             cursor.execute(query, data)
             vlist = cursor.fetchall()
-        return vlist
+        return cast(list[tuple[Any, ...]], vlist)

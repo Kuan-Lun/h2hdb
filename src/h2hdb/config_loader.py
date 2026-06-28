@@ -73,7 +73,7 @@ class LoggerConfig(BaseModel):
 
     @field_validator("level", mode="before")
     @classmethod
-    def normalize_level(cls, v) -> LOG_LEVEL:
+    def normalize_level(cls, v: object) -> LOG_LEVEL:
         if isinstance(v, str):
             v_lower = v.lower()
             try:
