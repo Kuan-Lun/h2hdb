@@ -42,11 +42,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/finalize-python.sh"
+            "command": "scripts/hooks/finalize-python.sh"
           },
           {
             "type": "command",
-            "command": ".claude/hooks/finalize-markdown.sh"
+            "command": "scripts/hooks/finalize-markdown.sh"
           }
         ]
       }
