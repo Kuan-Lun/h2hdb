@@ -1,0 +1,33 @@
+{
+  // --- Python 分析設定 ---
+  // 關閉 Pylance 型別檢查，統一由 mypy 負責（Pylance 仍提供補完/跳轉等語言服務）。
+  "python.analysis.typeCheckingMode": "off",
+  "python.analysis.diagnosticSeverityOverrides": {
+    "reportMissingModuleSource": "none",
+    "reportMissingImports": "none"
+  },
+  // --- 格式化設定 ---
+  // 使用 Black 作為 Python 的 formatter；Ruff 的 source.fixAll 限制在 Python
+  // 範圍內，避免它對 markdown 等其他檔案叫醒 preview-mode 警告。
+  "editor.formatOnSave": true,
+  "[python]": {
+    "editor.defaultFormatter": "ms-python.black-formatter",
+    "editor.codeActionsOnSave": {
+      "source.fixAll.ruff": "always"
+    }
+  },
+  "black-formatter.importStrategy": "fromEnvironment",
+  "ruff.importStrategy": "fromEnvironment",
+  "[markdown]": {
+    "editor.defaultFormatter": "DavidAnson.vscode-markdownlint"
+  },
+  // --- 一般編輯偏好 ---
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  "editor.rulers": [
+    88
+  ],
+  // --- mypy 擴充套件 ---
+  // 使用專案虛擬環境中的 mypy，確保 IDE 與 CLI (uv run mypy) 結果一致。
+  "mypy-type-checker.importStrategy": "fromEnvironment"
+}

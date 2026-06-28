@@ -4,7 +4,6 @@ from itertools import chain
 from .hash_dict import HASH_ALGORITHMS
 from .settings import FILE_NAME_LENGTH_LIMIT
 
-from .settings import chunk_list
 from .table_gids import H2HDBGalleriesIDs
 from .information import FileInformation
 from .h2hdb_spec import H2HDBAbstract
@@ -18,7 +17,7 @@ from .sql_connector import (
 class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_files_names_table(self) -> None:
         with self.SQLConnector() as connector:
-            table_name = f"files_dbids"
+            table_name = "files_dbids"
             match self.config.database.sql_type.lower():
                 case "mysql":
                     column_name = "name"
@@ -41,7 +40,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             connector.execute(query)
             self.logger.info(f"{table_name} table created.")
 
-            table_name = f"files_names"
+            table_name = "files_names"
             match self.config.database.sql_type.lower():
                 case "mysql":
                     query = f"""
@@ -259,7 +258,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
     def _check_files_dbids_by_db_gallery_id(self, db_gallery_id: int) -> tuple | None:
         with self.SQLConnector() as connector:
-            table_name = f"files_dbids"
+            table_name = "files_dbids"
             match self.config.database.sql_type.lower():
                 case "mysql":
                     select_query = f"""

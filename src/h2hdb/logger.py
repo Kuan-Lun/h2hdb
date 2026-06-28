@@ -1,4 +1,4 @@
-__all__ = ["logger"]
+__all__ = ["HentaiDBLogger", "setup_logger"]
 
 
 import logging

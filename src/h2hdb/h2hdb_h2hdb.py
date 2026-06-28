@@ -238,7 +238,9 @@ class H2HDB(
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
                 case "mysql":
-                    get_optimize_query = lambda x: "OPTIMIZE TABLE {x}".format(x=x)
+
+                    def get_optimize_query(x: str) -> str:
+                        return "OPTIMIZE TABLE {x}".format(x=x)
 
             for table_name in table_names:
                 connector.execute(get_optimize_query(table_name))
@@ -794,8 +796,9 @@ class H2HDB(
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
                 case "mysql":
-                    get_delete_db_hash_id_query = (
-                        lambda x, y: f"""
+
+                    def get_delete_db_hash_id_query(x: str, y: str) -> str:
+                        return f"""
                         DELETE FROM {y}
                         WHERE db_hash_id IN (
                                 SELECT db_hash_id
@@ -804,7 +807,7 @@ class H2HDB(
                                 WHERE {x}.db_hash_id IS NULL
                             )
                         """
-                    )
+
             hash_table_name = f"files_hashs_{algorithm.lower()}"
             db_table_name = f"files_hashs_{algorithm.lower()}_dbids"
             connector.execute(

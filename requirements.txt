@@ -1,1 +1,0 @@
-setuptools>=80.7.1 

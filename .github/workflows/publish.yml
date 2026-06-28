@@ -1,0 +1,55 @@
+name: Publish to PyPI
+
+on:
+  push:
+    branches: [master]
+    paths: [pyproject.toml]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check version bump
+        id: version
+        run: |
+          CURRENT=$(python -c "
+          import tomllib
+          with open('pyproject.toml', 'rb') as f:
+              print(tomllib.load(f)['project']['version'])
+          ")
+          PREVIOUS=$(git show HEAD~1:pyproject.toml | python -c "
+          import tomllib, sys
+          print(tomllib.load(sys.stdin.buffer)['project']['version'])
+          ")
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "previous=$PREVIOUS" >> "$GITHUB_OUTPUT"
+          if [ "$CURRENT" != "$PREVIOUS" ]; then
+            python -c "
+          from packaging.version import Version
+          current, previous = Version('$CURRENT'), Version('$PREVIOUS')
+          exit(0 if current > previous else 1)
+          "
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.version.outputs.bumped == 'true'
+        with:
+          python-version: "3.14"
+
+      - name: Build
+        if: steps.version.outputs.bumped == 'true'
+        run: pip install build && python -m build
+
+      - name: Publish
+        if: steps.version.outputs.bumped == 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1

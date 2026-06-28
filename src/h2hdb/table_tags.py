@@ -13,7 +13,7 @@ from .sql_connector import (
 class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_galleries_tags_table(self) -> None:
         with self.SQLConnector() as connector:
-            tag_name_table_name = f"galleries_tags_names"
+            tag_name_table_name = "galleries_tags_names"
             match self.config.database.sql_type.lower():
                 case "mysql":
                     query = f"""
@@ -25,7 +25,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             connector.execute(query)
             self.logger.info(f"{tag_name_table_name} table created.")
 
-            tag_value_table_name = f"galleries_tags_values"
+            tag_value_table_name = "galleries_tags_values"
             match self.config.database.sql_type.lower():
                 case "mysql":
                     query = f"""
@@ -37,7 +37,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             connector.execute(query)
             self.logger.info(f"{tag_value_table_name} table created.")
 
-            tag_pairs_table_name = f"galleries_tag_pairs_dbids"
+            tag_pairs_table_name = "galleries_tag_pairs_dbids"
             match self.config.database.sql_type.lower():
                 case "mysql":
                     query = f"""
@@ -59,7 +59,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             connector.execute(query)
             self.logger.info(f"{tag_pairs_table_name} table created.")
 
-            table_name = f"galleries_tags"
+            table_name = "galleries_tags"
             match self.config.database.sql_type.lower():
                 case "mysql":
                     query = f"""
@@ -83,7 +83,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
                 case "mysql":
-                    select_query = f"""
+                    select_query = """
                         SELECT db_tag_pair_id
                         FROM galleries_tag_pairs_dbids
                         WHERE tag_name = %s AND tag_value = %s
@@ -106,7 +106,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
     def _check_gallery_tag_name(self, tag_name: str) -> bool:
         with self.SQLConnector() as connector:
-            table_name = f"galleries_tags_names"
+            table_name = "galleries_tags_names"
             match self.config.database.sql_type.lower():
                 case "mysql":
                     select_query = f"""
@@ -119,7 +119,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
     def _check_gallery_tag_value(self, tag_value: str) -> bool:
         with self.SQLConnector() as connector:
-            table_name = f"galleries_tags_values"
+            table_name = "galleries_tags_values"
             match self.config.database.sql_type.lower():
                 case "mysql":
                     select_query = f"""
@@ -191,7 +191,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
         isretry = False
         with self.SQLConnector() as connector:
-            tag_pairs_table_name = f"galleries_tag_pairs_dbids"
+            tag_pairs_table_name = "galleries_tag_pairs_dbids"
             match self.config.database.sql_type.lower():
                 case "mysql":
                     insert_query_header = f"""
@@ -240,7 +240,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             )
 
         with self.SQLConnector() as connector:
-            table_name = f"galleries_tags"
+            table_name = "galleries_tags"
             match self.config.database.sql_type.lower():
                 case "mysql":
                     insert_query_header = f"""

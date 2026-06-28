@@ -7,7 +7,6 @@ from pydantic import Field
 
 from .sql_connector import SQLConnectorParams, SQLConnector, DatabaseDuplicateKeyError
 
-
 AUTO_COMMIT_KEYS = ["INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER"]
 
 

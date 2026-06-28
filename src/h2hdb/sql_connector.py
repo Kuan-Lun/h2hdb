@@ -1,6 +1,6 @@
 __all__ = [
     "SQLConnectorParams",
-    "MySQLConnector",
+    "SQLConnector",
     "DatabaseConfigurationError",
     "DatabaseKeyError",
     "DatabaseTableError",

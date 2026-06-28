@@ -7,12 +7,14 @@ import zipfile
 
 from PIL import Image, ImageFile  # type: ignore
 
+from .settings import (
+    hash_function_by_file,
+    FILE_NAME_LENGTH_LIMIT,
+    COMPARISON_HASH_ALGORITHM,
+)
+
 Image.MAX_IMAGE_PIXELS = None
 ImageFile.LOAD_TRUNCATED_IMAGES = True
-
-from .settings import hash_function_by_file
-
-from .settings import FILE_NAME_LENGTH_LIMIT, COMPARISON_HASH_ALGORITHM
 
 
 def compress_image(image_path: str, output_path: str, max_size: int) -> None:

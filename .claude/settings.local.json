@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(**/*)",
+      "Write(**/*)",
+      "Edit(**/*)",
+      "Bash(docker:*)",
+      "Bash(ls:*)",
+      "Bash(mkdir:*)",
+      "Bash(tree:*)",
+      "Bash(find:*)",
+      "Bash(uv:*)",
+      "Bash(grep:*)",
+      "Bash(xargs cat)",
+      "Bash(git diff:*)",
+      "Bash(git -C * diff:*)",
+      "Bash(cat > *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
+    ],
+    "additionalDirectories": [
+      "/tmp"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/finalize-python.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/finalize-markdown.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
