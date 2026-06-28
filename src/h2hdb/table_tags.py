@@ -81,13 +81,11 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
     def __get_db_tag_pair_id(self, tag_name: str, tag_value: str) -> tuple[int, ...]:
         with self.SQLConnector() as connector:
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_query = """
-                        SELECT db_tag_pair_id
-                        FROM galleries_tag_pairs_dbids
-                        WHERE tag_name = %s AND tag_value = %s
-                    """
+            select_query = """
+                SELECT db_tag_pair_id
+                FROM galleries_tag_pairs_dbids
+                WHERE tag_name = %s AND tag_value = %s
+            """
             query_result = connector.fetch_one(select_query, (tag_name, tag_value))
         return query_result
 
@@ -107,26 +105,22 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _check_gallery_tag_name(self, tag_name: str) -> bool:
         with self.SQLConnector() as connector:
             table_name = "galleries_tags_names"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_query = f"""
-                        SELECT tag_name
-                        FROM {table_name}
-                        WHERE tag_name = %s
-                    """
+            select_query = f"""
+                SELECT tag_name
+                FROM {table_name}
+                WHERE tag_name = %s
+            """
             query_result = connector.fetch_one(select_query, (tag_name,))
         return len(query_result) != 0
 
     def _check_gallery_tag_value(self, tag_value: str) -> bool:
         with self.SQLConnector() as connector:
             table_name = "galleries_tags_values"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_query = f"""
-                        SELECT tag_value
-                        FROM {table_name}
-                        WHERE tag_value = %s
-                    """
+            select_query = f"""
+                SELECT tag_value
+                FROM {table_name}
+                WHERE tag_value = %s
+            """
             query_result = connector.fetch_one(select_query, (tag_value,))
         return len(query_result) != 0
 
@@ -151,15 +145,13 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                     table_name = "galleries_tags_values"
                     column_name = "tag_value"
 
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    insert_query_header = f"""
-                        INSERT INTO {table_name} ({column_name})
-                    """
-                    insert_query_values = " ".join(
-                        ["VALUES", ", ".join(["(%s)" for _ in toinsert_tag_nvs])]
-                    )
-                    insert_query = f"{insert_query_header} {insert_query_values}"
+            insert_query_header = f"""
+                INSERT INTO {table_name} ({column_name})
+            """
+            insert_query_values = " ".join(
+                ["VALUES", ", ".join(["(%s)" for _ in toinsert_tag_nvs])]
+            )
+            insert_query = f"{insert_query_header} {insert_query_values}"
             try:
                 connector.execute(insert_query, tuple(toinsert_tag_nvs))
             except DatabaseDuplicateKeyError:
@@ -192,18 +184,16 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         isretry = False
         with self.SQLConnector() as connector:
             tag_pairs_table_name = "galleries_tag_pairs_dbids"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    insert_query_header = f"""
-                        INSERT INTO {tag_pairs_table_name} (tag_name, tag_value)
-                    """
-                    insert_query_values = " ".join(
-                        [
-                            "VALUES",
-                            ", ".join(["(%s, %s)" for _ in toinsert_db_tag_pair_id]),
-                        ]
-                    )
-                    insert_query = f"{insert_query_header} {insert_query_values}"
+            insert_query_header = f"""
+                INSERT INTO {tag_pairs_table_name} (tag_name, tag_value)
+            """
+            insert_query_values = " ".join(
+                [
+                    "VALUES",
+                    ", ".join(["(%s, %s)" for _ in toinsert_db_tag_pair_id]),
+                ]
+            )
+            insert_query = f"{insert_query_header} {insert_query_values}"
             parameter = list[str]()
             for tag in toinsert_db_tag_pair_id:
                 parameter.extend([tag.tag_name, tag.tag_value])
@@ -241,15 +231,13 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
         with self.SQLConnector() as connector:
             table_name = "galleries_tags"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    insert_query_header = f"""
-                        INSERT INTO {table_name} (db_gallery_id, db_tag_pair_id)
-                    """
-                    insert_query_values = " ".join(
-                        ["VALUES", ", ".join(["(%s, %s)" for _ in db_tag_pair_ids])]
-                    )
-                    insert_query = f"{insert_query_header} {insert_query_values}"
+            insert_query_header = f"""
+                INSERT INTO {table_name} (db_gallery_id, db_tag_pair_id)
+            """
+            insert_query_values = " ".join(
+                ["VALUES", ", ".join(["(%s, %s)" for _ in db_tag_pair_ids])]
+            )
+            insert_query = f"{insert_query_header} {insert_query_values}"
             parameter = list[int]()
             for db_tag_pair_id in db_tag_pair_ids:
                 parameter.extend([db_gallery_id, db_tag_pair_id])
@@ -258,13 +246,11 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _select_gallery_tag(self, db_gallery_id: int, tag_name: str) -> str:
         with self.SQLConnector() as connector:
             table_name = f"galleries_tags_{tag_name}"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_query = f"""
-                        SELECT tag
-                        FROM {table_name}
-                        WHERE db_gallery_id = %s
-                    """
+            select_query = f"""
+                SELECT tag
+                FROM {table_name}
+                WHERE db_gallery_id = %s
+            """
             query_result = connector.fetch_one(select_query, (db_gallery_id,))
         if query_result:
             tag = str(query_result[0])
@@ -291,26 +277,22 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _get_db_tag_pair_id_by_db_gallery_id(self, db_gallery_id: int) -> list[int]:
         with self.SQLConnector() as connector:
             table_name = "galleries_tags"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_query = f"""
-                        SELECT db_tag_pair_id
-                        FROM {table_name}
-                        WHERE db_gallery_id = %s
-                    """
+            select_query = f"""
+                SELECT db_tag_pair_id
+                FROM {table_name}
+                WHERE db_gallery_id = %s
+            """
             query_result = connector.fetch_all(select_query, (db_gallery_id,))
         return [query[0] for query in query_result]
 
     def _get_tag_pairs_by_db_tag_pair_id(self, db_tag_pair_id: int) -> tuple[str, str]:
         with self.SQLConnector() as connector:
             table_name = "galleries_tag_pairs_dbids"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_query = f"""
-                        SELECT tag_name, tag_value
-                        FROM {table_name}
-                        WHERE db_tag_pair_id = %s
-                    """
+            select_query = f"""
+                SELECT tag_name, tag_value
+                FROM {table_name}
+                WHERE db_tag_pair_id = %s
+            """
             query_result = connector.fetch_one(select_query, (db_tag_pair_id,))
         if query_result:
             tag_name, tag_value = query_result

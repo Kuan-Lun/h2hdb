@@ -174,13 +174,11 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
             table_name = "files_names"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_query = f"""
-                        SELECT full_name
-                            FROM {table_name}
-                            WHERE db_gallery_id = %s
-                    """
+            select_query = f"""
+                SELECT full_name
+                    FROM {table_name}
+                    WHERE db_gallery_id = %s
+            """
             query_result = connector.fetch_all(select_query, (db_gallery_id,))
         if query_result:
             files = [query[0] for query in query_result]
@@ -258,13 +256,11 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _check_files_dbids_by_db_gallery_id(self, db_gallery_id: int) -> bool:
         with self.SQLConnector() as connector:
             table_name = "files_dbids"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_query = f"""
-                        SELECT COUNT(*)
-                        FROM {table_name}
-                        WHERE db_gallery_id = %s
-                    """
+            select_query = f"""
+                SELECT COUNT(*)
+                FROM {table_name}
+                WHERE db_gallery_id = %s
+            """
             query_result = connector.fetch_one(select_query, (db_gallery_id,))
         return bool(query_result[0] != 0)
 
@@ -359,13 +355,11 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     ) -> tuple[int, ...]:
         with self.SQLConnector() as connector:
             table_name = f"files_hashs_{algorithm.lower()}_dbids"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_query = f"""
-                        SELECT db_hash_id
-                        FROM {table_name}
-                        WHERE hash_value = UNHEX(%s)
-                    """
+            select_query = f"""
+                SELECT db_hash_id
+                FROM {table_name}
+                WHERE hash_value = UNHEX(%s)
+            """
             query_result = connector.fetch_one(select_query, (hash_value.hex(),))
         return query_result
 
@@ -390,14 +384,12 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         for algorithm in HASH_ALGORITHMS:
             with self.SQLConnector() as connector:
                 table_name = f"files_hashs_{algorithm.lower()}"
-                match self.config.database.sql_type.lower():
-                    case "mariadb":
-                        insert_query_header = f"""
-                            INSERT INTO {table_name} (db_file_id, db_hash_id)
-                        """
-                        insert_query_values = " ".join(
-                            ["VALUES", ", ".join(["(%s, %s)"] * len(fileinformations))]
-                        )
+                insert_query_header = f"""
+                    INSERT INTO {table_name} (db_file_id, db_hash_id)
+                """
+                insert_query_values = " ".join(
+                    ["VALUES", ", ".join(["(%s, %s)"] * len(fileinformations))]
+                )
                 insert_query = f"{insert_query_header} {insert_query_values}"
                 parameters: list[int] = list()
                 for fileinformation in fileinformations:
@@ -412,11 +404,9 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     ) -> None:
         with self.SQLConnector() as connector:
             table_name = f"files_hashs_{algorithm.lower()}_dbids"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    insert_query = f"""
-                        INSERT INTO {table_name} (hash_value) VALUES (UNHEX(%s))
-                    """
+            insert_query = f"""
+                INSERT INTO {table_name} (hash_value) VALUES (UNHEX(%s))
+            """
             connector.execute(insert_query, (hash_value.hex(),))
 
     def insert_db_hash_id_by_hash_values(
@@ -435,14 +425,12 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         isretry = False
         with self.SQLConnector() as connector:
             table_name = f"files_hashs_{algorithm.lower()}_dbids"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    insert_query_header = f"""
-                        INSERT INTO {table_name} (hash_value)
-                    """
-                    insert_query_values = " ".join(
-                        ["VALUES", ", ".join(["(UNHEX(%s))"] * len(toinsert))]
-                    )
+            insert_query_header = f"""
+                INSERT INTO {table_name} (hash_value)
+            """
+            insert_query_values = " ".join(
+                ["VALUES", ", ".join(["(UNHEX(%s))"] * len(toinsert))]
+            )
             insert_query = f"{insert_query_header} {insert_query_values}"
             try:
                 connector.execute(insert_query, tuple(toinsert))
@@ -462,13 +450,11 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def get_hash_value_by_db_hash_id(self, db_hash_id: int, algorithm: str) -> bytes:
         with self.SQLConnector() as connector:
             table_name = f"files_hashs_{algorithm.lower()}_dbids"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_query = f"""
-                        SELECT hash_value
-                        FROM {table_name}
-                        WHERE db_hash_id = %s
-                    """
+            select_query = f"""
+                SELECT hash_value
+                FROM {table_name}
+                WHERE db_hash_id = %s
+            """
             query_result = connector.fetch_one(select_query, (db_hash_id,))
         if query_result:
             hash_value = cast(bytes, query_result[0])
@@ -482,13 +468,11 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     ) -> tuple[int, ...]:
         with self.SQLConnector() as connector:
             table_name = f"files_hashs_{algorithm.lower()}"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_query = f"""
-                        SELECT db_hash_id
-                        FROM {table_name}
-                        WHERE db_file_id = %s
-                    """
+            select_query = f"""
+                SELECT db_hash_id
+                FROM {table_name}
+                WHERE db_file_id = %s
+            """
             query_result = connector.fetch_one(select_query, (db_file_id,))
         return query_result
 
@@ -510,9 +494,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     ) -> None:
         with self.SQLConnector() as connector:
             table_name = f"files_hashs_{algorithm.lower()}"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    update_query = f"""
-                        UPDATE {table_name} SET db_hash_id = %s WHERE db_file_id = %s
-                    """
+            update_query = f"""
+                UPDATE {table_name} SET db_hash_id = %s WHERE db_file_id = %s
+            """
             connector.execute(update_query, (db_hash_id, db_file_id))

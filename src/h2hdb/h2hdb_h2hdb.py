@@ -65,12 +65,10 @@ class H2HDB(
     def _count_duplicated_files_hashs_sha512(self) -> int:
         with self.SQLConnector() as connector:
             table_name = "duplicated_files_hashs_sha512"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    query = f"""
-                        SELECT COUNT(*)
-                        FROM {table_name}
-                    """
+            query = f"""
+                SELECT COUNT(*)
+                FROM {table_name}
+            """
             query_result = connector.fetch_one(query)
         return int(query_result[0])
 
@@ -166,12 +164,10 @@ class H2HDB(
     def get_pending_gallery_removals(self) -> list[str]:
         with self.SQLConnector() as connector:
             table_name = "pending_gallery_removals"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_query = f"""
-                        SELECT full_name
-                        FROM {table_name}
-                    """
+            select_query = f"""
+                SELECT full_name
+                FROM {table_name}
+            """
 
             query_result = connector.fetch_all(select_query)
         pending_gallery_removals = [query[0] for query in query_result]
@@ -274,12 +270,10 @@ class H2HDB(
 
     def get_pending_download_gids(self) -> list[int]:
         with self.SQLConnector() as connector:
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    query = """
-                        SELECT gid
-                        FROM pending_download_gids
-                    """
+            query = """
+                SELECT gid
+                FROM pending_download_gids
+            """
             query_result = connector.fetch_all(query)
             pending_download_gids = [query[0] for query in query_result]
         return pending_download_gids
@@ -336,25 +330,21 @@ class H2HDB(
     def check_todelete_gid(self, gid: int) -> bool:
         with self.SQLConnector() as connector:
             table_name = "todelete_gids"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_query = f"""
-                        SELECT gid
-                        FROM {table_name}
-                        WHERE gid = %s
-                    """
-                    query_result = connector.fetch_one(select_query, (gid,))
+            select_query = f"""
+                SELECT gid
+                FROM {table_name}
+                WHERE gid = %s
+            """
+            query_result = connector.fetch_one(select_query, (gid,))
         return len(query_result) != 0
 
     def insert_todelete_gid(self, gid: int) -> None:
         if not self.check_todelete_gid(gid):
             with self.SQLConnector() as connector:
                 table_name = "todelete_gids"
-                match self.config.database.sql_type.lower():
-                    case "mariadb":
-                        insert_query = f"""
-                            INSERT INTO {table_name} (gid) VALUES (%s)
-                        """
+                insert_query = f"""
+                    INSERT INTO {table_name} (gid) VALUES (%s)
+                """
                 connector.execute(insert_query, (gid,))
 
     def _create_todownload_gids_table(self) -> None:
@@ -375,22 +365,20 @@ class H2HDB(
     def check_todownload_gid(self, gid: int, url: str) -> bool:
         with self.SQLConnector() as connector:
             table_name = "todownload_gids"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    if url != "":
-                        select_query = f"""
-                            SELECT gid
-                            FROM {table_name}
-                            WHERE gid = %s AND url = %s
-                        """
-                        query_result = connector.fetch_one(select_query, (gid, url))
-                    else:
-                        select_query = f"""
-                            SELECT gid
-                            FROM {table_name}
-                            WHERE gid = %s
-                        """
-                        query_result = connector.fetch_one(select_query, (gid,))
+            if url != "":
+                select_query = f"""
+                    SELECT gid
+                    FROM {table_name}
+                    WHERE gid = %s AND url = %s
+                """
+                query_result = connector.fetch_one(select_query, (gid, url))
+            else:
+                select_query = f"""
+                    SELECT gid
+                    FROM {table_name}
+                    WHERE gid = %s
+                """
+                query_result = connector.fetch_one(select_query, (gid,))
         return len(query_result) != 0
 
     def insert_todownload_gid(self, gid: int, url: str) -> None:
@@ -408,11 +396,9 @@ class H2HDB(
             if (url == "") or (not self.check_todownload_gid(gid, "")):
                 with self.SQLConnector() as connector:
                     table_name = "todownload_gids"
-                    match self.config.database.sql_type.lower():
-                        case "mariadb":
-                            insert_query = f"""
-                                INSERT INTO {table_name} (gid, url) VALUES (%s, %s)
-                            """
+                    insert_query = f"""
+                        INSERT INTO {table_name} (gid, url) VALUES (%s, %s)
+                    """
                     connector.execute(insert_query, (gid, url))
             else:
                 self.update_todownload_gid(gid, url)
@@ -420,32 +406,26 @@ class H2HDB(
     def update_todownload_gid(self, gid: int, url: str) -> None:
         with self.SQLConnector() as connector:
             table_name = "todownload_gids"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    update_query = f"""
-                        UPDATE {table_name} SET url = %s WHERE gid = %s
-                    """
+            update_query = f"""
+                UPDATE {table_name} SET url = %s WHERE gid = %s
+            """
             connector.execute(update_query, (url, gid))
 
     def remove_todownload_gid(self, gid: int) -> None:
         with self.SQLConnector() as connector:
             table_name = "todownload_gids"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    delete_query = f"""
-                        DELETE FROM {table_name} WHERE gid = %s
-                    """
+            delete_query = f"""
+                DELETE FROM {table_name} WHERE gid = %s
+            """
             connector.execute(delete_query, (gid,))
 
     def get_todownload_gids(self) -> list[tuple[int, str]]:
         with self.SQLConnector() as connector:
             table_name = "todownload_gids"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_query = f"""
-                        SELECT gid, url
-                        FROM {table_name}
-                    """
+            select_query = f"""
+                SELECT gid, url
+                FROM {table_name}
+            """
             query_result = connector.fetch_all(select_query)
         todownload_gids = [(query[0], query[1]) for query in query_result]
         return todownload_gids
@@ -586,12 +566,10 @@ class H2HDB(
     def _get_duplicated_hash_values_by_count_artist_ratio(self) -> list[bytes]:
         with self.SQLConnector() as connector:
             table_name = "duplicated_hash_values_by_count_artist_ratio"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_query = f"""
-                        SELECT hash_value
-                        FROM {table_name}
-                    """
+            select_query = f"""
+                SELECT hash_value
+                FROM {table_name}
+            """
 
             query_result = connector.fetch_all(select_query)
         return [query[0] for query in query_result]

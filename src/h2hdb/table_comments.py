@@ -29,21 +29,17 @@ class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
         if comment != "":
             with self.SQLConnector() as connector:
                 table_name = "galleries_comments"
-                match self.config.database.sql_type.lower():
-                    case "mariadb":
-                        insert_query = f"""
-                            INSERT INTO {table_name} (db_gallery_id, comment) VALUES (%s, %s)
-                        """
+                insert_query = f"""
+                    INSERT INTO {table_name} (db_gallery_id, comment) VALUES (%s, %s)
+                """
                 connector.execute(insert_query, (db_gallery_id, comment))
 
     def _update_gallery_comment(self, db_gallery_id: int, comment: str) -> None:
         with self.SQLConnector() as connector:
             table_name = "galleries_comments"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    update_query = f"""
-                        UPDATE {table_name} SET Comment = %s WHERE db_gallery_id = %s
-                    """
+            update_query = f"""
+                UPDATE {table_name} SET Comment = %s WHERE db_gallery_id = %s
+            """
             connector.execute(update_query, (comment, db_gallery_id))
 
     def __get_gallery_comment_by_db_gallery_id(
@@ -51,13 +47,11 @@ class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
     ) -> tuple[str, ...]:
         with self.SQLConnector() as connector:
             table_name = "galleries_comments"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_query = f"""
-                        SELECT Comment
-                        FROM {table_name}
-                        WHERE db_gallery_id = %s
-                    """
+            select_query = f"""
+                SELECT Comment
+                FROM {table_name}
+                WHERE db_gallery_id = %s
+            """
             query_result = connector.fetch_one(select_query, (db_gallery_id,))
         return query_result
 

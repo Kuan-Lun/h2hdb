@@ -28,22 +28,18 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
     def _insert_time(self, table_name: str, db_gallery_id: int, time: str) -> None:
         with self.SQLConnector() as connector:
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    insert_query = f"""
-                        INSERT INTO {table_name} (db_gallery_id, time) VALUES (%s, %s)
-                    """
+            insert_query = f"""
+                INSERT INTO {table_name} (db_gallery_id, time) VALUES (%s, %s)
+            """
             connector.execute(insert_query, (db_gallery_id, time))
 
     def _select_time(self, table_name: str, db_gallery_id: int) -> datetime.datetime:
         with self.SQLConnector() as connector:
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_query = f"""
-                        SELECT time
-                        FROM {table_name}
-                        WHERE db_gallery_id = %s
-                    """
+            select_query = f"""
+                SELECT time
+                FROM {table_name}
+                WHERE db_gallery_id = %s
+            """
             query_result = connector.fetch_one(select_query, (db_gallery_id,))
         if query_result:
             time = cast(datetime.datetime, query_result[0])
@@ -55,11 +51,9 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
     def _update_time(self, table_name: str, db_gallery_id: int, time: str) -> None:
         with self.SQLConnector() as connector:
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    update_query = f"""
-                        UPDATE {table_name} SET time = %s WHERE db_gallery_id = %s
-                    """
+            update_query = f"""
+                UPDATE {table_name} SET time = %s WHERE db_gallery_id = %s
+            """
             connector.execute(update_query, (time, db_gallery_id))
 
     def _create_galleries_download_times_table(self) -> None:

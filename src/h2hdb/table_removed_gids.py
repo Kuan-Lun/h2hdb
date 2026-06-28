@@ -23,11 +23,9 @@ class H2HDBRemovedGalleries(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta)
     def insert_removed_gallery_gid(self, gid: int) -> None:
         with self.SQLConnector() as connector:
             table_name = "removed_galleries_gids"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    insert_query = f"""
-                        INSERT INTO {table_name} (gid) VALUES (%s)
-                    """
+            insert_query = f"""
+                INSERT INTO {table_name} (gid) VALUES (%s)
+            """
             if self._check_removed_gallery_gid(gid):
                 self.logger.warning(f"Removed gallery GID {gid} already exists.")
             else:
@@ -36,13 +34,11 @@ class H2HDBRemovedGalleries(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta)
     def __get_removed_gallery_gid(self, gid: int) -> tuple[int, ...]:
         with self.SQLConnector() as connector:
             table_name = "removed_galleries_gids"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_query = f"""
-                        SELECT gid
-                        FROM {table_name}
-                        WHERE gid = %s
-                    """
+            select_query = f"""
+                SELECT gid
+                FROM {table_name}
+                WHERE gid = %s
+            """
             query_result = connector.fetch_one(select_query, (gid,))
         return query_result
 

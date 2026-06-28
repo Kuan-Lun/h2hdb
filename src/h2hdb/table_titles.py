@@ -28,23 +28,19 @@ class H2HDBGalleriesTitles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _insert_gallery_title(self, db_gallery_id: int, title: str) -> None:
         with self.SQLConnector() as connector:
             table_name = "galleries_titles"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    insert_query = f"""
-                        INSERT INTO {table_name} (db_gallery_id, title) VALUES (%s, %s)
-                    """
+            insert_query = f"""
+                INSERT INTO {table_name} (db_gallery_id, title) VALUES (%s, %s)
+            """
             connector.execute(insert_query, (db_gallery_id, title))
 
     def _get_title_by_db_gallery_id(self, db_gallery_id: int) -> str:
         with self.SQLConnector() as connector:
             table_name = "galleries_titles"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_query = f"""
-                        SELECT title
-                        FROM {table_name}
-                        WHERE db_gallery_id = %s
-                    """
+            select_query = f"""
+                SELECT title
+                FROM {table_name}
+                WHERE db_gallery_id = %s
+            """
             query_result = connector.fetch_one(select_query, (db_gallery_id,))
         if query_result:
             title = str(query_result[0])

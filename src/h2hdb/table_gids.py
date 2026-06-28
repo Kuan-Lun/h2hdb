@@ -112,13 +112,11 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
     def _get_db_gallery_id_by_gid(self, gid: int) -> int:
         with self.SQLConnector() as connector:
             table_name = "galleries_gids"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_query = f"""
-                        SELECT db_gallery_id
-                        FROM {table_name}
-                        WHERE gid = %s
-                    """
+            select_query = f"""
+                SELECT db_gallery_id
+                FROM {table_name}
+                WHERE gid = %s
+            """
             query_result = connector.fetch_one(select_query, (gid,))
 
         if query_result:
@@ -169,23 +167,19 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _insert_gallery_gid(self, db_gallery_id: int, gid: int) -> None:
         with self.SQLConnector() as connector:
             table_name = "galleries_gids"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    insert_query = f"""
-                        INSERT INTO {table_name} (db_gallery_id, gid) VALUES (%s, %s)
-                    """
+            insert_query = f"""
+                INSERT INTO {table_name} (db_gallery_id, gid) VALUES (%s, %s)
+            """
             connector.execute(insert_query, (db_gallery_id, gid))
 
     def _get_gid_by_db_gallery_id(self, db_gallery_id: int) -> int:
         with self.SQLConnector() as connector:
             table_name = "galleries_gids"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_query = f"""
-                        SELECT gid
-                        FROM {table_name}
-                        WHERE db_gallery_id = %s
-                    """
+            select_query = f"""
+                SELECT gid
+                FROM {table_name}
+                WHERE db_gallery_id = %s
+            """
             query_result = connector.fetch_one(select_query, (db_gallery_id,))
 
         if query_result:
@@ -203,12 +197,10 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def get_gids(self) -> list[int]:
         with self.SQLConnector() as connector:
             table_name = "galleries_gids"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_query = f"""
-                        SELECT gid
-                        FROM {table_name}
-                    """
+            select_query = f"""
+                SELECT gid
+                FROM {table_name}
+            """
             query_result = connector.fetch_all(select_query)
         gids = [gid for gid, in query_result]
         return gids
@@ -216,12 +208,10 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def check_gid_by_gid(self, gid: int) -> bool:
         with self.SQLConnector() as connector:
             table_name = "galleries_gids"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_query = f"""
-                        SELECT gid
-                        FROM {table_name}
-                        WHERE gid = %s
-                    """
+            select_query = f"""
+                SELECT gid
+                FROM {table_name}
+                WHERE gid = %s
+            """
             query_result = connector.fetch_one(select_query, (gid,))
         return len(query_result) != 0

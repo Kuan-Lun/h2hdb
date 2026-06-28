@@ -28,23 +28,19 @@ class H2HDBUploadAccounts(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _insert_gallery_upload_account(self, db_gallery_id: int, account: str) -> None:
         with self.SQLConnector() as connector:
             table_name = "galleries_upload_accounts"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    insert_query = f"""
-                        INSERT INTO {table_name} (db_gallery_id, account) VALUES (%s, %s)
-                    """
+            insert_query = f"""
+                INSERT INTO {table_name} (db_gallery_id, account) VALUES (%s, %s)
+            """
             connector.execute(insert_query, (db_gallery_id, account))
 
     def _select_gallery_upload_account(self, db_gallery_id: int) -> str:
         with self.SQLConnector() as connector:
             table_name = "galleries_upload_accounts"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_query = f"""
-                        SELECT account
-                        FROM {table_name}
-                        WHERE db_gallery_id = %s
-                    """
+            select_query = f"""
+                SELECT account
+                FROM {table_name}
+                WHERE db_gallery_id = %s
+            """
             query_result = connector.fetch_one(select_query, (db_gallery_id,))
         if query_result:
             account = str(query_result[0])
