@@ -17,17 +17,18 @@ The `H2HDB` is a comprehensive database for organising and managing H@H comic co
 
 ## Installation and Usage
 
-1. Install Python 3.13 or higher from [python.org](https://www.python.org/downloads/).
+1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/) (manages the Python
+   version and dependencies for you).
 1. Install the required packages.
 
     ```bash
-    pip install h2hdb
+    uv pip install h2hdb
     ```
 
 1. Run the script.
 
     ```bash
-    python -m h2hdb --config [json-path]
+    uv run python -m h2hdb --config [json-path]
     ```
 
 ### Config
