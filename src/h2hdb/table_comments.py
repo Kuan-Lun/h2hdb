@@ -1,11 +1,15 @@
-from abc import ABCMeta
-
-from .h2hdb_spec import H2HDBAbstract
+from .repository import BaseRepository, RepositoryContext
 from .sql_connector import DatabaseKeyError
 from .table_gids import H2HDBGalleriesIDs
 
 
-class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
+class H2HDBGalleriesComments(BaseRepository):
+    def __init__(
+        self, context: RepositoryContext, gallery_ids: H2HDBGalleriesIDs
+    ) -> None:
+        super().__init__(context)
+        self.gallery_ids = gallery_ids
+
     def _create_galleries_comments_table(self) -> None:
         with self.SQLConnector() as connector:
             table_name = "galleries_comments"
@@ -77,8 +81,10 @@ class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
 
     def _check_gallery_comment_by_gallery_name(self, gallery_name: str) -> bool:
         ischeck = False
-        if self._check_galleries_dbids_by_gallery_name(gallery_name):
-            db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
+        if self.gallery_ids._check_galleries_dbids_by_gallery_name(gallery_name):
+            db_gallery_id = self.gallery_ids._get_db_gallery_id_by_gallery_name(
+                gallery_name
+            )
             ischeck = self._check_gallery_comment_by_db_gallery_id(db_gallery_id)
         return ischeck
 
@@ -95,5 +101,7 @@ class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
         return comment
 
     def get_comment_by_gallery_name(self, gallery_name: str) -> str:
-        db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
+        db_gallery_id = self.gallery_ids._get_db_gallery_id_by_gallery_name(
+            gallery_name
+        )
         return self._select_gallery_comment(db_gallery_id)

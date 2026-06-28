@@ -1,10 +1,9 @@
-from abc import ABCMeta
 from itertools import chain
 from typing import cast
 
-from .h2hdb_spec import H2HDBAbstract
 from .hash_dict import HASH_ALGORITHMS
 from .information import FileInformation
+from .repository import BaseRepository, RepositoryContext
 from .settings import FILE_NAME_LENGTH_LIMIT, hash_function_by_file
 from .sql_connector import (
     DatabaseDuplicateKeyError,
@@ -13,7 +12,13 @@ from .sql_connector import (
 from .table_gids import H2HDBGalleriesIDs
 
 
-class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
+class H2HDBFiles(BaseRepository):
+    def __init__(
+        self, context: RepositoryContext, gallery_ids: H2HDBGalleriesIDs
+    ) -> None:
+        super().__init__(context)
+        self.gallery_ids = gallery_ids
+
     def _create_files_names_table(self) -> None:
         with self.SQLConnector() as connector:
             table_name = "files_dbids"
@@ -201,7 +206,9 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
     def get_files_by_gallery_name(self, gallery_name: str) -> list[str]:
         with self.SQLConnector() as connector:
-            db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
+            db_gallery_id = self.gallery_ids._get_db_gallery_id_by_gallery_name(
+                gallery_name
+            )
             select_query = """
                 SELECT files_names.full_name
                 FROM files_names

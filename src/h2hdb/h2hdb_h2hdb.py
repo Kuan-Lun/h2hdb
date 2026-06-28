@@ -12,8 +12,10 @@ from h2h_galleryinfo_parser import (
     parse_galleryinfo,
 )
 
+from .config_loader import H2HDBConfig
 from .hash_dict import HASH_ALGORITHMS
 from .information import FileInformation, TagInformation
+from .repository import BaseRepository, RepositoryContext
 from .settings import (
     COMPARISON_HASH_ALGORITHM,
     FILE_NAME_LENGTH_LIMIT,
@@ -23,9 +25,14 @@ from .settings import (
     hash_function_by_file,
 )
 from .table_comments import H2HDBGalleriesComments
+from .table_database_setting import H2HDBCheckDatabaseSettings
 from .table_files_dbids import H2HDBFiles
+from .table_gids import H2HDBGalleriesGIDs, H2HDBGalleriesIDs
 from .table_removed_gids import H2HDBRemovedGalleries
 from .table_tags import H2HDBGalleriesTags
+from .table_times import H2HDBTimes
+from .table_titles import H2HDBGalleriesTitles
+from .table_uploadaccounts import H2HDBUploadAccounts
 from .threading_tools import POOL_CPU_LIMIT, SQLThreadsList, run_in_parallel
 from .view_ginfo import H2HDBGalleriesInfos
 
@@ -35,13 +42,55 @@ def get_sorting_base_level(x: int = 20) -> int:
     return zero_level
 
 
-class H2HDB(
-    H2HDBGalleriesInfos,
-    H2HDBGalleriesComments,
-    H2HDBGalleriesTags,
-    H2HDBFiles,
-    H2HDBRemovedGalleries,
-):
+class H2HDB(BaseRepository):
+    def __init__(self, config: H2HDBConfig) -> None:
+        context = RepositoryContext.from_config(config)
+        super().__init__(context)
+
+        self.database_settings = H2HDBCheckDatabaseSettings(context)
+        self.gallery_ids = H2HDBGalleriesIDs(context)
+        self.gallery_gids = H2HDBGalleriesGIDs(context, self.gallery_ids)
+        self.gallery_times = H2HDBTimes(context, self.gallery_ids)
+        self.gallery_titles = H2HDBGalleriesTitles(context, self.gallery_ids)
+        self.upload_accounts = H2HDBUploadAccounts(context, self.gallery_ids)
+        self.gallery_infos = H2HDBGalleriesInfos(context)
+        self.gallery_comments = H2HDBGalleriesComments(context, self.gallery_ids)
+        self.gallery_tags = H2HDBGalleriesTags(context, self.gallery_ids)
+        self.files = H2HDBFiles(context, self.gallery_ids)
+        self.removed_galleries = H2HDBRemovedGalleries(context)
+        self._repositories = (
+            self.database_settings,
+            self.gallery_ids,
+            self.gallery_gids,
+            self.gallery_times,
+            self.gallery_titles,
+            self.upload_accounts,
+            self.gallery_infos,
+            self.gallery_comments,
+            self.gallery_tags,
+            self.files,
+            self.removed_galleries,
+        )
+
+    def __enter__(self) -> H2HDB:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: object | None,
+    ) -> None:
+        if exc_type is None:
+            with self.SQLConnector() as connector:
+                connector.commit()
+
+    def __getattr__(self, name: str) -> Any:
+        for repository in self._repositories:
+            if hasattr(repository, name):
+                return getattr(repository, name)
+        raise AttributeError(name)
+
     def _create_pending_gallery_removals_table(self) -> None:
         with self.SQLConnector() as connector:
             table_name = "pending_gallery_removals"
@@ -220,7 +269,9 @@ class H2HDB(
 
     def delete_gallery(self, gallery_name: str) -> None:
         with self.SQLConnector() as connector:
-            if not self._check_galleries_dbids_by_gallery_name(gallery_name):
+            if not self.gallery_ids._check_galleries_dbids_by_gallery_name(
+                gallery_name
+            ):
                 self.logger.debug(f"Gallery '{gallery_name}' does not exist.")
                 return
 
@@ -497,31 +548,31 @@ class H2HDB(
         self.logger.debug("Creating main tables...")
         self._create_todownload_gids_table()
         self._create_pending_gallery_removals_table()
-        self._create_galleries_names_table()
-        self._create_galleries_gids_table()
+        self.gallery_ids._create_galleries_names_table()
+        self.gallery_gids._create_galleries_gids_table()
         self._create_todelete_gids_table()
-        self._create_galleries_download_times_table()
-        self._create_galleries_redownload_times_table()
-        self._create_galleries_upload_times_table()
+        self.gallery_times._create_galleries_download_times_table()
+        self.gallery_times._create_galleries_redownload_times_table()
+        self.gallery_times._create_galleries_upload_times_table()
         self._create_pending_download_gids_view()
-        self._create_galleries_modified_times_table()
-        self._create_galleries_access_times_table()
-        self._create_galleries_titles_table()
-        self._create_upload_account_table()
-        self._create_galleries_comments_table()
-        self._create_files_names_table()
-        self._create_galleries_infos_view()
+        self.gallery_times._create_galleries_modified_times_table()
+        self.gallery_times._create_galleries_access_times_table()
+        self.gallery_titles._create_galleries_titles_table()
+        self.upload_accounts._create_upload_account_table()
+        self.gallery_comments._create_galleries_comments_table()
+        self.files._create_files_names_table()
+        self.gallery_infos._create_galleries_infos_view()
         self._create_todelete_names_view()
-        self._create_galleries_files_hashs_tables()
-        self._create_gallery_image_hash_view()
-        self._create_duplicate_hash_in_gallery_view()
-        self._create_removed_galleries_gids_table()
-        self._create_galleries_tags_table()
+        self.files._create_galleries_files_hashs_tables()
+        self.files._create_gallery_image_hash_view()
+        self.gallery_infos._create_duplicate_hash_in_gallery_view()
+        self.removed_galleries._create_removed_galleries_gids_table()
+        self.gallery_tags._create_galleries_tags_table()
         self._create_duplicated_galleries_tables()
         self.logger.info("Main tables created.")
 
     def update_redownload_time_to_now_by_gid(self, gid: int) -> None:
-        db_gallery_id = self._get_db_gallery_id_by_gid(gid)
+        db_gallery_id = self.gallery_gids._get_db_gallery_id_by_gid(gid)
         table_name = "galleries_redownload_times"
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
@@ -538,90 +589,90 @@ class H2HDB(
     def _insert_gallery_info(self, galleryinfo_params: GalleryInfoParser) -> None:
         self.insert_pending_gallery_removal(galleryinfo_params.gallery_name)
 
-        self._insert_gallery_name(galleryinfo_params.gallery_name)
-        db_gallery_id = self._get_db_gallery_id_by_gallery_name(
+        self.gallery_ids._insert_gallery_name(galleryinfo_params.gallery_name)
+        db_gallery_id = self.gallery_ids._get_db_gallery_id_by_gallery_name(
             galleryinfo_params.gallery_name
         )
 
         with SQLThreadsList() as threads:
             threads.append(
-                target=self._insert_gallery_gid,
+                target=self.gallery_gids._insert_gallery_gid,
                 args=(db_gallery_id, galleryinfo_params.gid),
             )
             threads.append(
-                target=self._insert_gallery_title,
+                target=self.gallery_titles._insert_gallery_title,
                 args=(db_gallery_id, galleryinfo_params.title),
             )
             threads.append(
-                target=self._insert_upload_time,
+                target=self.gallery_times._insert_upload_time,
                 args=(db_gallery_id, galleryinfo_params.upload_time),
             )
             threads.append(
-                target=self._insert_gallery_comment,
+                target=self.gallery_comments._insert_gallery_comment,
                 args=(db_gallery_id, galleryinfo_params.galleries_comments),
             )
             threads.append(
-                target=self._insert_gallery_upload_account,
+                target=self.upload_accounts._insert_gallery_upload_account,
                 args=(db_gallery_id, galleryinfo_params.upload_account),
             )
             threads.append(
-                target=self._insert_download_time,
+                target=self.gallery_times._insert_download_time,
                 args=(db_gallery_id, galleryinfo_params.download_time),
             )
             threads.append(
-                target=self._insert_access_time,
+                target=self.gallery_times._insert_access_time,
                 args=(db_gallery_id, galleryinfo_params.download_time),
             )
             threads.append(
-                target=self._insert_modified_time,
+                target=self.gallery_times._insert_modified_time,
                 args=(db_gallery_id, galleryinfo_params.modified_time),
             )
             threads.append(
-                target=self._insert_gallery_files,
+                target=self.files._insert_gallery_files,
                 args=(db_gallery_id, galleryinfo_params.files_path),
             )
 
         file_pairs: list[FileInformation] = list()
         for file_path in galleryinfo_params.files_path:
-            db_file_id = self._get_db_file_id(db_gallery_id, file_path)
+            db_file_id = self.files._get_db_file_id(db_gallery_id, file_path)
             absolute_file_path = os.path.join(
                 galleryinfo_params.gallery_folder, file_path
             )
             file_pairs.append(FileInformation(absolute_file_path, db_file_id))
-        self._insert_gallery_file_hash_for_db_gallery_id(file_pairs)
+        self.files._insert_gallery_file_hash_for_db_gallery_id(file_pairs)
 
         taglist: list[TagInformation] = list()
         for tag in galleryinfo_params.tags:
             taglist.append(TagInformation(tag[0], tag[1]))
-        self._insert_gallery_tags(db_gallery_id, taglist)
+        self.gallery_tags._insert_gallery_tags(db_gallery_id, taglist)
 
         self.delete_pending_gallery_removal(galleryinfo_params.gallery_name)
 
     def _check_gallery_info_file_hash(
         self, galleryinfo_params: GalleryInfoParser
     ) -> bool:
-        if not self._check_galleries_dbids_by_gallery_name(
+        if not self.gallery_ids._check_galleries_dbids_by_gallery_name(
             galleryinfo_params.gallery_name
         ):
             return False
-        db_gallery_id = self._get_db_gallery_id_by_gallery_name(
+        db_gallery_id = self.gallery_ids._get_db_gallery_id_by_gallery_name(
             galleryinfo_params.gallery_name
         )
 
-        if not self._check_db_file_id(db_gallery_id, GALLERY_INFO_FILE_NAME):
+        if not self.files._check_db_file_id(db_gallery_id, GALLERY_INFO_FILE_NAME):
             return False
-        gallery_info_file_id = self._get_db_file_id(
+        gallery_info_file_id = self.files._get_db_file_id(
             db_gallery_id, GALLERY_INFO_FILE_NAME
         )
         absolute_file_path = os.path.join(
             galleryinfo_params.gallery_folder, GALLERY_INFO_FILE_NAME
         )
 
-        if not self._check_hash_value_by_file_id(
+        if not self.files._check_hash_value_by_file_id(
             gallery_info_file_id, COMPARISON_HASH_ALGORITHM
         ):
             return False
-        original_hash_value = self.get_hash_value_by_file_id(
+        original_hash_value = self.files.get_hash_value_by_file_id(
             gallery_info_file_id, COMPARISON_HASH_ALGORITHM
         )
         current_hash_value = hash_function_by_file(
@@ -666,12 +717,12 @@ class H2HDB(
         galleryinfo_params = parse_galleryinfo(gallery_folder)
         match self.config.h2h.cbz_grouping:
             case "date-yyyy":
-                upload_time = self.get_upload_time_by_gallery_name(
+                upload_time = self.gallery_times.get_upload_time_by_gallery_name(
                     galleryinfo_params.gallery_name
                 )
                 relative_cbz_directory = str(upload_time.year).rjust(4, "0")
             case "date-yyyy-mm":
-                upload_time = self.get_upload_time_by_gallery_name(
+                upload_time = self.gallery_times.get_upload_time_by_gallery_name(
                     galleryinfo_params.gallery_name
                 )
                 relative_cbz_directory = os.path.join(
@@ -679,7 +730,7 @@ class H2HDB(
                     str(upload_time.month).rjust(2, "0"),
                 )
             case "date-yyyy-mm-dd":
-                upload_time = self.get_upload_time_by_gallery_name(
+                upload_time = self.gallery_times.get_upload_time_by_gallery_name(
                     galleryinfo_params.gallery_name
                 )
                 relative_cbz_directory = os.path.join(
@@ -705,13 +756,13 @@ class H2HDB(
             cbz_directory, gallery_name2cbz_file_name(galleryinfo_params.gallery_name)
         )
         if os.path.exists(cbz_path):
-            db_gallery_id = self._get_db_gallery_id_by_gallery_name(
+            db_gallery_id = self.gallery_ids._get_db_gallery_id_by_gallery_name(
                 galleryinfo_params.gallery_name
             )
-            gallery_info_file_id = self._get_db_file_id(
+            gallery_info_file_id = self.files._get_db_file_id(
                 db_gallery_id, GALLERY_INFO_FILE_NAME
             )
-            original_hash_value = self.get_hash_value_by_file_id(
+            original_hash_value = self.files.get_hash_value_by_file_id(
                 gallery_info_file_id, COMPARISON_HASH_ALGORITHM
             )
             cbz_hash_value = calculate_hash_of_file_in_cbz(
@@ -992,18 +1043,20 @@ class H2HDB(
             self.logger.info("Refreshing database...")
             return self.insert_h2h_download()
 
-        self._reset_redownload_times()
+        self.gallery_times._reset_redownload_times()
 
     def get_komga_metadata(
         self, gallery_name: str
     ) -> dict[str, str | list[dict[str, str]]]:
         metadata: dict[str, str | list[dict[str, str]]] = dict()
-        metadata["title"] = self.get_title_by_gallery_name(gallery_name)
-        if self._check_gallery_comment_by_gallery_name(gallery_name):
-            metadata["summary"] = self.get_comment_by_gallery_name(gallery_name)
+        metadata["title"] = self.gallery_titles.get_title_by_gallery_name(gallery_name)
+        if self.gallery_comments._check_gallery_comment_by_gallery_name(gallery_name):
+            metadata["summary"] = self.gallery_comments.get_comment_by_gallery_name(
+                gallery_name
+            )
         else:
             metadata["summary"] = ""
-        upload_time = self.get_upload_time_by_gallery_name(gallery_name)
+        upload_time = self.gallery_times.get_upload_time_by_gallery_name(gallery_name)
         metadata["releaseDate"] = "-".join(
             [
                 str(upload_time.year),
@@ -1011,7 +1064,7 @@ class H2HDB(
                 f"{upload_time.day:02d}",
             ]
         )
-        tags = self.get_tag_pairs_by_gallery_name(gallery_name)
+        tags = self.gallery_tags.get_tag_pairs_by_gallery_name(gallery_name)
         metadata["authors"] = [
             {"name": value, "role": key} for key, value in tags if value != ""
         ]

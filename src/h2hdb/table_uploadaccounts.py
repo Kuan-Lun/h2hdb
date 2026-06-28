@@ -1,11 +1,15 @@
-from abc import ABCMeta
-
-from .h2hdb_spec import H2HDBAbstract
+from .repository import BaseRepository, RepositoryContext
 from .sql_connector import DatabaseKeyError
 from .table_gids import H2HDBGalleriesIDs
 
 
-class H2HDBUploadAccounts(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
+class H2HDBUploadAccounts(BaseRepository):
+    def __init__(
+        self, context: RepositoryContext, gallery_ids: H2HDBGalleriesIDs
+    ) -> None:
+        super().__init__(context)
+        self.gallery_ids = gallery_ids
+
     def _create_upload_account_table(self) -> None:
         with self.SQLConnector() as connector:
             table_name = "galleries_upload_accounts"
@@ -68,5 +72,7 @@ class H2HDBUploadAccounts(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         return account
 
     def get_upload_account_by_gallery_name(self, gallery_name: str) -> str:
-        db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
+        db_gallery_id = self.gallery_ids._get_db_gallery_id_by_gallery_name(
+            gallery_name
+        )
         return self._select_gallery_upload_account(db_gallery_id)

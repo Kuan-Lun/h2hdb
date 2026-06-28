@@ -40,9 +40,8 @@ class SQLiteConnectorParams(SQLConnectorParams):
     SQLiteConnectorParams is a data class that holds the connection parameters required to connect to a SQLite database.
 
     The 'database' parameter is the filesystem path to the SQLite database file. It must not be
-    `:memory:`: every method opens and closes its own connection (see H2HDBAbstract), and SQLite's
-    in-memory databases are connection-scoped, so an in-memory database would lose all data between
-    calls.
+    `:memory:`: every repository method opens and closes its own connection, and SQLite's in-memory
+    databases are connection-scoped, so an in-memory database would lose all data between calls.
     """
 
     database: str = Field(

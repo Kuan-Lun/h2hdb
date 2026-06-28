@@ -1,8 +1,7 @@
-from abc import ABCMeta
 from collections.abc import Callable
 
-from .h2hdb_spec import H2HDBAbstract
 from .information import TagInformation
+from .repository import BaseRepository, RepositoryContext
 from .sql_connector import (
     DatabaseDuplicateKeyError,
     DatabaseKeyError,
@@ -10,7 +9,13 @@ from .sql_connector import (
 from .table_gids import H2HDBGalleriesIDs
 
 
-class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
+class H2HDBGalleriesTags(BaseRepository):
+    def __init__(
+        self, context: RepositoryContext, gallery_ids: H2HDBGalleriesIDs
+    ) -> None:
+        super().__init__(context)
+        self.gallery_ids = gallery_ids
+
     def _create_galleries_tags_table(self) -> None:
         with self.SQLConnector() as connector:
             tag_name_table_name = "galleries_tags_names"
@@ -309,11 +314,15 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def get_tag_value_by_gallery_name_and_tag_name(
         self, gallery_name: str, tag_name: str
     ) -> str:
-        db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
+        db_gallery_id = self.gallery_ids._get_db_gallery_id_by_gallery_name(
+            gallery_name
+        )
         return self._select_gallery_tag(db_gallery_id, tag_name)
 
     def get_tag_pairs_by_gallery_name(self, gallery_name: str) -> list[tuple[str, str]]:
-        db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
+        db_gallery_id = self.gallery_ids._get_db_gallery_id_by_gallery_name(
+            gallery_name
+        )
         db_tag_pair_ids = self._get_db_tag_pair_id_by_db_gallery_id(db_gallery_id)
         return [
             self._get_tag_pairs_by_db_tag_pair_id(db_tag_pair_id)

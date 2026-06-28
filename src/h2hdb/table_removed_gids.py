@@ -1,11 +1,8 @@
-from abc import ABCMeta
-
-from .h2hdb_spec import H2HDBAbstract
+from .repository import BaseRepository
 from .sql_connector import DatabaseKeyError
-from .table_gids import H2HDBGalleriesIDs
 
 
-class H2HDBRemovedGalleries(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
+class H2HDBRemovedGalleries(BaseRepository):
     def _create_removed_galleries_gids_table(self) -> None:
         with self.SQLConnector() as connector:
             table_name = "removed_galleries_gids"

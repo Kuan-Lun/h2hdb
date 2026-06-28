@@ -1,12 +1,10 @@
 __all__ = ["H2HDBGalleriesIDs", "H2HDBGalleriesGIDs"]
 
-from abc import ABCMeta
-
-from .h2hdb_spec import H2HDBAbstract
+from .repository import BaseRepository, RepositoryContext
 from .sql_connector import DatabaseKeyError
 
 
-class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
+class H2HDBGalleriesIDs(BaseRepository):
     def _create_galleries_names_table(self) -> None:
         with self.SQLConnector() as connector:
             table_name = "galleries_dbids"
@@ -132,30 +130,12 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
             raise DatabaseKeyError(f"Gallery name '{gallery_name}' does not exist.")
         return db_gallery_id
 
-    def _get_db_gallery_id_by_gid(self, gid: int) -> int:
-        with self.SQLConnector() as connector:
-            table_name = "galleries_gids"
-            select_query = f"""
-                SELECT db_gallery_id
-                FROM {table_name}
-                WHERE gid = %s
-            """
-            query_result = connector.fetch_one(select_query, (gid,))
 
-        if query_result:
-            db_gallery_id = int(query_result[0])
-        else:
-            msg = f"Gallery name ID for GID {gid} does not exist."
-            self.logger.error(msg)
-            raise DatabaseKeyError(msg)
-        return db_gallery_id
-
-
-class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
+class H2HDBGalleriesGIDs(BaseRepository):
     """
     A class that handles the GIDs for galleries in the comic database.
 
-    This class inherits from `H2HDBAbstract` and is used to manage the GIDs for galleries
+    This repository is used to manage the GIDs for galleries
 
     Attributes:
         sql_type (str): The type of SQL database being used.
@@ -167,6 +147,12 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         _insert_gallery_gid: Inserts the GID for the gallery name ID into the galleries_gids table.
         get_gid_by_gallery_name: Selects the GID for the gallery name from the database.
     """
+
+    def __init__(
+        self, context: RepositoryContext, gallery_ids: H2HDBGalleriesIDs
+    ) -> None:
+        super().__init__(context)
+        self.gallery_ids = gallery_ids
 
     def _create_galleries_gids_table(self) -> None:
         with self.SQLConnector() as connector:
@@ -230,8 +216,28 @@ class H2HDBGalleriesGIDs(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             raise DatabaseKeyError(msg)
         return gid
 
+    def _get_db_gallery_id_by_gid(self, gid: int) -> int:
+        with self.SQLConnector() as connector:
+            table_name = "galleries_gids"
+            select_query = f"""
+                SELECT db_gallery_id
+                FROM {table_name}
+                WHERE gid = %s
+            """
+            query_result = connector.fetch_one(select_query, (gid,))
+
+        if query_result:
+            db_gallery_id = int(query_result[0])
+        else:
+            msg = f"Gallery name ID for GID {gid} does not exist."
+            self.logger.error(msg)
+            raise DatabaseKeyError(msg)
+        return db_gallery_id
+
     def get_gid_by_gallery_name(self, gallery_name: str) -> int:
-        db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
+        db_gallery_id = self.gallery_ids._get_db_gallery_id_by_gallery_name(
+            gallery_name
+        )
         return self._get_gid_by_db_gallery_id(db_gallery_id)
 
     def get_gids(self) -> list[int]:

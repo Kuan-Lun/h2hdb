@@ -1,13 +1,18 @@
 import datetime
-from abc import ABCMeta
 from typing import cast
 
-from .h2hdb_spec import H2HDBAbstract
+from .repository import BaseRepository, RepositoryContext
 from .sql_connector import DatabaseKeyError
 from .table_gids import H2HDBGalleriesIDs
 
 
-class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
+class H2HDBTimes(BaseRepository):
+    def __init__(
+        self, context: RepositoryContext, gallery_ids: H2HDBGalleriesIDs
+    ) -> None:
+        super().__init__(context)
+        self.gallery_ids = gallery_ids
+
     def _create_times_table(self, table_name: str) -> None:
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
@@ -116,7 +121,9 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self._insert_time("galleries_upload_times", db_gallery_id, time)
 
     def get_upload_time_by_gallery_name(self, gallery_name: str) -> datetime.datetime:
-        db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
+        db_gallery_id = self.gallery_ids._get_db_gallery_id_by_gallery_name(
+            gallery_name
+        )
         return self._select_time("galleries_upload_times", db_gallery_id)
 
     def _create_galleries_modified_times_table(self) -> None:
@@ -132,5 +139,7 @@ class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self._insert_time("galleries_access_times", db_gallery_id, time)
 
     def update_access_time(self, gallery_name: str, time: str) -> None:
-        db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
+        db_gallery_id = self.gallery_ids._get_db_gallery_id_by_gallery_name(
+            gallery_name
+        )
         self._update_time("galleries_access_times", db_gallery_id, time)

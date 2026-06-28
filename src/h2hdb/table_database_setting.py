@@ -1,14 +1,12 @@
-from abc import ABCMeta
-
-from .h2hdb_spec import H2HDBAbstract
+from .repository import BaseRepository
 from .sql_connector import DatabaseConfigurationError
 
 
-class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
+class H2HDBCheckDatabaseSettings(BaseRepository):
     """
     A class that checks the database settings for character set and collation.
 
-    This class inherits from `H2HDBAbstract` and is used to ensure that the database
+    This repository is used to ensure that the database
     character set and collation are valid. It provides methods to check the character set and
     collation of the database and raises an error if they are invalid.
 

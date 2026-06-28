@@ -1,18 +1,7 @@
-from .table_database_setting import H2HDBCheckDatabaseSettings
-from .table_gids import H2HDBGalleriesGIDs, H2HDBGalleriesIDs
-from .table_times import H2HDBTimes
-from .table_titles import H2HDBGalleriesTitles
-from .table_uploadaccounts import H2HDBUploadAccounts
+from .repository import BaseRepository
 
 
-class H2HDBGalleriesInfos(
-    H2HDBGalleriesTitles,
-    H2HDBUploadAccounts,
-    H2HDBTimes,
-    H2HDBGalleriesGIDs,
-    H2HDBGalleriesIDs,
-    H2HDBCheckDatabaseSettings,
-):
+class H2HDBGalleriesInfos(BaseRepository):
     def _create_galleries_infos_view(self) -> None:
         with self.SQLConnector() as connector:
             query = """
