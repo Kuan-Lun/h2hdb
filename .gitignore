@@ -12,6 +12,8 @@ tmp
 !.vscode/**
 !.claude/
 !.claude/**
+!/.Codex/
+!.Codex/**
 
 uv.lock
 h2hdb.log
