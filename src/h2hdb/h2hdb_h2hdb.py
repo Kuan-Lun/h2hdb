@@ -746,30 +746,28 @@ class H2HDB(
             tmp_table_name = "tmp_current_galleries"
             match self.config.database.sql_type.lower():
                 case "mariadb":
-                    column_name = "name"
                     column_name_parts, create_gallery_name_parts_sql = (
-                        self.mariadb_split_gallery_name_based_on_limit(column_name)
+                        self.mariadb_split_gallery_name_based_on_limit("name")
                     )
-                    query = f"""
-                        CREATE TEMPORARY TABLE IF NOT EXISTS {tmp_table_name} (
-                            PRIMARY KEY ({", ".join(column_name_parts)}),
-                            {create_gallery_name_parts_sql}
-                        )
-                    """
+                case "sqlite":
+                    column_name_parts, create_gallery_name_parts_sql = (
+                        self.sqlite_name_columns("name")
+                    )
+            query = f"""
+                CREATE TEMPORARY TABLE IF NOT EXISTS {tmp_table_name} (
+                    {create_gallery_name_parts_sql},
+                    PRIMARY KEY ({", ".join(column_name_parts)})
+                )
+            """
 
             connector.execute(query)
             self.logger.info(f"{tmp_table_name} table created.")
 
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    column_name_parts, _ = (
-                        self.mariadb_split_gallery_name_based_on_limit("name")
-                    )
-                    insert_query = f"""
-                        INSERT INTO {tmp_table_name}
-                            ({", ".join(column_name_parts)})
-                        VALUES ({", ".join(["%s" for _ in column_name_parts])})
-                    """
+            insert_query = f"""
+                INSERT INTO {tmp_table_name}
+                    ({", ".join(column_name_parts)})
+                VALUES ({", ".join(["%s" for _ in column_name_parts])})
+            """
 
             data: list[tuple[Any, ...]] = list()
             current_galleries_folders: list[str] = list()
@@ -790,6 +788,16 @@ class H2HDB(
                 case "mariadb":
                     fetch_query = f"""
                         SELECT CONCAT({",".join(["galleries_dbids."+column_name for column_name in column_name_parts])})
+                        FROM galleries_dbids
+                        LEFT JOIN {tmp_table_name} USING ({",".join(column_name_parts)})
+                        WHERE {tmp_table_name}.{column_name_parts[0]} IS NULL
+                    """
+                case "sqlite":
+                    # SQLite branch never splits the name across columns (see
+                    # sqlite_name_columns), so there's exactly one column to select --
+                    # no CONCAT needed.
+                    fetch_query = f"""
+                        SELECT galleries_dbids.{column_name_parts[0]}
                         FROM galleries_dbids
                         LEFT JOIN {tmp_table_name} USING ({",".join(column_name_parts)})
                         WHERE {tmp_table_name}.{column_name_parts[0]} IS NULL
@@ -840,19 +848,17 @@ class H2HDB(
             )
 
         with self.SQLConnector() as connector:
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-
-                    def get_delete_db_hash_id_query(x: str, y: str) -> str:
-                        return f"""
-                        DELETE FROM {y}
-                        WHERE db_hash_id IN (
-                                SELECT db_hash_id
-                                FROM {x}
-                                RIGHT JOIN {y} USING (db_hash_id)
-                                WHERE {x}.db_hash_id IS NULL
-                            )
-                        """
+            # RIGHT JOIN is standard SQL, supported by both MariaDB and SQLite (3.39+).
+            def get_delete_db_hash_id_query(x: str, y: str) -> str:
+                return f"""
+                DELETE FROM {y}
+                WHERE db_hash_id IN (
+                        SELECT db_hash_id
+                        FROM {x}
+                        RIGHT JOIN {y} USING (db_hash_id)
+                        WHERE {x}.db_hash_id IS NULL
+                    )
+                """
 
             hash_table_name = f"files_hashs_{algorithm.lower()}"
             db_table_name = f"files_hashs_{algorithm.lower()}_dbids"
