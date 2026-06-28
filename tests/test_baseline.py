@@ -7,8 +7,8 @@ from h2hdb.sql_connector import DatabaseDuplicateKeyError, DatabaseKeyError
 
 
 @pytest.fixture
-def db(mariadb_config: H2HDBConfig) -> Iterator[H2HDB]:
-    instance = H2HDB(config=mariadb_config)
+def db(db_config: H2HDBConfig) -> Iterator[H2HDB]:
+    instance = H2HDB(config=db_config)
     with instance:
         instance.create_main_tables()
         yield instance

@@ -1,6 +1,7 @@
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 
 import mysql.connector
 import pytest
@@ -79,3 +80,10 @@ def sqlite_config(tmp_path: Path) -> H2HDBConfig:
     return H2HDBConfig(
         database=DatabaseConfig(sql_type="sqlite", database=str(database_path))
     )
+
+
+@pytest.fixture(params=["mariadb", "sqlite"])
+def db_config(request: pytest.FixtureRequest) -> H2HDBConfig:
+    # Lazily resolves only the fixture for the requested backend, so a
+    # sqlite-only test run never has to spin up a MariaDB container.
+    return cast(H2HDBConfig, request.getfixturevalue(f"{request.param}_config"))
