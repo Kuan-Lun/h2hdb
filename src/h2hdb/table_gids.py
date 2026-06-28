@@ -1,7 +1,6 @@
 __all__ = ["H2HDBGalleriesIDs", "H2HDBGalleriesGIDs"]
 
 from abc import ABCMeta
-from typing import Any
 
 from .h2hdb_spec import H2HDBAbstract
 from .sql_connector import DatabaseKeyError
@@ -78,7 +77,7 @@ class H2HDBGalleriesIDs(H2HDBAbstract, metaclass=ABCMeta):
                     """
             connector.execute(insert_query, (db_gallery_id, gallery_name))
 
-    def __get_db_gallery_id_by_gallery_name(self, gallery_name: str) -> tuple[Any, ...]:
+    def __get_db_gallery_id_by_gallery_name(self, gallery_name: str) -> tuple[int, ...]:
         with self.SQLConnector() as connector:
             table_name = "galleries_dbids"
             gallery_name_parts = self._split_gallery_name(gallery_name)

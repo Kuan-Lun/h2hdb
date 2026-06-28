@@ -1,5 +1,4 @@
 from abc import ABCMeta
-from typing import Any
 
 from .h2hdb_spec import H2HDBAbstract
 from .sql_connector import DatabaseKeyError
@@ -49,7 +48,7 @@ class H2HDBGalleriesComments(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta
 
     def __get_gallery_comment_by_db_gallery_id(
         self, db_gallery_id: int
-    ) -> tuple[Any, ...]:
+    ) -> tuple[str, ...]:
         with self.SQLConnector() as connector:
             table_name = "galleries_comments"
             match self.config.database.sql_type.lower():

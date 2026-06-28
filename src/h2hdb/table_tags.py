@@ -1,6 +1,5 @@
 from abc import ABCMeta
 from collections.abc import Callable
-from typing import Any
 
 from .h2hdb_spec import H2HDBAbstract
 from .information import TagInformation
@@ -80,7 +79,7 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             connector.execute(query)
             self.logger.info(f"{table_name} table created.")
 
-    def __get_db_tag_pair_id(self, tag_name: str, tag_value: str) -> tuple[Any, ...]:
+    def __get_db_tag_pair_id(self, tag_name: str, tag_value: str) -> tuple[int, ...]:
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
                 case "mysql":

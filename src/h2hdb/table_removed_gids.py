@@ -1,5 +1,4 @@
 from abc import ABCMeta
-from typing import Any
 
 from .h2hdb_spec import H2HDBAbstract
 from .sql_connector import DatabaseKeyError
@@ -34,7 +33,7 @@ class H2HDBRemovedGalleries(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta)
             else:
                 connector.execute(insert_query, (gid,))
 
-    def __get_removed_gallery_gid(self, gid: int) -> tuple[Any, ...]:
+    def __get_removed_gallery_gid(self, gid: int) -> tuple[int, ...]:
         with self.SQLConnector() as connector:
             table_name = "removed_galleries_gids"
             match self.config.database.sql_type.lower():

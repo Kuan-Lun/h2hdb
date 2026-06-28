@@ -1,6 +1,6 @@
 from abc import ABCMeta
 from itertools import chain
-from typing import Any, cast
+from typing import cast
 
 from .h2hdb_spec import H2HDBAbstract
 from .hash_dict import HASH_ALGORITHMS
@@ -137,7 +137,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                 ),
             )
 
-    def __get_db_file_id(self, db_gallery_id: int, file_name: str) -> tuple[Any, ...]:
+    def __get_db_file_id(self, db_gallery_id: int, file_name: str) -> tuple[int, ...]:
         with self.SQLConnector() as connector:
             table_name = "files_dbids"
             file_name_parts = self._split_gallery_name(file_name)
@@ -356,7 +356,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
     def __get_db_hash_id_by_hash_value(
         self, hash_value: bytes, algorithm: str
-    ) -> tuple[Any, ...]:
+    ) -> tuple[int, ...]:
         with self.SQLConnector() as connector:
             table_name = f"files_hashs_{algorithm.lower()}_dbids"
             match self.config.database.sql_type.lower():
@@ -479,7 +479,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
     def __get_hash_value_by_file_id(
         self, db_file_id: int, algorithm: str
-    ) -> tuple[Any, ...]:
+    ) -> tuple[int, ...]:
         with self.SQLConnector() as connector:
             table_name = f"files_hashs_{algorithm.lower()}"
             match self.config.database.sql_type.lower():
