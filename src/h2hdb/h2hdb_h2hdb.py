@@ -47,9 +47,8 @@ class H2HDB(
             table_name = "pending_gallery_removals"
             match self.config.database.sql_type.lower():
                 case "mariadb":
-                    column_name = "name"
                     column_name_parts, create_gallery_name_parts_sql = (
-                        self.mariadb_split_gallery_name_based_on_limit(column_name)
+                        self.mariadb_split_gallery_name_based_on_limit("name")
                     )
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
@@ -59,7 +58,25 @@ class H2HDB(
                             FULLTEXT (full_name)
                         )
                     """
+                case "sqlite":
+                    column_name_parts, create_gallery_name_parts_sql = (
+                        self.sqlite_name_columns("name")
+                    )
+                    query = f"""
+                        CREATE TABLE IF NOT EXISTS {table_name} (
+                            {create_gallery_name_parts_sql},
+                            full_name TEXT NOT NULL,
+                            PRIMARY KEY ({", ".join(column_name_parts)})
+                        )
+                    """
             connector.execute(query)
+
+            match self.config.database.sql_type.lower():
+                case "sqlite":
+                    self._create_sqlite_fts5_sync(
+                        connector, table_name, "full_name", "rowid"
+                    )
+
         self.logger.info(f"{table_name} table created.")
 
     def _count_duplicated_files_hashs_sha512(self) -> int:
@@ -74,23 +91,19 @@ class H2HDB(
 
     def _create_duplicated_galleries_tables(self) -> None:
         with self.SQLConnector() as connector:
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    query = """
-                            CREATE VIEW IF NOT EXISTS duplicated_files_hashs_sha512 AS
-                            SELECT db_file_id,
-                                db_hash_id
-                            FROM files_hashs_sha512
-                            GROUP BY db_hash_id
-                            HAVING COUNT(*) >= 3
-                            """
+            query = """
+                    CREATE VIEW IF NOT EXISTS duplicated_files_hashs_sha512 AS
+                    SELECT db_file_id,
+                        db_hash_id
+                    FROM files_hashs_sha512
+                    GROUP BY db_hash_id
+                    HAVING COUNT(*) >= 3
+                    """
             connector.execute(query)
 
         with self.SQLConnector() as connector:
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    query = """
-                        CREATE VIEW IF NOT EXISTS duplicated_hash_values_by_count_artist_ratio AS WITH duplicated_db_dbids AS (
+            query = """
+                CREATE VIEW IF NOT EXISTS duplicated_hash_values_by_count_artist_ratio AS WITH duplicated_db_dbids AS (
                             SELECT galleries_dbids.db_gallery_id AS db_gallery_id,
                                 files_dbids.db_file_id AS db_file_id,
                                 duplicated_files_hashs_sha512.db_hash_id AS db_hash_id,
@@ -136,10 +149,12 @@ class H2HDB(
                         column_name_parts, _ = (
                             self.mariadb_split_gallery_name_based_on_limit("name")
                         )
-                        insert_query = f"""
-                            INSERT INTO {table_name} ({", ".join(column_name_parts)}, full_name)
-                            VALUES ({", ".join(["%s" for _ in column_name_parts])}, %s)
-                        """
+                    case "sqlite":
+                        column_name_parts, _ = self.sqlite_name_columns("name")
+                insert_query = f"""
+                    INSERT INTO {table_name} ({", ".join(column_name_parts)}, full_name)
+                    VALUES ({", ".join(["%s" for _ in column_name_parts])}, %s)
+                """
                 connector.execute(
                     insert_query, (*tuple(gallery_name_parts), gallery_name)
                 )
@@ -153,11 +168,13 @@ class H2HDB(
                     column_name_parts, _ = (
                         self.mariadb_split_gallery_name_based_on_limit("name")
                     )
-                    select_query = f"""
-                        SELECT full_name
-                        FROM {table_name}
-                        WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
-                    """
+                case "sqlite":
+                    column_name_parts, _ = self.sqlite_name_columns("name")
+            select_query = f"""
+                SELECT full_name
+                FROM {table_name}
+                WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
+            """
             query_result = connector.fetch_one(select_query, tuple(gallery_name_parts))
         return len(query_result) != 0
 
@@ -181,9 +198,11 @@ class H2HDB(
                     column_name_parts, _ = (
                         self.mariadb_split_gallery_name_based_on_limit("name")
                     )
-                    delete_query = f"""
-                        DELETE FROM {table_name} WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
-                    """
+                case "sqlite":
+                    column_name_parts, _ = self.sqlite_name_columns("name")
+            delete_query = f"""
+                DELETE FROM {table_name} WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
+            """
 
             gallery_name_parts = self._split_gallery_name(gallery_name)
             connector.execute(delete_query, tuple(gallery_name_parts))
@@ -210,16 +229,27 @@ class H2HDB(
                     column_name_parts, _ = (
                         self.mariadb_split_gallery_name_based_on_limit("name")
                     )
-                    get_delete_gallery_id_query = f"""
-                        DELETE FROM galleries_dbids
-                        WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
-                        """
+                case "sqlite":
+                    column_name_parts, _ = self.sqlite_name_columns("name")
+            get_delete_gallery_id_query = f"""
+                DELETE FROM galleries_dbids
+                WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
+                """
 
             gallery_name_parts = self._split_gallery_name(gallery_name)
             connector.execute(get_delete_gallery_id_query, tuple(gallery_name_parts))
         self.logger.info(f"Gallery '{gallery_name}' deleted.")
 
     def optimize_database(self) -> None:
+        match self.config.database.sql_type.lower():
+            case "sqlite":
+                # SQLite has no per-table OPTIMIZE TABLE; VACUUM rebuilds and
+                # defragments the whole database file instead.
+                with self.SQLConnector() as connector:
+                    connector.execute("VACUUM")
+                self.logger.info("Database optimized.")
+                return
+
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
                 case "mariadb":
@@ -265,6 +295,26 @@ class H2HDB(
                                 OR DATE_ADD(gdt.time, INTERVAL 7 DAY) <= grt.time
                                  ORDER BY gut.`time` DESC
                     """
+                case "sqlite":
+                    query = """
+                        CREATE VIEW IF NOT EXISTS pending_download_gids AS
+                            SELECT gids.gid AS gid
+                            FROM (SELECT *
+                                FROM galleries_redownload_times AS grt0
+                                WHERE datetime(grt0.time, '+7 days') <= datetime('now')
+                                )
+                                AS grt
+                            INNER JOIN galleries_download_times AS gdt
+                                on grt.db_gallery_id = gdt.db_gallery_id
+                            INNER JOIN galleries_upload_times AS gut
+                                ON grt.db_gallery_id = gut.db_gallery_id
+                            INNER JOIN galleries_gids AS gids
+                                ON grt.db_gallery_id = gids.db_gallery_id
+                            WHERE grt.time <= datetime(gut.time, '+1 years')
+                                AND datetime(gut.time, '+7 days') <= datetime('now')
+                                OR datetime(gdt.time, '+7 days') <= grt.time
+                                 ORDER BY gut.time DESC
+                    """
             connector.execute(query)
         self.logger.info("pending_download_gids view created.")
 
@@ -292,38 +342,44 @@ class H2HDB(
                             gid          INT UNSIGNED NOT NULL
                         )
                     """
+                case "sqlite":
+                    query = f"""
+                        CREATE TABLE IF NOT EXISTS {table_name} (
+                            gid INTEGER NOT NULL PRIMARY KEY
+                                REFERENCES galleries_gids(gid)
+                                ON UPDATE CASCADE ON DELETE CASCADE
+                        )
+                    """
             connector.execute(query)
         self.logger.info(f"{table_name} table created.")
 
     def _create_todelete_names_view(self) -> None:
         with self.SQLConnector() as connector:
             table_name = "todelete_names"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    query = f"""
-                        CREATE VIEW IF NOT EXISTS {table_name} AS
-                            SELECT full_name
-                            FROM 
-                            (SELECT galleries_names.full_name AS full_name
-                            FROM todelete_gids
-                            INNER JOIN galleries_gids
-                                ON galleries_gids.gid = todelete_gids.gid
-                            INNER JOIN galleries_names
-                                ON galleries_names.db_gallery_id = galleries_gids.db_gallery_id) AS todelete_names
-                            UNION
-                                SELECT full_name
-                                FROM (
-                                    SELECT gi.name AS full_name
-                                    FROM galleries_infos gi
-                                    JOIN (
-                                        SELECT gid, MAX(download_time) AS max_download_time
-                                        FROM galleries_infos
-                                        GROUP BY gid
-                                        HAVING COUNT(*) > 1
-                                    ) sub ON gi.gid = sub.gid
-                                    WHERE gi.download_time < sub.max_download_time
-                                    ) AS duplicated_gids_names
-                    """
+            query = f"""
+                CREATE VIEW IF NOT EXISTS {table_name} AS
+                    SELECT full_name
+                    FROM
+                    (SELECT galleries_names.full_name AS full_name
+                    FROM todelete_gids
+                    INNER JOIN galleries_gids
+                        ON galleries_gids.gid = todelete_gids.gid
+                    INNER JOIN galleries_names
+                        ON galleries_names.db_gallery_id = galleries_gids.db_gallery_id) AS todelete_names
+                    UNION
+                        SELECT full_name
+                        FROM (
+                            SELECT gi.name AS full_name
+                            FROM galleries_infos gi
+                            JOIN (
+                                SELECT gid, MAX(download_time) AS max_download_time
+                                FROM galleries_infos
+                                GROUP BY gid
+                                HAVING COUNT(*) > 1
+                            ) sub ON gi.gid = sub.gid
+                            WHERE gi.download_time < sub.max_download_time
+                            ) AS duplicated_gids_names
+            """
             connector.execute(query)
         self.logger.info(f"{table_name} table created.")
 
@@ -357,6 +413,13 @@ class H2HDB(
                             PRIMARY KEY (gid),
                             gid          INT UNSIGNED NOT NULL,
                             url          CHAR({self.mariadb_index_prefix_limit}) NOT NULL
+                        )
+                    """
+                case "sqlite":
+                    query = f"""
+                        CREATE TABLE IF NOT EXISTS {table_name} (
+                            gid INTEGER NOT NULL PRIMARY KEY,
+                            url TEXT NOT NULL
                         )
                     """
             connector.execute(query)
@@ -465,6 +528,10 @@ class H2HDB(
                 case "mariadb":
                     update_query = f"""
                         UPDATE {table_name} SET time = NOW() WHERE db_gallery_id = %s
+                    """
+                case "sqlite":
+                    update_query = f"""
+                        UPDATE {table_name} SET time = datetime('now') WHERE db_gallery_id = %s
                     """
             connector.execute(update_query, (db_gallery_id,))
 
