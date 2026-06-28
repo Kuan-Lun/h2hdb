@@ -3,7 +3,6 @@ __all__ = ["H2HDB", "GALLERY_INFO_FILE_NAME"]
 
 import os
 from itertools import islice
-from time import sleep
 from typing import Any
 
 from h2h_galleryinfo_parser import (
@@ -912,7 +911,7 @@ class H2HDB(BaseRepository):
                     args=(algorithm,),
                 )
 
-    def insert_h2h_download(self) -> None:
+    def insert_h2h_download(self) -> bool:
         self.delete_pending_gallery_removals()
 
         current_galleries_folders, current_galleries_names = (
@@ -1026,12 +1025,9 @@ class H2HDB(BaseRepository):
         self.logger.info("Cleaning up database...")
         self.refresh_current_files_hashs()
 
-        if is_insert_limit_reached:
-            self.logger.info("Sleeping for 30 minutes...")
-            sleep(1800)
-            self.logger.info("Refreshing database...")
-            return self.insert_h2h_download()
+        return is_insert_limit_reached
 
+    def reset_redownload_times(self) -> None:
         self.gallery_times._reset_redownload_times()
 
     def get_komga_metadata(
