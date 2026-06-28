@@ -11,6 +11,8 @@ from .sql_connector import (
 )
 from .table_gids import H2HDBGalleriesIDs
 
+HASH_LOOKUP_BATCH_SIZE = 500
+
 
 class H2HDBFiles(BaseRepository):
     def __init__(
@@ -325,20 +327,24 @@ class H2HDBFiles(BaseRepository):
             finfo.sethash()
 
         for algorithm in HASH_ALGORITHMS:
-            toinsert: set[bytes] = set()
-            for finfo in fileinformations:
-                filehash: bytes = getattr(finfo, algorithm)
-                if not self._check_db_hash_id_by_hash_value(filehash, algorithm):
-                    toinsert.add(filehash)
-            self.insert_db_hash_id_by_hash_values(toinsert, algorithm)
+            hash_values = {
+                cast(bytes, getattr(finfo, algorithm)) for finfo in fileinformations
+            }
+            self.insert_db_hash_id_by_hash_values(hash_values, algorithm)
 
-        for finfo in fileinformations:
-            for algorithm in HASH_ALGORITHMS:
+        for algorithm in HASH_ALGORITHMS:
+            hash_values = {
+                cast(bytes, getattr(finfo, algorithm)) for finfo in fileinformations
+            }
+            db_hash_ids = self._get_db_hash_ids_by_hash_values(hash_values, algorithm)
+            for finfo in fileinformations:
+                hash_value = cast(bytes, getattr(finfo, algorithm))
+                if hash_value not in db_hash_ids:
+                    msg = f"Image hash for image ID 0x{hash_value.hex()} does not exist."
+                    raise DatabaseKeyError(msg)
                 finfo.setdb_hash_id(
                     algorithm,
-                    self.get_db_hash_id_by_hash_value(
-                        getattr(finfo, algorithm), algorithm
-                    ),
+                    db_hash_ids[hash_value],
                 )
         self.insert_hash_value_by_db_hash_ids(fileinformations)
 
@@ -428,6 +434,28 @@ class H2HDBFiles(BaseRepository):
             raise DatabaseKeyError(msg)
         return db_hash_id
 
+    def _get_db_hash_ids_by_hash_values(
+        self, hash_values: set[bytes], algorithm: str
+    ) -> dict[bytes, int]:
+        if not hash_values:
+            return {}
+
+        table_name = f"files_hashs_{algorithm.lower()}_dbids"
+        hash_value_list = list(hash_values)
+        db_hash_ids = dict[bytes, int]()
+        with self.SQLConnector() as connector:
+            for start in range(0, len(hash_value_list), HASH_LOOKUP_BATCH_SIZE):
+                batch = hash_value_list[start : start + HASH_LOOKUP_BATCH_SIZE]
+                select_query = f"""
+                    SELECT hash_value, db_hash_id
+                    FROM {table_name}
+                    WHERE hash_value IN ({", ".join(["%s"] * len(batch))})
+                """
+                query_result = connector.fetch_all(select_query, tuple(batch))
+                for hash_value, db_hash_id in query_result:
+                    db_hash_ids[cast(bytes, hash_value)] = int(db_hash_id)
+        return db_hash_ids
+
     def insert_hash_value_by_db_hash_ids(
         self, fileinformations: list[FileInformation]
     ) -> None:
@@ -459,41 +487,76 @@ class H2HDBFiles(BaseRepository):
             """
             connector.execute(insert_query, (hash_value,))
 
+    def _insert_db_hash_ids_with_split_retry(
+        self, hash_values: list[bytes], algorithm: str
+    ) -> None:
+        if not hash_values:
+            return
+
+        table_name = f"files_hashs_{algorithm.lower()}_dbids"
+        with self.SQLConnector() as connector:
+            insert_query_header = f"""
+                INSERT INTO {table_name} (hash_value)
+            """
+            insert_query_values = " ".join(
+                ["VALUES", ", ".join(["(%s)"] * len(hash_values))]
+            )
+            insert_query = f"{insert_query_header} {insert_query_values}"
+            try:
+                connector.execute(insert_query, tuple(hash_values))
+                return
+            except DatabaseDuplicateKeyError:
+                pass
+
+        existing_hash_ids = self._get_db_hash_ids_by_hash_values(
+            set(hash_values), algorithm
+        )
+        missing_hash_values = [
+            hash_value
+            for hash_value in hash_values
+            if hash_value not in existing_hash_ids
+        ]
+        if not missing_hash_values:
+            return
+
+        if len(missing_hash_values) == 1:
+            hash_value = missing_hash_values[0]
+            self.logger.warning(
+                f"Retrying to insert hash value 0x{hash_value.hex()} into the database."
+            )
+            try:
+                self.insert_db_hash_id_by_hash_value(hash_value, algorithm)
+            except DatabaseDuplicateKeyError:
+                if not self._check_db_hash_id_by_hash_value(hash_value, algorithm):
+                    raise
+            return
+
+        mid = len(missing_hash_values) // 2
+        self._insert_db_hash_ids_with_split_retry(
+            missing_hash_values[:mid], algorithm
+        )
+        self._insert_db_hash_ids_with_split_retry(
+            missing_hash_values[mid:], algorithm
+        )
+
     def insert_db_hash_id_by_hash_values(
         self, hash_values: set[bytes], algorithm: str
     ) -> None:
         if not hash_values:
             return
 
-        toinsert: list[bytes] = list()
-        for hash_value in hash_values:
-            if not self._check_db_hash_id_by_hash_value(hash_value, algorithm):
-                toinsert.append(hash_value)
+        existing_hash_ids = self._get_db_hash_ids_by_hash_values(hash_values, algorithm)
+        toinsert = [
+            hash_value
+            for hash_value in hash_values
+            if hash_value not in existing_hash_ids
+        ]
         if not toinsert:
             return
 
-        isretry = False
-        with self.SQLConnector() as connector:
-            table_name = f"files_hashs_{algorithm.lower()}_dbids"
-            insert_query_header = f"""
-                INSERT INTO {table_name} (hash_value)
-            """
-            insert_query_values = " ".join(
-                ["VALUES", ", ".join(["(%s)"] * len(toinsert))]
-            )
-            insert_query = f"{insert_query_header} {insert_query_values}"
-            try:
-                connector.execute(insert_query, tuple(toinsert))
-            except DatabaseDuplicateKeyError:
-                isretry = True
-
-        if isretry:
-            for hash_value in toinsert:
-                if not self._check_db_hash_id_by_hash_value(hash_value, algorithm):
-                    self.logger.warning(
-                        f"Retrying to insert hash value 0x{hash_value.hex()} into the database."
-                    )
-                    self.insert_db_hash_id_by_hash_values({hash_value}, algorithm)
+        for start in range(0, len(toinsert), HASH_LOOKUP_BATCH_SIZE):
+            batch = toinsert[start : start + HASH_LOOKUP_BATCH_SIZE]
+            self._insert_db_hash_ids_with_split_retry(batch, algorithm)
 
     def get_hash_value_by_db_hash_id(self, db_hash_id: int, algorithm: str) -> bytes:
         with self.SQLConnector() as connector:

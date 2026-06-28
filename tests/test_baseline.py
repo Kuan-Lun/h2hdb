@@ -85,6 +85,63 @@ def test_hash_value_round_trip(db: H2HDB) -> None:
     assert db.files.get_hash_value_by_db_hash_id(db_hash_id, "sha512") == hash_value
 
 
+def test_bulk_hash_insert_handles_stale_duplicate_read(
+    db: H2HDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hash_value = bytes.fromhex("cd" * 64)
+    db.files.insert_db_hash_id_by_hash_value(hash_value, "sha512")
+
+    original_get_hash_ids = db.files._get_db_hash_ids_by_hash_values
+    call_count = 0
+
+    def stale_once(hash_values: set[bytes], algorithm: str) -> dict[bytes, int]:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return {}
+        return original_get_hash_ids(hash_values, algorithm)
+
+    monkeypatch.setattr(db.files, "_get_db_hash_ids_by_hash_values", stale_once)
+
+    db.files.insert_db_hash_id_by_hash_values({hash_value}, "sha512")
+
+    assert db.files._check_db_hash_id_by_hash_value(hash_value, "sha512") is True
+
+
+def test_bulk_hash_insert_split_retries_duplicate_batches(
+    db: H2HDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    duplicate_hash = bytes.fromhex("dd" * 64)
+    new_hashes = [bytes([index]) * 64 for index in range(4)]
+    db.files.insert_db_hash_id_by_hash_value(duplicate_hash, "sha512")
+
+    original_get_hash_ids = db.files._get_db_hash_ids_by_hash_values
+    original_insert_hashes = db.files._insert_db_hash_ids_with_split_retry
+    call_sizes = list[int]()
+
+    def stale_once(hash_values: set[bytes], algorithm: str) -> dict[bytes, int]:
+        if hash_values == {duplicate_hash, *new_hashes}:
+            return {}
+        return original_get_hash_ids(hash_values, algorithm)
+
+    def recording_insert(hash_values: list[bytes], algorithm: str) -> None:
+        call_sizes.append(len(hash_values))
+        original_insert_hashes(hash_values, algorithm)
+
+    monkeypatch.setattr(db.files, "_get_db_hash_ids_by_hash_values", stale_once)
+    monkeypatch.setattr(
+        db.files, "_insert_db_hash_ids_with_split_retry", recording_insert
+    )
+
+    db.files.insert_db_hash_id_by_hash_values(
+        {duplicate_hash, *new_hashes}, "sha512"
+    )
+
+    for hash_value in new_hashes:
+        assert db.files._check_db_hash_id_by_hash_value(hash_value, "sha512") is True
+    assert any(call_size > 1 for call_size in call_sizes[1:])
+
+
 def test_get_files_by_gallery_name(db: H2HDB) -> None:
     gallery_name = "artist - gallery with files"
     db.gallery_ids._insert_gallery_name(gallery_name)
