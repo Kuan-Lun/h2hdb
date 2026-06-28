@@ -20,6 +20,7 @@
       "Bash(ls:*)",
       "Bash(tail:*)",
       "Bash(tree:*)",
+      "Bash(docker:*)",
       "Bash(mkdir:*)",
       "Bash(git add *)",
       "Bash(git commit -m ' *)"
