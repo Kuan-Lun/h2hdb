@@ -4,24 +4,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-H2HDB is a MySQL-backed database/cataloguer for H@H (Hentai@Home) comic collections. It scans
-a download folder for galleries (each gallery = a folder containing a `galleryinfo.txt`), records
-metadata (GID, title, tags, upload account, times, file hashes) into MySQL, and optionally
-compresses each gallery into a CBZ file. Entry point: `python -m h2hdb --config [json-path]`
-(see `src/h2hdb/__main__.py`).
+H2HDB is a MariaDB- or SQLite-backed database/cataloguer for H@H (Hentai@Home) comic collections.
+It scans a download folder for galleries (each gallery = a folder containing a `galleryinfo.txt`),
+records metadata (GID, title, tags, upload account, times, file hashes) into the database, and
+optionally compresses each gallery into a CBZ file. Entry point:
+`python -m h2hdb --config [json-path]` (see `src/h2hdb/__main__.py`).
 
-Requires Python >= 3.14. No test suite exists in this repo.
+Requires Python >= 3.14.
 
 ## Common commands
 
 Environment is managed with `uv`.
 
 ```bash
-uv pip install -e ".[dev]"      # install package + dev deps (black, ruff, mypy, pymarkdownlnt)
+uv pip install -e ".[dev]"      # install package + dev deps (black, ruff, mypy, pymarkdownlnt, pytest, testcontainers)
 uv run ruff check src/h2hdb     # lint
 uv run black src/h2hdb          # format
 uv run mypy src/h2hdb           # type-check (strict mode, see mypy.ini)
 uv run pymarkdownlnt fix .      # markdown autofix
+uv run pytest                   # run the test suite (see Testing below)
 ```
 
 Always run Python through `uv run` (e.g. `uv run python -m h2hdb ...`) so it resolves to the
@@ -37,8 +38,20 @@ blocks), registered in `.claude/settings.local.json`. It mirrors the VS Code on-
 If the venv breaks (e.g. after a Python version upgrade — mypyc extension module errors), nuke and
 rebuild it with `./scripts/rebuild-env.sh`.
 
-There are no automated tests; verifying behavior requires running against a real MySQL instance
-via a JSON config (see README.md for the config schema: `h2h`, `database`, `logger` sections).
+### Testing
+
+`tests/` holds the test suite (pytest). Most tests are parametrized over both backends via the
+`db_config` fixture in `tests/conftest.py` (`test_xxx[mariadb]` / `test_xxx[sqlite]`):
+
+- The `sqlite` param uses stdlib `sqlite3` against a temp file (never `:memory:` — every H2HDB
+  method opens its own connection, and SQLite's in-memory databases are connection-scoped, so an
+  in-memory DB would lose all data between calls).
+- The `mariadb` param uses `testcontainers` to start a throwaway MariaDB container per test run —
+  this needs a running Docker daemon, but otherwise requires no manual setup (no need to point it
+  at a real instance).
+
+`tests/test_sqlite_connector.py` covers the `SQLiteConnector` connection layer directly (not
+parametrized, since it's backend-specific by definition).
 
 ## Architecture
 
@@ -54,7 +67,7 @@ same change rather than working around it.
 multiple inheritance from a set of mixins, each living in its own `table_*.py`/`view_*.py` module
 and covering one schema concern (one table or view) plus that concern's CRUD methods. Every mixin
 ultimately inherits `H2HDBAbstract` (`h2hdb_spec.py`), which holds the shared state (`config`,
-`logger`, `SQLConnector`, `innodb_index_prefix_limit`) and declares the abstract interface `H2HDB`
+`logger`, `SQLConnector`, `mariadb_index_prefix_limit`) and declares the abstract interface `H2HDB`
 must fully implement. Higher-level mixins (e.g. one composing several table-level mixins into a SQL
 view) sit on top of the table-level ones. Read the `class H2HDB(...)` declaration in
 `h2hdb_h2hdb.py` for the current, authoritative list of mixins — don't rely on a list here, it goes
@@ -68,21 +81,38 @@ Convention for adding a new piece of gallery metadata: create a new `table_*.py`
 ### SQL abstraction
 
 `sql_connector.py` defines an abstract `SQLConnector` interface (connect/close/execute/fetch/commit/
-rollback) plus a small exception hierarchy for key/table/configuration errors — `mysql_connector.py`
-is the only concrete implementation today. Every mixin method opens a connector via
-`with self.SQLConnector() as connector:` and dispatches on `self.config.database.sql_type.lower()`
-with a `match` statement. Only the `"mysql"` case exists; the repetition was originally meant to
-leave room for other backends, but it's also exactly the kind of duplication a SOLID-driven pass
-would likely centralize (e.g. one dialect/strategy object instead of a `match` per method) — if
-that's the refactor you're doing, this paragraph describes what you're replacing, not a rule.
+rollback) plus a small exception hierarchy for key/table/configuration errors. Two concrete
+implementations exist: `mariadb_connector.py` (wraps `mysql-connector-python`, wire-protocol
+compatible with MariaDB) and `sqlite_connector.py` (wraps stdlib `sqlite3`). Every mixin method
+opens a connector via `with self.SQLConnector() as connector:` and writes its query as plain SQL
+with `%s` placeholders (the canonical placeholder style across the whole codebase —
+`SQLiteConnector` translates `%s` to `sqlite3`'s `?` internally; nothing else needs to know about
+that difference).
 
-### Long names vs MySQL index limits
+Most query bodies are identical across both backends and are written once, unconditionally. A
+`match self.config.database.sql_type.lower(): case "mariadb": ... case "sqlite": ...` dispatch is
+only used where the two backends genuinely need different SQL: DDL (`CREATE TABLE`/`CREATE VIEW`),
+anything that calls the name-column generators below, and a small set of backend-specific
+statements (date arithmetic, `OPTIMIZE TABLE` vs `VACUUM`, character-set/collation checks — search
+for `case "sqlite":` to find them all). Adding a third backend means adding a third `case` only at
+those sites, not everywhere `SQLConnector` is used.
 
-MySQL InnoDB limits indexed key prefixes to 191 bytes (`H2HDBAbstract.innodb_index_prefix_limit`).
-Gallery and file names can exceed that, so long names get split into multiple fixed-width columns
-and the index is defined across all of them together — see the name-splitting helpers on
-`H2HDBAbstract` in `h2hdb_spec.py`. Any new table keyed by a long name must follow this same
-column-splitting convention; don't key a new table on a single unsplit `CHAR(255)` column.
+### Long names vs MariaDB index limits
+
+MariaDB's InnoDB engine limits indexed key prefixes to 191 bytes
+(`H2HDBAbstract.mariadb_index_prefix_limit`). Gallery and file names can exceed that, so on the
+MariaDB backend long names get split into multiple fixed-width columns and the index is defined
+across all of them together — see `_mariadb_split_name_based_on_limit` and friends in
+`h2hdb_spec.py`. SQLite has no such limit, so the SQLite backend stores the same long name in a
+single unsplit `TEXT` column (`H2HDBAbstract.sqlite_name_columns`). Both generators return the same
+`(column_names, ddl_fragment)` shape, so the surrounding `WHERE`/`SELECT`/`INSERT` code that builds
+its query from `column_names` doesn't need to know which backend it's running against, or how many
+columns the name was split into. Any new table keyed by a long name must go through one of these
+two generators — don't key it on a single unsplit `CHAR(255)`/`VARCHAR` column directly.
+
+SQLite also has no `FULLTEXT` index; tables that declare one on MariaDB get a mirrored FTS5
+virtual table + sync triggers on SQLite instead (`H2HDBAbstract._create_sqlite_fts5_sync`) — same
+searchable capability, different mechanism.
 
 ### Configuration
 

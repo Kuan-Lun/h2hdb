@@ -42,11 +42,12 @@ The `H2HDB` is a comprehensive database for organising and managing H@H comic co
         "cbz_sort": "[str]" // `upload_time`, `download_time`, `pages`, or `pages+[num]`. The default is `no`.
     },
     "database": {
-        "sql_type": "[str]", // Now only supports `mariadb`. The default is `mariadb`. (Breaking change: previously `mysql` — existing config files must update this field.)
-        "host": "[str]", // The default is `localhost`.
-        "port": "[int]", // The default is `3306`.
-        "user": "[str]", // The default is `root`.
-        "password": "[str]" // The default is `password`.
+        "sql_type": "[str]", // `mariadb` or `sqlite`. The default is `mariadb`. (Breaking change: previously `mysql` — existing config files must update this field.)
+        "host": "[str]", // The default is `localhost`. Only used for `mariadb`.
+        "port": "[int]", // The default is `3306`. Only used for `mariadb`.
+        "user": "[str]", // The default is `root`. Only used for `mariadb`.
+        "password": "[str]", // The default is `password`. Only used for `mariadb`.
+        "database": "[str]" // The default is `h2h`. For `mariadb` this is the database name; for `sqlite` this is the path to the database file.
     },
     "logger": {
         "level": "[str]" // One of NOTSET, DEBUG, INFO, WARNING, ERROR, CRITICAL.
