@@ -8,9 +8,9 @@ import zipfile
 from PIL import Image, ImageFile
 
 from .settings import (
-    hash_function_by_file,
-    FILE_NAME_LENGTH_LIMIT,
     COMPARISON_HASH_ALGORITHM,
+    FILE_NAME_LENGTH_LIMIT,
+    hash_function_by_file,
 )
 
 Image.MAX_IMAGE_PIXELS = None

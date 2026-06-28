@@ -1,8 +1,8 @@
-from .table_uploadaccounts import H2HDBUploadAccounts
-from .table_titles import H2HDBGalleriesTitles
-from .table_times import H2HDBTimes
-from .table_gids import H2HDBGalleriesIDs, H2HDBGalleriesGIDs
 from .table_database_setting import H2HDBCheckDatabaseSettings
+from .table_gids import H2HDBGalleriesGIDs, H2HDBGalleriesIDs
+from .table_times import H2HDBTimes
+from .table_titles import H2HDBGalleriesTitles
+from .table_uploadaccounts import H2HDBUploadAccounts
 
 
 class H2HDBGalleriesInfos(

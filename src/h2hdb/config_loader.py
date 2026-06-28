@@ -4,9 +4,9 @@ import argparse
 import json
 import os
 
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .settings import LOG_LEVEL, CBZ_GROUPING, CBZ_SORT
+from .settings import CBZ_GROUPING, CBZ_SORT, LOG_LEVEL
 
 
 class ConfigError(Exception):
@@ -148,14 +148,14 @@ class H2HDBConfig(ConfigModel):
 
 def load_config(config_path: str = "") -> H2HDBConfig:
     if config_path:
-        with open(config_path, "r") as f:
+        with open(config_path) as f:
             raw = json.load(f)
     else:
         parser = argparse.ArgumentParser()
         parser.add_argument("--config")
         args = parser.parse_args()
         if args.config:
-            with open(args.config, "r") as f:
+            with open(args.config) as f:
                 raw = json.load(f)
         else:
             raw = {}  # ← 重點：傳空 config，讓 default 自動補

@@ -1,13 +1,14 @@
 from abc import ABCMeta
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-from .table_gids import H2HDBGalleriesIDs
 from .h2hdb_spec import H2HDBAbstract
 from .information import TagInformation
 from .sql_connector import (
-    DatabaseKeyError,
     DatabaseDuplicateKeyError,
+    DatabaseKeyError,
 )
+from .table_gids import H2HDBGalleriesIDs
 
 
 class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):

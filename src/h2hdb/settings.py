@@ -7,10 +7,9 @@ __all__ = [
     "hash_function_by_file",
 ]
 
-import logging
 import hashlib
-from enum import Enum
-from typing import TypeVar
+import logging
+from enum import Enum, StrEnum
 
 FOLDER_NAME_LENGTH_LIMIT = 255
 FILE_NAME_LENGTH_LIMIT = 255
@@ -27,14 +26,14 @@ class LOG_LEVEL(int, Enum):
     critical = logging.CRITICAL
 
 
-class CBZ_GROUPING(str, Enum):
+class CBZ_GROUPING(StrEnum):
     flat = "flat"
     date_yyyy = "date-yyyy"
     date_yyyy_mm = "date-yyyy-mm"
     date_yyyy_mm_dd = "date-yyyy-mm-dd"
 
 
-class CBZ_SORT(str, Enum):
+class CBZ_SORT(StrEnum):
     no = "no"
     upload_time = "upload_time"
     download_time = "download_time"
@@ -52,10 +51,7 @@ def hash_function_by_file(file_path: str, algorithm: str) -> bytes:
     return hash_function(file_content, algorithm)
 
 
-T = TypeVar("T")
-
-
-def chunk_list(input_list: list[T], chunk_size: int) -> list[list[T]]:
+def chunk_list[T](input_list: list[T], chunk_size: int) -> list[list[T]]:
     if chunk_size <= 0:
         raise ValueError("Chunk size must be greater than 0.")
 

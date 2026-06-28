@@ -39,3 +39,12 @@ Tracker = "https://github.com/Kuan-Lun/h2hdb/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/h2hdb"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+# E203/E226 conflict with Black's formatting choices; E501 is redundant with
+# Black's line-length enforcement and would otherwise fire on long inline SQL.
+extend-ignore = ["E203", "E226", "E501"]

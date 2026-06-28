@@ -3,12 +3,11 @@ from typing import Any, cast
 
 from mysql.connector import connect as SQLConnect
 from mysql.connector.abstracts import MySQLConnectionAbstract, MySQLCursorAbstract
-from mysql.connector.pooling import PooledMySQLConnection
 from mysql.connector.errors import IntegrityError
-
+from mysql.connector.pooling import PooledMySQLConnection
 from pydantic import Field
 
-from .sql_connector import SQLConnectorParams, SQLConnector, DatabaseDuplicateKeyError
+from .sql_connector import DatabaseDuplicateKeyError, SQLConnector, SQLConnectorParams
 
 AUTO_COMMIT_KEYS = ["INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER"]
 

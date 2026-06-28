@@ -11,12 +11,12 @@ __all__ = [
 __author__ = "Kuan-Lun Wang"
 
 
-from .h2hdb_h2hdb import H2HDB
 from .config_loader import (
     DatabaseConfig,
-    LoggerConfig,
     H2HConfig,
     H2HDBConfig,
+    LoggerConfig,
     load_config,
 )
+from .h2hdb_h2hdb import H2HDB
 from .logger import HentaiDBLogger, setup_logger

@@ -1,10 +1,11 @@
 import threading
-from threading import Thread
 from abc import ABCMeta, abstractmethod
-from typing import Any, Callable
+from collections.abc import Callable
+from contextlib import ExitStack
 from multiprocessing import cpu_count
 from multiprocessing.pool import Pool
-from contextlib import ExitStack
+from threading import Thread
+from typing import Any
 
 CPU_NUM = cpu_count()
 POOL_CPU_LIMIT = max(CPU_NUM - 2, 1)
@@ -38,7 +39,7 @@ class ThreadsList(list[Thread], metaclass=ABCMeta):
         )
         super().append(thread)
 
-    def __enter__(self) -> "ThreadsList":
+    def __enter__(self) -> ThreadsList:
         return self
 
     def __exit__(

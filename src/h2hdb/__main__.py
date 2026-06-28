@@ -1,4 +1,5 @@
 from h2hdb import H2HDB
+
 from .config_loader import load_config
 
 if __name__ == "__main__":

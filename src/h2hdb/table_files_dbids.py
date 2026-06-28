@@ -2,17 +2,15 @@ from abc import ABCMeta
 from itertools import chain
 from typing import Any, cast
 
-from .hash_dict import HASH_ALGORITHMS
-from .settings import FILE_NAME_LENGTH_LIMIT
-
-from .table_gids import H2HDBGalleriesIDs
-from .information import FileInformation
 from .h2hdb_spec import H2HDBAbstract
-from .settings import hash_function_by_file
+from .hash_dict import HASH_ALGORITHMS
+from .information import FileInformation
+from .settings import FILE_NAME_LENGTH_LIMIT, hash_function_by_file
 from .sql_connector import (
-    DatabaseKeyError,
     DatabaseDuplicateKeyError,
+    DatabaseKeyError,
 )
+from .table_gids import H2HDBGalleriesIDs
 
 
 class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
@@ -87,7 +85,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                             "VALUES",
                             ", ".join(
                                 [
-                                    f"(%s, {", ".join(["%s"   for _ in column_name_parts])})"
+                                    f"(%s, {", ".join(["%s" for _ in column_name_parts])})"
                                     for _ in file_names_list
                                 ]
                             ),
@@ -196,7 +194,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         self, algorithm: str, output_bits: int
     ) -> None:
         with self.SQLConnector() as connector:
-            dbids_table_name = "files_hashs_%s_dbids" % algorithm.lower()
+            dbids_table_name = f"files_hashs_{algorithm.lower()}_dbids"
             match self.config.database.sql_type.lower():
                 case "mysql":
                     query = f"""
@@ -210,7 +208,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             connector.execute(query)
             self.logger.info(f"{dbids_table_name} table created.")
 
-            table_name = "files_hashs_%s" % algorithm.lower()
+            table_name = f"files_hashs_{algorithm.lower()}"
             match self.config.database.sql_type.lower():
                 case "mysql":
                     query = f"""

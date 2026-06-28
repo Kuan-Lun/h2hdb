@@ -12,23 +12,22 @@ from h2h_galleryinfo_parser import (
     parse_galleryinfo,
 )
 
+from .hash_dict import HASH_ALGORITHMS
 from .information import FileInformation, TagInformation
-from .settings import chunk_list, hash_function_by_file
+from .settings import (
+    COMPARISON_HASH_ALGORITHM,
+    FILE_NAME_LENGTH_LIMIT,
+    FOLDER_NAME_LENGTH_LIMIT,
+    GALLERY_INFO_FILE_NAME,
+    chunk_list,
+    hash_function_by_file,
+)
 from .table_comments import H2HDBGalleriesComments
 from .table_files_dbids import H2HDBFiles
 from .table_removed_gids import H2HDBRemovedGalleries
 from .table_tags import H2HDBGalleriesTags
-from .threading_tools import run_in_parallel, SQLThreadsList
+from .threading_tools import POOL_CPU_LIMIT, SQLThreadsList, run_in_parallel
 from .view_ginfo import H2HDBGalleriesInfos
-
-from .hash_dict import HASH_ALGORITHMS
-from .settings import (
-    COMPARISON_HASH_ALGORITHM,
-    FOLDER_NAME_LENGTH_LIMIT,
-    FILE_NAME_LENGTH_LIMIT,
-    GALLERY_INFO_FILE_NAME,
-)
-from .threading_tools import POOL_CPU_LIMIT
 
 
 def get_sorting_base_level(x: int = 20) -> int:
@@ -241,7 +240,7 @@ class H2HDB(
                 case "mysql":
 
                     def get_optimize_query(x: str) -> str:
-                        return "OPTIMIZE TABLE {x}".format(x=x)
+                        return f"OPTIMIZE TABLE {x}"
 
             for table_name in table_names:
                 connector.execute(get_optimize_query(table_name))
@@ -615,8 +614,8 @@ class H2HDB(
         self, gallery_folder: str, exclude_hashs: list[bytes]
     ) -> bool:
         from .compress_gallery_to_cbz import (
-            compress_images_and_create_cbz,
             calculate_hash_of_file_in_cbz,
+            compress_images_and_create_cbz,
         )
 
         galleryinfo_params = parse_galleryinfo(gallery_folder)
@@ -957,8 +956,8 @@ class H2HDB(
         metadata["releaseDate"] = "-".join(
             [
                 str(upload_time.year),
-                "{m:02d}".format(m=upload_time.month),
-                "{d:02d}".format(d=upload_time.day),
+                f"{upload_time.month:02d}",
+                f"{upload_time.day:02d}",
             ]
         )
         tags = self.get_tag_pairs_by_gallery_name(gallery_name)

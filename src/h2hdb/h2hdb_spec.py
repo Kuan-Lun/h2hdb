@@ -3,7 +3,6 @@ import re
 from abc import ABCMeta, abstractmethod
 from functools import partial
 
-
 from .config_loader import H2HDBConfig
 from .logger import setup_logger
 from .settings import (
@@ -34,7 +33,7 @@ class H2HDBAbstract(metaclass=ABCMeta):
         # Set the appropriate connector based on the SQL type
         match self.config.database.sql_type.lower():
             case "mysql":
-                from .mysql_connector import MySQLConnectorParams, MySQLConnector
+                from .mysql_connector import MySQLConnector, MySQLConnectorParams
 
                 self.sql_connection_params = MySQLConnectorParams(
                     host=self.config.database.host,
@@ -50,7 +49,7 @@ class H2HDBAbstract(metaclass=ABCMeta):
             case _:
                 raise ValueError("Unsupported SQL type")
 
-    def __enter__(self) -> "H2HDBAbstract":
+    def __enter__(self) -> H2HDBAbstract:
         return self
 
     def __exit__(

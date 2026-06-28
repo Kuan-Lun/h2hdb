@@ -1,11 +1,10 @@
+import datetime
 from abc import ABCMeta
 from typing import cast
-import datetime
 
-
-from .table_gids import H2HDBGalleriesIDs
 from .h2hdb_spec import H2HDBAbstract
 from .sql_connector import DatabaseKeyError
+from .table_gids import H2HDBGalleriesIDs
 
 
 class H2HDBTimes(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):

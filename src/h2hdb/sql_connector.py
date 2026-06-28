@@ -123,7 +123,7 @@ class SQLConnector(ABC):
         """
         pass
 
-    def __enter__(self) -> "SQLConnector":
+    def __enter__(self) -> SQLConnector:
         """
         Establishes a connection to the SQL database.
 
