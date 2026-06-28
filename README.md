@@ -2,7 +2,10 @@
 
 ## Description
 
-The `H2HDB` is a comprehensive database for organising and managing H@H comic collections. It offers a streamlined way to catalogue your comics, providing key information such as GID (Gallery ID), title, tags and more, ensuring your collection is always organised and accessible.
+The `H2HDB` is a comprehensive database for organising and managing H@H comic
+collections. It offers a streamlined way to catalogue your comics, providing
+key information such as GID (Gallery ID), title, tags and more, ensuring your
+collection is always organised and accessible.
 
 ---
 
@@ -17,8 +20,8 @@ The `H2HDB` is a comprehensive database for organising and managing H@H comic co
 
 ## Installation and Usage
 
-1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/) (manages the Python
-   version and dependencies for you).
+1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/).
+   It manages the Python version and dependencies for you.
 1. Install the required packages.
 
     ```bash
@@ -36,35 +39,56 @@ The `H2HDB` is a comprehensive database for organising and managing H@H comic co
 ```json
 {
     "h2h": {
-        "download_path": "[str]", // The download path of H@H. The default is `download`.
-        "cbz_path": "[str]", // The cbz in this path.
-        "cbz_max_size": "[int]", // The maxinum of the mininum of width and height height. The default is `768`.
-        "cbz_grouping": "[str]", // `flat`, `date-yyyy`, `date-yyyy-mm`, or `date-yyyy-mm-dd`. The default is `flat`.
-        "cbz_sort": "[str]" // `upload_time`, `download_time`, `pages`, or `pages+[num]`. The default is `no`.
+        "download_path": "download",
+        "cbz_path": "",
+        "cbz_max_size": 768,
+        "cbz_grouping": "flat",
+        "cbz_sort": "no"
     },
     "database": {
-        "sql_type": "[str]", // `mariadb` or `sqlite`. The default is `mariadb`. (Breaking change: previously `mysql` — existing config files must update this field.)
-        "host": "[str]", // The default is `localhost`. Only used for `mariadb`.
-        "port": "[int]", // The default is `3306`. Only used for `mariadb`.
-        "user": "[str]", // The default is `root`. Only used for `mariadb`.
-        "password": "[str]", // The default is `password`. Only used for `mariadb`.
-        "database": "[str]" // The default is `h2h`. For `mariadb` this is the database name; for `sqlite` this is the path to the database file.
+        "sql_type": "mariadb",
+        "host": "localhost",
+        "port": 3306,
+        "user": "root",
+        "password": "password",
+        "database": "h2h"
     },
     "logger": {
-        "level": "[str]" // One of NOTSET, DEBUG, INFO, WARNING, ERROR, CRITICAL.
+        "level": "INFO"
     }
 }
 ```
+
+- `h2h.download_path`: H@H download path. The default is `download`.
+- `h2h.cbz_path`: directory for CBZ output. The default is empty.
+- `h2h.cbz_max_size`: maximum image size. The default is `768`.
+- `h2h.cbz_grouping`: `flat`, `date-yyyy`, `date-yyyy-mm`, or
+  `date-yyyy-mm-dd`. The default is `flat`.
+- `h2h.cbz_sort`: `no`, `upload_time`, `download_time`, `gid`, `title`,
+  `pages`, or `pages+[num]`. The default is `no`.
+- `database.sql_type`: `mariadb` or `sqlite`. The default is `mariadb`.
+  Existing config files that still use `mysql` must update this field.
+- `database.host`, `database.port`, `database.user`, and `database.password`
+  are only used for `mariadb`.
+- `database.database`: for `mariadb`, this is the database name. For `sqlite`,
+  this is the path to the database file.
+- `logger.level`: one of `NOTSET`, `DEBUG`, `INFO`, `WARNING`, `ERROR`, or
+  `CRITICAL`.
 
 ---
 
 ## Q & A
 
 - Why are some images missing from the CBZ-files?
-`H2HDB` does not compress images that are considered spam according to certain rules. If you encounter any images that you believe should have been included, please report the issue.
+
+`H2HDB` does not compress images that are considered spam according to certain
+rules. If you encounter any images that you believe should have been included,
+please report the issue.
 
 - Why are some images in some CBZ files and not in other CBZ-files?
-`H2HDB` learns the spam rule from the previous CBZ files. If you kill the CBZ files containing these images, the new CBZ files will not contain these images.
+
+`H2HDB` learns the spam rule from the previous CBZ files. If you kill the CBZ
+files containing these images, the new CBZ files will not contain these images.
 
 ---
 
@@ -76,4 +100,6 @@ The project was created by [Kuan-Lun Wang](https://www.klwang.tw/home/).
 
 ## License
 
-This project is distributed under the terms of the GNU General Public Licence (GPL). For detailed licence terms, see the `LICENSE` file included in this distribution.
+This project is distributed under the terms of the GNU General Public Licence
+(GPL). For detailed licence terms, see the `LICENSE` file included in this
+distribution.
