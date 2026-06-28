@@ -19,9 +19,8 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             table_name = "files_dbids"
             match self.config.database.sql_type.lower():
                 case "mariadb":
-                    column_name = "name"
                     column_name_parts, create_gallery_name_parts_sql = (
-                        self.mariadb_split_file_name_based_on_limit(column_name)
+                        self.mariadb_split_file_name_based_on_limit("name")
                     )
                     query = f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
@@ -34,6 +33,21 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                             {create_gallery_name_parts_sql},
                             UNIQUE real_primay_key (db_gallery_id, {", ".join(column_name_parts)}),
                             UNIQUE db_file_to_gallery_id (db_file_id, db_gallery_id)
+                        )
+                    """
+                case "sqlite":
+                    column_name_parts, create_gallery_name_parts_sql = (
+                        self.sqlite_name_columns("name")
+                    )
+                    query = f"""
+                        CREATE TABLE IF NOT EXISTS {table_name} (
+                            db_file_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                            db_gallery_id INTEGER NOT NULL
+                                REFERENCES galleries_dbids(db_gallery_id)
+                                ON UPDATE CASCADE ON DELETE CASCADE,
+                            {create_gallery_name_parts_sql},
+                            UNIQUE (db_gallery_id, {", ".join(column_name_parts)}),
+                            UNIQUE (db_file_id, db_gallery_id)
                         )
                     """
             connector.execute(query)
@@ -53,7 +67,23 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                             FULLTEXT (full_name)
                         )
                     """
+                case "sqlite":
+                    query = f"""
+                        CREATE TABLE IF NOT EXISTS {table_name} (
+                            db_file_id INTEGER NOT NULL PRIMARY KEY
+                                REFERENCES files_dbids(db_file_id)
+                                ON UPDATE CASCADE ON DELETE CASCADE,
+                            full_name TEXT NOT NULL
+                        )
+                    """
             connector.execute(query)
+
+            match self.config.database.sql_type.lower():
+                case "sqlite":
+                    self._create_sqlite_fts5_sync(
+                        connector, table_name, "full_name", "db_file_id"
+                    )
+
             self.logger.info(f"{table_name} table created.")
 
     def _insert_gallery_files(
@@ -76,22 +106,24 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                     column_name_parts, _ = self.mariadb_split_file_name_based_on_limit(
                         "name"
                     )
-                    insert_query_header = f"""
-                        INSERT INTO {table_name}
-                            (db_gallery_id, {", ".join(column_name_parts)})
-                    """  # VALUES (%s, {", ".join(["%s" for _ in column_name_parts])})
-                    insert_query_values = " ".join(
+                case "sqlite":
+                    column_name_parts, _ = self.sqlite_name_columns("name")
+            insert_query_header = f"""
+                INSERT INTO {table_name}
+                    (db_gallery_id, {", ".join(column_name_parts)})
+            """
+            insert_query_values = " ".join(
+                [
+                    "VALUES",
+                    ", ".join(
                         [
-                            "VALUES",
-                            ", ".join(
-                                [
-                                    f"(%s, {", ".join(["%s" for _ in column_name_parts])})"
-                                    for _ in file_names_list
-                                ]
-                            ),
+                            f"(%s, {", ".join(["%s" for _ in column_name_parts])})"
+                            for _ in file_names_list
                         ]
-                    )
-                    insert_query = f"{insert_query_header} {insert_query_values}"
+                    ),
+                ]
+            )
+            insert_query = f"{insert_query_header} {insert_query_values}"
             insert_parameter = tuple(
                 chain(
                     *[
@@ -111,18 +143,13 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             ]
 
             table_name = "files_names"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    column_name_parts, _ = self.mariadb_split_file_name_based_on_limit(
-                        "name"
-                    )
-                    insert_query_header = f"""
-                        INSERT INTO {table_name}
-                            (db_file_id, full_name)
-                    """
-                    insert_query_values = " ".join(
-                        ["VALUES", ", ".join(["(%s, %s)" for _ in file_names_list])]
-                    )
+            insert_query_header = f"""
+                INSERT INTO {table_name}
+                    (db_file_id, full_name)
+            """
+            insert_query_values = " ".join(
+                ["VALUES", ", ".join(["(%s, %s)" for _ in file_names_list])]
+            )
             insert_query = f"{insert_query_header} {insert_query_values}"
 
             connector.execute(
@@ -146,12 +173,14 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                     column_name_parts, _ = self.mariadb_split_file_name_based_on_limit(
                         "name"
                     )
-                    select_query = f"""
-                        SELECT db_file_id
-                        FROM {table_name}
-                        WHERE db_gallery_id = %s
-                        AND {" AND ".join([f"{part} = %s" for part in column_name_parts])}
-                    """
+                case "sqlite":
+                    column_name_parts, _ = self.sqlite_name_columns("name")
+            select_query = f"""
+                SELECT db_file_id
+                FROM {table_name}
+                WHERE db_gallery_id = %s
+                AND {" AND ".join([f"{part} = %s" for part in column_name_parts])}
+            """
             data = (db_gallery_id, *file_name_parts)
             query_result = connector.fetch_one(select_query, data)
         return query_result
@@ -173,11 +202,11 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def get_files_by_gallery_name(self, gallery_name: str) -> list[str]:
         with self.SQLConnector() as connector:
             db_gallery_id = self._get_db_gallery_id_by_gallery_name(gallery_name)
-            table_name = "files_names"
-            select_query = f"""
-                SELECT full_name
-                    FROM {table_name}
-                    WHERE db_gallery_id = %s
+            select_query = """
+                SELECT files_names.full_name
+                FROM files_names
+                JOIN files_dbids USING (db_file_id)
+                WHERE files_dbids.db_gallery_id = %s
             """
             query_result = connector.fetch_all(select_query, (db_gallery_id,))
         if query_result:
@@ -203,6 +232,14 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                             UNIQUE (hash_value)
                         )
                     """
+                case "sqlite":
+                    query = f"""
+                        CREATE TABLE IF NOT EXISTS {dbids_table_name} (
+                            db_hash_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            hash_value BLOB NOT NULL,
+                            UNIQUE (hash_value)
+                        )
+                    """
             connector.execute(query)
             self.logger.info(f"{dbids_table_name} table created.")
 
@@ -222,6 +259,18 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                             UNIQUE db_hash_id (db_hash_id, db_file_id)
                         )
                     """
+                case "sqlite":
+                    query = f"""
+                        CREATE TABLE IF NOT EXISTS {table_name} (
+                            db_file_id INTEGER NOT NULL PRIMARY KEY
+                                REFERENCES files_dbids(db_file_id)
+                                ON UPDATE CASCADE ON DELETE CASCADE,
+                            db_hash_id INTEGER NOT NULL
+                                REFERENCES {dbids_table_name}(db_hash_id)
+                                ON UPDATE CASCADE,
+                            UNIQUE (db_hash_id, db_file_id)
+                        )
+                    """
             connector.execute(query)
             self.logger.info(f"{table_name} table created.")
 
@@ -234,22 +283,20 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
     def _create_gallery_image_hash_view(self) -> None:
         with self.SQLConnector() as connector:
             table_name = "files_hashs"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    query = f"""
-                        CREATE VIEW IF NOT EXISTS {table_name} AS
-                        SELECT files_names.db_file_id               AS db_file_id,
-                            galleries_titles.title               AS gallery_title,
-                            galleries_names.full_name            AS gallery_name,
-                            files_names.full_name                AS file_name,
-                            files_hashs_sha512_dbids.hash_value  AS sha512
-                        FROM files_names
-                            LEFT JOIN files_dbids                USING (db_file_id)
-                            LEFT JOIN galleries_titles           USING (db_gallery_id)
-                            LEFT JOIN galleries_names            USING (db_gallery_id)
-                            LEFT JOIN files_hashs_sha512         USING (db_file_id)
-                            LEFT JOIN files_hashs_sha512_dbids   USING (db_hash_id)
-                    """
+            query = f"""
+                CREATE VIEW IF NOT EXISTS {table_name} AS
+                SELECT files_names.db_file_id               AS db_file_id,
+                    galleries_titles.title               AS gallery_title,
+                    galleries_names.full_name            AS gallery_name,
+                    files_names.full_name                AS file_name,
+                    files_hashs_sha512_dbids.hash_value  AS sha512
+                FROM files_names
+                    LEFT JOIN files_dbids                USING (db_file_id)
+                    LEFT JOIN galleries_titles           USING (db_gallery_id)
+                    LEFT JOIN galleries_names            USING (db_gallery_id)
+                    LEFT JOIN files_hashs_sha512         USING (db_file_id)
+                    LEFT JOIN files_hashs_sha512_dbids   USING (db_hash_id)
+            """
             connector.execute(query)
             self.logger.info(f"{table_name} view created.")
 
@@ -322,14 +369,12 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                 else:
                     with self.SQLConnector() as connector:
                         table_name = f"files_hashs_{algorithm.lower()}_dbids"
-                        match self.config.database.sql_type.lower():
-                            case "mariadb":
-                                insert_hash_value_query = f"""
-                                    INSERT INTO {table_name} (hash_value) VALUES (UNHEX(%s))
-                                """
+                        insert_hash_value_query = f"""
+                            INSERT INTO {table_name} (hash_value) VALUES (%s)
+                        """
                         try:
                             connector.execute(
-                                insert_hash_value_query, (current_hash_value.hex(),)
+                                insert_hash_value_query, (current_hash_value,)
                             )
                         except DatabaseDuplicateKeyError:
                             self.logger.warning(
@@ -343,11 +388,9 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
 
                 with self.SQLConnector() as connector:
                     table_name = f"files_hashs_{algorithm.lower()}"
-                    match self.config.database.sql_type.lower():
-                        case "mariadb":
-                            insert_db_hash_id_query = f"""
-                                INSERT INTO {table_name} (db_file_id, db_hash_id) VALUES (%s, %s)
-                            """
+                    insert_db_hash_id_query = f"""
+                        INSERT INTO {table_name} (db_file_id, db_hash_id) VALUES (%s, %s)
+                    """
                     connector.execute(insert_db_hash_id_query, (db_file_id, db_hash_id))
 
     def __get_db_hash_id_by_hash_value(
@@ -358,9 +401,9 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
             select_query = f"""
                 SELECT db_hash_id
                 FROM {table_name}
-                WHERE hash_value = UNHEX(%s)
+                WHERE hash_value = %s
             """
-            query_result = connector.fetch_one(select_query, (hash_value.hex(),))
+            query_result = connector.fetch_one(select_query, (hash_value,))
         return query_result
 
     def _check_db_hash_id_by_hash_value(
@@ -405,9 +448,9 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         with self.SQLConnector() as connector:
             table_name = f"files_hashs_{algorithm.lower()}_dbids"
             insert_query = f"""
-                INSERT INTO {table_name} (hash_value) VALUES (UNHEX(%s))
+                INSERT INTO {table_name} (hash_value) VALUES (%s)
             """
-            connector.execute(insert_query, (hash_value.hex(),))
+            connector.execute(insert_query, (hash_value,))
 
     def insert_db_hash_id_by_hash_values(
         self, hash_values: set[bytes], algorithm: str
@@ -415,10 +458,10 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
         if not hash_values:
             return
 
-        toinsert: list[str] = list()
+        toinsert: list[bytes] = list()
         for hash_value in hash_values:
             if not self._check_db_hash_id_by_hash_value(hash_value, algorithm):
-                toinsert.append(hash_value.hex())
+                toinsert.append(hash_value)
         if not toinsert:
             return
 
@@ -429,7 +472,7 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                 INSERT INTO {table_name} (hash_value)
             """
             insert_query_values = " ".join(
-                ["VALUES", ", ".join(["(UNHEX(%s))"] * len(toinsert))]
+                ["VALUES", ", ".join(["(%s)"] * len(toinsert))]
             )
             insert_query = f"{insert_query_header} {insert_query_values}"
             try:
@@ -438,14 +481,12 @@ class H2HDBFiles(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                 isretry = True
 
         if isretry:
-            for hash_hex in toinsert:
+            for hash_value in toinsert:
                 if not self._check_db_hash_id_by_hash_value(hash_value, algorithm):
                     self.logger.warning(
-                        f"Retrying to insert hash value 0x{hash_hex} into the database."
+                        f"Retrying to insert hash value 0x{hash_value.hex()} into the database."
                     )
-                    self.insert_db_hash_id_by_hash_values(
-                        {bytes.fromhex(hash_hex)}, algorithm
-                    )
+                    self.insert_db_hash_id_by_hash_values({hash_value}, algorithm)
 
     def get_hash_value_by_db_hash_id(self, db_hash_id: int, algorithm: str) -> bytes:
         with self.SQLConnector() as connector:

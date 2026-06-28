@@ -77,3 +77,18 @@ def test_hash_value_round_trip(db: H2HDB) -> None:
     db_hash_id = db.get_db_hash_id_by_hash_value(hash_value, "sha512")
     assert isinstance(db_hash_id, int)
     assert db.get_hash_value_by_db_hash_id(db_hash_id, "sha512") == hash_value
+
+
+def test_get_files_by_gallery_name(db: H2HDB) -> None:
+    gallery_name = "artist - gallery with files"
+    db._insert_gallery_name(gallery_name)
+    db_gallery_id = db._get_db_gallery_id_by_gallery_name(gallery_name)
+
+    db._insert_gallery_files(db_gallery_id, ["page1.jpg", "page2.jpg"])
+
+    assert sorted(db.get_files_by_gallery_name(gallery_name)) == [
+        "page1.jpg",
+        "page2.jpg",
+    ]
+    db_file_id = db._get_db_file_id(db_gallery_id, "page1.jpg")
+    assert isinstance(db_file_id, int)

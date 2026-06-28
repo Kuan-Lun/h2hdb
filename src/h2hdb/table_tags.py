@@ -22,6 +22,12 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                             tag_name CHAR({self.mariadb_index_prefix_limit}) NOT NULL
                         )
                     """
+                case "sqlite":
+                    query = f"""
+                        CREATE TABLE IF NOT EXISTS {tag_name_table_name} (
+                            tag_name TEXT NOT NULL PRIMARY KEY
+                        )
+                    """
             connector.execute(query)
             self.logger.info(f"{tag_name_table_name} table created.")
 
@@ -32,6 +38,12 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                         CREATE TABLE IF NOT EXISTS {tag_value_table_name} (
                             PRIMARY KEY (tag_value),
                             tag_value CHAR({self.mariadb_index_prefix_limit}) NOT NULL
+                        )
+                    """
+                case "sqlite":
+                    query = f"""
+                        CREATE TABLE IF NOT EXISTS {tag_value_table_name} (
+                            tag_value TEXT NOT NULL PRIMARY KEY
                         )
                     """
             connector.execute(query)
@@ -56,7 +68,28 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                             INDEX (tag_value)
                         )
                     """
+                case "sqlite":
+                    query = f"""
+                        CREATE TABLE IF NOT EXISTS {tag_pairs_table_name} (
+                            db_tag_pair_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            tag_name       TEXT NOT NULL
+                                REFERENCES {tag_name_table_name}(tag_name)
+                                ON UPDATE CASCADE ON DELETE CASCADE,
+                            tag_value      TEXT NOT NULL
+                                REFERENCES {tag_value_table_name}(tag_value)
+                                ON UPDATE CASCADE ON DELETE CASCADE,
+                            UNIQUE (tag_name, tag_value)
+                        )
+                    """
             connector.execute(query)
+
+            match self.config.database.sql_type.lower():
+                case "sqlite":
+                    connector.execute(
+                        f"CREATE INDEX IF NOT EXISTS idx_{tag_pairs_table_name}_tag_value "
+                        f"ON {tag_pairs_table_name}(tag_value)"
+                    )
+
             self.logger.info(f"{tag_pairs_table_name} table created.")
 
             table_name = "galleries_tags"
@@ -73,6 +106,19 @@ class H2HDBGalleriesTags(H2HDBGalleriesIDs, H2HDBAbstract, metaclass=ABCMeta):
                             FOREIGN KEY (db_tag_pair_id) REFERENCES {tag_pairs_table_name}(db_tag_pair_id)
                                 ON UPDATE CASCADE
                                 ON DELETE CASCADE,
+                            UNIQUE (db_tag_pair_id, db_gallery_id)
+                        )
+                    """
+                case "sqlite":
+                    query = f"""
+                        CREATE TABLE IF NOT EXISTS {table_name} (
+                            db_gallery_id  INTEGER NOT NULL
+                                REFERENCES galleries_dbids(db_gallery_id)
+                                ON UPDATE CASCADE ON DELETE CASCADE,
+                            db_tag_pair_id INTEGER NOT NULL
+                                REFERENCES {tag_pairs_table_name}(db_tag_pair_id)
+                                ON UPDATE CASCADE ON DELETE CASCADE,
+                            PRIMARY KEY (db_gallery_id, db_tag_pair_id),
                             UNIQUE (db_tag_pair_id, db_gallery_id)
                         )
                     """
