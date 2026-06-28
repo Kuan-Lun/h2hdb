@@ -24,9 +24,16 @@ class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
         """
         Checks the character set of the database and raises an error if it is invalid.
 
+        SQLite has no database-level character set setting (TEXT is always UTF-8), so this
+        is a no-op for the "sqlite" backend.
+
         Raises:
             DatabaseConfigurationError: If the database character set is invalid.
         """
+        match self.config.database.sql_type.lower():
+            case "sqlite":
+                return
+
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
                 case "mariadb":
@@ -45,9 +52,16 @@ class H2HDBCheckDatabaseSettings(H2HDBAbstract, metaclass=ABCMeta):
         """
         Checks the collation of the database and raises an error if it is invalid.
 
+        SQLite has no database-level collation setting (collation is a per-column/per-expression
+        concept in SQLite), so this is a no-op for the "sqlite" backend.
+
         Raises:
             DatabaseConfigurationError: If the database collation is invalid.
         """
+        match self.config.database.sql_type.lower():
+            case "sqlite":
+                return
+
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
                 case "mariadb":
