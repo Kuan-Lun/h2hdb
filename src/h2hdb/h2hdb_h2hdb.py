@@ -58,19 +58,6 @@ class H2HDB(BaseRepository):
         self.gallery_tags = H2HDBGalleriesTags(context, self.gallery_ids)
         self.files = H2HDBFiles(context, self.gallery_ids)
         self.removed_galleries = H2HDBRemovedGalleries(context)
-        self._repositories = (
-            self.database_settings,
-            self.gallery_ids,
-            self.gallery_gids,
-            self.gallery_times,
-            self.gallery_titles,
-            self.upload_accounts,
-            self.gallery_infos,
-            self.gallery_comments,
-            self.gallery_tags,
-            self.files,
-            self.removed_galleries,
-        )
 
     def __enter__(self) -> H2HDB:
         return self
@@ -85,11 +72,11 @@ class H2HDB(BaseRepository):
             with self.SQLConnector() as connector:
                 connector.commit()
 
-    def __getattr__(self, name: str) -> Any:
-        for repository in self._repositories:
-            if hasattr(repository, name):
-                return getattr(repository, name)
-        raise AttributeError(name)
+    def check_database_character_set(self) -> None:
+        self.database_settings.check_database_character_set()
+
+    def check_database_collation(self) -> None:
+        self.database_settings.check_database_collation()
 
     def _create_pending_gallery_removals_table(self) -> None:
         with self.SQLConnector() as connector:
@@ -999,9 +986,10 @@ class H2HDB(BaseRepository):
             # Insert gallery info to database
             is_insert_list: list[bool] = list()
             try:
+                config_data = self.config.model_dump(mode="json")
                 is_insert_list += run_in_parallel(
-                    self.insert_gallery_info,
-                    [(x,) for x in gallery_chunk],
+                    insert_gallery_info_worker,
+                    [(config_data, x) for x in gallery_chunk],
                 )
             except Exception as e:
                 self.logger.error(f"Error inserting galleries: {e}")
@@ -1022,9 +1010,10 @@ class H2HDB(BaseRepository):
                             previously_count_duplicated_files, exclude_hashs
                         )
                     )
+                config_data = self.config.model_dump(mode="json")
                 is_new_list = run_in_parallel(
-                    self.compress_gallery_to_cbz,
-                    [(x, exclude_hashs) for x in gallery_chunk],
+                    compress_gallery_to_cbz_worker,
+                    [(config_data, x, exclude_hashs) for x in gallery_chunk],
                 )
                 if any(is_new_list):
                     self.logger.info("There are new CBZ files created.")
@@ -1069,3 +1058,21 @@ class H2HDB(BaseRepository):
             {"name": value, "role": key} for key, value in tags if value != ""
         ]
         return metadata
+
+
+def insert_gallery_info_worker(
+    config_data: dict[str, Any], gallery_folder: str
+) -> bool:
+    config = H2HDBConfig.model_validate(config_data)
+    with H2HDB(config=config) as connector:
+        return connector.insert_gallery_info(gallery_folder)
+
+
+def compress_gallery_to_cbz_worker(
+    config_data: dict[str, Any],
+    gallery_folder: str,
+    exclude_hashs: list[bytes],
+) -> bool:
+    config = H2HDBConfig.model_validate(config_data)
+    with H2HDB(config=config) as connector:
+        return connector.compress_gallery_to_cbz(gallery_folder, exclude_hashs)

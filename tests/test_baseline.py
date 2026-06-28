@@ -1,9 +1,12 @@
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
 from h2hdb import H2HDB, H2HDBConfig
+from h2hdb.h2hdb_h2hdb import insert_gallery_info_worker
 from h2hdb.sql_connector import DatabaseDuplicateKeyError, DatabaseKeyError
+from h2hdb.threading_tools import run_in_parallel
 
 
 @pytest.fixture
@@ -16,79 +19,113 @@ def db(db_config: H2HDBConfig) -> Iterator[H2HDB]:
 
 def test_gallery_name_round_trip(db: H2HDB) -> None:
     gallery_name = "artist - gallery title"
-    db._insert_gallery_name(gallery_name)
+    db.gallery_ids._insert_gallery_name(gallery_name)
 
-    assert db._check_galleries_dbids_by_gallery_name(gallery_name) is True
-    db_gallery_id = db._get_db_gallery_id_by_gallery_name(gallery_name)
+    assert db.gallery_ids._check_galleries_dbids_by_gallery_name(gallery_name) is True
+    db_gallery_id = db.gallery_ids._get_db_gallery_id_by_gallery_name(gallery_name)
     assert isinstance(db_gallery_id, int)
 
 
 def test_gallery_gid_round_trip(db: H2HDB) -> None:
     gallery_name = "artist - another gallery"
-    db._insert_gallery_name(gallery_name)
-    db_gallery_id = db._get_db_gallery_id_by_gallery_name(gallery_name)
+    db.gallery_ids._insert_gallery_name(gallery_name)
+    db_gallery_id = db.gallery_ids._get_db_gallery_id_by_gallery_name(gallery_name)
 
-    db._insert_gallery_gid(db_gallery_id, gid=123456)
+    db.gallery_gids._insert_gallery_gid(db_gallery_id, gid=123456)
 
-    assert db.check_gid_by_gid(123456) is True
-    assert db.get_gid_by_gallery_name(gallery_name) == 123456
-    assert db.get_gids() == [123456]
+    assert db.gallery_gids.check_gid_by_gid(123456) is True
+    assert db.gallery_gids.get_gid_by_gallery_name(gallery_name) == 123456
+    assert db.gallery_gids.get_gids() == [123456]
 
 
 def test_gallery_gid_duplicate_raises(db: H2HDB) -> None:
     gallery_name = "artist - yet another gallery"
-    db._insert_gallery_name(gallery_name)
-    db_gallery_id = db._get_db_gallery_id_by_gallery_name(gallery_name)
-    db._insert_gallery_gid(db_gallery_id, gid=999)
+    db.gallery_ids._insert_gallery_name(gallery_name)
+    db_gallery_id = db.gallery_ids._get_db_gallery_id_by_gallery_name(gallery_name)
+    db.gallery_gids._insert_gallery_gid(db_gallery_id, gid=999)
 
     with pytest.raises(DatabaseDuplicateKeyError):
-        db._insert_gallery_gid(db_gallery_id, gid=999)
+        db.gallery_gids._insert_gallery_gid(db_gallery_id, gid=999)
 
 
 def test_removed_gallery_gid_round_trip(db: H2HDB) -> None:
-    db.insert_removed_gallery_gid(42)
+    db.removed_galleries.insert_removed_gallery_gid(42)
 
-    assert db._check_removed_gallery_gid(42) is True
-    assert db.select_removed_gallery_gid(42) == 42
+    assert db.removed_galleries._check_removed_gallery_gid(42) is True
+    assert db.removed_galleries.select_removed_gallery_gid(42) == 42
 
 
 def test_removed_gallery_gid_missing_raises(db: H2HDB) -> None:
     with pytest.raises(DatabaseKeyError):
-        db.select_removed_gallery_gid(404)
+        db.removed_galleries.select_removed_gallery_gid(404)
 
 
 def test_gallery_comment_round_trip(db: H2HDB) -> None:
     gallery_name = "artist - commented gallery"
-    db._insert_gallery_name(gallery_name)
-    db_gallery_id = db._get_db_gallery_id_by_gallery_name(gallery_name)
+    db.gallery_ids._insert_gallery_name(gallery_name)
+    db_gallery_id = db.gallery_ids._get_db_gallery_id_by_gallery_name(gallery_name)
 
-    db._insert_gallery_comment(db_gallery_id, "hello world")
+    db.gallery_comments._insert_gallery_comment(db_gallery_id, "hello world")
 
-    assert db._check_gallery_comment_by_db_gallery_id(db_gallery_id) is True
-    assert db._select_gallery_comment(db_gallery_id) == "hello world"
+    assert (
+        db.gallery_comments._check_gallery_comment_by_db_gallery_id(db_gallery_id)
+        is True
+    )
+    assert db.gallery_comments._select_gallery_comment(db_gallery_id) == "hello world"
 
 
 def test_hash_value_round_trip(db: H2HDB) -> None:
     hash_value = bytes.fromhex("ab" * 64)
 
-    db.insert_db_hash_id_by_hash_value(hash_value, "sha512")
+    db.files.insert_db_hash_id_by_hash_value(hash_value, "sha512")
 
-    assert db._check_db_hash_id_by_hash_value(hash_value, "sha512") is True
-    db_hash_id = db.get_db_hash_id_by_hash_value(hash_value, "sha512")
+    assert db.files._check_db_hash_id_by_hash_value(hash_value, "sha512") is True
+    db_hash_id = db.files.get_db_hash_id_by_hash_value(hash_value, "sha512")
     assert isinstance(db_hash_id, int)
-    assert db.get_hash_value_by_db_hash_id(db_hash_id, "sha512") == hash_value
+    assert db.files.get_hash_value_by_db_hash_id(db_hash_id, "sha512") == hash_value
 
 
 def test_get_files_by_gallery_name(db: H2HDB) -> None:
     gallery_name = "artist - gallery with files"
-    db._insert_gallery_name(gallery_name)
-    db_gallery_id = db._get_db_gallery_id_by_gallery_name(gallery_name)
+    db.gallery_ids._insert_gallery_name(gallery_name)
+    db_gallery_id = db.gallery_ids._get_db_gallery_id_by_gallery_name(gallery_name)
 
-    db._insert_gallery_files(db_gallery_id, ["page1.jpg", "page2.jpg"])
+    db.files._insert_gallery_files(db_gallery_id, ["page1.jpg", "page2.jpg"])
 
-    assert sorted(db.get_files_by_gallery_name(gallery_name)) == [
+    assert sorted(db.files.get_files_by_gallery_name(gallery_name)) == [
         "page1.jpg",
         "page2.jpg",
     ]
-    db_file_id = db._get_db_file_id(db_gallery_id, "page1.jpg")
+    db_file_id = db.files._get_db_file_id(db_gallery_id, "page1.jpg")
     assert isinstance(db_file_id, int)
+
+
+def test_parallel_worker_does_not_pickle_h2hdb_instance(
+    db_config: H2HDBConfig, tmp_path: Path
+) -> None:
+    gallery_folder = tmp_path / "123456"
+    gallery_folder.mkdir()
+    (gallery_folder / "galleryinfo.txt").write_text(
+        "\n".join(
+            [
+                "Title: Worker Gallery",
+                "Upload Time: 2024-01-01 00:00",
+                "Uploaded By: tester",
+                "Downloaded: 2024-01-02 00:00",
+                "Tags: artist:worker, language:english",
+                "Downloaded from E-Hentai Galleries by the Hentai@Home Downloader <3",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with H2HDB(config=db_config) as db:
+        db.create_main_tables()
+
+    config_data = db_config.model_dump(mode="json")
+    result = run_in_parallel(
+        insert_gallery_info_worker,
+        [(config_data, str(gallery_folder))],
+    )
+
+    assert result == [True]

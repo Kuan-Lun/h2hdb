@@ -4,6 +4,7 @@ import hashlib
 import os
 import shutil
 import zipfile
+from typing import cast
 
 from PIL import Image, ImageFile
 
@@ -19,7 +20,8 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 def compress_image(image_path: str, output_path: str, max_size: int) -> None:
     """Compress an image, saving it to the output path."""
-    with Image.open(image_path) as image:
+    with Image.open(image_path) as opened_image:
+        image = cast(Image.Image, opened_image)
         if image.mode in ("RGBA", "LA"):
             image = image.convert("RGBA")
             white_bg = Image.new("RGBA", image.size, (255, 255, 255, 255))
@@ -28,6 +30,8 @@ def compress_image(image_path: str, output_path: str, max_size: int) -> None:
         if image.mode != "RGB":
             image = image.convert("RGB")
 
+        max_width = max_size
+        max_height = max_size
         if max_size >= 1:
             if image.height >= image.width:
                 max_width = max_size
