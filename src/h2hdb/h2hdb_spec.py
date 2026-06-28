@@ -1,6 +1,7 @@
 import math
 import re
 from abc import ABCMeta, abstractmethod
+from collections.abc import Callable
 from functools import partial
 
 from .config_loader import H2HDBConfig
@@ -9,6 +10,7 @@ from .settings import (
     FILE_NAME_LENGTH_LIMIT,
     FOLDER_NAME_LENGTH_LIMIT,
 )
+from .sql_connector import SQLConnector, SQLConnectorParams
 
 
 class H2HDBAbstract(metaclass=ABCMeta):
@@ -19,6 +21,9 @@ class H2HDBAbstract(metaclass=ABCMeta):
         "SQLConnector",
         "logger",
     ]
+
+    sql_connection_params: SQLConnectorParams
+    SQLConnector: Callable[..., SQLConnector]
 
     def __init__(self, config: H2HDBConfig) -> None:
         """
@@ -46,6 +51,15 @@ class H2HDBAbstract(metaclass=ABCMeta):
                     MariaDBConnector, **self.sql_connection_params.model_dump()
                 )
                 self.mariadb_index_prefix_limit = 191
+            case "sqlite":
+                from .sqlite_connector import SQLiteConnector, SQLiteConnectorParams
+
+                self.sql_connection_params = SQLiteConnectorParams(
+                    database=self.config.database.database,
+                )
+                self.SQLConnector = partial(
+                    SQLiteConnector, **self.sql_connection_params.model_dump()
+                )
             case _:
                 raise ValueError("Unsupported SQL type")
 

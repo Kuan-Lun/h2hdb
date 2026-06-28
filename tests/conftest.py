@@ -1,5 +1,6 @@
 import uuid
 from collections.abc import Iterator
+from pathlib import Path
 
 import mysql.connector
 import pytest
@@ -68,3 +69,13 @@ def mariadb_config(mariadb_container: MySqlContainer) -> Iterator[H2HDBConfig]:
             admin_connection.commit()
         finally:
             admin_connection.close()
+
+
+@pytest.fixture
+def sqlite_config(tmp_path: Path) -> H2HDBConfig:
+    # Must be a real file, not `:memory:`: every H2HDB method opens its own
+    # connection, and SQLite's in-memory databases are connection-scoped.
+    database_path = tmp_path / "h2hdb_test.sqlite3"
+    return H2HDBConfig(
+        database=DatabaseConfig(sql_type="sqlite", database=str(database_path))
+    )
