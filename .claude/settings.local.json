@@ -15,6 +15,12 @@
       "Bash(git diff:*)",
       "Bash(git -C * diff:*)",
       "Bash(cat > *)",
+      "Bash(echo:*)",
+      "Bash(head:*)",
+      "Bash(ls:*)",
+      "Bash(tail:*)",
+      "Bash(tree:*)",
+      "Bash(mkdir:*)",
       "Bash(git add *)",
       "Bash(git commit -m ' *)"
     ],
