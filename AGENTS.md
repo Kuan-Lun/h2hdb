@@ -58,16 +58,16 @@ This project is pre-1.0. Architecture descriptions document the current design,
 not a permanent contract. If a change intentionally replaces one of these
 patterns, update the affected docs in the same change.
 
-`H2HDB` in `src/h2hdb/h2hdb_h2hdb.py` is the public API and is assembled through
-multiple inheritance from mixins. Table and view concerns live in
-`table_*.py`/`view_*.py` modules. The authoritative list of current mixins is
-the `class H2HDB(...)` declaration, not any documentation list.
+`H2HDB` in `src/h2hdb/h2hdb_h2hdb.py` is the public API and acts as a facade
+over focused repository objects. Table and view concerns live in
+`table_*.py`/`view_*.py` modules. Shared repository dependencies and SQL helper
+methods live in `src/h2hdb/repository.py`.
 
-Every mixin ultimately depends on `H2HDBAbstract` in `src/h2hdb/h2hdb_spec.py`,
-which owns shared state and helper behavior. When adding new gallery metadata,
-follow the existing table-mixin pattern: create a focused `table_*.py` mixin,
-add its table creation method, implement insert/get behavior, compose it into
-`H2HDB`, and register it in `create_main_tables()`.
+Cross-table dependencies should be explicit constructor arguments, not inherited
+through a mixin chain. When adding new gallery metadata, create a focused
+`table_*.py` repository, add its table creation method, implement insert/get
+behavior, instantiate it in `H2HDB.__init__()`, and register it in
+`create_main_tables()`.
 
 ## SQL Rules
 
@@ -84,14 +84,14 @@ SQL truly differs, such as DDL, date arithmetic, optimization commands,
 collation checks, name-column generation, and SQLite FTS5 support.
 
 Long gallery or file names must use the name-column helpers in
-`H2HDBAbstract`. MariaDB splits indexed names across fixed-width columns to
+`BaseRepository`. MariaDB splits indexed names across fixed-width columns to
 respect InnoDB prefix limits; SQLite stores the same logical name in one `TEXT`
 column. Do not introduce a direct single-column indexed long-name key that
 bypasses those helpers.
 
 SQLite has no native `FULLTEXT` index. MariaDB full-text tables should be
 mirrored with SQLite FTS5 virtual tables and sync triggers using the existing
-`H2HDBAbstract._create_sqlite_fts5_sync` pattern.
+`BaseRepository._create_sqlite_fts5_sync` pattern.
 
 ## Configuration
 
