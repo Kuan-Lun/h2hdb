@@ -1,0 +1,19 @@
+.*
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+tmp
+
+!/.gitignore
+!/.github/
+!.github/**
+!/.vscode/
+!.vscode/**
+!.claude/
+!.claude/**
+
+uv.lock
+
+# macOS
+.DS_Store
