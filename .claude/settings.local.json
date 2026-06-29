@@ -34,7 +34,8 @@
       "Read(//tmp/**)",
       "Bash(python3 -c ' *)",
       "Bash(git -C * show *)",
-      "Bash(python3 -)"
+      "Bash(python3 -)",
+      "Bash(docker info *)"
     ],
     "additionalDirectories": [
       "/tmp",
