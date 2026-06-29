@@ -73,3 +73,35 @@ class H2HDBCheckDatabaseSettings(BaseRepository):
                 self.logger.error(message)
                 raise DatabaseConfigurationError(message)
             self.logger.info("Database character set and collation are valid.")
+
+    def optimize_database(self) -> None:
+        match self.config.database.sql_type.lower():
+            case "sqlite":
+                # SQLite has no per-table OPTIMIZE TABLE; VACUUM rebuilds and
+                # defragments the whole database file instead.
+                with self.SQLConnector() as connector:
+                    connector.execute("VACUUM")
+                self.logger.info("Database optimized.")
+                return
+
+        with self.SQLConnector() as connector:
+            match self.config.database.sql_type.lower():
+                case "mariadb":
+                    select_table_name_query = f"""
+                        SELECT TABLE_NAME
+                        FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+                        WHERE REFERENCED_TABLE_SCHEMA = '{self.config.database.database}'
+                    """
+            raw_table_names = connector.fetch_all(select_table_name_query)
+        table_names = [str(t[0]) for t in raw_table_names]
+
+        with self.SQLConnector() as connector:
+            match self.config.database.sql_type.lower():
+                case "mariadb":
+
+                    def get_optimize_query(x: str) -> str:
+                        return f"OPTIMIZE TABLE {x}"
+
+            for table_name in table_names:
+                connector.execute(get_optimize_query(table_name))
+        self.logger.info("Database optimized.")

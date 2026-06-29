@@ -7,7 +7,6 @@ from typing import Any
 
 from h2h_galleryinfo_parser import (
     GalleryInfoParser,
-    GalleryURLParser,
     parse_galleryinfo,
 )
 
@@ -18,15 +17,16 @@ from .repository import BaseRepository, RepositoryContext
 from .settings import (
     COMPARISON_HASH_ALGORITHM,
     FILE_NAME_LENGTH_LIMIT,
-    FOLDER_NAME_LENGTH_LIMIT,
     GALLERY_INFO_FILE_NAME,
     chunk_list,
     hash_function_by_file,
 )
 from .table_comments import H2HDBGalleriesComments
 from .table_database_setting import H2HDBCheckDatabaseSettings
+from .table_download_queue import H2HDBDownloadQueue
 from .table_files_dbids import H2HDBFiles
 from .table_gids import H2HDBGalleriesGIDs, H2HDBGalleriesIDs
+from .table_pending_removals import H2HDBPendingGalleryRemovals
 from .table_removed_gids import H2HDBRemovedGalleries
 from .table_tags import H2HDBGalleriesTags
 from .table_times import H2HDBTimes
@@ -49,7 +49,9 @@ class H2HDB(BaseRepository):
         super().__init__(context)
 
         self.database_settings = H2HDBCheckDatabaseSettings(context)
+        self.download_queue = H2HDBDownloadQueue(context)
         self.gallery_ids = H2HDBGalleriesIDs(context)
+        self.pending_removals = H2HDBPendingGalleryRemovals(context, self.gallery_ids)
         self.gallery_gids = H2HDBGalleriesGIDs(context, self.gallery_ids)
         self.gallery_times = H2HDBTimes(context, self.gallery_ids)
         self.gallery_titles = H2HDBGalleriesTitles(context, self.gallery_ids)
@@ -78,43 +80,6 @@ class H2HDB(BaseRepository):
 
     def check_database_collation(self) -> None:
         self.database_settings.check_database_collation()
-
-    def _create_pending_gallery_removals_table(self) -> None:
-        with self.SQLConnector() as connector:
-            table_name = "pending_gallery_removals"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    column_name_parts, create_gallery_name_parts_sql = (
-                        self.mariadb_split_gallery_name_based_on_limit("name")
-                    )
-                    query = f"""
-                        CREATE TABLE IF NOT EXISTS {table_name} (
-                            PRIMARY KEY ({", ".join(column_name_parts)}),
-                            {create_gallery_name_parts_sql},
-                            full_name TEXT NOT NULL,
-                            FULLTEXT (full_name)
-                        )
-                    """
-                case "sqlite":
-                    column_name_parts, create_gallery_name_parts_sql = (
-                        self.sqlite_name_columns("name")
-                    )
-                    query = f"""
-                        CREATE TABLE IF NOT EXISTS {table_name} (
-                            {create_gallery_name_parts_sql},
-                            full_name TEXT NOT NULL,
-                            PRIMARY KEY ({", ".join(column_name_parts)})
-                        )
-                    """
-            connector.execute(query)
-
-            match self.config.database.sql_type.lower():
-                case "sqlite":
-                    self._create_sqlite_fts5_sync(
-                        connector, table_name, "full_name", "rowid"
-                    )
-
-        self.logger.info(f"{table_name} table created.")
 
     def _count_duplicated_files_hashs_sha512(self) -> int:
         with self.SQLConnector() as connector:
@@ -171,378 +136,64 @@ class H2HDB(BaseRepository):
             connector.execute(query)
 
     def insert_pending_gallery_removal(self, gallery_name: str) -> None:
-        with self.SQLConnector() as connector:
-            if self.check_pending_gallery_removal(gallery_name) is False:
-                table_name = "pending_gallery_removals"
-                if len(gallery_name) > FOLDER_NAME_LENGTH_LIMIT:
-                    self.logger.error(
-                        f"Gallery name '{gallery_name}' is too long. Must be {FOLDER_NAME_LENGTH_LIMIT} characters or less."
-                    )
-                    raise ValueError("Gallery name is too long.")
-                gallery_name_parts = self._split_gallery_name(gallery_name)
-
-                match self.config.database.sql_type.lower():
-                    case "mariadb":
-                        column_name_parts, _ = (
-                            self.mariadb_split_gallery_name_based_on_limit("name")
-                        )
-                    case "sqlite":
-                        column_name_parts, _ = self.sqlite_name_columns("name")
-                insert_query = f"""
-                    INSERT INTO {table_name} ({", ".join(column_name_parts)}, full_name)
-                    VALUES ({", ".join(["%s" for _ in column_name_parts])}, %s)
-                """
-                connector.execute(
-                    insert_query, (*tuple(gallery_name_parts), gallery_name)
-                )
+        self.pending_removals.insert_pending_gallery_removal(gallery_name)
 
     def check_pending_gallery_removal(self, gallery_name: str) -> bool:
-        with self.SQLConnector() as connector:
-            table_name = "pending_gallery_removals"
-            gallery_name_parts = self._split_gallery_name(gallery_name)
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    column_name_parts, _ = (
-                        self.mariadb_split_gallery_name_based_on_limit("name")
-                    )
-                case "sqlite":
-                    column_name_parts, _ = self.sqlite_name_columns("name")
-            select_query = f"""
-                SELECT full_name
-                FROM {table_name}
-                WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
-            """
-            query_result = connector.fetch_one(select_query, tuple(gallery_name_parts))
-        return len(query_result) != 0
+        return self.pending_removals.check_pending_gallery_removal(gallery_name)
 
     def get_pending_gallery_removals(self) -> list[str]:
-        with self.SQLConnector() as connector:
-            table_name = "pending_gallery_removals"
-            select_query = f"""
-                SELECT full_name
-                FROM {table_name}
-            """
-
-            query_result = connector.fetch_all(select_query)
-        pending_gallery_removals = [query[0] for query in query_result]
-        return pending_gallery_removals
+        return self.pending_removals.get_pending_gallery_removals()
 
     def delete_pending_gallery_removal(self, gallery_name: str) -> None:
-        with self.SQLConnector() as connector:
-            table_name = "pending_gallery_removals"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    column_name_parts, _ = (
-                        self.mariadb_split_gallery_name_based_on_limit("name")
-                    )
-                case "sqlite":
-                    column_name_parts, _ = self.sqlite_name_columns("name")
-            delete_query = f"""
-                DELETE FROM {table_name} WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
-            """
-
-            gallery_name_parts = self._split_gallery_name(gallery_name)
-            connector.execute(delete_query, tuple(gallery_name_parts))
+        self.pending_removals.delete_pending_gallery_removal(gallery_name)
 
     def delete_pending_gallery_removals(self) -> None:
-        pending_gallery_removals = self.get_pending_gallery_removals()
-        for gallery_name in pending_gallery_removals:
-            self.delete_gallery_file(gallery_name)
-            self.delete_gallery(gallery_name)
-            self.delete_pending_gallery_removal(gallery_name)
+        self.pending_removals.delete_pending_gallery_removals()
 
     def delete_gallery_file(self, gallery_name: str) -> None:
-        # self.logger.info(f"Gallery images for '{gallery_name}' deleted.")
-        pass
+        self.pending_removals.delete_gallery_file(gallery_name)
 
     def delete_gallery(self, gallery_name: str) -> None:
-        with self.SQLConnector() as connector:
-            if not self.gallery_ids._check_galleries_dbids_by_gallery_name(
-                gallery_name
-            ):
-                self.logger.debug(f"Gallery '{gallery_name}' does not exist.")
-                return
-
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    column_name_parts, _ = (
-                        self.mariadb_split_gallery_name_based_on_limit("name")
-                    )
-                case "sqlite":
-                    column_name_parts, _ = self.sqlite_name_columns("name")
-            get_delete_gallery_id_query = f"""
-                DELETE FROM galleries_dbids
-                WHERE {" AND ".join([f"{part} = %s" for part in column_name_parts])}
-                """
-
-            gallery_name_parts = self._split_gallery_name(gallery_name)
-            connector.execute(get_delete_gallery_id_query, tuple(gallery_name_parts))
-        self.logger.info(f"Gallery '{gallery_name}' deleted.")
+        self.pending_removals.delete_gallery(gallery_name)
 
     def optimize_database(self) -> None:
-        match self.config.database.sql_type.lower():
-            case "sqlite":
-                # SQLite has no per-table OPTIMIZE TABLE; VACUUM rebuilds and
-                # defragments the whole database file instead.
-                with self.SQLConnector() as connector:
-                    connector.execute("VACUUM")
-                self.logger.info("Database optimized.")
-                return
-
-        with self.SQLConnector() as connector:
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_table_name_query = f"""
-                        SELECT TABLE_NAME
-                        FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
-                        WHERE REFERENCED_TABLE_SCHEMA = '{self.config.database.database}'
-                    """
-            raw_table_names = connector.fetch_all(select_table_name_query)
-        table_names = [str(t[0]) for t in raw_table_names]
-
-        with self.SQLConnector() as connector:
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-
-                    def get_optimize_query(x: str) -> str:
-                        return f"OPTIMIZE TABLE {x}"
-
-            for table_name in table_names:
-                connector.execute(get_optimize_query(table_name))
-        self.logger.info("Database optimized.")
-
-    def _create_pending_download_gids_view(self) -> None:
-        with self.SQLConnector() as connector:
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    query = """
-                        CREATE VIEW IF NOT EXISTS pending_download_gids AS
-                            SELECT gids.gid AS gid
-                            FROM (SELECT *
-                                FROM galleries_redownload_times AS grt0
-                                WHERE DATE_ADD(grt0.time, INTERVAL 7 DAY) <= NOW()
-                                )
-                                AS grt
-                            INNER JOIN galleries_download_times AS gdt
-                                on grt.db_gallery_id = gdt.db_gallery_id
-                            INNER JOIN galleries_upload_times AS gut
-                                ON grt.db_gallery_id = gut.db_gallery_id
-                            INNER JOIN galleries_gids AS gids
-                                ON grt.db_gallery_id = gids.db_gallery_id
-                            WHERE grt.time <= DATE_ADD(gut.time, INTERVAL 1 YEAR)
-                                AND DATE_ADD(gut.time, INTERVAL 7 DAY) <= NOW()
-                                OR DATE_ADD(gdt.time, INTERVAL 7 DAY) <= grt.time
-                                 ORDER BY gut.`time` DESC
-                    """
-                case "sqlite":
-                    query = """
-                        CREATE VIEW IF NOT EXISTS pending_download_gids AS
-                            SELECT gids.gid AS gid
-                            FROM (SELECT *
-                                FROM galleries_redownload_times AS grt0
-                                WHERE datetime(grt0.time, '+7 days') <= datetime('now')
-                                )
-                                AS grt
-                            INNER JOIN galleries_download_times AS gdt
-                                on grt.db_gallery_id = gdt.db_gallery_id
-                            INNER JOIN galleries_upload_times AS gut
-                                ON grt.db_gallery_id = gut.db_gallery_id
-                            INNER JOIN galleries_gids AS gids
-                                ON grt.db_gallery_id = gids.db_gallery_id
-                            WHERE grt.time <= datetime(gut.time, '+1 years')
-                                AND datetime(gut.time, '+7 days') <= datetime('now')
-                                OR datetime(gdt.time, '+7 days') <= grt.time
-                                 ORDER BY gut.time DESC
-                    """
-            connector.execute(query)
-        self.logger.info("pending_download_gids view created.")
+        self.database_settings.optimize_database()
 
     def get_pending_download_gids(self) -> list[int]:
-        with self.SQLConnector() as connector:
-            query = """
-                SELECT gid
-                FROM pending_download_gids
-            """
-            query_result = connector.fetch_all(query)
-            pending_download_gids = [query[0] for query in query_result]
-        return pending_download_gids
-
-    def _create_todelete_gids_table(self) -> None:
-        with self.SQLConnector() as connector:
-            table_name = "todelete_gids"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    query = f"""
-                        CREATE TABLE IF NOT EXISTS {table_name} (
-                            PRIMARY KEY (gid),
-                            FOREIGN KEY (gid) REFERENCES galleries_gids(gid)
-                                ON UPDATE CASCADE
-                                ON DELETE CASCADE,
-                            gid          INT UNSIGNED NOT NULL
-                        )
-                    """
-                case "sqlite":
-                    query = f"""
-                        CREATE TABLE IF NOT EXISTS {table_name} (
-                            gid INTEGER NOT NULL PRIMARY KEY
-                                REFERENCES galleries_gids(gid)
-                                ON UPDATE CASCADE ON DELETE CASCADE
-                        )
-                    """
-            connector.execute(query)
-        self.logger.info(f"{table_name} table created.")
-
-    def _create_todelete_names_view(self) -> None:
-        with self.SQLConnector() as connector:
-            table_name = "todelete_names"
-            query = f"""
-                CREATE VIEW IF NOT EXISTS {table_name} AS
-                    SELECT full_name
-                    FROM
-                    (SELECT galleries_names.full_name AS full_name
-                    FROM todelete_gids
-                    INNER JOIN galleries_gids
-                        ON galleries_gids.gid = todelete_gids.gid
-                    INNER JOIN galleries_names
-                        ON galleries_names.db_gallery_id = galleries_gids.db_gallery_id) AS todelete_names
-                    UNION
-                        SELECT full_name
-                        FROM (
-                            SELECT gi.name AS full_name
-                            FROM galleries_infos gi
-                            JOIN (
-                                SELECT gid, MAX(download_time) AS max_download_time
-                                FROM galleries_infos
-                                GROUP BY gid
-                                HAVING COUNT(*) > 1
-                            ) sub ON gi.gid = sub.gid
-                            WHERE gi.download_time < sub.max_download_time
-                            ) AS duplicated_gids_names
-            """
-            connector.execute(query)
-        self.logger.info(f"{table_name} table created.")
+        return self.download_queue.get_pending_download_gids()
 
     def check_todelete_gid(self, gid: int) -> bool:
-        with self.SQLConnector() as connector:
-            table_name = "todelete_gids"
-            select_query = f"""
-                SELECT gid
-                FROM {table_name}
-                WHERE gid = %s
-            """
-            query_result = connector.fetch_one(select_query, (gid,))
-        return len(query_result) != 0
+        return self.download_queue.check_todelete_gid(gid)
 
     def insert_todelete_gid(self, gid: int) -> None:
-        if not self.check_todelete_gid(gid):
-            with self.SQLConnector() as connector:
-                table_name = "todelete_gids"
-                insert_query = f"""
-                    INSERT INTO {table_name} (gid) VALUES (%s)
-                """
-                connector.execute(insert_query, (gid,))
-
-    def _create_todownload_gids_table(self) -> None:
-        with self.SQLConnector() as connector:
-            table_name = "todownload_gids"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    query = f"""
-                        CREATE TABLE IF NOT EXISTS {table_name} (
-                            PRIMARY KEY (gid),
-                            gid          INT UNSIGNED NOT NULL,
-                            url          CHAR({self.mariadb_index_prefix_limit}) NOT NULL
-                        )
-                    """
-                case "sqlite":
-                    query = f"""
-                        CREATE TABLE IF NOT EXISTS {table_name} (
-                            gid INTEGER NOT NULL PRIMARY KEY,
-                            url TEXT NOT NULL
-                        )
-                    """
-            connector.execute(query)
-        self.logger.info(f"{table_name} table created.")
+        self.download_queue.insert_todelete_gid(gid)
 
     def check_todownload_gid(self, gid: int, url: str) -> bool:
-        with self.SQLConnector() as connector:
-            table_name = "todownload_gids"
-            if url != "":
-                select_query = f"""
-                    SELECT gid
-                    FROM {table_name}
-                    WHERE gid = %s AND url = %s
-                """
-                query_result = connector.fetch_one(select_query, (gid, url))
-            else:
-                select_query = f"""
-                    SELECT gid
-                    FROM {table_name}
-                    WHERE gid = %s
-                """
-                query_result = connector.fetch_one(select_query, (gid,))
-        return len(query_result) != 0
+        return self.download_queue.check_todownload_gid(gid, url)
 
     def insert_todownload_gid(self, gid: int, url: str) -> None:
-        if url != "":
-            gallery = GalleryURLParser(url)
-            gid = gallery.gid
-            if gallery.gid != gid and gid != 0:
-                raise ValueError(
-                    f"Gallery GID {gid} does not match URL GID {gallery.gid}."
-                )
-        elif gid <= 0:
-            raise ValueError("Gallery GID must be greater than zero.")
-
-        if not self.check_todownload_gid(gid, url):
-            if (url == "") or (not self.check_todownload_gid(gid, "")):
-                with self.SQLConnector() as connector:
-                    table_name = "todownload_gids"
-                    insert_query = f"""
-                        INSERT INTO {table_name} (gid, url) VALUES (%s, %s)
-                    """
-                    connector.execute(insert_query, (gid, url))
-            else:
-                self.update_todownload_gid(gid, url)
+        self.download_queue.insert_todownload_gid(gid, url)
 
     def update_todownload_gid(self, gid: int, url: str) -> None:
-        with self.SQLConnector() as connector:
-            table_name = "todownload_gids"
-            update_query = f"""
-                UPDATE {table_name} SET url = %s WHERE gid = %s
-            """
-            connector.execute(update_query, (url, gid))
+        self.download_queue.update_todownload_gid(gid, url)
 
     def remove_todownload_gid(self, gid: int) -> None:
-        with self.SQLConnector() as connector:
-            table_name = "todownload_gids"
-            delete_query = f"""
-                DELETE FROM {table_name} WHERE gid = %s
-            """
-            connector.execute(delete_query, (gid,))
+        self.download_queue.remove_todownload_gid(gid)
 
     def get_todownload_gids(self) -> list[tuple[int, str]]:
-        with self.SQLConnector() as connector:
-            table_name = "todownload_gids"
-            select_query = f"""
-                SELECT gid, url
-                FROM {table_name}
-            """
-            query_result = connector.fetch_all(select_query)
-        todownload_gids = [(query[0], query[1]) for query in query_result]
-        return todownload_gids
+        return self.download_queue.get_todownload_gids()
 
     def create_main_tables(self) -> None:
         self.logger.debug("Creating main tables...")
-        self._create_todownload_gids_table()
-        self._create_pending_gallery_removals_table()
+        self.download_queue._create_todownload_gids_table()
+        self.pending_removals._create_pending_gallery_removals_table()
         self.gallery_ids._create_galleries_names_table()
         self.gallery_gids._create_galleries_gids_table()
-        self._create_todelete_gids_table()
+        self.download_queue._create_todelete_gids_table()
         self.gallery_times._create_galleries_download_times_table()
         self.gallery_times._create_galleries_redownload_times_table()
         self.gallery_times._create_galleries_upload_times_table()
-        self._create_pending_download_gids_view()
+        self.download_queue._create_pending_download_gids_view()
         self.gallery_times._create_galleries_modified_times_table()
         self.gallery_times._create_galleries_access_times_table()
         self.gallery_titles._create_galleries_titles_table()
@@ -550,7 +201,7 @@ class H2HDB(BaseRepository):
         self.gallery_comments._create_galleries_comments_table()
         self.files._create_files_names_table()
         self.gallery_infos._create_galleries_infos_view()
-        self._create_todelete_names_view()
+        self.download_queue._create_todelete_names_view()
         self.files._create_galleries_files_hashs_tables()
         self.files._create_gallery_image_hash_view()
         self.gallery_infos._create_duplicate_hash_in_gallery_view()
@@ -561,18 +212,7 @@ class H2HDB(BaseRepository):
 
     def update_redownload_time_to_now_by_gid(self, gid: int) -> None:
         db_gallery_id = self.gallery_gids._get_db_gallery_id_by_gid(gid)
-        table_name = "galleries_redownload_times"
-        with self.SQLConnector() as connector:
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    update_query = f"""
-                        UPDATE {table_name} SET time = NOW() WHERE db_gallery_id = %s
-                    """
-                case "sqlite":
-                    update_query = f"""
-                        UPDATE {table_name} SET time = datetime('now') WHERE db_gallery_id = %s
-                    """
-            connector.execute(update_query, (db_gallery_id,))
+        self.gallery_times.update_redownload_time_to_now(db_gallery_id)
 
     @property
     def _insert_rows_batch_size(self) -> int:

@@ -91,6 +91,20 @@ class H2HDBTimes(BaseRepository):
     def update_redownload_time(self, db_gallery_id: int, time: str) -> None:
         self._update_time("galleries_redownload_times", db_gallery_id, time)
 
+    def update_redownload_time_to_now(self, db_gallery_id: int) -> None:
+        table_name = "galleries_redownload_times"
+        with self.SQLConnector() as connector:
+            match self.config.database.sql_type.lower():
+                case "mariadb":
+                    update_query = f"""
+                        UPDATE {table_name} SET time = NOW() WHERE db_gallery_id = %s
+                    """
+                case "sqlite":
+                    update_query = f"""
+                        UPDATE {table_name} SET time = datetime('now') WHERE db_gallery_id = %s
+                    """
+            connector.execute(update_query, (db_gallery_id,))
+
     def _reset_redownload_times(self) -> None:
         table_name = "galleries_redownload_times"
         with self.SQLConnector() as connector:
