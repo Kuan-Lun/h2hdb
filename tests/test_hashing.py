@@ -1,15 +1,11 @@
 import hashlib
 import os
-import zipfile
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from h2hdb.compress_gallery_to_cbz import (
-    calculate_hash_of_file_in_cbz,
-    hash_and_process_file,
-)
+from h2hdb.compress_gallery_to_cbz import hash_and_process_file
 from h2hdb.hash_dict import HASH_ALGORITHMS
 from h2hdb.information import FileInformation
 from h2hdb.settings import (
@@ -92,29 +88,6 @@ def test_file_information_sethash_matches_reference_digests(tmp_path: Path) -> N
         assert (
             getattr(finfo, algorithm) == hashlib.new(algorithm, TEST_CONTENT).digest()
         )
-
-
-def test_calculate_hash_of_file_in_cbz_matches_reference_digest(tmp_path: Path) -> None:
-    cbz_path = tmp_path / "gallery.cbz"
-    with zipfile.ZipFile(cbz_path, "w") as cbz:
-        cbz.writestr("page.bin", TEST_CONTENT)
-
-    digest = calculate_hash_of_file_in_cbz(
-        str(cbz_path), "page.bin", "sha512", buffer_size=SMALL_BUFFER_SIZE
-    )
-
-    assert digest == hashlib.sha512(TEST_CONTENT).digest()
-
-
-def test_calculate_hash_of_file_in_cbz_returns_empty_for_non_zip(
-    tmp_path: Path,
-) -> None:
-    not_a_zip = tmp_path / "not-a-zip.cbz"
-    not_a_zip.write_bytes(b"definitely not a zip file")
-
-    assert calculate_hash_of_file_in_cbz(str(not_a_zip), "page.bin", "sha512") == bytes(
-        0
-    )
 
 
 def test_hash_and_process_file_skips_files_with_excluded_hash(tmp_path: Path) -> None:

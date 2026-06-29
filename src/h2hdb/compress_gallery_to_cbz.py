@@ -1,4 +1,8 @@
-__all__ = ["compress_images_and_create_cbz", "calculate_hash_of_file_in_cbz"]
+__all__ = [
+    "compress_images_and_create_cbz",
+    "expected_output_filename",
+    "gallery_name_to_cbz_file_name",
+]
 
 import os
 import shutil
@@ -10,14 +14,13 @@ from PIL import Image, ImageFile
 from .settings import (
     COMPARISON_HASH_ALGORITHM,
     FILE_NAME_LENGTH_LIMIT,
-    HASH_STREAM_BUFFER_SIZE,
     hash_function_by_file,
-    hash_stream,
-    iter_file_chunks,
 )
 
 Image.MAX_IMAGE_PIXELS = None
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp")
 
 
 def compress_image(image_path: str, output_path: str, max_size: int) -> None:
@@ -61,6 +64,13 @@ def create_cbz(directory: str, output_path: str) -> None:
             cbz.write(os.path.join(directory, filename), filename)
 
 
+def expected_output_filename(filename: str) -> str:
+    """Name a file would have inside the cbz, if its hash isn't excluded."""
+    if filename.lower().endswith(IMAGE_EXTENSIONS):
+        return os.path.splitext(filename)[0] + ".jpg"
+    return filename
+
+
 def hash_and_process_file(
     input_directory: str,
     tmp_cbz_directory: str,
@@ -72,8 +82,8 @@ def hash_and_process_file(
         os.path.join(input_directory, filename), COMPARISON_HASH_ALGORITHM
     )
     if file_hash not in exclude_hashs:
-        if filename.lower().endswith((".jpg", ".jpeg", ".png", "bmp")):
-            new_filename = os.path.splitext(filename)[0] + ".jpg"
+        if filename.lower().endswith(IMAGE_EXTENSIONS):
+            new_filename = expected_output_filename(filename)
             compress_image(
                 os.path.join(input_directory, filename),
                 os.path.join(tmp_cbz_directory, new_filename),
@@ -129,20 +139,3 @@ def gallery_name_to_cbz_file_name(gallery_name: str) -> str:
     while (len(gallery_name.encode("utf-8")) + 4) > FILE_NAME_LENGTH_LIMIT:
         gallery_name = gallery_name[1:]
     return gallery_name + ".cbz"
-
-
-def calculate_hash_of_file_in_cbz(
-    cbz_path: str,
-    file_name: str,
-    algorithm: str,
-    buffer_size: int = HASH_STREAM_BUFFER_SIZE,
-) -> bytes:
-    if zipfile.is_zipfile(cbz_path):
-        with zipfile.ZipFile(cbz_path, "r") as myzip:
-            with myzip.open(file_name) as myfile:
-                hash_of_file = hash_stream(
-                    iter_file_chunks(myfile, buffer_size), [algorithm]
-                )[algorithm]
-    else:
-        hash_of_file = bytes(0)
-    return hash_of_file

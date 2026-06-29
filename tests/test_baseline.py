@@ -1,3 +1,5 @@
+import hashlib
+import zipfile
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -421,6 +423,57 @@ def test_refresh_current_cbz_files_removes_only_orphaned_files(
 
     assert (cbz_path / "kept.cbz").exists()
     assert not (cbz_path / "orphan.cbz").exists()
+
+
+def test_get_stale_cbz_galleries_flags_cbz_containing_newly_excluded_file(
+    db: H2HDB, tmp_path: Path
+) -> None:
+    from h2hdb.compress_gallery_to_cbz import gallery_name_to_cbz_file_name
+
+    gallery_folder = tmp_path / "700001"
+    _write_galleryinfo(gallery_folder, title="Stale CBZ Gallery")
+    image_content = b"some image bytes"
+    (gallery_folder / "001.jpg").write_bytes(image_content)
+    gallery_info = parse_galleryinfo(str(gallery_folder))
+    db.insert_gallery_infos([gallery_info])
+    gallery_name = gallery_info.gallery_name
+    image_hash = hashlib.sha512(image_content).digest()
+
+    cbz_path = tmp_path / "cbz"
+    cbz_path.mkdir()
+    db.config.h2h.cbz_path = str(cbz_path)
+    cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
+    with zipfile.ZipFile(cbz_file, "w") as cbz:
+        cbz.writestr("galleryinfo.txt", "stale")
+        cbz.writestr("001.jpg", image_content)
+
+    # image_hash is now excluded, but the existing cbz still contains it.
+    assert db.get_stale_cbz_galleries({gallery_name}, {image_hash}) == {gallery_name}
+
+
+def test_get_stale_cbz_galleries_ignores_cbz_that_already_excludes_file(
+    db: H2HDB, tmp_path: Path
+) -> None:
+    from h2hdb.compress_gallery_to_cbz import gallery_name_to_cbz_file_name
+
+    gallery_folder = tmp_path / "700002"
+    _write_galleryinfo(gallery_folder, title="Fresh CBZ Gallery")
+    image_content = b"some other image bytes"
+    (gallery_folder / "001.jpg").write_bytes(image_content)
+    gallery_info = parse_galleryinfo(str(gallery_folder))
+    db.insert_gallery_infos([gallery_info])
+    gallery_name = gallery_info.gallery_name
+    image_hash = hashlib.sha512(image_content).digest()
+
+    cbz_path = tmp_path / "cbz"
+    cbz_path.mkdir()
+    db.config.h2h.cbz_path = str(cbz_path)
+    cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
+    with zipfile.ZipFile(cbz_file, "w") as cbz:
+        cbz.writestr("galleryinfo.txt", "fresh")
+        # 001.jpg already absent, matching the exclusion below.
+
+    assert db.get_stale_cbz_galleries({gallery_name}, {image_hash}) == set()
 
 
 def test_update_redownload_time_to_now_by_gid(db: H2HDB) -> None:

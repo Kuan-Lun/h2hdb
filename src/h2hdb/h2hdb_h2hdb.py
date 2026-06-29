@@ -2,6 +2,7 @@ __all__ = ["H2HDB", "GALLERY_INFO_FILE_NAME"]
 
 
 import os
+import zipfile
 from itertools import islice
 from typing import Any
 
@@ -457,8 +458,8 @@ class H2HDB(BaseRepository):
         self, gallery_folder: str, exclude_hashs: set[bytes]
     ) -> bool:
         from .compress_gallery_to_cbz import (
-            calculate_hash_of_file_in_cbz,
             compress_images_and_create_cbz,
+            expected_output_filename,
         )
 
         galleryinfo_params = parse_galleryinfo(gallery_folder)
@@ -502,31 +503,23 @@ class H2HDB(BaseRepository):
         cbz_path = os.path.join(
             cbz_directory, gallery_name2cbz_file_name(galleryinfo_params.gallery_name)
         )
+        needs_rebuild = True
         if os.path.exists(cbz_path):
-            db_gallery_id = self.gallery_ids._get_db_gallery_id_by_gallery_name(
-                galleryinfo_params.gallery_name
-            )
-            gallery_info_file_id = self.files._get_db_file_id(
-                db_gallery_id, GALLERY_INFO_FILE_NAME
-            )
-            original_hash_value = self.files.get_hash_value_by_file_id(
-                gallery_info_file_id, COMPARISON_HASH_ALGORITHM
-            )
-            cbz_hash_value = calculate_hash_of_file_in_cbz(
-                cbz_path, GALLERY_INFO_FILE_NAME, COMPARISON_HASH_ALGORITHM
-            )
-            if original_hash_value != cbz_hash_value:
-                compress_images_and_create_cbz(
-                    gallery_folder,
-                    cbz_directory,
-                    cbz_tmp_directory,
-                    self.config.h2h.cbz_max_size,
-                    exclude_hashs,
+            with self.SQLConnector() as connector:
+                rows = connector.fetch_all(
+                    "SELECT file_name, sha512 FROM files_hashs WHERE gallery_name = %s",
+                    (galleryinfo_params.gallery_name,),
                 )
-                result = True
-            else:
-                result = False
-        else:
+            expected_names = frozenset(
+                expected_output_filename(str(file_name))
+                for file_name, sha512 in rows
+                if bytes(sha512) not in exclude_hashs
+            )
+            with zipfile.ZipFile(cbz_path) as cbz:
+                actual_names = frozenset(cbz.namelist())
+            needs_rebuild = actual_names != expected_names
+
+        if needs_rebuild:
             compress_images_and_create_cbz(
                 gallery_folder,
                 cbz_directory,
@@ -534,8 +527,65 @@ class H2HDB(BaseRepository):
                 self.config.h2h.cbz_max_size,
                 exclude_hashs,
             )
-            result = True
-        return result
+        return needs_rebuild
+
+    def get_stale_cbz_galleries(
+        self, current_galleries_names: set[str], exclude_hashs: set[bytes]
+    ) -> set[str]:
+        from .compress_gallery_to_cbz import (
+            expected_output_filename,
+            gallery_name_to_cbz_file_name,
+        )
+
+        if not exclude_hashs:
+            return set()
+
+        with self.SQLConnector() as connector:
+            rows = connector.fetch_all(
+                "SELECT gallery_name, file_name, sha512 FROM files_hashs"
+            )
+
+        files_by_gallery: dict[str, list[tuple[str, bytes]]] = dict()
+        for gallery_name, file_name, sha512 in rows:
+            files_by_gallery.setdefault(str(gallery_name), []).append(
+                (str(file_name), bytes(sha512))
+            )
+
+        current_cbzs: dict[str, str] = dict()
+        for root, _, files in os.walk(self.config.h2h.cbz_path):
+            for file in files:
+                current_cbzs[file] = root
+
+        candidates: list[tuple[str, str, frozenset[str]]] = list()
+        for gallery_name in current_galleries_names:
+            gallery_files = files_by_gallery.get(gallery_name, [])
+            if not any(file_hash in exclude_hashs for _, file_hash in gallery_files):
+                continue
+            cbz_file_name = gallery_name_to_cbz_file_name(gallery_name)
+            if cbz_file_name not in current_cbzs:
+                continue
+            cbz_path = os.path.join(current_cbzs[cbz_file_name], cbz_file_name)
+            expected_names = frozenset(
+                expected_output_filename(file_name)
+                for file_name, file_hash in gallery_files
+                if file_hash not in exclude_hashs
+            )
+            candidates.append((gallery_name, cbz_path, expected_names))
+
+        if not candidates:
+            return set()
+
+        is_stale_list = run_in_parallel(
+            cbz_contents_are_stale_worker,
+            [(cbz_path, expected_names) for _, cbz_path, expected_names in candidates],
+        )
+        return {
+            gallery_name
+            for (gallery_name, _, _), is_stale in zip(
+                candidates, is_stale_list, strict=True
+            )
+            if is_stale
+        }
 
     def scan_current_galleries_folders(self) -> tuple[list[str], set[str]]:
         self.delete_pending_gallery_removals()
@@ -783,6 +833,33 @@ class H2HDB(BaseRepository):
         )
         self.logger.info(f"Total CBZ files created: {total_created_cbz}")
 
+        if self.config.h2h.cbz_path != "":
+            self.logger.info("Checking for CBZ files made stale by new exclusions...")
+            final_exclude_hashs = (
+                self._get_duplicated_hash_values_by_count_artist_ratio()
+            )
+            stale_galleries = self.get_stale_cbz_galleries(
+                current_galleries_names, final_exclude_hashs
+            )
+            if stale_galleries:
+                self.logger.info(
+                    f"Recompressing {len(stale_galleries)} CBZ file(s) made stale "
+                    "by newly-excluded duplicate files..."
+                )
+                folder_by_gallery_name = {
+                    os.path.basename(folder): folder
+                    for folder in current_galleries_folders
+                }
+                config_data = self.config.model_dump(mode="json")
+                run_in_parallel(
+                    compress_gallery_to_cbz_worker,
+                    [
+                        (config_data, folder_by_gallery_name[name], final_exclude_hashs)
+                        for name in stale_galleries
+                        if name in folder_by_gallery_name
+                    ],
+                )
+
         self.logger.info("Cleaning up database...")
         self.refresh_current_files_hashs()
 
@@ -825,3 +902,11 @@ def compress_gallery_to_cbz_worker(
     config = H2HDBConfig.model_validate(config_data)
     with H2HDB(config=config) as connector:
         return connector.compress_gallery_to_cbz(gallery_folder, exclude_hashs)
+
+
+def cbz_contents_are_stale_worker(
+    cbz_path: str, expected_names: frozenset[str]
+) -> bool:
+    with zipfile.ZipFile(cbz_path) as cbz:
+        actual_names = frozenset(cbz.namelist())
+    return actual_names != expected_names
