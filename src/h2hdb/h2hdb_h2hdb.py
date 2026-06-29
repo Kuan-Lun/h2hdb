@@ -731,9 +731,14 @@ class H2HDB(BaseRepository):
             ]
         )
         tags = self.gallery_tags.get_tag_pairs_by_gallery_name(gallery_name)
-        metadata["authors"] = [
-            {"name": value, "role": key} for key, value in tags if value != ""
-        ]
+        authors = [{"name": value, "role": key} for key, value in tags if value != ""]
+        authors.append(
+            {
+                "name": str(self.gallery_gids.get_gid_by_gallery_name(gallery_name)),
+                "role": "gid",
+            }
+        )
+        metadata["authors"] = authors
         return metadata
 
 
