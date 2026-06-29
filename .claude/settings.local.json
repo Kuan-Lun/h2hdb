@@ -29,7 +29,11 @@
       "Write(**/*)",
       "Bash(uv run *)",
       "Bash(uv run python -c ' *)",
-      "Bash(cat -A *)"
+      "Bash(cat -A *)",
+      "Bash(git show *)",
+      "Read(//tmp/**)",
+      "Bash(python3 -c ' *)",
+      "Bash(git -C * show *)"
     ],
     "additionalDirectories": [
       "/tmp",
