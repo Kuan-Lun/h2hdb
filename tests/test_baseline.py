@@ -419,7 +419,7 @@ def test_refresh_current_cbz_files_removes_only_orphaned_files(
     sqlite_config.h2h.cbz_path = str(cbz_path)
 
     with H2HDB(config=sqlite_config) as db:
-        db._refresh_current_cbz_files({"kept"})
+        db.cbz._refresh_current_cbz_files({"kept"})
 
     assert (cbz_path / "kept.cbz").exists()
     assert not (cbz_path / "orphan.cbz").exists()
@@ -448,7 +448,9 @@ def test_get_stale_cbz_galleries_flags_cbz_containing_newly_excluded_file(
         cbz.writestr("001.jpg", image_content)
 
     # image_hash is now excluded, but the existing cbz still contains it.
-    assert db.get_stale_cbz_galleries({gallery_name}, {image_hash}) == {gallery_name}
+    assert db.cbz.get_stale_cbz_galleries({gallery_name}, {image_hash}) == {
+        gallery_name
+    }
 
 
 def test_get_stale_cbz_galleries_ignores_cbz_that_already_excludes_file(
@@ -473,7 +475,7 @@ def test_get_stale_cbz_galleries_ignores_cbz_that_already_excludes_file(
         cbz.writestr("galleryinfo.txt", "fresh")
         # 001.jpg already absent, matching the exclusion below.
 
-    assert db.get_stale_cbz_galleries({gallery_name}, {image_hash}) == set()
+    assert db.cbz.get_stale_cbz_galleries({gallery_name}, {image_hash}) == set()
 
 
 def test_update_redownload_time_to_now_by_gid(db: H2HDB) -> None:
