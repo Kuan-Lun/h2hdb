@@ -780,7 +780,7 @@ class H2HDB(BaseRepository):
         issame = original_hash_value == current_hash_value
         return issame
 
-    def _get_duplicated_hash_values_by_count_artist_ratio(self) -> list[bytes]:
+    def _get_duplicated_hash_values_by_count_artist_ratio(self) -> set[bytes]:
         with self.SQLConnector() as connector:
             table_name = "duplicated_hash_values_by_count_artist_ratio"
             select_query = f"""
@@ -789,7 +789,7 @@ class H2HDB(BaseRepository):
             """
 
             query_result = connector.fetch_all(select_query)
-        return [query[0] for query in query_result]
+        return {query[0] for query in query_result}
 
     def insert_gallery_infos(
         self, galleryinfo_params_list: list[GalleryInfoParser]
@@ -818,7 +818,7 @@ class H2HDB(BaseRepository):
         return self.insert_gallery_infos([galleryinfo_params])[0]
 
     def compress_gallery_to_cbz(
-        self, gallery_folder: str, exclude_hashs: list[bytes]
+        self, gallery_folder: str, exclude_hashs: set[bytes]
     ) -> bool:
         from .compress_gallery_to_cbz import (
             calculate_hash_of_file_in_cbz,
@@ -1074,13 +1074,13 @@ class H2HDB(BaseRepository):
         self.logger.info("Galleries sorted.")
 
         self.logger.info("Getting excluded hash values...")
-        exclude_hashs = list[bytes]()
+        exclude_hashs = set[bytes]()
         previously_count_duplicated_files = 0
         self.logger.info("Excluded hash values obtained.")
 
         def calculate_exclude_hashs(
-            previously_count_duplicated_files: int, exclude_hashs: list[bytes]
-        ) -> tuple[int, list[bytes]]:
+            previously_count_duplicated_files: int, exclude_hashs: set[bytes]
+        ) -> tuple[int, set[bytes]]:
             self.logger.debug("Checking for duplicated files...")
             current_count_duplicated_files = self._count_duplicated_files_hashs_sha512()
             new_exclude_hashs = exclude_hashs
@@ -1181,7 +1181,7 @@ class H2HDB(BaseRepository):
 def compress_gallery_to_cbz_worker(
     config_data: dict[str, Any],
     gallery_folder: str,
-    exclude_hashs: list[bytes],
+    exclude_hashs: set[bytes],
 ) -> bool:
     config = H2HDBConfig.model_validate(config_data)
     with H2HDB(config=config) as connector:

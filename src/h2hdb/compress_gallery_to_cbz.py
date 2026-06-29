@@ -65,7 +65,7 @@ def hash_and_process_file(
     input_directory: str,
     tmp_cbz_directory: str,
     filename: str,
-    exclude_hashs: list[bytes],
+    exclude_hashs: set[bytes],
     max_size: int,
 ) -> None:
     file_hash = hash_function_by_file(
@@ -98,7 +98,7 @@ def compress_images_and_create_cbz(
     output_directory: str,
     tmp_directory: str,
     max_size: int,
-    exclude_hashs: list[bytes],
+    exclude_hashs: set[bytes],
 ) -> None:
     if len(set([input_directory, output_directory, tmp_directory])) < 2:
         raise ValueError("Input and output directories cannot be the same.")

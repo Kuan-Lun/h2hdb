@@ -6,10 +6,18 @@ from typing import Any
 
 import pytest
 
-from h2hdb.compress_gallery_to_cbz import calculate_hash_of_file_in_cbz
+from h2hdb.compress_gallery_to_cbz import (
+    calculate_hash_of_file_in_cbz,
+    hash_and_process_file,
+)
 from h2hdb.hash_dict import HASH_ALGORITHMS
 from h2hdb.information import FileInformation
-from h2hdb.settings import hash_function_by_file, hash_multiple_by_file, hash_stream
+from h2hdb.settings import (
+    COMPARISON_HASH_ALGORITHM,
+    hash_function_by_file,
+    hash_multiple_by_file,
+    hash_stream,
+)
 
 # Larger than the small buffer sizes used below, forcing every streaming call
 # in this file to cross multiple chunk boundaries instead of reading in one go.
@@ -107,3 +115,28 @@ def test_calculate_hash_of_file_in_cbz_returns_empty_for_non_zip(
     assert calculate_hash_of_file_in_cbz(str(not_a_zip), "page.bin", "sha512") == bytes(
         0
     )
+
+
+def test_hash_and_process_file_skips_files_with_excluded_hash(tmp_path: Path) -> None:
+    input_directory = tmp_path / "input"
+    tmp_cbz_directory = tmp_path / "tmp_cbz"
+    input_directory.mkdir()
+    tmp_cbz_directory.mkdir()
+
+    excluded_content = b"excluded file content"
+    kept_content = b"kept file content"
+    (input_directory / "excluded.bin").write_bytes(excluded_content)
+    (input_directory / "kept.bin").write_bytes(kept_content)
+
+    excluded_hash = hashlib.new(COMPARISON_HASH_ALGORITHM, excluded_content).digest()
+    exclude_hashs = {excluded_hash}
+
+    hash_and_process_file(
+        str(input_directory), str(tmp_cbz_directory), "excluded.bin", exclude_hashs, 0
+    )
+    hash_and_process_file(
+        str(input_directory), str(tmp_cbz_directory), "kept.bin", exclude_hashs, 0
+    )
+
+    assert not (tmp_cbz_directory / "excluded.bin").exists()
+    assert (tmp_cbz_directory / "kept.bin").read_bytes() == kept_content
