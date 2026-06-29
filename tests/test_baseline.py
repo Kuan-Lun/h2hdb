@@ -368,3 +368,40 @@ def test_refresh_current_files_hashs_propagates_worker_errors(
 
     with pytest.raises(RuntimeError):
         db.refresh_current_files_hashs()
+
+
+def test_insert_gallery_file_hash_reads_file_once_for_all_algorithms(
+    db: H2HDB, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gallery_name = "artist - single read gallery"
+    db.gallery_ids._insert_gallery_name(gallery_name)
+    db_gallery_id = db.gallery_ids._get_db_gallery_id_by_gallery_name(gallery_name)
+    db_file_ids_by_name = db.files._insert_gallery_files(db_gallery_id, ["page.bin"])
+    db_file_id = db_file_ids_by_name["page.bin"]
+
+    file_path = tmp_path / "page.bin"
+    file_path.write_bytes(b"page content")
+
+    import h2hdb.table_files_dbids as table_files_dbids_module
+    from h2hdb.settings import hash_multiple_by_file
+
+    call_count = 0
+
+    def counting_hash_multiple_by_file(
+        file_path_arg: str, algorithms: dict[str, int]
+    ) -> dict[str, bytes]:
+        nonlocal call_count
+        call_count += 1
+        return hash_multiple_by_file(file_path_arg, algorithms)
+
+    monkeypatch.setattr(
+        table_files_dbids_module,
+        "hash_multiple_by_file",
+        counting_hash_multiple_by_file,
+    )
+
+    db.files._insert_gallery_file_hash(db_file_id, str(file_path))
+
+    assert call_count == 1
+    for algorithm in HASH_ALGORITHMS:
+        assert db.files._check_hash_value_by_file_id(db_file_id, algorithm) is True

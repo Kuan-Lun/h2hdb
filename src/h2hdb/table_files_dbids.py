@@ -4,7 +4,7 @@ from typing import cast
 from .hash_dict import HASH_ALGORITHMS
 from .information import FileInformation
 from .repository import BaseRepository, RepositoryContext
-from .settings import FILE_NAME_LENGTH_LIMIT, hash_function_by_file
+from .settings import FILE_NAME_LENGTH_LIMIT, hash_multiple_by_file
 from .sql_connector import (
     DatabaseDuplicateKeyError,
     DatabaseKeyError,
@@ -365,10 +365,11 @@ class H2HDBFiles(BaseRepository):
     def _insert_gallery_file_hash(
         self, db_file_id: int, absolute_file_path: str
     ) -> None:
+        current_hash_values = hash_multiple_by_file(absolute_file_path, HASH_ALGORITHMS)
 
         for algorithm in HASH_ALGORITHMS:
             is_insert = False
-            current_hash_value = hash_function_by_file(absolute_file_path, algorithm)
+            current_hash_value = current_hash_values[algorithm]
             if self._check_hash_value_by_file_id(db_file_id, algorithm):
                 original_hash_value = self.get_hash_value_by_file_id(
                     db_file_id, algorithm

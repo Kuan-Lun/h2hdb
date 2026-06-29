@@ -1,5 +1,5 @@
 from .hash_dict import HASH_ALGORITHMS
-from .settings import hash_function
+from .settings import hash_multiple_by_file
 
 
 class FileInformation:
@@ -11,10 +11,9 @@ class FileInformation:
 
     def sethash(self) -> None:
         if not self.issethash:
-            with open(self.absolute_path, "rb") as file:
-                file_content = file.read()
-            for algorithm in HASH_ALGORITHMS:
-                setattr(self, algorithm, hash_function(file_content, algorithm))
+            digests = hash_multiple_by_file(self.absolute_path, HASH_ALGORITHMS)
+            for algorithm, digest in digests.items():
+                setattr(self, algorithm, digest)
             self.issethash = True
 
     def setdb_hash_id(self, algorithm: str, db_hash_id: int) -> None:

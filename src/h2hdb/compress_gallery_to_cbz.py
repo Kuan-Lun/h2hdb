@@ -1,6 +1,5 @@
 __all__ = ["compress_images_and_create_cbz", "calculate_hash_of_file_in_cbz"]
 
-import hashlib
 import os
 import shutil
 import zipfile
@@ -11,7 +10,10 @@ from PIL import Image, ImageFile
 from .settings import (
     COMPARISON_HASH_ALGORITHM,
     FILE_NAME_LENGTH_LIMIT,
+    HASH_STREAM_BUFFER_SIZE,
     hash_function_by_file,
+    hash_stream,
+    iter_file_chunks,
 )
 
 Image.MAX_IMAGE_PIXELS = None
@@ -130,15 +132,17 @@ def gallery_name_to_cbz_file_name(gallery_name: str) -> str:
 
 
 def calculate_hash_of_file_in_cbz(
-    cbz_path: str, file_name: str, algorithm: str
+    cbz_path: str,
+    file_name: str,
+    algorithm: str,
+    buffer_size: int = HASH_STREAM_BUFFER_SIZE,
 ) -> bytes:
     if zipfile.is_zipfile(cbz_path):
         with zipfile.ZipFile(cbz_path, "r") as myzip:
             with myzip.open(file_name) as myfile:
-                file_content = myfile.read()
-                hash_object = hashlib.new(algorithm)
-                hash_object.update(file_content)
-                hash_of_file = hash_object.digest()
+                hash_of_file = hash_stream(
+                    iter_file_chunks(myfile, buffer_size), [algorithm]
+                )[algorithm]
     else:
         hash_of_file = bytes(0)
     return hash_of_file
