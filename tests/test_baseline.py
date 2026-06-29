@@ -4,7 +4,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from h2h_galleryinfo_parser import parse_galleryinfo
+from h2h_galleryinfo_parser import GalleryInfoParser, parse_galleryinfo
 
 from h2hdb import H2HDB, H2HDBConfig
 from h2hdb import h2hdb_h2hdb as h2hdb_h2hdb_module
@@ -343,6 +343,38 @@ def test_insert_gallery_infos_does_not_issue_per_file_id_lookups(
     assert db.insert_gallery_infos([gallery_info]) == [True]
 
     assert call_count == 0
+
+
+def test_insert_gallery_chunk_splits_retry_instead_of_one_by_one(
+    db: H2HDB, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gallery_paths = list[str]()
+    for index in range(4):
+        gallery_folder = tmp_path / f"80000{index}"
+        _write_galleryinfo(gallery_folder, title=f"Split Retry Gallery {index}")
+        gallery_paths.append(str(gallery_folder))
+
+    original_insert_gallery_infos = db.insert_gallery_infos
+    call_sizes = list[int]()
+    fail_once = True
+
+    def flaky_insert_gallery_infos(
+        galleryinfo_params_list: list[GalleryInfoParser],
+    ) -> list[bool]:
+        nonlocal fail_once
+        call_sizes.append(len(galleryinfo_params_list))
+        if fail_once and len(galleryinfo_params_list) == len(gallery_paths):
+            fail_once = False
+            raise RuntimeError("simulated transient failure")
+        return original_insert_gallery_infos(galleryinfo_params_list)
+
+    monkeypatch.setattr(db, "insert_gallery_infos", flaky_insert_gallery_infos)
+
+    result = db._insert_gallery_chunk_with_split_retry(gallery_paths)
+
+    assert result == [True, True, True, True]
+    # The failing full batch is retried as two halves, not four single-item calls.
+    assert call_sizes == [4, 2, 2]
 
 
 def test_refresh_current_files_hashs_removes_orphans_for_every_algorithm(

@@ -558,6 +558,25 @@ class H2HDB(BaseRepository):
         for algorithm in HASH_ALGORITHMS:
             self._refresh_current_files_hashs(algorithm)
 
+    def _insert_gallery_chunk_with_split_retry(
+        self, gallery_chunk: list[str]
+    ) -> list[bool]:
+        try:
+            return self.insert_gallery_infos(
+                [parse_galleryinfo(gallery_folder) for gallery_folder in gallery_chunk]
+            )
+        except Exception as e:
+            if len(gallery_chunk) == 1:
+                raise
+            mid = len(gallery_chunk) // 2
+            self.logger.error(
+                f"Error inserting {len(gallery_chunk)} galleries: {e}. "
+                f"Retrying as two batches of {mid} and {len(gallery_chunk) - mid}..."
+            )
+            return self._insert_gallery_chunk_with_split_retry(
+                gallery_chunk[:mid]
+            ) + self._insert_gallery_chunk_with_split_retry(gallery_chunk[mid:])
+
     def insert_h2h_download(self) -> bool:
         self.delete_pending_gallery_removals()
 
@@ -630,22 +649,7 @@ class H2HDB(BaseRepository):
         self.logger.info("Inserting galleries in parallel...")
         for gallery_chunk in chunked_galleries_folders:
             # Insert gallery info to database
-            is_insert_list: list[bool] = list()
-            try:
-                is_insert_list = self.insert_gallery_infos(
-                    [
-                        parse_galleryinfo(gallery_folder)
-                        for gallery_folder in gallery_chunk
-                    ]
-                )
-            except Exception as e:
-                self.logger.error(f"Error inserting galleries: {e}")
-                self.logger.error("Retrying galleries one by one")
-                for x in gallery_chunk:
-                    self.logger.error(f"Retrying gallery '{x}'...")
-                    is_insert_list.append(
-                        self.insert_gallery_infos([parse_galleryinfo(x)])[0]
-                    )
+            is_insert_list = self._insert_gallery_chunk_with_split_retry(gallery_chunk)
             if any(is_insert_list):
                 self.logger.info("There are new galleries inserted in database.")
                 is_insert_limit_reached |= True
