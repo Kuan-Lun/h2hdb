@@ -239,14 +239,14 @@ class H2HDB(BaseRepository):
             ],
         )
 
-        db_gallery_ids = {
-            galleryinfo_params.gallery_name: (
-                self.gallery_ids._get_db_gallery_id_by_gallery_name(
+        db_gallery_ids = (
+            self.gallery_ids._get_db_gallery_ids_by_gallery_names_from_dbids(
+                [
                     galleryinfo_params.gallery_name
-                )
+                    for galleryinfo_params in galleryinfo_params_list
+                ]
             )
-            for galleryinfo_params in galleryinfo_params_list
-        }
+        )
         self._insert_rows(
             "galleries_names",
             ["db_gallery_id", "full_name"],
@@ -712,34 +712,45 @@ class H2HDB(BaseRepository):
         self.gallery_times._reset_redownload_times()
 
     def get_komga_metadata(
-        self, gallery_name: str
-    ) -> dict[str, str | list[dict[str, str]]]:
-        metadata: dict[str, str | list[dict[str, str]]] = dict()
-        metadata["title"] = self.gallery_titles.get_title_by_gallery_name(gallery_name)
-        if self.gallery_comments._check_gallery_comment_by_gallery_name(gallery_name):
-            metadata["summary"] = self.gallery_comments.get_comment_by_gallery_name(
-                gallery_name
+        self, gallery_names: list[str]
+    ) -> dict[str, dict[str, str | list[dict[str, str]]]]:
+        db_gallery_ids_by_name = self.gallery_ids._get_db_gallery_ids_by_gallery_names(
+            gallery_names
+        )
+        db_gallery_ids = list(db_gallery_ids_by_name.values())
+
+        titles = self.gallery_titles.get_titles_by_db_gallery_ids(db_gallery_ids)
+        comments = self.gallery_comments.get_comments_by_db_gallery_ids(db_gallery_ids)
+        upload_times = self.gallery_times.get_upload_times_by_db_gallery_ids(
+            db_gallery_ids
+        )
+        tags_by_gallery_id = self.gallery_tags.get_tag_pairs_by_db_gallery_ids(
+            db_gallery_ids
+        )
+        gids = self.gallery_gids.get_gids_by_db_gallery_ids(db_gallery_ids)
+
+        result = dict[str, dict[str, str | list[dict[str, str]]]]()
+        for gallery_name in gallery_names:
+            db_gallery_id = db_gallery_ids_by_name[gallery_name]
+            metadata: dict[str, str | list[dict[str, str]]] = dict()
+            metadata["title"] = titles[db_gallery_id]
+            metadata["summary"] = comments.get(db_gallery_id, "")
+            upload_time = upload_times[db_gallery_id]
+            metadata["releaseDate"] = "-".join(
+                [
+                    str(upload_time.year),
+                    f"{upload_time.month:02d}",
+                    f"{upload_time.day:02d}",
+                ]
             )
-        else:
-            metadata["summary"] = ""
-        upload_time = self.gallery_times.get_upload_time_by_gallery_name(gallery_name)
-        metadata["releaseDate"] = "-".join(
-            [
-                str(upload_time.year),
-                f"{upload_time.month:02d}",
-                f"{upload_time.day:02d}",
+            tags = tags_by_gallery_id.get(db_gallery_id, [])
+            authors = [
+                {"name": value, "role": key} for key, value in tags if value != ""
             ]
-        )
-        tags = self.gallery_tags.get_tag_pairs_by_gallery_name(gallery_name)
-        authors = [{"name": value, "role": key} for key, value in tags if value != ""]
-        authors.append(
-            {
-                "name": str(self.gallery_gids.get_gid_by_gallery_name(gallery_name)),
-                "role": "gid",
-            }
-        )
-        metadata["authors"] = authors
-        return metadata
+            authors.append({"name": str(gids[db_gallery_id]), "role": "gid"})
+            metadata["authors"] = authors
+            result[gallery_name] = metadata
+        return result
 
 
 def compress_gallery_to_cbz_worker(

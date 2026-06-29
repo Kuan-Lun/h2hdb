@@ -1,6 +1,9 @@
 from .repository import BaseRepository, RepositoryContext
+from .settings import chunk_list
 from .sql_connector import DatabaseKeyError
 from .table_gids import H2HDBGalleriesIDs
+
+COMMENT_BATCH_SIZE = 500
 
 
 class H2HDBGalleriesComments(BaseRepository):
@@ -105,3 +108,23 @@ class H2HDBGalleriesComments(BaseRepository):
             gallery_name
         )
         return self._select_gallery_comment(db_gallery_id)
+
+    def get_comments_by_db_gallery_ids(
+        self, db_gallery_ids: list[int]
+    ) -> dict[int, str]:
+        if not db_gallery_ids:
+            return {}
+
+        comments = dict[int, str]()
+        with self.SQLConnector() as connector:
+            for batch in chunk_list(db_gallery_ids, COMMENT_BATCH_SIZE):
+                table_name = "galleries_comments"
+                select_query = f"""
+                    SELECT db_gallery_id, Comment
+                    FROM {table_name}
+                    WHERE db_gallery_id IN ({", ".join(["%s"] * len(batch))})
+                """
+                query_result = connector.fetch_all(select_query, tuple(batch))
+                for db_gallery_id, comment in query_result:
+                    comments[int(db_gallery_id)] = str(comment)
+        return comments

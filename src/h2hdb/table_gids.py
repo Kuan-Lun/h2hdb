@@ -1,7 +1,12 @@
 __all__ = ["H2HDBGalleriesIDs", "H2HDBGalleriesGIDs"]
 
+from itertools import chain
+
 from .repository import BaseRepository, RepositoryContext
+from .settings import chunk_list
 from .sql_connector import DatabaseKeyError
+
+GALLERY_ID_BATCH_SIZE = 500
 
 
 class H2HDBGalleriesIDs(BaseRepository):
@@ -130,6 +135,80 @@ class H2HDBGalleriesIDs(BaseRepository):
             raise DatabaseKeyError(f"Gallery name '{gallery_name}' does not exist.")
         return db_gallery_id
 
+    def _get_db_gallery_ids_by_gallery_names(
+        self, gallery_names: list[str]
+    ) -> dict[str, int]:
+        if not gallery_names:
+            return {}
+
+        db_gallery_ids = dict[str, int]()
+        with self.SQLConnector() as connector:
+            for batch in chunk_list(gallery_names, GALLERY_ID_BATCH_SIZE):
+                select_query = f"""
+                    SELECT db_gallery_id, full_name
+                    FROM galleries_names
+                    WHERE full_name IN ({", ".join(["%s"] * len(batch))})
+                """
+                query_result = connector.fetch_all(select_query, tuple(batch))
+                for db_gallery_id, full_name in query_result:
+                    db_gallery_ids[str(full_name)] = int(db_gallery_id)
+        return db_gallery_ids
+
+    def _get_db_gallery_ids_by_gallery_names_from_dbids(
+        self, gallery_names: list[str]
+    ) -> dict[str, int]:
+        # Unlike _get_db_gallery_ids_by_gallery_names, this reads back from
+        # galleries_dbids itself (split into per-backend name columns) rather
+        # than galleries_names.full_name. It exists for callers that need the
+        # db_gallery_id immediately after inserting into galleries_dbids,
+        # before the corresponding galleries_names row has been written.
+        if not gallery_names:
+            return {}
+
+        match self.config.database.sql_type.lower():
+            case "mariadb":
+                column_name_parts, _ = self.mariadb_split_gallery_name_based_on_limit(
+                    "name"
+                )
+            case "sqlite":
+                column_name_parts, _ = self.sqlite_name_columns("name")
+
+        name_parts_by_gallery_name = {
+            gallery_name: tuple(self._split_gallery_name(gallery_name))
+            for gallery_name in gallery_names
+        }
+
+        db_gallery_id_by_name_parts = dict[tuple[str, ...], int]()
+        with self.SQLConnector() as connector:
+            for batch in chunk_list(gallery_names, GALLERY_ID_BATCH_SIZE):
+                where_clause = " OR ".join(
+                    "("
+                    + " AND ".join(f"{part} = %s" for part in column_name_parts)
+                    + ")"
+                    for _ in batch
+                )
+                select_query = f"""
+                    SELECT {", ".join(column_name_parts)}, db_gallery_id
+                    FROM galleries_dbids
+                    WHERE {where_clause}
+                """
+                parameters = tuple(
+                    chain.from_iterable(
+                        name_parts_by_gallery_name[gallery_name]
+                        for gallery_name in batch
+                    )
+                )
+                query_result = connector.fetch_all(select_query, parameters)
+                for row in query_result:
+                    name_parts = tuple(str(part) for part in row[:-1])
+                    db_gallery_id_by_name_parts[name_parts] = int(row[-1])
+
+        return {
+            gallery_name: db_gallery_id_by_name_parts[name_parts]
+            for gallery_name, name_parts in name_parts_by_gallery_name.items()
+            if name_parts in db_gallery_id_by_name_parts
+        }
+
 
 class H2HDBGalleriesGIDs(BaseRepository):
     """
@@ -239,6 +318,24 @@ class H2HDBGalleriesGIDs(BaseRepository):
             gallery_name
         )
         return self._get_gid_by_db_gallery_id(db_gallery_id)
+
+    def get_gids_by_db_gallery_ids(self, db_gallery_ids: list[int]) -> dict[int, int]:
+        if not db_gallery_ids:
+            return {}
+
+        gids = dict[int, int]()
+        with self.SQLConnector() as connector:
+            for batch in chunk_list(db_gallery_ids, GALLERY_ID_BATCH_SIZE):
+                table_name = "galleries_gids"
+                select_query = f"""
+                    SELECT db_gallery_id, gid
+                    FROM {table_name}
+                    WHERE db_gallery_id IN ({", ".join(["%s"] * len(batch))})
+                """
+                query_result = connector.fetch_all(select_query, tuple(batch))
+                for db_gallery_id, gid in query_result:
+                    gids[int(db_gallery_id)] = int(gid)
+        return gids
 
     def get_gids(self) -> list[int]:
         with self.SQLConnector() as connector:

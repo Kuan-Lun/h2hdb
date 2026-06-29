@@ -235,6 +235,44 @@ def test_insert_gallery_infos_batches_multiple_galleries(
     assert db.insert_gallery_infos(gallery_infos) == [False, False]
 
 
+def test_get_komga_metadata_does_not_cross_mix_galleries(
+    db: H2HDB, tmp_path: Path
+) -> None:
+    gallery_folders = list[Path]()
+    for index in range(2):
+        gallery_folder = tmp_path / f"70000{index}"
+        _write_galleryinfo(
+            gallery_folder,
+            title=f"Komga Gallery {index}",
+            tags=f"artist:komga{index}, group:shared, language:english",
+        )
+        gallery_folders.append(gallery_folder)
+
+    gallery_infos = [parse_galleryinfo(str(path)) for path in gallery_folders]
+    assert db.insert_gallery_infos(gallery_infos) == [True, True]
+
+    gallery_name_0 = gallery_infos[0].gallery_name
+    gallery_name_1 = gallery_infos[1].gallery_name
+    db_gallery_id_0 = db.gallery_ids._get_db_gallery_id_by_gallery_name(gallery_name_0)
+    db.gallery_comments._insert_gallery_comment(db_gallery_id_0, "hello world")
+
+    metadata = db.get_komga_metadata([gallery_name_0, gallery_name_1])
+
+    assert metadata[gallery_name_0]["title"] == "Komga Gallery 0"
+    assert metadata[gallery_name_0]["summary"] == "hello world"
+    assert metadata[gallery_name_1]["title"] == "Komga Gallery 1"
+    assert metadata[gallery_name_1]["summary"] == ""
+
+    for index, gallery_name in enumerate((gallery_name_0, gallery_name_1)):
+        gid = gallery_infos[index].gid
+        authors = metadata[gallery_name]["authors"]
+        assert {"name": str(gid), "role": "gid"} in authors
+        assert {"name": f"komga{index}", "role": "artist"} in authors
+        assert {"name": "shared", "role": "group"} in authors
+        assert {"name": "english", "role": "language"} in authors
+        assert len(authors) == 4
+
+
 def test_insert_rows_batches_galleries_across_chunk_boundary(
     db: H2HDB, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

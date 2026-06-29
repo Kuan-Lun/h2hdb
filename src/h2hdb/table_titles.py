@@ -1,6 +1,9 @@
 from .repository import BaseRepository, RepositoryContext
+from .settings import chunk_list
 from .sql_connector import DatabaseKeyError
 from .table_gids import H2HDBGalleriesIDs
+
+TITLE_BATCH_SIZE = 500
 
 
 class H2HDBGalleriesTitles(BaseRepository):
@@ -75,3 +78,21 @@ class H2HDBGalleriesTitles(BaseRepository):
             gallery_name
         )
         return self._get_title_by_db_gallery_id(db_gallery_id)
+
+    def get_titles_by_db_gallery_ids(self, db_gallery_ids: list[int]) -> dict[int, str]:
+        if not db_gallery_ids:
+            return {}
+
+        titles = dict[int, str]()
+        with self.SQLConnector() as connector:
+            for batch in chunk_list(db_gallery_ids, TITLE_BATCH_SIZE):
+                table_name = "galleries_titles"
+                select_query = f"""
+                    SELECT db_gallery_id, title
+                    FROM {table_name}
+                    WHERE db_gallery_id IN ({", ".join(["%s"] * len(batch))})
+                """
+                query_result = connector.fetch_all(select_query, tuple(batch))
+                for db_gallery_id, title in query_result:
+                    titles[int(db_gallery_id)] = str(title)
+        return titles

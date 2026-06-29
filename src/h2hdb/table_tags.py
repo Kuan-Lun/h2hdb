@@ -1,8 +1,10 @@
+from collections import defaultdict
 from itertools import chain
 from typing import Any
 
 from .information import TagInformation
 from .repository import BaseRepository, RepositoryContext
+from .settings import chunk_list
 from .sql_connector import (
     DatabaseDuplicateKeyError,
     DatabaseKeyError,
@@ -298,6 +300,31 @@ class H2HDBGalleriesTags(BaseRepository):
             self._get_tag_pairs_by_db_tag_pair_id(db_tag_pair_id)
             for db_tag_pair_id in db_tag_pair_ids
         ]
+
+    def get_tag_pairs_by_db_gallery_ids(
+        self, db_gallery_ids: list[int]
+    ) -> dict[int, list[tuple[str, str]]]:
+        if not db_gallery_ids:
+            return {}
+
+        tag_pairs_by_gallery_id = defaultdict[int, list[tuple[str, str]]](list)
+        with self.SQLConnector() as connector:
+            for batch in chunk_list(db_gallery_ids, TAG_BATCH_SIZE):
+                select_query = f"""
+                    SELECT galleries_tags.db_gallery_id,
+                        galleries_tag_pairs_dbids.tag_name,
+                        galleries_tag_pairs_dbids.tag_value
+                    FROM galleries_tags
+                    JOIN galleries_tag_pairs_dbids
+                        ON galleries_tags.db_tag_pair_id = galleries_tag_pairs_dbids.db_tag_pair_id
+                    WHERE galleries_tags.db_gallery_id IN ({", ".join(["%s"] * len(batch))})
+                """
+                query_result = connector.fetch_all(select_query, tuple(batch))
+                for db_gallery_id, tag_name, tag_value in query_result:
+                    tag_pairs_by_gallery_id[int(db_gallery_id)].append(
+                        (str(tag_name), str(tag_value))
+                    )
+        return dict(tag_pairs_by_gallery_id)
 
     def _get_db_tag_pair_id_by_db_gallery_id(self, db_gallery_id: int) -> list[int]:
         with self.SQLConnector() as connector:

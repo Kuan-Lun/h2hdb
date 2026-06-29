@@ -2,8 +2,11 @@ import datetime
 from typing import cast
 
 from .repository import BaseRepository, RepositoryContext
+from .settings import chunk_list
 from .sql_connector import DatabaseKeyError
 from .table_gids import H2HDBGalleriesIDs
+
+TIME_BATCH_SIZE = 500
 
 
 class H2HDBTimes(BaseRepository):
@@ -70,6 +73,25 @@ class H2HDBTimes(BaseRepository):
             self.logger.error(msg)
             raise DatabaseKeyError(msg)
         return time
+
+    def _select_times(
+        self, table_name: str, db_gallery_ids: list[int]
+    ) -> dict[int, datetime.datetime]:
+        if not db_gallery_ids:
+            return {}
+
+        times = dict[int, datetime.datetime]()
+        with self.SQLConnector() as connector:
+            for batch in chunk_list(db_gallery_ids, TIME_BATCH_SIZE):
+                select_query = f"""
+                    SELECT db_gallery_id, time
+                    FROM {table_name}
+                    WHERE db_gallery_id IN ({", ".join(["%s"] * len(batch))})
+                """
+                query_result = connector.fetch_all(select_query, tuple(batch))
+                for db_gallery_id, time in query_result:
+                    times[int(db_gallery_id)] = cast(datetime.datetime, time)
+        return times
 
     def _update_time(self, table_name: str, db_gallery_id: int, time: str) -> None:
         with self.SQLConnector() as connector:
@@ -139,6 +161,11 @@ class H2HDBTimes(BaseRepository):
             gallery_name
         )
         return self._select_time("galleries_upload_times", db_gallery_id)
+
+    def get_upload_times_by_db_gallery_ids(
+        self, db_gallery_ids: list[int]
+    ) -> dict[int, datetime.datetime]:
+        return self._select_times("galleries_upload_times", db_gallery_ids)
 
     def _create_galleries_modified_times_table(self) -> None:
         self._create_times_table("galleries_modified_times")
