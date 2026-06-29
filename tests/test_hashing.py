@@ -2,6 +2,7 @@ import hashlib
 import os
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -59,11 +60,11 @@ def test_hash_multiple_by_file_reads_file_only_once(
     open_count = 0
     original_open = open
 
-    def counting_open(*args: object, **kwargs: object) -> object:
+    def counting_open(*args: Any, **kwargs: Any) -> Any:
         nonlocal open_count
         if args and args[0] == str(file_path):
             open_count += 1
-        return original_open(*args, **kwargs)  # type: ignore[arg-type]
+        return original_open(*args, **kwargs)
 
     monkeypatch.setattr("builtins.open", counting_open)
 
