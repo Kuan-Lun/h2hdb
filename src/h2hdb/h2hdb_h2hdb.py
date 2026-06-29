@@ -813,10 +813,6 @@ class H2HDB(BaseRepository):
             self.logger.debug(f"Gallery '{galleryinfo_params.gallery_name}' inserted.")
         return is_insert_list
 
-    def insert_gallery_info(self, gallery_folder: str) -> bool:
-        galleryinfo_params = parse_galleryinfo(gallery_folder)
-        return self.insert_gallery_infos([galleryinfo_params])[0]
-
     def compress_gallery_to_cbz(
         self, gallery_folder: str, exclude_hashs: set[bytes]
     ) -> bool:
@@ -1118,7 +1114,9 @@ class H2HDB(BaseRepository):
                 self.logger.error("Retrying galleries one by one")
                 for x in gallery_chunk:
                     self.logger.error(f"Retrying gallery '{x}'...")
-                    is_insert_list.append(self.insert_gallery_info(x))
+                    is_insert_list.append(
+                        self.insert_gallery_infos([parse_galleryinfo(x)])[0]
+                    )
             if any(is_insert_list):
                 self.logger.info("There are new galleries inserted in database.")
                 is_insert_limit_reached |= True
