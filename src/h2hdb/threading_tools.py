@@ -1,69 +1,10 @@
-import threading
-from abc import ABCMeta, abstractmethod
 from collections.abc import Callable
-from contextlib import ExitStack
 from multiprocessing import cpu_count
 from multiprocessing.pool import Pool
-from threading import Thread
 from typing import Any
 
 CPU_NUM = cpu_count()
 POOL_CPU_LIMIT = max(CPU_NUM - 2, 1)
-
-MAX_THREADS = 2 * CPU_NUM
-SQL_SEMAPHORE = threading.Semaphore(POOL_CPU_LIMIT)
-
-
-def wrap_thread_target_with_semaphores(
-    target: Callable[..., Any],
-    semaphores: list[threading.Semaphore],
-) -> Callable[..., None]:
-    def wrapper(*args: Any, **kwargs: Any) -> None:
-        with ExitStack() as stack:
-            for semaphore in semaphores:
-                stack.enter_context(semaphore)
-            target(*args, **kwargs)
-
-    return wrapper
-
-
-class ThreadsList(list[Thread], metaclass=ABCMeta):
-    @abstractmethod
-    def get_semaphores(self) -> list[threading.Semaphore]:
-        pass
-
-    def append(self, target: Callable[..., Any], args: tuple[Any, ...]) -> None:  # type: ignore[override]
-        thread = Thread(
-            target=wrap_thread_target_with_semaphores(target, self.get_semaphores()),
-            args=args,
-        )
-        super().append(thread)
-
-    def __enter__(self) -> ThreadsList:
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: object | None,
-    ) -> None:
-        running_threads: list[Thread] = list()
-        while self:
-            self[0].start()
-            running_threads.append(self.pop(0))
-            while len(running_threads) >= MAX_THREADS:
-                for thread in running_threads:
-                    if not thread.is_alive():
-                        thread.join()
-                        running_threads.remove(thread)
-        for thread in running_threads:
-            thread.join()
-
-
-class SQLThreadsList(ThreadsList):
-    def get_semaphores(self) -> list[threading.Semaphore]:
-        return [SQL_SEMAPHORE]
 
 
 def run_in_parallel(fun: Callable[..., Any], args: list[tuple[Any, ...]]) -> list[Any]:

@@ -7,6 +7,7 @@ from h2h_galleryinfo_parser import parse_galleryinfo
 from h2hdb import H2HDB, H2HDBConfig
 from h2hdb import h2hdb_h2hdb as h2hdb_h2hdb_module
 from h2hdb import table_tags as table_tags_module
+from h2hdb.hash_dict import HASH_ALGORITHMS
 from h2hdb.sql_connector import DatabaseDuplicateKeyError, DatabaseKeyError
 
 
@@ -340,3 +341,30 @@ def test_insert_gallery_infos_does_not_issue_per_file_id_lookups(
     assert db.insert_gallery_infos([gallery_info]) == [True]
 
     assert call_count == 0
+
+
+def test_refresh_current_files_hashs_removes_orphans_for_every_algorithm(
+    db: H2HDB,
+) -> None:
+    for index, algorithm in enumerate(HASH_ALGORITHMS):
+        hash_value = bytes([index]) * 64
+        db.files.insert_db_hash_id_by_hash_value(hash_value, algorithm)
+        assert db.files._check_db_hash_id_by_hash_value(hash_value, algorithm) is True
+
+    db.refresh_current_files_hashs()
+
+    for index, algorithm in enumerate(HASH_ALGORITHMS):
+        hash_value = bytes([index]) * 64
+        assert db.files._check_db_hash_id_by_hash_value(hash_value, algorithm) is False
+
+
+def test_refresh_current_files_hashs_propagates_worker_errors(
+    db: H2HDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(algorithm: str) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(db, "_refresh_current_files_hashs", boom)
+
+    with pytest.raises(RuntimeError):
+        db.refresh_current_files_hashs()

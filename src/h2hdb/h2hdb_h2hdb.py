@@ -32,7 +32,7 @@ from .table_tags import H2HDBGalleriesTags
 from .table_times import H2HDBTimes
 from .table_titles import H2HDBGalleriesTitles
 from .table_uploadaccounts import H2HDBUploadAccounts
-from .threading_tools import POOL_CPU_LIMIT, SQLThreadsList, run_in_parallel
+from .threading_tools import POOL_CPU_LIMIT, run_in_parallel
 from .view_ginfo import H2HDBGalleriesInfos
 
 GALLERY_METADATA_BATCH_SIZE = 500
@@ -1029,12 +1029,8 @@ class H2HDB(BaseRepository):
             )
 
     def refresh_current_files_hashs(self) -> None:
-        with SQLThreadsList() as threads:
-            for algorithm in HASH_ALGORITHMS:
-                threads.append(
-                    target=self._refresh_current_files_hashs,
-                    args=(algorithm,),
-                )
+        for algorithm in HASH_ALGORITHMS:
+            self._refresh_current_files_hashs(algorithm)
 
     def insert_h2h_download(self) -> bool:
         self.delete_pending_gallery_removals()
