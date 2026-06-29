@@ -3,7 +3,8 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
-from typing import cast
+from itertools import chain
+from typing import Any, cast
 
 from .config_loader import H2HDBConfig
 from .logger import HentaiDBLogger, setup_logger
@@ -90,6 +91,28 @@ class BaseRepository:
     @property
     def mariadb_index_prefix_limit(self) -> int:
         return self._context.mariadb_index_prefix_limit
+
+    @property
+    def _insert_rows_batch_size(self) -> int:
+        return 500
+
+    def _insert_rows(
+        self, table_name: str, columns: list[str], rows: list[tuple[Any, ...]]
+    ) -> None:
+        if not rows:
+            return
+
+        row_placeholder = f"({', '.join(['%s'] * len(columns))})"
+        batch_size = self._insert_rows_batch_size
+        for start in range(0, len(rows), batch_size):
+            batch = rows[start : start + batch_size]
+            insert_query = f"""
+                INSERT INTO {table_name} ({", ".join(columns)})
+                VALUES {", ".join([row_placeholder] * len(batch))}
+            """
+            parameters = tuple(chain.from_iterable(batch))
+            with self.SQLConnector() as connector:
+                connector.execute(insert_query, parameters)
 
     def _split_gallery_name(self, gallery_name: str) -> list[str]:
         match self.config.database.sql_type.lower():

@@ -95,7 +95,7 @@ class H2HDBFiles(BaseRepository):
 
     def _insert_gallery_files(
         self, db_gallery_id: int, file_names_list: list[str]
-    ) -> None:
+    ) -> dict[str, int]:
         with self.SQLConnector() as connector:
 
             file_name_parts_list: list[list[str]] = list()
@@ -144,9 +144,19 @@ class H2HDBFiles(BaseRepository):
                 insert_parameter,
             )
 
+            select_query = f"""
+                SELECT {", ".join(column_name_parts)}, db_file_id
+                FROM files_dbids
+                WHERE db_gallery_id = %s
+            """
+            query_result = connector.fetch_all(select_query, (db_gallery_id,))
+            db_file_id_by_parts = {
+                tuple(str(part) for part in row[:-1]): int(row[-1])
+                for row in query_result
+            }
             db_file_id_list = [
-                self._get_db_file_id(db_gallery_id, file_name)
-                for file_name in file_names_list
+                db_file_id_by_parts[tuple(file_name_parts_list[n])]
+                for n in range(len(file_names_list))
             ]
 
             table_name = "files_names"
@@ -170,6 +180,8 @@ class H2HDBFiles(BaseRepository):
                     )
                 ),
             )
+
+        return dict(zip(file_names_list, db_file_id_list, strict=True))
 
     def __get_db_file_id(self, db_gallery_id: int, file_name: str) -> tuple[int, ...]:
         with self.SQLConnector() as connector:
@@ -340,7 +352,9 @@ class H2HDBFiles(BaseRepository):
             for finfo in fileinformations:
                 hash_value = cast(bytes, getattr(finfo, algorithm))
                 if hash_value not in db_hash_ids:
-                    msg = f"Image hash for image ID 0x{hash_value.hex()} does not exist."
+                    msg = (
+                        f"Image hash for image ID 0x{hash_value.hex()} does not exist."
+                    )
                     raise DatabaseKeyError(msg)
                 finfo.setdb_hash_id(
                     algorithm,
@@ -532,12 +546,8 @@ class H2HDBFiles(BaseRepository):
             return
 
         mid = len(missing_hash_values) // 2
-        self._insert_db_hash_ids_with_split_retry(
-            missing_hash_values[:mid], algorithm
-        )
-        self._insert_db_hash_ids_with_split_retry(
-            missing_hash_values[mid:], algorithm
-        )
+        self._insert_db_hash_ids_with_split_retry(missing_hash_values[:mid], algorithm)
+        self._insert_db_hash_ids_with_split_retry(missing_hash_values[mid:], algorithm)
 
     def insert_db_hash_id_by_hash_values(
         self, hash_values: set[bytes], algorithm: str
