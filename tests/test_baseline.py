@@ -405,3 +405,19 @@ def test_insert_gallery_file_hash_reads_file_once_for_all_algorithms(
     assert call_count == 1
     for algorithm in HASH_ALGORITHMS:
         assert db.files._check_hash_value_by_file_id(db_file_id, algorithm) is True
+
+
+def test_refresh_current_cbz_files_removes_only_orphaned_files(
+    sqlite_config: H2HDBConfig, tmp_path: Path
+) -> None:
+    cbz_path = tmp_path / "cbz"
+    cbz_path.mkdir()
+    (cbz_path / "kept.cbz").write_bytes(b"kept")
+    (cbz_path / "orphan.cbz").write_bytes(b"orphan")
+    sqlite_config.h2h.cbz_path = str(cbz_path)
+
+    with H2HDB(config=sqlite_config) as db:
+        db._refresh_current_cbz_files({"kept"})
+
+    assert (cbz_path / "kept.cbz").exists()
+    assert not (cbz_path / "orphan.cbz").exists()

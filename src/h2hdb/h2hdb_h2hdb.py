@@ -901,7 +901,7 @@ class H2HDB(BaseRepository):
             result = True
         return result
 
-    def scan_current_galleries_folders(self) -> tuple[list[str], list[str]]:
+    def scan_current_galleries_folders(self) -> tuple[list[str], set[str]]:
         self.delete_pending_gallery_removals()
 
         with self.SQLConnector() as connector:
@@ -933,12 +933,12 @@ class H2HDB(BaseRepository):
 
             data: list[tuple[Any, ...]] = list()
             current_galleries_folders: list[str] = list()
-            current_galleries_names: list[str] = list()
+            current_galleries_names: set[str] = set()
             for root, _, files in os.walk(self.config.h2h.download_path):
                 if GALLERY_INFO_FILE_NAME in files:
                     current_galleries_folders.append(root)
                     gallery_name = os.path.basename(current_galleries_folders[-1])
-                    current_galleries_names.append(gallery_name)
+                    current_galleries_names.add(gallery_name)
                     gallery_name_parts = self._split_gallery_name(gallery_name)
                     data.append(tuple(gallery_name_parts))
             group_size = 5000
@@ -976,16 +976,17 @@ class H2HDB(BaseRepository):
 
         return (current_galleries_folders, current_galleries_names)
 
-    def _refresh_current_cbz_files(self, current_galleries_names: list[str]) -> None:
+    def _refresh_current_cbz_files(self, current_galleries_names: set[str]) -> None:
         from .compress_gallery_to_cbz import gallery_name_to_cbz_file_name
 
         current_cbzs: dict[str, str] = dict()
         for root, _, files in os.walk(self.config.h2h.cbz_path):
             for file in files:
                 current_cbzs[file] = root
-        for key in set(current_cbzs.keys()) - set(
+        current_cbz_file_names = {
             gallery_name_to_cbz_file_name(name) for name in current_galleries_names
-        ):
+        }
+        for key in set(current_cbzs.keys()) - current_cbz_file_names:
             os.remove(os.path.join(current_cbzs[key], key))
             self.logger.info(f"CBZ '{key}' removed.")
         self.logger.info("CBZ files refreshed.")
