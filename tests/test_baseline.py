@@ -1,6 +1,7 @@
 import hashlib
 import zipfile
 from collections.abc import Iterator
+from multiprocessing.pool import Pool
 from pathlib import Path
 
 import pytest
@@ -517,9 +518,10 @@ def test_get_stale_cbz_galleries_flags_cbz_containing_newly_excluded_file(
         cbz.writestr("001.jpg", image_content)
 
     # image_hash is now excluded, but the existing cbz still contains it.
-    assert db.cbz.get_stale_cbz_galleries({gallery_name}, {image_hash}) == {
-        gallery_name
-    }
+    with Pool(1) as pool:
+        assert db.cbz.get_stale_cbz_galleries({gallery_name}, {image_hash}, pool) == {
+            gallery_name
+        }
 
 
 def test_get_stale_cbz_galleries_ignores_cbz_that_already_excludes_file(
@@ -544,7 +546,10 @@ def test_get_stale_cbz_galleries_ignores_cbz_that_already_excludes_file(
         cbz.writestr("galleryinfo.txt", "fresh")
         # 001.jpg already absent, matching the exclusion below.
 
-    assert db.cbz.get_stale_cbz_galleries({gallery_name}, {image_hash}) == set()
+    with Pool(1) as pool:
+        assert (
+            db.cbz.get_stale_cbz_galleries({gallery_name}, {image_hash}, pool) == set()
+        )
 
 
 def test_update_redownload_time_to_now_by_gid(db: H2HDB) -> None:
