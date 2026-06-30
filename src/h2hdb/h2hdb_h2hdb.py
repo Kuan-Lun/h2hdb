@@ -32,7 +32,7 @@ from .table_tags import H2HDBGalleriesTags
 from .table_times import H2HDBTimes
 from .table_titles import H2HDBGalleriesTitles
 from .table_uploadaccounts import H2HDBUploadAccounts
-from .threading_tools import POOL_CPU_LIMIT, run_in_parallel
+from .threading_tools import POOL_CPU_LIMIT
 from .view_ginfo import H2HDBGalleriesInfos
 
 GALLERY_METADATA_BATCH_SIZE = 500
@@ -580,6 +580,55 @@ class H2HDB(BaseRepository):
                 gallery_chunk[:mid]
             ) + self._insert_gallery_chunk_with_split_retry(gallery_chunk[mid:])
 
+    def _sort_galleries_for_processing(
+        self, current_galleries_folders: list[str]
+    ) -> list[str]:
+        if self.config.h2h.cbz_sort in ["upload_time", "download_time", "gid", "title"]:
+            self.logger.info(f"Sorting by {self.config.h2h.cbz_sort}...")
+            sorted_galleries_folders = sorted(
+                current_galleries_folders,
+                key=lambda x: getattr(parse_galleryinfo(x), self.config.h2h.cbz_sort),
+                reverse=True,
+            )
+        elif "no" in self.config.h2h.cbz_sort:
+            self.logger.info("No sorting...")
+            sorted_galleries_folders = current_galleries_folders
+        elif "pages" in self.config.h2h.cbz_sort:
+            zero_level = (
+                max(1, int(self.config.h2h.cbz_sort.split("+")[-1]))
+                if "+" in self.config.h2h.cbz_sort
+                else 20
+            )
+            self.logger.info(
+                f"Sorting by pages with adjustment based on {zero_level} pages..."
+            )
+            sorted_galleries_folders = sorted(
+                current_galleries_folders,
+                key=lambda x: abs(getattr(parse_galleryinfo(x), "pages") - zero_level),
+            )
+        else:
+            sorted_galleries_folders = sorted(
+                current_galleries_folders,
+                key=lambda x: getattr(parse_galleryinfo(x), "pages"),
+            )
+        self.logger.info("Galleries sorted.")
+        return sorted_galleries_folders
+
+    def _refresh_exclude_hashs(
+        self, previously_count_duplicated_files: int, exclude_hashs: set[bytes]
+    ) -> tuple[int, set[bytes]]:
+        self.logger.debug("Checking for duplicated files...")
+        current_count_duplicated_files = self._count_duplicated_files_hashs_sha512()
+        new_exclude_hashs = exclude_hashs
+        if current_count_duplicated_files > previously_count_duplicated_files:
+            self.logger.debug(
+                "Duplicated files found. Updating excluded hash values..."
+            )
+            previously_count_duplicated_files = current_count_duplicated_files
+            new_exclude_hashs = self._get_duplicated_hash_values_by_count_artist_ratio()
+            self.logger.info("Excluded hash values updated.")
+        return previously_count_duplicated_files, new_exclude_hashs
+
     def insert_h2h_download(self) -> bool:
         self.delete_pending_gallery_removals()
 
@@ -590,58 +639,14 @@ class H2HDB(BaseRepository):
         self.cbz._refresh_current_cbz_files(current_galleries_names)
 
         self.logger.info("Inserting galleries...")
-        if self.config.h2h.cbz_sort in ["upload_time", "download_time", "gid", "title"]:
-            self.logger.info(f"Sorting by {self.config.h2h.cbz_sort}...")
-            current_galleries_folders = sorted(
-                current_galleries_folders,
-                key=lambda x: getattr(parse_galleryinfo(x), self.config.h2h.cbz_sort),
-                reverse=True,
-            )
-        elif "no" in self.config.h2h.cbz_sort:
-            self.logger.info("No sorting...")
-            pass
-        elif "pages" in self.config.h2h.cbz_sort:
-            self.logger.info("Sorting by pages...")
-            zero_level = (
-                max(1, int(self.config.h2h.cbz_sort.split("+")[-1]))
-                if "+" in self.config.h2h.cbz_sort
-                else 20
-            )
-            self.logger.info(
-                f"Sorting by pages with adjustment based on {zero_level} pages..."
-            )
-            current_galleries_folders = sorted(
-                current_galleries_folders,
-                key=lambda x: abs(getattr(parse_galleryinfo(x), "pages") - zero_level),
-            )
-        else:
-            current_galleries_folders = sorted(
-                current_galleries_folders,
-                key=lambda x: getattr(parse_galleryinfo(x), "pages"),
-            )
-        self.logger.info("Galleries sorted.")
+        current_galleries_folders = self._sort_galleries_for_processing(
+            current_galleries_folders
+        )
 
         self.logger.info("Getting excluded hash values...")
         exclude_hashs = set[bytes]()
         previously_count_duplicated_files = 0
         self.logger.info("Excluded hash values obtained.")
-
-        def calculate_exclude_hashs(
-            previously_count_duplicated_files: int, exclude_hashs: set[bytes]
-        ) -> tuple[int, set[bytes]]:
-            self.logger.debug("Checking for duplicated files...")
-            current_count_duplicated_files = self._count_duplicated_files_hashs_sha512()
-            new_exclude_hashs = exclude_hashs
-            if current_count_duplicated_files > previously_count_duplicated_files:
-                self.logger.debug(
-                    "Duplicated files found. Updating excluded hash values..."
-                )
-                previously_count_duplicated_files = current_count_duplicated_files
-                new_exclude_hashs = (
-                    self._get_duplicated_hash_values_by_count_artist_ratio()
-                )
-                self.logger.info("Excluded hash values updated.")
-            return previously_count_duplicated_files, new_exclude_hashs
 
         total_inserted_in_database = 0
         total_created_cbz = 0
@@ -662,14 +667,12 @@ class H2HDB(BaseRepository):
             if self.config.h2h.cbz_path != "":
                 if any(is_insert_list):
                     previously_count_duplicated_files, exclude_hashs = (
-                        calculate_exclude_hashs(
+                        self._refresh_exclude_hashs(
                             previously_count_duplicated_files, exclude_hashs
                         )
                     )
-                config_data = self.config.model_dump(mode="json")
-                is_new_list = run_in_parallel(
-                    compress_gallery_to_cbz_worker,
-                    [(config_data, x, exclude_hashs) for x in gallery_chunk],
+                is_new_list = self.cbz.compress_galleries_to_cbz(
+                    gallery_chunk, exclude_hashs
                 )
                 if any(is_new_list):
                     self.logger.info("There are new CBZ files created.")
@@ -696,14 +699,13 @@ class H2HDB(BaseRepository):
                     os.path.basename(folder): folder
                     for folder in current_galleries_folders
                 }
-                config_data = self.config.model_dump(mode="json")
-                run_in_parallel(
-                    compress_gallery_to_cbz_worker,
+                self.cbz.compress_galleries_to_cbz(
                     [
-                        (config_data, folder_by_gallery_name[name], final_exclude_hashs)
+                        folder_by_gallery_name[name]
                         for name in stale_galleries
                         if name in folder_by_gallery_name
                     ],
+                    final_exclude_hashs,
                 )
 
         self.logger.info("Cleaning up database...")
@@ -754,13 +756,3 @@ class H2HDB(BaseRepository):
             metadata["authors"] = authors
             result[gallery_name] = metadata
         return result
-
-
-def compress_gallery_to_cbz_worker(
-    config_data: dict[str, Any],
-    gallery_folder: str,
-    exclude_hashs: set[bytes],
-) -> bool:
-    config = H2HDBConfig.model_validate(config_data)
-    with H2HDB(config=config) as connector:
-        return connector.cbz.compress_gallery_to_cbz(gallery_folder, exclude_hashs)

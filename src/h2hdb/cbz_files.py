@@ -1,8 +1,10 @@
 import os
 import zipfile
+from typing import Any
 
 from h2h_galleryinfo_parser import parse_galleryinfo
 
+from .config_loader import H2HDBConfig
 from .repository import BaseRepository, RepositoryContext
 from .table_times import H2HDBTimes
 from .threading_tools import run_in_parallel
@@ -14,6 +16,21 @@ def cbz_contents_are_stale_worker(
     with zipfile.ZipFile(cbz_path) as cbz:
         actual_names = frozenset(cbz.namelist())
     return actual_names != expected_names
+
+
+def compress_gallery_to_cbz_worker(
+    config_data: dict[str, Any],
+    gallery_folder: str,
+    exclude_hashs: set[bytes],
+) -> bool:
+    # Deferred to avoid a circular import: h2hdb_h2hdb.py imports this module
+    # at module load time, so H2HDB can only be imported lazily, by which
+    # point both modules have finished loading.
+    from .h2hdb_h2hdb import H2HDB
+
+    config = H2HDBConfig.model_validate(config_data)
+    with H2HDB(config=config) as connector:
+        return connector.cbz.compress_gallery_to_cbz(gallery_folder, exclude_hashs)
 
 
 class H2HDBCBZFiles(BaseRepository):
@@ -121,6 +138,15 @@ class H2HDBCBZFiles(BaseRepository):
                 exclude_hashs,
             )
         return needs_rebuild
+
+    def compress_galleries_to_cbz(
+        self, gallery_folders: list[str], exclude_hashs: set[bytes]
+    ) -> list[bool]:
+        config_data = self.config.model_dump(mode="json")
+        return run_in_parallel(
+            compress_gallery_to_cbz_worker,
+            [(config_data, folder, exclude_hashs) for folder in gallery_folders],
+        )
 
     def get_stale_cbz_galleries(
         self, current_galleries_names: set[str], exclude_hashs: set[bytes]
