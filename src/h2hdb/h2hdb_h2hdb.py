@@ -1,9 +1,12 @@
 __all__ = ["H2HDB", "GALLERY_INFO_FILE_NAME"]
 
 
+import contextlib
 import os
 from itertools import islice
-from typing import Any
+from multiprocessing import cpu_count
+from multiprocessing.pool import Pool
+from typing import Any, cast
 
 from h2h_galleryinfo_parser import (
     GalleryInfoParser,
@@ -32,10 +35,11 @@ from .table_tags import H2HDBGalleriesTags
 from .table_times import H2HDBTimes
 from .table_titles import H2HDBGalleriesTitles
 from .table_uploadaccounts import H2HDBUploadAccounts
-from .threading_tools import POOL_CPU_LIMIT
 from .view_ginfo import H2HDBGalleriesInfos
 
 GALLERY_METADATA_BATCH_SIZE = 500
+CPU_NUM = cpu_count()
+POOL_CPU_LIMIT = max(CPU_NUM - 2, 1)
 
 
 class H2HDB(BaseRepository):
@@ -674,56 +678,71 @@ class H2HDB(BaseRepository):
             current_galleries_folders, 100 * POOL_CPU_LIMIT
         )
         self.logger.info("Inserting galleries in parallel...")
-        for gallery_chunk in chunked_galleries_folders:
-            is_insert_list = self._insert_gallery_chunk_with_split_retry(gallery_chunk)
-            if any(is_insert_list):
-                self.logger.info("There are new galleries inserted in database.")
-                is_insert_limit_reached |= True
-                total_inserted_in_database += sum(is_insert_list)
+        # One pool, reused for every chunk's CBZ compression/staleness check in
+        # this call, instead of spawning a fresh batch of worker processes per
+        # chunk. Only created when cbz_path is actually configured, since
+        # nothing in this method dispatches to the pool otherwise.
+        cbz_pool_cm = (
+            Pool(POOL_CPU_LIMIT)
+            if self.config.h2h.cbz_path != ""
+            else contextlib.nullcontext()
+        )
+        with cbz_pool_cm as cbz_pool:
+            for gallery_chunk in chunked_galleries_folders:
+                is_insert_list = self._insert_gallery_chunk_with_split_retry(
+                    gallery_chunk
+                )
+                if any(is_insert_list):
+                    self.logger.info("There are new galleries inserted in database.")
+                    is_insert_limit_reached |= True
+                    total_inserted_in_database += sum(is_insert_list)
+
+                if self.config.h2h.cbz_path != "":
+                    if any(is_insert_list):
+                        previously_count_duplicated_files, exclude_hashs = (
+                            self._refresh_exclude_hashs(
+                                previously_count_duplicated_files, exclude_hashs
+                            )
+                        )
+                    is_new_list = self.cbz.compress_galleries_to_cbz(
+                        gallery_chunk, exclude_hashs, cast(Pool, cbz_pool)
+                    )
+                    if any(is_new_list):
+                        self.logger.info("There are new CBZ files created.")
+                        total_created_cbz += sum(is_new_list)
+            self.logger.info(
+                f"Total galleries inserted in database: {total_inserted_in_database}"
+            )
+            self.logger.info(f"Total CBZ files created: {total_created_cbz}")
 
             if self.config.h2h.cbz_path != "":
-                if any(is_insert_list):
-                    previously_count_duplicated_files, exclude_hashs = (
-                        self._refresh_exclude_hashs(
-                            previously_count_duplicated_files, exclude_hashs
-                        )
-                    )
-                is_new_list = self.cbz.compress_galleries_to_cbz(
-                    gallery_chunk, exclude_hashs
-                )
-                if any(is_new_list):
-                    self.logger.info("There are new CBZ files created.")
-                    total_created_cbz += sum(is_new_list)
-        self.logger.info(
-            f"Total galleries inserted in database: {total_inserted_in_database}"
-        )
-        self.logger.info(f"Total CBZ files created: {total_created_cbz}")
-
-        if self.config.h2h.cbz_path != "":
-            self.logger.info("Checking for CBZ files made stale by new exclusions...")
-            final_exclude_hashs = (
-                self._get_duplicated_hash_values_by_count_artist_ratio()
-            )
-            stale_galleries = self.cbz.get_stale_cbz_galleries(
-                current_galleries_names, final_exclude_hashs
-            )
-            if stale_galleries:
                 self.logger.info(
-                    f"Recompressing {len(stale_galleries)} CBZ file(s) made stale "
-                    "by newly-excluded duplicate files..."
+                    "Checking for CBZ files made stale by new exclusions..."
                 )
-                folder_by_gallery_name = {
-                    os.path.basename(folder): folder
-                    for folder in current_galleries_folders
-                }
-                self.cbz.compress_galleries_to_cbz(
-                    [
-                        folder_by_gallery_name[name]
-                        for name in stale_galleries
-                        if name in folder_by_gallery_name
-                    ],
-                    final_exclude_hashs,
+                final_exclude_hashs = (
+                    self._get_duplicated_hash_values_by_count_artist_ratio()
                 )
+                stale_galleries = self.cbz.get_stale_cbz_galleries(
+                    current_galleries_names, final_exclude_hashs, cast(Pool, cbz_pool)
+                )
+                if stale_galleries:
+                    self.logger.info(
+                        f"Recompressing {len(stale_galleries)} CBZ file(s) made stale "
+                        "by newly-excluded duplicate files..."
+                    )
+                    folder_by_gallery_name = {
+                        os.path.basename(folder): folder
+                        for folder in current_galleries_folders
+                    }
+                    self.cbz.compress_galleries_to_cbz(
+                        [
+                            folder_by_gallery_name[name]
+                            for name in stale_galleries
+                            if name in folder_by_gallery_name
+                        ],
+                        final_exclude_hashs,
+                        cast(Pool, cbz_pool),
+                    )
 
         self.logger.info("Cleaning up database...")
         self.refresh_current_files_hashs()
