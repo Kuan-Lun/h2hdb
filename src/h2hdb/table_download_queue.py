@@ -13,7 +13,7 @@ class H2HDBDownloadQueue(BaseRepository):
                             SELECT gids.gid AS gid
                             FROM (SELECT *
                                 FROM galleries_redownload_times AS grt0
-                                WHERE DATE_ADD(grt0.time, INTERVAL 7 DAY) <= NOW()
+                                WHERE grt0.time <= DATE_SUB(NOW(), INTERVAL 7 DAY)
                                 )
                                 AS grt
                             INNER JOIN galleries_download_times AS gdt
@@ -33,7 +33,7 @@ class H2HDBDownloadQueue(BaseRepository):
                             SELECT gids.gid AS gid
                             FROM (SELECT *
                                 FROM galleries_redownload_times AS grt0
-                                WHERE datetime(grt0.time, '+7 days') <= datetime('now')
+                                WHERE grt0.time <= datetime('now', '-7 days')
                                 )
                                 AS grt
                             INNER JOIN galleries_download_times AS gdt
