@@ -1,3 +1,4 @@
+import datetime
 import os
 import zipfile
 from collections.abc import Callable
@@ -38,6 +39,8 @@ def compress_gallery_to_cbz_worker(
     config_data: dict[str, Any],
     gallery_folder: str,
     exclude_hashs: set[bytes],
+    expected_names: frozenset[str] | None,
+    upload_time: datetime.datetime | None,
 ) -> bool:
     # Deferred to avoid a circular import: h2hdb_h2hdb.py imports this module
     # at module load time, so H2HDB can only be imported lazily, by which
@@ -45,8 +48,14 @@ def compress_gallery_to_cbz_worker(
     from .h2hdb_h2hdb import H2HDB
 
     config = H2HDBConfig.model_validate(config_data)
-    with H2HDB(config=config) as connector:
-        return connector.cbz.compress_gallery_to_cbz(gallery_folder, exclude_hashs)
+    # Not used as a context manager: compress_gallery_to_cbz doesn't touch the
+    # database here (expected_names/upload_time are precomputed by the caller),
+    # so there's nothing to commit, and H2HDB.__exit__ would otherwise open a
+    # connection just to commit nothing.
+    connector = H2HDB(config=config)
+    return connector.cbz.compress_gallery_to_cbz(
+        gallery_folder, exclude_hashs, expected_names, upload_time
+    )
 
 
 class H2HDBCBZFiles(BaseRepository):
@@ -83,33 +92,30 @@ class H2HDBCBZFiles(BaseRepository):
         self.logger.info("Empty directories removed.")
 
     def compress_gallery_to_cbz(
-        self, gallery_folder: str, exclude_hashs: set[bytes]
+        self,
+        gallery_folder: str,
+        exclude_hashs: set[bytes],
+        expected_names: frozenset[str] | None,
+        upload_time: datetime.datetime | None,
     ) -> bool:
         from .compress_gallery_to_cbz import (
             compress_images_and_create_cbz,
-            expected_output_filename,
             gallery_name_to_cbz_file_name,
         )
 
         galleryinfo_params = parse_galleryinfo(gallery_folder)
         match self.config.h2h.cbz_grouping:
             case "date-yyyy":
-                upload_time = self.gallery_times.get_upload_time_by_gallery_name(
-                    galleryinfo_params.gallery_name
-                )
+                assert upload_time is not None
                 relative_cbz_directory = str(upload_time.year).rjust(4, "0")
             case "date-yyyy-mm":
-                upload_time = self.gallery_times.get_upload_time_by_gallery_name(
-                    galleryinfo_params.gallery_name
-                )
+                assert upload_time is not None
                 relative_cbz_directory = os.path.join(
                     str(upload_time.year).rjust(4, "0"),
                     str(upload_time.month).rjust(2, "0"),
                 )
             case "date-yyyy-mm-dd":
-                upload_time = self.gallery_times.get_upload_time_by_gallery_name(
-                    galleryinfo_params.gallery_name
-                )
+                assert upload_time is not None
                 relative_cbz_directory = os.path.join(
                     str(upload_time.year).rjust(4, "0"),
                     str(upload_time.month).rjust(2, "0"),
@@ -130,17 +136,7 @@ class H2HDBCBZFiles(BaseRepository):
         )
 
         needs_rebuild = True
-        if os.path.exists(cbz_path):
-            with self.SQLConnector() as connector:
-                rows = connector.fetch_all(
-                    "SELECT file_name, sha512 FROM files_hashs WHERE gallery_name = %s",
-                    (galleryinfo_params.gallery_name,),
-                )
-            expected_names = frozenset(
-                expected_output_filename(str(file_name))
-                for file_name, sha512 in rows
-                if bytes(sha512) not in exclude_hashs
-            )
+        if os.path.exists(cbz_path) and expected_names is not None:
             with zipfile.ZipFile(cbz_path) as cbz:
                 actual_names = frozenset(cbz.namelist())
             needs_rebuild = actual_names != expected_names
@@ -158,11 +154,48 @@ class H2HDBCBZFiles(BaseRepository):
     def compress_galleries_to_cbz(
         self, gallery_folders: list[str], exclude_hashs: set[bytes], pool: Pool
     ) -> list[bool]:
+        if not gallery_folders:
+            return []
+
+        from .compress_gallery_to_cbz import expected_output_filename
+
+        # Precompute everything compress_gallery_to_cbz needs from the database
+        # here, in batched queries, and pass the results into each worker --
+        # instead of every worker process opening its own connection to look
+        # the same things up one gallery at a time.
+        gallery_names = {os.path.basename(folder) for folder in gallery_folders}
+        files_by_gallery = self._get_files_by_gallery(gallery_names)
+        expected_names_by_gallery = {
+            gallery_name: frozenset(
+                expected_output_filename(file_name)
+                for file_name, file_hash in files
+                if file_hash not in exclude_hashs
+            )
+            for gallery_name, files in files_by_gallery.items()
+        }
+
+        upload_time_by_gallery: dict[str, datetime.datetime] = {}
+        if self.config.h2h.cbz_grouping != "flat":
+            upload_time_by_gallery = (
+                self.gallery_times.get_upload_times_by_gallery_names(
+                    list(gallery_names)
+                )
+            )
+
         config_data = self.config.model_dump(mode="json")
         return run_in_parallel(
             pool,
             compress_gallery_to_cbz_worker,
-            [(config_data, folder, exclude_hashs) for folder in gallery_folders],
+            [
+                (
+                    config_data,
+                    folder,
+                    exclude_hashs,
+                    expected_names_by_gallery.get(os.path.basename(folder)),
+                    upload_time_by_gallery.get(os.path.basename(folder)),
+                )
+                for folder in gallery_folders
+            ],
         )
 
     def _get_galleries_with_excluded_files(self, exclude_hashs: set[bytes]) -> set[str]:

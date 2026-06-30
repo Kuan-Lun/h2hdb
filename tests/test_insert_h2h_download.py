@@ -16,7 +16,7 @@ from PIL import Image
 
 from h2hdb import H2HDB, H2HDBConfig
 from h2hdb.compress_gallery_to_cbz import gallery_name_to_cbz_file_name
-from h2hdb.settings import CBZ_SORT
+from h2hdb.settings import CBZ_GROUPING, CBZ_SORT
 
 
 def _write_galleryinfo(
@@ -96,6 +96,33 @@ def test_insert_h2h_download_creates_cbz_files_when_cbz_path_configured(
     assert db.insert_h2h_download() is True
 
     cbz_file = cbz_path / gallery_name_to_cbz_file_name("700003")
+    assert cbz_file.exists()
+    with zipfile.ZipFile(cbz_file) as cbz:
+        assert set(cbz.namelist()) == {"galleryinfo.txt", "000.jpg"}
+
+
+def test_insert_h2h_download_groups_cbz_by_upload_time_when_configured(
+    db: H2HDB, download_path: Path, tmp_path: Path
+) -> None:
+    # cbz_grouping besides "flat" needs each gallery's upload_time, batched
+    # ahead of dispatch to the worker pool in compress_galleries_to_cbz --
+    # pins that the batched lookup actually reaches the worker correctly.
+    cbz_path = tmp_path / "cbz"
+    cbz_path.mkdir()
+    db.config.h2h.cbz_path = str(cbz_path)
+    db.config.h2h.cbz_grouping = CBZ_GROUPING.date_yyyy_mm_dd
+
+    gallery_folder = download_path / "700004"
+    _write_galleryinfo(
+        gallery_folder,
+        title="Gallery Four",
+        upload_time="2023-05-17 00:00",
+        pages=1,
+    )
+
+    assert db.insert_h2h_download() is True
+
+    cbz_file = cbz_path / "2023" / "05" / "17" / gallery_name_to_cbz_file_name("700004")
     assert cbz_file.exists()
     with zipfile.ZipFile(cbz_file) as cbz:
         assert set(cbz.namelist()) == {"galleryinfo.txt", "000.jpg"}

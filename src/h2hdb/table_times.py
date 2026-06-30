@@ -167,6 +167,23 @@ class H2HDBTimes(BaseRepository):
     ) -> dict[int, datetime.datetime]:
         return self._select_times("galleries_upload_times", db_gallery_ids)
 
+    def get_upload_times_by_gallery_names(
+        self, gallery_names: list[str]
+    ) -> dict[str, datetime.datetime]:
+        if not gallery_names:
+            return {}
+        db_gallery_ids_by_name = self.gallery_ids._get_db_gallery_ids_by_gallery_names(
+            gallery_names
+        )
+        upload_times = self.get_upload_times_by_db_gallery_ids(
+            list(db_gallery_ids_by_name.values())
+        )
+        return {
+            name: upload_times[db_gallery_id]
+            for name, db_gallery_id in db_gallery_ids_by_name.items()
+            if db_gallery_id in upload_times
+        }
+
     def _create_galleries_modified_times_table(self) -> None:
         self._create_times_table("galleries_modified_times")
 
