@@ -38,11 +38,6 @@ from .view_ginfo import H2HDBGalleriesInfos
 GALLERY_METADATA_BATCH_SIZE = 500
 
 
-def get_sorting_base_level(x: int = 20) -> int:
-    zero_level = max(x, 1)
-    return zero_level
-
-
 class H2HDB(BaseRepository):
     def __init__(self, config: H2HDBConfig) -> None:
         context = RepositoryContext.from_config(config)
