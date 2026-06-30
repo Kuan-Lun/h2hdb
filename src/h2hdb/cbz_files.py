@@ -10,6 +10,7 @@ from h2h_galleryinfo_parser import parse_galleryinfo
 from .config_loader import H2HDBConfig
 from .repository import BaseRepository, RepositoryContext
 from .settings import chunk_list
+from .table_gids import H2HDBGalleriesIDs
 from .table_times import H2HDBTimes
 
 HASH_LOOKUP_BATCH_SIZE = 500
@@ -59,9 +60,15 @@ def compress_gallery_to_cbz_worker(
 
 
 class H2HDBCBZFiles(BaseRepository):
-    def __init__(self, context: RepositoryContext, gallery_times: H2HDBTimes) -> None:
+    def __init__(
+        self,
+        context: RepositoryContext,
+        gallery_times: H2HDBTimes,
+        gallery_ids: H2HDBGalleriesIDs,
+    ) -> None:
         super().__init__(context)
         self.gallery_times = gallery_times
+        self.gallery_ids = gallery_ids
 
     def _refresh_current_cbz_files(self, current_galleries_names: set[str]) -> None:
         from .compress_gallery_to_cbz import gallery_name_to_cbz_file_name
@@ -160,27 +167,45 @@ class H2HDBCBZFiles(BaseRepository):
         from .compress_gallery_to_cbz import expected_output_filename
 
         # Precompute everything compress_gallery_to_cbz needs from the database
-        # here, in batched queries, and pass the results into each worker --
-        # instead of every worker process opening its own connection to look
-        # the same things up one gallery at a time.
+        # here, in batched queries keyed on db_gallery_id, and pass the results
+        # into each worker -- instead of every worker process opening its own
+        # connection to look the same things up one gallery at a time via
+        # gallery_name. galleries_names.full_name only has a FULLTEXT index
+        # (confirmed with EXPLAIN), so an equality/IN lookup on it can't use an
+        # index and scans close to the whole files/galleries tables regardless
+        # of batch size; galleries_dbids' split name columns are a real UNIQUE
+        # index, so resolving names to db_gallery_id there first keeps every
+        # subsequent lookup an indexed one.
         gallery_names = {os.path.basename(folder) for folder in gallery_folders}
-        files_by_gallery = self._get_files_by_gallery(gallery_names)
+        db_gallery_ids_by_name = (
+            self.gallery_ids._get_db_gallery_ids_by_gallery_names_from_dbids(
+                list(gallery_names)
+            )
+        )
+        files_by_db_gallery_id = self._get_files_by_db_gallery_ids(
+            list(db_gallery_ids_by_name.values())
+        )
         expected_names_by_gallery = {
             gallery_name: frozenset(
                 expected_output_filename(file_name)
-                for file_name, file_hash in files
+                for file_name, file_hash in files_by_db_gallery_id.get(
+                    db_gallery_id, []
+                )
                 if file_hash not in exclude_hashs
             )
-            for gallery_name, files in files_by_gallery.items()
+            for gallery_name, db_gallery_id in db_gallery_ids_by_name.items()
         }
 
         upload_time_by_gallery: dict[str, datetime.datetime] = {}
         if self.config.h2h.cbz_grouping != "flat":
-            upload_time_by_gallery = (
-                self.gallery_times.get_upload_times_by_gallery_names(
-                    list(gallery_names)
-                )
+            upload_times_by_id = self.gallery_times.get_upload_times_by_db_gallery_ids(
+                list(db_gallery_ids_by_name.values())
             )
+            upload_time_by_gallery = {
+                gallery_name: upload_times_by_id[db_gallery_id]
+                for gallery_name, db_gallery_id in db_gallery_ids_by_name.items()
+                if db_gallery_id in upload_times_by_id
+            }
 
         config_data = self.config.model_dump(mode="json")
         return run_in_parallel(
@@ -215,23 +240,34 @@ class H2HDBCBZFiles(BaseRepository):
                 affected_galleries.update(str(gallery_name) for (gallery_name,) in rows)
         return affected_galleries
 
-    def _get_files_by_gallery(
-        self, gallery_names: set[str]
-    ) -> dict[str, list[tuple[str, bytes]]]:
-        files_by_gallery: dict[str, list[tuple[str, bytes]]] = dict()
+    def _get_files_by_db_gallery_ids(
+        self, db_gallery_ids: list[int]
+    ) -> dict[int, list[tuple[str, bytes]]]:
+        # Joins from files_dbids (filtered on the indexed db_gallery_id) rather
+        # than going through the files_hashs view's gallery_name column -- see
+        # the comment in compress_galleries_to_cbz for why that matters.
+        files_by_db_gallery_id: dict[int, list[tuple[str, bytes]]] = dict()
         with self.SQLConnector() as connector:
-            for batch in chunk_list(list(gallery_names), HASH_LOOKUP_BATCH_SIZE):
+            for batch in chunk_list(db_gallery_ids, HASH_LOOKUP_BATCH_SIZE):
                 select_query = f"""
-                    SELECT gallery_name, file_name, sha512
-                    FROM files_hashs
-                    WHERE gallery_name IN ({", ".join(["%s"] * len(batch))})
+                    SELECT files_dbids.db_gallery_id,
+                        files_names.full_name,
+                        files_hashs_sha512_dbids.hash_value
+                    FROM files_dbids
+                        JOIN files_names
+                            ON files_names.db_file_id = files_dbids.db_file_id
+                        LEFT JOIN files_hashs_sha512
+                            ON files_hashs_sha512.db_file_id = files_dbids.db_file_id
+                        LEFT JOIN files_hashs_sha512_dbids
+                            ON files_hashs_sha512_dbids.db_hash_id = files_hashs_sha512.db_hash_id
+                    WHERE files_dbids.db_gallery_id IN ({", ".join(["%s"] * len(batch))})
                 """
                 rows = connector.fetch_all(select_query, tuple(batch))
-                for gallery_name, file_name, sha512 in rows:
-                    files_by_gallery.setdefault(str(gallery_name), []).append(
+                for db_gallery_id, file_name, sha512 in rows:
+                    files_by_db_gallery_id.setdefault(int(db_gallery_id), []).append(
                         (str(file_name), bytes(sha512))
                     )
-        return files_by_gallery
+        return files_by_db_gallery_id
 
     def get_stale_cbz_galleries(
         self, current_galleries_names: set[str], exclude_hashs: set[bytes], pool: Pool
@@ -251,7 +287,14 @@ class H2HDBCBZFiles(BaseRepository):
         if not affected_galleries:
             return set()
 
-        files_by_gallery = self._get_files_by_gallery(affected_galleries)
+        db_gallery_ids_by_name = (
+            self.gallery_ids._get_db_gallery_ids_by_gallery_names_from_dbids(
+                list(affected_galleries)
+            )
+        )
+        files_by_db_gallery_id = self._get_files_by_db_gallery_ids(
+            list(db_gallery_ids_by_name.values())
+        )
 
         current_cbzs: dict[str, str] = dict()
         for root, _, files in os.walk(self.config.h2h.cbz_path):
@@ -260,7 +303,12 @@ class H2HDBCBZFiles(BaseRepository):
 
         candidates: list[tuple[str, str, frozenset[str]]] = list()
         for gallery_name in affected_galleries:
-            gallery_files = files_by_gallery.get(gallery_name, [])
+            db_gallery_id = db_gallery_ids_by_name.get(gallery_name)
+            gallery_files = (
+                files_by_db_gallery_id.get(db_gallery_id, [])
+                if db_gallery_id is not None
+                else []
+            )
             cbz_file_name = gallery_name_to_cbz_file_name(gallery_name)
             if cbz_file_name not in current_cbzs:
                 continue

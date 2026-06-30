@@ -60,7 +60,7 @@ class H2HDB(BaseRepository):
         self.gallery_tags = H2HDBGalleriesTags(context, self.gallery_ids)
         self.files = H2HDBFiles(context, self.gallery_ids)
         self.removed_galleries = H2HDBRemovedGalleries(context)
-        self.cbz = H2HDBCBZFiles(context, self.gallery_times)
+        self.cbz = H2HDBCBZFiles(context, self.gallery_times, self.gallery_ids)
 
     def __enter__(self) -> H2HDB:
         return self
