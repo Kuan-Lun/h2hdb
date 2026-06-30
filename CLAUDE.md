@@ -142,14 +142,19 @@ level) live in `settings.py`.
 
 ### Concurrency
 
-`threading_tools.py` provides two parallelism primitives used throughout
-`h2hdb_h2hdb.py`: a bounded thread pool gated by a semaphore, used to fire off
-several independent SQL writes for one gallery concurrently, and a
-`multiprocessing.Pool` helper used to process multiple *galleries* in parallel.
-The main ingest pipeline (`insert_h2h_download` in `h2hdb_h2hdb.py`) is built
-on these: scan folders → refresh CBZ files → sort galleries → insert +
-compress to CBZ in chunks (excluding spam images detected via duplicate-hash
-views) → refresh file hashes → sleep/retry if new galleries were found.
+Gallery metadata is written with batched SQL (`_insert_rows` and friends),
+not per-gallery concurrent writes. The one parallelism primitive left is
+CPU-bound work across *galleries* — CBZ compression and CBZ-staleness
+checks — dispatched to a `multiprocessing.Pool` via `run_in_parallel` in
+`cbz_files.py` (its only caller). `insert_h2h_download` in `h2hdb_h2hdb.py`
+owns the pool's lifetime: it creates one `Pool(POOL_CPU_LIMIT)` (only when
+`cbz_path` is configured) and reuses it for every gallery chunk plus the
+final staleness pass within that call, instead of spawning a fresh batch of
+worker processes per chunk. `POOL_CPU_LIMIT`/`CPU_NUM` live in
+`h2hdb_h2hdb.py` alongside it. The main ingest pipeline is built on this:
+scan folders → refresh CBZ files → sort galleries → insert + compress to CBZ
+in chunks (excluding spam images detected via duplicate-hash views) →
+refresh file hashes → sleep/retry if new galleries were found.
 
 ### CBZ compression
 
