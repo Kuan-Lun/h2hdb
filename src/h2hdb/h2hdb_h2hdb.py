@@ -391,38 +391,59 @@ class H2HDB(BaseRepository):
         for galleryinfo_params in galleryinfo_params_list:
             self.delete_pending_gallery_removal(galleryinfo_params.gallery_name)
 
-    def _check_gallery_info_file_hash(
-        self, galleryinfo_params: GalleryInfoParser
-    ) -> bool:
-        if not self.gallery_ids._check_galleries_dbids_by_gallery_name(
-            galleryinfo_params.gallery_name
-        ):
-            return False
-        db_gallery_id = self.gallery_ids._get_db_gallery_id_by_gallery_name(
-            galleryinfo_params.gallery_name
+    def _check_gallery_info_file_hashes(
+        self, galleryinfo_params_list: list[GalleryInfoParser]
+    ) -> list[bool]:
+        # Batched equivalent of the old per-gallery _check_gallery_info_file_hash:
+        # three batched lookups (gallery id, galleryinfo.txt file id, its stored
+        # hash) instead of ~7 separately-connected single-row queries per gallery.
+        if not galleryinfo_params_list:
+            return []
+
+        # Reads from galleries_dbids itself, not galleries_names, to match the
+        # original per-gallery check: galleries_dbids is the table deletions
+        # actually hit, while galleries_names can carry stale orphaned rows on
+        # SQLite (its ON DELETE CASCADE is a no-op there since foreign key
+        # enforcement is never turned on).
+        db_gallery_ids_by_name = (
+            self.gallery_ids._get_db_gallery_ids_by_gallery_names_from_dbids(
+                [
+                    galleryinfo_params.gallery_name
+                    for galleryinfo_params in galleryinfo_params_list
+                ]
+            )
+        )
+        db_file_ids_by_gallery_id = self.files._get_db_file_ids_by_gallery_ids_for_name(
+            list(db_gallery_ids_by_name.values()), GALLERY_INFO_FILE_NAME
+        )
+        hash_values_by_file_id = self.files._get_hash_values_by_file_ids(
+            list(db_file_ids_by_gallery_id.values()), COMPARISON_HASH_ALGORITHM
         )
 
-        if not self.files._check_db_file_id(db_gallery_id, GALLERY_INFO_FILE_NAME):
-            return False
-        gallery_info_file_id = self.files._get_db_file_id(
-            db_gallery_id, GALLERY_INFO_FILE_NAME
-        )
-        absolute_file_path = os.path.join(
-            galleryinfo_params.gallery_folder, GALLERY_INFO_FILE_NAME
-        )
-
-        if not self.files._check_hash_value_by_file_id(
-            gallery_info_file_id, COMPARISON_HASH_ALGORITHM
-        ):
-            return False
-        original_hash_value = self.files.get_hash_value_by_file_id(
-            gallery_info_file_id, COMPARISON_HASH_ALGORITHM
-        )
-        current_hash_value = hash_function_by_file(
-            absolute_file_path, COMPARISON_HASH_ALGORITHM
-        )
-        issame = original_hash_value == current_hash_value
-        return issame
+        issame_list: list[bool] = list()
+        for galleryinfo_params in galleryinfo_params_list:
+            db_gallery_id = db_gallery_ids_by_name.get(galleryinfo_params.gallery_name)
+            gallery_info_file_id = (
+                None
+                if db_gallery_id is None
+                else db_file_ids_by_gallery_id.get(db_gallery_id)
+            )
+            original_hash_value = (
+                None
+                if gallery_info_file_id is None
+                else hash_values_by_file_id.get(gallery_info_file_id)
+            )
+            if original_hash_value is None:
+                issame_list.append(False)
+                continue
+            absolute_file_path = os.path.join(
+                galleryinfo_params.gallery_folder, GALLERY_INFO_FILE_NAME
+            )
+            current_hash_value = hash_function_by_file(
+                absolute_file_path, COMPARISON_HASH_ALGORITHM
+            )
+            issame_list.append(original_hash_value == current_hash_value)
+        return issame_list
 
     def _get_duplicated_hash_values_by_count_artist_ratio(self) -> set[bytes]:
         with self.SQLConnector() as connector:
@@ -438,10 +459,14 @@ class H2HDB(BaseRepository):
     def insert_gallery_infos(
         self, galleryinfo_params_list: list[GalleryInfoParser]
     ) -> list[bool]:
+        issame_list = self._check_gallery_info_file_hashes(galleryinfo_params_list)
+
         is_insert_list: list[bool] = list()
         to_insert: list[GalleryInfoParser] = list()
-        for galleryinfo_params in galleryinfo_params_list:
-            is_insert = self._check_gallery_info_file_hash(galleryinfo_params) is False
+        for galleryinfo_params, issame in zip(
+            galleryinfo_params_list, issame_list, strict=True
+        ):
+            is_insert = issame is False
             is_insert_list.append(is_insert)
             if is_insert:
                 self.logger.debug(

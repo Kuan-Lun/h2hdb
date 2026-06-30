@@ -4,7 +4,7 @@ from typing import cast
 from .hash_dict import HASH_ALGORITHMS
 from .information import FileInformation
 from .repository import BaseRepository, RepositoryContext
-from .settings import FILE_NAME_LENGTH_LIMIT, hash_multiple_by_file
+from .settings import FILE_NAME_LENGTH_LIMIT, chunk_list, hash_multiple_by_file
 from .sql_connector import (
     DatabaseDuplicateKeyError,
     DatabaseKeyError,
@@ -217,6 +217,41 @@ class H2HDBFiles(BaseRepository):
             self.logger.error(msg)
             raise DatabaseKeyError(msg)
         return gallery_image_id
+
+    def _get_db_file_ids_by_gallery_ids_for_name(
+        self, db_gallery_ids: list[int], file_name: str
+    ) -> dict[int, int]:
+        # Batched equivalent of __get_db_file_id for a single fixed file_name
+        # (e.g. galleryinfo.txt) looked up across many galleries at once, so
+        # callers checking that file for N galleries issue O(N / batch_size)
+        # queries instead of N.
+        if not db_gallery_ids:
+            return {}
+
+        file_name_parts = self._split_gallery_name(file_name)
+        match self.config.database.sql_type.lower():
+            case "mariadb":
+                column_name_parts, _ = self.mariadb_split_file_name_based_on_limit(
+                    "name"
+                )
+            case "sqlite":
+                column_name_parts, _ = self.sqlite_name_columns("name")
+        name_condition = " AND ".join(f"{part} = %s" for part in column_name_parts)
+
+        db_file_id_by_gallery_id = dict[int, int]()
+        with self.SQLConnector() as connector:
+            for batch in chunk_list(db_gallery_ids, HASH_LOOKUP_BATCH_SIZE):
+                select_query = f"""
+                    SELECT db_gallery_id, db_file_id
+                    FROM files_dbids
+                    WHERE db_gallery_id IN ({", ".join(["%s"] * len(batch))})
+                    AND {name_condition}
+                """
+                parameters = tuple(batch) + tuple(file_name_parts)
+                query_result = connector.fetch_all(select_query, parameters)
+                for db_gallery_id, db_file_id in query_result:
+                    db_file_id_by_gallery_id[int(db_gallery_id)] = int(db_file_id)
+        return db_file_id_by_gallery_id
 
     def get_files_by_gallery_name(self, gallery_name: str) -> list[str]:
         with self.SQLConnector() as connector:
@@ -610,6 +645,32 @@ class H2HDBFiles(BaseRepository):
             msg = f"Image hash for image ID {db_file_id} does not exist."
             raise DatabaseKeyError(msg)
         return self.get_hash_value_by_db_hash_id(db_hash_id, algorithm)
+
+    def _get_hash_values_by_file_ids(
+        self, db_file_ids: list[int], algorithm: str
+    ) -> dict[int, bytes]:
+        # Batched equivalent of get_hash_value_by_file_id, joining the two
+        # hash tables in one query per batch instead of two fresh connections
+        # (db_file_id -> db_hash_id, then db_hash_id -> hash_value) per file.
+        if not db_file_ids:
+            return {}
+
+        hash_table_name = f"files_hashs_{algorithm.lower()}"
+        dbids_table_name = f"files_hashs_{algorithm.lower()}_dbids"
+
+        hash_value_by_file_id = dict[int, bytes]()
+        with self.SQLConnector() as connector:
+            for batch in chunk_list(db_file_ids, HASH_LOOKUP_BATCH_SIZE):
+                select_query = f"""
+                    SELECT {hash_table_name}.db_file_id, {dbids_table_name}.hash_value
+                    FROM {hash_table_name}
+                    JOIN {dbids_table_name} USING (db_hash_id)
+                    WHERE {hash_table_name}.db_file_id IN ({", ".join(["%s"] * len(batch))})
+                """
+                query_result = connector.fetch_all(select_query, tuple(batch))
+                for db_file_id, hash_value in query_result:
+                    hash_value_by_file_id[int(db_file_id)] = cast(bytes, hash_value)
+        return hash_value_by_file_id
 
     def _update_gallery_file_hash_by_db_hash_id(
         self, db_file_id: int, db_hash_id: int, algorithm: str
