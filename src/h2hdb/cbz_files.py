@@ -244,8 +244,8 @@ class H2HDBCBZFiles(BaseRepository):
         self, db_gallery_ids: list[int]
     ) -> dict[int, list[tuple[str, bytes]]]:
         # Joins from files_dbids (filtered on the indexed db_gallery_id) rather
-        # than going through the files_hashs view's gallery_name column -- see
-        # the comment in compress_galleries_to_cbz for why that matters.
+        # than through the files_hashs view's gallery_name column, which only
+        # has a FULLTEXT index and can't serve an equality/IN lookup.
         files_by_db_gallery_id: dict[int, list[tuple[str, bytes]]] = dict()
         with self.SQLConnector() as connector:
             for batch in chunk_list(db_gallery_ids, HASH_LOOKUP_BATCH_SIZE):

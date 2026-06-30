@@ -678,10 +678,6 @@ class H2HDB(BaseRepository):
             current_galleries_folders, 100 * POOL_CPU_LIMIT
         )
         self.logger.info("Inserting galleries in parallel...")
-        # One pool, reused for every chunk's CBZ compression/staleness check in
-        # this call, instead of spawning a fresh batch of worker processes per
-        # chunk. Only created when cbz_path is actually configured, since
-        # nothing in this method dispatches to the pool otherwise.
         cbz_pool_cm = (
             Pool(POOL_CPU_LIMIT)
             if self.config.h2h.cbz_path != ""

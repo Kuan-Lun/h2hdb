@@ -361,7 +361,7 @@ def test_insert_gallery_infos_does_not_issue_per_file_id_lookups(
     db: H2HDB, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # _insert_gallery_files returns the name->db_file_id mapping from a single
-    # batched SELECT; guards against a regression to per-file id lookups.
+    # batched SELECT.
     gallery_folder = tmp_path / "700001"
     _write_galleryinfo(gallery_folder, title="No N+1 Gallery")
     for index in range(5):

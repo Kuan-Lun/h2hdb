@@ -22,6 +22,5 @@ if __name__ == "__main__":
 
         connector.reset_redownload_times()
 
-        # Reclaim space and refresh optimizer statistics now that the queue is idle
         connector.optimize_database()
         connector.analyze_database()
