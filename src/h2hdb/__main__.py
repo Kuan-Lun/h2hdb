@@ -17,9 +17,11 @@ if __name__ == "__main__":
 
         # Insert the H2H download
         while connector.insert_h2h_download():
+            while connector.insert_h2h_download():
+                connector.logger.info("More downloads found, continuing immediately...")
             connector.logger.info("Sleeping for 30 minutes...")
             sleep(SLEEP_INTERVAL_SECONDS)
-            connector.logger.info("Refreshing database...")
+            connector.logger.info("Checking for new downloads...")
 
         connector.reset_redownload_times()
 
