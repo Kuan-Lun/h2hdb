@@ -135,33 +135,17 @@ class H2HDBGalleriesIDs(BaseRepository):
             raise DatabaseKeyError(f"Gallery name '{gallery_name}' does not exist.")
         return db_gallery_id
 
-    def _get_db_gallery_ids_by_gallery_names(
-        self, gallery_names: list[str]
-    ) -> dict[str, int]:
-        if not gallery_names:
-            return {}
-
-        db_gallery_ids = dict[str, int]()
-        with self.SQLConnector() as connector:
-            for batch in chunk_list(gallery_names, GALLERY_ID_BATCH_SIZE):
-                select_query = f"""
-                    SELECT db_gallery_id, full_name
-                    FROM galleries_names
-                    WHERE full_name IN ({", ".join(["%s"] * len(batch))})
-                """
-                query_result = connector.fetch_all(select_query, tuple(batch))
-                for db_gallery_id, full_name in query_result:
-                    db_gallery_ids[str(full_name)] = int(db_gallery_id)
-        return db_gallery_ids
-
     def _get_db_gallery_ids_by_gallery_names_from_dbids(
         self, gallery_names: list[str]
     ) -> dict[str, int]:
-        # Unlike _get_db_gallery_ids_by_gallery_names, this reads back from
-        # galleries_dbids itself (split into per-backend name columns) rather
-        # than galleries_names.full_name. It exists for callers that need the
-        # db_gallery_id immediately after inserting into galleries_dbids,
-        # before the corresponding galleries_names row has been written.
+        # Reads back from galleries_dbids itself (split into per-backend name
+        # columns), not galleries_names.full_name: the latter only has a
+        # FULLTEXT index, which can't serve an equality/IN lookup and forces a
+        # near-full scan (confirmed with EXPLAIN), whereas galleries_dbids'
+        # split name columns are a real UNIQUE index. This also makes the
+        # db_gallery_id available immediately after inserting into
+        # galleries_dbids, before the corresponding galleries_names row has
+        # been written.
         if not gallery_names:
             return {}
 

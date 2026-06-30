@@ -266,31 +266,6 @@ class H2HDBGalleriesTags(BaseRepository):
             gallery_tag_rows,
         )
 
-    def _select_gallery_tag(self, db_gallery_id: int, tag_name: str) -> str:
-        with self.SQLConnector() as connector:
-            table_name = f"galleries_tags_{tag_name}"
-            select_query = f"""
-                SELECT tag
-                FROM {table_name}
-                WHERE db_gallery_id = %s
-            """
-            query_result = connector.fetch_one(select_query, (db_gallery_id,))
-        if query_result:
-            tag = str(query_result[0])
-        else:
-            msg = f"Tag '{tag_name}' does not exist."
-            self.logger.error(msg)
-            raise DatabaseKeyError(msg)
-        return tag
-
-    def get_tag_value_by_gallery_name_and_tag_name(
-        self, gallery_name: str, tag_name: str
-    ) -> str:
-        db_gallery_id = self.gallery_ids._get_db_gallery_id_by_gallery_name(
-            gallery_name
-        )
-        return self._select_gallery_tag(db_gallery_id, tag_name)
-
     def get_tag_pairs_by_gallery_name(self, gallery_name: str) -> list[tuple[str, str]]:
         db_gallery_id = self.gallery_ids._get_db_gallery_id_by_gallery_name(
             gallery_name

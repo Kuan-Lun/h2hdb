@@ -755,8 +755,10 @@ class H2HDB(BaseRepository):
     def get_komga_metadata(
         self, gallery_names: list[str]
     ) -> dict[str, dict[str, str | list[dict[str, str]]]]:
-        db_gallery_ids_by_name = self.gallery_ids._get_db_gallery_ids_by_gallery_names(
-            gallery_names
+        db_gallery_ids_by_name = (
+            self.gallery_ids._get_db_gallery_ids_by_gallery_names_from_dbids(
+                gallery_names
+            )
         )
         db_gallery_ids = list(db_gallery_ids_by_name.values())
 
