@@ -160,6 +160,9 @@ class H2HDB(BaseRepository):
     def optimize_database(self) -> None:
         self.database_settings.optimize_database()
 
+    def analyze_database(self) -> None:
+        self.database_settings.analyze_database()
+
     def get_pending_download_gids(self) -> list[int]:
         return self.download_queue.get_pending_download_gids()
 

@@ -74,6 +74,22 @@ class H2HDBCheckDatabaseSettings(BaseRepository):
                 raise DatabaseConfigurationError(message)
             self.logger.info("Database character set and collation are valid.")
 
+    def _get_all_table_names(self) -> list[str]:
+        # KEY_COLUMN_USAGE only lists tables that themselves declare an
+        # outgoing FOREIGN KEY, which silently skips top-level parent tables
+        # such as galleries_dbids (nothing for them to reference). TABLES
+        # covers every base table regardless of whether it has a FK.
+        select_table_name_query = """
+            SELECT TABLE_NAME
+            FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE'
+        """
+        with self.SQLConnector() as connector:
+            raw_table_names = connector.fetch_all(
+                select_table_name_query, (self.config.database.database,)
+            )
+        return [str(t[0]) for t in raw_table_names]
+
     def optimize_database(self) -> None:
         match self.config.database.sql_type.lower():
             case "sqlite":
@@ -84,17 +100,7 @@ class H2HDBCheckDatabaseSettings(BaseRepository):
                 self.logger.info("Database optimized.")
                 return
 
-        with self.SQLConnector() as connector:
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    select_table_name_query = f"""
-                        SELECT TABLE_NAME
-                        FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
-                        WHERE REFERENCED_TABLE_SCHEMA = '{self.config.database.database}'
-                    """
-            raw_table_names = connector.fetch_all(select_table_name_query)
-        table_names = [str(t[0]) for t in raw_table_names]
-
+        table_names = self._get_all_table_names()
         with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
                 case "mariadb":
@@ -105,3 +111,25 @@ class H2HDBCheckDatabaseSettings(BaseRepository):
             for table_name in table_names:
                 connector.execute(get_optimize_query(table_name))
         self.logger.info("Database optimized.")
+
+    def analyze_database(self) -> None:
+        match self.config.database.sql_type.lower():
+            case "sqlite":
+                # Bare ANALYZE (no table name) refreshes statistics for every
+                # table in the main database in one pass.
+                with self.SQLConnector() as connector:
+                    connector.execute("ANALYZE")
+                self.logger.info("Database analyzed.")
+                return
+
+        table_names = self._get_all_table_names()
+        with self.SQLConnector() as connector:
+            match self.config.database.sql_type.lower():
+                case "mariadb":
+
+                    def get_analyze_query(x: str) -> str:
+                        return f"ANALYZE TABLE {x}"
+
+            for table_name in table_names:
+                connector.execute(get_analyze_query(table_name))
+        self.logger.info("Database analyzed.")

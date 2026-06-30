@@ -582,6 +582,20 @@ def test_optimize_database_preserves_data(db: H2HDB) -> None:
     assert db.gallery_gids.get_gid_by_gallery_name(gallery_name) == 888
 
 
+def test_analyze_database_preserves_data(db: H2HDB) -> None:
+    gallery_name = "artist - analyze database gallery"
+    db.gallery_ids._insert_gallery_name(gallery_name)
+    db_gallery_id = db.gallery_ids._get_db_gallery_id_by_gallery_name(gallery_name)
+    db.gallery_gids._insert_gallery_gid(db_gallery_id, gid=889)
+
+    db.analyze_database()
+
+    assert (
+        db.gallery_ids._get_db_gallery_id_by_gallery_name(gallery_name) == db_gallery_id
+    )
+    assert db.gallery_gids.get_gid_by_gallery_name(gallery_name) == 889
+
+
 def test_todownload_gid_round_trip(db: H2HDB) -> None:
     assert db.check_todownload_gid(111, "") is False
 
