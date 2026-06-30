@@ -77,7 +77,7 @@ class LoggerConfig(BaseModel):
         if isinstance(v, str):
             v_lower = v.lower()
             try:
-                return LOG_LEVEL[v_lower]  # Enum lookup by name
+                return LOG_LEVEL[v_lower]
             except KeyError:
                 raise ValueError(
                     f"Invalid log level '{v}'. Must be one of: "
@@ -158,6 +158,6 @@ def load_config(config_path: str = "") -> H2HDBConfig:
             with open(args.config) as f:
                 raw = json.load(f)
         else:
-            raw = {}  # ← 重點：傳空 config，讓 default 自動補
+            raw = {}
 
     return H2HDBConfig.model_validate(raw)

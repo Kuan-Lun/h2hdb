@@ -394,17 +394,16 @@ class H2HDB(BaseRepository):
     def _check_gallery_info_file_hashes(
         self, galleryinfo_params_list: list[GalleryInfoParser]
     ) -> list[bool]:
-        # Batched equivalent of the old per-gallery _check_gallery_info_file_hash:
-        # three batched lookups (gallery id, galleryinfo.txt file id, its stored
-        # hash) instead of ~7 separately-connected single-row queries per gallery.
+        # Three batched lookups (gallery id, galleryinfo.txt file id, its stored
+        # hash) keep query count independent of the number of galleries, instead
+        # of issuing them per gallery.
         if not galleryinfo_params_list:
             return []
 
-        # Reads from galleries_dbids itself, not galleries_names, to match the
-        # original per-gallery check: galleries_dbids is the table deletions
-        # actually hit, while galleries_names can carry stale orphaned rows on
-        # SQLite (its ON DELETE CASCADE is a no-op there since foreign key
-        # enforcement is never turned on).
+        # Reads from galleries_dbids itself, not galleries_names: galleries_dbids
+        # is the table deletions actually hit, while galleries_names can carry
+        # stale orphaned rows on SQLite (its ON DELETE CASCADE is a no-op there
+        # since foreign key enforcement is never turned on).
         db_gallery_ids_by_name = (
             self.gallery_ids._get_db_gallery_ids_by_gallery_names_from_dbids(
                 [
@@ -681,14 +680,12 @@ class H2HDB(BaseRepository):
         )
         self.logger.info("Inserting galleries in parallel...")
         for gallery_chunk in chunked_galleries_folders:
-            # Insert gallery info to database
             is_insert_list = self._insert_gallery_chunk_with_split_retry(gallery_chunk)
             if any(is_insert_list):
                 self.logger.info("There are new galleries inserted in database.")
                 is_insert_limit_reached |= True
                 total_inserted_in_database += sum(is_insert_list)
 
-            # Compress gallery to CBZ file
             if self.config.h2h.cbz_path != "":
                 if any(is_insert_list):
                     previously_count_duplicated_files, exclude_hashs = (

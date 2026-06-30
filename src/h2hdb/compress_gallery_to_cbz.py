@@ -102,7 +102,6 @@ def hash_and_process_file(
             )
 
 
-# Compress images and create a CBZ file
 def compress_images_and_create_cbz(
     input_directory: str,
     output_directory: str,
@@ -113,7 +112,6 @@ def compress_images_and_create_cbz(
     if len(set([input_directory, output_directory, tmp_directory])) < 2:
         raise ValueError("Input and output directories cannot be the same.")
 
-    # Create the output directory
     gallery_name = os.path.basename(input_directory)
     tmp_cbz_directory = os.path.join(tmp_directory, gallery_name)
     if os.path.exists(tmp_cbz_directory):
@@ -125,7 +123,6 @@ def compress_images_and_create_cbz(
             input_directory, tmp_cbz_directory, filename, exclude_hashs, max_size
         )
 
-    # Create the CBZ file
     os.makedirs(output_directory, exist_ok=True)
     cbzfile = os.path.join(
         output_directory, gallery_name_to_cbz_file_name(gallery_name)

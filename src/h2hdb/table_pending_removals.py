@@ -129,7 +129,6 @@ class H2HDBPendingGalleryRemovals(BaseRepository):
             self.delete_pending_gallery_removal(gallery_name)
 
     def delete_gallery_file(self, gallery_name: str) -> None:
-        # self.logger.info(f"Gallery images for '{gallery_name}' deleted.")
         pass
 
     def delete_gallery(self, gallery_name: str) -> None:

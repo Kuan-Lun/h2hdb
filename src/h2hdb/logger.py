@@ -33,7 +33,6 @@ def setup_file_logger(level: int) -> logging.Logger:
         formatter = logging.Formatter('"%(asctime)s","%(levelname)-8s","%(message)s"')
         file_handler.setFormatter(formatter)
 
-        # MemoryHandler with a capacity of x bytes
         memory_handler = MemoryHandler(
             capacity=1024, target=file_handler, flushLevel=logging.ERROR
         )
