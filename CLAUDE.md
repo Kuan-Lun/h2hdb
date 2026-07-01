@@ -213,3 +213,10 @@ misleads the next session instead of just being silent.
   extension flags separately.
 - Python version range: refer to `requires-python` in
   [pyproject.toml](pyproject.toml)
+- **Comments:** default to none. Only add one when the *why* isn't obvious
+  from the code itself (a hidden constraint, a non-obvious invariant, a
+  workaround for a specific bug). Never frame a comment around the current
+  change, refactor, or task ("moved here for X", "changed from Y to Z",
+  "added for the Z flow") — write it as a timeless statement of the
+  constraint, since that context rots as the codebase evolves but the
+  underlying constraint doesn't. Prefer one line over a multi-line block.
