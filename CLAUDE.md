@@ -77,6 +77,9 @@ Repositories inherit only `BaseRepository`, which exposes those shared
 dependencies and SQL helper methods.
 
 Table and view repositories still live in `table_*.py`/`view_*.py` modules.
+When a repository's tables and views form one cohesive domain concept (e.g.
+`todelete_queue.py`, `duplicated_hashes.py`), the module drops the prefix
+instead of being split across a matching `table_*.py`/`view_*.py` pair.
 Cross-table dependencies must be constructor-injected explicitly; for example
 most gallery metadata repositories receive the gallery ID repository because
 their tables foreign-key into `galleries_dbids`. `H2HDB.__init__()` is the
