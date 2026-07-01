@@ -6,7 +6,7 @@ import os
 from itertools import islice
 from multiprocessing import cpu_count
 from multiprocessing.pool import Pool
-from typing import Any, cast
+from typing import cast
 
 from h2h_galleryinfo_parser import (
     GalleryInfoParser,
@@ -510,7 +510,7 @@ class H2HDB(BaseRepository):
                 VALUES ({", ".join(["%s" for _ in column_name_parts])})
             """
 
-            data: list[tuple[Any, ...]] = list()
+            data: list[tuple[str, ...]] = list()
             current_galleries_folders: list[str] = list()
             current_galleries_names: set[str] = set()
             for root, _, files in os.walk(self.config.h2h.download_path):

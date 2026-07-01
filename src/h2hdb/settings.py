@@ -14,7 +14,7 @@ import hashlib
 import logging
 from collections.abc import Iterable, Iterator
 from enum import Enum, StrEnum
-from typing import Any
+from typing import BinaryIO
 
 FOLDER_NAME_LENGTH_LIMIT = 255
 FILE_NAME_LENGTH_LIMIT = 255
@@ -61,7 +61,7 @@ def hash_stream(chunks: Iterable[bytes], algorithms: Iterable[str]) -> dict[str,
 
 
 def iter_file_chunks(
-    file: Any, buffer_size: int = HASH_STREAM_BUFFER_SIZE
+    file: BinaryIO, buffer_size: int = HASH_STREAM_BUFFER_SIZE
 ) -> Iterator[bytes]:
     """Yield fixed-size chunks from a binary file-like object until EOF."""
     return iter(lambda: file.read(buffer_size), b"")
