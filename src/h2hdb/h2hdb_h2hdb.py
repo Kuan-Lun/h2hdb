@@ -28,7 +28,6 @@ from .settings import (
 )
 from .table_comments import H2HDBGalleriesComments
 from .table_database_setting import H2HDBCheckDatabaseSettings
-from .table_download_queue import H2HDBDownloadQueue
 from .table_files_dbids import H2HDBFiles
 from .table_gids import H2HDBGalleriesGIDs, H2HDBGalleriesIDs
 from .table_pending_removals import H2HDBPendingGalleryRemovals
@@ -37,6 +36,8 @@ from .table_tags import H2HDBGalleriesTags
 from .table_times import H2HDBTimes
 from .table_titles import H2HDBGalleriesTitles
 from .table_uploadaccounts import H2HDBUploadAccounts
+from .todelete_queue import H2HDBToDeleteQueue
+from .todownload_queue import H2HDBToDownloadQueue
 from .view_ginfo import H2HDBGalleriesInfos
 
 GALLERY_METADATA_BATCH_SIZE = 500
@@ -77,7 +78,8 @@ class H2HDB(BaseRepository):
         super().__init__(context)
 
         self.database_settings = H2HDBCheckDatabaseSettings(context)
-        self.download_queue = H2HDBDownloadQueue(context)
+        self.todownload_queue = H2HDBToDownloadQueue(context)
+        self.todelete_queue = H2HDBToDeleteQueue(context)
         self.gallery_ids = H2HDBGalleriesIDs(context)
         self.pending_removals = H2HDBPendingGalleryRemovals(context, self.gallery_ids)
         self.gallery_gids = H2HDBGalleriesGIDs(context, self.gallery_ids)
@@ -139,40 +141,40 @@ class H2HDB(BaseRepository):
         self.database_settings.analyze_database()
 
     def get_pending_download_gids(self) -> list[int]:
-        return self.download_queue.get_pending_download_gids()
+        return self.todownload_queue.get_pending_download_gids()
 
     def check_todelete_gid(self, gid: int) -> bool:
-        return self.download_queue.check_todelete_gid(gid)
+        return self.todelete_queue.check_todelete_gid(gid)
 
     def insert_todelete_gid(self, gid: int) -> None:
-        self.download_queue.insert_todelete_gid(gid)
+        self.todelete_queue.insert_todelete_gid(gid)
 
     def check_todownload_gid(self, gid: int, url: str) -> bool:
-        return self.download_queue.check_todownload_gid(gid, url)
+        return self.todownload_queue.check_todownload_gid(gid, url)
 
     def insert_todownload_gid(self, gid: int, url: str) -> None:
-        self.download_queue.insert_todownload_gid(gid, url)
+        self.todownload_queue.insert_todownload_gid(gid, url)
 
     def update_todownload_gid(self, gid: int, url: str) -> None:
-        self.download_queue.update_todownload_gid(gid, url)
+        self.todownload_queue.update_todownload_gid(gid, url)
 
     def remove_todownload_gid(self, gid: int) -> None:
-        self.download_queue.remove_todownload_gid(gid)
+        self.todownload_queue.remove_todownload_gid(gid)
 
     def get_todownload_gids(self) -> list[tuple[int, str]]:
-        return self.download_queue.get_todownload_gids()
+        return self.todownload_queue.get_todownload_gids()
 
     def create_main_tables(self) -> None:
         self.logger.debug("Creating main tables...")
-        self.download_queue._create_todownload_gids_table()
+        self.todownload_queue._create_todownload_gids_table()
         self.pending_removals._create_pending_gallery_removals_table()
         self.gallery_ids._create_galleries_names_table()
         self.gallery_gids._create_galleries_gids_table()
-        self.download_queue._create_todelete_gids_table()
+        self.todelete_queue._create_todelete_gids_table()
         self.gallery_times._create_galleries_download_times_table()
         self.gallery_times._create_galleries_redownload_times_table()
         self.gallery_times._create_galleries_upload_times_table()
-        self.download_queue._create_pending_download_gids_view()
+        self.todownload_queue._create_pending_download_gids_view()
         self.gallery_times._create_galleries_modified_times_table()
         self.gallery_times._create_galleries_access_times_table()
         self.gallery_titles._create_galleries_titles_table()
@@ -183,7 +185,7 @@ class H2HDB(BaseRepository):
         self.files._create_galleries_files_hashs_tables()
         self.files._create_gallery_image_hash_view()
         self.gallery_infos._create_duplicate_hash_in_gallery_view()
-        self.download_queue._create_todelete_names_view()
+        self.todelete_queue._create_todelete_names_view()
         self.removed_galleries._create_removed_galleries_gids_table()
         self.gallery_tags._create_galleries_tags_table()
         self.logger.info("Main tables created.")
@@ -692,7 +694,7 @@ class H2HDB(BaseRepository):
         self.refresh_current_files_hashs()
 
         self.logger.info("Queuing redownloads for galleries pending deletion...")
-        self.download_queue._queue_redownload_for_todelete_names()
+        self.todelete_queue._queue_redownload_for_todelete_names()
 
         return is_insert_limit_reached
 
