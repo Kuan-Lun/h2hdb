@@ -186,6 +186,7 @@ class H2HDB(BaseRepository):
         self.files._create_gallery_image_hash_view()
         self.gallery_infos._create_duplicate_hash_in_gallery_view()
         self.todelete_queue._create_todelete_names_view()
+        self.todelete_queue._create_todelete_rm_commands_view()
         self.removed_galleries._create_removed_galleries_gids_table()
         self.gallery_tags._create_galleries_tags_table()
         self.logger.info("Main tables created.")

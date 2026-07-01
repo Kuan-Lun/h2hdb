@@ -60,6 +60,29 @@ class H2HDBToDeleteQueue(BaseRepository):
             connector.execute(query)
         self.logger.info(f"{table_name} table created.")
 
+    def _create_todelete_rm_commands_view(self) -> None:
+        with self.SQLConnector() as connector:
+            table_name = "todelete_rm_commands"
+            match self.config.database.sql_type.lower():
+                case "mariadb":
+                    query = f"""
+                        CREATE VIEW IF NOT EXISTS {table_name} AS
+                        SELECT CONCAT(
+                            'rm -rf -- ''',
+                            REPLACE(full_name, '''', '''\\'''''),
+                            ''''
+                        ) AS cmd
+                        FROM todelete_names
+                    """
+                case "sqlite":
+                    query = f"""
+                        CREATE VIEW IF NOT EXISTS {table_name} AS
+                        SELECT 'rm -rf -- ''' || REPLACE(full_name, '''', '''\\''''') || '''' AS cmd
+                        FROM todelete_names
+                    """
+            connector.execute(query)
+        self.logger.info(f"{table_name} table created.")
+
     def _queue_redownload_for_todelete_names(self) -> None:
         with self.SQLConnector() as connector:
             query = """
