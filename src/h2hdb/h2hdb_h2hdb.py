@@ -694,10 +694,10 @@ class H2HDB(BaseRepository):
         self.logger.info("Cleaning up database...")
         self.refresh_current_files_hashs()
 
-        self.logger.info("Queuing redownloads for galleries pending deletion...")
-        self.todelete_queue._queue_redownload_for_todelete_names()
-
         return is_insert_limit_reached
+
+    def queue_redownload_for_pending_deletions(self) -> None:
+        self.todelete_queue._queue_redownload_for_todelete_names()
 
     def reset_redownload_times(self) -> None:
         self.gallery_times._reset_redownload_times()

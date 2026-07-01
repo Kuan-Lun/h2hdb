@@ -21,6 +21,7 @@ if __name__ == "__main__":
             connector.logger.info("Checking for new downloads...")
 
         connector.reset_redownload_times()
+        connector.queue_redownload_for_pending_deletions()
 
         connector.optimize_database()
         connector.analyze_database()
