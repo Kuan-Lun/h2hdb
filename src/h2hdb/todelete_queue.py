@@ -65,7 +65,10 @@ class H2HDBToDeleteQueue(BaseRepository):
             table_name = "todelete_rm_commands"
             match self.config.database.sql_type.lower():
                 case "mariadb":
-                    query = f"""
+                    # Not an f-string with escaped backslashes: MariaDB needs a literal
+                    # `\\` in the source to produce one backslash in the shell-quoted
+                    # output, and a regular f-string would collapse it to one first.
+                    query = rf"""
                         CREATE VIEW IF NOT EXISTS {table_name} AS
                         SELECT CONCAT(
                             'rm -rf -- ''',
@@ -75,9 +78,9 @@ class H2HDBToDeleteQueue(BaseRepository):
                         FROM todelete_names
                     """
                 case "sqlite":
-                    query = f"""
+                    query = rf"""
                         CREATE VIEW IF NOT EXISTS {table_name} AS
-                        SELECT 'rm -rf -- ''' || REPLACE(full_name, '''', '''\\''''') || '''' AS cmd
+                        SELECT 'rm -rf -- ''' || REPLACE(full_name, '''', '''\''''') || '''' AS cmd
                         FROM todelete_names
                     """
             connector.execute(query)
