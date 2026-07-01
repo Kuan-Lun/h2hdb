@@ -53,8 +53,12 @@ class _ExcludeHashesTracker:
     ) -> None:
         self._duplicated_hashes = duplicated_hashes
         self._logger = logger
-        self._previously_count_duplicated_files = 0
-        self.exclude_hashs = set[bytes]()
+        self._previously_count_duplicated_files = (
+            duplicated_hashes._count_duplicated_files_hashs_sha512()
+        )
+        self.exclude_hashs = (
+            duplicated_hashes._get_duplicated_hash_values_by_count_artist_ratio()
+        )
 
     def refresh_if_new_duplicates(self) -> None:
         self._logger.debug("Checking for duplicated files...")
