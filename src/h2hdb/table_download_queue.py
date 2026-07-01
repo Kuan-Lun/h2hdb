@@ -111,9 +111,25 @@ class H2HDBDownloadQueue(BaseRepository):
                             ) sub ON gi.gid = sub.gid
                             WHERE gi.download_time < sub.max_download_time
                             ) AS duplicated_gids_names
+                    UNION
+                        SELECT gallery_name AS full_name
+                        FROM duplicate_hash_in_gallery
             """
             connector.execute(query)
         self.logger.info(f"{table_name} table created.")
+
+    def _queue_redownload_for_todelete_names(self) -> None:
+        with self.SQLConnector() as connector:
+            query = """
+                INSERT INTO todownload_gids (gid, url)
+                SELECT galleries_infos.gid, ''
+                FROM galleries_infos
+                    INNER JOIN todelete_names ON galleries_infos.name = todelete_names.full_name
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM todownload_gids WHERE todownload_gids.gid = galleries_infos.gid
+                )
+            """
+            connector.execute(query)
 
     def check_todelete_gid(self, gid: int) -> bool:
         with self.SQLConnector() as connector:

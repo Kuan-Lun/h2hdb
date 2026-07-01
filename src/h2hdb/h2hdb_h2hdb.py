@@ -180,10 +180,10 @@ class H2HDB(BaseRepository):
         self.gallery_comments._create_galleries_comments_table()
         self.files._create_files_names_table()
         self.gallery_infos._create_galleries_infos_view()
-        self.download_queue._create_todelete_names_view()
         self.files._create_galleries_files_hashs_tables()
         self.files._create_gallery_image_hash_view()
         self.gallery_infos._create_duplicate_hash_in_gallery_view()
+        self.download_queue._create_todelete_names_view()
         self.removed_galleries._create_removed_galleries_gids_table()
         self.gallery_tags._create_galleries_tags_table()
         self.logger.info("Main tables created.")
@@ -690,6 +690,9 @@ class H2HDB(BaseRepository):
 
         self.logger.info("Cleaning up database...")
         self.refresh_current_files_hashs()
+
+        self.logger.info("Queuing redownloads for galleries pending deletion...")
+        self.download_queue._queue_redownload_for_todelete_names()
 
         return is_insert_limit_reached
 
