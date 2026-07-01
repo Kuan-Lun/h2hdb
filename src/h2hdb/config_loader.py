@@ -10,26 +10,12 @@ from .settings import CBZ_GROUPING, CBZ_SORT, LOG_LEVEL
 
 
 class ConfigError(Exception):
-    """
-    Exception raised for errors in the configuration.
-
-    Attributes:
-        message -- explanation of the error
-    """
-
     def __init__(self, message: str) -> None:
         self.message = message
         super().__init__(self.message)
 
 
 class ConfigModel(BaseModel):
-    """
-    Base class for configuration models.
-
-    This class inherits from `pydantic.BaseModel` and is used to define the configuration
-    structure for the application. It provides a way to validate and parse configuration data.
-    """
-
     model_config = ConfigDict(extra="forbid")
 
 
@@ -125,13 +111,6 @@ class H2HConfig(ConfigModel):
 
 
 class H2HDBConfig(ConfigModel):
-    """
-    Configuration class for H2HDB.
-
-    This class combines the configurations for H2H, database, and logger into a single
-    configuration object. It validates the types of each configuration component.
-    """
-
     h2h: H2HConfig = Field(
         default_factory=H2HConfig,
         description="Configuration for H2H",

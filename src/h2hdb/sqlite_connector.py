@@ -24,25 +24,15 @@ sqlite3.register_converter("TIMESTAMP", _convert_timestamp)
 
 
 class SQLiteDuplicateKeyError(DatabaseDuplicateKeyError):
-    """
-    Custom exception class for SQLite duplicate key errors.
-
-    This class inherits from the stdlib sqlite3 IntegrityError class.
-    """
-
     def __init__(self, message: str) -> None:
         self.message = message
         super().__init__(self.message)
 
 
 class SQLiteConnectorParams(SQLConnectorParams):
-    """
-    SQLiteConnectorParams is a data class that holds the connection parameters required to connect to a SQLite database.
-
-    The 'database' parameter is the filesystem path to the SQLite database file. It must not be
-    `:memory:`: every repository method opens and closes its own connection, and SQLite's in-memory
-    databases are connection-scoped, so an in-memory database would lose all data between calls.
-    """
+    """`database` must not be `:memory:`: every repository method opens and closes its
+    own connection, and SQLite's in-memory databases are connection-scoped, so an
+    in-memory database would lose all data between calls."""
 
     database: str = Field(
         min_length=1,
@@ -55,28 +45,6 @@ def _to_qmark(query: str) -> str:
 
 
 class SQLiteConnector(SQLConnector):
-    """
-    SQLiteConnector is a concrete subclass of SQLConnector that provides an implementation for connecting to a SQLite database.
-
-    The class uses the stdlib `sqlite3` module to establish a connection.
-
-    The 'connect' method establishes a connection to the SQLite database file, in autocommit mode.
-
-    The 'close' method closes the connection to the SQLite database.
-
-    The 'execute' method executes a single SQL command on the SQLite database.
-
-    The 'execute_many' method executes multiple SQL commands on the SQLite database.
-
-    The 'fetch_one' method fetches a single result from the SQLite database.
-
-    The 'fetch_all' method fetches all results from the SQLite database.
-
-    The 'commit' method commits the current transaction to the SQLite database.
-
-    The 'rollback' method rolls back the current transaction in the SQLite database.
-    """
-
     def __init__(self, database: str) -> None:
         self.params = SQLiteConnectorParams(database=database)
 

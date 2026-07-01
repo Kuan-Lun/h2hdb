@@ -3,31 +3,9 @@ from .sql_connector import DatabaseConfigurationError
 
 
 class H2HDBCheckDatabaseSettings(BaseRepository):
-    """
-    A class that checks the database settings for character set and collation.
-
-    This repository is used to ensure that the database
-    character set and collation are valid. It provides methods to check the character set and
-    collation of the database and raises an error if they are invalid.
-
-    Attributes:
-        sql_type (str): The type of SQL database being used.
-
-    Methods:
-        check_database_character_set: Checks the character set of the database.
-        check_database_collation: Checks the collation of the database.
-    """
-
     def check_database_character_set(self) -> None:
-        """
-        Checks the character set of the database and raises an error if it is invalid.
-
-        SQLite has no database-level character set setting (TEXT is always UTF-8), so this
-        is a no-op for the "sqlite" backend.
-
-        Raises:
-            DatabaseConfigurationError: If the database character set is invalid.
-        """
+        # SQLite has no database-level character set setting (TEXT is always UTF-8), so
+        # this is a no-op for the "sqlite" backend.
         match self.config.database.sql_type.lower():
             case "sqlite":
                 return
@@ -47,15 +25,9 @@ class H2HDBCheckDatabaseSettings(BaseRepository):
             self.logger.info("Database character set is valid.")
 
     def check_database_collation(self) -> None:
-        """
-        Checks the collation of the database and raises an error if it is invalid.
-
-        SQLite has no database-level collation setting (collation is a per-column/per-expression
-        concept in SQLite), so this is a no-op for the "sqlite" backend.
-
-        Raises:
-            DatabaseConfigurationError: If the database collation is invalid.
-        """
+        # SQLite has no database-level collation setting (collation is a
+        # per-column/per-expression concept in SQLite), so this is a no-op for the
+        # "sqlite" backend.
         match self.config.database.sql_type.lower():
             case "sqlite":
                 return

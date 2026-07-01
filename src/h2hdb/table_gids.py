@@ -195,22 +195,6 @@ class H2HDBGalleriesIDs(BaseRepository):
 
 
 class H2HDBGalleriesGIDs(BaseRepository):
-    """
-    A class that handles the GIDs for galleries in the comic database.
-
-    This repository is used to manage the GIDs for galleries
-
-    Attributes:
-        sql_type (str): The type of SQL database being used.
-        sql_connection_params (SQLConnectorParams): The parameters for establishing the SQL connection.
-        connector (SQLConnector): The SQL connector object.
-
-    Methods:
-        _create_galleries_gids_table: Creates the galleries_gids table.
-        _insert_gallery_gid: Inserts the GID for the gallery name ID into the galleries_gids table.
-        get_gid_by_gallery_name: Selects the GID for the gallery name from the database.
-    """
-
     def __init__(
         self, context: RepositoryContext, gallery_ids: H2HDBGalleriesIDs
     ) -> None:

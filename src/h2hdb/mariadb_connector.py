@@ -13,34 +13,12 @@ AUTO_COMMIT_KEYS = ["INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER"]
 
 
 class MariaDBDuplicateKeyError(DatabaseDuplicateKeyError):
-    """
-    Custom exception class for MariaDB duplicate key errors.
-
-    This class inherits from the MySQL Connector/Python IntegrityError class.
-    """
-
     def __init__(self, message: str) -> None:
         self.message = message
         super().__init__(self.message)
 
 
 class MariaDBConnectorParams(SQLConnectorParams):
-    """
-    MariaDBConnectorParams is a data class that holds the connection parameters required to connect to a MariaDB database.
-
-    The class inherits from SQLConnectorParams and adds additional parameters specific to MariaDB databases.
-
-    The 'host' parameter is the host name or IP address of the MariaDB database server.
-
-    The 'port' parameter is the port number to connect to the MariaDB database server.
-
-    The 'user' parameter is the username to authenticate with the MariaDB database server.
-
-    The 'password' parameter is the password to authenticate with the MariaDB database server.
-
-    The 'database' parameter is the name of the MariaDB database to connect to.
-    """
-
     host: str = Field(
         min_length=1,
         description="Host of the MariaDB database",
@@ -83,28 +61,6 @@ class MariaDBCursor:
 
 
 class MariaDBConnector(SQLConnector):
-    """
-    MariaDBConnector is a concrete subclass of SQLConnector that provides an implementation for connecting to a MariaDB database.
-
-    The class uses the MySQL Connector/Python library (wire-protocol compatible with MariaDB) to establish a connection.
-
-    The 'connect' method establishes a connection to the MariaDB database using the provided connection parameters.
-
-    The 'close' method closes the connection to the MariaDB database.
-
-    The 'execute' method executes a single SQL command on the MariaDB database.
-
-    The 'execute_many' method executes multiple SQL commands on the MariaDB database.
-
-    The 'fetch_one' method fetches a single result from the MariaDB database.
-
-    The 'fetch_all' method fetches all results from the MariaDB database.
-
-    The 'commit' method commits the current transaction to the MariaDB database.
-
-    The 'rollback' method rolls back the current transaction in the MariaDB database.
-    """
-
     def __init__(
         self, host: str, port: int, user: str, password: str, database: str
     ) -> None:
