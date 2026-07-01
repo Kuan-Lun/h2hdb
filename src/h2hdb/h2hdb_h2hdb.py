@@ -630,14 +630,25 @@ class H2HDB(BaseRepository):
         chunked_galleries_folders = chunk_list(
             current_galleries_folders, 100 * POOL_CPU_LIMIT
         )
-        self.logger.info("Inserting galleries in parallel...")
+        total_chunks = len(chunked_galleries_folders)
+        total_galleries = len(current_galleries_folders)
+        galleries_processed = 0
+        self.logger.info(
+            f"Inserting {total_galleries} galleries in parallel "
+            f"across {total_chunks} chunk(s)..."
+        )
         cbz_pool_cm = (
             Pool(POOL_CPU_LIMIT)
             if self.config.h2h.cbz_path != ""
             else contextlib.nullcontext()
         )
         with cbz_pool_cm as cbz_pool:
-            for gallery_chunk in chunked_galleries_folders:
+            for chunk_index, gallery_chunk in enumerate(chunked_galleries_folders, 1):
+                galleries_processed += len(gallery_chunk)
+                self.logger.info(
+                    f"Processing chunk {chunk_index}/{total_chunks} "
+                    f"({galleries_processed}/{total_galleries} galleries)..."
+                )
                 is_insert_list = self._insert_gallery_chunk_with_split_retry(
                     gallery_chunk
                 )
