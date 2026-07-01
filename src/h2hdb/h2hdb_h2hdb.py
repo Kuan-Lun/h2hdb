@@ -15,6 +15,7 @@ from h2h_galleryinfo_parser import (
 
 from .cbz_files import H2HDBCBZFiles
 from .config_loader import H2HDBConfig
+from .duplicated_hashes import H2HDBDuplicatedHashes
 from .hash_dict import HASH_ALGORITHMS
 from .information import FileInformation, TagInformation
 from .logger import HentaiDBLogger
@@ -36,7 +37,6 @@ from .table_tags import H2HDBGalleriesTags
 from .table_times import H2HDBTimes
 from .table_titles import H2HDBGalleriesTitles
 from .table_uploadaccounts import H2HDBUploadAccounts
-from .view_duplicated_hashes import H2HDBDuplicatedHashes
 from .view_ginfo import H2HDBGalleriesInfos
 
 GALLERY_METADATA_BATCH_SIZE = 500
@@ -186,7 +186,6 @@ class H2HDB(BaseRepository):
         self.gallery_infos._create_duplicate_hash_in_gallery_view()
         self.removed_galleries._create_removed_galleries_gids_table()
         self.gallery_tags._create_galleries_tags_table()
-        self.duplicated_hashes._create_duplicated_galleries_tables()
         self.logger.info("Main tables created.")
 
     def update_redownload_time_to_now_by_gid(self, gid: int) -> None:
