@@ -17,6 +17,7 @@ from .cbz_files import H2HDBCBZFiles
 from .config_loader import H2HDBConfig
 from .hash_dict import HASH_ALGORITHMS
 from .information import FileInformation, TagInformation
+from .logger import HentaiDBLogger
 from .repository import BaseRepository, RepositoryContext
 from .settings import (
     COMPARISON_HASH_ALGORITHM,
@@ -35,11 +36,39 @@ from .table_tags import H2HDBGalleriesTags
 from .table_times import H2HDBTimes
 from .table_titles import H2HDBGalleriesTitles
 from .table_uploadaccounts import H2HDBUploadAccounts
+from .view_duplicated_hashes import H2HDBDuplicatedHashes
 from .view_ginfo import H2HDBGalleriesInfos
 
 GALLERY_METADATA_BATCH_SIZE = 500
 CPU_NUM = cpu_count()
 POOL_CPU_LIMIT = max(CPU_NUM - 2, 1)
+
+
+class _ExcludeHashesTracker:
+    """Recreated per call: a longer-lived cache would miss duplicate-count drops caused by deletions."""
+
+    def __init__(
+        self, duplicated_hashes: H2HDBDuplicatedHashes, logger: HentaiDBLogger
+    ) -> None:
+        self._duplicated_hashes = duplicated_hashes
+        self._logger = logger
+        self._previously_count_duplicated_files = 0
+        self.exclude_hashs = set[bytes]()
+
+    def refresh_if_new_duplicates(self) -> None:
+        self._logger.debug("Checking for duplicated files...")
+        current_count_duplicated_files = (
+            self._duplicated_hashes._count_duplicated_files_hashs_sha512()
+        )
+        if current_count_duplicated_files > self._previously_count_duplicated_files:
+            self._logger.debug(
+                "Duplicated files found. Updating excluded hash values..."
+            )
+            self._previously_count_duplicated_files = current_count_duplicated_files
+            self.exclude_hashs = (
+                self._duplicated_hashes._get_duplicated_hash_values_by_count_artist_ratio()
+            )
+            self._logger.info("Excluded hash values updated.")
 
 
 class H2HDB(BaseRepository):
@@ -61,6 +90,7 @@ class H2HDB(BaseRepository):
         self.files = H2HDBFiles(context, self.gallery_ids)
         self.removed_galleries = H2HDBRemovedGalleries(context)
         self.cbz = H2HDBCBZFiles(context, self.gallery_times, self.gallery_ids)
+        self.duplicated_hashes = H2HDBDuplicatedHashes(context)
 
     def __enter__(self) -> H2HDB:
         return self
@@ -80,60 +110,6 @@ class H2HDB(BaseRepository):
 
     def check_database_collation(self) -> None:
         self.database_settings.check_database_collation()
-
-    def _count_duplicated_files_hashs_sha512(self) -> int:
-        with self.SQLConnector() as connector:
-            table_name = "duplicated_files_hashs_sha512"
-            query = f"""
-                SELECT COUNT(*)
-                FROM {table_name}
-            """
-            query_result = connector.fetch_one(query)
-        return int(query_result[0])
-
-    def _create_duplicated_galleries_tables(self) -> None:
-        with self.SQLConnector() as connector:
-            query = """
-                    CREATE VIEW IF NOT EXISTS duplicated_files_hashs_sha512 AS
-                    SELECT db_file_id,
-                        db_hash_id
-                    FROM files_hashs_sha512
-                    GROUP BY db_hash_id
-                    HAVING COUNT(*) >= 3
-                    """
-            connector.execute(query)
-
-        with self.SQLConnector() as connector:
-            query = """
-                CREATE VIEW IF NOT EXISTS duplicated_hash_values_by_count_artist_ratio AS WITH duplicated_db_dbids AS (
-                            SELECT galleries_dbids.db_gallery_id AS db_gallery_id,
-                                files_dbids.db_file_id AS db_file_id,
-                                duplicated_files_hashs_sha512.db_hash_id AS db_hash_id,
-                                galleries_tag_pairs_dbids.tag_value AS artist_value
-                            FROM duplicated_files_hashs_sha512
-                                LEFT JOIN files_hashs_sha512 ON duplicated_files_hashs_sha512.db_hash_id = files_hashs_sha512.db_hash_id
-                                LEFT JOIN files_dbids ON files_hashs_sha512.db_file_id = files_dbids.db_file_id
-                                LEFT JOIN galleries_dbids ON files_dbids.db_gallery_id = galleries_dbids.db_gallery_id
-                                LEFT JOIN galleries_tags ON galleries_dbids.db_gallery_id = galleries_tags.db_gallery_id
-                                LEFT JOIN galleries_tag_pairs_dbids ON galleries_tags.db_tag_pair_id = galleries_tag_pairs_dbids.db_tag_pair_id
-                            WHERE galleries_tag_pairs_dbids.tag_name = 'artist'
-                        ),
-                        duplicated_count_artists_by_db_gallery_id AS(
-                            SELECT COUNT(DISTINCT artist_value) AS artist_count,
-                                db_gallery_id
-                            FROM duplicated_db_dbids
-                            GROUP BY db_gallery_id
-                        )
-                        SELECT files_hashs_sha512_dbids.hash_value AS hash_value
-                        FROM duplicated_db_dbids
-                            LEFT JOIN duplicated_count_artists_by_db_gallery_id ON duplicated_db_dbids.db_gallery_id = duplicated_count_artists_by_db_gallery_id.db_gallery_id
-                            LEFT JOIN files_hashs_sha512_dbids ON duplicated_db_dbids.db_hash_id = files_hashs_sha512_dbids.db_hash_id
-                        GROUP BY duplicated_db_dbids.db_hash_id
-                        HAVING COUNT(DISTINCT duplicated_db_dbids.artist_value) / MAX(
-                                duplicated_count_artists_by_db_gallery_id.artist_count
-                            ) > 2
-                        """
-            connector.execute(query)
 
     def insert_pending_gallery_removal(self, gallery_name: str) -> None:
         self.pending_removals.insert_pending_gallery_removal(gallery_name)
@@ -210,7 +186,7 @@ class H2HDB(BaseRepository):
         self.gallery_infos._create_duplicate_hash_in_gallery_view()
         self.removed_galleries._create_removed_galleries_gids_table()
         self.gallery_tags._create_galleries_tags_table()
-        self._create_duplicated_galleries_tables()
+        self.duplicated_hashes._create_duplicated_galleries_tables()
         self.logger.info("Main tables created.")
 
     def update_redownload_time_to_now_by_gid(self, gid: int) -> None:
@@ -443,17 +419,6 @@ class H2HDB(BaseRepository):
             issame_list.append(original_hash_value == current_hash_value)
         return issame_list
 
-    def _get_duplicated_hash_values_by_count_artist_ratio(self) -> set[bytes]:
-        with self.SQLConnector() as connector:
-            table_name = "duplicated_hash_values_by_count_artist_ratio"
-            select_query = f"""
-                SELECT hash_value
-                FROM {table_name}
-            """
-
-            query_result = connector.fetch_all(select_query)
-        return {query[0] for query in query_result}
-
     def insert_gallery_infos(
         self, galleryinfo_params_list: list[GalleryInfoParser]
     ) -> list[bool]:
@@ -637,21 +602,6 @@ class H2HDB(BaseRepository):
         self.logger.info("Galleries sorted.")
         return sorted_galleries_folders
 
-    def _refresh_exclude_hashs(
-        self, previously_count_duplicated_files: int, exclude_hashs: set[bytes]
-    ) -> tuple[int, set[bytes]]:
-        self.logger.debug("Checking for duplicated files...")
-        current_count_duplicated_files = self._count_duplicated_files_hashs_sha512()
-        new_exclude_hashs = exclude_hashs
-        if current_count_duplicated_files > previously_count_duplicated_files:
-            self.logger.debug(
-                "Duplicated files found. Updating excluded hash values..."
-            )
-            previously_count_duplicated_files = current_count_duplicated_files
-            new_exclude_hashs = self._get_duplicated_hash_values_by_count_artist_ratio()
-            self.logger.info("Excluded hash values updated.")
-        return previously_count_duplicated_files, new_exclude_hashs
-
     def insert_h2h_download(self) -> bool:
         self.delete_pending_gallery_removals()
 
@@ -667,8 +617,9 @@ class H2HDB(BaseRepository):
         )
 
         self.logger.info("Getting excluded hash values...")
-        exclude_hashs = set[bytes]()
-        previously_count_duplicated_files = 0
+        exclude_hashes_tracker = _ExcludeHashesTracker(
+            self.duplicated_hashes, self.logger
+        )
         self.logger.info("Excluded hash values obtained.")
 
         total_inserted_in_database = 0
@@ -695,13 +646,11 @@ class H2HDB(BaseRepository):
 
                 if self.config.h2h.cbz_path != "":
                     if any(is_insert_list):
-                        previously_count_duplicated_files, exclude_hashs = (
-                            self._refresh_exclude_hashs(
-                                previously_count_duplicated_files, exclude_hashs
-                            )
-                        )
+                        exclude_hashes_tracker.refresh_if_new_duplicates()
                     is_new_list = self.cbz.compress_galleries_to_cbz(
-                        gallery_chunk, exclude_hashs, cast(Pool, cbz_pool)
+                        gallery_chunk,
+                        exclude_hashes_tracker.exclude_hashs,
+                        cast(Pool, cbz_pool),
                     )
                     if any(is_new_list):
                         self.logger.info("There are new CBZ files created.")
@@ -716,7 +665,7 @@ class H2HDB(BaseRepository):
                     "Checking for CBZ files made stale by new exclusions..."
                 )
                 final_exclude_hashs = (
-                    self._get_duplicated_hash_values_by_count_artist_ratio()
+                    self.duplicated_hashes._get_duplicated_hash_values_by_count_artist_ratio()
                 )
                 stale_galleries = self.cbz.get_stale_cbz_galleries(
                     current_galleries_names, final_exclude_hashs, cast(Pool, cbz_pool)
