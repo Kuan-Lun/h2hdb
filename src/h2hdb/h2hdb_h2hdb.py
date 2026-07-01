@@ -628,7 +628,7 @@ class H2HDB(BaseRepository):
         total_created_cbz = 0
         is_insert_limit_reached = False
         chunked_galleries_folders = chunk_list(
-            current_galleries_folders, 100 * POOL_CPU_LIMIT
+            current_galleries_folders, 1000 * POOL_CPU_LIMIT
         )
         total_chunks = len(chunked_galleries_folders)
         total_galleries = len(current_galleries_folders)
