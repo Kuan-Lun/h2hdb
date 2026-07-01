@@ -22,11 +22,11 @@ class H2HDBDuplicatedHashes(BaseRepository):
                                 duplicated_files_hashs_sha512.db_hash_id AS db_hash_id,
                                 galleries_tag_pairs_dbids.tag_value AS artist_value
                             FROM duplicated_files_hashs_sha512
-                                LEFT JOIN files_hashs_sha512 ON duplicated_files_hashs_sha512.db_hash_id = files_hashs_sha512.db_hash_id
-                                LEFT JOIN files_dbids ON files_hashs_sha512.db_file_id = files_dbids.db_file_id
-                                LEFT JOIN galleries_dbids ON files_dbids.db_gallery_id = galleries_dbids.db_gallery_id
-                                LEFT JOIN galleries_tags ON galleries_dbids.db_gallery_id = galleries_tags.db_gallery_id
-                                LEFT JOIN galleries_tag_pairs_dbids ON galleries_tags.db_tag_pair_id = galleries_tag_pairs_dbids.db_tag_pair_id
+                                INNER JOIN files_hashs_sha512 ON duplicated_files_hashs_sha512.db_hash_id = files_hashs_sha512.db_hash_id
+                                INNER JOIN files_dbids ON files_hashs_sha512.db_file_id = files_dbids.db_file_id
+                                INNER JOIN galleries_dbids ON files_dbids.db_gallery_id = galleries_dbids.db_gallery_id
+                                INNER JOIN galleries_tags ON galleries_dbids.db_gallery_id = galleries_tags.db_gallery_id
+                                INNER JOIN galleries_tag_pairs_dbids ON galleries_tags.db_tag_pair_id = galleries_tag_pairs_dbids.db_tag_pair_id
                             WHERE galleries_tag_pairs_dbids.tag_name = 'artist'
                         ),
                         duplicated_count_artists_by_db_gallery_id AS(
@@ -37,8 +37,8 @@ class H2HDBDuplicatedHashes(BaseRepository):
                         )
                         SELECT files_hashs_sha512_dbids.hash_value AS hash_value
                         FROM duplicated_db_dbids
-                            LEFT JOIN duplicated_count_artists_by_db_gallery_id ON duplicated_db_dbids.db_gallery_id = duplicated_count_artists_by_db_gallery_id.db_gallery_id
-                            LEFT JOIN files_hashs_sha512_dbids ON duplicated_db_dbids.db_hash_id = files_hashs_sha512_dbids.db_hash_id
+                            INNER JOIN duplicated_count_artists_by_db_gallery_id ON duplicated_db_dbids.db_gallery_id = duplicated_count_artists_by_db_gallery_id.db_gallery_id
+                            INNER JOIN files_hashs_sha512_dbids ON duplicated_db_dbids.db_hash_id = files_hashs_sha512_dbids.db_hash_id
                         GROUP BY duplicated_db_dbids.db_hash_id
                         HAVING COUNT(DISTINCT duplicated_db_dbids.artist_value) / MAX(
                                 duplicated_count_artists_by_db_gallery_id.artist_count
