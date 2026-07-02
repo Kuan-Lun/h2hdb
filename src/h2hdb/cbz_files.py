@@ -75,6 +75,18 @@ class H2HDBCBZFiles(BaseRepository):
         self.gallery_times = gallery_times
         self.gallery_ids = gallery_ids
 
+    def _delete_cbz_file_for_gallery_name(self, gallery_name: str) -> None:
+        from .compress_gallery_to_cbz import gallery_name_to_cbz_file_name
+
+        target_file_name = gallery_name_to_cbz_file_name(gallery_name)
+        for root, _, files in os.walk(self.config.h2h.cbz_path):
+            if target_file_name in files:
+                os.remove(os.path.join(root, target_file_name))
+                self.logger.info(
+                    f"CBZ '{target_file_name}' removed (duplicate content)."
+                )
+                return
+
     def _refresh_current_cbz_files(self, current_galleries_names: set[str]) -> None:
         from .compress_gallery_to_cbz import gallery_name_to_cbz_file_name
 

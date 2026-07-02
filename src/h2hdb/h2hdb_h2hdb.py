@@ -2,6 +2,7 @@ __all__ = ["H2HDB", "GALLERY_INFO_FILE_NAME"]
 
 
 import contextlib
+import hashlib
 import os
 from itertools import islice
 from multiprocessing import cpu_count
@@ -14,8 +15,10 @@ from h2h_galleryinfo_parser import (
 )
 
 from .cbz_files import H2HDBCBZFiles
+from .cbz_integrity import H2HDBCBZIntegrity
 from .config_loader import H2HDBConfig
 from .duplicated_hashes import H2HDBDuplicatedHashes
+from .gallery_deduplication import H2HDBGalleryDeduplication
 from .hash_dict import HASH_ALGORITHMS
 from .information import FileInformation, TagInformation
 from .logger import HentaiDBLogger
@@ -96,6 +99,10 @@ class H2HDB(BaseRepository):
         self.files = H2HDBFiles(context, self.gallery_ids)
         self.removed_galleries = H2HDBRemovedGalleries(context)
         self.cbz = H2HDBCBZFiles(context, self.gallery_times, self.gallery_ids)
+        self.cbz_integrity = H2HDBCBZIntegrity(context, self.gallery_ids)
+        self.gallery_deduplication = H2HDBGalleryDeduplication(
+            context, self.gallery_ids, self.gallery_times
+        )
         self.duplicated_hashes = H2HDBDuplicatedHashes(context)
 
     def __enter__(self) -> H2HDB:
@@ -189,10 +196,17 @@ class H2HDB(BaseRepository):
         self.files._create_galleries_files_hashs_tables()
         self.files._create_gallery_image_hash_view()
         self.gallery_infos._create_duplicate_hash_in_gallery_view()
+        self.gallery_deduplication._create_gallery_content_hashes_table()
+        self.gallery_deduplication._create_gallery_full_content_hashes_table()
+        self.gallery_deduplication._create_gallery_full_duplicate_names_view()
+        self.gallery_deduplication._create_gallery_duplicate_warnings_table()
+        self.gallery_deduplication._create_gallery_duplicate_warnings_names_view()
         self.todelete_queue._create_todelete_names_view()
         self.todelete_queue._create_todelete_rm_commands_view()
         self.removed_galleries._create_removed_galleries_gids_table()
         self.gallery_tags._create_galleries_tags_table()
+        self.cbz_integrity._create_cbz_hashes_table()
+        self.cbz_integrity._create_cbz_verifications_table()
         self.logger.info("Main tables created.")
 
     def update_redownload_time_to_now_by_gid(self, gid: int) -> None:
@@ -608,6 +622,97 @@ class H2HDB(BaseRepository):
         self.logger.info("Galleries sorted.")
         return sorted_galleries_folders
 
+    def _filter_gallery_chunk_for_deduplication(
+        self, gallery_chunk: list[str], exclude_hashs: set[bytes]
+    ) -> list[str]:
+        if not gallery_chunk:
+            return []
+
+        gallery_names = [os.path.basename(folder) for folder in gallery_chunk]
+        db_gallery_ids_by_name = (
+            self.gallery_ids._get_db_gallery_ids_by_gallery_names_from_dbids(
+                gallery_names
+            )
+        )
+        db_gallery_ids = list(db_gallery_ids_by_name.values())
+        files_by_db_gallery_id = self.cbz._get_files_by_db_gallery_ids(db_gallery_ids)
+        download_times_by_db_gallery_id = (
+            self.gallery_times.get_download_times_by_db_gallery_ids(db_gallery_ids)
+        )
+
+        kept_folders: list[str] = []
+        for folder in gallery_chunk:
+            db_gallery_id = db_gallery_ids_by_name.get(os.path.basename(folder))
+            if db_gallery_id is None:
+                # Not yet resolvable (e.g. its insert was skipped/retried) --
+                # let it through unchanged rather than silently dropping it.
+                kept_folders.append(folder)
+                continue
+
+            # galleryinfo.txt is excluded from both hashes below: it embeds
+            # this gallery's own GID/metadata, so it necessarily differs
+            # between galleries even when every other file is identical --
+            # including it would mean these hashes could never match across
+            # genuinely duplicate galleries.
+            gallery_files = [
+                (file_name, file_hash)
+                for file_name, file_hash in files_by_db_gallery_id.get(
+                    db_gallery_id, []
+                )
+                if file_name != GALLERY_INFO_FILE_NAME
+            ]
+
+            # An empty file set (e.g. every file happens to be excluded, or
+            # the gallery genuinely has none besides galleryinfo.txt) hashes
+            # to the same value for every such gallery -- that's not a
+            # meaningful content match, so galleries in this state opt out of
+            # both hash tables entirely rather than being wrongly treated as
+            # duplicates of each other.
+            content_files = [
+                file_hash
+                for _, file_hash in gallery_files
+                if file_hash not in exclude_hashs
+            ]
+
+            # Unfiltered by exclude_hashs: only matches another gallery when
+            # every single file (not just the ones that would survive
+            # exclusion) is bit-for-bit identical, so a match here is strong
+            # enough evidence of a true duplicate re-upload to feed
+            # todelete_names automatically (see gallery_full_duplicate_names).
+            if gallery_files:
+                full_hash = hashlib.sha256(
+                    b"".join(sorted(file_hash for _, file_hash in gallery_files))
+                ).digest()
+                self.gallery_deduplication._set_full_content_hash(
+                    db_gallery_id, full_hash
+                )
+
+            if not content_files:
+                kept_folders.append(folder)
+                continue
+
+            content_hash = hashlib.sha256(b"".join(sorted(content_files))).digest()
+            should_compress, evicted_db_gallery_id = self.gallery_deduplication.resolve(
+                db_gallery_id,
+                content_hash,
+                download_times_by_db_gallery_id[db_gallery_id],
+            )
+            if evicted_db_gallery_id is not None:
+                self._evict_duplicate_gallery_cbz(evicted_db_gallery_id)
+            if should_compress:
+                kept_folders.append(folder)
+
+        return kept_folders
+
+    def _evict_duplicate_gallery_cbz(self, db_gallery_id: int) -> None:
+        self.cbz_integrity._delete_hash(db_gallery_id)
+        self.cbz_integrity._delete_verification(db_gallery_id)
+        gallery_name = self.gallery_ids.get_gallery_names_by_db_gallery_ids(
+            [db_gallery_id]
+        ).get(db_gallery_id)
+        if gallery_name is not None:
+            self.cbz._delete_cbz_file_for_gallery_name(gallery_name)
+
     def insert_h2h_download(self) -> bool:
         self.delete_pending_gallery_removals()
 
@@ -664,8 +769,13 @@ class H2HDB(BaseRepository):
                 if self.config.h2h.cbz_path != "":
                     if any(is_insert_list):
                         exclude_hashes_tracker.refresh_if_new_duplicates()
+                    gallery_chunk_to_compress = (
+                        self._filter_gallery_chunk_for_deduplication(
+                            gallery_chunk, exclude_hashes_tracker.exclude_hashs
+                        )
+                    )
                     is_new_list = self.cbz.compress_galleries_to_cbz(
-                        gallery_chunk,
+                        gallery_chunk_to_compress,
                         exclude_hashes_tracker.exclude_hashs,
                         cast(Pool, cbz_pool),
                     )
@@ -696,12 +806,16 @@ class H2HDB(BaseRepository):
                         os.path.basename(folder): folder
                         for folder in current_galleries_folders
                     }
-                    self.cbz.compress_galleries_to_cbz(
+                    stale_folders = self._filter_gallery_chunk_for_deduplication(
                         [
                             folder_by_gallery_name[name]
                             for name in stale_galleries
                             if name in folder_by_gallery_name
                         ],
+                        final_exclude_hashs,
+                    )
+                    self.cbz.compress_galleries_to_cbz(
+                        stale_folders,
                         final_exclude_hashs,
                         cast(Pool, cbz_pool),
                     )

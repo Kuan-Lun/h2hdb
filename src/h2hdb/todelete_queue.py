@@ -56,6 +56,9 @@ class H2HDBToDeleteQueue(BaseRepository):
                     UNION
                         SELECT gallery_name AS full_name
                         FROM duplicate_hash_in_gallery
+                    UNION
+                        SELECT full_name
+                        FROM gallery_full_duplicate_names
             """
             connector.execute(query)
         self.logger.info(f"{table_name} table created.")

@@ -110,6 +110,17 @@ class H2HDBTimes(BaseRepository):
         self._insert_time("galleries_download_times", db_gallery_id, time)
         self._insert_time("galleries_redownload_times", db_gallery_id, time)
 
+    def get_download_time_by_gallery_name(self, gallery_name: str) -> datetime.datetime:
+        db_gallery_id = self.gallery_ids._get_db_gallery_id_by_gallery_name(
+            gallery_name
+        )
+        return self._select_time("galleries_download_times", db_gallery_id)
+
+    def get_download_times_by_db_gallery_ids(
+        self, db_gallery_ids: list[int]
+    ) -> dict[int, datetime.datetime]:
+        return self._select_times("galleries_download_times", db_gallery_ids)
+
     def update_redownload_time(self, db_gallery_id: int, time: str) -> None:
         self._update_time("galleries_redownload_times", db_gallery_id, time)
 

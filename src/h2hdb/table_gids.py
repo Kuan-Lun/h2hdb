@@ -193,6 +193,25 @@ class H2HDBGalleriesIDs(BaseRepository):
             if name_parts in db_gallery_id_by_name_parts
         }
 
+    def get_gallery_names_by_db_gallery_ids(
+        self, db_gallery_ids: list[int]
+    ) -> dict[int, str]:
+        if not db_gallery_ids:
+            return {}
+
+        names_by_id = dict[int, str]()
+        with self.SQLConnector() as connector:
+            for batch in chunk_list(db_gallery_ids, GALLERY_ID_BATCH_SIZE):
+                select_query = f"""
+                    SELECT db_gallery_id, full_name
+                    FROM galleries_names
+                    WHERE db_gallery_id IN ({", ".join(["%s"] * len(batch))})
+                """
+                query_result = connector.fetch_all(select_query, tuple(batch))
+                for db_gallery_id, full_name in query_result:
+                    names_by_id[int(db_gallery_id)] = str(full_name)
+        return names_by_id
+
 
 class H2HDBGalleriesGIDs(BaseRepository):
     def __init__(
