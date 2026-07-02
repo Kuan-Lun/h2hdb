@@ -43,7 +43,8 @@ collection is always organised and accessible.
         "cbz_path": "",
         "cbz_max_size": 768,
         "cbz_grouping": "flat",
-        "cbz_sort": "no"
+        "cbz_sort": "no",
+        "cbz_scrub_batch_size": 100
     },
     "database": {
         "sql_type": "mariadb",
@@ -66,6 +67,9 @@ collection is always organised and accessible.
   `date-yyyy-mm-dd`. The default is `flat`.
 - `h2h.cbz_sort`: `no`, `upload_time`, `download_time`, `gid`, `title`,
   `pages`, or `pages+[num]`. The default is `no`.
+- `h2h.cbz_scrub_batch_size`: number of CBZ files to integrity-check (and
+  transparently rebuild if corrupted) per `insert_h2h_download` run. `0`
+  disables scrubbing. The default is `100`.
 - `database.sql_type`: `mariadb` or `sqlite`. The default is `mariadb`.
   Existing config files that still use `mysql` must update this field.
 - `database.host`, `database.port`, `database.user`, and `database.password`
