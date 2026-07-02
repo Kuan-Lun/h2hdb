@@ -40,7 +40,6 @@ collection is always organised and accessible.
 {
     "h2h": {
         "download_path": "download",
-        "cbz_path": "",
         "cbz_max_size": 768,
         "cbz_grouping": "flat",
         "cbz_sort": "no",
@@ -61,7 +60,8 @@ collection is always organised and accessible.
 ```
 
 - `h2h.download_path`: H@H download path. The default is `download`.
-- `h2h.cbz_path`: directory for CBZ output. The default is empty.
+- `h2h.cbz_path`: directory for CBZ output. Unset (the default) disables CBZ
+  output entirely; if given, it must be a non-empty path (`""` is rejected).
 - `h2h.cbz_max_size`: maximum image size. The default is `768`.
 - `h2h.cbz_grouping`: `flat`, `date-yyyy`, `date-yyyy-mm`, or
   `date-yyyy-mm-dd`. The default is `flat`.

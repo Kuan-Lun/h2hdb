@@ -92,6 +92,7 @@ class H2HDBCBZFiles(BaseRepository):
     def _delete_cbz_file_for_gallery_name(self, gallery_name: str) -> None:
         from .compress_gallery_to_cbz import gallery_name_to_cbz_file_name
 
+        assert self.config.h2h.cbz_path is not None
         target_file_name = gallery_name_to_cbz_file_name(gallery_name)
         for root, _, files in os.walk(self.config.h2h.cbz_path):
             if target_file_name in files:
@@ -104,6 +105,7 @@ class H2HDBCBZFiles(BaseRepository):
     def _refresh_current_cbz_files(self, current_galleries_names: set[str]) -> None:
         from .compress_gallery_to_cbz import gallery_name_to_cbz_file_name
 
+        assert self.config.h2h.cbz_path is not None
         current_cbzs: dict[str, str] = dict()
         for root, _, files in os.walk(self.config.h2h.cbz_path):
             for file in files:
@@ -141,6 +143,7 @@ class H2HDBCBZFiles(BaseRepository):
             gallery_name_to_cbz_file_name,
         )
 
+        assert self.config.h2h.cbz_path is not None
         galleryinfo_params = parse_galleryinfo(gallery_folder)
         match self.config.h2h.cbz_grouping:
             case "date-yyyy":
@@ -313,6 +316,7 @@ class H2HDBCBZFiles(BaseRepository):
             gallery_name_to_cbz_file_name,
         )
 
+        assert self.config.h2h.cbz_path is not None
         if not exclude_hashs:
             return set()
 

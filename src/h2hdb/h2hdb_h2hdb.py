@@ -719,6 +719,9 @@ class H2HDB(BaseRepository):
     def _evict_duplicate_gallery_cbz(self, db_gallery_id: int) -> None:
         self.cbz_integrity._delete_hash(db_gallery_id)
         self.cbz_integrity._delete_verification(db_gallery_id)
+        if self.config.h2h.cbz_path is None:
+            # No CBZ pipeline running, so there's no physical file to remove.
+            return
         gallery_name = self.gallery_ids.get_gallery_names_by_db_gallery_ids(
             [db_gallery_id]
         ).get(db_gallery_id)
@@ -728,6 +731,7 @@ class H2HDB(BaseRepository):
     def _locate_cbz_paths(self, db_gallery_ids: list[int]) -> list[tuple[int, str]]:
         from .compress_gallery_to_cbz import gallery_name_to_cbz_file_name
 
+        assert self.config.h2h.cbz_path is not None
         if not db_gallery_ids:
             return []
 
@@ -849,7 +853,8 @@ class H2HDB(BaseRepository):
             self.scan_current_galleries_folders()
         )
 
-        self.cbz._refresh_current_cbz_files(current_galleries_names)
+        if self.config.h2h.cbz_path is not None:
+            self.cbz._refresh_current_cbz_files(current_galleries_names)
 
         self.logger.info("Inserting galleries...")
         current_galleries_folders = self._sort_galleries_for_processing(
@@ -877,7 +882,7 @@ class H2HDB(BaseRepository):
         )
         cbz_pool_cm = (
             Pool(POOL_CPU_LIMIT)
-            if self.config.h2h.cbz_path != ""
+            if self.config.h2h.cbz_path is not None
             else contextlib.nullcontext()
         )
         with cbz_pool_cm as cbz_pool:
@@ -894,15 +899,20 @@ class H2HDB(BaseRepository):
                     self.logger.info("There are new galleries inserted in database.")
                     is_insert_limit_reached |= True
                     total_inserted_in_database += sum(is_insert_list)
+                    exclude_hashes_tracker.refresh_if_new_duplicates()
 
-                if self.config.h2h.cbz_path != "":
-                    if any(is_insert_list):
-                        exclude_hashes_tracker.refresh_if_new_duplicates()
-                    gallery_chunk_to_compress = (
-                        self._filter_gallery_chunk_for_deduplication(
-                            gallery_chunk, exclude_hashes_tracker.exclude_hashs
-                        )
+                # Gallery-content dedup detection (gallery_content_hashes,
+                # gallery_full_content_hashes, gallery_duplicate_warnings) is
+                # useful on its own -- e.g. todelete_names -- independently of
+                # whether CBZ output is configured, so it always runs. Only
+                # actually compressing the filtered result is CBZ-specific.
+                gallery_chunk_to_compress = (
+                    self._filter_gallery_chunk_for_deduplication(
+                        gallery_chunk, exclude_hashes_tracker.exclude_hashs
                     )
+                )
+
+                if self.config.h2h.cbz_path is not None:
                     is_new_list = self.cbz.compress_galleries_to_cbz(
                         gallery_chunk_to_compress,
                         exclude_hashes_tracker.exclude_hashs,
@@ -916,7 +926,7 @@ class H2HDB(BaseRepository):
             )
             self.logger.info(f"Total CBZ files created: {total_created_cbz}")
 
-            if self.config.h2h.cbz_path != "":
+            if self.config.h2h.cbz_path is not None:
                 self.logger.info(
                     "Checking for CBZ files made stale by new exclusions..."
                 )

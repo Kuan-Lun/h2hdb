@@ -2,7 +2,6 @@ __all__ = ["DatabaseConfig", "LoggerConfig", "H2HConfig", "H2HDBConfig", "load_c
 
 import argparse
 import json
-import os
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -86,10 +85,10 @@ class H2HConfig(ConfigModel):
         min_length=1,
         description="Path to download files",
     )
-    cbz_path: str = Field(
-        default="",
-        min_length=0,
-        description="Path to save CBZ files",
+    cbz_path: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Path to save CBZ files. Unset disables CBZ output.",
     )
     cbz_max_size: int = Field(
         default=768,
@@ -109,10 +108,6 @@ class H2HConfig(ConfigModel):
         ge=0,
         description="Number of CBZ files to integrity-check per insert_h2h_download run (0 disables scrubbing)",
     )
-
-    @property
-    def cbz_tmp_directory(self) -> str:
-        return os.path.join(self.cbz_path, "tmp")
 
 
 class H2HDBConfig(ConfigModel):
