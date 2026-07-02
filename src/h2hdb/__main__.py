@@ -22,6 +22,7 @@ if __name__ == "__main__":
 
         connector.reset_redownload_times()
         connector.queue_redownload_for_pending_deletions()
+        connector.refresh_todelete_names_cache()
 
         connector.optimize_database()
         connector.analyze_database()

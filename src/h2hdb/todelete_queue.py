@@ -63,6 +63,30 @@ class H2HDBToDeleteQueue(BaseRepository):
             connector.execute(query)
         self.logger.info(f"{table_name} table created.")
 
+    def _create_todelete_names_cache_table(self) -> None:
+        with self.SQLConnector() as connector:
+            table_name = "todelete_names_cache"
+            # No index: this is only ever read back in full to build rm
+            # commands, never looked up by name, so it doesn't need the
+            # MariaDB long-name-column splitting treatment other name columns
+            # require.
+            query = f"""
+                CREATE TABLE IF NOT EXISTS {table_name} (
+                    full_name TEXT NOT NULL
+                )
+            """
+            connector.execute(query)
+        self.logger.info(f"{table_name} table created.")
+
+    def refresh_todelete_names_cache(self) -> None:
+        with self.SQLConnector() as connector:
+            connector.execute("DELETE FROM todelete_names_cache")
+            connector.execute(
+                "INSERT INTO todelete_names_cache (full_name) "
+                "SELECT full_name FROM todelete_names"
+            )
+        self.logger.info("todelete_names_cache refreshed.")
+
     def _create_todelete_rm_commands_view(self) -> None:
         with self.SQLConnector() as connector:
             table_name = "todelete_rm_commands"
@@ -78,13 +102,13 @@ class H2HDBToDeleteQueue(BaseRepository):
                             REPLACE(full_name, '''', '''\\'''''),
                             ''''
                         ) AS cmd
-                        FROM todelete_names
+                        FROM todelete_names_cache
                     """
                 case "sqlite":
                     query = rf"""
                         CREATE VIEW IF NOT EXISTS {table_name} AS
                         SELECT 'rm -rf -- ''' || REPLACE(full_name, '''', '''\''''') || '''' AS cmd
-                        FROM todelete_names
+                        FROM todelete_names_cache
                     """
             connector.execute(query)
         self.logger.info(f"{table_name} table created.")

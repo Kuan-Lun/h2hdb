@@ -202,6 +202,7 @@ class H2HDB(BaseRepository):
         self.gallery_deduplication._create_gallery_duplicate_warnings_table()
         self.gallery_deduplication._create_gallery_duplicate_warnings_names_view()
         self.todelete_queue._create_todelete_names_view()
+        self.todelete_queue._create_todelete_names_cache_table()
         self.todelete_queue._create_todelete_rm_commands_view()
         self.removed_galleries._create_removed_galleries_gids_table()
         self.gallery_tags._create_galleries_tags_table()
@@ -827,6 +828,9 @@ class H2HDB(BaseRepository):
 
     def queue_redownload_for_pending_deletions(self) -> None:
         self.todelete_queue._queue_redownload_for_todelete_names()
+
+    def refresh_todelete_names_cache(self) -> None:
+        self.todelete_queue.refresh_todelete_names_cache()
 
     def reset_redownload_times(self) -> None:
         self.gallery_times._reset_redownload_times()
