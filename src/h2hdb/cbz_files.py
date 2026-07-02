@@ -31,8 +31,13 @@ def run_in_parallel(
 def cbz_contents_are_stale_worker(
     cbz_path: str, expected_names: frozenset[str]
 ) -> bool:
-    with zipfile.ZipFile(cbz_path) as cbz:
-        actual_names = frozenset(cbz.namelist())
+    # A corrupt CBZ (e.g. left behind by a process killed mid-write) is
+    # treated as stale so it gets rebuilt, rather than crashing the pool.
+    try:
+        with zipfile.ZipFile(cbz_path) as cbz:
+            actual_names = frozenset(cbz.namelist())
+    except zipfile.BadZipFile:
+        return True
     return actual_names != expected_names
 
 
@@ -144,9 +149,14 @@ class H2HDBCBZFiles(BaseRepository):
 
         needs_rebuild = True
         if os.path.exists(cbz_path) and expected_names is not None:
-            with zipfile.ZipFile(cbz_path) as cbz:
-                actual_names = frozenset(cbz.namelist())
-            needs_rebuild = actual_names != expected_names
+            # A corrupt CBZ (e.g. left behind by a process killed mid-write)
+            # is treated as needing a rebuild, rather than raising here.
+            try:
+                with zipfile.ZipFile(cbz_path) as cbz:
+                    actual_names = frozenset(cbz.namelist())
+                needs_rebuild = actual_names != expected_names
+            except zipfile.BadZipFile:
+                needs_rebuild = True
 
         if needs_rebuild:
             compress_images_and_create_cbz(

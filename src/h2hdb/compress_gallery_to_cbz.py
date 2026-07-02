@@ -6,6 +6,7 @@ __all__ = [
 
 import os
 import shutil
+import uuid
 import zipfile
 from typing import cast
 
@@ -59,9 +60,21 @@ def compress_image(image_path: str, output_path: str, max_size: int) -> None:
 
 def create_cbz(directory: str, output_path: str) -> None:
     """Create a CBZ file from all images in a directory."""
-    with zipfile.ZipFile(output_path, "w") as cbz:
+    # Written to a sibling temp file and atomically moved into place so a
+    # process killed mid-write (OOM, crash) never leaves a corrupt file at
+    # output_path -- only a stray temp file, which
+    # H2HDBCBZFiles._refresh_current_cbz_files() clears out on the next run
+    # since it doesn't match any expected CBZ file name. The temp name is
+    # independent of output_path's name (rather than output_path + a
+    # suffix) since gallery names are already truncated to the filesystem's
+    # name-length limit and couldn't take a suffix.
+    tmp_output_path = os.path.join(
+        os.path.dirname(output_path), f".{uuid.uuid4().hex}.cbz.tmp"
+    )
+    with zipfile.ZipFile(tmp_output_path, "w") as cbz:
         for filename in os.listdir(directory):
             cbz.write(os.path.join(directory, filename), filename)
+    os.replace(tmp_output_path, output_path)
 
 
 def expected_output_filename(filename: str) -> str:
