@@ -104,6 +104,11 @@ class H2HConfig(ConfigModel):
         default=CBZ_SORT.no,
         description="Sorting method for CBZ files: no, upload_time, download_time, pages, or pages+[num]",
     )
+    cbz_scrub_batch_size: int = Field(
+        default=100,
+        ge=0,
+        description="Number of CBZ files to integrity-check per insert_h2h_download run (0 disables scrubbing)",
+    )
 
     @property
     def cbz_tmp_directory(self) -> str:

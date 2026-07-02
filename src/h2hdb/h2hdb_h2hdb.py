@@ -14,7 +14,7 @@ from h2h_galleryinfo_parser import (
     parse_galleryinfo,
 )
 
-from .cbz_files import H2HDBCBZFiles
+from .cbz_files import H2HDBCBZFiles, cbz_scrub_worker, run_in_parallel
 from .cbz_integrity import H2HDBCBZIntegrity
 from .config_loader import H2HDBConfig
 from .duplicated_hashes import H2HDBDuplicatedHashes
@@ -725,6 +725,123 @@ class H2HDB(BaseRepository):
         if gallery_name is not None:
             self.cbz._delete_cbz_file_for_gallery_name(gallery_name)
 
+    def _locate_cbz_paths(self, db_gallery_ids: list[int]) -> list[tuple[int, str]]:
+        from .compress_gallery_to_cbz import gallery_name_to_cbz_file_name
+
+        if not db_gallery_ids:
+            return []
+
+        gallery_names_by_id = self.gallery_ids.get_gallery_names_by_db_gallery_ids(
+            db_gallery_ids
+        )
+        current_cbzs: dict[str, str] = dict()
+        for root, _, files in os.walk(self.config.h2h.cbz_path):
+            for file in files:
+                current_cbzs[file] = root
+
+        located: list[tuple[int, str]] = []
+        for db_gallery_id in db_gallery_ids:
+            gallery_name = gallery_names_by_id.get(db_gallery_id)
+            if gallery_name is None:
+                continue
+            cbz_file_name = gallery_name_to_cbz_file_name(gallery_name)
+            if cbz_file_name not in current_cbzs:
+                continue
+            located.append(
+                (
+                    db_gallery_id,
+                    os.path.join(current_cbzs[cbz_file_name], cbz_file_name),
+                )
+            )
+        return located
+
+    def _establish_cbz_hash_baselines(
+        self, db_gallery_ids: list[int], pool: Pool
+    ) -> None:
+        """(Re)hash CBZ files and unconditionally record the result as their baseline.
+
+        Used after a rebuild: the freshly-written file is definitionally
+        valid, so there's nothing to compare against, only a new baseline to
+        record.
+        """
+        candidates = self._locate_cbz_paths(db_gallery_ids)
+        if not candidates:
+            return
+
+        actual_hashes = run_in_parallel(
+            pool, cbz_scrub_worker, [(cbz_path,) for _, cbz_path in candidates]
+        )
+        for (db_gallery_id, _), actual_sha256 in zip(
+            candidates, actual_hashes, strict=True
+        ):
+            if actual_sha256 is None:
+                continue
+            self.cbz_integrity._upsert_hash(db_gallery_id, actual_sha256)
+            self.cbz_integrity._set_verification_to_now(db_gallery_id)
+
+    def _scrub_cbz_files(
+        self,
+        current_galleries_folders: list[str],
+        exclude_hashs: set[bytes],
+        pool: Pool,
+    ) -> None:
+        batch_size = self.config.h2h.cbz_scrub_batch_size
+        if batch_size <= 0:
+            return
+
+        folder_by_gallery_name = {
+            os.path.basename(folder): folder for folder in current_galleries_folders
+        }
+        db_gallery_ids_by_name = (
+            self.gallery_ids._get_db_gallery_ids_by_gallery_names_from_dbids(
+                list(folder_by_gallery_name.keys())
+            )
+        )
+        candidate_ids = self.cbz_integrity._get_scrub_candidates(
+            list(db_gallery_ids_by_name.values()), batch_size
+        )
+        candidates = self._locate_cbz_paths(candidate_ids)
+        if not candidates:
+            return
+
+        self.logger.info(f"Scrubbing {len(candidates)} CBZ file(s) for integrity...")
+        actual_hashes = run_in_parallel(
+            pool, cbz_scrub_worker, [(cbz_path,) for _, cbz_path in candidates]
+        )
+
+        corrupt_db_gallery_ids: list[int] = []
+        for (db_gallery_id, _), actual_sha256 in zip(
+            candidates, actual_hashes, strict=True
+        ):
+            expected_sha256 = self.cbz_integrity._get_hash(db_gallery_id)
+            if actual_sha256 is None or (
+                expected_sha256 is not None and actual_sha256 != expected_sha256
+            ):
+                corrupt_db_gallery_ids.append(db_gallery_id)
+                continue
+            self.cbz_integrity._upsert_hash(db_gallery_id, actual_sha256)
+            self.cbz_integrity._set_verification_to_now(db_gallery_id)
+
+        if not corrupt_db_gallery_ids:
+            return
+
+        self.logger.info(
+            f"Rebuilding {len(corrupt_db_gallery_ids)} CBZ file(s) that failed "
+            "integrity verification..."
+        )
+        corrupt_gallery_names_by_id = (
+            self.gallery_ids.get_gallery_names_by_db_gallery_ids(corrupt_db_gallery_ids)
+        )
+        corrupt_folders = [
+            folder_by_gallery_name[gallery_name]
+            for gallery_name in corrupt_gallery_names_by_id.values()
+            if gallery_name in folder_by_gallery_name
+        ]
+        if not corrupt_folders:
+            return
+        self.cbz.compress_galleries_to_cbz(corrupt_folders, exclude_hashs, pool)
+        self._establish_cbz_hash_baselines(corrupt_db_gallery_ids, pool)
+
     def insert_h2h_download(self) -> bool:
         self.delete_pending_gallery_removals()
 
@@ -831,6 +948,10 @@ class H2HDB(BaseRepository):
                         final_exclude_hashs,
                         cast(Pool, cbz_pool),
                     )
+
+                self._scrub_cbz_files(
+                    current_galleries_folders, final_exclude_hashs, cast(Pool, cbz_pool)
+                )
 
         self.logger.info("Cleaning up database...")
         self.refresh_current_files_hashs()

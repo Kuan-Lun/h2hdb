@@ -9,7 +9,7 @@ from h2h_galleryinfo_parser import parse_galleryinfo
 
 from .config_loader import H2HDBConfig
 from .repository import BaseRepository, RepositoryContext
-from .settings import chunk_list
+from .settings import chunk_list, hash_function_by_file
 from .table_gids import H2HDBGalleriesIDs
 from .table_times import H2HDBTimes
 
@@ -39,6 +39,20 @@ def cbz_contents_are_stale_worker(
     except zipfile.BadZipFile:
         return True
     return actual_names != expected_names
+
+
+def cbz_scrub_worker(cbz_path: str) -> bytes | None:
+    """Hash a CBZ file's raw bytes for integrity scrubbing; `None` if unreadable.
+
+    Deliberately doesn't open it as a zip: bit rot doesn't necessarily make a
+    file fail to parse as a zip, but it always changes its hash, so comparing
+    the whole file's bytes against a known-good baseline is both simpler and
+    strictly more sensitive than a structural check.
+    """
+    try:
+        return hash_function_by_file(cbz_path, "sha256")
+    except OSError:
+        return None
 
 
 def compress_gallery_to_cbz_worker(
