@@ -37,7 +37,8 @@
       "Bash(python3 -)",
       "Bash(docker info *)",
       "Bash(git log *)",
-      "Bash(docker --version)"
+      "Bash(docker --version)",
+      "Bash(python3)"
     ],
     "additionalDirectories": [
       "/tmp",
