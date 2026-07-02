@@ -767,6 +767,28 @@ class H2HDB(BaseRepository):
             )
         return located
 
+    def _cleanup_orphaned_duplicate_cbz_files(self) -> None:
+        """Remove CBZ files a past run left behind on disk for a gallery
+        that has since lost its content-hash race to another gallery.
+
+        `_evict_duplicate_gallery_cbz` only deletes the physical file at the
+        moment ownership transfers, so a run with `cbz_path` unset misses it
+        permanently -- `resolve()` won't re-trigger eviction for an owner
+        change that already happened. This sweeps up anything still on disk
+        for a gallery `gallery_duplicate_warnings` currently says shouldn't
+        have one.
+        """
+        assert self.config.h2h.cbz_path is not None
+        losing_db_gallery_ids = (
+            self.gallery_deduplication.get_duplicate_warning_db_gallery_ids()
+        )
+        for db_gallery_id, cbz_path in self._locate_cbz_paths(losing_db_gallery_ids):
+            os.remove(cbz_path)
+            self.logger.info(
+                f"Orphaned CBZ '{cbz_path}' removed "
+                f"(gallery {db_gallery_id} lost its duplicate-content race)."
+            )
+
     def _establish_cbz_hash_baselines(
         self, db_gallery_ids: list[int], pool: Pool
     ) -> None:
@@ -937,6 +959,11 @@ class H2HDB(BaseRepository):
             self.logger.info(f"Total CBZ files created: {total_created_cbz}")
 
             if self.config.h2h.cbz_path is not None:
+                self.logger.info(
+                    "Cleaning up CBZ files orphaned by duplicate-content eviction..."
+                )
+                self._cleanup_orphaned_duplicate_cbz_files()
+
                 self.logger.info(
                     "Checking for CBZ files made stale by new exclusions..."
                 )

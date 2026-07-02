@@ -207,6 +207,14 @@ class H2HDBGalleryDeduplication(BaseRepository):
             query = "DELETE FROM gallery_duplicate_warnings WHERE db_gallery_id = %s"
             connector.execute(query, (db_gallery_id,))
 
+    def get_duplicate_warning_db_gallery_ids(self) -> list[int]:
+        """db_gallery_id of every gallery currently losing its content-hash
+        race to another gallery -- i.e. galleries that shouldn't have a CBZ."""
+        with self.SQLConnector() as connector:
+            query = "SELECT db_gallery_id FROM gallery_duplicate_warnings"
+            query_result = connector.fetch_all(query)
+        return [int(row[0]) for row in query_result]
+
     def _record_duplicate_warning(
         self, db_gallery_id: int, duplicate_of_db_gallery_id: int
     ) -> None:
