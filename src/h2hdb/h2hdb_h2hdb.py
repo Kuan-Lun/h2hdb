@@ -145,6 +145,9 @@ class H2HDB(BaseRepository):
     def delete_gallery(self, gallery_name: str) -> None:
         self.pending_removals.delete_gallery(gallery_name)
 
+    def refresh_gallery(self, gallery_name: str) -> None:
+        self.pending_removals.refresh_gallery(gallery_name)
+
     def optimize_database(self) -> None:
         self.database_settings.optimize_database()
 
@@ -457,7 +460,7 @@ class H2HDB(BaseRepository):
                     f"Inserting gallery '{galleryinfo_params.gallery_name}'..."
                 )
                 self.delete_gallery_file(galleryinfo_params.gallery_name)
-                self.delete_gallery(galleryinfo_params.gallery_name)
+                self.refresh_gallery(galleryinfo_params.gallery_name)
                 to_insert.append(galleryinfo_params)
 
         self._insert_gallery_infos(to_insert)

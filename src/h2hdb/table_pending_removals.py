@@ -48,30 +48,30 @@ class H2HDBPendingGalleryRemovals(BaseRepository):
         self.logger.info(f"{table_name} table created.")
 
     def insert_pending_gallery_removal(self, gallery_name: str) -> None:
-        with self.SQLConnector() as connector:
-            if self.check_pending_gallery_removal(gallery_name) is False:
-                table_name = "pending_gallery_removals"
-                if len(gallery_name) > FOLDER_NAME_LENGTH_LIMIT:
-                    self.logger.error(
-                        f"Gallery name '{gallery_name}' is too long. Must be {FOLDER_NAME_LENGTH_LIMIT} characters or less."
-                    )
-                    raise ValueError("Gallery name is too long.")
-                gallery_name_parts = self._split_gallery_name(gallery_name)
+        if self.check_pending_gallery_removal(gallery_name) is True:
+            return
 
-                match self.config.database.sql_type.lower():
-                    case "mariadb":
-                        column_name_parts, _ = (
-                            self.mariadb_split_gallery_name_based_on_limit("name")
-                        )
-                    case "sqlite":
-                        column_name_parts, _ = self.sqlite_name_columns("name")
-                insert_query = f"""
-                    INSERT INTO {table_name} ({", ".join(column_name_parts)}, full_name)
-                    VALUES ({", ".join(["%s" for _ in column_name_parts])}, %s)
-                """
-                connector.execute(
-                    insert_query, (*tuple(gallery_name_parts), gallery_name)
+        table_name = "pending_gallery_removals"
+        if len(gallery_name) > FOLDER_NAME_LENGTH_LIMIT:
+            self.logger.error(
+                f"Gallery name '{gallery_name}' is too long. Must be {FOLDER_NAME_LENGTH_LIMIT} characters or less."
+            )
+            raise ValueError("Gallery name is too long.")
+        gallery_name_parts = self._split_gallery_name(gallery_name)
+
+        match self.config.database.sql_type.lower():
+            case "mariadb":
+                column_name_parts, _ = self.mariadb_split_gallery_name_based_on_limit(
+                    "name"
                 )
+            case "sqlite":
+                column_name_parts, _ = self.sqlite_name_columns("name")
+        insert_query = f"""
+            INSERT INTO {table_name} ({", ".join(column_name_parts)}, full_name)
+            VALUES ({", ".join(["%s" for _ in column_name_parts])}, %s)
+        """
+        with self.SQLConnector() as connector:
+            connector.execute(insert_query, (*tuple(gallery_name_parts), gallery_name))
 
     def check_pending_gallery_removal(self, gallery_name: str) -> bool:
         with self.SQLConnector() as connector:
@@ -132,13 +132,22 @@ class H2HDBPendingGalleryRemovals(BaseRepository):
         pass
 
     def delete_gallery(self, gallery_name: str) -> None:
-        with self.SQLConnector() as connector:
-            if not self.gallery_ids._check_galleries_dbids_by_gallery_name(
-                gallery_name
-            ):
-                self.logger.debug(f"Gallery '{gallery_name}' does not exist.")
-                return
+        if self._delete_gallery_row(gallery_name):
+            self.logger.info(f"Gallery '{gallery_name}' deleted.")
 
+    def refresh_gallery(self, gallery_name: str) -> None:
+        if self._delete_gallery_row(gallery_name):
+            self.logger.info(
+                f"Gallery '{gallery_name}' refreshed: galleryinfo.txt changed, "
+                "reinserting."
+            )
+
+    def _delete_gallery_row(self, gallery_name: str) -> bool:
+        if not self.gallery_ids._check_galleries_dbids_by_gallery_name(gallery_name):
+            self.logger.debug(f"Gallery '{gallery_name}' does not exist.")
+            return False
+
+        with self.SQLConnector() as connector:
             match self.config.database.sql_type.lower():
                 case "mariadb":
                     column_name_parts, _ = (
@@ -153,4 +162,4 @@ class H2HDBPendingGalleryRemovals(BaseRepository):
 
             gallery_name_parts = self._split_gallery_name(gallery_name)
             connector.execute(get_delete_gallery_id_query, tuple(gallery_name_parts))
-        self.logger.info(f"Gallery '{gallery_name}' deleted.")
+        return True
