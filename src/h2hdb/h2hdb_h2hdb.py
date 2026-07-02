@@ -101,7 +101,7 @@ class H2HDB(BaseRepository):
         self.cbz = H2HDBCBZFiles(context, self.gallery_times, self.gallery_ids)
         self.cbz_integrity = H2HDBCBZIntegrity(context, self.gallery_ids)
         self.gallery_deduplication = H2HDBGalleryDeduplication(
-            context, self.gallery_ids, self.gallery_times
+            context, self.gallery_ids, self.gallery_times, self.gallery_titles
         )
         self.duplicated_hashes = H2HDBDuplicatedHashes(context)
 
@@ -640,6 +640,14 @@ class H2HDB(BaseRepository):
         download_times_by_db_gallery_id = (
             self.gallery_times.get_download_times_by_db_gallery_ids(db_gallery_ids)
         )
+        titles_by_db_gallery_id = self.gallery_titles.get_titles_by_db_gallery_ids(
+            db_gallery_ids
+        )
+        already_uploaded_by_db_gallery_id = (
+            self.gallery_deduplication.get_already_uploaded_flags_by_db_gallery_ids(
+                db_gallery_ids
+            )
+        )
 
         kept_folders: list[str] = []
         for folder in gallery_chunk:
@@ -693,10 +701,13 @@ class H2HDB(BaseRepository):
                 continue
 
             content_hash = hashlib.sha256(b"".join(sorted(content_files))).digest()
-            should_compress, evicted_db_gallery_id = self.gallery_deduplication.resolve(
-                db_gallery_id,
-                content_hash,
+            priority_key = (
+                not already_uploaded_by_db_gallery_id[db_gallery_id],
+                len(titles_by_db_gallery_id[db_gallery_id]),
                 download_times_by_db_gallery_id[db_gallery_id],
+            )
+            should_compress, evicted_db_gallery_id = self.gallery_deduplication.resolve(
+                db_gallery_id, content_hash, priority_key
             )
             if evicted_db_gallery_id is not None:
                 self._evict_duplicate_gallery_cbz(evicted_db_gallery_id)
