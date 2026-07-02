@@ -624,7 +624,10 @@ class H2HDB(BaseRepository):
         return sorted_galleries_folders
 
     def _filter_gallery_chunk_for_deduplication(
-        self, gallery_chunk: list[str], exclude_hashs: set[bytes]
+        self,
+        gallery_chunk: list[str],
+        exclude_hashs: set[bytes],
+        is_insert_list: list[bool],
     ) -> list[str]:
         if not gallery_chunk:
             return []
@@ -650,7 +653,7 @@ class H2HDB(BaseRepository):
         )
 
         kept_folders: list[str] = []
-        for folder in gallery_chunk:
+        for folder, is_insert in zip(gallery_chunk, is_insert_list, strict=True):
             db_gallery_id = db_gallery_ids_by_name.get(os.path.basename(folder))
             if db_gallery_id is None:
                 # Not yet resolvable (e.g. its insert was skipped/retried) --
@@ -688,7 +691,12 @@ class H2HDB(BaseRepository):
             # exclusion) is bit-for-bit identical, so a match here is strong
             # enough evidence of a true duplicate re-upload to feed
             # todelete_names automatically (see gallery_full_duplicate_names).
-            if gallery_files:
+            # Only recomputed when galleryinfo.txt actually changed this run
+            # (is_insert) -- its stored hash is a proxy for "this gallery's
+            # files could have changed", since every file, including
+            # galleryinfo.txt, is only ever (re)written together as a whole
+            # gallery re-insert.
+            if gallery_files and is_insert:
                 full_hash = hashlib.sha256(
                     b"".join(sorted(file_hash for _, file_hash in gallery_files))
                 ).digest()
@@ -908,7 +916,9 @@ class H2HDB(BaseRepository):
                 # actually compressing the filtered result is CBZ-specific.
                 gallery_chunk_to_compress = (
                     self._filter_gallery_chunk_for_deduplication(
-                        gallery_chunk, exclude_hashes_tracker.exclude_hashs
+                        gallery_chunk,
+                        exclude_hashes_tracker.exclude_hashs,
+                        is_insert_list,
                     )
                 )
 
@@ -945,13 +955,20 @@ class H2HDB(BaseRepository):
                         os.path.basename(folder): folder
                         for folder in current_galleries_folders
                     }
+                    stale_folders_to_filter = [
+                        folder_by_gallery_name[name]
+                        for name in stale_galleries
+                        if name in folder_by_gallery_name
+                    ]
                     stale_folders = self._filter_gallery_chunk_for_deduplication(
-                        [
-                            folder_by_gallery_name[name]
-                            for name in stale_galleries
-                            if name in folder_by_gallery_name
-                        ],
+                        stale_folders_to_filter,
                         final_exclude_hashs,
+                        # These galleries are only here because
+                        # get_stale_cbz_galleries flagged newly-excluded
+                        # duplicate files, not because their own content
+                        # changed -- their full-content hash is unaffected
+                        # and already correct from a prior pass.
+                        [False] * len(stale_folders_to_filter),
                     )
                     self.cbz.compress_galleries_to_cbz(
                         stale_folders,
