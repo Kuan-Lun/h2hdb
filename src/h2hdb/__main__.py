@@ -1,4 +1,4 @@
-from time import sleep
+from time import monotonic, sleep
 
 from h2hdb import H2HDB
 
@@ -14,15 +14,24 @@ if __name__ == "__main__":
         connector.create_main_tables()
 
         while connector.insert_h2h_download():
+            cycle_start_time = monotonic()
             while connector.insert_h2h_download():
                 connector.logger.info("More downloads found, continuing immediately...")
-            connector.logger.info("Sleeping for 30 minutes...")
-            sleep(SLEEP_INTERVAL_SECONDS)
             connector.logger.info("Checking for new downloads...")
-
-        connector.reset_redownload_times()
-        connector.queue_redownload_for_pending_deletions()
-        connector.refresh_todelete_names_cache()
-
-        connector.optimize_database()
-        connector.analyze_database()
+            connector.reset_redownload_times()
+            connector.queue_redownload_for_pending_deletions()
+            connector.refresh_todelete_names_cache()
+            connector.optimize_database()
+            connector.analyze_database()
+            remaining_sleep_seconds = SLEEP_INTERVAL_SECONDS - (
+                monotonic() - cycle_start_time
+            )
+            if remaining_sleep_seconds > 0:
+                connector.logger.info(
+                    f"Sleeping for {remaining_sleep_seconds:.0f} seconds..."
+                )
+                sleep(remaining_sleep_seconds)
+            else:
+                connector.logger.info(
+                    "Cycle already took longer than the sleep interval; skipping sleep."
+                )
