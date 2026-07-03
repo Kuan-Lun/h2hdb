@@ -14,6 +14,10 @@ optionally compresses each gallery into a CBZ file. Entry point:
 
 Requires Python >= 3.14.
 
+## Communication
+
+- Claude 必須以繁體中文回答所有對話內容，不論使用者以何種語言提問；程式碼、指令、檔名、專有名詞等仍維持原文。
+
 ## Common commands
 
 Environment is managed with `uv`.
