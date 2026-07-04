@@ -16,11 +16,11 @@ if __name__ == "__main__":
         while connector.insert_h2h_download():
             cycle_start_time = monotonic()
             while connector.insert_h2h_download():
+                connector.reset_redownload_times()
+                connector.queue_redownload_for_pending_deletions()
+                connector.refresh_todelete_names_cache()
                 connector.logger.info("More downloads found, continuing immediately...")
             connector.logger.info("Checking for new downloads...")
-            connector.reset_redownload_times()
-            connector.queue_redownload_for_pending_deletions()
-            connector.refresh_todelete_names_cache()
             connector.optimize_database()
             connector.analyze_database()
             remaining_sleep_seconds = SLEEP_INTERVAL_SECONDS - (
