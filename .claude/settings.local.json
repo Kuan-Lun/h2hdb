@@ -27,7 +27,8 @@
       "Read(//tmp/**)",
       "Write(**/*)",
       "Skill(update-config)",
-      "Skill(update-config:*)"
+      "Skill(update-config:*)",
+      "Bash(uv run python -c ' *)"
     ],
     "additionalDirectories": [
       "/tmp",
