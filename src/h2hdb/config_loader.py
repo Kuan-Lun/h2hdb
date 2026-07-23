@@ -2,6 +2,7 @@ __all__ = ["DatabaseConfig", "LoggerConfig", "H2HConfig", "H2HDBConfig", "load_c
 
 import argparse
 import json
+import os
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -85,6 +86,20 @@ class H2HConfig(ConfigModel):
         min_length=1,
         description="Path to download files",
     )
+
+    @field_validator("download_path")
+    @classmethod
+    def validate_download_path_not_empty(cls, v: str) -> str:
+        try:
+            is_empty = not os.listdir(v)
+        except OSError as e:
+            raise ValueError(f"Invalid download_path '{v}': {e}")
+        if is_empty:
+            raise ValueError(
+                f"download_path '{v}' is empty; check that the path is correct"
+            )
+        return v
+
     cbz_path: str | None = Field(
         default=None,
         min_length=1,
