@@ -28,7 +28,10 @@
       "Write(**/*)",
       "Skill(update-config)",
       "Skill(update-config:*)",
-      "Bash(uv run python -c ' *)"
+      "Bash(uv run python -c ' *)",
+      "Bash(python3 -)",
+      "Bash(uv run *)",
+      "Bash(docker info *)"
     ],
     "additionalDirectories": [
       "/tmp",
