@@ -25,12 +25,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-dev = [
-    "black>=26.5.1",
-    "ruff>=0.15.20",
-    "mypy>=2.1.0",
-    "pymarkdownlnt>=0.9.38",
-]
+dev = ["black>=26.5.1", "ruff>=0.15.20", "mypy>=2.1.0", "pymarkdownlnt>=0.9.38"]
 
 [project.urls]
 Homepage = "https://github.com/Kuan-Lun/h2hdb"
@@ -50,7 +45,4 @@ select = ["E", "F", "I", "UP"]
 extend-ignore = ["E203", "E226", "E501"]
 
 [dependency-groups]
-dev = [
-    "pytest>=9.1.1",
-    "testcontainers>=4.14.2",
-]
+dev = ["pytest>=9.1.1", "testcontainers>=4.14.2"]
