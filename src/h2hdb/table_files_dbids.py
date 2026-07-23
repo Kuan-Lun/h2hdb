@@ -1,4 +1,5 @@
 from itertools import chain
+from pathlib import Path
 from typing import cast
 
 from .hash_dict import HASH_ALGORITHMS
@@ -398,7 +399,7 @@ class H2HDBFiles(BaseRepository):
         self.insert_hash_value_by_db_hash_ids(fileinformations)
 
     def _insert_gallery_file_hash(
-        self, db_file_id: int, absolute_file_path: str
+        self, db_file_id: int, absolute_file_path: Path
     ) -> None:
         current_hash_values = hash_multiple_by_file(absolute_file_path, HASH_ALGORITHMS)
 

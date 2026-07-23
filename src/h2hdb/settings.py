@@ -14,6 +14,7 @@ import hashlib
 import logging
 from collections.abc import Iterable, Iterator
 from enum import Enum, StrEnum
+from pathlib import Path
 from typing import BinaryIO
 
 FOLDER_NAME_LENGTH_LIMIT = 255
@@ -68,7 +69,7 @@ def iter_file_chunks(
 
 
 def hash_multiple_by_file(
-    file_path: str,
+    file_path: Path,
     algorithms: Iterable[str],
     buffer_size: int = HASH_STREAM_BUFFER_SIZE,
 ) -> dict[str, bytes]:
@@ -76,7 +77,7 @@ def hash_multiple_by_file(
         return hash_stream(iter_file_chunks(f, buffer_size), algorithms)
 
 
-def hash_function_by_file(file_path: str, algorithm: str) -> bytes:
+def hash_function_by_file(file_path: Path, algorithm: str) -> bytes:
     return hash_multiple_by_file(file_path, [algorithm])[algorithm]
 
 

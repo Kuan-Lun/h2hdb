@@ -1,9 +1,11 @@
+from pathlib import Path
+
 from .hash_dict import HASH_ALGORITHMS
 from .settings import hash_multiple_by_file
 
 
 class FileInformation:
-    def __init__(self, absolute_path: str, db_file_id: int) -> None:
+    def __init__(self, absolute_path: Path, db_file_id: int) -> None:
         self.absolute_path = absolute_path
         self.db_file_id = db_file_id
         self.issethash = False

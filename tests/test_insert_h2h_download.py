@@ -62,7 +62,7 @@ def download_path(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def db(db_config: H2HDBConfig, download_path: Path) -> Iterator[H2HDB]:
-    db_config.h2h.download_path = str(download_path)
+    db_config.h2h.download_path = download_path
     instance = H2HDB(config=db_config)
     with instance:
         instance.create_main_tables()
@@ -88,7 +88,7 @@ def test_insert_h2h_download_creates_cbz_files_when_cbz_path_configured(
 ) -> None:
     cbz_path = tmp_path / "cbz"
     cbz_path.mkdir()
-    db.config.h2h.cbz_path = str(cbz_path)
+    db.config.h2h.cbz_path = cbz_path
 
     gallery_folder = download_path / "700003"
     _write_galleryinfo(gallery_folder, title="Gallery Three", pages=1)
@@ -109,7 +109,7 @@ def test_insert_h2h_download_groups_cbz_by_upload_time_when_configured(
     # pins that the batched lookup actually reaches the worker correctly.
     cbz_path = tmp_path / "cbz"
     cbz_path.mkdir()
-    db.config.h2h.cbz_path = str(cbz_path)
+    db.config.h2h.cbz_path = cbz_path
     db.config.h2h.cbz_grouping = CBZ_GROUPING.date_yyyy_mm_dd
 
     gallery_folder = download_path / "700004"
@@ -133,7 +133,7 @@ def test_insert_h2h_download_excludes_and_recovers_duplicate_spam_images(
 ) -> None:
     cbz_path = tmp_path / "cbz"
     cbz_path.mkdir()
-    db.config.h2h.cbz_path = str(cbz_path)
+    db.config.h2h.cbz_path = cbz_path
 
     # An identical image shared by 3 galleries from 3 different artists trips
     # the duplicate/spam-image exclusion (duplicated_hash_values_by_count_
@@ -184,8 +184,8 @@ def test_insert_h2h_download_sorts_by_upload_time_descending(
     seen_orders: list[list[str]] = []
     original = db._insert_gallery_chunk_with_split_retry
 
-    def recording(gallery_chunk: list[str]) -> list[bool]:
-        seen_orders.append([Path(folder).name for folder in gallery_chunk])
+    def recording(gallery_chunk: list[Path]) -> list[bool]:
+        seen_orders.append([folder.name for folder in gallery_chunk])
         return original(gallery_chunk)
 
     monkeypatch.setattr(db, "_insert_gallery_chunk_with_split_retry", recording)
@@ -206,8 +206,8 @@ def test_insert_h2h_download_sorts_by_pages_distance_from_adjustment(
     seen_orders: list[list[str]] = []
     original = db._insert_gallery_chunk_with_split_retry
 
-    def recording(gallery_chunk: list[str]) -> list[bool]:
-        seen_orders.append([Path(folder).name for folder in gallery_chunk])
+    def recording(gallery_chunk: list[Path]) -> list[bool]:
+        seen_orders.append([folder.name for folder in gallery_chunk])
         return original(gallery_chunk)
 
     monkeypatch.setattr(db, "_insert_gallery_chunk_with_split_retry", recording)

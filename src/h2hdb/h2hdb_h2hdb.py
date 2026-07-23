@@ -3,10 +3,10 @@ __all__ = ["H2HDB", "GALLERY_INFO_FILE_NAME"]
 
 import contextlib
 import hashlib
-import os
 from itertools import islice
 from multiprocessing import cpu_count
 from multiprocessing.pool import Pool
+from pathlib import Path
 from typing import cast
 
 from h2h_galleryinfo_parser import (
@@ -371,9 +371,7 @@ class H2HDB(BaseRepository):
             )
             for file_path in galleryinfo_params.files_path:
                 db_file_id = db_file_ids_by_name[file_path]
-                absolute_file_path = os.path.join(
-                    galleryinfo_params.gallery_folder, file_path
-                )
+                absolute_file_path = Path(galleryinfo_params.gallery_folder) / file_path
                 file_pairs.append(FileInformation(absolute_file_path, db_file_id))
 
         self.files._insert_gallery_file_hash_for_db_gallery_id(file_pairs)
@@ -434,8 +432,8 @@ class H2HDB(BaseRepository):
             if original_hash_value is None:
                 issame_list.append(False)
                 continue
-            absolute_file_path = os.path.join(
-                galleryinfo_params.gallery_folder, GALLERY_INFO_FILE_NAME
+            absolute_file_path = (
+                Path(galleryinfo_params.gallery_folder) / GALLERY_INFO_FILE_NAME
             )
             current_hash_value = hash_function_by_file(
                 absolute_file_path, COMPARISON_HASH_ALGORITHM
@@ -469,7 +467,7 @@ class H2HDB(BaseRepository):
             self.logger.debug(f"Gallery '{galleryinfo_params.gallery_name}' inserted.")
         return is_insert_list
 
-    def scan_current_galleries_folders(self) -> tuple[list[str], set[str]]:
+    def scan_current_galleries_folders(self) -> tuple[list[Path], set[str]]:
         self.delete_pending_gallery_removals()
 
         with self.SQLConnector() as connector:
@@ -500,12 +498,12 @@ class H2HDB(BaseRepository):
             """
 
             data: list[tuple[str, ...]] = list()
-            current_galleries_folders: list[str] = list()
+            current_galleries_folders: list[Path] = list()
             current_galleries_names: set[str] = set()
-            for root, _, files in os.walk(self.config.h2h.download_path):
+            for root, _, files in self.config.h2h.download_path.walk():
                 if GALLERY_INFO_FILE_NAME in files:
                     current_galleries_folders.append(root)
-                    gallery_name = os.path.basename(current_galleries_folders[-1])
+                    gallery_name = current_galleries_folders[-1].name
                     current_galleries_names.add(gallery_name)
                     gallery_name_parts = self._split_gallery_name(gallery_name)
                     data.append(tuple(gallery_name_parts))
@@ -574,11 +572,14 @@ class H2HDB(BaseRepository):
             self._refresh_current_files_hashs(algorithm)
 
     def _insert_gallery_chunk_with_split_retry(
-        self, gallery_chunk: list[str]
+        self, gallery_chunk: list[Path]
     ) -> list[bool]:
         try:
             return self.insert_gallery_infos(
-                [parse_galleryinfo(gallery_folder) for gallery_folder in gallery_chunk]
+                [
+                    parse_galleryinfo(str(gallery_folder))
+                    for gallery_folder in gallery_chunk
+                ]
             )
         except Exception as e:
             if len(gallery_chunk) == 1:
@@ -593,13 +594,15 @@ class H2HDB(BaseRepository):
             ) + self._insert_gallery_chunk_with_split_retry(gallery_chunk[mid:])
 
     def _sort_galleries_for_processing(
-        self, current_galleries_folders: list[str]
-    ) -> list[str]:
+        self, current_galleries_folders: list[Path]
+    ) -> list[Path]:
         if self.config.h2h.cbz_sort in ["upload_time", "download_time", "gid", "title"]:
             self.logger.info(f"Sorting by {self.config.h2h.cbz_sort}...")
             sorted_galleries_folders = sorted(
                 current_galleries_folders,
-                key=lambda x: getattr(parse_galleryinfo(x), self.config.h2h.cbz_sort),
+                key=lambda x: getattr(
+                    parse_galleryinfo(str(x)), self.config.h2h.cbz_sort
+                ),
                 reverse=True,
             )
         elif "no" in self.config.h2h.cbz_sort:
@@ -616,26 +619,28 @@ class H2HDB(BaseRepository):
             )
             sorted_galleries_folders = sorted(
                 current_galleries_folders,
-                key=lambda x: abs(getattr(parse_galleryinfo(x), "pages") - zero_level),
+                key=lambda x: abs(
+                    getattr(parse_galleryinfo(str(x)), "pages") - zero_level
+                ),
             )
         else:
             sorted_galleries_folders = sorted(
                 current_galleries_folders,
-                key=lambda x: getattr(parse_galleryinfo(x), "pages"),
+                key=lambda x: getattr(parse_galleryinfo(str(x)), "pages"),
             )
         self.logger.info("Galleries sorted.")
         return sorted_galleries_folders
 
     def _filter_gallery_chunk_for_deduplication(
         self,
-        gallery_chunk: list[str],
+        gallery_chunk: list[Path],
         exclude_hashs: set[bytes],
         is_insert_list: list[bool],
-    ) -> list[str]:
+    ) -> list[Path]:
         if not gallery_chunk:
             return []
 
-        gallery_names = [os.path.basename(folder) for folder in gallery_chunk]
+        gallery_names = [folder.name for folder in gallery_chunk]
         db_gallery_ids_by_name = (
             self.gallery_ids._get_db_gallery_ids_by_gallery_names_from_dbids(
                 gallery_names
@@ -655,9 +660,9 @@ class H2HDB(BaseRepository):
             )
         )
 
-        kept_folders: list[str] = []
+        kept_folders: list[Path] = []
         for folder, is_insert in zip(gallery_chunk, is_insert_list, strict=True):
-            db_gallery_id = db_gallery_ids_by_name.get(os.path.basename(folder))
+            db_gallery_id = db_gallery_ids_by_name.get(folder.name)
             if db_gallery_id is None:
                 # Not yet resolvable (e.g. its insert was skipped/retried) --
                 # let it through unchanged rather than silently dropping it.
@@ -739,7 +744,7 @@ class H2HDB(BaseRepository):
         if gallery_name is not None:
             self.cbz._delete_cbz_file_for_gallery_name(gallery_name)
 
-    def _locate_cbz_paths(self, db_gallery_ids: list[int]) -> list[tuple[int, str]]:
+    def _locate_cbz_paths(self, db_gallery_ids: list[int]) -> list[tuple[int, Path]]:
         from .compress_gallery_to_cbz import gallery_name_to_cbz_file_name
 
         assert self.config.h2h.cbz_path is not None
@@ -749,12 +754,12 @@ class H2HDB(BaseRepository):
         gallery_names_by_id = self.gallery_ids.get_gallery_names_by_db_gallery_ids(
             db_gallery_ids
         )
-        current_cbzs: dict[str, str] = dict()
-        for root, _, files in os.walk(self.config.h2h.cbz_path):
+        current_cbzs: dict[str, Path] = dict()
+        for root, _, files in self.config.h2h.cbz_path.walk():
             for file in files:
                 current_cbzs[file] = root
 
-        located: list[tuple[int, str]] = []
+        located: list[tuple[int, Path]] = []
         for db_gallery_id in db_gallery_ids:
             gallery_name = gallery_names_by_id.get(db_gallery_id)
             if gallery_name is None:
@@ -765,7 +770,7 @@ class H2HDB(BaseRepository):
             located.append(
                 (
                     db_gallery_id,
-                    os.path.join(current_cbzs[cbz_file_name], cbz_file_name),
+                    current_cbzs[cbz_file_name] / cbz_file_name,
                 )
             )
         return located
@@ -786,7 +791,7 @@ class H2HDB(BaseRepository):
             self.gallery_deduplication.get_duplicate_warning_db_gallery_ids()
         )
         for db_gallery_id, cbz_path in self._locate_cbz_paths(losing_db_gallery_ids):
-            os.remove(cbz_path)
+            cbz_path.unlink()
             self.logger.info(
                 f"Orphaned CBZ '{cbz_path}' removed "
                 f"(gallery {db_gallery_id} lost its duplicate-content race)."
@@ -818,7 +823,7 @@ class H2HDB(BaseRepository):
 
     def _scrub_cbz_files(
         self,
-        current_galleries_folders: list[str],
+        current_galleries_folders: list[Path],
         exclude_hashs: set[bytes],
         pool: Pool,
     ) -> None:
@@ -827,7 +832,7 @@ class H2HDB(BaseRepository):
             return
 
         folder_by_gallery_name = {
-            os.path.basename(folder): folder for folder in current_galleries_folders
+            folder.name: folder for folder in current_galleries_folders
         }
         db_gallery_ids_by_name = (
             self.gallery_ids._get_db_gallery_ids_by_gallery_names_from_dbids(
@@ -982,8 +987,7 @@ class H2HDB(BaseRepository):
                         "by newly-excluded duplicate files..."
                     )
                     folder_by_gallery_name = {
-                        os.path.basename(folder): folder
-                        for folder in current_galleries_folders
+                        folder.name: folder for folder in current_galleries_folders
                     }
                     stale_folders_to_filter = [
                         folder_by_gallery_name[name]

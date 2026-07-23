@@ -38,7 +38,7 @@ def test_hash_multiple_by_file_matches_reference_digests(tmp_path: Path) -> None
     file_path.write_bytes(TEST_CONTENT)
 
     digests = hash_multiple_by_file(
-        str(file_path), HASH_ALGORITHMS, buffer_size=SMALL_BUFFER_SIZE
+        file_path, HASH_ALGORITHMS, buffer_size=SMALL_BUFFER_SIZE
     )
 
     for algorithm in HASH_ALGORITHMS:
@@ -50,7 +50,7 @@ def test_hash_function_by_file_matches_reference_digest(tmp_path: Path) -> None:
     file_path.write_bytes(TEST_CONTENT)
 
     assert (
-        hash_function_by_file(str(file_path), "sha512")
+        hash_function_by_file(file_path, "sha512")
         == hashlib.sha512(TEST_CONTENT).digest()
     )
 
@@ -66,13 +66,13 @@ def test_hash_multiple_by_file_reads_file_only_once(
 
     def counting_open(*args: Any, **kwargs: Any) -> Any:
         nonlocal open_count
-        if args and args[0] == str(file_path):
+        if args and args[0] == file_path:
             open_count += 1
         return original_open(*args, **kwargs)
 
     monkeypatch.setattr("builtins.open", counting_open)
 
-    hash_multiple_by_file(str(file_path), HASH_ALGORITHMS)
+    hash_multiple_by_file(file_path, HASH_ALGORITHMS)
 
     assert open_count == 1
 
@@ -81,7 +81,7 @@ def test_file_information_sethash_matches_reference_digests(tmp_path: Path) -> N
     file_path = tmp_path / "page.bin"
     file_path.write_bytes(TEST_CONTENT)
 
-    finfo = FileInformation(str(file_path), db_file_id=1)
+    finfo = FileInformation(file_path, db_file_id=1)
     finfo.sethash()
 
     for algorithm in HASH_ALGORITHMS:
@@ -105,10 +105,10 @@ def test_hash_and_process_file_skips_files_with_excluded_hash(tmp_path: Path) ->
     exclude_hashs = {excluded_hash}
 
     hash_and_process_file(
-        str(input_directory), str(tmp_cbz_directory), "excluded.bin", exclude_hashs, 0
+        input_directory, tmp_cbz_directory, "excluded.bin", exclude_hashs, 0
     )
     hash_and_process_file(
-        str(input_directory), str(tmp_cbz_directory), "kept.bin", exclude_hashs, 0
+        input_directory, tmp_cbz_directory, "kept.bin", exclude_hashs, 0
     )
 
     assert not (tmp_cbz_directory / "excluded.bin").exists()

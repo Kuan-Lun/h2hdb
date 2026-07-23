@@ -386,11 +386,11 @@ def test_insert_gallery_infos_does_not_issue_per_file_id_lookups(
 def test_insert_gallery_chunk_splits_retry_instead_of_one_by_one(
     db: H2HDB, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    gallery_paths = list[str]()
+    gallery_paths = list[Path]()
     for index in range(4):
         gallery_folder = tmp_path / f"80000{index}"
         _write_galleryinfo(gallery_folder, title=f"Split Retry Gallery {index}")
-        gallery_paths.append(str(gallery_folder))
+        gallery_paths.append(gallery_folder)
 
     original_insert_gallery_infos = db.insert_gallery_infos
     call_sizes = list[int]()
@@ -460,7 +460,7 @@ def test_insert_gallery_file_hash_reads_file_once_for_all_algorithms(
     call_count = 0
 
     def counting_hash_multiple_by_file(
-        file_path_arg: str, algorithms: dict[str, int]
+        file_path_arg: Path, algorithms: dict[str, int]
     ) -> dict[str, bytes]:
         nonlocal call_count
         call_count += 1
@@ -472,7 +472,7 @@ def test_insert_gallery_file_hash_reads_file_once_for_all_algorithms(
         counting_hash_multiple_by_file,
     )
 
-    db.files._insert_gallery_file_hash(db_file_id, str(file_path))
+    db.files._insert_gallery_file_hash(db_file_id, file_path)
 
     assert call_count == 1
     for algorithm in HASH_ALGORITHMS:
@@ -486,7 +486,7 @@ def test_refresh_current_cbz_files_removes_only_orphaned_files(
     cbz_path.mkdir()
     (cbz_path / "kept.cbz").write_bytes(b"kept")
     (cbz_path / "orphan.cbz").write_bytes(b"orphan")
-    sqlite_config.h2h.cbz_path = str(cbz_path)
+    sqlite_config.h2h.cbz_path = cbz_path
 
     with H2HDB(config=sqlite_config) as db:
         db.cbz._refresh_current_cbz_files({"kept"})
@@ -511,7 +511,7 @@ def test_get_stale_cbz_galleries_flags_cbz_containing_newly_excluded_file(
 
     cbz_path = tmp_path / "cbz"
     cbz_path.mkdir()
-    db.config.h2h.cbz_path = str(cbz_path)
+    db.config.h2h.cbz_path = cbz_path
     cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
     with zipfile.ZipFile(cbz_file, "w") as cbz:
         cbz.writestr("galleryinfo.txt", "stale")
@@ -540,7 +540,7 @@ def test_get_stale_cbz_galleries_ignores_cbz_that_already_excludes_file(
 
     cbz_path = tmp_path / "cbz"
     cbz_path.mkdir()
-    db.config.h2h.cbz_path = str(cbz_path)
+    db.config.h2h.cbz_path = cbz_path
     cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
     with zipfile.ZipFile(cbz_file, "w") as cbz:
         cbz.writestr("galleryinfo.txt", "fresh")

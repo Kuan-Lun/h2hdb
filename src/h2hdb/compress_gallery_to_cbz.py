@@ -4,10 +4,10 @@ __all__ = [
     "gallery_name_to_cbz_file_name",
 ]
 
-import os
 import shutil
 import uuid
 import zipfile
+from pathlib import Path
 from typing import cast
 
 from PIL import Image, ImageFile
@@ -24,7 +24,7 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp")
 
 
-def compress_image(image_path: str, output_path: str, max_size: int) -> None:
+def compress_image(image_path: Path, output_path: Path, max_size: int) -> None:
     """Compress an image, saving it to the output path."""
     with Image.open(image_path) as opened_image:
         image = cast(Image.Image, opened_image)
@@ -58,7 +58,7 @@ def compress_image(image_path: str, output_path: str, max_size: int) -> None:
             image.save(output_path, "JPEG")
 
 
-def create_cbz(directory: str, output_path: str) -> None:
+def create_cbz(directory: Path, output_path: Path) -> None:
     """Create a CBZ file from all images in a directory."""
     # Written to a sibling temp file and atomically moved into place so a
     # process killed mid-write (OOM, crash) never leaves a corrupt file at
@@ -68,78 +68,74 @@ def create_cbz(directory: str, output_path: str) -> None:
     # independent of output_path's name (rather than output_path + a
     # suffix) since gallery names are already truncated to the filesystem's
     # name-length limit and couldn't take a suffix.
-    tmp_output_path = os.path.join(
-        os.path.dirname(output_path), f".{uuid.uuid4().hex}.cbz.tmp"
-    )
+    tmp_output_path = output_path.parent / f".{uuid.uuid4().hex}.cbz.tmp"
     with zipfile.ZipFile(tmp_output_path, "w") as cbz:
-        for filename in os.listdir(directory):
-            cbz.write(os.path.join(directory, filename), filename)
-    os.replace(tmp_output_path, output_path)
+        for entry in directory.iterdir():
+            cbz.write(entry, entry.name)
+    tmp_output_path.replace(output_path)
 
 
 def expected_output_filename(filename: str) -> str:
     """Name a file would have inside the cbz, if its hash isn't excluded."""
     if filename.lower().endswith(IMAGE_EXTENSIONS):
-        return os.path.splitext(filename)[0] + ".jpg"
+        return f"{Path(filename).stem}.jpg"
     return filename
 
 
 def hash_and_process_file(
-    input_directory: str,
-    tmp_cbz_directory: str,
+    input_directory: Path,
+    tmp_cbz_directory: Path,
     filename: str,
     exclude_hashs: set[bytes],
     max_size: int,
 ) -> None:
     file_hash = hash_function_by_file(
-        os.path.join(input_directory, filename), COMPARISON_HASH_ALGORITHM
+        input_directory / filename, COMPARISON_HASH_ALGORITHM
     )
     if file_hash not in exclude_hashs:
         if filename.lower().endswith(IMAGE_EXTENSIONS):
             new_filename = expected_output_filename(filename)
             compress_image(
-                os.path.join(input_directory, filename),
-                os.path.join(tmp_cbz_directory, new_filename),
+                input_directory / filename,
+                tmp_cbz_directory / new_filename,
                 max_size,
             )
         elif filename.lower().endswith(".gif"):
             compress_image(
-                os.path.join(input_directory, filename),
-                os.path.join(tmp_cbz_directory, filename),
+                input_directory / filename,
+                tmp_cbz_directory / filename,
                 max_size,
             )
         else:
             shutil.copy(
-                os.path.join(input_directory, filename),
-                os.path.join(tmp_cbz_directory, filename),
+                input_directory / filename,
+                tmp_cbz_directory / filename,
             )
 
 
 def compress_images_and_create_cbz(
-    input_directory: str,
-    output_directory: str,
-    tmp_directory: str,
+    input_directory: Path,
+    output_directory: Path,
+    tmp_directory: Path,
     max_size: int,
     exclude_hashs: set[bytes],
 ) -> None:
     if len(set([input_directory, output_directory, tmp_directory])) < 2:
         raise ValueError("Input and output directories cannot be the same.")
 
-    gallery_name = os.path.basename(input_directory)
-    tmp_cbz_directory = os.path.join(tmp_directory, gallery_name)
-    if os.path.exists(tmp_cbz_directory):
+    gallery_name = input_directory.name
+    tmp_cbz_directory = tmp_directory / gallery_name
+    if tmp_cbz_directory.exists():
         shutil.rmtree(tmp_cbz_directory)
-    os.makedirs(tmp_cbz_directory)
+    tmp_cbz_directory.mkdir(parents=True)
 
-    for filename in os.listdir(input_directory):
+    for entry in input_directory.iterdir():
         hash_and_process_file(
-            input_directory, tmp_cbz_directory, filename, exclude_hashs, max_size
+            input_directory, tmp_cbz_directory, entry.name, exclude_hashs, max_size
         )
 
-    os.makedirs(output_directory, exist_ok=True)
-    cbzfile = os.path.join(
-        output_directory, gallery_name_to_cbz_file_name(gallery_name)
-    )
+    output_directory.mkdir(parents=True, exist_ok=True)
+    cbzfile = output_directory / gallery_name_to_cbz_file_name(gallery_name)
     create_cbz(tmp_cbz_directory, cbzfile)
     shutil.rmtree(tmp_cbz_directory)
 
