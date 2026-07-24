@@ -10,7 +10,7 @@ readme = "README.md"
 authors = [{ name = "Kuan-Lun Wang" }]
 license = { text = "GNU Affero General Public License v3" }
 dependencies = [
-    "h2h-galleryinfo-parser>=0.3.0",
+    "h2h-galleryinfo-parser>=0.4.0",
     "mysql-connector-python>=9.7.0,<10.0.0",
     "pillow>=12.3.0,<13.0.0",
     "pydantic>=2.13.4,<3.0.0",
