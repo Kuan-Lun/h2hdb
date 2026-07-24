@@ -208,7 +208,7 @@ def test_insert_gallery_infos_batches_multiple_galleries(
         (gallery_folder / "001.jpg").write_bytes(f"image-{index}".encode())
         gallery_folders.append(gallery_folder)
 
-    gallery_infos = [parse_galleryinfo(str(path)) for path in gallery_folders]
+    gallery_infos = [parse_galleryinfo(path) for path in gallery_folders]
 
     assert db.insert_gallery_infos(gallery_infos) == [True, True]
 
@@ -249,7 +249,7 @@ def test_get_komga_metadata_does_not_cross_mix_galleries(
         )
         gallery_folders.append(gallery_folder)
 
-    gallery_infos = [parse_galleryinfo(str(path)) for path in gallery_folders]
+    gallery_infos = [parse_galleryinfo(path) for path in gallery_folders]
     assert db.insert_gallery_infos(gallery_infos) == [True, True]
 
     gallery_name_0 = gallery_infos[0].gallery_name
@@ -287,7 +287,7 @@ def test_insert_rows_batches_galleries_across_chunk_boundary(
         _write_galleryinfo(gallery_folder, title=f"Chunk Gallery {index}")
         gallery_folders.append(gallery_folder)
 
-    gallery_infos = [parse_galleryinfo(str(path)) for path in gallery_folders]
+    gallery_infos = [parse_galleryinfo(path) for path in gallery_folders]
 
     assert db.insert_gallery_infos(gallery_infos) == [True, True, True]
 
@@ -310,7 +310,7 @@ def test_insert_rows_batches_tags_across_chunk_boundary(
         title="Many Tags Gallery",
         tags="artist:a, artist:b, group:c, language:english",
     )
-    gallery_info = parse_galleryinfo(str(gallery_folder))
+    gallery_info = parse_galleryinfo(gallery_folder)
 
     assert db.insert_gallery_infos([gallery_info]) == [True]
 
@@ -366,7 +366,7 @@ def test_insert_gallery_infos_does_not_issue_per_file_id_lookups(
     _write_galleryinfo(gallery_folder, title="No N+1 Gallery")
     for index in range(5):
         (gallery_folder / f"{index:03d}.jpg").write_bytes(f"image-{index}".encode())
-    gallery_info = parse_galleryinfo(str(gallery_folder))
+    gallery_info = parse_galleryinfo(gallery_folder)
 
     call_count = 0
     original_get_db_file_id = db.files._get_db_file_id
@@ -504,7 +504,7 @@ def test_get_stale_cbz_galleries_flags_cbz_containing_newly_excluded_file(
     _write_galleryinfo(gallery_folder, title="Stale CBZ Gallery")
     image_content = b"some image bytes"
     (gallery_folder / "001.jpg").write_bytes(image_content)
-    gallery_info = parse_galleryinfo(str(gallery_folder))
+    gallery_info = parse_galleryinfo(gallery_folder)
     db.insert_gallery_infos([gallery_info])
     gallery_name = gallery_info.gallery_name
     image_hash = hashlib.sha512(image_content).digest()
@@ -533,7 +533,7 @@ def test_get_stale_cbz_galleries_ignores_cbz_that_already_excludes_file(
     _write_galleryinfo(gallery_folder, title="Fresh CBZ Gallery")
     image_content = b"some other image bytes"
     (gallery_folder / "001.jpg").write_bytes(image_content)
-    gallery_info = parse_galleryinfo(str(gallery_folder))
+    gallery_info = parse_galleryinfo(gallery_folder)
     db.insert_gallery_infos([gallery_info])
     gallery_name = gallery_info.gallery_name
     image_hash = hashlib.sha512(image_content).digest()

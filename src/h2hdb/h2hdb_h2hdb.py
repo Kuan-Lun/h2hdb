@@ -366,13 +366,13 @@ class H2HDB(BaseRepository):
         file_pairs: list[FileInformation] = list()
         for galleryinfo_params in galleryinfo_params_list:
             db_gallery_id = db_gallery_ids[galleryinfo_params.gallery_name]
+            file_names = [file_path.name for file_path in galleryinfo_params.files_path]
             db_file_ids_by_name = self.files._insert_gallery_files(
-                db_gallery_id, galleryinfo_params.files_path
+                db_gallery_id, file_names
             )
             for file_path in galleryinfo_params.files_path:
-                db_file_id = db_file_ids_by_name[file_path]
-                absolute_file_path = Path(galleryinfo_params.gallery_folder) / file_path
-                file_pairs.append(FileInformation(absolute_file_path, db_file_id))
+                db_file_id = db_file_ids_by_name[file_path.name]
+                file_pairs.append(FileInformation(file_path, db_file_id))
 
         self.files._insert_gallery_file_hash_for_db_gallery_id(file_pairs)
 
@@ -433,7 +433,7 @@ class H2HDB(BaseRepository):
                 issame_list.append(False)
                 continue
             absolute_file_path = (
-                Path(galleryinfo_params.gallery_folder) / GALLERY_INFO_FILE_NAME
+                galleryinfo_params.gallery_folder / GALLERY_INFO_FILE_NAME
             )
             current_hash_value = hash_function_by_file(
                 absolute_file_path, COMPARISON_HASH_ALGORITHM
@@ -576,10 +576,7 @@ class H2HDB(BaseRepository):
     ) -> list[bool]:
         try:
             return self.insert_gallery_infos(
-                [
-                    parse_galleryinfo(str(gallery_folder))
-                    for gallery_folder in gallery_chunk
-                ]
+                [parse_galleryinfo(gallery_folder) for gallery_folder in gallery_chunk]
             )
         except Exception as e:
             if len(gallery_chunk) == 1:
@@ -600,9 +597,7 @@ class H2HDB(BaseRepository):
             self.logger.info(f"Sorting by {self.config.h2h.cbz_sort}...")
             sorted_galleries_folders = sorted(
                 current_galleries_folders,
-                key=lambda x: getattr(
-                    parse_galleryinfo(str(x)), self.config.h2h.cbz_sort
-                ),
+                key=lambda x: getattr(parse_galleryinfo(x), self.config.h2h.cbz_sort),
                 reverse=True,
             )
         elif "no" in self.config.h2h.cbz_sort:
@@ -619,14 +614,12 @@ class H2HDB(BaseRepository):
             )
             sorted_galleries_folders = sorted(
                 current_galleries_folders,
-                key=lambda x: abs(
-                    getattr(parse_galleryinfo(str(x)), "pages") - zero_level
-                ),
+                key=lambda x: abs(getattr(parse_galleryinfo(x), "pages") - zero_level),
             )
         else:
             sorted_galleries_folders = sorted(
                 current_galleries_folders,
-                key=lambda x: getattr(parse_galleryinfo(str(x)), "pages"),
+                key=lambda x: getattr(parse_galleryinfo(x), "pages"),
             )
         self.logger.info("Galleries sorted.")
         return sorted_galleries_folders

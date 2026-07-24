@@ -144,7 +144,7 @@ class H2HDBCBZFiles(BaseRepository):
         )
 
         assert self.config.h2h.cbz_path is not None
-        galleryinfo_params = parse_galleryinfo(str(gallery_folder))
+        galleryinfo_params = parse_galleryinfo(gallery_folder)
         match self.config.h2h.cbz_grouping:
             case "date-yyyy":
                 assert upload_time is not None
