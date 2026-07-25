@@ -2,12 +2,13 @@ from time import monotonic, sleep
 
 from h2hdb import H2HDB
 
-from .config_loader import load_config
+from .config_loader import ensure_download_path_ready, load_config
 
 SLEEP_INTERVAL_SECONDS = 1800
 
 if __name__ == "__main__":
     config = load_config()
+    ensure_download_path_ready(config.h2h.download_path)
     with H2HDB(config=config) as connector:
         connector.check_database_character_set()
         connector.check_database_collation()

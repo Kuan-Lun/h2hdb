@@ -1,4 +1,11 @@
-__all__ = ["DatabaseConfig", "LoggerConfig", "H2HConfig", "H2HDBConfig", "load_config"]
+__all__ = [
+    "DatabaseConfig",
+    "LoggerConfig",
+    "H2HConfig",
+    "H2HDBConfig",
+    "load_config",
+    "ensure_download_path_ready",
+]
 
 import argparse
 import json
@@ -85,20 +92,6 @@ class H2HConfig(ConfigModel):
         default=Path("download"),
         description="Path to download files",
     )
-
-    @field_validator("download_path")
-    @classmethod
-    def validate_download_path_not_empty(cls, v: Path) -> Path:
-        try:
-            is_empty = not any(v.iterdir())
-        except OSError as e:
-            raise ValueError(f"Invalid download_path '{v}': {e}")
-        if is_empty:
-            raise ValueError(
-                f"download_path '{v}' is empty; check that the path is correct"
-            )
-        return v
-
     cbz_path: Path | None = Field(
         default=None,
         description="Path to save CBZ files. Unset disables CBZ output.",
@@ -136,6 +129,17 @@ class H2HDBConfig(ConfigModel):
         default_factory=LoggerConfig,
         description="Configuration for the logger",
     )
+
+
+def ensure_download_path_ready(download_path: Path) -> None:
+    try:
+        is_empty = not any(download_path.iterdir())
+    except OSError as e:
+        raise ConfigError(f"Invalid download_path '{download_path}': {e}")
+    if is_empty:
+        raise ConfigError(
+            f"download_path '{download_path}' is empty; check that the path is correct"
+        )
 
 
 def load_config(config_path: str = "") -> H2HDBConfig:
