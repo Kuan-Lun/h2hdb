@@ -89,6 +89,37 @@ def test_insert_h2h_download_inserts_new_galleries_and_is_idempotent(
     assert sorted(db.gallery_gids.get_gids()) == [700001, 700002]
 
 
+def test_insert_h2h_download_emits_perf_debug_stages(
+    sqlite_config: H2HDBConfig,
+    download_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sqlite_config.h2h.download_path = download_path
+    _write_galleryinfo(download_path / "700099", title="Profiled Gallery")
+
+    with H2HDB(config=sqlite_config) as instance:
+        instance.create_main_tables()
+        debug_messages: list[str] = []
+        monkeypatch.setattr(instance.logger, "debug", debug_messages.append)
+
+        assert instance.insert_h2h_download() is True
+
+    perf_messages = [
+        message for message in debug_messages if message.startswith("PERF ")
+    ]
+    for expected_message in (
+        "event=start stage=insert_h2h_download",
+        "event=end stage=sql_insert",
+        "event=end stage=gallery_files",
+        "event=end stage=file_byte_hashing",
+        "event=end stage=hash_association_insert",
+        "event=end stage=final_dedup",
+        "event=end stage=cleanup_file_hashes",
+        "event=end stage=insert_h2h_download",
+    ):
+        assert any(expected_message in message for message in perf_messages)
+
+
 def test_insert_h2h_download_creates_cbz_files_when_cbz_path_configured(
     db: H2HDB, download_path: Path, tmp_path: Path
 ) -> None:

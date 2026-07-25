@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from itertools import chain
+from time import monotonic
 from typing import Any, cast
 
 from .config_loader import H2HDBConfig
@@ -104,15 +105,34 @@ class BaseRepository:
 
         row_placeholder = f"({', '.join(['%s'] * len(columns))})"
         batch_size = self._insert_rows_batch_size
-        for start in range(0, len(rows), batch_size):
+        batch_count = math.ceil(len(rows) / batch_size)
+        insert_started = monotonic()
+        self.logger.debug(
+            "PERF event=start stage=sql_insert "
+            f"table={table_name} rows={len(rows)} batch_size={batch_size} "
+            f"batches={batch_count}"
+        )
+        for batch_index, start in enumerate(range(0, len(rows), batch_size), start=1):
             batch = rows[start : start + batch_size]
             insert_query = f"""
                 INSERT INTO {table_name} ({", ".join(columns)})
                 VALUES {", ".join([row_placeholder] * len(batch))}
             """
             parameters = tuple(chain.from_iterable(batch))
+            batch_started = monotonic()
             with self.SQLConnector() as connector:
                 connector.execute(insert_query, parameters)
+            self.logger.debug(
+                "PERF event=batch stage=sql_insert "
+                f"table={table_name} batch_index={batch_index} "
+                f"batches={batch_count} batch_rows={len(batch)} "
+                f"elapsed_s={monotonic() - batch_started:.6f}"
+            )
+        self.logger.debug(
+            "PERF event=end stage=sql_insert "
+            f"table={table_name} rows={len(rows)} batches={batch_count} "
+            f"elapsed_s={monotonic() - insert_started:.6f}"
+        )
 
     def _split_gallery_name(self, gallery_name: str) -> list[str]:
         match self.config.database.sql_type.lower():

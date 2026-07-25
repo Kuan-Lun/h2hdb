@@ -7,6 +7,7 @@ from itertools import islice
 from multiprocessing import cpu_count
 from multiprocessing.pool import Pool
 from pathlib import Path
+from time import monotonic
 
 from h2h_galleryinfo_parser import (
     GalleryInfoParser,
@@ -52,6 +53,7 @@ PROGRESSIVE_GALLERY_CHUNK_SIZE = min(
     GALLERY_METADATA_BATCH_SIZE,
     max(64, POOL_CPU_LIMIT * PROGRESSIVE_GALLERIES_PER_WORKER),
 )
+PERF_HEARTBEAT_SECONDS = 10.0
 
 
 class H2HDB(BaseRepository):
@@ -343,18 +345,58 @@ class H2HDB(BaseRepository):
         if not galleryinfo_params_list:
             return
 
+        insert_started = monotonic()
+        gallery_count = len(galleryinfo_params_list)
+        self.logger.debug(
+            f"PERF event=start stage=gallery_insert galleries={gallery_count}"
+        )
+
+        stage_started = monotonic()
+        self.logger.debug(
+            f"PERF event=start stage=gallery_insert_pending galleries={gallery_count}"
+        )
         self.insert_pending_gallery_removals(
             [
                 galleryinfo_params.gallery_name
                 for galleryinfo_params in galleryinfo_params_list
             ]
         )
+        self.logger.debug(
+            "PERF event=end stage=gallery_insert_pending "
+            f"galleries={gallery_count} elapsed_s={monotonic() - stage_started:.6f}"
+        )
 
+        stage_started = monotonic()
+        self.logger.debug(
+            f"PERF event=start stage=gallery_insert_names galleries={gallery_count}"
+        )
         db_gallery_ids = self._insert_gallery_names(galleryinfo_params_list)
+        self.logger.debug(
+            "PERF event=end stage=gallery_insert_names "
+            f"galleries={gallery_count} db_gallery_ids={len(db_gallery_ids)} "
+            f"elapsed_s={monotonic() - stage_started:.6f}"
+        )
+
+        stage_started = monotonic()
+        self.logger.debug(
+            f"PERF event=start stage=gallery_insert_metadata galleries={gallery_count}"
+        )
         self._insert_gallery_metadata_rows(galleryinfo_params_list, db_gallery_ids)
+        self.logger.debug(
+            "PERF event=end stage=gallery_insert_metadata "
+            f"galleries={gallery_count} elapsed_s={monotonic() - stage_started:.6f}"
+        )
 
         file_pairs: list[FileInformation] = list()
-        for galleryinfo_params in galleryinfo_params_list:
+        stage_started = monotonic()
+        next_heartbeat = stage_started + PERF_HEARTBEAT_SECONDS
+        self.logger.debug(
+            f"PERF event=start stage=gallery_insert_file_manifest "
+            f"galleries={gallery_count}"
+        )
+        for gallery_index, galleryinfo_params in enumerate(
+            galleryinfo_params_list, start=1
+        ):
             db_gallery_id = db_gallery_ids[galleryinfo_params.gallery_name]
             file_names = [file_path.name for file_path in galleryinfo_params.files_path]
             db_file_ids_by_name = self.files._insert_gallery_files(
@@ -364,8 +406,37 @@ class H2HDB(BaseRepository):
                 db_file_id = db_file_ids_by_name[file_path.name]
                 file_pairs.append(FileInformation(file_path, db_file_id))
 
-        self.files._insert_gallery_file_hash_for_db_gallery_id(file_pairs)
+            now = monotonic()
+            if now >= next_heartbeat:
+                self.logger.debug(
+                    "PERF event=heartbeat stage=gallery_insert_file_manifest "
+                    f"galleries_processed={gallery_index} "
+                    f"galleries={gallery_count} files={len(file_pairs)} "
+                    f"elapsed_s={now - stage_started:.6f}"
+                )
+                next_heartbeat = now + PERF_HEARTBEAT_SECONDS
+        self.logger.debug(
+            "PERF event=end stage=gallery_insert_file_manifest "
+            f"galleries={gallery_count} files={len(file_pairs)} "
+            f"elapsed_s={monotonic() - stage_started:.6f}"
+        )
 
+        stage_started = monotonic()
+        self.logger.debug(
+            f"PERF event=start stage=gallery_insert_hash "
+            f"galleries={gallery_count} files={len(file_pairs)}"
+        )
+        self.files._insert_gallery_file_hash_for_db_gallery_id(file_pairs)
+        self.logger.debug(
+            "PERF event=end stage=gallery_insert_hash "
+            f"galleries={gallery_count} files={len(file_pairs)} "
+            f"elapsed_s={monotonic() - stage_started:.6f}"
+        )
+
+        stage_started = monotonic()
+        self.logger.debug(
+            f"PERF event=start stage=gallery_insert_tags galleries={gallery_count}"
+        )
         tags_by_gallery_id = {
             db_gallery_ids[galleryinfo_params.gallery_name]: [
                 TagInformation(tag_name, tag_value)
@@ -374,12 +445,30 @@ class H2HDB(BaseRepository):
             for galleryinfo_params in galleryinfo_params_list
         }
         self.gallery_tags._insert_gallery_tags_many(tags_by_gallery_id)
+        self.logger.debug(
+            "PERF event=end stage=gallery_insert_tags "
+            f"galleries={gallery_count} elapsed_s={monotonic() - stage_started:.6f}"
+        )
 
+        stage_started = monotonic()
+        self.logger.debug(
+            f"PERF event=start stage=gallery_insert_pending_clear "
+            f"galleries={gallery_count}"
+        )
         self.delete_pending_gallery_removals_by_names(
             [
                 galleryinfo_params.gallery_name
                 for galleryinfo_params in galleryinfo_params_list
             ]
+        )
+        self.logger.debug(
+            "PERF event=end stage=gallery_insert_pending_clear "
+            f"galleries={gallery_count} elapsed_s={monotonic() - stage_started:.6f}"
+        )
+        self.logger.debug(
+            "PERF event=end stage=gallery_insert "
+            f"galleries={gallery_count} files={len(file_pairs)} "
+            f"elapsed_s={monotonic() - insert_started:.6f}"
         )
 
     def _check_gallery_info_file_hashes(
@@ -390,6 +479,13 @@ class H2HDB(BaseRepository):
         # of issuing them per gallery.
         if not galleryinfo_params_list:
             return []
+
+        change_detection_started = monotonic()
+        gallery_count = len(galleryinfo_params_list)
+        self.logger.debug(
+            f"PERF event=start stage=gallery_change_detection "
+            f"galleries={gallery_count}"
+        )
 
         # Reads from galleries_dbids itself, not galleries_names: galleries_dbids
         # is the table deletions actually hit, while galleries_names can carry
@@ -403,15 +499,36 @@ class H2HDB(BaseRepository):
                 ]
             )
         )
+        self.logger.debug(
+            "PERF event=progress stage=gallery_change_detection "
+            f"step=gallery_id_lookup galleries={gallery_count} "
+            f"existing_galleries={len(db_gallery_ids_by_name)} "
+            f"elapsed_s={monotonic() - change_detection_started:.6f}"
+        )
         db_file_ids_by_gallery_id = self.files._get_db_file_ids_by_gallery_ids_for_name(
             list(db_gallery_ids_by_name.values()), GALLERY_INFO_FILE_NAME
+        )
+        self.logger.debug(
+            "PERF event=progress stage=gallery_change_detection "
+            f"step=file_id_lookup galleries={gallery_count} "
+            f"existing_files={len(db_file_ids_by_gallery_id)} "
+            f"elapsed_s={monotonic() - change_detection_started:.6f}"
         )
         hash_values_by_file_id = self.files._get_hash_values_by_file_ids(
             list(db_file_ids_by_gallery_id.values()), COMPARISON_HASH_ALGORITHM
         )
+        self.logger.debug(
+            "PERF event=progress stage=gallery_change_detection "
+            f"step=hash_lookup galleries={gallery_count} "
+            f"existing_hashes={len(hash_values_by_file_id)} "
+            f"elapsed_s={monotonic() - change_detection_started:.6f}"
+        )
 
         issame_list: list[bool] = list()
-        for galleryinfo_params in galleryinfo_params_list:
+        next_heartbeat = change_detection_started + PERF_HEARTBEAT_SECONDS
+        for gallery_index, galleryinfo_params in enumerate(
+            galleryinfo_params_list, start=1
+        ):
             db_gallery_id = db_gallery_ids_by_name.get(galleryinfo_params.gallery_name)
             gallery_info_file_id = (
                 None
@@ -425,14 +542,28 @@ class H2HDB(BaseRepository):
             )
             if original_hash_value is None:
                 issame_list.append(False)
-                continue
-            absolute_file_path = (
-                galleryinfo_params.gallery_folder / GALLERY_INFO_FILE_NAME
-            )
-            current_hash_value = hash_function_by_file(
-                absolute_file_path, COMPARISON_HASH_ALGORITHM
-            )
-            issame_list.append(original_hash_value == current_hash_value)
+            else:
+                absolute_file_path = (
+                    galleryinfo_params.gallery_folder / GALLERY_INFO_FILE_NAME
+                )
+                current_hash_value = hash_function_by_file(
+                    absolute_file_path, COMPARISON_HASH_ALGORITHM
+                )
+                issame_list.append(original_hash_value == current_hash_value)
+            now = monotonic()
+            if now >= next_heartbeat:
+                self.logger.debug(
+                    "PERF event=heartbeat stage=gallery_change_detection "
+                    f"galleries_checked={gallery_index} galleries={gallery_count} "
+                    f"elapsed_s={now - change_detection_started:.6f}"
+                )
+                next_heartbeat = now + PERF_HEARTBEAT_SECONDS
+        self.logger.debug(
+            "PERF event=end stage=gallery_change_detection "
+            f"galleries={gallery_count} unchanged={sum(issame_list)} "
+            f"changed={gallery_count - sum(issame_list)} "
+            f"elapsed_s={monotonic() - change_detection_started:.6f}"
+        )
         return issame_list
 
     def insert_gallery_infos(
@@ -463,6 +594,11 @@ class H2HDB(BaseRepository):
         return is_insert_list
 
     def scan_current_galleries_folders(self) -> tuple[list[Path], set[str]]:
+        scan_started = monotonic()
+        self.logger.debug(
+            "PERF event=start stage=scan "
+            f"backend={self.config.database.sql_type.lower()}"
+        )
         self.delete_pending_gallery_removals()
 
         with self.SQLConnector() as connector:
@@ -483,8 +619,14 @@ class H2HDB(BaseRepository):
                 )
             """
 
+            stage_started = monotonic()
+            self.logger.debug("PERF event=start stage=scan_temp_table_create")
             connector.execute(query)
             self.logger.info(f"{tmp_table_name} table created.")
+            self.logger.debug(
+                "PERF event=end stage=scan_temp_table_create "
+                f"elapsed_s={monotonic() - stage_started:.6f}"
+            )
 
             insert_query = f"""
                 INSERT INTO {tmp_table_name}
@@ -495,17 +637,49 @@ class H2HDB(BaseRepository):
             data: list[tuple[str, ...]] = list()
             current_galleries_folders: list[Path] = list()
             current_galleries_names: set[str] = set()
+            stage_started = monotonic()
+            next_heartbeat = stage_started + PERF_HEARTBEAT_SECONDS
+            directories_scanned = 0
+            self.logger.debug("PERF event=start stage=scan_walk")
             for root, _, files in self.config.h2h.download_path.walk():
+                directories_scanned += 1
                 if GALLERY_INFO_FILE_NAME in files:
                     current_galleries_folders.append(root)
                     gallery_name = current_galleries_folders[-1].name
                     current_galleries_names.add(gallery_name)
                     gallery_name_parts = self._split_gallery_name(gallery_name)
                     data.append(tuple(gallery_name_parts))
+                now = monotonic()
+                if now >= next_heartbeat:
+                    self.logger.debug(
+                        "PERF event=heartbeat stage=scan_walk "
+                        f"directories={directories_scanned} "
+                        f"galleries={len(current_galleries_folders)} "
+                        f"elapsed_s={now - stage_started:.6f}"
+                    )
+                    next_heartbeat = now + PERF_HEARTBEAT_SECONDS
+            self.logger.debug(
+                "PERF event=end stage=scan_walk "
+                f"directories={directories_scanned} "
+                f"galleries={len(current_galleries_folders)} "
+                f"elapsed_s={monotonic() - stage_started:.6f}"
+            )
+
             group_size = 5000
             it = iter(data)
+            stage_started = monotonic()
+            batch_count = (len(data) + group_size - 1) // group_size
+            self.logger.debug(
+                "PERF event=start stage=scan_temp_table_insert "
+                f"rows={len(data)} batches={batch_count} batch_size={group_size}"
+            )
             for _ in range(0, len(data), group_size):
                 connector.execute_many(insert_query, list(islice(it, group_size)))
+            self.logger.debug(
+                "PERF event=end stage=scan_temp_table_insert "
+                f"rows={len(data)} batches={batch_count} "
+                f"elapsed_s={monotonic() - stage_started:.6f}"
+            )
 
             match self.config.database.sql_type.lower():
                 case "mariadb":
@@ -525,15 +699,29 @@ class H2HDB(BaseRepository):
                         LEFT JOIN {tmp_table_name} USING ({",".join(column_name_parts)})
                         WHERE {tmp_table_name}.{column_name_parts[0]} IS NULL
                     """
+            stage_started = monotonic()
+            self.logger.debug("PERF event=start stage=scan_removed_fetch")
             raw_removed_galleries = connector.fetch_all(fetch_query)
             removed_gallery_names = [
                 str(gallery[0]) for gallery in raw_removed_galleries
             ]
+            self.logger.debug(
+                "PERF event=end stage=scan_removed_fetch "
+                f"removed_galleries={len(removed_gallery_names)} "
+                f"elapsed_s={monotonic() - stage_started:.6f}"
+            )
 
         self.insert_pending_gallery_removals(removed_gallery_names)
 
         self.delete_pending_gallery_removals()
 
+        self.logger.debug(
+            "PERF event=end stage=scan "
+            f"galleries={len(current_galleries_folders)} "
+            f"unique_names={len(current_galleries_names)} "
+            f"removed_galleries={len(removed_gallery_names)} "
+            f"elapsed_s={monotonic() - scan_started:.6f}"
+        )
         return (current_galleries_folders, current_galleries_names)
 
     def _refresh_current_files_hashs(self, algorithm: str) -> None:
@@ -569,9 +757,29 @@ class H2HDB(BaseRepository):
         self, gallery_chunk: list[Path]
     ) -> list[bool]:
         try:
-            return self.insert_gallery_infos(
-                [parse_galleryinfo(gallery_folder) for gallery_folder in gallery_chunk]
+            parse_started = monotonic()
+            self.logger.debug(
+                f"PERF event=start stage=chunk_parse galleries={len(gallery_chunk)}"
             )
+            galleryinfo_params_list = [
+                parse_galleryinfo(gallery_folder) for gallery_folder in gallery_chunk
+            ]
+            self.logger.debug(
+                "PERF event=end stage=chunk_parse "
+                f"galleries={len(gallery_chunk)} "
+                f"elapsed_s={monotonic() - parse_started:.6f}"
+            )
+            insert_started = monotonic()
+            self.logger.debug(
+                f"PERF event=start stage=chunk_insert galleries={len(gallery_chunk)}"
+            )
+            result = self.insert_gallery_infos(galleryinfo_params_list)
+            self.logger.debug(
+                "PERF event=end stage=chunk_insert "
+                f"galleries={len(gallery_chunk)} inserted={sum(result)} "
+                f"elapsed_s={monotonic() - insert_started:.6f}"
+            )
+            return result
         except Exception as e:
             if len(gallery_chunk) == 1:
                 raise
@@ -587,6 +795,12 @@ class H2HDB(BaseRepository):
     def _sort_galleries_for_processing(
         self, current_galleries_folders: list[Path]
     ) -> list[Path]:
+        sort_started = monotonic()
+        self.logger.debug(
+            "PERF event=start stage=sort "
+            f"galleries={len(current_galleries_folders)} "
+            f"mode={self.config.h2h.cbz_sort}"
+        )
         if self.config.h2h.cbz_sort in ["upload_time", "download_time", "gid", "title"]:
             self.logger.info(f"Sorting by {self.config.h2h.cbz_sort}...")
             sorted_galleries_folders = sorted(
@@ -616,6 +830,12 @@ class H2HDB(BaseRepository):
                 key=lambda x: getattr(parse_galleryinfo(x), "pages"),
             )
         self.logger.info("Galleries sorted.")
+        self.logger.debug(
+            "PERF event=end stage=sort "
+            f"galleries={len(sorted_galleries_folders)} "
+            f"mode={self.config.h2h.cbz_sort} "
+            f"elapsed_s={monotonic() - sort_started:.6f}"
+        )
         return sorted_galleries_folders
 
     def _collect_gallery_deduplication_batch(
@@ -701,10 +921,19 @@ class H2HDB(BaseRepository):
         galleries: list[Path],
         exclude_hashs: set[bytes],
     ) -> list[Path]:
+        collection_started = monotonic()
         claims: list[ContentClaim] = []
         full_content_hashes_by_id: dict[int, bytes] = {}
         db_gallery_ids_by_name: dict[str, int] = {}
-        for gallery_chunk in chunk_list(galleries, GALLERY_METADATA_BATCH_SIZE):
+        gallery_chunks = chunk_list(galleries, GALLERY_METADATA_BATCH_SIZE)
+        self.logger.debug(
+            "PERF event=start stage=global_dedup_collection "
+            f"galleries={len(galleries)} batches={len(gallery_chunks)} "
+            f"excluded_hashes={len(exclude_hashs)}"
+        )
+        galleries_processed = 0
+        for batch_index, gallery_chunk in enumerate(gallery_chunks, start=1):
+            batch_started = monotonic()
             (
                 chunk_claims,
                 chunk_full_content_hashes,
@@ -713,6 +942,21 @@ class H2HDB(BaseRepository):
             claims.extend(chunk_claims)
             full_content_hashes_by_id.update(chunk_full_content_hashes)
             db_gallery_ids_by_name.update(chunk_db_gallery_ids_by_name)
+            galleries_processed += len(gallery_chunk)
+            self.logger.debug(
+                "PERF event=batch stage=global_dedup_collection "
+                f"batch_index={batch_index} batches={len(gallery_chunks)} "
+                f"batch_galleries={len(gallery_chunk)} "
+                f"galleries_processed={galleries_processed} "
+                f"galleries={len(galleries)} batch_claims={len(chunk_claims)} "
+                f"elapsed_s={monotonic() - batch_started:.6f}"
+            )
+        self.logger.debug(
+            "PERF event=end stage=global_dedup_collection "
+            f"galleries={len(galleries)} claims={len(claims)} "
+            f"full_content_hashes={len(full_content_hashes_by_id)} "
+            f"elapsed_s={monotonic() - collection_started:.6f}"
+        )
 
         missing_gallery_names = {folder.name for folder in galleries}.difference(
             db_gallery_ids_by_name
@@ -723,8 +967,21 @@ class H2HDB(BaseRepository):
                 f"{sorted(missing_gallery_names)}"
             )
 
+        reconcile_started = monotonic()
+        self.logger.debug(
+            "PERF event=start stage=global_dedup_reconcile "
+            f"claims={len(claims)} "
+            f"full_content_hashes={len(full_content_hashes_by_id)}"
+        )
         result = self.gallery_deduplication.reconcile_many(
             claims, full_content_hashes_by_id
+        )
+        self.logger.debug(
+            "PERF event=end stage=global_dedup_reconcile "
+            f"claims={len(claims)} "
+            f"eligible_galleries={len(result.eligible_db_gallery_ids)} "
+            f"losing_galleries={len(result.losing_db_gallery_ids)} "
+            f"elapsed_s={monotonic() - reconcile_started:.6f}"
         )
         losing_db_gallery_ids = list(result.losing_db_gallery_ids)
         self.cbz_integrity._delete_stale_rows()
@@ -876,7 +1133,21 @@ class H2HDB(BaseRepository):
         self._establish_cbz_hash_baselines(corrupt_db_gallery_ids, pool)
 
     def insert_h2h_download(self) -> bool:
+        run_started = monotonic()
+        self.logger.debug(
+            "PERF event=start stage=insert_h2h_download "
+            f"backend={self.config.database.sql_type.lower()} "
+            f"cbz_enabled={self.config.h2h.cbz_path is not None} "
+            f"cpu_count={CPU_NUM} pool_workers={POOL_CPU_LIMIT}"
+        )
+
+        stage_started = monotonic()
+        self.logger.debug("PERF event=start stage=insert_h2h_download_pending_cleanup")
         self.delete_pending_gallery_removals()
+        self.logger.debug(
+            "PERF event=end stage=insert_h2h_download_pending_cleanup "
+            f"elapsed_s={monotonic() - stage_started:.6f}"
+        )
 
         current_galleries_folders, _ = self.scan_current_galleries_folders()
 
@@ -899,6 +1170,11 @@ class H2HDB(BaseRepository):
         total_chunks = len(chunked_galleries_folders)
         total_galleries = len(current_galleries_folders)
         galleries_processed = 0
+        self.logger.debug(
+            "PERF event=progress stage=insert_h2h_download "
+            f"step=chunk_plan galleries={total_galleries} chunks={total_chunks} "
+            f"chunk_size={gallery_chunk_size}"
+        )
         self.logger.info(
             f"Inserting {total_galleries} galleries "
             f"across {total_chunks} chunk(s)..."
@@ -920,9 +1196,23 @@ class H2HDB(BaseRepository):
                 if cbz_pool is not None
                 else set()
             )
+            self.logger.debug(
+                "PERF event=progress stage=insert_h2h_download "
+                f"step=provisional_exclusions "
+                f"excluded_hashes={len(provisional_exclude_hashs)}"
+            )
 
             for chunk_index, gallery_chunk in enumerate(chunked_galleries_folders, 1):
+                chunk_started = monotonic()
+                chunk_cbz_operations_before = total_cbz_write_operations
                 galleries_processed += len(gallery_chunk)
+                self.logger.debug(
+                    "PERF event=start stage=insertion_chunk "
+                    f"chunk_index={chunk_index} chunks={total_chunks} "
+                    f"chunk_galleries={len(gallery_chunk)} "
+                    f"galleries_processed={galleries_processed} "
+                    f"galleries={total_galleries}"
+                )
                 self.logger.info(
                     f"Processing insertion chunk {chunk_index}/{total_chunks} "
                     f"({galleries_processed}/{total_galleries} galleries)..."
@@ -956,6 +1246,16 @@ class H2HDB(BaseRepository):
                         )
                         total_cbz_write_operations += sum(provisional_results)
 
+                self.logger.debug(
+                    "PERF event=end stage=insertion_chunk "
+                    f"chunk_index={chunk_index} chunks={total_chunks} "
+                    f"chunk_galleries={len(gallery_chunk)} "
+                    f"inserted={sum(is_insert_list)} "
+                    f"cbz_write_operations="
+                    f"{total_cbz_write_operations - chunk_cbz_operations_before} "
+                    f"elapsed_s={monotonic() - chunk_started:.6f}"
+                )
+
             self.logger.info(
                 f"Total galleries inserted in database: {total_inserted_in_database}"
             )
@@ -965,12 +1265,34 @@ class H2HDB(BaseRepository):
             # globally against that same snapshot, so chunk boundaries cannot
             # leave stale or conflicting ownership behind.
             self.logger.info("Getting final excluded hash values...")
+            stage_started = monotonic()
+            self.logger.debug(
+                "PERF event=start stage=final_exclusions "
+                f"galleries={total_galleries}"
+            )
             final_exclude_hashs = (
                 self.duplicated_hashes._get_duplicated_hash_values_by_count_artist_ratio()
             )
+            self.logger.debug(
+                "PERF event=end stage=final_exclusions "
+                f"excluded_hashes={len(final_exclude_hashs)} "
+                f"elapsed_s={monotonic() - stage_started:.6f}"
+            )
             self.logger.info("Final excluded hash values obtained.")
+            stage_started = monotonic()
+            self.logger.debug(
+                "PERF event=start stage=final_dedup "
+                f"galleries={total_galleries} "
+                f"excluded_hashes={len(final_exclude_hashs)}"
+            )
             galleries_to_compress = self._filter_galleries_for_deduplication(
                 current_galleries_folders, final_exclude_hashs
+            )
+            self.logger.debug(
+                "PERF event=end stage=final_dedup "
+                f"galleries={total_galleries} "
+                f"eligible_galleries={len(galleries_to_compress)} "
+                f"elapsed_s={monotonic() - stage_started:.6f}"
             )
 
             if cbz_pool is not None:
@@ -1009,7 +1331,26 @@ class H2HDB(BaseRepository):
         )
 
         self.logger.info("Cleaning up database...")
+        stage_started = monotonic()
+        self.logger.debug(
+            "PERF event=start stage=cleanup_file_hashes "
+            f"algorithms={len(HASH_ALGORITHMS)}"
+        )
         self.refresh_current_files_hashs()
+        self.logger.debug(
+            "PERF event=end stage=cleanup_file_hashes "
+            f"algorithms={len(HASH_ALGORITHMS)} "
+            f"elapsed_s={monotonic() - stage_started:.6f}"
+        )
+
+        self.logger.debug(
+            "PERF event=end stage=insert_h2h_download "
+            f"galleries={total_galleries} "
+            f"inserted={total_inserted_in_database} "
+            f"cbz_write_operations={total_cbz_write_operations} "
+            f"changed={is_insert_limit_reached} "
+            f"elapsed_s={monotonic() - run_started:.6f}"
+        )
 
         return is_insert_limit_reached
 

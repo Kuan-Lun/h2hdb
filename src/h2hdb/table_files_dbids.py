@@ -1,5 +1,6 @@
 from itertools import chain
 from pathlib import Path
+from time import monotonic
 from typing import cast
 
 from .hash_dict import HASH_ALGORITHMS
@@ -97,7 +98,10 @@ class H2HDBFiles(BaseRepository):
     def _insert_gallery_files(
         self, db_gallery_id: int, file_names_list: list[str]
     ) -> dict[str, int]:
+        total_started = monotonic()
+        connect_started = total_started
         with self.SQLConnector() as connector:
+            connect_elapsed = monotonic() - connect_started
 
             file_name_parts_list: list[list[str]] = list()
             for file_name in file_names_list:
@@ -140,17 +144,21 @@ class H2HDBFiles(BaseRepository):
                     ]
                 )
             )
+            phase_started = monotonic()
             connector.execute(
                 insert_query,
                 insert_parameter,
             )
+            files_dbids_insert_elapsed = monotonic() - phase_started
 
             select_query = f"""
                 SELECT {", ".join(column_name_parts)}, db_file_id
                 FROM files_dbids
                 WHERE db_gallery_id = %s
             """
+            phase_started = monotonic()
             query_result = connector.fetch_all(select_query, (db_gallery_id,))
+            id_select_elapsed = monotonic() - phase_started
             db_file_id_by_parts = {
                 tuple(str(part) for part in row[:-1]): int(row[-1])
                 for row in query_result
@@ -170,6 +178,7 @@ class H2HDBFiles(BaseRepository):
             )
             insert_query = f"{insert_query_header} {insert_query_values}"
 
+            phase_started = monotonic()
             connector.execute(
                 insert_query,
                 tuple(
@@ -181,7 +190,20 @@ class H2HDBFiles(BaseRepository):
                     )
                 ),
             )
+            files_names_insert_elapsed = monotonic() - phase_started
+            close_started = monotonic()
 
+        close_elapsed = monotonic() - close_started
+        self.logger.debug(
+            "PERF event=end stage=gallery_files "
+            f"db_gallery_id={db_gallery_id} files={len(file_names_list)} "
+            f"connect_s={connect_elapsed:.6f} "
+            f"files_dbids_insert_s={files_dbids_insert_elapsed:.6f} "
+            f"id_select_s={id_select_elapsed:.6f} "
+            f"files_names_insert_s={files_names_insert_elapsed:.6f} "
+            f"close_s={close_elapsed:.6f} "
+            f"total_s={monotonic() - total_started:.6f}"
+        )
         return dict(zip(file_names_list, db_file_id_list, strict=True))
 
     def __get_db_file_id(self, db_gallery_id: int, file_name: str) -> tuple[int, ...]:
@@ -371,19 +393,72 @@ class H2HDBFiles(BaseRepository):
     def _insert_gallery_file_hash_for_db_gallery_id(
         self, fileinformations: list[FileInformation]
     ) -> None:
+        total_files = len(fileinformations)
+        processed_files = 0
+        hashing_started = monotonic()
+        next_heartbeat = hashing_started + 10.0
+        self.logger.debug(
+            "PERF event=start stage=file_byte_hashing "
+            f"processed=0 total={total_files}"
+        )
         for finfo in fileinformations:
             finfo.sethash()
+            processed_files += 1
+            current_time = monotonic()
+            if current_time >= next_heartbeat:
+                elapsed = current_time - hashing_started
+                rate = processed_files / elapsed if elapsed > 0.0 else 0.0
+                self.logger.debug(
+                    "PERF event=progress stage=file_byte_hashing "
+                    f"processed={processed_files} total={total_files} "
+                    f"elapsed_s={elapsed:.6f} rate_files_s={rate:.3f}"
+                )
+                next_heartbeat = current_time + 10.0
+        hashing_elapsed = monotonic() - hashing_started
+        hashing_rate = (
+            processed_files / hashing_elapsed if hashing_elapsed > 0.0 else 0.0
+        )
+        self.logger.debug(
+            "PERF event=progress stage=file_byte_hashing "
+            f"processed={processed_files} total={total_files} "
+            f"elapsed_s={hashing_elapsed:.6f} "
+            f"rate_files_s={hashing_rate:.3f} final=true"
+        )
+        self.logger.debug(
+            "PERF event=end stage=file_byte_hashing "
+            f"processed={processed_files} total={total_files} "
+            f"elapsed_s={hashing_elapsed:.6f} "
+            f"rate_files_s={hashing_rate:.3f}"
+        )
 
         for algorithm in HASH_ALGORITHMS:
             hash_values = {
                 cast(bytes, getattr(finfo, algorithm)) for finfo in fileinformations
             }
+            catalog_started = monotonic()
+            self.logger.debug(
+                "PERF event=start stage=hash_catalog_insert "
+                f"algorithm={algorithm} files={total_files} "
+                f"unique_hashes={len(hash_values)}"
+            )
             self.insert_db_hash_id_by_hash_values(hash_values, algorithm)
+            self.logger.debug(
+                "PERF event=end stage=hash_catalog_insert "
+                f"algorithm={algorithm} files={total_files} "
+                f"unique_hashes={len(hash_values)} "
+                f"elapsed_s={monotonic() - catalog_started:.6f}"
+            )
 
         for algorithm in HASH_ALGORITHMS:
             hash_values = {
                 cast(bytes, getattr(finfo, algorithm)) for finfo in fileinformations
             }
+            lookup_started = monotonic()
+            self.logger.debug(
+                "PERF event=start stage=hash_catalog_lookup "
+                f"algorithm={algorithm} files={total_files} "
+                f"unique_hashes={len(hash_values)}"
+            )
             db_hash_ids = self._get_db_hash_ids_by_hash_values(hash_values, algorithm)
             for finfo in fileinformations:
                 hash_value = cast(bytes, getattr(finfo, algorithm))
@@ -396,7 +471,25 @@ class H2HDBFiles(BaseRepository):
                     algorithm,
                     db_hash_ids[hash_value],
                 )
+            self.logger.debug(
+                "PERF event=end stage=hash_catalog_lookup "
+                f"algorithm={algorithm} files={total_files} "
+                f"unique_hashes={len(hash_values)} "
+                f"matched_hashes={len(db_hash_ids)} "
+                f"elapsed_s={monotonic() - lookup_started:.6f}"
+            )
+
+        association_started = monotonic()
+        self.logger.debug(
+            "PERF event=start stage=hash_association_persistence "
+            f"files={total_files} algorithms={len(HASH_ALGORITHMS)}"
+        )
         self.insert_hash_value_by_db_hash_ids(fileinformations)
+        self.logger.debug(
+            "PERF event=end stage=hash_association_persistence "
+            f"files={total_files} algorithms={len(HASH_ALGORITHMS)} "
+            f"elapsed_s={monotonic() - association_started:.6f}"
+        )
 
     def _insert_gallery_file_hash(
         self, db_file_id: int, absolute_file_path: Path
@@ -511,6 +604,11 @@ class H2HDBFiles(BaseRepository):
         self, fileinformations: list[FileInformation]
     ) -> None:
         for algorithm in HASH_ALGORITHMS:
+            insert_started = monotonic()
+            self.logger.debug(
+                "PERF event=start stage=hash_association_insert "
+                f"algorithm={algorithm} rows={len(fileinformations)}"
+            )
             with self.SQLConnector() as connector:
                 table_name = f"files_hashs_{algorithm.lower()}"
                 insert_query_header = f"""
@@ -527,6 +625,11 @@ class H2HDBFiles(BaseRepository):
                         fileinformation.db_hash_id[algorithm],
                     ]
                 connector.execute(insert_query, tuple(parameters))
+            self.logger.debug(
+                "PERF event=end stage=hash_association_insert "
+                f"algorithm={algorithm} rows={len(fileinformations)} "
+                f"elapsed_s={monotonic() - insert_started:.6f}"
+            )
 
     def insert_db_hash_id_by_hash_value(
         self, hash_value: bytes, algorithm: str
