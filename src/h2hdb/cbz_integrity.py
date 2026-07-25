@@ -115,6 +115,26 @@ class H2HDBCBZIntegrity(BaseRepository):
             query = "DELETE FROM cbz_verifications WHERE db_gallery_id = %s"
             connector.execute(query, (db_gallery_id,))
 
+    def _delete_stale_rows(self) -> None:
+        with self.SQLConnector() as connector:
+            for table_name in ("cbz_hashes", "cbz_verifications"):
+                query = f"""
+                    DELETE FROM {table_name}
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM galleries_dbids
+                        WHERE galleries_dbids.db_gallery_id =
+                            {table_name}.db_gallery_id
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                        FROM gallery_duplicate_warnings
+                        WHERE gallery_duplicate_warnings.db_gallery_id =
+                            {table_name}.db_gallery_id
+                    )
+                """
+                connector.execute(query)
+
     def _set_verification_to_now(self, db_gallery_id: int) -> None:
         with self.SQLConnector() as connector:
             select_query = "SELECT 1 FROM cbz_verifications WHERE db_gallery_id = %s"

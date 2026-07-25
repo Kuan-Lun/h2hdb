@@ -151,17 +151,30 @@ level) live in `settings.py`.
 
 Gallery metadata is written with batched SQL (`_insert_rows` and friends),
 not per-gallery concurrent writes. The one parallelism primitive left is
-CPU-bound work across *galleries* — CBZ compression and CBZ-staleness
-checks — dispatched to a `multiprocessing.Pool` via `run_in_parallel` in
-`cbz_files.py` (its only caller). `insert_h2h_download` in `h2hdb_h2hdb.py`
-owns the pool's lifetime: it creates one `Pool(POOL_CPU_LIMIT)` (only when
-`cbz_path` is configured) and reuses it for every gallery chunk plus the
-final staleness pass within that call, instead of spawning a fresh batch of
-worker processes per chunk. `POOL_CPU_LIMIT`/`CPU_NUM` live in
-`h2hdb_h2hdb.py` alongside it. The main ingest pipeline is built on this:
-scan folders → refresh CBZ files → sort galleries → insert + compress to CBZ
-in chunks (excluding spam images detected via duplicate-hash views) →
-refresh file hashes → sleep/retry if new galleries were found.
+CPU-bound work across *galleries* — CBZ compression and integrity checks —
+dispatched to a `multiprocessing.Pool` via `run_in_parallel` in `cbz_files.py`
+(its only caller). `insert_h2h_download` in `h2hdb_h2hdb.py` owns that pool's
+lifetime when `cbz_path` is configured. `POOL_CPU_LIMIT`/`CPU_NUM` live in
+`h2hdb_h2hdb.py` alongside it.
+
+When CBZ output is enabled, the ingest pipeline uses CPU-scaled progress chunks:
+`POOL_CPU_LIMIT * 16`, clamped to 64–500 galleries. It computes provisional
+duplicate/spam exclusions at run start; after each chunk's metadata insert, new
+or changed galleries immediately enter the CBZ creation/rebuild check against
+that provisional set. This keeps visible progress while SQL insertion itself
+remains batched.
+
+After all insertion chunks finish, the pipeline freezes the final exclusion
+set and performs one stable, global deduplication reconciliation across all
+current galleries. It exact-syncs content ownership, full-content hashes, and
+duplicate warnings, deletes loser CBZ files, and repairs final winners against
+the final exclusions. For equal priority claims, a still-valid incumbent for
+that same hash remains the owner; otherwise the database gallery ID is the
+deterministic tie-breaker. Intermediate ownership and provisional CBZ output
+may be inconsistent, but a successful `main`/`insert_h2h_download` return has
+converged to the final snapshot. This result is stable relative to the prior
+owner used for exact ties; it is not a history-independent canonical
+assignment.
 
 ### CBZ compression
 

@@ -106,9 +106,25 @@ database fields identify the server and database name. For SQLite, the
 
 `src/h2hdb/threading_tools.py` provides the bounded thread-pool and
 multi-process helpers used by the ingest pipeline in `src/h2hdb/h2hdb_h2hdb.py`.
-Be careful when changing insert, compression, or hash-refresh behavior because
-the pipeline processes galleries in chunks and runs independent SQL writes
-concurrently.
+Gallery metadata is inserted with batched SQL. With CBZ output enabled, progress
+chunks scale as `POOL_CPU_LIMIT * 16`, clamped to 64–500 galleries. After each
+chunk's metadata insert, new or changed galleries immediately enter the CBZ
+creation/rebuild check using the provisional duplicate/spam exclusions captured
+at run start.
+
+After all insertion chunks finish, the pipeline freezes one final exclusion set
+and runs one stable global deduplication reconciliation across all current
+galleries. That reconciliation exact-syncs content ownership, full-content
+hashes, and duplicate warnings, deletes loser CBZ files, and repairs final
+winners against the final exclusions. A still-valid incumbent wins an exact
+priority tie for the same hash; otherwise the database gallery ID is the
+deterministic tie-breaker.
+
+Transient ownership and CBZ state during a run may be inconsistent, but a
+successful `main`/`insert_h2h_download` return must converge to the final
+snapshot. Do not weaken that property by making reconciliation chunk-local.
+The exact-tie result is stable relative to prior ownership, not canonical
+across different prior histories.
 
 `compress_gallery_to_cbz.py` is imported lazily inside the method that needs it
 to avoid a hard Pillow import at package import time. Preserve that lazy-import

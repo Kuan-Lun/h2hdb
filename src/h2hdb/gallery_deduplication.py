@@ -1,4 +1,7 @@
 import datetime
+from collections import defaultdict
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
 from .repository import BaseRepository, RepositoryContext
 from .settings import chunk_list
@@ -8,6 +11,97 @@ from .table_titles import H2HDBGalleriesTitles
 
 ALREADY_UPLOADED_TAG_VALUE = "already uploaded"
 ALREADY_UPLOADED_BATCH_SIZE = 500
+HASH_OWNER_BATCH_SIZE = 500
+
+PriorityKey = tuple[bool, int, datetime.datetime]
+
+
+@dataclass(frozen=True)
+class ContentClaim:
+    """A gallery's final effective-content state for one reconciliation pass.
+
+    ``sha256`` is ``None`` when no files remain after applying the final
+    exclusion set. Such a gallery does not participate in content ownership
+    and remains eligible for a CBZ.
+    """
+
+    db_gallery_id: int
+    sha256: bytes | None
+    priority_key: PriorityKey
+
+
+@dataclass(frozen=True)
+class ReconciliationResult:
+    """Stable content ownership and its direct loser-to-winner relation."""
+
+    owner_hash_by_db_gallery_id: dict[int, bytes]
+    duplicate_of_by_db_gallery_id: dict[int, int]
+    eligible_db_gallery_ids: frozenset[int]
+
+    @property
+    def losing_db_gallery_ids(self) -> frozenset[int]:
+        return frozenset(self.duplicate_of_by_db_gallery_id)
+
+
+def select_reconciliation(
+    claims: Sequence[ContentClaim],
+    existing_owner_hash_by_db_gallery_id: Mapping[int, bytes],
+) -> ReconciliationResult:
+    """Purely select the stable owner of every effective content hash.
+
+    Highest ``priority_key`` wins. At an exact priority tie, the incumbent
+    remains owner only when it still claims that same hash; otherwise the
+    greatest ``db_gallery_id`` wins. Every contentful non-winner points
+    directly to its group's final winner. Contentless galleries own no hash,
+    have no duplicate warning, and remain CBZ-eligible.
+    """
+
+    claim_by_id: dict[int, ContentClaim] = {}
+    claims_by_hash: defaultdict[bytes, list[ContentClaim]] = defaultdict(list)
+    for claim in claims:
+        if claim.db_gallery_id in claim_by_id:
+            raise ValueError(
+                f"Duplicate content claim for gallery {claim.db_gallery_id}."
+            )
+        claim_by_id[claim.db_gallery_id] = claim
+        if claim.sha256 is not None:
+            claims_by_hash[claim.sha256].append(claim)
+
+    valid_incumbent_by_hash: dict[bytes, int] = {}
+    for db_gallery_id, sha256 in existing_owner_hash_by_db_gallery_id.items():
+        existing_claim = claim_by_id.get(db_gallery_id)
+        if existing_claim is None or existing_claim.sha256 != sha256:
+            continue
+        if sha256 in valid_incumbent_by_hash:
+            raise ValueError(f"Multiple existing owners for hash {sha256.hex()}.")
+        valid_incumbent_by_hash[sha256] = db_gallery_id
+
+    owner_hash_by_id: dict[int, bytes] = {}
+    duplicate_of_by_id: dict[int, int] = {}
+    for sha256, hash_claims in claims_by_hash.items():
+        highest_priority = max(claim.priority_key for claim in hash_claims)
+        top_claims = [
+            claim for claim in hash_claims if claim.priority_key == highest_priority
+        ]
+        incumbent_id = valid_incumbent_by_hash.get(sha256)
+        if incumbent_id is not None and any(
+            claim.db_gallery_id == incumbent_id for claim in top_claims
+        ):
+            winner_id = incumbent_id
+        else:
+            winner_id = max(claim.db_gallery_id for claim in top_claims)
+
+        owner_hash_by_id[winner_id] = sha256
+        for claim in hash_claims:
+            if claim.db_gallery_id != winner_id:
+                duplicate_of_by_id[claim.db_gallery_id] = winner_id
+
+    eligible_ids = frozenset(claim_by_id).difference(duplicate_of_by_id)
+    return ReconciliationResult(
+        owner_hash_by_db_gallery_id=owner_hash_by_id,
+        duplicate_of_by_db_gallery_id=duplicate_of_by_id,
+        eligible_db_gallery_ids=eligible_ids,
+    )
 
 
 class H2HDBGalleryDeduplication(BaseRepository):
@@ -262,9 +356,7 @@ class H2HDBGalleryDeduplication(BaseRepository):
             for db_gallery_id in db_gallery_ids
         }
 
-    def _get_priority_key(
-        self, db_gallery_id: int
-    ) -> tuple[bool, int, datetime.datetime]:
+    def _get_priority_key(self, db_gallery_id: int) -> PriorityKey:
         """Rank a gallery against a hash-collision opponent.
 
         Lexicographic: a gallery tagged "already uploaded" always loses
@@ -286,7 +378,7 @@ class H2HDBGalleryDeduplication(BaseRepository):
         self,
         db_gallery_id: int,
         sha256: bytes,
-        priority_key: tuple[bool, int, datetime.datetime],
+        priority_key: PriorityKey,
     ) -> tuple[bool, int | None]:
         """Claim `sha256` for `db_gallery_id`.
 
@@ -319,3 +411,135 @@ class H2HDBGalleryDeduplication(BaseRepository):
 
         self._record_duplicate_warning(db_gallery_id, owner_id)
         return False, None
+
+    def _get_all_hashes(self, table_name: str) -> dict[int, bytes]:
+        with self.SQLConnector() as connector:
+            query_result = connector.fetch_all(
+                f"SELECT db_gallery_id, sha256 FROM {table_name}"
+            )
+        return {
+            int(db_gallery_id): bytes(sha256) for db_gallery_id, sha256 in query_result
+        }
+
+    def _get_all_duplicate_warnings(self) -> dict[int, int]:
+        with self.SQLConnector() as connector:
+            query_result = connector.fetch_all("""
+                SELECT db_gallery_id, duplicate_of_db_gallery_id
+                FROM gallery_duplicate_warnings
+                """)
+        return {
+            int(db_gallery_id): int(duplicate_of_db_gallery_id)
+            for db_gallery_id, duplicate_of_db_gallery_id in query_result
+        }
+
+    def _delete_rows_by_db_gallery_ids(
+        self, table_name: str, db_gallery_ids: list[int]
+    ) -> None:
+        if not db_gallery_ids:
+            return
+
+        with self.SQLConnector() as connector:
+            for batch in chunk_list(db_gallery_ids, HASH_OWNER_BATCH_SIZE):
+                connector.execute(
+                    f"""
+                    DELETE FROM {table_name}
+                    WHERE db_gallery_id IN ({", ".join(["%s"] * len(batch))})
+                    """,
+                    tuple(batch),
+                )
+
+    def _sync_hashes(
+        self,
+        table_name: str,
+        existing: Mapping[int, bytes],
+        desired: Mapping[int, bytes],
+    ) -> None:
+        changed_ids = sorted(
+            db_gallery_id
+            for db_gallery_id in existing.keys() | desired.keys()
+            if existing.get(db_gallery_id) != desired.get(db_gallery_id)
+        )
+        self._delete_rows_by_db_gallery_ids(table_name, changed_ids)
+        self._insert_rows(
+            table_name,
+            ["db_gallery_id", "sha256"],
+            [
+                (db_gallery_id, desired[db_gallery_id])
+                for db_gallery_id in changed_ids
+                if db_gallery_id in desired
+            ],
+        )
+
+    def _sync_duplicate_warnings(
+        self,
+        existing: Mapping[int, int],
+        desired: Mapping[int, int],
+    ) -> None:
+        changed_ids = sorted(
+            db_gallery_id
+            for db_gallery_id in existing.keys() | desired.keys()
+            if existing.get(db_gallery_id) != desired.get(db_gallery_id)
+        )
+        self._delete_rows_by_db_gallery_ids("gallery_duplicate_warnings", changed_ids)
+        self._insert_rows(
+            "gallery_duplicate_warnings",
+            ["db_gallery_id", "duplicate_of_db_gallery_id"],
+            [
+                (db_gallery_id, desired[db_gallery_id])
+                for db_gallery_id in changed_ids
+                if db_gallery_id in desired
+            ],
+        )
+
+    def reconcile_many(
+        self,
+        claims: list[ContentClaim],
+        full_content_hashes_by_db_gallery_id: dict[int, bytes],
+    ) -> ReconciliationResult:
+        """Globally reconcile content ownership, full hashes, and warnings.
+
+        ``claims`` must contain exactly one entry for every live gallery;
+        contentless galleries use ``sha256=None``. The full-content mapping is
+        the exact subset of those galleries that have at least one
+        non-``galleryinfo.txt`` file.
+
+        Writes are exact, not upserts: stale and orphaned rows are removed,
+        changed warning targets are replaced, and all conflicting content-hash
+        rows are deleted before their stable replacements are inserted.
+        Consequently a later successful call repairs any partially-applied
+        state left by an interrupted earlier call.
+        """
+
+        claim_ids = {claim.db_gallery_id for claim in claims}
+        if len(claim_ids) != len(claims):
+            raise ValueError("Each gallery must have exactly one content claim.")
+        extra_full_hash_ids = full_content_hashes_by_db_gallery_id.keys() - claim_ids
+        if extra_full_hash_ids:
+            raise ValueError(
+                "Full-content hashes contain galleries without content claims: "
+                f"{sorted(extra_full_hash_ids)}"
+            )
+
+        existing_content_hashes = self._get_all_hashes("gallery_content_hashes")
+        result = select_reconciliation(claims, existing_content_hashes)
+
+        existing_full_content_hashes = self._get_all_hashes(
+            "gallery_full_content_hashes"
+        )
+        existing_warnings = self._get_all_duplicate_warnings()
+
+        self._sync_hashes(
+            "gallery_content_hashes",
+            existing_content_hashes,
+            result.owner_hash_by_db_gallery_id,
+        )
+        self._sync_hashes(
+            "gallery_full_content_hashes",
+            existing_full_content_hashes,
+            full_content_hashes_by_db_gallery_id,
+        )
+        self._sync_duplicate_warnings(
+            existing_warnings,
+            result.duplicate_of_by_db_gallery_id,
+        )
+        return result

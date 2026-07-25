@@ -7,7 +7,6 @@ from itertools import islice
 from multiprocessing import cpu_count
 from multiprocessing.pool import Pool
 from pathlib import Path
-from typing import cast
 
 from h2h_galleryinfo_parser import (
     GalleryInfoParser,
@@ -18,10 +17,12 @@ from .cbz_files import H2HDBCBZFiles, cbz_scrub_worker, run_in_parallel
 from .cbz_integrity import H2HDBCBZIntegrity
 from .config_loader import H2HDBConfig
 from .duplicated_hashes import H2HDBDuplicatedHashes
-from .gallery_deduplication import H2HDBGalleryDeduplication
+from .gallery_deduplication import (
+    ContentClaim,
+    H2HDBGalleryDeduplication,
+)
 from .hash_dict import HASH_ALGORITHMS
 from .information import FileInformation, TagInformation
-from .logger import HentaiDBLogger
 from .repository import BaseRepository, RepositoryContext
 from .settings import (
     COMPARISON_HASH_ALGORITHM,
@@ -46,37 +47,11 @@ from .view_ginfo import H2HDBGalleriesInfos
 GALLERY_METADATA_BATCH_SIZE = 500
 CPU_NUM = cpu_count()
 POOL_CPU_LIMIT = max(CPU_NUM - 2, 1)
-
-
-class _ExcludeHashesTracker:
-    """Recreated per call: a longer-lived cache would miss duplicate-count drops caused by deletions."""
-
-    def __init__(
-        self, duplicated_hashes: H2HDBDuplicatedHashes, logger: HentaiDBLogger
-    ) -> None:
-        self._duplicated_hashes = duplicated_hashes
-        self._logger = logger
-        self._previously_count_duplicated_files = (
-            duplicated_hashes._count_duplicated_files_hashs_sha512()
-        )
-        self.exclude_hashs = (
-            duplicated_hashes._get_duplicated_hash_values_by_count_artist_ratio()
-        )
-
-    def refresh_if_new_duplicates(self) -> None:
-        self._logger.debug("Checking for duplicated files...")
-        current_count_duplicated_files = (
-            self._duplicated_hashes._count_duplicated_files_hashs_sha512()
-        )
-        if current_count_duplicated_files > self._previously_count_duplicated_files:
-            self._logger.debug(
-                "Duplicated files found. Updating excluded hash values..."
-            )
-            self._previously_count_duplicated_files = current_count_duplicated_files
-            self.exclude_hashs = (
-                self._duplicated_hashes._get_duplicated_hash_values_by_count_artist_ratio()
-            )
-            self._logger.info("Excluded hash values updated.")
+PROGRESSIVE_GALLERIES_PER_WORKER = 16
+PROGRESSIVE_GALLERY_CHUNK_SIZE = min(
+    GALLERY_METADATA_BATCH_SIZE,
+    max(64, POOL_CPU_LIMIT * PROGRESSIVE_GALLERIES_PER_WORKER),
+)
 
 
 class H2HDB(BaseRepository):
@@ -643,14 +618,13 @@ class H2HDB(BaseRepository):
         self.logger.info("Galleries sorted.")
         return sorted_galleries_folders
 
-    def _filter_gallery_chunk_for_deduplication(
+    def _collect_gallery_deduplication_batch(
         self,
         gallery_chunk: list[Path],
         exclude_hashs: set[bytes],
-        is_insert_list: list[bool],
-    ) -> list[Path]:
+    ) -> tuple[list[ContentClaim], dict[int, bytes], dict[str, int]]:
         if not gallery_chunk:
-            return []
+            return ([], {}, {})
 
         gallery_names = [folder.name for folder in gallery_chunk]
         db_gallery_ids_by_name = (
@@ -672,13 +646,11 @@ class H2HDB(BaseRepository):
             )
         )
 
-        kept_folders: list[Path] = []
-        for folder, is_insert in zip(gallery_chunk, is_insert_list, strict=True):
+        claims: list[ContentClaim] = []
+        full_content_hashes_by_id: dict[int, bytes] = {}
+        for folder in gallery_chunk:
             db_gallery_id = db_gallery_ids_by_name.get(folder.name)
             if db_gallery_id is None:
-                # Not yet resolvable (e.g. its insert was skipped/retried) --
-                # let it through unchanged rather than silently dropping it.
-                kept_folders.append(folder)
                 continue
 
             # galleryinfo.txt is excluded from both hashes below: it embeds
@@ -694,67 +666,96 @@ class H2HDB(BaseRepository):
                 if file_name != GALLERY_INFO_FILE_NAME
             ]
 
-            # An empty file set (e.g. every file happens to be excluded, or
-            # the gallery genuinely has none besides galleryinfo.txt) hashes
-            # to the same value for every such gallery -- that's not a
-            # meaningful content match, so galleries in this state opt out of
-            # both hash tables entirely rather than being wrongly treated as
-            # duplicates of each other.
+            if gallery_files:
+                full_content_hashes_by_id[db_gallery_id] = hashlib.sha256(
+                    b"".join(sorted(file_hash for _, file_hash in gallery_files))
+                ).digest()
+
             content_files = [
                 file_hash
                 for _, file_hash in gallery_files
                 if file_hash not in exclude_hashs
             ]
-
-            # Unfiltered by exclude_hashs: only matches another gallery when
-            # every single file (not just the ones that would survive
-            # exclusion) is bit-for-bit identical, so a match here is strong
-            # enough evidence of a true duplicate re-upload to feed
-            # todelete_names automatically (see gallery_full_duplicate_names).
-            # Only recomputed when galleryinfo.txt actually changed this run
-            # (is_insert) -- its stored hash is a proxy for "this gallery's
-            # files could have changed", since every file, including
-            # galleryinfo.txt, is only ever (re)written together as a whole
-            # gallery re-insert.
-            if gallery_files and is_insert:
-                full_hash = hashlib.sha256(
-                    b"".join(sorted(file_hash for _, file_hash in gallery_files))
-                ).digest()
-                self.gallery_deduplication._set_full_content_hash(
-                    db_gallery_id, full_hash
-                )
-
-            if not content_files:
-                kept_folders.append(folder)
-                continue
-
-            content_hash = hashlib.sha256(b"".join(sorted(content_files))).digest()
+            content_hash = (
+                hashlib.sha256(b"".join(sorted(content_files))).digest()
+                if content_files
+                else None
+            )
             priority_key = (
                 not already_uploaded_by_db_gallery_id[db_gallery_id],
                 len(titles_by_db_gallery_id[db_gallery_id]),
                 download_times_by_db_gallery_id[db_gallery_id],
             )
-            should_compress, evicted_db_gallery_id = self.gallery_deduplication.resolve(
-                db_gallery_id, content_hash, priority_key
+            claims.append(
+                ContentClaim(
+                    db_gallery_id=db_gallery_id,
+                    sha256=content_hash,
+                    priority_key=priority_key,
+                )
             )
-            if evicted_db_gallery_id is not None:
-                self._evict_duplicate_gallery_cbz(evicted_db_gallery_id)
-            if should_compress:
-                kept_folders.append(folder)
 
-        return kept_folders
+        return (claims, full_content_hashes_by_id, db_gallery_ids_by_name)
 
-    def _evict_duplicate_gallery_cbz(self, db_gallery_id: int) -> None:
-        self.cbz_integrity._delete_hash(db_gallery_id)
-        self.cbz_integrity._delete_verification(db_gallery_id)
-        if self.config.h2h.cbz_path is None:
-            # No CBZ pipeline running, so there's no physical file to remove.
+    def _filter_galleries_for_deduplication(
+        self,
+        galleries: list[Path],
+        exclude_hashs: set[bytes],
+    ) -> list[Path]:
+        claims: list[ContentClaim] = []
+        full_content_hashes_by_id: dict[int, bytes] = {}
+        db_gallery_ids_by_name: dict[str, int] = {}
+        for gallery_chunk in chunk_list(galleries, GALLERY_METADATA_BATCH_SIZE):
+            (
+                chunk_claims,
+                chunk_full_content_hashes,
+                chunk_db_gallery_ids_by_name,
+            ) = self._collect_gallery_deduplication_batch(gallery_chunk, exclude_hashs)
+            claims.extend(chunk_claims)
+            full_content_hashes_by_id.update(chunk_full_content_hashes)
+            db_gallery_ids_by_name.update(chunk_db_gallery_ids_by_name)
+
+        missing_gallery_names = {folder.name for folder in galleries}.difference(
+            db_gallery_ids_by_name
+        )
+        if missing_gallery_names:
+            raise RuntimeError(
+                "Cannot reconcile galleries missing from the database: "
+                f"{sorted(missing_gallery_names)}"
+            )
+
+        result = self.gallery_deduplication.reconcile_many(
+            claims, full_content_hashes_by_id
+        )
+        losing_db_gallery_ids = list(result.losing_db_gallery_ids)
+        self.cbz_integrity._delete_stale_rows()
+        if self.config.h2h.cbz_path is not None:
+            self._delete_duplicate_gallery_cbz_files(losing_db_gallery_ids)
+
+        return [
+            folder
+            for folder in galleries
+            if db_gallery_ids_by_name[folder.name] in result.eligible_db_gallery_ids
+        ]
+
+    def _delete_duplicate_gallery_cbz_files(self, db_gallery_ids: list[int]) -> None:
+        from .compress_gallery_to_cbz import gallery_name_to_cbz_file_name
+
+        assert self.config.h2h.cbz_path is not None
+        if not db_gallery_ids:
             return
-        gallery_name = self.gallery_ids.get_gallery_names_by_db_gallery_ids(
-            [db_gallery_id]
-        ).get(db_gallery_id)
-        if gallery_name is not None:
-            self.cbz._delete_cbz_file_for_gallery_name(gallery_name)
+
+        gallery_names = self.gallery_ids.get_gallery_names_by_db_gallery_ids(
+            db_gallery_ids
+        ).values()
+        target_file_names = {
+            gallery_name_to_cbz_file_name(gallery_name)
+            for gallery_name in gallery_names
+        }
+        for root, _, files in self.config.h2h.cbz_path.walk():
+            for file_name in target_file_names.intersection(files):
+                cbz_path = root / file_name
+                cbz_path.unlink()
+                self.logger.info(f"CBZ '{cbz_path}' removed (duplicate content).")
 
     def _locate_cbz_paths(self, db_gallery_ids: list[int]) -> list[tuple[int, Path]]:
         from .compress_gallery_to_cbz import gallery_name_to_cbz_file_name
@@ -786,28 +787,6 @@ class H2HDB(BaseRepository):
                 )
             )
         return located
-
-    def _cleanup_orphaned_duplicate_cbz_files(self) -> None:
-        """Remove CBZ files a past run left behind on disk for a gallery
-        that has since lost its content-hash race to another gallery.
-
-        `_evict_duplicate_gallery_cbz` only deletes the physical file at the
-        moment ownership transfers, so a run with `cbz_path` unset misses it
-        permanently -- `resolve()` won't re-trigger eviction for an owner
-        change that already happened. This sweeps up anything still on disk
-        for a gallery `gallery_duplicate_warnings` currently says shouldn't
-        have one.
-        """
-        assert self.config.h2h.cbz_path is not None
-        losing_db_gallery_ids = (
-            self.gallery_deduplication.get_duplicate_warning_db_gallery_ids()
-        )
-        for db_gallery_id, cbz_path in self._locate_cbz_paths(losing_db_gallery_ids):
-            cbz_path.unlink()
-            self.logger.info(
-                f"Orphaned CBZ '{cbz_path}' removed "
-                f"(gallery {db_gallery_id} lost its duplicate-content race)."
-            )
 
     def _establish_cbz_hash_baselines(
         self, db_gallery_ids: list[int], pool: Pool
@@ -899,47 +878,53 @@ class H2HDB(BaseRepository):
     def insert_h2h_download(self) -> bool:
         self.delete_pending_gallery_removals()
 
-        current_galleries_folders, current_galleries_names = (
-            self.scan_current_galleries_folders()
-        )
-
-        if self.config.h2h.cbz_path is not None:
-            self.cbz._refresh_current_cbz_files(current_galleries_names)
+        current_galleries_folders, _ = self.scan_current_galleries_folders()
 
         self.logger.info("Inserting galleries...")
         current_galleries_folders = self._sort_galleries_for_processing(
             current_galleries_folders
         )
 
-        self.logger.info("Getting excluded hash values...")
-        exclude_hashes_tracker = _ExcludeHashesTracker(
-            self.duplicated_hashes, self.logger
-        )
-        self.logger.info("Excluded hash values obtained.")
-
         total_inserted_in_database = 0
-        total_created_cbz = 0
+        total_cbz_write_operations = 0
         is_insert_limit_reached = False
+        gallery_chunk_size = (
+            PROGRESSIVE_GALLERY_CHUNK_SIZE
+            if self.config.h2h.cbz_path is not None
+            else 1000 * POOL_CPU_LIMIT
+        )
         chunked_galleries_folders = chunk_list(
-            current_galleries_folders, 1000 * POOL_CPU_LIMIT
+            current_galleries_folders, gallery_chunk_size
         )
         total_chunks = len(chunked_galleries_folders)
         total_galleries = len(current_galleries_folders)
         galleries_processed = 0
         self.logger.info(
-            f"Inserting {total_galleries} galleries in parallel "
+            f"Inserting {total_galleries} galleries "
             f"across {total_chunks} chunk(s)..."
         )
-        cbz_pool_cm = (
-            Pool(POOL_CPU_LIMIT)
-            if self.config.h2h.cbz_path is not None
-            else contextlib.nullcontext()
-        )
-        with cbz_pool_cm as cbz_pool:
+        with contextlib.ExitStack() as stack:
+            cbz_pool = (
+                stack.enter_context(Pool(POOL_CPU_LIMIT))
+                if self.config.h2h.cbz_path is not None
+                else None
+            )
+
+            # This snapshot is intentionally provisional. Newly inserted
+            # galleries may introduce more exclusions or later lose their
+            # content-ownership race. Producing their CBZ now keeps progress
+            # visible; the authoritative global pass below repairs or removes
+            # every provisional result before a successful return.
+            provisional_exclude_hashs = (
+                self.duplicated_hashes._get_duplicated_hash_values_by_count_artist_ratio()
+                if cbz_pool is not None
+                else set()
+            )
+
             for chunk_index, gallery_chunk in enumerate(chunked_galleries_folders, 1):
                 galleries_processed += len(gallery_chunk)
                 self.logger.info(
-                    f"Processing chunk {chunk_index}/{total_chunks} "
+                    f"Processing insertion chunk {chunk_index}/{total_chunks} "
                     f"({galleries_processed}/{total_galleries} galleries)..."
                 )
                 is_insert_list = self._insert_gallery_chunk_with_split_retry(
@@ -947,84 +932,81 @@ class H2HDB(BaseRepository):
                 )
                 if any(is_insert_list):
                     self.logger.info("There are new galleries inserted in database.")
-                    is_insert_limit_reached |= True
+                    is_insert_limit_reached = True
                     total_inserted_in_database += sum(is_insert_list)
-                    exclude_hashes_tracker.refresh_if_new_duplicates()
 
-                # Gallery-content dedup detection (gallery_content_hashes,
-                # gallery_full_content_hashes, gallery_duplicate_warnings) is
-                # useful on its own -- e.g. todelete_names -- independently of
-                # whether CBZ output is configured, so it always runs. Only
-                # actually compressing the filtered result is CBZ-specific.
-                gallery_chunk_to_compress = (
-                    self._filter_gallery_chunk_for_deduplication(
-                        gallery_chunk,
-                        exclude_hashes_tracker.exclude_hashs,
-                        is_insert_list,
-                    )
-                )
+                if cbz_pool is not None:
+                    provisional_galleries = [
+                        gallery_folder
+                        for gallery_folder, is_insert in zip(
+                            gallery_chunk, is_insert_list, strict=True
+                        )
+                        if is_insert
+                    ]
+                    if provisional_galleries:
+                        self.logger.info(
+                            "Checking provisional CBZ output for "
+                            f"{len(provisional_galleries)} newly inserted or "
+                            "updated galleries..."
+                        )
+                        provisional_results = self.cbz.compress_galleries_to_cbz(
+                            provisional_galleries,
+                            provisional_exclude_hashs,
+                            cbz_pool,
+                        )
+                        total_cbz_write_operations += sum(provisional_results)
 
-                if self.config.h2h.cbz_path is not None:
-                    is_new_list = self.cbz.compress_galleries_to_cbz(
-                        gallery_chunk_to_compress,
-                        exclude_hashes_tracker.exclude_hashs,
-                        cast(Pool, cbz_pool),
-                    )
-                    if any(is_new_list):
-                        self.logger.info("There are new CBZ files created.")
-                        total_created_cbz += sum(is_new_list)
             self.logger.info(
                 f"Total galleries inserted in database: {total_inserted_in_database}"
             )
-            self.logger.info(f"Total CBZ files created: {total_created_cbz}")
 
-            if self.config.h2h.cbz_path is not None:
-                self.logger.info(
-                    "Cleaning up CBZ files orphaned by duplicate-content eviction..."
-                )
-                self._cleanup_orphaned_duplicate_cbz_files()
+            # Freeze one final exclusion set only after every insertion chunk
+            # has updated the file-hash tables. Reconcile all current galleries
+            # globally against that same snapshot, so chunk boundaries cannot
+            # leave stale or conflicting ownership behind.
+            self.logger.info("Getting final excluded hash values...")
+            final_exclude_hashs = (
+                self.duplicated_hashes._get_duplicated_hash_values_by_count_artist_ratio()
+            )
+            self.logger.info("Final excluded hash values obtained.")
+            galleries_to_compress = self._filter_galleries_for_deduplication(
+                current_galleries_folders, final_exclude_hashs
+            )
 
-                self.logger.info(
-                    "Checking for CBZ files made stale by new exclusions..."
+            if cbz_pool is not None:
+                eligible_gallery_names = {
+                    gallery_folder.name for gallery_folder in galleries_to_compress
+                }
+                self.cbz._refresh_current_cbz_files(eligible_gallery_names)
+
+                chunked_galleries_to_compress = chunk_list(
+                    galleries_to_compress, 1000 * POOL_CPU_LIMIT
                 )
-                final_exclude_hashs = (
-                    self.duplicated_hashes._get_duplicated_hash_values_by_count_artist_ratio()
-                )
-                stale_galleries = self.cbz.get_stale_cbz_galleries(
-                    current_galleries_names, final_exclude_hashs, cast(Pool, cbz_pool)
-                )
-                if stale_galleries:
+                for chunk_index, gallery_chunk in enumerate(
+                    chunked_galleries_to_compress, 1
+                ):
                     self.logger.info(
-                        f"Recompressing {len(stale_galleries)} CBZ file(s) made stale "
-                        "by newly-excluded duplicate files..."
+                        "Compressing final eligible gallery chunk "
+                        f"{chunk_index}/{len(chunked_galleries_to_compress)}..."
                     )
-                    folder_by_gallery_name = {
-                        folder.name: folder for folder in current_galleries_folders
-                    }
-                    stale_folders_to_filter = [
-                        folder_by_gallery_name[name]
-                        for name in stale_galleries
-                        if name in folder_by_gallery_name
-                    ]
-                    stale_folders = self._filter_gallery_chunk_for_deduplication(
-                        stale_folders_to_filter,
+                    is_new_list = self.cbz.compress_galleries_to_cbz(
+                        gallery_chunk,
                         final_exclude_hashs,
-                        # These galleries are only here because
-                        # get_stale_cbz_galleries flagged newly-excluded
-                        # duplicate files, not because their own content
-                        # changed -- their full-content hash is unaffected
-                        # and already correct from a prior pass.
-                        [False] * len(stale_folders_to_filter),
+                        cbz_pool,
                     )
-                    self.cbz.compress_galleries_to_cbz(
-                        stale_folders,
-                        final_exclude_hashs,
-                        cast(Pool, cbz_pool),
-                    )
+                    if any(is_new_list):
+                        self.logger.info("CBZ files were created or rebuilt.")
+                        total_cbz_write_operations += sum(is_new_list)
 
                 self._scrub_cbz_files(
-                    current_galleries_folders, final_exclude_hashs, cast(Pool, cbz_pool)
+                    galleries_to_compress,
+                    final_exclude_hashs,
+                    cbz_pool,
                 )
+
+        self.logger.info(
+            f"Total CBZ create/rebuild operations: {total_cbz_write_operations}"
+        )
 
         self.logger.info("Cleaning up database...")
         self.refresh_current_files_hashs()

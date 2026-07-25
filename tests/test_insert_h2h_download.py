@@ -1,11 +1,12 @@
 """Characterization tests for H2HDB.insert_h2h_download().
 
 These pin today's externally-observable behavior of the pipeline (gallery
-scanning/sorting, CBZ compression, and the duplicate-spam-image exclusion +
-stale-CBZ recompression safety net) so that extracting pieces of it into
+scanning/sorting, global content-ownership reconciliation, CBZ compression,
+and duplicate-spam-image exclusion) so that extracting pieces of it into
 smaller methods doesn't silently change behavior.
 """
 
+import hashlib
 import io
 import zipfile
 from collections.abc import Iterator
@@ -51,6 +52,11 @@ def _make_jpeg_bytes(seed: int) -> bytes:
     buf = io.BytesIO()
     Image.new("RGB", (8, 8), color=(seed % 256, 0, 0)).save(buf, "JPEG")
     return buf.getvalue()
+
+
+def _effective_content_hash(*file_contents: bytes) -> bytes:
+    file_hashes = sorted(hashlib.sha512(content).digest() for content in file_contents)
+    return hashlib.sha256(b"".join(file_hashes)).digest()
 
 
 @pytest.fixture
@@ -101,6 +107,86 @@ def test_insert_h2h_download_creates_cbz_files_when_cbz_path_configured(
         assert set(cbz.namelist()) == {"galleryinfo.txt", "000.jpg"}
 
 
+def test_insert_h2h_download_creates_provisional_cbz_between_progress_chunks(
+    db: H2HDB,
+    download_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cbz_path = tmp_path / "cbz"
+    cbz_path.mkdir()
+    db.config.h2h.cbz_path = cbz_path
+    monkeypatch.setattr(
+        "h2hdb.h2hdb_h2hdb.PROGRESSIVE_GALLERY_CHUNK_SIZE",
+        1,
+    )
+
+    for gallery_name, seed in (("700006", 20), ("700007", 220)):
+        folder = download_path / gallery_name
+        _write_galleryinfo(folder, title=f"Progressive {gallery_name}")
+        (folder / "001.jpg").write_bytes(_make_jpeg_bytes(seed))
+
+    seen_chunks: list[list[str]] = []
+    original_insert = db._insert_gallery_chunk_with_split_retry
+
+    def observe_before_inserting_next_chunk(
+        gallery_chunk: list[Path],
+    ) -> list[bool]:
+        if seen_chunks:
+            first_gallery_name = seen_chunks[0][0]
+            first_cbz = cbz_path / gallery_name_to_cbz_file_name(first_gallery_name)
+            assert first_cbz.exists()
+            with zipfile.ZipFile(first_cbz) as cbz:
+                assert set(cbz.namelist()) == {"galleryinfo.txt", "001.jpg"}
+        seen_chunks.append([folder.name for folder in gallery_chunk])
+        return original_insert(gallery_chunk)
+
+    monkeypatch.setattr(
+        db,
+        "_insert_gallery_chunk_with_split_retry",
+        observe_before_inserting_next_chunk,
+    )
+
+    assert db.insert_h2h_download() is True
+
+    assert len(seen_chunks) == 2
+    assert all(len(chunk) == 1 for chunk in seen_chunks)
+    assert db.gallery_deduplication.get_duplicate_warning_db_gallery_ids() == []
+    for gallery_name in {"700006", "700007"}:
+        assert db.gallery_ids._get_db_gallery_id_by_gallery_name(gallery_name) > 0
+        cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
+        assert cbz_file.exists()
+        with zipfile.ZipFile(cbz_file) as cbz:
+            assert set(cbz.namelist()) == {"galleryinfo.txt", "001.jpg"}
+
+
+def test_insert_h2h_download_keeps_galleryinfo_only_gallery_eligible_for_cbz(
+    db: H2HDB, download_path: Path, tmp_path: Path
+) -> None:
+    cbz_path = tmp_path / "cbz"
+    cbz_path.mkdir()
+    db.config.h2h.cbz_path = cbz_path
+
+    gallery_name = "700005"
+    _write_galleryinfo(
+        download_path / gallery_name,
+        title="Gallery With Metadata Only",
+    )
+
+    assert db.insert_h2h_download() is True
+
+    db_gallery_id = db.gallery_ids._get_db_gallery_id_by_gallery_name(gallery_name)
+    assert db_gallery_id > 0
+    assert db.gallery_deduplication._get_all_hashes("gallery_content_hashes") == {}
+    assert db.gallery_deduplication._get_all_hashes("gallery_full_content_hashes") == {}
+    assert db.gallery_deduplication.get_duplicate_warning_db_gallery_ids() == []
+
+    cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
+    assert cbz_file.exists()
+    with zipfile.ZipFile(cbz_file) as cbz:
+        assert cbz.namelist() == ["galleryinfo.txt"]
+
+
 def test_insert_h2h_download_groups_cbz_by_upload_time_when_configured(
     db: H2HDB, download_path: Path, tmp_path: Path
 ) -> None:
@@ -129,7 +215,10 @@ def test_insert_h2h_download_groups_cbz_by_upload_time_when_configured(
 
 
 def test_insert_h2h_download_excludes_and_recovers_duplicate_spam_images(
-    db: H2HDB, download_path: Path, tmp_path: Path
+    db: H2HDB,
+    download_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cbz_path = tmp_path / "cbz"
     cbz_path.mkdir()
@@ -147,24 +236,196 @@ def test_insert_h2h_download_excludes_and_recovers_duplicate_spam_images(
         (folder / "001.jpg").write_bytes(shared_image)
         gallery_names.append(folder.name)
 
+    saw_unreconciled_provisional_cbzs = False
+    original_filter = db._filter_galleries_for_deduplication
+
+    def observe_provisional_cbzs_before_final_reconciliation(
+        galleries: list[Path],
+        exclude_hashs: set[bytes],
+    ) -> list[Path]:
+        nonlocal saw_unreconciled_provisional_cbzs
+        if not saw_unreconciled_provisional_cbzs:
+            for name in gallery_names:
+                provisional_cbz = cbz_path / gallery_name_to_cbz_file_name(name)
+                assert provisional_cbz.exists()
+                with zipfile.ZipFile(provisional_cbz) as cbz:
+                    assert set(cbz.namelist()) == {
+                        "galleryinfo.txt",
+                        "001.jpg",
+                    }
+            saw_unreconciled_provisional_cbzs = True
+        return original_filter(galleries, exclude_hashs)
+
+    monkeypatch.setattr(
+        db,
+        "_filter_galleries_for_deduplication",
+        observe_provisional_cbzs_before_final_reconciliation,
+    )
+
     assert db.insert_h2h_download() is True
+    assert saw_unreconciled_provisional_cbzs
+
+    db_gallery_ids = {
+        db.gallery_ids._get_db_gallery_id_by_gallery_name(name)
+        for name in gallery_names
+    }
+    assert len(db_gallery_ids) == len(gallery_names)
+    assert db.gallery_deduplication._get_all_hashes("gallery_content_hashes") == {}
+    assert db.gallery_deduplication.get_duplicate_warning_db_gallery_ids() == []
 
     for name in gallery_names:
         cbz_file = cbz_path / gallery_name_to_cbz_file_name(name)
         with zipfile.ZipFile(cbz_file) as cbz:
             assert cbz.namelist() == ["galleryinfo.txt"]
 
-    # No new galleries on the second pass, so the in-loop exclude_hashs
-    # recalculation never runs (it's gated on `any(is_insert_list)`) -- the
-    # CBZs would get rebuilt *without* the exclusion if not for the
-    # end-of-run "stale CBZ" safety net recomputing the exclusion set
-    # unconditionally and recompressing anything that drifted from it.
+    # A no-op pass must use the same final exclusion snapshot and preserve both
+    # contentless eligibility and the metadata-only CBZ result.
     assert db.insert_h2h_download() is False
 
     for name in gallery_names:
         cbz_file = cbz_path / gallery_name_to_cbz_file_name(name)
         with zipfile.ZipFile(cbz_file) as cbz:
             assert cbz.namelist() == ["galleryinfo.txt"]
+
+
+def test_insert_h2h_download_reconciles_migrated_owner_before_compression(
+    db: H2HDB,
+    download_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One run must release A's old hash before judging B's claim to it.
+
+    A and B are deliberately collected in separate metadata batches. This
+    catches the old snapshot bug where B lost X to the higher-priority A even
+    though A's final claim had migrated from X to Y.
+    """
+
+    monkeypatch.setattr(
+        "h2hdb.h2hdb_h2hdb.GALLERY_METADATA_BATCH_SIZE",
+        1,
+    )
+    cbz_path = tmp_path / "cbz"
+    cbz_path.mkdir()
+    db.config.h2h.cbz_path = cbz_path
+
+    content_x = _make_jpeg_bytes(21)
+    content_y = _make_jpeg_bytes(220)
+    a_name = "700050"
+    b_name = "700051"
+    a_folder = download_path / a_name
+    _write_galleryinfo(
+        a_folder,
+        title="A title deliberately much longer than B",
+    )
+    a_page = a_folder / "001.jpg"
+    a_page.write_bytes(content_x)
+
+    assert db.insert_h2h_download() is True
+
+    a_id = db.gallery_ids._get_db_gallery_id_by_gallery_name(a_name)
+    assert db.gallery_deduplication._get_all_hashes("gallery_content_hashes") == {
+        a_id: _effective_content_hash(content_x)
+    }
+
+    # The normal ingest contract treats an unchanged galleryinfo.txt as an
+    # unchanged gallery. Update A's already-known file hash directly so this
+    # setup preserves A's db_gallery_id and its incumbent ownership of X while
+    # presenting a final claim for Y to the next full main run.
+    a_page.write_bytes(content_y)
+    a_page_id = db.files._get_db_file_ids_by_gallery_ids_for_name([a_id], a_page.name)[
+        a_id
+    ]
+    content_y_sha512 = hashlib.sha512(content_y).digest()
+    db.files.insert_db_hash_id_by_hash_values({content_y_sha512}, "sha512")
+    db.files._update_gallery_file_hash_by_db_hash_id(
+        a_page_id,
+        db.files.get_db_hash_id_by_hash_value(content_y_sha512, "sha512"),
+        "sha512",
+    )
+
+    # Force the final compression phase to materialize A from its migrated
+    # source bytes rather than reuse the prior same-name CBZ.
+    (cbz_path / gallery_name_to_cbz_file_name(a_name)).unlink()
+
+    b_folder = download_path / b_name
+    _write_galleryinfo(b_folder, title="B")
+    (b_folder / "001.jpg").write_bytes(content_x)
+
+    # This single successful return must be the convergence point; no repair
+    # run is allowed or needed.
+    assert db.insert_h2h_download() is True
+
+    assert db.gallery_ids._get_db_gallery_id_by_gallery_name(a_name) == a_id
+    b_id = db.gallery_ids._get_db_gallery_id_by_gallery_name(b_name)
+    assert db.gallery_deduplication._get_all_hashes("gallery_content_hashes") == {
+        a_id: _effective_content_hash(content_y),
+        b_id: _effective_content_hash(content_x),
+    }
+    assert db.gallery_deduplication.get_duplicate_warning_db_gallery_ids() == []
+
+    for gallery_name, expected_content in (
+        (a_name, content_y),
+        (b_name, content_x),
+    ):
+        cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
+        assert cbz_file.exists()
+        with zipfile.ZipFile(cbz_file) as cbz:
+            assert set(cbz.namelist()) == {"galleryinfo.txt", "001.jpg"}
+            with (
+                Image.open(io.BytesIO(cbz.read("001.jpg"))) as actual_image,
+                Image.open(io.BytesIO(expected_content)) as expected_image,
+            ):
+                actual_red = actual_image.convert("RGB").getpixel((0, 0))[0]
+                expected_red = expected_image.convert("RGB").getpixel((0, 0))[0]
+                assert abs(actual_red - expected_red) <= 2
+
+
+def test_insert_h2h_download_resolves_three_way_content_hash_collision(
+    db: H2HDB, download_path: Path, tmp_path: Path
+) -> None:
+    """Three brand-new galleries in one chunk share byte-identical file
+    content. Only the highest-priority gallery (longest title, here) should
+    end up with a CBZ after a full run; the others must lose the race."""
+    cbz_path = tmp_path / "cbz"
+    cbz_path.mkdir()
+    db.config.h2h.cbz_path = cbz_path
+
+    # Same tags/artist for all three (no "artist:" tag at all) so the
+    # unrelated spam-image exclusion mechanism never trips -- this is purely
+    # a content-hash race between three otherwise-ordinary galleries.
+    shared_image = _make_jpeg_bytes(0)
+    entries = [
+        ("700040", "short"),
+        ("700041", "a somewhat longer title"),
+        ("700042", "the longest title of them all here"),
+    ]
+    for name, title in entries:
+        folder = download_path / name
+        _write_galleryinfo(folder, title=title)
+        (folder / "001.jpg").write_bytes(shared_image)
+
+    assert db.insert_h2h_download() is True
+
+    winner_name, loser_names = "700042", ["700040", "700041"]
+    winner_cbz = cbz_path / gallery_name_to_cbz_file_name(winner_name)
+    assert winner_cbz.exists()
+    with zipfile.ZipFile(winner_cbz) as cbz:
+        assert set(cbz.namelist()) == {"galleryinfo.txt", "001.jpg"}
+
+    for loser_name in loser_names:
+        loser_cbz = cbz_path / gallery_name_to_cbz_file_name(loser_name)
+        assert not loser_cbz.exists()
+
+    winner_id = db.gallery_ids._get_db_gallery_id_by_gallery_name(winner_name)
+    loser_ids = {
+        db.gallery_ids._get_db_gallery_id_by_gallery_name(name) for name in loser_names
+    }
+    assert (
+        set(db.gallery_deduplication.get_duplicate_warning_db_gallery_ids())
+        == loser_ids
+    )
+    assert winner_id not in loser_ids
 
 
 def test_insert_h2h_download_sorts_by_upload_time_descending(
