@@ -10,7 +10,7 @@ from h2h_galleryinfo_parser import GalleryInfoParser, parse_galleryinfo
 from h2hdb import H2HDB, H2HDBConfig
 from h2hdb import h2hdb_h2hdb as h2hdb_h2hdb_module
 from h2hdb import table_tags as table_tags_module
-from h2hdb.hash_dict import HASH_ALGORITHMS
+from h2hdb.hash_dict import FILE_CONTENT_HASH_ALGORITHM
 from h2hdb.sql_connector import DatabaseDuplicateKeyError, DatabaseKeyError
 
 
@@ -105,21 +105,100 @@ def test_gallery_comment_round_trip(db: H2HDB) -> None:
 
 
 def test_hash_value_round_trip(db: H2HDB) -> None:
-    hash_value = bytes.fromhex("ab" * 64)
+    hash_value = bytes.fromhex("ab" * 32)
 
-    db.files.insert_db_hash_id_by_hash_value(hash_value, "sha512")
+    db.files.insert_db_hash_id_by_hash_value(hash_value, FILE_CONTENT_HASH_ALGORITHM)
 
-    assert db.files._check_db_hash_id_by_hash_value(hash_value, "sha512") is True
-    db_hash_id = db.files.get_db_hash_id_by_hash_value(hash_value, "sha512")
+    assert (
+        db.files._check_db_hash_id_by_hash_value(
+            hash_value, FILE_CONTENT_HASH_ALGORITHM
+        )
+        is True
+    )
+    db_hash_id = db.files.get_db_hash_id_by_hash_value(
+        hash_value, FILE_CONTENT_HASH_ALGORITHM
+    )
     assert isinstance(db_hash_id, int)
-    assert db.files.get_hash_value_by_db_hash_id(db_hash_id, "sha512") == hash_value
+    assert (
+        db.files.get_hash_value_by_db_hash_id(db_hash_id, FILE_CONTENT_HASH_ALGORITHM)
+        == hash_value
+    )
+    with pytest.raises(DatabaseDuplicateKeyError):
+        db.files.insert_db_hash_id_by_hash_value(
+            hash_value, FILE_CONTENT_HASH_ALGORITHM
+        )
+
+
+@pytest.mark.parametrize("digest_size", [31, 33])
+def test_hash_value_rejects_non_sha256_digest_lengths(
+    db: H2HDB, digest_size: int
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match=rf"sha256 digest must be exactly 32 bytes, got {digest_size}",
+    ):
+        db.files.insert_db_hash_id_by_hash_value(
+            bytes(digest_size), FILE_CONTENT_HASH_ALGORITHM
+        )
+
+
+def test_file_hash_schema_uses_only_sha256_tables(db: H2HDB) -> None:
+    with db.SQLConnector() as connector:
+        match db.config.database.sql_type.lower():
+            case "mariadb":
+                table_rows = connector.fetch_all(
+                    """
+                    SELECT TABLE_NAME
+                    FROM INFORMATION_SCHEMA.TABLES
+                    WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE'
+                    """,
+                    (db.config.database.database,),
+                )
+                hash_column = connector.fetch_one(
+                    """
+                    SELECT DATA_TYPE, CHARACTER_OCTET_LENGTH
+                    FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_SCHEMA = %s
+                        AND TABLE_NAME = 'files_hashs_sha256_dbids'
+                        AND COLUMN_NAME = 'hash_value'
+                    """,
+                    (db.config.database.database,),
+                )
+                assert hash_column == ("binary", 32)
+            case "sqlite":
+                table_rows = connector.fetch_all(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+                create_sql = connector.fetch_one("""
+                    SELECT sql
+                    FROM sqlite_master
+                    WHERE type = 'table'
+                        AND name = 'files_hashs_sha256_dbids'
+                    """)[0]
+                assert "hash_value BLOB NOT NULL" in create_sql
+                assert "CHECK (length(hash_value) = 32)" in create_sql
+
+        assert connector.fetch_all("SELECT sha256 FROM files_hashs LIMIT 0") == []
+        assert (
+            connector.fetch_all("SELECT * FROM duplicate_hash_in_gallery LIMIT 0") == []
+        )
+
+    hash_tables = {
+        str(table_name)
+        for (table_name,) in table_rows
+        if str(table_name).startswith("files_hashs_")
+    }
+    assert hash_tables == {
+        "files_hashs_sha256",
+        "files_hashs_sha256_dbids",
+    }
 
 
 def test_bulk_hash_insert_handles_stale_duplicate_read(
     db: H2HDB, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    hash_value = bytes.fromhex("cd" * 64)
-    db.files.insert_db_hash_id_by_hash_value(hash_value, "sha512")
+    hash_value = bytes.fromhex("cd" * 32)
+    db.files.insert_db_hash_id_by_hash_value(hash_value, FILE_CONTENT_HASH_ALGORITHM)
 
     original_get_hash_ids = db.files._get_db_hash_ids_by_hash_values
     call_count = 0
@@ -133,17 +212,24 @@ def test_bulk_hash_insert_handles_stale_duplicate_read(
 
     monkeypatch.setattr(db.files, "_get_db_hash_ids_by_hash_values", stale_once)
 
-    db.files.insert_db_hash_id_by_hash_values({hash_value}, "sha512")
+    db.files.insert_db_hash_id_by_hash_values({hash_value}, FILE_CONTENT_HASH_ALGORITHM)
 
-    assert db.files._check_db_hash_id_by_hash_value(hash_value, "sha512") is True
+    assert (
+        db.files._check_db_hash_id_by_hash_value(
+            hash_value, FILE_CONTENT_HASH_ALGORITHM
+        )
+        is True
+    )
 
 
 def test_bulk_hash_insert_split_retries_duplicate_batches(
     db: H2HDB, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    duplicate_hash = bytes.fromhex("dd" * 64)
-    new_hashes = [bytes([index]) * 64 for index in range(4)]
-    db.files.insert_db_hash_id_by_hash_value(duplicate_hash, "sha512")
+    duplicate_hash = bytes.fromhex("dd" * 32)
+    new_hashes = [bytes([index]) * 32 for index in range(4)]
+    db.files.insert_db_hash_id_by_hash_value(
+        duplicate_hash, FILE_CONTENT_HASH_ALGORITHM
+    )
 
     original_get_hash_ids = db.files._get_db_hash_ids_by_hash_values
     original_insert_hashes = db.files._insert_db_hash_ids_with_split_retry
@@ -163,10 +249,17 @@ def test_bulk_hash_insert_split_retries_duplicate_batches(
         db.files, "_insert_db_hash_ids_with_split_retry", recording_insert
     )
 
-    db.files.insert_db_hash_id_by_hash_values({duplicate_hash, *new_hashes}, "sha512")
+    db.files.insert_db_hash_id_by_hash_values(
+        {duplicate_hash, *new_hashes}, FILE_CONTENT_HASH_ALGORITHM
+    )
 
     for hash_value in new_hashes:
-        assert db.files._check_db_hash_id_by_hash_value(hash_value, "sha512") is True
+        assert (
+            db.files._check_db_hash_id_by_hash_value(
+                hash_value, FILE_CONTENT_HASH_ALGORITHM
+            )
+            is True
+        )
     assert any(call_size > 1 for call_size in call_sizes[1:])
 
 
@@ -226,7 +319,12 @@ def test_insert_gallery_infos_batches_multiple_galleries(
         ]
         db_gallery_id = db.gallery_ids._get_db_gallery_id_by_gallery_name(gallery_name)
         db_file_id = db.files._get_db_file_id(db_gallery_id, "001.jpg")
-        assert db.files._check_hash_value_by_file_id(db_file_id, "sha512") is True
+        assert (
+            db.files._check_hash_value_by_file_id(
+                db_file_id, FILE_CONTENT_HASH_ALGORITHM
+            )
+            is True
+        )
         assert sorted(db.gallery_tags.get_tag_pairs_by_gallery_name(gallery_name)) == [
             ("artist", f"batch{index}"),
             ("group", "shared"),
@@ -415,19 +513,26 @@ def test_insert_gallery_chunk_splits_retry_instead_of_one_by_one(
     assert call_sizes == [4, 2, 2]
 
 
-def test_refresh_current_files_hashs_removes_orphans_for_every_algorithm(
+def test_refresh_current_files_hashs_removes_orphaned_sha256(
     db: H2HDB,
 ) -> None:
-    for index, algorithm in enumerate(HASH_ALGORITHMS):
-        hash_value = bytes([index]) * 64
-        db.files.insert_db_hash_id_by_hash_value(hash_value, algorithm)
-        assert db.files._check_db_hash_id_by_hash_value(hash_value, algorithm) is True
+    hash_value = bytes.fromhex("ee" * 32)
+    db.files.insert_db_hash_id_by_hash_value(hash_value, FILE_CONTENT_HASH_ALGORITHM)
+    assert (
+        db.files._check_db_hash_id_by_hash_value(
+            hash_value, FILE_CONTENT_HASH_ALGORITHM
+        )
+        is True
+    )
 
     db.refresh_current_files_hashs()
 
-    for index, algorithm in enumerate(HASH_ALGORITHMS):
-        hash_value = bytes([index]) * 64
-        assert db.files._check_db_hash_id_by_hash_value(hash_value, algorithm) is False
+    assert (
+        db.files._check_db_hash_id_by_hash_value(
+            hash_value, FILE_CONTENT_HASH_ALGORITHM
+        )
+        is False
+    )
 
 
 def test_refresh_current_files_hashs_propagates_worker_errors(
@@ -442,7 +547,7 @@ def test_refresh_current_files_hashs_propagates_worker_errors(
         db.refresh_current_files_hashs()
 
 
-def test_insert_gallery_file_hash_reads_file_once_for_all_algorithms(
+def test_insert_gallery_file_hash_hashes_and_persists_sha256(
     db: H2HDB, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     gallery_name = "artist - single read gallery"
@@ -475,8 +580,10 @@ def test_insert_gallery_file_hash_reads_file_once_for_all_algorithms(
     db.files._insert_gallery_file_hash(db_file_id, file_path)
 
     assert call_count == 1
-    for algorithm in HASH_ALGORITHMS:
-        assert db.files._check_hash_value_by_file_id(db_file_id, algorithm) is True
+    assert (
+        db.files.get_hash_value_by_file_id(db_file_id, FILE_CONTENT_HASH_ALGORITHM)
+        == hashlib.sha256(b"page content").digest()
+    )
 
 
 def test_refresh_current_cbz_files_removes_only_orphaned_files(
@@ -507,7 +614,7 @@ def test_get_stale_cbz_galleries_flags_cbz_containing_newly_excluded_file(
     gallery_info = parse_galleryinfo(gallery_folder)
     db.insert_gallery_infos([gallery_info])
     gallery_name = gallery_info.gallery_name
-    image_hash = hashlib.sha512(image_content).digest()
+    image_hash = hashlib.sha256(image_content).digest()
 
     cbz_path = tmp_path / "cbz"
     cbz_path.mkdir()
@@ -536,7 +643,7 @@ def test_get_stale_cbz_galleries_ignores_cbz_that_already_excludes_file(
     gallery_info = parse_galleryinfo(gallery_folder)
     db.insert_gallery_infos([gallery_info])
     gallery_name = gallery_info.gallery_name
-    image_hash = hashlib.sha512(image_content).digest()
+    image_hash = hashlib.sha256(image_content).digest()
 
     cbz_path = tmp_path / "cbz"
     cbz_path.mkdir()

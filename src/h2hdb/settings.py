@@ -18,9 +18,11 @@ from enum import Enum, StrEnum
 from pathlib import Path
 from typing import BinaryIO
 
+from .hash_dict import FILE_CONTENT_HASH_ALGORITHM
+
 FOLDER_NAME_LENGTH_LIMIT = 255
 FILE_NAME_LENGTH_LIMIT = 255
-COMPARISON_HASH_ALGORITHM = "sha512"
+COMPARISON_HASH_ALGORITHM = FILE_CONTENT_HASH_ALGORITHM
 GALLERY_INFO_FILE_NAME = "galleryinfo.txt"
 
 # Large scanned pages can be tens of MiB; hashing in fixed-size chunks keeps

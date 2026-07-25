@@ -8,6 +8,7 @@ from typing import Any
 from h2h_galleryinfo_parser import parse_galleryinfo
 
 from .config_loader import H2HDBConfig
+from .hash_dict import FILE_CONTENT_HASH_ALGORITHM
 from .repository import BaseRepository, RepositoryContext
 from .settings import chunk_list, hash_function_by_file
 from .table_gids import H2HDBGalleriesIDs
@@ -275,7 +276,7 @@ class H2HDBCBZFiles(BaseRepository):
                 select_query = f"""
                     SELECT DISTINCT gallery_name
                     FROM files_hashs
-                    WHERE sha512 IN ({", ".join(["%s"] * len(batch))})
+                    WHERE {FILE_CONTENT_HASH_ALGORITHM} IN ({", ".join(["%s"] * len(batch))})
                 """
                 rows = connector.fetch_all(select_query, tuple(batch))
                 affected_galleries.update(str(gallery_name) for (gallery_name,) in rows)
@@ -288,25 +289,27 @@ class H2HDBCBZFiles(BaseRepository):
         # than through the files_hashs view's gallery_name column, which only
         # has a FULLTEXT index and can't serve an equality/IN lookup.
         files_by_db_gallery_id: dict[int, list[tuple[str, bytes]]] = dict()
+        hash_table_name = f"files_hashs_{FILE_CONTENT_HASH_ALGORITHM}"
+        hash_dbids_table_name = f"{hash_table_name}_dbids"
         with self.SQLConnector() as connector:
             for batch in chunk_list(db_gallery_ids, HASH_LOOKUP_BATCH_SIZE):
                 select_query = f"""
                     SELECT files_dbids.db_gallery_id,
                         files_names.full_name,
-                        files_hashs_sha512_dbids.hash_value
+                        {hash_dbids_table_name}.hash_value
                     FROM files_dbids
                         JOIN files_names
                             ON files_names.db_file_id = files_dbids.db_file_id
-                        LEFT JOIN files_hashs_sha512
-                            ON files_hashs_sha512.db_file_id = files_dbids.db_file_id
-                        LEFT JOIN files_hashs_sha512_dbids
-                            ON files_hashs_sha512_dbids.db_hash_id = files_hashs_sha512.db_hash_id
+                        LEFT JOIN {hash_table_name}
+                            ON {hash_table_name}.db_file_id = files_dbids.db_file_id
+                        LEFT JOIN {hash_dbids_table_name}
+                            ON {hash_dbids_table_name}.db_hash_id = {hash_table_name}.db_hash_id
                     WHERE files_dbids.db_gallery_id IN ({", ".join(["%s"] * len(batch))})
                 """
                 rows = connector.fetch_all(select_query, tuple(batch))
-                for db_gallery_id, file_name, sha512 in rows:
+                for db_gallery_id, file_name, content_hash in rows:
                     files_by_db_gallery_id.setdefault(int(db_gallery_id), []).append(
-                        (str(file_name), bytes(sha512))
+                        (str(file_name), bytes(content_hash))
                     )
         return files_by_db_gallery_id
 

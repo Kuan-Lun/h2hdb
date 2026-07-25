@@ -5,7 +5,7 @@ from pathlib import Path
 from time import monotonic
 from typing import cast
 
-from .hash_dict import HASH_ALGORITHMS
+from .hash_dict import FILE_CONTENT_HASH_ALGORITHM, HASH_ALGORITHMS
 from .information import FileInformation
 from .repository import BaseRepository, RepositoryContext
 from .settings import FILE_NAME_LENGTH_LIMIT, chunk_list, hash_multiple_by_file
@@ -16,6 +16,20 @@ from .sql_connector import (
 from .table_gids import H2HDBGalleriesIDs
 
 HASH_LOOKUP_BATCH_SIZE = 500
+
+
+def _validate_hash_value(hash_value: bytes, algorithm: str) -> None:
+    try:
+        output_bits = HASH_ALGORITHMS[algorithm]
+    except KeyError:
+        raise ValueError(f"Unsupported file hash algorithm: {algorithm}") from None
+
+    expected_bytes = output_bits // 8
+    if len(hash_value) != expected_bytes:
+        raise ValueError(
+            f"{algorithm} digest must be exactly {expected_bytes} bytes, "
+            f"got {len(hash_value)}."
+        )
 
 
 class H2HDBFiles(BaseRepository):
@@ -309,7 +323,7 @@ class H2HDBFiles(BaseRepository):
                         CREATE TABLE IF NOT EXISTS {dbids_table_name} (
                             PRIMARY KEY (db_hash_id),
                             db_hash_id INT UNSIGNED AUTO_INCREMENT,
-                            hash_value BINARY({output_bits/8}) NOT NULL,
+                            hash_value BINARY({output_bits // 8}) NOT NULL,
                             UNIQUE (hash_value)
                         )
                     """
@@ -318,6 +332,7 @@ class H2HDBFiles(BaseRepository):
                         CREATE TABLE IF NOT EXISTS {dbids_table_name} (
                             db_hash_id INTEGER PRIMARY KEY AUTOINCREMENT,
                             hash_value BLOB NOT NULL,
+                            CHECK (length(hash_value) = {output_bits // 8}),
                             UNIQUE (hash_value)
                         )
                     """
@@ -364,19 +379,21 @@ class H2HDBFiles(BaseRepository):
     def _create_gallery_image_hash_view(self) -> None:
         with self.SQLConnector() as connector:
             table_name = "files_hashs"
+            hash_table_name = f"files_hashs_{FILE_CONTENT_HASH_ALGORITHM}"
+            hash_dbids_table_name = f"{hash_table_name}_dbids"
             query = f"""
                 CREATE VIEW IF NOT EXISTS {table_name} AS
                 SELECT files_names.db_file_id               AS db_file_id,
                     galleries_titles.title               AS gallery_title,
                     galleries_names.full_name            AS gallery_name,
                     files_names.full_name                AS file_name,
-                    files_hashs_sha512_dbids.hash_value  AS sha512
+                    {hash_dbids_table_name}.hash_value   AS {FILE_CONTENT_HASH_ALGORITHM}
                 FROM files_names
                     LEFT JOIN files_dbids                USING (db_file_id)
                     LEFT JOIN galleries_titles           USING (db_gallery_id)
                     LEFT JOIN galleries_names            USING (db_gallery_id)
-                    LEFT JOIN files_hashs_sha512         USING (db_file_id)
-                    LEFT JOIN files_hashs_sha512_dbids   USING (db_hash_id)
+                    LEFT JOIN {hash_table_name}          USING (db_file_id)
+                    LEFT JOIN {hash_dbids_table_name}    USING (db_hash_id)
             """
             connector.execute(query)
             self.logger.info(f"{table_name} view created.")
@@ -728,6 +745,7 @@ class H2HDBFiles(BaseRepository):
     def insert_db_hash_id_by_hash_value(
         self, hash_value: bytes, algorithm: str
     ) -> None:
+        _validate_hash_value(hash_value, algorithm)
         with self.SQLConnector() as connector:
             table_name = f"files_hashs_{algorithm.lower()}_dbids"
             insert_query = f"""
@@ -740,6 +758,9 @@ class H2HDBFiles(BaseRepository):
     ) -> None:
         if not hash_values:
             return
+
+        for hash_value in hash_values:
+            _validate_hash_value(hash_value, algorithm)
 
         table_name = f"files_hashs_{algorithm.lower()}_dbids"
         with self.SQLConnector() as connector:
@@ -788,6 +809,9 @@ class H2HDBFiles(BaseRepository):
     ) -> None:
         if not hash_values:
             return
+
+        for hash_value in hash_values:
+            _validate_hash_value(hash_value, algorithm)
 
         existing_hash_ids = self._get_db_hash_ids_by_hash_values(hash_values, algorithm)
         toinsert = [

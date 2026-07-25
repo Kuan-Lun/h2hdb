@@ -8,7 +8,11 @@ import pytest
 
 from h2hdb import H2HDB, H2HConfig, H2HDBConfig
 from h2hdb.compress_gallery_to_cbz import hash_and_process_file
-from h2hdb.hash_dict import HASH_ALGORITHMS
+from h2hdb.hash_dict import (
+    FILE_CONTENT_HASH_ALGORITHM,
+    FILE_CONTENT_HASH_OUTPUT_BITS,
+    HASH_ALGORITHMS,
+)
 from h2hdb.information import FileInformation
 from h2hdb.settings import (
     COMPARISON_HASH_ALGORITHM,
@@ -23,6 +27,13 @@ from h2hdb.table_files_dbids import H2HDBFiles
 # in this file to cross multiple chunk boundaries instead of reading in one go.
 TEST_CONTENT = os.urandom(10_000)
 SMALL_BUFFER_SIZE = 777
+
+
+def test_canonical_file_content_hash_is_sha256() -> None:
+    assert FILE_CONTENT_HASH_ALGORITHM == "sha256"
+    assert FILE_CONTENT_HASH_OUTPUT_BITS == 256
+    assert HASH_ALGORITHMS == {"sha256": 256}
+    assert COMPARISON_HASH_ALGORITHM == FILE_CONTENT_HASH_ALGORITHM
 
 
 def test_hash_stream_matches_reference_digests() -> None:
@@ -67,8 +78,8 @@ def test_hash_function_by_file_matches_reference_digest(tmp_path: Path) -> None:
     file_path.write_bytes(TEST_CONTENT)
 
     assert (
-        hash_function_by_file(file_path, "sha512")
-        == hashlib.sha512(TEST_CONTENT).digest()
+        hash_function_by_file(file_path, FILE_CONTENT_HASH_ALGORITHM)
+        == hashlib.sha256(TEST_CONTENT).digest()
     )
 
 
@@ -102,10 +113,7 @@ def test_file_information_sethash_matches_reference_digests(tmp_path: Path) -> N
     assert finfo.sethash() == len(TEST_CONTENT)
     assert finfo.sethash() == len(TEST_CONTENT)
 
-    for algorithm in HASH_ALGORITHMS:
-        assert (
-            getattr(finfo, algorithm) == hashlib.new(algorithm, TEST_CONTENT).digest()
-        )
+    assert finfo.sha256 == hashlib.sha256(TEST_CONTENT).digest()
 
 
 def test_file_hash_workers_default_and_bounds() -> None:
@@ -287,6 +295,32 @@ def test_file_hash_perf_log_reports_workers_and_bytes(
     assert "worker_limit=2" in end_message
     assert "rate_files_s=" in end_message
     assert "rate_mib_s=" in end_message
+    assert (
+        sum(
+            "event=start stage=hash_catalog_insert algorithm=sha256" in message
+            for message in debug_messages
+        )
+        == 1
+    )
+    assert (
+        sum(
+            "event=start stage=hash_catalog_lookup algorithm=sha256" in message
+            for message in debug_messages
+        )
+        == 1
+    )
+    assert (
+        sum(
+            "event=start stage=hash_association_insert algorithm=sha256" in message
+            for message in debug_messages
+        )
+        == 1
+    )
+    assert any(
+        "event=start stage=hash_association_persistence" in message
+        and "algorithms=1" in message
+        for message in debug_messages
+    )
 
 
 def test_hash_and_process_file_skips_files_with_excluded_hash(tmp_path: Path) -> None:

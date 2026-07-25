@@ -17,6 +17,7 @@ from PIL import Image
 
 from h2hdb import H2HDB, H2HDBConfig
 from h2hdb.compress_gallery_to_cbz import gallery_name_to_cbz_file_name
+from h2hdb.hash_dict import FILE_CONTENT_HASH_ALGORITHM
 from h2hdb.settings import CBZ_GROUPING, CBZ_SORT
 
 
@@ -55,7 +56,7 @@ def _make_jpeg_bytes(seed: int) -> bytes:
 
 
 def _effective_content_hash(*file_contents: bytes) -> bytes:
-    file_hashes = sorted(hashlib.sha512(content).digest() for content in file_contents)
+    file_hashes = sorted(hashlib.sha256(content).digest() for content in file_contents)
     return hashlib.sha256(b"".join(file_hashes)).digest()
 
 
@@ -87,6 +88,32 @@ def test_insert_h2h_download_inserts_new_galleries_and_is_idempotent(
     # Nothing changed on disk, so the second pass must not find new work.
     assert db.insert_h2h_download() is False
     assert sorted(db.gallery_gids.get_gids()) == [700001, 700002]
+
+
+def test_insert_h2h_download_reimports_changed_galleryinfo_with_sha256(
+    db: H2HDB, download_path: Path
+) -> None:
+    gallery_folder = download_path / "700003"
+    _write_galleryinfo(gallery_folder, title="Original title")
+    galleryinfo_path = gallery_folder / "galleryinfo.txt"
+
+    assert db.insert_h2h_download() is True
+
+    updated_text = galleryinfo_path.read_text(encoding="utf-8").replace(
+        "Title: Original title", "Title: Updated title"
+    )
+    galleryinfo_path.write_text(updated_text, encoding="utf-8")
+
+    assert db.insert_h2h_download() is True
+    assert db.gallery_titles.get_title_by_gallery_name("700003") == "Updated title"
+
+    db_gallery_id = db.gallery_ids._get_db_gallery_id_by_gallery_name("700003")
+    db_file_id = db.files._get_db_file_id(db_gallery_id, "galleryinfo.txt")
+    assert (
+        db.files.get_hash_value_by_file_id(db_file_id, FILE_CONTENT_HASH_ALGORITHM)
+        == hashlib.sha256(galleryinfo_path.read_bytes()).digest()
+    )
+    assert db.insert_h2h_download() is False
 
 
 def test_insert_h2h_download_emits_perf_debug_stages(
@@ -257,7 +284,7 @@ def test_insert_h2h_download_excludes_and_recovers_duplicate_spam_images(
 
     # An identical image shared by 3 galleries from 3 different artists trips
     # the duplicate/spam-image exclusion (duplicated_hash_values_by_count_
-    # artist_ratio): files_hashs_sha512 sees the same hash >=3 times, and the
+    # artist_ratio): files_hashs_sha256 sees the same hash >=3 times, and the
     # distinct-artist-count-to-max-artist-count ratio exceeds 2.
     shared_image = _make_jpeg_bytes(0)
     gallery_names: list[str] = []
@@ -367,12 +394,16 @@ def test_insert_h2h_download_reconciles_migrated_owner_before_compression(
     a_page_id = db.files._get_db_file_ids_by_gallery_ids_for_name([a_id], a_page.name)[
         a_id
     ]
-    content_y_sha512 = hashlib.sha512(content_y).digest()
-    db.files.insert_db_hash_id_by_hash_values({content_y_sha512}, "sha512")
+    content_y_sha256 = hashlib.sha256(content_y).digest()
+    db.files.insert_db_hash_id_by_hash_values(
+        {content_y_sha256}, FILE_CONTENT_HASH_ALGORITHM
+    )
     db.files._update_gallery_file_hash_by_db_hash_id(
         a_page_id,
-        db.files.get_db_hash_id_by_hash_value(content_y_sha512, "sha512"),
-        "sha512",
+        db.files.get_db_hash_id_by_hash_value(
+            content_y_sha256, FILE_CONTENT_HASH_ALGORITHM
+        ),
+        FILE_CONTENT_HASH_ALGORITHM,
     )
 
     # Force the final compression phase to materialize A from its migrated

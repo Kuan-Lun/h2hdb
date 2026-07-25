@@ -1,3 +1,4 @@
+from .hash_dict import FILE_CONTENT_HASH_ALGORITHM
 from .repository import BaseRepository
 
 
@@ -29,12 +30,13 @@ class H2HDBGalleriesInfos(BaseRepository):
 
     def _create_duplicate_hash_in_gallery_view(self) -> None:
         with self.SQLConnector() as connector:
-            query = """
+            hash_table_name = f"files_hashs_{FILE_CONTENT_HASH_ALGORITHM}"
+            query = f"""
                 CREATE VIEW IF NOT EXISTS duplicate_hash_in_gallery AS WITH Files AS (
                     SELECT files_dbids.db_gallery_id AS db_gallery_id,
-                        files_hashs_sha512.db_hash_id AS hash_value
+                        {hash_table_name}.db_hash_id AS hash_value
                     FROM files_dbids
-                        JOIN files_hashs_sha512 ON files_dbids.db_file_id = files_hashs_sha512.db_file_id
+                        JOIN {hash_table_name} ON files_dbids.db_file_id = {hash_table_name}.db_file_id
                 ),
                 DuplicateCount AS (
                     SELECT db_gallery_id,
