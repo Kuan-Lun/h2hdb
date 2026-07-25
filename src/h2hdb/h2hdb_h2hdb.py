@@ -127,6 +127,9 @@ class H2HDB(BaseRepository):
     def insert_pending_gallery_removal(self, gallery_name: str) -> None:
         self.pending_removals.insert_pending_gallery_removal(gallery_name)
 
+    def insert_pending_gallery_removals(self, gallery_names: list[str]) -> None:
+        self.pending_removals.insert_pending_gallery_removals(gallery_names)
+
     def check_pending_gallery_removal(self, gallery_name: str) -> bool:
         return self.pending_removals.check_pending_gallery_removal(gallery_name)
 
@@ -135,6 +138,11 @@ class H2HDB(BaseRepository):
 
     def delete_pending_gallery_removal(self, gallery_name: str) -> None:
         self.pending_removals.delete_pending_gallery_removal(gallery_name)
+
+    def delete_pending_gallery_removals_by_names(
+        self, gallery_names: list[str]
+    ) -> None:
+        self.pending_removals.delete_pending_gallery_removals_by_names(gallery_names)
 
     def delete_pending_gallery_removals(self) -> None:
         self.pending_removals.delete_pending_gallery_removals()
@@ -357,8 +365,12 @@ class H2HDB(BaseRepository):
         if not galleryinfo_params_list:
             return
 
-        for galleryinfo_params in galleryinfo_params_list:
-            self.insert_pending_gallery_removal(galleryinfo_params.gallery_name)
+        self.insert_pending_gallery_removals(
+            [
+                galleryinfo_params.gallery_name
+                for galleryinfo_params in galleryinfo_params_list
+            ]
+        )
 
         db_gallery_ids = self._insert_gallery_names(galleryinfo_params_list)
         self._insert_gallery_metadata_rows(galleryinfo_params_list, db_gallery_ids)
@@ -385,8 +397,12 @@ class H2HDB(BaseRepository):
         }
         self.gallery_tags._insert_gallery_tags_many(tags_by_gallery_id)
 
-        for galleryinfo_params in galleryinfo_params_list:
-            self.delete_pending_gallery_removal(galleryinfo_params.gallery_name)
+        self.delete_pending_gallery_removals_by_names(
+            [
+                galleryinfo_params.gallery_name
+                for galleryinfo_params in galleryinfo_params_list
+            ]
+        )
 
     def _check_gallery_info_file_hashes(
         self, galleryinfo_params_list: list[GalleryInfoParser]
@@ -535,8 +551,7 @@ class H2HDB(BaseRepository):
                 str(gallery[0]) for gallery in raw_removed_galleries
             ]
 
-        for removed_gallery in removed_gallery_names:
-            self.insert_pending_gallery_removal(removed_gallery)
+        self.insert_pending_gallery_removals(removed_gallery_names)
 
         self.delete_pending_gallery_removals()
 
