@@ -147,14 +147,17 @@ class H2HDB(BaseRepository):
     def delete_pending_gallery_removals(self) -> None:
         self.pending_removals.delete_pending_gallery_removals()
 
-    def delete_gallery_file(self, gallery_name: str) -> None:
-        self.pending_removals.delete_gallery_file(gallery_name)
-
     def delete_gallery(self, gallery_name: str) -> None:
         self.pending_removals.delete_gallery(gallery_name)
 
+    def delete_galleries(self, gallery_names: list[str]) -> None:
+        self.pending_removals.delete_galleries(gallery_names)
+
     def refresh_gallery(self, gallery_name: str) -> None:
         self.pending_removals.refresh_gallery(gallery_name)
+
+    def refresh_galleries(self, gallery_names: list[str]) -> None:
+        self.pending_removals.refresh_galleries(gallery_names)
 
     def optimize_database(self) -> None:
         self.database_settings.optimize_database()
@@ -473,10 +476,11 @@ class H2HDB(BaseRepository):
                 self.logger.debug(
                     f"Inserting gallery '{galleryinfo_params.gallery_name}'..."
                 )
-                self.delete_gallery_file(galleryinfo_params.gallery_name)
-                self.refresh_gallery(galleryinfo_params.gallery_name)
                 to_insert.append(galleryinfo_params)
 
+        self.refresh_galleries(
+            [galleryinfo_params.gallery_name for galleryinfo_params in to_insert]
+        )
         self._insert_gallery_infos(to_insert)
 
         for galleryinfo_params in to_insert:

@@ -245,20 +245,29 @@ class H2HDBPendingGalleryRemovals(BaseRepository):
 
     def delete_pending_gallery_removals(self) -> None:
         pending_gallery_removals = self.get_pending_gallery_removals()
-        for gallery_name in pending_gallery_removals:
-            self.delete_gallery_file(gallery_name)
-            self.delete_gallery(gallery_name)
-            self.delete_pending_gallery_removal(gallery_name)
+        if not pending_gallery_removals:
+            return
 
-    def delete_gallery_file(self, gallery_name: str) -> None:
-        pass
+        self.delete_galleries(pending_gallery_removals)
+        self.delete_pending_gallery_removals_by_names(pending_gallery_removals)
 
     def delete_gallery(self, gallery_name: str) -> None:
         if self._delete_gallery_row(gallery_name):
             self.logger.info(f"Gallery '{gallery_name}' deleted.")
 
+    def delete_galleries(self, gallery_names: list[str]) -> None:
+        for gallery_name in self._delete_existing_gallery_rows(gallery_names):
+            self.logger.info(f"Gallery '{gallery_name}' deleted.")
+
     def refresh_gallery(self, gallery_name: str) -> None:
         if self._delete_gallery_row(gallery_name):
+            self.logger.info(
+                f"Gallery '{gallery_name}' refreshed: galleryinfo.txt changed, "
+                "reinserting."
+            )
+
+    def refresh_galleries(self, gallery_names: list[str]) -> None:
+        for gallery_name in self._delete_existing_gallery_rows(gallery_names):
             self.logger.info(
                 f"Gallery '{gallery_name}' refreshed: galleryinfo.txt changed, "
                 "reinserting."
@@ -285,3 +294,44 @@ class H2HDBPendingGalleryRemovals(BaseRepository):
             gallery_name_parts = self._split_gallery_name(gallery_name)
             connector.execute(get_delete_gallery_id_query, tuple(gallery_name_parts))
         return True
+
+    def _delete_existing_gallery_rows(self, gallery_names: list[str]) -> list[str]:
+        if not gallery_names:
+            return []
+
+        existing_db_gallery_ids = (
+            self.gallery_ids._get_db_gallery_ids_by_gallery_names_from_dbids(
+                gallery_names
+            )
+        )
+        existing_gallery_names = list(existing_db_gallery_ids)
+        if not existing_gallery_names:
+            return []
+
+        match self.config.database.sql_type.lower():
+            case "mariadb":
+                column_name_parts, _ = self.mariadb_split_gallery_name_based_on_limit(
+                    "name"
+                )
+            case "sqlite":
+                column_name_parts, _ = self.sqlite_name_columns("name")
+
+        with self.SQLConnector() as connector:
+            for batch in chunk_list(existing_gallery_names, PENDING_REMOVAL_BATCH_SIZE):
+                where_clause = " OR ".join(
+                    "("
+                    + " AND ".join(f"{part} = %s" for part in column_name_parts)
+                    + ")"
+                    for _ in batch
+                )
+                delete_query = f"""
+                    DELETE FROM galleries_dbids WHERE {where_clause}
+                """
+                parameters = tuple(
+                    chain.from_iterable(
+                        self._split_gallery_name(gallery_name) for gallery_name in batch
+                    )
+                )
+                connector.execute(delete_query, parameters)
+
+        return existing_gallery_names
