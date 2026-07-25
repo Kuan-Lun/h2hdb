@@ -1,6 +1,7 @@
 import hashlib
 import os
 import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -254,6 +255,83 @@ def test_hash_worker_error_skips_database_persistence(
     assert not any(
         thread.name.startswith("h2hdb-file-hash") for thread in threading.enumerate()
     )
+
+
+def test_hash_association_insert_uses_bounded_batches(
+    sqlite_config: H2HDBConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    execute_calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    class RecordingConnector:
+        def __enter__(self) -> RecordingConnector:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            pass
+
+        def execute(self, query: str, data: tuple[Any, ...] = ()) -> None:
+            execute_calls.append((query, data))
+
+    db = H2HDB(config=sqlite_config)
+    monkeypatch.setattr(
+        db.files,
+        "_context",
+        replace(db.files._context, SQLConnector=RecordingConnector),
+    )
+
+    fileinformations = list[FileInformation]()
+    expected_pairs = list[tuple[int, int]]()
+    for index in range(501):
+        db_file_id = index + 1
+        db_hash_id = index + 10_001
+        fileinformation = FileInformation(
+            Path(f"unused-{db_file_id}"), db_file_id=db_file_id
+        )
+        fileinformation.setdb_hash_id(FILE_CONTENT_HASH_ALGORITHM, db_hash_id)
+        fileinformations.append(fileinformation)
+        expected_pairs.append((db_file_id, db_hash_id))
+
+    db.files.insert_hash_value_by_db_hash_ids(fileinformations)
+
+    assert [len(parameters) // 2 for _, parameters in execute_calls] == [500, 1]
+    actual_pairs = [
+        (int(parameters[index]), int(parameters[index + 1]))
+        for _, parameters in execute_calls
+        for index in range(0, len(parameters), 2)
+    ]
+    assert actual_pairs == expected_pairs
+    assert [query.count("(%s, %s)") for query, _ in execute_calls] == [500, 1]
+
+
+def test_empty_hash_association_insert_executes_no_sql(
+    sqlite_config: H2HDBConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    execute_calls = 0
+
+    class RecordingConnector:
+        def __enter__(self) -> RecordingConnector:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            pass
+
+        def execute(self, query: str, data: tuple[Any, ...] = ()) -> None:
+            del query, data
+            nonlocal execute_calls
+            execute_calls += 1
+
+    db = H2HDB(config=sqlite_config)
+    monkeypatch.setattr(
+        db.files,
+        "_context",
+        replace(db.files._context, SQLConnector=RecordingConnector),
+    )
+
+    db.files.insert_hash_value_by_db_hash_ids([])
+
+    assert execute_calls == 0
 
 
 def test_file_hash_perf_log_reports_workers_and_bytes(

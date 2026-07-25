@@ -15,6 +15,7 @@ from .sql_connector import (
 )
 from .table_gids import H2HDBGalleriesIDs
 
+HASH_ASSOCIATION_BATCH_SIZE = 500
 HASH_LOOKUP_BATCH_SIZE = 500
 
 
@@ -38,6 +39,10 @@ class H2HDBFiles(BaseRepository):
     ) -> None:
         super().__init__(context)
         self.gallery_ids = gallery_ids
+
+    @property
+    def _insert_rows_batch_size(self) -> int:
+        return HASH_ASSOCIATION_BATCH_SIZE
 
     def _create_files_names_table(self) -> None:
         with self.SQLConnector() as connector:
@@ -720,22 +725,18 @@ class H2HDBFiles(BaseRepository):
                 "PERF event=start stage=hash_association_insert "
                 f"algorithm={algorithm} rows={len(fileinformations)}"
             )
-            with self.SQLConnector() as connector:
-                table_name = f"files_hashs_{algorithm.lower()}"
-                insert_query_header = f"""
-                    INSERT INTO {table_name} (db_file_id, db_hash_id)
-                """
-                insert_query_values = " ".join(
-                    ["VALUES", ", ".join(["(%s, %s)"] * len(fileinformations))]
-                )
-                insert_query = f"{insert_query_header} {insert_query_values}"
-                parameters: list[int] = list()
-                for fileinformation in fileinformations:
-                    parameters += [
+            table_name = f"files_hashs_{algorithm.lower()}"
+            self._insert_rows(
+                table_name,
+                ["db_file_id", "db_hash_id"],
+                [
+                    (
                         fileinformation.db_file_id,
                         fileinformation.db_hash_id[algorithm],
-                    ]
-                connector.execute(insert_query, tuple(parameters))
+                    )
+                    for fileinformation in fileinformations
+                ],
+            )
             self.logger.debug(
                 "PERF event=end stage=hash_association_insert "
                 f"algorithm={algorithm} rows={len(fileinformations)} "

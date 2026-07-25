@@ -9,8 +9,10 @@ from h2h_galleryinfo_parser import GalleryInfoParser, parse_galleryinfo
 
 from h2hdb import H2HDB, H2HDBConfig
 from h2hdb import h2hdb_h2hdb as h2hdb_h2hdb_module
+from h2hdb import table_files_dbids as table_files_dbids_module
 from h2hdb import table_tags as table_tags_module
 from h2hdb.hash_dict import FILE_CONTENT_HASH_ALGORITHM
+from h2hdb.information import FileInformation
 from h2hdb.sql_connector import DatabaseDuplicateKeyError, DatabaseKeyError
 
 
@@ -417,6 +419,54 @@ def test_insert_rows_batches_tags_across_chunk_boundary(
     ) == sorted(
         [("artist", "a"), ("artist", "b"), ("group", "c"), ("language", "english")]
     )
+
+
+def test_hash_association_insert_batches_across_boundary(
+    db: H2HDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(table_files_dbids_module, "HASH_ASSOCIATION_BATCH_SIZE", 2)
+
+    gallery_name = "hash association batching"
+    db.gallery_ids._insert_gallery_name(gallery_name)
+    db_gallery_id = db.gallery_ids._get_db_gallery_id_by_gallery_name(gallery_name)
+    file_names = [f"{index}.jpg" for index in range(3)]
+    db_file_ids = db.files._insert_gallery_files(db_gallery_id, file_names)
+
+    hash_values = {
+        file_name: hashlib.sha256(file_name.encode()).digest()
+        for file_name in file_names
+    }
+    db.files.insert_db_hash_id_by_hash_values(
+        set(hash_values.values()), FILE_CONTENT_HASH_ALGORITHM
+    )
+    db_hash_ids = db.files._get_db_hash_ids_by_hash_values(
+        set(hash_values.values()), FILE_CONTENT_HASH_ALGORITHM
+    )
+    fileinformations = list[FileInformation]()
+    for file_name in file_names:
+        fileinformation = FileInformation(Path(file_name), db_file_ids[file_name])
+        fileinformation.setdb_hash_id(
+            FILE_CONTENT_HASH_ALGORITHM,
+            db_hash_ids[hash_values[file_name]],
+        )
+        fileinformations.append(fileinformation)
+
+    debug_messages = list[str]()
+    monkeypatch.setattr(db.logger, "debug", debug_messages.append)
+    db.files.insert_hash_value_by_db_hash_ids(fileinformations)
+
+    assert any(
+        "event=start stage=sql_insert table=files_hashs_sha256 "
+        "rows=3 batch_size=2 batches=2" in message
+        for message in debug_messages
+    )
+    for file_name in file_names:
+        assert (
+            db.files.get_hash_value_by_file_id(
+                db_file_ids[file_name], FILE_CONTENT_HASH_ALGORITHM
+            )
+            == hash_values[file_name]
+        )
 
 
 def test_insert_gallery_files_assigns_distinct_ids_for_each_file(db: H2HDB) -> None:
