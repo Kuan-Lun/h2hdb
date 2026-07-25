@@ -70,6 +70,9 @@ collection is always organised and accessible.
 - `h2h.cbz_scrub_batch_size`: number of CBZ files to integrity-check (and
   transparently rebuild if corrupted) per `insert_h2h_download` run. `0`
   disables scrubbing. The default is `100`.
+- `h2h.file_hash_workers`: maximum number of files read and hashed
+  concurrently. The default is the smaller of `4` and the available CPU count;
+  set it to `1` for serial hashing. Valid values are `1`–`32`.
 - `database.sql_type`: `mariadb` or `sqlite`. The default is `mariadb`.
   Existing config files that still use `mysql` must update this field.
 - `database.host`, `database.port`, `database.user`, and `database.password`

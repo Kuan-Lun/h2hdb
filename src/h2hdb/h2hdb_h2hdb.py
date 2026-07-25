@@ -1138,7 +1138,8 @@ class H2HDB(BaseRepository):
             "PERF event=start stage=insert_h2h_download "
             f"backend={self.config.database.sql_type.lower()} "
             f"cbz_enabled={self.config.h2h.cbz_path is not None} "
-            f"cpu_count={CPU_NUM} pool_workers={POOL_CPU_LIMIT}"
+            f"cpu_count={CPU_NUM} pool_workers={POOL_CPU_LIMIT} "
+            f"file_hash_workers={self.config.h2h.file_hash_workers}"
         )
 
         stage_started = monotonic()

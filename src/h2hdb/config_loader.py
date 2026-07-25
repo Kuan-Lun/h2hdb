@@ -9,11 +9,15 @@ __all__ = [
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .settings import CBZ_GROUPING, CBZ_SORT, LOG_LEVEL
+
+DEFAULT_FILE_HASH_WORKERS = min(4, os.process_cpu_count() or 1)
+MAX_FILE_HASH_WORKERS = 32
 
 
 class ConfigError(Exception):
@@ -113,6 +117,15 @@ class H2HConfig(ConfigModel):
         default=100,
         ge=0,
         description="Number of CBZ files to integrity-check per insert_h2h_download run (0 disables scrubbing)",
+    )
+    file_hash_workers: int = Field(
+        default=DEFAULT_FILE_HASH_WORKERS,
+        ge=1,
+        le=MAX_FILE_HASH_WORKERS,
+        description=(
+            "Maximum number of files to read and hash concurrently. "
+            "Set to 1 for serial hashing."
+        ),
     )
 
 

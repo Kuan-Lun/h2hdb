@@ -150,10 +150,14 @@ level) live in `settings.py`.
 ### Concurrency
 
 Gallery metadata is written with batched SQL (`_insert_rows` and friends),
-not per-gallery concurrent writes. The one parallelism primitive left is
-CPU-bound work across *galleries* — CBZ compression and integrity checks —
-dispatched to a `multiprocessing.Pool` via `run_in_parallel` in `cbz_files.py`
-(its only caller). `insert_h2h_download` in `h2hdb_h2hdb.py` owns that pool's
+not per-gallery concurrent writes. File-byte hashing uses a bounded
+`ThreadPoolExecutor` in `table_files_dbids.py`; `h2h.file_hash_workers`
+controls the worker limit, and workers only read files and compute digests.
+Hash catalog lookups and all database writes remain on the main thread.
+
+CPU-bound work across *galleries* — CBZ compression and integrity checks — is
+dispatched to a shared `multiprocessing.Pool` via `run_in_parallel` in
+`cbz_files.py`. `insert_h2h_download` in `h2hdb_h2hdb.py` owns that pool's
 lifetime when `cbz_path` is configured. `POOL_CPU_LIMIT`/`CPU_NUM` live in
 `h2hdb_h2hdb.py` alongside it.
 

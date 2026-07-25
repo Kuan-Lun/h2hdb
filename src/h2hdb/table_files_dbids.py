@@ -1,3 +1,5 @@
+from collections.abc import Iterator
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from itertools import chain
 from pathlib import Path
 from time import monotonic
@@ -390,45 +392,137 @@ class H2HDBFiles(BaseRepository):
             query_result = connector.fetch_one(select_query, (db_gallery_id,))
         return bool(query_result[0] != 0)
 
+    @staticmethod
+    def _hash_file_informations(
+        fileinformations: list[FileInformation], max_workers: int
+    ) -> Iterator[int]:
+        """Hash files with bounded pending work and propagate worker failures."""
+        if max_workers < 1:
+            raise ValueError("max_workers must be at least 1.")
+
+        if max_workers == 1:
+            for fileinformation in fileinformations:
+                yield fileinformation.sethash()
+            return
+
+        executor = ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="h2hdb-file-hash",
+        )
+        fileinformation_iterator = iter(fileinformations)
+        pending = set[Future[int]]()
+        try:
+            for fileinformation in fileinformation_iterator:
+                pending.add(executor.submit(fileinformation.sethash))
+                if len(pending) == max_workers * 2:
+                    break
+
+            while pending:
+                completed, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for future in completed:
+                    bytes_read = future.result()
+                    try:
+                        fileinformation = next(fileinformation_iterator)
+                    except StopIteration:
+                        pass
+                    else:
+                        pending.add(executor.submit(fileinformation.sethash))
+                    yield bytes_read
+        except BaseException:
+            executor.shutdown(wait=True, cancel_futures=True)
+            raise
+        else:
+            executor.shutdown(wait=True)
+
     def _insert_gallery_file_hash_for_db_gallery_id(
         self, fileinformations: list[FileInformation]
     ) -> None:
         total_files = len(fileinformations)
+        configured_workers = self.config.h2h.file_hash_workers
+        worker_limit = min(configured_workers, total_files)
         processed_files = 0
+        processed_bytes = 0
         hashing_started = monotonic()
         next_heartbeat = hashing_started + 10.0
         self.logger.debug(
             "PERF event=start stage=file_byte_hashing "
-            f"processed=0 total={total_files}"
+            f"processed=0 total={total_files} bytes=0 "
+            f"configured_workers={configured_workers} "
+            f"worker_limit={worker_limit}"
         )
-        for finfo in fileinformations:
-            finfo.sethash()
-            processed_files += 1
-            current_time = monotonic()
-            if current_time >= next_heartbeat:
-                elapsed = current_time - hashing_started
-                rate = processed_files / elapsed if elapsed > 0.0 else 0.0
-                self.logger.debug(
-                    "PERF event=progress stage=file_byte_hashing "
-                    f"processed={processed_files} total={total_files} "
-                    f"elapsed_s={elapsed:.6f} rate_files_s={rate:.3f}"
-                )
-                next_heartbeat = current_time + 10.0
+
+        if not fileinformations:
+            hashing_elapsed = monotonic() - hashing_started
+            self.logger.debug(
+                "PERF event=end stage=file_byte_hashing "
+                f"processed=0 total=0 bytes=0 elapsed_s={hashing_elapsed:.6f} "
+                "rate_files_s=0.000 rate_mib_s=0.000 "
+                f"configured_workers={configured_workers} worker_limit=0"
+            )
+            return
+
+        try:
+            for bytes_read in self._hash_file_informations(
+                fileinformations, worker_limit
+            ):
+                processed_files += 1
+                processed_bytes += bytes_read
+                current_time = monotonic()
+                if current_time >= next_heartbeat:
+                    elapsed = current_time - hashing_started
+                    rate = processed_files / elapsed if elapsed > 0.0 else 0.0
+                    rate_mib = (
+                        processed_bytes / (1024 * 1024) / elapsed
+                        if elapsed > 0.0
+                        else 0.0
+                    )
+                    self.logger.debug(
+                        "PERF event=progress stage=file_byte_hashing "
+                        f"processed={processed_files} total={total_files} "
+                        f"bytes={processed_bytes} elapsed_s={elapsed:.6f} "
+                        f"rate_files_s={rate:.3f} rate_mib_s={rate_mib:.3f} "
+                        f"configured_workers={configured_workers} "
+                        f"worker_limit={worker_limit}"
+                    )
+                    next_heartbeat = current_time + 10.0
+        except BaseException as error:
+            hashing_elapsed = monotonic() - hashing_started
+            self.logger.debug(
+                "PERF event=error stage=file_byte_hashing "
+                f"processed={processed_files} total={total_files} "
+                f"bytes={processed_bytes} elapsed_s={hashing_elapsed:.6f} "
+                f"configured_workers={configured_workers} "
+                f"worker_limit={worker_limit} "
+                f"error_type={type(error).__name__}"
+            )
+            raise
+
         hashing_elapsed = monotonic() - hashing_started
         hashing_rate = (
             processed_files / hashing_elapsed if hashing_elapsed > 0.0 else 0.0
         )
+        hashing_mib_rate = (
+            processed_bytes / (1024 * 1024) / hashing_elapsed
+            if hashing_elapsed > 0.0
+            else 0.0
+        )
         self.logger.debug(
             "PERF event=progress stage=file_byte_hashing "
             f"processed={processed_files} total={total_files} "
-            f"elapsed_s={hashing_elapsed:.6f} "
-            f"rate_files_s={hashing_rate:.3f} final=true"
+            f"bytes={processed_bytes} elapsed_s={hashing_elapsed:.6f} "
+            f"rate_files_s={hashing_rate:.3f} "
+            f"rate_mib_s={hashing_mib_rate:.3f} "
+            f"configured_workers={configured_workers} "
+            f"worker_limit={worker_limit} final=true"
         )
         self.logger.debug(
             "PERF event=end stage=file_byte_hashing "
             f"processed={processed_files} total={total_files} "
-            f"elapsed_s={hashing_elapsed:.6f} "
-            f"rate_files_s={hashing_rate:.3f}"
+            f"bytes={processed_bytes} elapsed_s={hashing_elapsed:.6f} "
+            f"rate_files_s={hashing_rate:.3f} "
+            f"rate_mib_s={hashing_mib_rate:.3f} "
+            f"configured_workers={configured_workers} "
+            f"worker_limit={worker_limit}"
         )
 
         for algorithm in HASH_ALGORITHMS:

@@ -8,6 +8,7 @@ __all__ = [
     "hash_stream",
     "hash_function_by_file",
     "hash_multiple_by_file",
+    "hash_multiple_by_file_with_size",
 ]
 
 import hashlib
@@ -52,13 +53,24 @@ class CBZ_SORT(StrEnum):
     pages_num = "pages+[num]"
 
 
-def hash_stream(chunks: Iterable[bytes], algorithms: Iterable[str]) -> dict[str, bytes]:
-    """Compute one digest per algorithm from a single pass over `chunks`."""
+def _hash_stream_with_size(
+    chunks: Iterable[bytes], algorithms: Iterable[str]
+) -> tuple[dict[str, bytes], int]:
     hashers = {algorithm: hashlib.new(algorithm.lower()) for algorithm in algorithms}
+    bytes_read = 0
     for chunk in chunks:
+        bytes_read += len(chunk)
         for hasher in hashers.values():
             hasher.update(chunk)
-    return {algorithm: hasher.digest() for algorithm, hasher in hashers.items()}
+    return (
+        {algorithm: hasher.digest() for algorithm, hasher in hashers.items()},
+        bytes_read,
+    )
+
+
+def hash_stream(chunks: Iterable[bytes], algorithms: Iterable[str]) -> dict[str, bytes]:
+    """Compute one digest per algorithm from a single pass over `chunks`."""
+    return _hash_stream_with_size(chunks, algorithms)[0]
 
 
 def iter_file_chunks(
@@ -73,8 +85,17 @@ def hash_multiple_by_file(
     algorithms: Iterable[str],
     buffer_size: int = HASH_STREAM_BUFFER_SIZE,
 ) -> dict[str, bytes]:
+    return hash_multiple_by_file_with_size(file_path, algorithms, buffer_size)[0]
+
+
+def hash_multiple_by_file_with_size(
+    file_path: Path,
+    algorithms: Iterable[str],
+    buffer_size: int = HASH_STREAM_BUFFER_SIZE,
+) -> tuple[dict[str, bytes], int]:
+    """Hash a file in one pass and return both its digests and bytes read."""
     with open(file_path, "rb") as f:
-        return hash_stream(iter_file_chunks(f, buffer_size), algorithms)
+        return _hash_stream_with_size(iter_file_chunks(f, buffer_size), algorithms)
 
 
 def hash_function_by_file(file_path: Path, algorithm: str) -> bytes:

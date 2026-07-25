@@ -104,13 +104,18 @@ database fields identify the server and database name. For SQLite, the
 
 ## Concurrency and CBZ Handling
 
-`src/h2hdb/threading_tools.py` provides the bounded thread-pool and
-multi-process helpers used by the ingest pipeline in `src/h2hdb/h2hdb_h2hdb.py`.
-Gallery metadata is inserted with batched SQL. With CBZ output enabled, progress
-chunks scale as `POOL_CPU_LIMIT * 16`, clamped to 64–500 galleries. After each
-chunk's metadata insert, new or changed galleries immediately enter the CBZ
-creation/rebuild check using the provisional duplicate/spam exclusions captured
-at run start.
+Gallery metadata is inserted with batched SQL. File-byte hashing uses a bounded
+`ThreadPoolExecutor` in `src/h2hdb/table_files_dbids.py`;
+`h2h.file_hash_workers` controls the worker limit. Hash workers only read files
+and compute digests; hash catalog lookups and all database writes stay on the
+main thread.
+
+CBZ compression and integrity work uses the shared `multiprocessing.Pool`
+owned by `insert_h2h_download` in `src/h2hdb/h2hdb_h2hdb.py`. With CBZ output
+enabled, progress chunks scale as `POOL_CPU_LIMIT * 16`, clamped to 64–500
+galleries. After each chunk's metadata insert, new or changed galleries
+immediately enter the CBZ creation/rebuild check using the provisional
+duplicate/spam exclusions captured at run start.
 
 After all insertion chunks finish, the pipeline freezes one final exclusion set
 and runs one stable global deduplication reconciliation across all current
