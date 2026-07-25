@@ -288,18 +288,8 @@ class H2HDBGalleryDeduplication(BaseRepository):
     def _claim_hash(self, db_gallery_id: int, sha256: bytes) -> None:
         self._upsert_hash("gallery_content_hashes", db_gallery_id, sha256)
 
-    def _evict_hash(self, db_gallery_id: int) -> None:
-        with self.SQLConnector() as connector:
-            query = "DELETE FROM gallery_content_hashes WHERE db_gallery_id = %s"
-            connector.execute(query, (db_gallery_id,))
-
     def _set_full_content_hash(self, db_gallery_id: int, sha256: bytes) -> None:
         self._upsert_hash("gallery_full_content_hashes", db_gallery_id, sha256)
-
-    def _clear_duplicate_warning(self, db_gallery_id: int) -> None:
-        with self.SQLConnector() as connector:
-            query = "DELETE FROM gallery_duplicate_warnings WHERE db_gallery_id = %s"
-            connector.execute(query, (db_gallery_id,))
 
     def get_duplicate_warning_db_gallery_ids(self) -> list[int]:
         """db_gallery_id of every gallery currently losing its content-hash
@@ -373,44 +363,6 @@ class H2HDBGalleryDeduplication(BaseRepository):
             [db_gallery_id]
         )[db_gallery_id]
         return (not has_already_uploaded_tag, len(title), download_time)
-
-    def resolve(
-        self,
-        db_gallery_id: int,
-        sha256: bytes,
-        priority_key: PriorityKey,
-    ) -> tuple[bool, int | None]:
-        """Claim `sha256` for `db_gallery_id`.
-
-        `priority_key` (see `_get_priority_key`) ranks `db_gallery_id`
-        against whichever gallery currently owns `sha256`. Returns
-        `(should_compress, evicted_db_gallery_id)`. If `db_gallery_id`
-        outranks the current owner (or there is none), it claims the hash,
-        any stale `gallery_duplicate_warnings` row of its own from a past
-        loss is cleared (it isn't a duplicate anymore), and the outranked
-        owner -- if any -- is evicted from `gallery_content_hashes` and its
-        `db_gallery_id` returned so the caller can also clean up its CBZ file
-        and `cbz_integrity` rows. If `db_gallery_id` is outranked, nothing is
-        claimed, a one-time warning is recorded, and `should_compress` is
-        `False`.
-        """
-        owner_id = self._get_hash_owner(sha256)
-        if owner_id is None:
-            self._claim_hash(db_gallery_id, sha256)
-            self._clear_duplicate_warning(db_gallery_id)
-            return True, None
-        if owner_id == db_gallery_id:
-            return True, None
-
-        owner_priority_key = self._get_priority_key(owner_id)
-        if priority_key > owner_priority_key:
-            self._evict_hash(owner_id)
-            self._claim_hash(db_gallery_id, sha256)
-            self._clear_duplicate_warning(db_gallery_id)
-            return True, owner_id
-
-        self._record_duplicate_warning(db_gallery_id, owner_id)
-        return False, None
 
     def _get_all_hashes(self, table_name: str) -> dict[int, bytes]:
         with self.SQLConnector() as connector:
