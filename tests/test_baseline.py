@@ -11,6 +11,10 @@ from h2hdb import H2HDB, H2HDBConfig
 from h2hdb import h2hdb_h2hdb as h2hdb_h2hdb_module
 from h2hdb import table_files_dbids as table_files_dbids_module
 from h2hdb import table_tags as table_tags_module
+from h2hdb.gallery_source_manifest import (
+    GalleryChange,
+    build_gallery_source_manifest,
+)
 from h2hdb.hash_dict import FILE_CONTENT_HASH_ALGORITHM
 from h2hdb.information import FileInformation
 from h2hdb.sql_connector import DatabaseDuplicateKeyError, DatabaseKeyError
@@ -47,6 +51,19 @@ def _write_galleryinfo(
         ),
         encoding="utf-8",
     )
+
+
+def test_gallery_source_manifest_is_stable_and_detects_rename(tmp_path: Path) -> None:
+    gallery_folder = tmp_path / "700090"
+    _write_galleryinfo(gallery_folder, title="Source Manifest")
+    original_file = gallery_folder / "001.jpg"
+    original_file.write_bytes(b"same file bytes")
+
+    first = build_gallery_source_manifest(parse_galleryinfo(gallery_folder))
+    assert first == build_gallery_source_manifest(parse_galleryinfo(gallery_folder))
+
+    original_file.rename(gallery_folder / "renamed.jpg")
+    assert first != build_gallery_source_manifest(parse_galleryinfo(gallery_folder))
 
 
 def test_gallery_name_round_trip(db: H2HDB) -> None:
@@ -190,10 +207,16 @@ def test_file_hash_schema_uses_only_sha256_tables(db: H2HDB) -> None:
         for (table_name,) in table_rows
         if str(table_name).startswith("files_hashs_")
     }
+    all_tables = {str(table_name) for (table_name,) in table_rows}
     assert hash_tables == {
         "files_hashs_sha256",
         "files_hashs_sha256_dbids",
     }
+    assert {"cbz_hashes", "cbz_verifications"}.isdisjoint(all_tables)
+    assert {
+        "gallery_source_manifests",
+        "pending_cbz_rebuilds",
+    }.issubset(all_tables)
 
 
 def test_bulk_hash_insert_handles_stale_duplicate_read(
@@ -305,7 +328,10 @@ def test_insert_gallery_infos_batches_multiple_galleries(
 
     gallery_infos = [parse_galleryinfo(path) for path in gallery_folders]
 
-    assert db.insert_gallery_infos(gallery_infos) == [True, True]
+    assert db.insert_gallery_infos(gallery_infos) == [
+        GalleryChange.new,
+        GalleryChange.new,
+    ]
 
     for index, gallery_info in enumerate(gallery_infos):
         gallery_name = gallery_info.gallery_name
@@ -333,7 +359,10 @@ def test_insert_gallery_infos_batches_multiple_galleries(
             ("language", "english"),
         ]
 
-    assert db.insert_gallery_infos(gallery_infos) == [False, False]
+    assert db.insert_gallery_infos(gallery_infos) == [
+        GalleryChange.unchanged,
+        GalleryChange.unchanged,
+    ]
 
 
 def test_get_komga_metadata_does_not_cross_mix_galleries(
@@ -350,7 +379,10 @@ def test_get_komga_metadata_does_not_cross_mix_galleries(
         gallery_folders.append(gallery_folder)
 
     gallery_infos = [parse_galleryinfo(path) for path in gallery_folders]
-    assert db.insert_gallery_infos(gallery_infos) == [True, True]
+    assert db.insert_gallery_infos(gallery_infos) == [
+        GalleryChange.new,
+        GalleryChange.new,
+    ]
 
     gallery_name_0 = gallery_infos[0].gallery_name
     gallery_name_1 = gallery_infos[1].gallery_name
@@ -389,7 +421,11 @@ def test_insert_rows_batches_galleries_across_chunk_boundary(
 
     gallery_infos = [parse_galleryinfo(path) for path in gallery_folders]
 
-    assert db.insert_gallery_infos(gallery_infos) == [True, True, True]
+    assert db.insert_gallery_infos(gallery_infos) == [
+        GalleryChange.new,
+        GalleryChange.new,
+        GalleryChange.new,
+    ]
 
     for index, gallery_info in enumerate(gallery_infos):
         assert (
@@ -412,7 +448,7 @@ def test_insert_rows_batches_tags_across_chunk_boundary(
     )
     gallery_info = parse_galleryinfo(gallery_folder)
 
-    assert db.insert_gallery_infos([gallery_info]) == [True]
+    assert db.insert_gallery_infos([gallery_info]) == [GalleryChange.new]
 
     assert sorted(
         db.gallery_tags.get_tag_pairs_by_gallery_name(gallery_info.gallery_name)
@@ -526,7 +562,7 @@ def test_insert_gallery_infos_does_not_issue_per_file_id_lookups(
 
     monkeypatch.setattr(db.files, "_get_db_file_id", counting_get_db_file_id)
 
-    assert db.insert_gallery_infos([gallery_info]) == [True]
+    assert db.insert_gallery_infos([gallery_info]) == [GalleryChange.new]
 
     assert call_count == 0
 
@@ -546,7 +582,7 @@ def test_insert_gallery_chunk_splits_retry_instead_of_one_by_one(
 
     def flaky_insert_gallery_infos(
         galleryinfo_params_list: list[GalleryInfoParser],
-    ) -> list[bool]:
+    ) -> list[GalleryChange]:
         nonlocal fail_once
         call_sizes.append(len(galleryinfo_params_list))
         if fail_once and len(galleryinfo_params_list) == len(gallery_paths):
@@ -558,7 +594,7 @@ def test_insert_gallery_chunk_splits_retry_instead_of_one_by_one(
 
     result = db._insert_gallery_chunk_with_split_retry(gallery_paths)
 
-    assert result == [True, True, True, True]
+    assert result == [GalleryChange.new] * 4
     # The failing full batch is retried as two halves, not four single-item calls.
     assert call_sizes == [4, 2, 2]
 
@@ -668,51 +704,6 @@ def test_refresh_current_cbz_files_removes_only_orphaned_files(
         "expected_cbz_files=1 unexpected_files_removed=4 "
         "empty_directories_removed=4."
     ]
-
-
-def test_get_scrub_candidates_preserves_global_order_across_query_batches(
-    sqlite_config: H2HDBConfig,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("h2hdb.cbz_integrity.INTEGRITY_BATCH_SIZE", 2)
-
-    with H2HDB(config=sqlite_config) as db:
-        db.create_main_tables()
-        gallery_names = [f"scrub-candidate-{index}" for index in range(6)]
-        for gallery_name in gallery_names:
-            db.gallery_ids._insert_gallery_name(gallery_name)
-        db_gallery_ids = [
-            db.gallery_ids._get_db_gallery_id_by_gallery_name(gallery_name)
-            for gallery_name in gallery_names
-        ]
-
-        verification_times = {
-            db_gallery_ids[0]: "2024-01-01 00:00:00",
-            db_gallery_ids[2]: "2020-01-01 00:00:00",
-            db_gallery_ids[4]: "2022-01-01 00:00:00",
-            db_gallery_ids[5]: "2021-01-01 00:00:00",
-        }
-        with db.SQLConnector() as connector:
-            connector.execute_many(
-                """
-                    INSERT INTO cbz_verifications (
-                        db_gallery_id,
-                        last_verified_time
-                    )
-                    VALUES (%s, %s)
-                """,
-                list(verification_times.items()),
-            )
-
-        assert db.cbz_integrity._get_scrub_candidates(
-            list(reversed(db_gallery_ids)),
-            limit=4,
-        ) == [
-            db_gallery_ids[1],
-            db_gallery_ids[3],
-            db_gallery_ids[2],
-            db_gallery_ids[5],
-        ]
 
 
 def test_get_stale_cbz_galleries_flags_cbz_containing_newly_excluded_file(

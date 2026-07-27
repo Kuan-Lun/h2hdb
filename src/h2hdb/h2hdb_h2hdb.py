@@ -16,16 +16,18 @@ from h2h_galleryinfo_parser import (
 
 from .cbz_files import (
     CBZCompressionSummary,
+    ExistingCBZPolicy,
     H2HDBCBZFiles,
-    cbz_scrub_worker,
-    run_in_parallel,
 )
-from .cbz_integrity import H2HDBCBZIntegrity
 from .config_loader import H2HDBConfig
 from .duplicated_hashes import H2HDBDuplicatedHashes
 from .gallery_deduplication import (
     ContentClaim,
     H2HDBGalleryDeduplication,
+)
+from .gallery_source_manifest import (
+    GalleryChange,
+    build_gallery_source_manifest,
 )
 from .hash_dict import HASH_ALGORITHMS
 from .information import FileInformation, TagInformation
@@ -39,7 +41,9 @@ from .settings import (
 from .table_comments import H2HDBGalleriesComments
 from .table_database_setting import H2HDBCheckDatabaseSettings
 from .table_files_dbids import H2HDBFiles
+from .table_gallery_source_manifests import H2HDBGallerySourceManifests
 from .table_gids import H2HDBGalleriesGIDs, H2HDBGalleriesIDs
+from .table_pending_cbz_rebuilds import H2HDBPendingCBZRebuilds
 from .table_pending_removals import H2HDBPendingGalleryRemovals
 from .table_removed_gids import H2HDBRemovedGalleries
 from .table_tags import H2HDBGalleriesTags
@@ -86,9 +90,12 @@ class H2HDB(BaseRepository):
         self.gallery_comments = H2HDBGalleriesComments(context, self.gallery_ids)
         self.gallery_tags = H2HDBGalleriesTags(context, self.gallery_ids)
         self.files = H2HDBFiles(context, self.gallery_ids)
+        self.gallery_source_manifests = H2HDBGallerySourceManifests(
+            context, self.gallery_ids
+        )
+        self.pending_cbz_rebuilds = H2HDBPendingCBZRebuilds(context)
         self.removed_galleries = H2HDBRemovedGalleries(context)
         self.cbz = H2HDBCBZFiles(context, self.gallery_times, self.gallery_ids)
-        self.cbz_integrity = H2HDBCBZIntegrity(context, self.gallery_ids)
         self.gallery_deduplication = H2HDBGalleryDeduplication(
             context, self.gallery_ids, self.gallery_times, self.gallery_titles
         )
@@ -195,6 +202,8 @@ class H2HDB(BaseRepository):
         self.upload_accounts._create_upload_account_table()
         self.gallery_comments._create_galleries_comments_table()
         self.files._create_files_names_table()
+        self.gallery_source_manifests._create_gallery_source_manifests_table()
+        self.pending_cbz_rebuilds._create_pending_cbz_rebuilds_table()
         self.gallery_infos._create_galleries_infos_view()
         self.files._create_galleries_files_hashs_tables()
         self.files._create_gallery_image_hash_view()
@@ -209,8 +218,6 @@ class H2HDB(BaseRepository):
         self.todelete_queue._create_todelete_rm_commands_view()
         self.removed_galleries._create_removed_galleries_gids_table()
         self.gallery_tags._create_galleries_tags_table()
-        self.cbz_integrity._create_cbz_hashes_table()
-        self.cbz_integrity._create_cbz_verifications_table()
         self.logger.info(
             "Database schema initialization completed: "
             f"backend={self.config.database.sql_type.lower()}."
@@ -394,6 +401,25 @@ class H2HDB(BaseRepository):
 
         stage_started = monotonic()
         self.logger.debug(
+            "PERF event=start stage=gallery_insert_source_manifests "
+            f"galleries={gallery_count}"
+        )
+        self.gallery_source_manifests._insert_many(
+            {
+                db_gallery_ids[galleryinfo_params.gallery_name]: (
+                    build_gallery_source_manifest(galleryinfo_params)
+                )
+                for galleryinfo_params in galleryinfo_params_list
+            }
+        )
+        self.logger.debug(
+            "PERF event=end stage=gallery_insert_source_manifests "
+            f"galleries={gallery_count} "
+            f"elapsed_s={monotonic() - stage_started:.6f}"
+        )
+
+        stage_started = monotonic()
+        self.logger.debug(
             f"PERF event=start stage=gallery_insert_metadata galleries={gallery_count}"
         )
         self._insert_gallery_metadata_rows(galleryinfo_params_list, db_gallery_ids)
@@ -486,12 +512,13 @@ class H2HDB(BaseRepository):
             f"elapsed_s={monotonic() - insert_started:.6f}"
         )
 
-    def _check_gallery_info_file_hashes(
+    def _classify_gallery_changes(
         self, galleryinfo_params_list: list[GalleryInfoParser]
-    ) -> list[bool]:
-        # Three batched lookups (gallery id, galleryinfo.txt file id, its stored
-        # hash) keep query count independent of the number of galleries, instead
-        # of issuing them per gallery.
+    ) -> list[GalleryChange]:
+        # Batched lookups keep query count independent of gallery count. The
+        # source manifest catches file add/delete/rename operations without
+        # rereading image bytes; galleryinfo.txt is still content-hashed so a
+        # same-name metadata edit is detected as well.
         if not galleryinfo_params_list:
             return []
 
@@ -520,6 +547,17 @@ class H2HDB(BaseRepository):
             f"existing_galleries={len(db_gallery_ids_by_name)} "
             f"elapsed_s={monotonic() - change_detection_started:.6f}"
         )
+        source_manifests_by_gallery_id = (
+            self.gallery_source_manifests._get_by_db_gallery_ids(
+                list(db_gallery_ids_by_name.values())
+            )
+        )
+        self.logger.debug(
+            "PERF event=progress stage=gallery_change_detection "
+            f"step=source_manifest_lookup galleries={gallery_count} "
+            f"existing_manifests={len(source_manifests_by_gallery_id)} "
+            f"elapsed_s={monotonic() - change_detection_started:.6f}"
+        )
         db_file_ids_by_gallery_id = self.files._get_db_file_ids_by_gallery_ids_for_name(
             list(db_gallery_ids_by_name.values()), GALLERY_INFO_FILE_NAME
         )
@@ -539,32 +577,45 @@ class H2HDB(BaseRepository):
             f"elapsed_s={monotonic() - change_detection_started:.6f}"
         )
 
-        issame_list: list[bool] = list()
+        change_list: list[GalleryChange] = list()
         next_heartbeat = change_detection_started + PERF_HEARTBEAT_SECONDS
         for gallery_index, galleryinfo_params in enumerate(
             galleryinfo_params_list, start=1
         ):
             db_gallery_id = db_gallery_ids_by_name.get(galleryinfo_params.gallery_name)
-            gallery_info_file_id = (
-                None
-                if db_gallery_id is None
-                else db_file_ids_by_gallery_id.get(db_gallery_id)
-            )
-            original_hash_value = (
-                None
-                if gallery_info_file_id is None
-                else hash_values_by_file_id.get(gallery_info_file_id)
-            )
-            if original_hash_value is None:
-                issame_list.append(False)
+            if db_gallery_id is None:
+                change = GalleryChange.new
             else:
-                absolute_file_path = (
-                    galleryinfo_params.gallery_folder / GALLERY_INFO_FILE_NAME
+                stored_source_manifest = source_manifests_by_gallery_id.get(
+                    db_gallery_id
                 )
-                current_hash_value = hash_function_by_file(
-                    absolute_file_path, COMPARISON_HASH_ALGORITHM
+                current_source_manifest = build_gallery_source_manifest(
+                    galleryinfo_params
                 )
-                issame_list.append(original_hash_value == current_hash_value)
+                gallery_info_file_id = db_file_ids_by_gallery_id.get(db_gallery_id)
+                original_hash_value = (
+                    None
+                    if gallery_info_file_id is None
+                    else hash_values_by_file_id.get(gallery_info_file_id)
+                )
+                if (
+                    stored_source_manifest != current_source_manifest
+                    or original_hash_value is None
+                ):
+                    change = GalleryChange.changed
+                else:
+                    absolute_file_path = (
+                        galleryinfo_params.gallery_folder / GALLERY_INFO_FILE_NAME
+                    )
+                    current_hash_value = hash_function_by_file(
+                        absolute_file_path, COMPARISON_HASH_ALGORITHM
+                    )
+                    change = (
+                        GalleryChange.unchanged
+                        if original_hash_value == current_hash_value
+                        else GalleryChange.changed
+                    )
+            change_list.append(change)
             now = monotonic()
             if now >= next_heartbeat:
                 self.logger.debug(
@@ -573,40 +624,54 @@ class H2HDB(BaseRepository):
                     f"elapsed_s={now - change_detection_started:.6f}"
                 )
                 next_heartbeat = now + PERF_HEARTBEAT_SECONDS
+        new_count = change_list.count(GalleryChange.new)
+        changed_count = change_list.count(GalleryChange.changed)
+        unchanged_count = change_list.count(GalleryChange.unchanged)
         self.logger.debug(
             "PERF event=end stage=gallery_change_detection "
-            f"galleries={gallery_count} unchanged={sum(issame_list)} "
-            f"changed={gallery_count - sum(issame_list)} "
+            f"galleries={gallery_count} new={new_count} changed={changed_count} "
+            f"unchanged={unchanged_count} "
             f"elapsed_s={monotonic() - change_detection_started:.6f}"
         )
-        return issame_list
+        return change_list
 
     def insert_gallery_infos(
         self, galleryinfo_params_list: list[GalleryInfoParser]
-    ) -> list[bool]:
-        issame_list = self._check_gallery_info_file_hashes(galleryinfo_params_list)
+    ) -> list[GalleryChange]:
+        change_list = self._classify_gallery_changes(galleryinfo_params_list)
 
-        is_insert_list: list[bool] = list()
         to_insert: list[GalleryInfoParser] = list()
-        for galleryinfo_params, issame in zip(
-            galleryinfo_params_list, issame_list, strict=True
+        changed_gallery_names: list[str] = list()
+        for galleryinfo_params, change in zip(
+            galleryinfo_params_list, change_list, strict=True
         ):
-            is_insert = issame is False
-            is_insert_list.append(is_insert)
-            if is_insert:
+            if change != GalleryChange.unchanged:
                 self.logger.debug(
-                    f"Inserting gallery '{galleryinfo_params.gallery_name}'..."
+                    "Applying gallery database change: "
+                    f"gallery={galleryinfo_params.gallery_name!r} "
+                    f"change={change.value}."
                 )
                 to_insert.append(galleryinfo_params)
+            if change == GalleryChange.changed:
+                changed_gallery_names.append(galleryinfo_params.gallery_name)
 
-        self.refresh_galleries(
-            [galleryinfo_params.gallery_name for galleryinfo_params in to_insert]
-        )
+        # Persist this before deleting/reinserting changed gallery rows. If the
+        # process stops before final CBZ reconciliation, the next run still
+        # knows that a same-member-name CBZ must be rebuilt.
+        self.pending_cbz_rebuilds.insert_pending_gallery_names(changed_gallery_names)
+        self.refresh_galleries(changed_gallery_names)
         self._insert_gallery_infos(to_insert)
 
-        for galleryinfo_params in to_insert:
-            self.logger.debug(f"Gallery '{galleryinfo_params.gallery_name}' inserted.")
-        return is_insert_list
+        for galleryinfo_params, change in zip(
+            galleryinfo_params_list, change_list, strict=True
+        ):
+            if change != GalleryChange.unchanged:
+                self.logger.debug(
+                    "Gallery database change applied: "
+                    f"gallery={galleryinfo_params.gallery_name!r} "
+                    f"change={change.value}."
+                )
+        return change_list
 
     def scan_current_galleries_folders(self) -> tuple[list[Path], set[str]]:
         scan_started = monotonic()
@@ -769,7 +834,7 @@ class H2HDB(BaseRepository):
 
     def _insert_gallery_chunk_with_split_retry(
         self, gallery_chunk: list[Path]
-    ) -> list[bool]:
+    ) -> list[GalleryChange]:
         try:
             parse_started = monotonic()
             self.logger.debug(
@@ -788,9 +853,13 @@ class H2HDB(BaseRepository):
                 f"PERF event=start stage=chunk_insert galleries={len(gallery_chunk)}"
             )
             result = self.insert_gallery_infos(galleryinfo_params_list)
+            inserted_or_updated = sum(
+                change != GalleryChange.unchanged for change in result
+            )
             self.logger.debug(
                 "PERF event=end stage=chunk_insert "
-                f"galleries={len(gallery_chunk)} inserted={sum(result)} "
+                f"galleries={len(gallery_chunk)} "
+                f"inserted_or_updated={inserted_or_updated} "
                 f"elapsed_s={monotonic() - insert_started:.6f}"
             )
             return result
@@ -1004,7 +1073,6 @@ class H2HDB(BaseRepository):
             f"elapsed_s={monotonic() - reconcile_started:.6f}"
         )
         losing_db_gallery_ids = list(result.losing_db_gallery_ids)
-        self.cbz_integrity._delete_stale_rows()
         if self.config.h2h.cbz_path is not None:
             self._delete_duplicate_gallery_cbz_files(losing_db_gallery_ids)
 
@@ -1042,203 +1110,6 @@ class H2HDB(BaseRepository):
             f"targeted={len(target_file_names)} removed={removed}."
         )
 
-    def _locate_cbz_paths(self, db_gallery_ids: list[int]) -> list[tuple[int, Path]]:
-        assert self.config.h2h.cbz_path is not None
-        if not db_gallery_ids:
-            return []
-
-        expected_paths_by_id = self.cbz._get_cbz_output_paths_by_db_gallery_ids(
-            db_gallery_ids
-        )
-        return [
-            (db_gallery_id, cbz_path)
-            for db_gallery_id in db_gallery_ids
-            if (cbz_path := expected_paths_by_id.get(db_gallery_id)) is not None
-            and cbz_path.exists()
-        ]
-
-    def _establish_cbz_hash_baselines(
-        self, db_gallery_ids: list[int], pool: Pool
-    ) -> int:
-        """(Re)hash CBZ files and unconditionally record the result as their baseline.
-
-        Used after a rebuild: the freshly-written file is definitionally
-        valid, so there's nothing to compare against, only a new baseline to
-        record.
-        """
-        candidates = self._locate_cbz_paths(db_gallery_ids)
-        if not candidates:
-            return 0
-
-        actual_hashes = run_in_parallel(
-            pool, cbz_scrub_worker, [(cbz_path,) for _, cbz_path in candidates]
-        )
-        baselines_recorded = 0
-        for (db_gallery_id, cbz_path), actual_sha256 in zip(
-            candidates, actual_hashes, strict=True
-        ):
-            if actual_sha256 is None:
-                self.logger.error(
-                    "CBZ integrity baseline could not be recorded after rebuild: "
-                    f"db_gallery_id={db_gallery_id} path={str(cbz_path)!r} "
-                    "reason=unreadable."
-                )
-                continue
-            self.cbz_integrity._upsert_hash(db_gallery_id, actual_sha256)
-            self.cbz_integrity._set_verification_to_now(db_gallery_id)
-            baselines_recorded += 1
-        return baselines_recorded
-
-    def _scrub_cbz_files(
-        self,
-        current_galleries_folders: list[Path],
-        exclude_hashs: set[bytes],
-        pool: Pool,
-    ) -> CBZCompressionSummary:
-        batch_size = self.config.h2h.cbz_scrub_batch_size
-        if batch_size <= 0:
-            self.logger.debug("CBZ integrity scrub disabled: batch_size=0.")
-            return CBZCompressionSummary()
-
-        folder_by_gallery_name = {
-            folder.name: folder for folder in current_galleries_folders
-        }
-        db_gallery_ids_by_name = (
-            self.gallery_ids._get_db_gallery_ids_by_gallery_names_from_dbids(
-                list(folder_by_gallery_name.keys())
-            )
-        )
-        candidate_ids = self.cbz_integrity._get_scrub_candidates(
-            list(db_gallery_ids_by_name.values()), batch_size
-        )
-        if not candidate_ids:
-            self.logger.debug(
-                "CBZ integrity scrub skipped: no eligible gallery records."
-            )
-            return CBZCompressionSummary()
-
-        candidates = self._locate_cbz_paths(candidate_ids)
-        missing_candidate_files = len(candidate_ids) - len(candidates)
-        if missing_candidate_files:
-            self.logger.warning(
-                "CBZ integrity scrub candidates are missing expected files: "
-                f"selected_db_gallery_ids={len(candidate_ids)} "
-                f"located_cbz_files={len(candidates)} "
-                f"missing_cbz_files={missing_candidate_files}."
-            )
-        if not candidates:
-            return CBZCompressionSummary()
-
-        scrub_started = monotonic()
-        self.logger.info(f"Scrubbing {len(candidates)} CBZ file(s) for integrity...")
-        actual_hashes = run_in_parallel(
-            pool, cbz_scrub_worker, [(cbz_path,) for _, cbz_path in candidates]
-        )
-
-        corrupt_db_gallery_ids: list[int] = []
-        baselines_created = 0
-        verified = 0
-        unreadable = 0
-        hash_mismatches = 0
-        for (db_gallery_id, cbz_path), actual_sha256 in zip(
-            candidates, actual_hashes, strict=True
-        ):
-            expected_sha256 = self.cbz_integrity._get_hash(db_gallery_id)
-            if actual_sha256 is None:
-                unreadable += 1
-                corrupt_db_gallery_ids.append(db_gallery_id)
-                self.logger.warning(
-                    "CBZ integrity check failed: "
-                    f"db_gallery_id={db_gallery_id} path={str(cbz_path)!r} "
-                    "reason=unreadable."
-                )
-                continue
-            if expected_sha256 is not None and actual_sha256 != expected_sha256:
-                hash_mismatches += 1
-                corrupt_db_gallery_ids.append(db_gallery_id)
-                self.logger.warning(
-                    "CBZ integrity check failed: "
-                    f"db_gallery_id={db_gallery_id} path={str(cbz_path)!r} "
-                    "reason=sha256_mismatch "
-                    f"expected_sha256=0x{expected_sha256.hex()} "
-                    f"actual_sha256=0x{actual_sha256.hex()}."
-                )
-                continue
-            self.cbz_integrity._upsert_hash(db_gallery_id, actual_sha256)
-            self.cbz_integrity._set_verification_to_now(db_gallery_id)
-            if expected_sha256 is None:
-                baselines_created += 1
-            else:
-                verified += 1
-
-        if not corrupt_db_gallery_ids:
-            self.logger.info(
-                "CBZ integrity scrub completed: "
-                f"checked={len(candidates)} verified={verified} "
-                f"baselines_created={baselines_created} unreadable=0 "
-                f"hash_mismatches=0 rebuilt=0 "
-                f"elapsed_s={monotonic() - scrub_started:.3f}."
-            )
-            return CBZCompressionSummary()
-
-        corrupt_gallery_names_by_id = (
-            self.gallery_ids.get_gallery_names_by_db_gallery_ids(corrupt_db_gallery_ids)
-        )
-        rebuild_candidates = [
-            (db_gallery_id, folder_by_gallery_name[gallery_name])
-            for db_gallery_id, gallery_name in corrupt_gallery_names_by_id.items()
-            if gallery_name in folder_by_gallery_name
-        ]
-        unavailable_sources = len(corrupt_db_gallery_ids) - len(rebuild_candidates)
-        self.logger.warning(
-            "Repairing CBZ integrity failures: "
-            f"failed={len(corrupt_db_gallery_ids)} "
-            f"sources_available={len(rebuild_candidates)} "
-            f"sources_unavailable={unavailable_sources}..."
-        )
-        if unavailable_sources:
-            available_rebuild_ids = {
-                db_gallery_id for db_gallery_id, _ in rebuild_candidates
-            }
-            for db_gallery_id in corrupt_db_gallery_ids:
-                if db_gallery_id in available_rebuild_ids:
-                    continue
-                self.logger.error(
-                    "CBZ integrity repair source gallery not found: "
-                    f"db_gallery_id={db_gallery_id} "
-                    f"gallery={corrupt_gallery_names_by_id.get(db_gallery_id)!r}."
-                )
-            self.logger.error(
-                "CBZ integrity repair could not locate source galleries: "
-                f"count={unavailable_sources}."
-            )
-
-        rebuild_summary = self.cbz.compress_galleries_to_cbz(
-            [folder for _, folder in rebuild_candidates],
-            exclude_hashs,
-            pool,
-            invalidate_integrity_state=(
-                self.cbz_integrity._invalidate_verifications_for_db_gallery_ids
-            ),
-            force_rebuild=True,
-        )
-        baselines_refreshed = self._establish_cbz_hash_baselines(
-            [db_gallery_id for db_gallery_id, _ in rebuild_candidates], pool
-        )
-        self.logger.info(
-            "CBZ integrity scrub completed: "
-            f"checked={len(candidates)} verified={verified} "
-            f"baselines_created={baselines_created} unreadable={unreadable} "
-            f"hash_mismatches={hash_mismatches} "
-            f"repair_checked={rebuild_summary.checked} "
-            f"repair_created={rebuild_summary.created} "
-            f"repair_rebuilt={rebuild_summary.rebuilt} "
-            f"baselines_refreshed={baselines_refreshed} "
-            f"unavailable_sources={unavailable_sources} "
-            f"elapsed_s={monotonic() - scrub_started:.3f}."
-        )
-        return rebuild_summary
-
     def insert_h2h_download(self) -> bool:
         run_started = monotonic()
         self.logger.debug(
@@ -1257,7 +1128,11 @@ class H2HDB(BaseRepository):
             f"elapsed_s={monotonic() - stage_started:.6f}"
         )
 
-        current_galleries_folders, _ = self.scan_current_galleries_folders()
+        (
+            current_galleries_folders,
+            current_galleries_names,
+        ) = self.scan_current_galleries_folders()
+        self.pending_cbz_rebuilds.delete_stale_gallery_names(current_galleries_names)
 
         current_galleries_folders = self._sort_galleries_for_processing(
             current_galleries_folders
@@ -1267,7 +1142,6 @@ class H2HDB(BaseRepository):
         total_cbz_summary = CBZCompressionSummary()
         provisional_cbz_summary = CBZCompressionSummary()
         final_cbz_summary = CBZCompressionSummary()
-        scrub_cbz_summary = CBZCompressionSummary()
         is_insert_limit_reached = False
         gallery_chunk_size = (
             PROGRESSIVE_GALLERY_CHUNK_SIZE
@@ -1296,11 +1170,12 @@ class H2HDB(BaseRepository):
                 else None
             )
 
-            # This snapshot is intentionally provisional. Newly inserted
-            # galleries may introduce more exclusions or later lose their
-            # content-ownership race. Producing their CBZ now keeps progress
-            # visible; the authoritative global pass below repairs or removes
-            # every provisional result before a successful return.
+            # This snapshot is intentionally provisional. Only missing CBZ
+            # files for brand-new database rows are created here. Existing CBZ
+            # files are preserved until the authoritative final exclusion set
+            # is available, preventing a fresh database from rebuilding valid
+            # output once with an empty exclusion set and then rebuilding it
+            # again during final reconciliation.
             provisional_exclude_hashs = (
                 self.duplicated_hashes._get_duplicated_hash_values_by_count_artist_ratio()
                 if cbz_pool is not None
@@ -1328,10 +1203,11 @@ class H2HDB(BaseRepository):
                     f"galleries={len(gallery_chunk)} "
                     f"cumulative={galleries_processed}/{total_galleries}..."
                 )
-                is_insert_list = self._insert_gallery_chunk_with_split_retry(
-                    gallery_chunk
-                )
-                inserted_or_updated = sum(is_insert_list)
+                change_list = self._insert_gallery_chunk_with_split_retry(gallery_chunk)
+                new_count = change_list.count(GalleryChange.new)
+                changed_count = change_list.count(GalleryChange.changed)
+                unchanged_count = change_list.count(GalleryChange.unchanged)
+                inserted_or_updated = new_count + changed_count
                 if inserted_or_updated:
                     is_insert_limit_reached = True
                     total_inserted_in_database += inserted_or_updated
@@ -1339,10 +1215,10 @@ class H2HDB(BaseRepository):
                 if cbz_pool is not None:
                     provisional_galleries = [
                         gallery_folder
-                        for gallery_folder, is_insert in zip(
-                            gallery_chunk, is_insert_list, strict=True
+                        for gallery_folder, change in zip(
+                            gallery_chunk, change_list, strict=True
                         )
-                        if is_insert
+                        if change == GalleryChange.new
                     ]
                     if provisional_galleries:
                         provisional_started = monotonic()
@@ -1355,9 +1231,7 @@ class H2HDB(BaseRepository):
                             provisional_galleries,
                             provisional_exclude_hashs,
                             cbz_pool,
-                            invalidate_integrity_state=(
-                                self.cbz_integrity._invalidate_for_db_gallery_ids
-                            ),
+                            existing_cbz_policy=ExistingCBZPolicy.preserve,
                         )
                         provisional_cbz_summary += chunk_provisional_summary
                         total_cbz_summary += chunk_provisional_summary
@@ -1374,8 +1248,8 @@ class H2HDB(BaseRepository):
                 self.logger.info(
                     f"Gallery chunk {chunk_index}/{total_chunks} completed: "
                     f"checked={len(gallery_chunk)} "
-                    f"inserted_or_updated={inserted_or_updated} "
-                    f"unchanged={len(gallery_chunk) - inserted_or_updated} "
+                    f"new={new_count} changed={changed_count} "
+                    f"unchanged={unchanged_count} "
                     f"provisional_cbz_writes={chunk_cbz_writes} "
                     f"elapsed_s={monotonic() - chunk_started:.3f}."
                 )
@@ -1384,7 +1258,8 @@ class H2HDB(BaseRepository):
                     "PERF event=end stage=insertion_chunk "
                     f"chunk_index={chunk_index} chunks={total_chunks} "
                     f"chunk_galleries={len(gallery_chunk)} "
-                    f"inserted_or_updated={inserted_or_updated} "
+                    f"new={new_count} changed={changed_count} "
+                    f"unchanged={unchanged_count} "
                     f"cbz_write_operations={chunk_cbz_writes} "
                     f"elapsed_s={monotonic() - chunk_started:.6f}"
                 )
@@ -1437,6 +1312,11 @@ class H2HDB(BaseRepository):
                     gallery_folder.name for gallery_folder in galleries_to_compress
                 }
                 self.cbz._refresh_current_cbz_files(eligible_gallery_names)
+                pending_rebuild_gallery_names = (
+                    self.pending_cbz_rebuilds.get_pending_gallery_names(
+                        list(current_galleries_names)
+                    )
+                )
 
                 chunked_galleries_to_compress = chunk_list(
                     galleries_to_compress, 1000 * POOL_CPU_LIMIT
@@ -1454,9 +1334,18 @@ class H2HDB(BaseRepository):
                         gallery_chunk,
                         final_exclude_hashs,
                         cbz_pool,
-                        invalidate_integrity_state=(
-                            self.cbz_integrity._invalidate_for_db_gallery_ids
+                        force_rebuild_gallery_names=(
+                            pending_rebuild_gallery_names.intersection(
+                                gallery_folder.name for gallery_folder in gallery_chunk
+                            )
                         ),
+                    )
+                    self.pending_cbz_rebuilds.delete_pending_gallery_names(
+                        [
+                            gallery_folder.name
+                            for gallery_folder in gallery_chunk
+                            if gallery_folder.name in pending_rebuild_gallery_names
+                        ]
                     )
                     final_cbz_summary += chunk_final_summary
                     total_cbz_summary += chunk_final_summary
@@ -1465,13 +1354,11 @@ class H2HDB(BaseRepository):
                         f"{_cbz_summary_fields(chunk_final_summary)} "
                         f"elapsed_s={monotonic() - final_cbz_started:.3f}."
                     )
-
-                scrub_cbz_summary = self._scrub_cbz_files(
-                    galleries_to_compress,
-                    final_exclude_hashs,
-                    cbz_pool,
+                # Pending rows for deduplication losers are also complete: their
+                # CBZ files were removed before the final winner checks.
+                self.pending_cbz_rebuilds.delete_pending_gallery_names(
+                    list(current_galleries_names)
                 )
-                total_cbz_summary += scrub_cbz_summary
 
         if self.config.h2h.cbz_path is not None:
             self.logger.info(
@@ -1482,14 +1369,13 @@ class H2HDB(BaseRepository):
                 f"unchanged_checks={total_cbz_summary.unchanged} "
                 f"write_operations={total_cbz_summary.write_operations} "
                 f"provisional_writes={provisional_cbz_summary.write_operations} "
-                f"final_writes={final_cbz_summary.write_operations} "
-                f"integrity_repair_writes={scrub_cbz_summary.write_operations} "
-                f"integrity_state_db_gallery_ids_invalidated="
-                f"{total_cbz_summary.integrity_state_db_gallery_ids_invalidated}."
+                f"final_writes={final_cbz_summary.write_operations}."
             )
 
         self.logger.info(
-            f"Cleaning orphaned file-hash records: algorithms={len(HASH_ALGORITHMS)}..."
+            "Cleaning orphaned derived records: "
+            f"file_hash_algorithms={len(HASH_ALGORITHMS)} "
+            "source_manifest_tables=1..."
         )
         stage_started = monotonic()
         self.logger.debug(
@@ -1497,6 +1383,7 @@ class H2HDB(BaseRepository):
             f"algorithms={len(HASH_ALGORITHMS)}"
         )
         self.refresh_current_files_hashs()
+        self.gallery_source_manifests._delete_stale_rows()
         cleanup_elapsed = monotonic() - stage_started
         self.logger.debug(
             "PERF event=end stage=cleanup_file_hashes "
@@ -1504,8 +1391,9 @@ class H2HDB(BaseRepository):
             f"elapsed_s={cleanup_elapsed:.6f}"
         )
         self.logger.info(
-            "Orphaned file-hash cleanup completed: "
-            f"algorithms={len(HASH_ALGORITHMS)} elapsed_s={cleanup_elapsed:.3f}."
+            "Orphaned derived-record cleanup completed: "
+            f"file_hash_algorithms={len(HASH_ALGORITHMS)} "
+            f"source_manifest_tables=1 elapsed_s={cleanup_elapsed:.3f}."
         )
 
         self.logger.debug(

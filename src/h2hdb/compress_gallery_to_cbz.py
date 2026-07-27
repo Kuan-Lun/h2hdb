@@ -12,6 +12,7 @@ from typing import cast
 
 from PIL import Image, ImageFile
 
+from .gallery_source_manifest import cbz_input_manifest_to_comment
 from .settings import (
     COMPARISON_HASH_ALGORITHM,
     FILE_NAME_LENGTH_LIMIT,
@@ -58,7 +59,11 @@ def compress_image(image_path: Path, output_path: Path, max_size: int) -> None:
             image.save(output_path, "JPEG")
 
 
-def create_cbz(directory: Path, output_path: Path) -> None:
+def create_cbz(
+    directory: Path,
+    output_path: Path,
+    input_manifest: bytes,
+) -> None:
     """Create a CBZ file from all images in a directory."""
     # Written to a sibling temp file and atomically moved into place so a
     # process killed mid-write (OOM, crash) never leaves a corrupt file at
@@ -72,6 +77,7 @@ def create_cbz(directory: Path, output_path: Path) -> None:
     with zipfile.ZipFile(tmp_output_path, "w") as cbz:
         for entry in directory.iterdir():
             cbz.write(entry, entry.name)
+        cbz.comment = cbz_input_manifest_to_comment(input_manifest)
     tmp_output_path.replace(output_path)
 
 
@@ -119,6 +125,7 @@ def compress_images_and_create_cbz(
     tmp_directory: Path,
     max_size: int,
     exclude_hashs: set[bytes],
+    input_manifest: bytes,
 ) -> None:
     if len(set([input_directory, output_directory, tmp_directory])) < 2:
         raise ValueError("Input and output directories cannot be the same.")
@@ -136,7 +143,7 @@ def compress_images_and_create_cbz(
 
     output_directory.mkdir(parents=True, exist_ok=True)
     cbzfile = output_directory / gallery_name_to_cbz_file_name(gallery_name)
-    create_cbz(tmp_cbz_directory, cbzfile)
+    create_cbz(tmp_cbz_directory, cbzfile, input_manifest)
     shutil.rmtree(tmp_cbz_directory)
 
 

@@ -9,19 +9,21 @@ smaller methods doesn't silently change behavior.
 import hashlib
 import io
 import zipfile
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from multiprocessing.pool import Pool
 from pathlib import Path
-from typing import Any
 
 import pytest
 from PIL import Image
 
 from h2hdb import H2HDB, H2HDBConfig
-from h2hdb import cbz_files as cbz_files_module
-from h2hdb import h2hdb_h2hdb as h2hdb_h2hdb_module
-from h2hdb.cbz_files import CBZCompressionOutcome, CBZCompressionSummary
+from h2hdb.cbz_files import (
+    CBZCompressionOutcome,
+    CBZCompressionSummary,
+    ExistingCBZPolicy,
+)
 from h2hdb.compress_gallery_to_cbz import gallery_name_to_cbz_file_name
+from h2hdb.gallery_source_manifest import GalleryChange
 from h2hdb.hash_dict import FILE_CONTENT_HASH_ALGORITHM
 from h2hdb.settings import CBZ_GROUPING, CBZ_SORT
 
@@ -58,6 +60,30 @@ def _make_jpeg_bytes(seed: int) -> bytes:
     buf = io.BytesIO()
     Image.new("RGB", (8, 8), color=(seed % 256, 0, 0)).save(buf, "JPEG")
     return buf.getvalue()
+
+
+def _make_png_bytes(seed: int) -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), color=(seed % 256, 0, 0)).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _replace_cbz_member(cbz_path: Path, member_name: str, content: bytes) -> None:
+    with zipfile.ZipFile(cbz_path) as cbz:
+        members = {name: cbz.read(name) for name in cbz.namelist()}
+        comment = cbz.comment
+    assert member_name in members
+    members[member_name] = content
+    with zipfile.ZipFile(cbz_path, "w") as cbz:
+        for name, member_content in members.items():
+            cbz.writestr(name, member_content)
+        cbz.comment = comment
+
+
+def _remove_cbz_input_manifest(cbz_path: Path) -> None:
+    with zipfile.ZipFile(cbz_path, "a") as cbz:
+        assert cbz.comment
+        cbz.comment = b""
 
 
 def _effective_content_hash(*file_contents: bytes) -> bytes:
@@ -222,7 +248,6 @@ def test_insert_h2h_download_logs_cbz_batch_outcome_counts(
     cbz_path.mkdir()
     sqlite_config.h2h.download_path = download_path
     sqlite_config.h2h.cbz_path = cbz_path
-    sqlite_config.h2h.cbz_scrub_batch_size = 0
     _write_galleryinfo(download_path / "700031", title="CBZ Log Gallery", pages=1)
 
     with H2HDB(config=sqlite_config) as instance:
@@ -245,15 +270,12 @@ def test_insert_h2h_download_logs_cbz_batch_outcome_counts(
         assert any(
             "CBZ processing totals: compression_checks=2 create_operations=1 "
             "rebuild_operations=0 unchanged_checks=1 "
-            "write_operations=1 provisional_writes=1 final_writes=0 "
-            "integrity_repair_writes=0 "
-            "integrity_state_db_gallery_ids_invalidated=0."
-            in message
+            "write_operations=1 provisional_writes=1 final_writes=0." in message
             for message in info_messages
         )
 
 
-def test_final_cbz_rebuild_invalidates_prior_integrity_state(
+def test_source_filename_rename_updates_database_and_rebuilds_cbz(
     sqlite_config: H2HDBConfig,
     download_path: Path,
     tmp_path: Path,
@@ -263,66 +285,36 @@ def test_final_cbz_rebuild_invalidates_prior_integrity_state(
     cbz_path.mkdir()
     sqlite_config.h2h.download_path = download_path
     sqlite_config.h2h.cbz_path = cbz_path
-    sqlite_config.h2h.cbz_scrub_batch_size = 1
-    gallery_name = "700033"
-    _write_galleryinfo(
-        download_path / gallery_name,
-        title="CBZ Baseline Invalidation Gallery",
-        pages=1,
-    )
+    gallery_name = "700032"
+    gallery_folder = download_path / gallery_name
+    _write_galleryinfo(gallery_folder, title="Renamed Source Gallery", pages=1)
 
     with H2HDB(config=sqlite_config) as instance:
         instance.create_main_tables()
         assert instance.insert_h2h_download() is True
 
-        db_gallery_id = instance.gallery_ids._get_db_gallery_id_by_gallery_name(
-            gallery_name
-        )
-        assert instance.cbz_integrity._get_hash(db_gallery_id) is not None
+        (gallery_folder / "000.jpg").rename(gallery_folder / "renamed.jpg")
+        info_messages: list[str] = []
+        monkeypatch.setattr(instance.logger, "info", info_messages.append)
+
+        assert instance.insert_h2h_download() is True
+        assert set(instance.files.get_files_by_gallery_name(gallery_name)) == {
+            "galleryinfo.txt",
+            "renamed.jpg",
+        }
+        assert instance.pending_cbz_rebuilds.get_pending_gallery_names() == set()
 
         cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
         with zipfile.ZipFile(cbz_file) as cbz:
-            original_members = {
-                member_name: cbz.read(member_name) for member_name in cbz.namelist()
-            }
-        with zipfile.ZipFile(cbz_file, "w") as cbz:
-            for member_name, content in original_members.items():
-                cbz.writestr(member_name, content)
-            cbz.writestr("unexpected.txt", b"stale")
-
-        info_messages: list[str] = []
-        debug_messages: list[str] = []
-        monkeypatch.setattr(instance.logger, "info", info_messages.append)
-        monkeypatch.setattr(instance.logger, "debug", debug_messages.append)
-
-        assert instance.insert_h2h_download() is False
-
+            assert set(cbz.namelist()) == {"galleryinfo.txt", "renamed.jpg"}
         assert any(
             "Final CBZ chunk 1/1 completed: "
             "checked=1 created=0 rebuilt=1 unchanged=0" in message
             for message in info_messages
         )
-        assert any(
-            "CBZ integrity scrub completed: checked=1 verified=0 "
-            "baselines_created=1 unreadable=0 hash_mismatches=0 rebuilt=0"
-            in message
-            for message in info_messages
-        )
-        assert any(
-            "CBZ integrity state invalidated before CBZ write dispatch: "
-            "planned_written_db_gallery_ids=1 "
-            "prior_state_db_gallery_ids=1." in message
-            for message in debug_messages
-        )
-        assert any(
-            "integrity_repair_writes=0 "
-            "integrity_state_db_gallery_ids_invalidated=1."
-            in message
-            for message in info_messages
-        )
 
 
-def test_cbz_write_invalidates_integrity_state_before_a_later_chunk_fails(
+def test_normalized_png_to_jpg_rename_forces_cbz_rebuild(
     sqlite_config: H2HDBConfig,
     download_path: Path,
     tmp_path: Path,
@@ -332,169 +324,114 @@ def test_cbz_write_invalidates_integrity_state_before_a_later_chunk_fails(
     cbz_path.mkdir()
     sqlite_config.h2h.download_path = download_path
     sqlite_config.h2h.cbz_path = cbz_path
-    sqlite_config.h2h.cbz_scrub_batch_size = 2
-    gallery_names = ["700034", "700035"]
-    for index, gallery_name in enumerate(gallery_names):
-        gallery_folder = download_path / gallery_name
-        _write_galleryinfo(
-            gallery_folder,
-            title=f"Interrupted CBZ {gallery_name}",
-            pages=1,
-        )
-        (gallery_folder / "000.jpg").write_bytes(_make_jpeg_bytes(index * 100))
+    gallery_name = "700033"
+    gallery_folder = download_path / gallery_name
+    _write_galleryinfo(gallery_folder, title="Normalized Rename Gallery")
+    source_path = gallery_folder / "001.png"
+    source_path.write_bytes(_make_png_bytes(33))
 
     with H2HDB(config=sqlite_config) as instance:
         instance.create_main_tables()
         assert instance.insert_h2h_download() is True
 
-        db_gallery_ids_by_name = {
-            gallery_name: instance.gallery_ids._get_db_gallery_id_by_gallery_name(
-                gallery_name
-            )
-            for gallery_name in gallery_names
-        }
-        for db_gallery_id in db_gallery_ids_by_name.values():
-            assert instance.cbz_integrity._get_hash(db_gallery_id) is not None
+        cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
+        _replace_cbz_member(cbz_file, "001.jpg", b"stale-but-same-member-name")
+        source_path.rename(gallery_folder / "001.jpg")
 
-        for gallery_name in gallery_names:
-            cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
-            with zipfile.ZipFile(cbz_file) as cbz:
-                original_members = {
-                    member_name: cbz.read(member_name)
-                    for member_name in cbz.namelist()
-                }
-            with zipfile.ZipFile(cbz_file, "w") as cbz:
-                for member_name, content in original_members.items():
-                    cbz.writestr(member_name, content)
-                cbz.writestr("unexpected.txt", b"stale")
-
-        original_chunk_list = h2hdb_h2hdb_module.chunk_list
-
-        def use_one_gallery_per_final_chunk(
-            input_list: list[Path], chunk_size: int
-        ) -> list[list[Path]]:
-            if chunk_size == 1000 * h2hdb_h2hdb_module.POOL_CPU_LIMIT:
-                return original_chunk_list(input_list, 1)
-            return original_chunk_list(input_list, chunk_size)
-
-        monkeypatch.setattr(
-            h2hdb_h2hdb_module,
-            "chunk_list",
-            use_one_gallery_per_final_chunk,
-        )
-
-        first_completed_gallery: str | None = None
-        compression_call_count = 0
+        compression_calls: list[tuple[ExistingCBZPolicy, frozenset[str]]] = []
         original_compress = instance.cbz.compress_galleries_to_cbz
 
-        def interrupt_second_final_chunk(
+        def record_compression_policy(
             gallery_folders: list[Path],
             exclude_hashs: set[bytes],
             pool: Pool,
             *,
-            invalidate_integrity_state: Callable[[set[int]], int],
-            force_rebuild: bool = False,
+            existing_cbz_policy: ExistingCBZPolicy = ExistingCBZPolicy.reconcile,
+            force_rebuild_gallery_names: set[str] | None = None,
         ) -> CBZCompressionSummary:
-            nonlocal compression_call_count, first_completed_gallery
-            compression_call_count += 1
-            if compression_call_count == 2:
-                raise RuntimeError("simulated forced termination")
-            first_completed_gallery = gallery_folders[0].name
+            compression_calls.append(
+                (
+                    existing_cbz_policy,
+                    frozenset(force_rebuild_gallery_names or set()),
+                )
+            )
             return original_compress(
                 gallery_folders,
                 exclude_hashs,
                 pool,
-                invalidate_integrity_state=invalidate_integrity_state,
-                force_rebuild=force_rebuild,
+                existing_cbz_policy=existing_cbz_policy,
+                force_rebuild_gallery_names=force_rebuild_gallery_names,
             )
 
         monkeypatch.setattr(
             instance.cbz,
             "compress_galleries_to_cbz",
-            interrupt_second_final_chunk,
+            record_compression_policy,
         )
 
-        with pytest.raises(RuntimeError, match="simulated forced termination"):
-            instance.insert_h2h_download()
+        assert instance.insert_h2h_download() is True
+        assert compression_calls == [
+            (ExistingCBZPolicy.reconcile, frozenset({gallery_name}))
+        ]
+        assert set(instance.files.get_files_by_gallery_name(gallery_name)) == {
+            "galleryinfo.txt",
+            "001.jpg",
+        }
+        assert instance.pending_cbz_rebuilds.get_pending_gallery_names() == set()
+        with zipfile.ZipFile(cbz_file) as cbz:
+            rebuilt_image = cbz.read("001.jpg")
+        assert rebuilt_image != b"stale-but-same-member-name"
+        with Image.open(io.BytesIO(rebuilt_image)) as image:
+            image.verify()
 
-        assert first_completed_gallery is not None
-        first_completed_id = db_gallery_ids_by_name[first_completed_gallery]
-        not_started_name = next(
-            name for name in gallery_names if name != first_completed_gallery
-        )
-        assert instance.cbz_integrity._get_hash(first_completed_id) is None
-        assert (
-            instance.cbz_integrity._get_hash(db_gallery_ids_by_name[not_started_name])
-            is not None
-        )
 
-
-def test_cbz_scrub_force_rebuilds_hash_mismatch_with_unchanged_member_names(
+def test_cbz_disabled_keeps_rename_pending_until_cbz_is_enabled(
     sqlite_config: H2HDBConfig,
     download_path: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cbz_path = tmp_path / "cbz"
     cbz_path.mkdir()
     sqlite_config.h2h.download_path = download_path
     sqlite_config.h2h.cbz_path = cbz_path
-    sqlite_config.h2h.cbz_scrub_batch_size = 1
-    gallery_name = "700032"
-    _write_galleryinfo(
-        download_path / gallery_name,
-        title="CBZ Scrub Repair Gallery",
-        pages=1,
-    )
+    gallery_name = "700034"
+    gallery_folder = download_path / gallery_name
+    _write_galleryinfo(gallery_folder, title="Deferred CBZ Rename Gallery")
+    source_path = gallery_folder / "002.png"
+    source_path.write_bytes(_make_png_bytes(34))
 
     with H2HDB(config=sqlite_config) as instance:
         instance.create_main_tables()
         assert instance.insert_h2h_download() is True
 
         cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
+        stale_member = b"stale-while-cbz-output-is-disabled"
+        _replace_cbz_member(cbz_file, "002.jpg", stale_member)
+        source_path.rename(gallery_folder / "002.jpg")
+
+        instance.config.h2h.cbz_path = None
+        assert instance.insert_h2h_download() is True
+        assert instance.pending_cbz_rebuilds.get_pending_gallery_names() == {
+            gallery_name
+        }
+        assert set(instance.files.get_files_by_gallery_name(gallery_name)) == {
+            "galleryinfo.txt",
+            "002.jpg",
+        }
         with zipfile.ZipFile(cbz_file) as cbz:
-            original_members = {
-                member_name: cbz.read(member_name) for member_name in cbz.namelist()
-            }
+            assert cbz.read("002.jpg") == stale_member
 
-        with zipfile.ZipFile(cbz_file, "w") as cbz:
-            for member_name in original_members:
-                cbz.writestr(member_name, b"tampered")
-
-        info_messages: list[str] = []
-        warning_messages: list[str] = []
-        monkeypatch.setattr(instance.logger, "info", info_messages.append)
-        monkeypatch.setattr(instance.logger, "warning", warning_messages.append)
+        instance.config.h2h.cbz_path = cbz_path
         assert instance.insert_h2h_download() is False
-
+        assert instance.pending_cbz_rebuilds.get_pending_gallery_names() == set()
         with zipfile.ZipFile(cbz_file) as cbz:
-            repaired_members = {
-                member_name: cbz.read(member_name) for member_name in cbz.namelist()
-            }
-        assert repaired_members == original_members
-
-        db_gallery_id = instance.gallery_ids._get_db_gallery_id_by_gallery_name(
-            gallery_name
-        )
-        assert (
-            instance.cbz_integrity._get_hash(db_gallery_id)
-            == hashlib.sha256(cbz_file.read_bytes()).digest()
-        )
-        assert any(
-            "CBZ integrity scrub completed: checked=1 verified=0 "
-            "baselines_created=0 unreadable=0 hash_mismatches=1 "
-            "repair_checked=1 repair_created=0 repair_rebuilt=1" in message
-            for message in info_messages
-        )
-        assert any(
-            f"db_gallery_id={db_gallery_id} path={str(cbz_file)!r} "
-            "reason=sha256_mismatch expected_sha256=0x" in message
-            and " actual_sha256=0x" in message
-            for message in warning_messages
-        )
+            rebuilt_image = cbz.read("002.jpg")
+        assert rebuilt_image != stale_member
+        with Image.open(io.BytesIO(rebuilt_image)) as image:
+            image.verify()
 
 
-def test_interrupted_integrity_repair_keeps_known_good_hash(
+def test_fresh_database_preserves_existing_correct_cbz_during_provisional_check(
     sqlite_config: H2HDBConfig,
     download_path: Path,
     tmp_path: Path,
@@ -504,69 +441,349 @@ def test_interrupted_integrity_repair_keeps_known_good_hash(
     cbz_path.mkdir()
     sqlite_config.h2h.download_path = download_path
     sqlite_config.h2h.cbz_path = cbz_path
-    sqlite_config.h2h.cbz_scrub_batch_size = 1
-    gallery_name = "700036"
-    _write_galleryinfo(
-        download_path / gallery_name,
-        title="Interrupted CBZ Integrity Repair",
-        pages=1,
-    )
+    gallery_name = "700035"
+    gallery_folder = download_path / gallery_name
+    _write_galleryinfo(gallery_folder, title="Existing Correct CBZ", pages=1)
+
+    with H2HDB(config=sqlite_config) as original_instance:
+        original_instance.create_main_tables()
+        assert original_instance.insert_h2h_download() is True
+
+    cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
+    with zipfile.ZipFile(cbz_file) as cbz:
+        assert cbz.comment
+    original_cbz_bytes = cbz_file.read_bytes()
+    Path(sqlite_config.database.database).unlink()
 
     with H2HDB(config=sqlite_config) as instance:
         instance.create_main_tables()
-        assert instance.insert_h2h_download() is True
+        compression_calls: list[
+            tuple[ExistingCBZPolicy, frozenset[str], CBZCompressionSummary]
+        ] = []
+        original_compress = instance.cbz.compress_galleries_to_cbz
 
-        db_gallery_id = instance.gallery_ids._get_db_gallery_id_by_gallery_name(
-            gallery_name
-        )
-        known_good_hash = instance.cbz_integrity._get_hash(db_gallery_id)
-        assert known_good_hash is not None
-
-        cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
-        with zipfile.ZipFile(cbz_file) as cbz:
-            original_members = {
-                member_name: cbz.read(member_name) for member_name in cbz.namelist()
-            }
-        with zipfile.ZipFile(cbz_file, "w") as cbz:
-            for member_name in original_members:
-                cbz.writestr(member_name, b"tampered")
-
-        original_run_in_parallel = cbz_files_module.run_in_parallel
-
-        def fail_before_integrity_repair_write(
+        def record_compression_policy(
+            gallery_folders: list[Path],
+            exclude_hashs: set[bytes],
             pool: Pool,
-            fun: Callable[..., Any],
-            args: list[tuple[Any, ...]],
-        ) -> list[Any]:
-            if fun is cbz_files_module.compress_gallery_to_cbz_worker and args:
-                raise RuntimeError("simulated interruption before repair write")
-            return original_run_in_parallel(pool, fun, args)
+            *,
+            existing_cbz_policy: ExistingCBZPolicy = ExistingCBZPolicy.reconcile,
+            force_rebuild_gallery_names: set[str] | None = None,
+        ) -> CBZCompressionSummary:
+            summary = original_compress(
+                gallery_folders,
+                exclude_hashs,
+                pool,
+                existing_cbz_policy=existing_cbz_policy,
+                force_rebuild_gallery_names=force_rebuild_gallery_names,
+            )
+            compression_calls.append(
+                (
+                    existing_cbz_policy,
+                    frozenset(force_rebuild_gallery_names or set()),
+                    summary,
+                )
+            )
+            return summary
 
         monkeypatch.setattr(
-            cbz_files_module,
-            "run_in_parallel",
-            fail_before_integrity_repair_write,
+            instance.cbz,
+            "compress_galleries_to_cbz",
+            record_compression_policy,
+        )
+
+        assert instance.insert_h2h_download() is True
+
+    assert [
+        (policy, forced_names) for policy, forced_names, _ in compression_calls
+    ] == [
+        (ExistingCBZPolicy.preserve, frozenset()),
+        (ExistingCBZPolicy.reconcile, frozenset()),
+    ]
+    assert [summary.write_operations for _, _, summary in compression_calls] == [0, 0]
+    assert cbz_file.read_bytes() == original_cbz_bytes
+
+
+def test_fresh_database_rebuilds_cbz_after_normalized_source_rename(
+    sqlite_config: H2HDBConfig,
+    download_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cbz_path = tmp_path / "cbz"
+    cbz_path.mkdir()
+    sqlite_config.h2h.download_path = download_path
+    sqlite_config.h2h.cbz_path = cbz_path
+    gallery_name = "700037"
+    gallery_folder = download_path / gallery_name
+    _write_galleryinfo(gallery_folder, title="Fresh DB Normalized Rename")
+    source_path = gallery_folder / "001.png"
+    source_path.write_bytes(_make_png_bytes(37))
+
+    with H2HDB(config=sqlite_config) as original_instance:
+        original_instance.create_main_tables()
+        assert original_instance.insert_h2h_download() is True
+
+    cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
+    with zipfile.ZipFile(cbz_file) as cbz:
+        assert cbz.comment
+        original_comment = cbz.comment
+    Path(sqlite_config.database.database).unlink()
+    source_path.rename(gallery_folder / "001.jpg")
+
+    with H2HDB(config=sqlite_config) as instance:
+        instance.create_main_tables()
+        compression_calls: list[tuple[ExistingCBZPolicy, CBZCompressionSummary]] = []
+        original_compress = instance.cbz.compress_galleries_to_cbz
+
+        def record_compression_policy(
+            gallery_folders: list[Path],
+            exclude_hashs: set[bytes],
+            pool: Pool,
+            *,
+            existing_cbz_policy: ExistingCBZPolicy = ExistingCBZPolicy.reconcile,
+            force_rebuild_gallery_names: set[str] | None = None,
+        ) -> CBZCompressionSummary:
+            summary = original_compress(
+                gallery_folders,
+                exclude_hashs,
+                pool,
+                existing_cbz_policy=existing_cbz_policy,
+                force_rebuild_gallery_names=force_rebuild_gallery_names,
+            )
+            compression_calls.append((existing_cbz_policy, summary))
+            return summary
+
+        monkeypatch.setattr(
+            instance.cbz,
+            "compress_galleries_to_cbz",
+            record_compression_policy,
+        )
+
+        assert instance.insert_h2h_download() is True
+
+    assert [policy for policy, _ in compression_calls] == [
+        ExistingCBZPolicy.preserve,
+        ExistingCBZPolicy.reconcile,
+    ]
+    assert [summary.write_operations for _, summary in compression_calls] == [0, 1]
+    assert [summary.rebuilt for _, summary in compression_calls] == [0, 1]
+    with zipfile.ZipFile(cbz_file) as cbz:
+        assert cbz.comment
+        assert cbz.comment != original_comment
+
+
+def test_fresh_database_rebuilds_cbz_after_source_filenames_are_swapped(
+    sqlite_config: H2HDBConfig,
+    download_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cbz_path = tmp_path / "cbz"
+    cbz_path.mkdir()
+    sqlite_config.h2h.download_path = download_path
+    sqlite_config.h2h.cbz_path = cbz_path
+    gallery_name = "700038"
+    gallery_folder = download_path / gallery_name
+    _write_galleryinfo(gallery_folder, title="Fresh DB Filename Swap")
+    first_source = gallery_folder / "first.txt"
+    second_source = gallery_folder / "second.txt"
+    first_source.write_bytes(b"first-content")
+    second_source.write_bytes(b"second-content")
+
+    with H2HDB(config=sqlite_config) as original_instance:
+        original_instance.create_main_tables()
+        assert original_instance.insert_h2h_download() is True
+
+    cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
+    with zipfile.ZipFile(cbz_file) as cbz:
+        assert cbz.comment
+        original_comment = cbz.comment
+        assert cbz.read("first.txt") == b"first-content"
+        assert cbz.read("second.txt") == b"second-content"
+    Path(sqlite_config.database.database).unlink()
+
+    temporary_source = gallery_folder / "swap.tmp"
+    first_source.rename(temporary_source)
+    second_source.rename(first_source)
+    temporary_source.rename(second_source)
+
+    with H2HDB(config=sqlite_config) as instance:
+        instance.create_main_tables()
+        compression_calls: list[CBZCompressionSummary] = []
+        original_compress = instance.cbz.compress_galleries_to_cbz
+
+        def record_compression_summary(
+            gallery_folders: list[Path],
+            exclude_hashs: set[bytes],
+            pool: Pool,
+            *,
+            existing_cbz_policy: ExistingCBZPolicy = ExistingCBZPolicy.reconcile,
+            force_rebuild_gallery_names: set[str] | None = None,
+        ) -> CBZCompressionSummary:
+            summary = original_compress(
+                gallery_folders,
+                exclude_hashs,
+                pool,
+                existing_cbz_policy=existing_cbz_policy,
+                force_rebuild_gallery_names=force_rebuild_gallery_names,
+            )
+            compression_calls.append(summary)
+            return summary
+
+        monkeypatch.setattr(
+            instance.cbz,
+            "compress_galleries_to_cbz",
+            record_compression_summary,
+        )
+
+        assert instance.insert_h2h_download() is True
+
+    assert [summary.write_operations for summary in compression_calls] == [0, 1]
+    assert [summary.rebuilt for summary in compression_calls] == [0, 1]
+    with zipfile.ZipFile(cbz_file) as cbz:
+        assert cbz.comment
+        assert cbz.comment != original_comment
+        assert cbz.read("first.txt") == b"second-content"
+        assert cbz.read("second.txt") == b"first-content"
+
+
+def test_fresh_database_rebuilds_existing_cbz_without_input_manifest_once(
+    sqlite_config: H2HDBConfig,
+    download_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cbz_path = tmp_path / "cbz"
+    cbz_path.mkdir()
+    sqlite_config.h2h.download_path = download_path
+    sqlite_config.h2h.cbz_path = cbz_path
+    gallery_name = "700039"
+    gallery_folder = download_path / gallery_name
+    _write_galleryinfo(gallery_folder, title="Legacy CBZ", pages=1)
+
+    with H2HDB(config=sqlite_config) as original_instance:
+        original_instance.create_main_tables()
+        assert original_instance.insert_h2h_download() is True
+
+    cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
+    _remove_cbz_input_manifest(cbz_file)
+    Path(sqlite_config.database.database).unlink()
+
+    with H2HDB(config=sqlite_config) as instance:
+        instance.create_main_tables()
+        compression_calls: list[CBZCompressionSummary] = []
+        original_compress = instance.cbz.compress_galleries_to_cbz
+
+        def record_compression_summary(
+            gallery_folders: list[Path],
+            exclude_hashs: set[bytes],
+            pool: Pool,
+            *,
+            existing_cbz_policy: ExistingCBZPolicy = ExistingCBZPolicy.reconcile,
+            force_rebuild_gallery_names: set[str] | None = None,
+        ) -> CBZCompressionSummary:
+            summary = original_compress(
+                gallery_folders,
+                exclude_hashs,
+                pool,
+                existing_cbz_policy=existing_cbz_policy,
+                force_rebuild_gallery_names=force_rebuild_gallery_names,
+            )
+            compression_calls.append(summary)
+            return summary
+
+        monkeypatch.setattr(
+            instance.cbz,
+            "compress_galleries_to_cbz",
+            record_compression_summary,
+        )
+
+        assert instance.insert_h2h_download() is True
+        assert [summary.write_operations for summary in compression_calls] == [0, 1]
+        assert [summary.rebuilt for summary in compression_calls] == [0, 1]
+        with zipfile.ZipFile(cbz_file) as cbz:
+            assert cbz.comment
+
+        compression_calls.clear()
+        assert instance.insert_h2h_download() is False
+        assert [summary.write_operations for summary in compression_calls] == [0]
+        assert [summary.unchanged for summary in compression_calls] == [1]
+
+
+def test_interrupted_rename_rebuild_remains_pending_for_next_run(
+    sqlite_config: H2HDBConfig,
+    download_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cbz_path = tmp_path / "cbz"
+    cbz_path.mkdir()
+    sqlite_config.h2h.download_path = download_path
+    sqlite_config.h2h.cbz_path = cbz_path
+    gallery_name = "700036"
+    gallery_folder = download_path / gallery_name
+    _write_galleryinfo(gallery_folder, title="Interrupted Rename Gallery")
+    source_path = gallery_folder / "003.png"
+    source_path.write_bytes(_make_png_bytes(36))
+
+    with H2HDB(config=sqlite_config) as instance:
+        instance.create_main_tables()
+        assert instance.insert_h2h_download() is True
+
+        cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
+        stale_member = b"stale-before-simulated-forced-termination"
+        _replace_cbz_member(cbz_file, "003.jpg", stale_member)
+        source_path.rename(gallery_folder / "003.jpg")
+        original_compress = instance.cbz.compress_galleries_to_cbz
+
+        def interrupt_forced_rebuild(
+            gallery_folders: list[Path],
+            exclude_hashs: set[bytes],
+            pool: Pool,
+            *,
+            existing_cbz_policy: ExistingCBZPolicy = ExistingCBZPolicy.reconcile,
+            force_rebuild_gallery_names: set[str] | None = None,
+        ) -> CBZCompressionSummary:
+            if force_rebuild_gallery_names == {gallery_name}:
+                raise RuntimeError("simulated forced termination before CBZ rebuild")
+            return original_compress(
+                gallery_folders,
+                exclude_hashs,
+                pool,
+                existing_cbz_policy=existing_cbz_policy,
+                force_rebuild_gallery_names=force_rebuild_gallery_names,
+            )
+
+        monkeypatch.setattr(
+            instance.cbz,
+            "compress_galleries_to_cbz",
+            interrupt_forced_rebuild,
         )
         with pytest.raises(
             RuntimeError,
-            match="simulated interruption before repair write",
+            match="simulated forced termination before CBZ rebuild",
         ):
             instance.insert_h2h_download()
 
-        assert instance.cbz_integrity._get_hash(db_gallery_id) == known_good_hash
-        assert instance.cbz_integrity._get_last_verified_time(db_gallery_id) is None
+        assert instance.pending_cbz_rebuilds.get_pending_gallery_names() == {
+            gallery_name
+        }
+        with zipfile.ZipFile(cbz_file) as cbz:
+            assert cbz.read("003.jpg") == stale_member
 
         monkeypatch.setattr(
-            cbz_files_module,
-            "run_in_parallel",
-            original_run_in_parallel,
+            instance.cbz,
+            "compress_galleries_to_cbz",
+            original_compress,
         )
         assert instance.insert_h2h_download() is False
+        assert instance.pending_cbz_rebuilds.get_pending_gallery_names() == set()
         with zipfile.ZipFile(cbz_file) as cbz:
-            repaired_members = {
-                member_name: cbz.read(member_name) for member_name in cbz.namelist()
-            }
-        assert repaired_members == original_members
+            rebuilt_image = cbz.read("003.jpg")
+        assert rebuilt_image != stale_member
+        with Image.open(io.BytesIO(rebuilt_image)) as image:
+            image.verify()
 
 
 def test_insert_h2h_download_creates_provisional_cbz_between_progress_chunks(
@@ -593,7 +810,7 @@ def test_insert_h2h_download_creates_provisional_cbz_between_progress_chunks(
 
     def observe_before_inserting_next_chunk(
         gallery_chunk: list[Path],
-    ) -> list[bool]:
+    ) -> list[GalleryChange]:
         if seen_chunks:
             first_gallery_name = seen_chunks[0][0]
             first_cbz = cbz_path / gallery_name_to_cbz_file_name(first_gallery_name)
@@ -682,9 +899,7 @@ def test_insert_h2h_download_groups_cbz_by_upload_time_when_configured(
     db.config.h2h.cbz_grouping = CBZ_GROUPING.date_yyyy
     assert db.insert_h2h_download() is False
 
-    regrouped_cbz_file = (
-        cbz_path / "2023" / gallery_name_to_cbz_file_name("700004")
-    )
+    regrouped_cbz_file = cbz_path / "2023" / gallery_name_to_cbz_file_name("700004")
     assert not cbz_file.exists()
     assert regrouped_cbz_file.exists()
 
@@ -924,7 +1139,7 @@ def test_insert_h2h_download_sorts_by_upload_time_descending(
     seen_orders: list[list[str]] = []
     original = db._insert_gallery_chunk_with_split_retry
 
-    def recording(gallery_chunk: list[Path]) -> list[bool]:
+    def recording(gallery_chunk: list[Path]) -> list[GalleryChange]:
         seen_orders.append([folder.name for folder in gallery_chunk])
         return original(gallery_chunk)
 
@@ -946,7 +1161,7 @@ def test_insert_h2h_download_sorts_by_pages_distance_from_adjustment(
     seen_orders: list[list[str]] = []
     original = db._insert_gallery_chunk_with_split_retry
 
-    def recording(gallery_chunk: list[Path]) -> list[bool]:
+    def recording(gallery_chunk: list[Path]) -> list[GalleryChange]:
         seen_orders.append([folder.name for folder in gallery_chunk])
         return original(gallery_chunk)
 

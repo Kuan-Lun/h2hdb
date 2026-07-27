@@ -155,30 +155,32 @@ not per-gallery concurrent writes. File-byte hashing uses a bounded
 controls the worker limit, and workers only read files and compute digests.
 Hash catalog lookups and all database writes remain on the main thread.
 
-CPU-bound work across *galleries* — CBZ compression and integrity checks — is
-dispatched to a shared `multiprocessing.Pool` via `run_in_parallel` in
-`cbz_files.py`. `insert_h2h_download` in `h2hdb_h2hdb.py` owns that pool's
-lifetime when `cbz_path` is configured. `POOL_CPU_LIMIT`/`CPU_NUM` live in
+CPU-bound CBZ compression across *galleries* is dispatched to a shared
+`multiprocessing.Pool` via `run_in_parallel` in `cbz_files.py`.
+`insert_h2h_download` in `h2hdb_h2hdb.py` owns that pool's lifetime when
+`cbz_path` is configured. `POOL_CPU_LIMIT`/`CPU_NUM` live in
 `h2hdb_h2hdb.py` alongside it.
 
 When CBZ output is enabled, the ingest pipeline uses CPU-scaled progress chunks:
 `POOL_CPU_LIMIT * 16`, clamped to 64–500 galleries. It computes provisional
-duplicate/spam exclusions at run start; after each chunk's metadata insert, new
-or changed galleries immediately enter the CBZ creation/rebuild check against
-that provisional set. This keeps visible progress while SQL insertion itself
-remains batched.
+duplicate/spam exclusions at run start. After each chunk's metadata insert, the
+provisional CBZ pass considers only galleries whose database rows are new,
+creates their missing CBZ files, and preserves any existing CBZ files. Changed
+galleries and existing output wait for the authoritative final exclusion set;
+this prevents a fresh database from rebuilding valid output against an
+incomplete provisional set.
 
 After all insertion chunks finish, the pipeline freezes the final exclusion
 set and performs one stable, global deduplication reconciliation across all
 current galleries. It exact-syncs content ownership, full-content hashes, and
 duplicate warnings, deletes loser CBZ files, and repairs final winners against
-the final exclusions. For equal priority claims, a still-valid incumbent for
-that same hash remains the owner; otherwise the database gallery ID is the
-deterministic tie-breaker. Intermediate ownership and provisional CBZ output
-may be inconsistent, but a successful `main`/`insert_h2h_download` return has
-converged to the final snapshot. This result is stable relative to the prior
-owner used for exact ties; it is not a history-independent canonical
-assignment.
+the final exclusions. This final pass is the only pass that rebuilds existing
+CBZ files. For equal priority claims, a still-valid incumbent for that same hash
+remains the owner; otherwise the database gallery ID is the deterministic
+tie-breaker. Intermediate ownership and provisional CBZ output may be
+inconsistent, but a successful `main`/`insert_h2h_download` return has converged
+to the final snapshot. This result is stable relative to the prior owner used
+for exact ties; it is not a history-independent canonical assignment.
 
 ### CBZ compression
 
@@ -187,6 +189,27 @@ it) to avoid a hard Pillow dependency at import time — keep that lazy-import
 convention if you touch it. It resizes images and bundles them into a `.cbz`,
 skipping images whose hash is in a duplicate/spam exclusion list computed from
 a view defined in `h2hdb_h2hdb.py`.
+
+Gallery change detection stores a cheap SHA-256 source-layout token in
+`gallery_source_manifests`; it does not reread image contents to build that
+token. A source-file add, delete, or rename therefore marks the gallery as
+changed even when `galleryinfo.txt` and all image bytes are unchanged. Before a
+changed gallery's database rows are refreshed, its name is stored in
+`pending_cbz_rebuilds`. That pending state survives runs with CBZ output
+disabled and process interruption. The stable final CBZ pass forces those
+galleries to rebuild, then clears completed pending entries; entries for final
+deduplication losers are cleared after their CBZ files are removed.
+
+Every created or rebuilt CBZ stores a separate, versioned input-layout manifest
+in the ZIP archive comment. The manifest is derived from raw source filenames
+and the source SHA-256 values already catalogued during ingest, so it requires
+no extra file reads. Final reconciliation compares both member names and this
+marker. Consequently, deleting the database does not lose the information
+needed to detect a normalized rename or filename swap after the database is
+rebuilt. A missing, malformed, or mismatched marker triggers one conservative
+rebuild. This is build-input metadata, not CBZ integrity verification: H2HDB
+does not hash CBZ bytes, scrub member contents, or maintain a known-good CBZ
+baseline.
 
 ## Keeping this file in sync
 

@@ -1,7 +1,7 @@
 import datetime
 import zipfile
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from multiprocessing.pool import Pool
 from pathlib import Path
@@ -10,6 +10,10 @@ from typing import Any
 from h2h_galleryinfo_parser import parse_galleryinfo
 
 from .config_loader import H2HDBConfig
+from .gallery_source_manifest import (
+    build_cbz_input_manifest,
+    cbz_input_manifest_to_comment,
+)
 from .hash_dict import FILE_CONTENT_HASH_ALGORITHM
 from .repository import BaseRepository, RepositoryContext
 from .settings import chunk_list, hash_function_by_file
@@ -25,39 +29,28 @@ class CBZCompressionOutcome(StrEnum):
     unchanged = "unchanged"
 
 
+class ExistingCBZPolicy(StrEnum):
+    reconcile = "reconcile"
+    preserve = "preserve"
+
+
 @dataclass
 class CBZCompressionSummary:
     checked: int = 0
     created: int = 0
     rebuilt: int = 0
     unchanged: int = 0
-    written_db_gallery_ids: set[int] = field(default_factory=set, repr=False)
-    integrity_state_db_gallery_ids_invalidated: int = 0
 
     @classmethod
     def from_outcomes(
         cls,
         outcomes: list[CBZCompressionOutcome],
-        db_gallery_ids: list[int],
-        integrity_state_db_gallery_ids_invalidated: int = 0,
     ) -> CBZCompressionSummary:
-        if len(outcomes) != len(db_gallery_ids):
-            raise ValueError(
-                "CBZ outcomes and db_gallery_id values must have equal lengths."
-            )
         return cls(
             checked=len(outcomes),
             created=outcomes.count(CBZCompressionOutcome.created),
             rebuilt=outcomes.count(CBZCompressionOutcome.rebuilt),
             unchanged=outcomes.count(CBZCompressionOutcome.unchanged),
-            written_db_gallery_ids={
-                db_gallery_id
-                for db_gallery_id, outcome in zip(db_gallery_ids, outcomes, strict=True)
-                if outcome != CBZCompressionOutcome.unchanged
-            },
-            integrity_state_db_gallery_ids_invalidated=(
-                integrity_state_db_gallery_ids_invalidated
-            ),
         )
 
     @property
@@ -70,13 +63,6 @@ class CBZCompressionSummary:
             created=self.created + other.created,
             rebuilt=self.rebuilt + other.rebuilt,
             unchanged=self.unchanged + other.unchanged,
-            written_db_gallery_ids=(
-                self.written_db_gallery_ids | other.written_db_gallery_ids
-            ),
-            integrity_state_db_gallery_ids_invalidated=(
-                self.integrity_state_db_gallery_ids_invalidated
-                + other.integrity_state_db_gallery_ids_invalidated
-            ),
         )
 
     def __iadd__(self, other: CBZCompressionSummary) -> CBZCompressionSummary:
@@ -84,10 +70,6 @@ class CBZCompressionSummary:
         self.created += other.created
         self.rebuilt += other.rebuilt
         self.unchanged += other.unchanged
-        self.written_db_gallery_ids.update(other.written_db_gallery_ids)
-        self.integrity_state_db_gallery_ids_invalidated += (
-            other.integrity_state_db_gallery_ids_invalidated
-        )
         return self
 
 
@@ -104,43 +86,45 @@ def run_in_parallel(
 
 
 def cbz_contents_are_stale_worker(
-    cbz_path: Path, expected_names: frozenset[str]
+    cbz_path: Path,
+    expected_names: frozenset[str],
+    expected_input_manifest: bytes | None = None,
 ) -> bool:
     # A corrupt CBZ (e.g. left behind by a process killed mid-write) is
     # treated as stale so it gets rebuilt, rather than crashing the pool.
     try:
         with zipfile.ZipFile(cbz_path) as cbz:
             actual_names = frozenset(cbz.namelist())
+            actual_comment = cbz.comment
     except zipfile.BadZipFile:
         return True
-    return actual_names != expected_names
+    return actual_names != expected_names or (
+        expected_input_manifest is not None
+        and actual_comment != cbz_input_manifest_to_comment(expected_input_manifest)
+    )
 
 
 def plan_cbz_compression_worker(
     cbz_path: Path,
     expected_names: frozenset[str],
+    expected_input_manifest: bytes,
+    existing_cbz_policy: ExistingCBZPolicy,
     force_rebuild: bool,
 ) -> CBZCompressionOutcome:
     """Classify one CBZ check without writing, including the filesystem stat."""
     if not cbz_path.exists():
         return CBZCompressionOutcome.created
-    if force_rebuild or cbz_contents_are_stale_worker(cbz_path, expected_names):
+    if existing_cbz_policy == ExistingCBZPolicy.preserve:
+        return CBZCompressionOutcome.unchanged
+    if force_rebuild:
+        return CBZCompressionOutcome.rebuilt
+    if cbz_contents_are_stale_worker(
+        cbz_path,
+        expected_names,
+        expected_input_manifest,
+    ):
         return CBZCompressionOutcome.rebuilt
     return CBZCompressionOutcome.unchanged
-
-
-def cbz_scrub_worker(cbz_path: Path) -> bytes | None:
-    """Hash a CBZ file's raw bytes for integrity scrubbing; `None` if unreadable.
-
-    Deliberately doesn't open it as a zip: bit rot doesn't necessarily make a
-    file fail to parse as a zip, but it always changes its hash, so comparing
-    the whole file's bytes against a known-good baseline is both simpler and
-    strictly more sensitive than a structural check.
-    """
-    try:
-        return hash_function_by_file(cbz_path, "sha256")
-    except OSError:
-        return None
 
 
 def compress_gallery_to_cbz_worker(
@@ -149,6 +133,7 @@ def compress_gallery_to_cbz_worker(
     exclude_hashs: set[bytes],
     expected_names: frozenset[str] | None,
     upload_time: datetime.datetime | None,
+    input_manifest: bytes,
     force_rebuild: bool,
 ) -> CBZCompressionOutcome:
     # Deferred to avoid a circular import: h2hdb_h2hdb.py imports this module
@@ -167,6 +152,7 @@ def compress_gallery_to_cbz_worker(
         exclude_hashs,
         expected_names,
         upload_time,
+        input_manifest=input_manifest,
         force_rebuild=force_rebuild,
     )
 
@@ -344,12 +330,24 @@ class H2HDBCBZFiles(BaseRepository):
         expected_names: frozenset[str] | None,
         upload_time: datetime.datetime | None,
         *,
+        input_manifest: bytes | None = None,
         force_rebuild: bool = False,
     ) -> CBZCompressionOutcome:
         from .compress_gallery_to_cbz import compress_images_and_create_cbz
 
         assert self.config.h2h.cbz_path is not None
         galleryinfo_params = parse_galleryinfo(gallery_folder)
+        if input_manifest is None:
+            input_manifest = build_cbz_input_manifest(
+                (
+                    file_path.name,
+                    hash_function_by_file(
+                        file_path,
+                        FILE_CONTENT_HASH_ALGORITHM,
+                    ),
+                )
+                for file_path in galleryinfo_params.files_path
+            )
         cbz_path = self._get_cbz_output_path(
             galleryinfo_params.gallery_name, upload_time
         )
@@ -364,7 +362,11 @@ class H2HDBCBZFiles(BaseRepository):
             try:
                 with zipfile.ZipFile(cbz_path) as cbz:
                     actual_names = frozenset(cbz.namelist())
-                needs_rebuild = actual_names != expected_names
+                    actual_comment = cbz.comment
+                needs_rebuild = (
+                    actual_names != expected_names
+                    or actual_comment != cbz_input_manifest_to_comment(input_manifest)
+                )
             except zipfile.BadZipFile:
                 needs_rebuild = True
 
@@ -375,6 +377,7 @@ class H2HDBCBZFiles(BaseRepository):
                 cbz_tmp_directory,
                 self.config.h2h.cbz_max_size,
                 exclude_hashs,
+                input_manifest,
             )
             return (
                 CBZCompressionOutcome.rebuilt
@@ -389,13 +392,30 @@ class H2HDBCBZFiles(BaseRepository):
         exclude_hashs: set[bytes],
         pool: Pool,
         *,
-        invalidate_integrity_state: Callable[[set[int]], int],
-        force_rebuild: bool = False,
+        existing_cbz_policy: ExistingCBZPolicy = ExistingCBZPolicy.reconcile,
+        force_rebuild_gallery_names: set[str] | None = None,
     ) -> CBZCompressionSummary:
         if not gallery_folders:
             return CBZCompressionSummary()
 
         from .compress_gallery_to_cbz import expected_output_filename
+
+        force_rebuild_gallery_names = force_rebuild_gallery_names or set()
+        unknown_force_rebuild_names = force_rebuild_gallery_names.difference(
+            gallery_folder.name for gallery_folder in gallery_folders
+        )
+        if unknown_force_rebuild_names:
+            raise ValueError(
+                "Forced CBZ rebuild names are not in gallery_folders: "
+                f"{sorted(unknown_force_rebuild_names)}"
+            )
+        if (
+            existing_cbz_policy == ExistingCBZPolicy.preserve
+            and force_rebuild_gallery_names
+        ):
+            raise ValueError(
+                "Cannot force CBZ rebuilds while preserving existing CBZ files."
+            )
 
         # Precompute everything compress_gallery_to_cbz needs from the database
         # here, in batched queries keyed on db_gallery_id, and pass the results
@@ -426,6 +446,12 @@ class H2HDBCBZFiles(BaseRepository):
             )
             for gallery_name, db_gallery_id in db_gallery_ids_by_name.items()
         }
+        input_manifests_by_gallery = {
+            gallery_name: build_cbz_input_manifest(
+                files_by_db_gallery_id.get(db_gallery_id, [])
+            )
+            for gallery_name, db_gallery_id in db_gallery_ids_by_name.items()
+        }
 
         upload_time_by_gallery: dict[str, datetime.datetime] = {}
         if self.config.h2h.cbz_grouping != "flat":
@@ -438,12 +464,12 @@ class H2HDBCBZFiles(BaseRepository):
                 if db_gallery_id in upload_times_by_id
             }
 
-        db_gallery_ids = [
-            db_gallery_ids_by_name[gallery_folder.name]
-            for gallery_folder in gallery_folders
-        ]
         expected_names = [
             expected_names_by_gallery[gallery_folder.name]
+            for gallery_folder in gallery_folders
+        ]
+        input_manifests = [
+            input_manifests_by_gallery[gallery_folder.name]
             for gallery_folder in gallery_folders
         ]
         upload_times = [
@@ -460,9 +486,24 @@ class H2HDBCBZFiles(BaseRepository):
             pool,
             plan_cbz_compression_worker,
             [
-                (cbz_path, gallery_expected_names, force_rebuild)
-                for cbz_path, gallery_expected_names in zip(
-                    cbz_paths, expected_names, strict=True
+                (
+                    cbz_path,
+                    gallery_expected_names,
+                    input_manifest,
+                    existing_cbz_policy,
+                    gallery_folder.name in force_rebuild_gallery_names,
+                )
+                for (
+                    gallery_folder,
+                    cbz_path,
+                    gallery_expected_names,
+                    input_manifest,
+                ) in zip(
+                    gallery_folders,
+                    cbz_paths,
+                    expected_names,
+                    input_manifests,
+                    strict=True,
                 )
             ],
         )
@@ -475,18 +516,6 @@ class H2HDBCBZFiles(BaseRepository):
             for index, outcome in enumerate(typed_outcomes)
             if outcome != CBZCompressionOutcome.unchanged
         ]
-        planned_written_db_gallery_ids = {
-            db_gallery_ids[index] for index in planned_write_indices
-        }
-        invalidated_integrity_states = invalidate_integrity_state(
-            planned_written_db_gallery_ids
-        )
-        self.logger.debug(
-            "CBZ integrity state invalidated before CBZ write dispatch: "
-            f"planned_written_db_gallery_ids="
-            f"{len(planned_written_db_gallery_ids)} "
-            f"prior_state_db_gallery_ids={invalidated_integrity_states}."
-        )
 
         config_data = self.config.model_dump(mode="json")
         written_outcomes = run_in_parallel(
@@ -499,6 +528,7 @@ class H2HDBCBZFiles(BaseRepository):
                     exclude_hashs,
                     expected_names[index],
                     upload_times[index],
+                    input_manifests[index],
                     True,
                 )
                 for index in planned_write_indices
@@ -516,8 +546,6 @@ class H2HDBCBZFiles(BaseRepository):
             )
         return CBZCompressionSummary.from_outcomes(
             typed_outcomes,
-            db_gallery_ids,
-            invalidated_integrity_states,
         )
 
     def _get_galleries_with_excluded_files(self, exclude_hashs: set[bytes]) -> set[str]:

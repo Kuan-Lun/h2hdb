@@ -42,8 +42,7 @@ collection is always organised and accessible.
         "download_path": "download",
         "cbz_max_size": 768,
         "cbz_grouping": "flat",
-        "cbz_sort": "no",
-        "cbz_scrub_batch_size": 100
+        "cbz_sort": "no"
     },
     "database": {
         "sql_type": "mariadb",
@@ -67,9 +66,6 @@ collection is always organised and accessible.
   `date-yyyy-mm-dd`. The default is `flat`.
 - `h2h.cbz_sort`: `no`, `upload_time`, `download_time`, `gid`, `title`,
   `pages`, or `pages+[num]`. The default is `no`.
-- `h2h.cbz_scrub_batch_size`: number of CBZ files to integrity-check (and
-  transparently rebuild if corrupted) per `insert_h2h_download` run. `0`
-  disables scrubbing. The default is `100`.
 - `h2h.file_hash_workers`: maximum number of files read and hashed
   concurrently. The default is the smaller of `4` and the available CPU count;
   set it to `1` for serial hashing. Valid values are `1`–`32`.
@@ -81,6 +77,17 @@ collection is always organised and accessible.
   this is the path to the database file.
 - `logger.level`: one of `NOTSET`, `DEBUG`, `INFO`, `WARNING`, `ERROR`, or
   `CRITICAL`.
+
+H2HDB records a source-filename manifest for each gallery. Adding, deleting, or
+renaming a source file marks that gallery's CBZ for rebuilding. This pending
+state remains in the database if CBZ output is disabled or a run is interrupted.
+During ingestion, the provisional pass creates only missing CBZ files for new
+galleries and preserves existing CBZ files. After all galleries have been
+processed, one final pass uses the stable exclusion set to perform any required
+rebuilds. Created CBZ files carry a small input-layout marker in their ZIP
+comment, allowing the final pass to detect normalized renames and filename
+swaps even after the database has been deleted and rebuilt. H2HDB does not hash
+or scrub CBZ file contents.
 
 ---
 
