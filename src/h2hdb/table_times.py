@@ -49,7 +49,7 @@ class H2HDBTimes(BaseRepository):
                         f"ON {table_name}(time)"
                     )
 
-            self.logger.info(f"{table_name} table created.")
+            self.logger.debug(f"Ensured database table exists: name={table_name}.")
 
     def _insert_time(self, table_name: str, db_gallery_id: int, time: str) -> None:
         with self.SQLConnector() as connector:

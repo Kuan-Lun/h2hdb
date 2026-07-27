@@ -2,7 +2,10 @@ import datetime
 from typing import cast
 
 from .repository import BaseRepository, RepositoryContext
+from .settings import chunk_list
 from .table_gids import H2HDBGalleriesIDs
+
+INTEGRITY_BATCH_SIZE = 400
 
 
 class H2HDBCBZIntegrity(BaseRepository):
@@ -46,7 +49,7 @@ class H2HDBCBZIntegrity(BaseRepository):
                         f"ON {table_name}(sha256)"
                     )
 
-        self.logger.info(f"{table_name} table created.")
+        self.logger.debug(f"Ensured database table exists: name={table_name}.")
 
     def _create_cbz_verifications_table(self) -> None:
         with self.SQLConnector() as connector:
@@ -82,7 +85,7 @@ class H2HDBCBZIntegrity(BaseRepository):
                         f"ON {table_name}(last_verified_time)"
                     )
 
-        self.logger.info(f"{table_name} table created.")
+        self.logger.debug(f"Ensured database table exists: name={table_name}.")
 
     def _upsert_hash(self, db_gallery_id: int, sha256: bytes) -> None:
         with self.SQLConnector() as connector:
@@ -114,6 +117,96 @@ class H2HDBCBZIntegrity(BaseRepository):
         with self.SQLConnector() as connector:
             query = "DELETE FROM cbz_verifications WHERE db_gallery_id = %s"
             connector.execute(query, (db_gallery_id,))
+
+    def _invalidate_for_db_gallery_ids(self, db_gallery_ids: set[int]) -> int:
+        """Remove integrity state that planned CBZ writes would make stale."""
+        if not db_gallery_ids:
+            return 0
+
+        invalidated_ids = set[int]()
+        with self.SQLConnector() as connector:
+            has_integrity_rows = connector.fetch_one("""
+                    SELECT 1 FROM cbz_hashes
+                    UNION ALL
+                    SELECT 1 FROM cbz_verifications
+                    LIMIT 1
+                """)
+            if not has_integrity_rows:
+                return 0
+
+            for batch in chunk_list(sorted(db_gallery_ids), INTEGRITY_BATCH_SIZE):
+                placeholders = ", ".join(["%s"] * len(batch))
+                rows = connector.fetch_all(
+                    f"""
+                        SELECT db_gallery_id
+                        FROM cbz_hashes
+                        WHERE db_gallery_id IN ({placeholders})
+                        UNION
+                        SELECT db_gallery_id
+                        FROM cbz_verifications
+                        WHERE db_gallery_id IN ({placeholders})
+                    """,
+                    (*batch, *batch),
+                )
+                existing_ids = [int(row[0]) for row in rows]
+                if not existing_ids:
+                    continue
+
+                existing_placeholders = ", ".join(["%s"] * len(existing_ids))
+                # Delete the verification first. MariaDBConnector commits each
+                # DELETE independently, so interruption between these statements
+                # then leaves the gallery eligible for an early scrub instead of
+                # leaving a recent verification paired with no baseline hash.
+                for table_name in ("cbz_verifications", "cbz_hashes"):
+                    connector.execute(
+                        f"""
+                            DELETE FROM {table_name}
+                            WHERE db_gallery_id IN ({existing_placeholders})
+                        """,
+                        tuple(existing_ids),
+                    )
+                invalidated_ids.update(existing_ids)
+        return len(invalidated_ids)
+
+    def _invalidate_verifications_for_db_gallery_ids(
+        self, db_gallery_ids: set[int]
+    ) -> int:
+        """Make planned integrity repairs eligible for retry without losing hashes.
+
+        A repair can be interrupted before the corrupt file is replaced. Keeping
+        its known-good hash prevents the next scrub from accepting those corrupt
+        bytes as a new baseline, while deleting the verification ensures it is
+        selected for another check promptly.
+        """
+        if not db_gallery_ids:
+            return 0
+
+        invalidated_ids = set[int]()
+        with self.SQLConnector() as connector:
+            for batch in chunk_list(sorted(db_gallery_ids), INTEGRITY_BATCH_SIZE):
+                placeholders = ", ".join(["%s"] * len(batch))
+                rows = connector.fetch_all(
+                    f"""
+                        SELECT db_gallery_id
+                        FROM cbz_verifications
+                        WHERE db_gallery_id IN ({placeholders})
+                    """,
+                    tuple(batch),
+                )
+                existing_ids = [int(row[0]) for row in rows]
+                if not existing_ids:
+                    continue
+                connector.execute(
+                    f"""
+                        DELETE FROM cbz_verifications
+                        WHERE db_gallery_id IN (
+                            {", ".join(["%s"] * len(existing_ids))}
+                        )
+                    """,
+                    tuple(existing_ids),
+                )
+                invalidated_ids.update(existing_ids)
+        return len(invalidated_ids)
 
     def _delete_stale_rows(self) -> None:
         with self.SQLConnector() as connector:
@@ -169,18 +262,39 @@ class H2HDBCBZIntegrity(BaseRepository):
         if not db_gallery_ids or limit <= 0:
             return []
 
+        candidates = list[tuple[int, datetime.datetime | None]]()
         with self.SQLConnector() as connector:
-            select_query = f"""
-                SELECT galleries_dbids.db_gallery_id
-                FROM galleries_dbids
-                    LEFT JOIN cbz_verifications
-                        ON cbz_verifications.db_gallery_id = galleries_dbids.db_gallery_id
-                WHERE galleries_dbids.db_gallery_id IN (
-                    {", ".join(["%s"] * len(db_gallery_ids))}
+            for batch in chunk_list(sorted(set(db_gallery_ids)), INTEGRITY_BATCH_SIZE):
+                select_query = f"""
+                    SELECT galleries_dbids.db_gallery_id,
+                        cbz_verifications.last_verified_time
+                    FROM galleries_dbids
+                        LEFT JOIN cbz_verifications
+                            ON cbz_verifications.db_gallery_id =
+                                galleries_dbids.db_gallery_id
+                    WHERE galleries_dbids.db_gallery_id IN (
+                        {", ".join(["%s"] * len(batch))}
+                    )
+                    ORDER BY
+                        cbz_verifications.last_verified_time IS NOT NULL,
+                        cbz_verifications.last_verified_time ASC,
+                        galleries_dbids.db_gallery_id ASC
+                    LIMIT %s
+                """
+                query_result = connector.fetch_all(select_query, (*batch, limit))
+                candidates.extend(
+                    (
+                        int(db_gallery_id),
+                        cast(datetime.datetime | None, last_verified_time),
+                    )
+                    for db_gallery_id, last_verified_time in query_result
                 )
-                ORDER BY cbz_verifications.last_verified_time IS NOT NULL,
-                    cbz_verifications.last_verified_time ASC
-                LIMIT %s
-            """
-            query_result = connector.fetch_all(select_query, (*db_gallery_ids, limit))
-        return [int(row[0]) for row in query_result]
+
+        candidates.sort(
+            key=lambda candidate: (
+                candidate[1] is not None,
+                candidate[1] or datetime.datetime.min,
+                candidate[0],
+            )
+        )
+        return [db_gallery_id for db_gallery_id, _ in candidates[:limit]]

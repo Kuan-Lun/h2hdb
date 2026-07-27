@@ -81,7 +81,7 @@ class H2HDBFiles(BaseRepository):
                         )
                     """
             connector.execute(query)
-            self.logger.info(f"{table_name} table created.")
+            self.logger.debug(f"Ensured database table exists: name={table_name}.")
 
             table_name = "files_names"
             match self.config.database.sql_type.lower():
@@ -114,7 +114,7 @@ class H2HDBFiles(BaseRepository):
                         connector, table_name, "full_name", "db_file_id"
                     )
 
-            self.logger.info(f"{table_name} table created.")
+            self.logger.debug(f"Ensured database table exists: name={table_name}.")
 
     def _insert_gallery_files(
         self, db_gallery_id: int, file_names_list: list[str]
@@ -342,7 +342,9 @@ class H2HDBFiles(BaseRepository):
                         )
                     """
             connector.execute(query)
-            self.logger.info(f"{dbids_table_name} table created.")
+            self.logger.debug(
+                f"Ensured database table exists: name={dbids_table_name}."
+            )
 
             table_name = f"files_hashs_{algorithm.lower()}"
             match self.config.database.sql_type.lower():
@@ -373,13 +375,11 @@ class H2HDBFiles(BaseRepository):
                         )
                     """
             connector.execute(query)
-            self.logger.info(f"{table_name} table created.")
+            self.logger.debug(f"Ensured database table exists: name={table_name}.")
 
     def _create_galleries_files_hashs_tables(self) -> None:
-        self.logger.debug("Creating gallery image hash tables...")
         for algorithm, output_bits in HASH_ALGORITHMS.items():
             self._create_galleries_files_hashs_table(algorithm, output_bits)
-        self.logger.info("Gallery image hash tables created.")
 
     def _create_gallery_image_hash_view(self) -> None:
         with self.SQLConnector() as connector:
@@ -401,7 +401,7 @@ class H2HDBFiles(BaseRepository):
                     LEFT JOIN {hash_dbids_table_name}    USING (db_hash_id)
             """
             connector.execute(query)
-            self.logger.info(f"{table_name} view created.")
+            self.logger.debug(f"Ensured database view exists: name={table_name}.")
 
     def _check_files_dbids_by_db_gallery_id(self, db_gallery_id: int) -> bool:
         with self.SQLConnector() as connector:
@@ -529,15 +529,6 @@ class H2HDBFiles(BaseRepository):
             else 0.0
         )
         self.logger.debug(
-            "PERF event=progress stage=file_byte_hashing "
-            f"processed={processed_files} total={total_files} "
-            f"bytes={processed_bytes} elapsed_s={hashing_elapsed:.6f} "
-            f"rate_files_s={hashing_rate:.3f} "
-            f"rate_mib_s={hashing_mib_rate:.3f} "
-            f"configured_workers={configured_workers} "
-            f"worker_limit={worker_limit} final=true"
-        )
-        self.logger.debug(
             "PERF event=end stage=file_byte_hashing "
             f"processed={processed_files} total={total_files} "
             f"bytes={processed_bytes} elapsed_s={hashing_elapsed:.6f} "
@@ -651,7 +642,10 @@ class H2HDBFiles(BaseRepository):
                             )
                         except DatabaseDuplicateKeyError:
                             self.logger.warning(
-                                f"Hash value {current_hash_value!r} already exists in the database."
+                                "Concurrent hash catalog insert detected; "
+                                f"algorithm={algorithm} "
+                                f"hash=0x{current_hash_value.hex()}; "
+                                "using the existing row."
                             )
                         except Exception as e:
                             raise e
@@ -792,7 +786,8 @@ class H2HDBFiles(BaseRepository):
         if len(missing_hash_values) == 1:
             hash_value = missing_hash_values[0]
             self.logger.warning(
-                f"Retrying to insert hash value 0x{hash_value.hex()} into the database."
+                "Retrying hash catalog insert after a batch conflict: "
+                f"algorithm={algorithm} hash=0x{hash_value.hex()}."
             )
             try:
                 self.insert_db_hash_id_by_hash_value(hash_value, algorithm)

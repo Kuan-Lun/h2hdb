@@ -1,6 +1,8 @@
 import datetime
 import zipfile
 from collections.abc import Callable
+from dataclasses import dataclass, field
+from enum import StrEnum
 from multiprocessing.pool import Pool
 from pathlib import Path
 from typing import Any
@@ -15,6 +17,78 @@ from .table_gids import H2HDBGalleriesIDs
 from .table_times import H2HDBTimes
 
 HASH_LOOKUP_BATCH_SIZE = 500
+
+
+class CBZCompressionOutcome(StrEnum):
+    created = "created"
+    rebuilt = "rebuilt"
+    unchanged = "unchanged"
+
+
+@dataclass
+class CBZCompressionSummary:
+    checked: int = 0
+    created: int = 0
+    rebuilt: int = 0
+    unchanged: int = 0
+    written_db_gallery_ids: set[int] = field(default_factory=set, repr=False)
+    integrity_state_db_gallery_ids_invalidated: int = 0
+
+    @classmethod
+    def from_outcomes(
+        cls,
+        outcomes: list[CBZCompressionOutcome],
+        db_gallery_ids: list[int],
+        integrity_state_db_gallery_ids_invalidated: int = 0,
+    ) -> CBZCompressionSummary:
+        if len(outcomes) != len(db_gallery_ids):
+            raise ValueError(
+                "CBZ outcomes and db_gallery_id values must have equal lengths."
+            )
+        return cls(
+            checked=len(outcomes),
+            created=outcomes.count(CBZCompressionOutcome.created),
+            rebuilt=outcomes.count(CBZCompressionOutcome.rebuilt),
+            unchanged=outcomes.count(CBZCompressionOutcome.unchanged),
+            written_db_gallery_ids={
+                db_gallery_id
+                for db_gallery_id, outcome in zip(db_gallery_ids, outcomes, strict=True)
+                if outcome != CBZCompressionOutcome.unchanged
+            },
+            integrity_state_db_gallery_ids_invalidated=(
+                integrity_state_db_gallery_ids_invalidated
+            ),
+        )
+
+    @property
+    def write_operations(self) -> int:
+        return self.created + self.rebuilt
+
+    def __add__(self, other: CBZCompressionSummary) -> CBZCompressionSummary:
+        return CBZCompressionSummary(
+            checked=self.checked + other.checked,
+            created=self.created + other.created,
+            rebuilt=self.rebuilt + other.rebuilt,
+            unchanged=self.unchanged + other.unchanged,
+            written_db_gallery_ids=(
+                self.written_db_gallery_ids | other.written_db_gallery_ids
+            ),
+            integrity_state_db_gallery_ids_invalidated=(
+                self.integrity_state_db_gallery_ids_invalidated
+                + other.integrity_state_db_gallery_ids_invalidated
+            ),
+        )
+
+    def __iadd__(self, other: CBZCompressionSummary) -> CBZCompressionSummary:
+        self.checked += other.checked
+        self.created += other.created
+        self.rebuilt += other.rebuilt
+        self.unchanged += other.unchanged
+        self.written_db_gallery_ids.update(other.written_db_gallery_ids)
+        self.integrity_state_db_gallery_ids_invalidated += (
+            other.integrity_state_db_gallery_ids_invalidated
+        )
+        return self
 
 
 def run_in_parallel(
@@ -42,6 +116,19 @@ def cbz_contents_are_stale_worker(
     return actual_names != expected_names
 
 
+def plan_cbz_compression_worker(
+    cbz_path: Path,
+    expected_names: frozenset[str],
+    force_rebuild: bool,
+) -> CBZCompressionOutcome:
+    """Classify one CBZ check without writing, including the filesystem stat."""
+    if not cbz_path.exists():
+        return CBZCompressionOutcome.created
+    if force_rebuild or cbz_contents_are_stale_worker(cbz_path, expected_names):
+        return CBZCompressionOutcome.rebuilt
+    return CBZCompressionOutcome.unchanged
+
+
 def cbz_scrub_worker(cbz_path: Path) -> bytes | None:
     """Hash a CBZ file's raw bytes for integrity scrubbing; `None` if unreadable.
 
@@ -62,7 +149,8 @@ def compress_gallery_to_cbz_worker(
     exclude_hashs: set[bytes],
     expected_names: frozenset[str] | None,
     upload_time: datetime.datetime | None,
-) -> bool:
+    force_rebuild: bool,
+) -> CBZCompressionOutcome:
     # Deferred to avoid a circular import: h2hdb_h2hdb.py imports this module
     # at module load time, so H2HDB can only be imported lazily, by which
     # point both modules have finished loading.
@@ -75,7 +163,11 @@ def compress_gallery_to_cbz_worker(
     # connection just to commit nothing.
     connector = H2HDB(config=config)
     return connector.cbz.compress_gallery_to_cbz(
-        gallery_folder, exclude_hashs, expected_names, upload_time
+        gallery_folder,
+        exclude_hashs,
+        expected_names,
+        upload_time,
+        force_rebuild=force_rebuild,
     )
 
 
@@ -90,77 +182,38 @@ class H2HDBCBZFiles(BaseRepository):
         self.gallery_times = gallery_times
         self.gallery_ids = gallery_ids
 
-    def _delete_cbz_file_for_gallery_name(self, gallery_name: str) -> None:
-        from .compress_gallery_to_cbz import gallery_name_to_cbz_file_name
-
-        assert self.config.h2h.cbz_path is not None
-        target_file_name = gallery_name_to_cbz_file_name(gallery_name)
-        for root, _, files in self.config.h2h.cbz_path.walk():
-            if target_file_name in files:
-                (root / target_file_name).unlink()
-                self.logger.info(
-                    f"CBZ '{target_file_name}' removed (duplicate content)."
-                )
-                return
-
-    def _refresh_current_cbz_files(self, current_galleries_names: set[str]) -> None:
-        from .compress_gallery_to_cbz import gallery_name_to_cbz_file_name
-
-        assert self.config.h2h.cbz_path is not None
-        current_cbzs: dict[str, Path] = dict()
-        for root, _, files in self.config.h2h.cbz_path.walk():
-            for file in files:
-                current_cbzs[file] = root
-        current_cbz_file_names = {
-            gallery_name_to_cbz_file_name(name) for name in current_galleries_names
-        }
-        for key in set(current_cbzs.keys()) - current_cbz_file_names:
-            (current_cbzs[key] / key).unlink()
-            self.logger.info(f"CBZ '{key}' removed.")
-        self.logger.info("CBZ files refreshed.")
-
-        while True:
-            directory_removed = False
-            for root, dirs, files in self.config.h2h.cbz_path.walk(top_down=False):
-                if root == self.config.h2h.cbz_path:
-                    continue
-                if max([len(dirs), len(files)]) == 0:
-                    directory_removed = True
-                    root.rmdir()
-                    self.logger.info(f"Directory '{root}' removed.")
-            if not directory_removed:
-                break
-        self.logger.info("Empty directories removed.")
-
-    def compress_gallery_to_cbz(
+    def _get_cbz_output_path(
         self,
-        gallery_folder: Path,
-        exclude_hashs: set[bytes],
-        expected_names: frozenset[str] | None,
+        gallery_name: str,
         upload_time: datetime.datetime | None,
-    ) -> bool:
-        from .compress_gallery_to_cbz import (
-            compress_images_and_create_cbz,
-            gallery_name_to_cbz_file_name,
-        )
+    ) -> Path:
+        from .compress_gallery_to_cbz import gallery_name_to_cbz_file_name
 
         assert self.config.h2h.cbz_path is not None
-        galleryinfo_params = parse_galleryinfo(gallery_folder)
         match self.config.h2h.cbz_grouping:
             case "date-yyyy":
-                assert upload_time is not None
+                if upload_time is None:
+                    raise ValueError(
+                        f"Missing upload time for grouped CBZ: gallery={gallery_name!r}."
+                    )
                 cbz_directory = self.config.h2h.cbz_path / str(upload_time.year).rjust(
                     4, "0"
                 )
             case "date-yyyy-mm":
-                assert upload_time is not None
+                if upload_time is None:
+                    raise ValueError(
+                        f"Missing upload time for grouped CBZ: gallery={gallery_name!r}."
+                    )
                 cbz_directory = (
                     self.config.h2h.cbz_path
                     / str(upload_time.year).rjust(4, "0")
                     / str(upload_time.month).rjust(2, "0")
                 )
             case "date-yyyy-mm-dd":
-                assert upload_time is not None
+                if upload_time is None:
+                    raise ValueError(
+                        f"Missing upload time for grouped CBZ: gallery={gallery_name!r}."
+                    )
                 cbz_directory = (
                     self.config.h2h.cbz_path
                     / str(upload_time.year).rjust(4, "0")
@@ -173,14 +226,139 @@ class H2HDBCBZFiles(BaseRepository):
                 raise ValueError(
                     f"Invalid cbz_grouping value: {self.config.h2h.cbz_grouping}"
                 )
-        cbz_tmp_directory = self.config.h2h.cbz_path / "tmp"
+        return cbz_directory / gallery_name_to_cbz_file_name(gallery_name)
 
-        cbz_path = cbz_directory / gallery_name_to_cbz_file_name(
-            galleryinfo_params.gallery_name
+    def _get_cbz_output_paths_by_db_gallery_ids(
+        self, db_gallery_ids: list[int]
+    ) -> dict[int, Path]:
+        gallery_names_by_id = self.gallery_ids.get_gallery_names_by_db_gallery_ids(
+            db_gallery_ids
+        )
+        upload_times_by_id = (
+            self.gallery_times.get_upload_times_by_db_gallery_ids(db_gallery_ids)
+            if self.config.h2h.cbz_grouping != "flat"
+            else {}
+        )
+        return {
+            db_gallery_id: self._get_cbz_output_path(
+                gallery_name,
+                upload_times_by_id.get(db_gallery_id),
+            )
+            for db_gallery_id, gallery_name in gallery_names_by_id.items()
+        }
+
+    def _get_cbz_output_paths_by_gallery_names(
+        self, gallery_names: set[str]
+    ) -> dict[str, Path]:
+        if self.config.h2h.cbz_grouping == "flat":
+            return {
+                gallery_name: self._get_cbz_output_path(gallery_name, None)
+                for gallery_name in gallery_names
+            }
+
+        db_gallery_ids_by_name = (
+            self.gallery_ids._get_db_gallery_ids_by_gallery_names_from_dbids(
+                list(gallery_names)
+            )
+        )
+        paths_by_id = self._get_cbz_output_paths_by_db_gallery_ids(
+            list(db_gallery_ids_by_name.values())
+        )
+        paths_by_name = {
+            gallery_name: paths_by_id[db_gallery_id]
+            for gallery_name, db_gallery_id in db_gallery_ids_by_name.items()
+            if db_gallery_id in paths_by_id
+        }
+        unresolved_names = gallery_names - paths_by_name.keys()
+        if unresolved_names:
+            raise ValueError(
+                "Could not resolve CBZ output paths for current galleries: "
+                f"count={len(unresolved_names)}."
+            )
+        return paths_by_name
+
+    def _delete_cbz_file_for_gallery_name(self, gallery_name: str) -> None:
+        from .compress_gallery_to_cbz import gallery_name_to_cbz_file_name
+
+        assert self.config.h2h.cbz_path is not None
+        target_file_name = gallery_name_to_cbz_file_name(gallery_name)
+        for root, _, files in self.config.h2h.cbz_path.walk():
+            if target_file_name in files:
+                cbz_path = root / target_file_name
+                cbz_path.unlink()
+                self.logger.info(
+                    "CBZ removed because its gallery record changed: "
+                    f"path={str(cbz_path)!r}."
+                )
+                return
+
+    def _refresh_current_cbz_files(self, current_galleries_names: set[str]) -> None:
+        assert self.config.h2h.cbz_path is not None
+        current_output_files: list[Path] = []
+        for root, _, files in self.config.h2h.cbz_path.walk():
+            for file in files:
+                current_output_files.append(root / file)
+        expected_cbz_paths = set(
+            self._get_cbz_output_paths_by_gallery_names(
+                current_galleries_names
+            ).values()
+        )
+        removed_files = 0
+        for artifact_path in current_output_files:
+            if artifact_path in expected_cbz_paths:
+                continue
+            artifact_path.unlink()
+            removed_files += 1
+            self.logger.debug(
+                "Unexpected CBZ output artifact removed during reconciliation: "
+                f"path={str(artifact_path)!r}."
+            )
+
+        removed_directories = 0
+        while True:
+            directory_removed = False
+            for root, dirs, files in self.config.h2h.cbz_path.walk(top_down=False):
+                if root == self.config.h2h.cbz_path:
+                    continue
+                if max([len(dirs), len(files)]) == 0:
+                    directory_removed = True
+                    root.rmdir()
+                    removed_directories += 1
+                    self.logger.debug(
+                        f"Empty CBZ output directory removed: path={str(root)!r}."
+                    )
+            if not directory_removed:
+                break
+        self.logger.info(
+            "CBZ output reconciliation completed: "
+            f"scanned_files={len(current_output_files)} "
+            f"expected_cbz_files={len(expected_cbz_paths)} "
+            f"unexpected_files_removed={removed_files} "
+            f"empty_directories_removed={removed_directories}."
         )
 
-        needs_rebuild = True
-        if cbz_path.exists() and expected_names is not None:
+    def compress_gallery_to_cbz(
+        self,
+        gallery_folder: Path,
+        exclude_hashs: set[bytes],
+        expected_names: frozenset[str] | None,
+        upload_time: datetime.datetime | None,
+        *,
+        force_rebuild: bool = False,
+    ) -> CBZCompressionOutcome:
+        from .compress_gallery_to_cbz import compress_images_and_create_cbz
+
+        assert self.config.h2h.cbz_path is not None
+        galleryinfo_params = parse_galleryinfo(gallery_folder)
+        cbz_path = self._get_cbz_output_path(
+            galleryinfo_params.gallery_name, upload_time
+        )
+        cbz_directory = cbz_path.parent
+        cbz_tmp_directory = self.config.h2h.cbz_path / "tmp"
+
+        cbz_existed = cbz_path.exists()
+        needs_rebuild = force_rebuild or not cbz_existed or expected_names is None
+        if cbz_existed and not force_rebuild and expected_names is not None:
             # A corrupt CBZ (e.g. left behind by a process killed mid-write)
             # is treated as needing a rebuild, rather than raising here.
             try:
@@ -198,13 +376,24 @@ class H2HDBCBZFiles(BaseRepository):
                 self.config.h2h.cbz_max_size,
                 exclude_hashs,
             )
-        return needs_rebuild
+            return (
+                CBZCompressionOutcome.rebuilt
+                if cbz_existed
+                else CBZCompressionOutcome.created
+            )
+        return CBZCompressionOutcome.unchanged
 
     def compress_galleries_to_cbz(
-        self, gallery_folders: list[Path], exclude_hashs: set[bytes], pool: Pool
-    ) -> list[bool]:
+        self,
+        gallery_folders: list[Path],
+        exclude_hashs: set[bytes],
+        pool: Pool,
+        *,
+        invalidate_integrity_state: Callable[[set[int]], int],
+        force_rebuild: bool = False,
+    ) -> CBZCompressionSummary:
         if not gallery_folders:
-            return []
+            return CBZCompressionSummary()
 
         from .compress_gallery_to_cbz import expected_output_filename
 
@@ -249,20 +438,86 @@ class H2HDBCBZFiles(BaseRepository):
                 if db_gallery_id in upload_times_by_id
             }
 
+        db_gallery_ids = [
+            db_gallery_ids_by_name[gallery_folder.name]
+            for gallery_folder in gallery_folders
+        ]
+        expected_names = [
+            expected_names_by_gallery[gallery_folder.name]
+            for gallery_folder in gallery_folders
+        ]
+        upload_times = [
+            upload_time_by_gallery.get(gallery_folder.name)
+            for gallery_folder in gallery_folders
+        ]
+        cbz_paths = [
+            self._get_cbz_output_path(gallery_folder.name, upload_time)
+            for gallery_folder, upload_time in zip(
+                gallery_folders, upload_times, strict=True
+            )
+        ]
+        planned_outcomes = run_in_parallel(
+            pool,
+            plan_cbz_compression_worker,
+            [
+                (cbz_path, gallery_expected_names, force_rebuild)
+                for cbz_path, gallery_expected_names in zip(
+                    cbz_paths, expected_names, strict=True
+                )
+            ],
+        )
+        typed_outcomes = [
+            CBZCompressionOutcome(outcome) for outcome in planned_outcomes
+        ]
+
+        planned_write_indices = [
+            index
+            for index, outcome in enumerate(typed_outcomes)
+            if outcome != CBZCompressionOutcome.unchanged
+        ]
+        planned_written_db_gallery_ids = {
+            db_gallery_ids[index] for index in planned_write_indices
+        }
+        invalidated_integrity_states = invalidate_integrity_state(
+            planned_written_db_gallery_ids
+        )
+        self.logger.debug(
+            "CBZ integrity state invalidated before CBZ write dispatch: "
+            f"planned_written_db_gallery_ids="
+            f"{len(planned_written_db_gallery_ids)} "
+            f"prior_state_db_gallery_ids={invalidated_integrity_states}."
+        )
+
         config_data = self.config.model_dump(mode="json")
-        return run_in_parallel(
+        written_outcomes = run_in_parallel(
             pool,
             compress_gallery_to_cbz_worker,
             [
                 (
                     config_data,
-                    folder,
+                    gallery_folders[index],
                     exclude_hashs,
-                    expected_names_by_gallery.get(folder.name),
-                    upload_time_by_gallery.get(folder.name),
+                    expected_names[index],
+                    upload_times[index],
+                    True,
                 )
-                for folder in gallery_folders
+                for index in planned_write_indices
             ],
+        )
+        for index, outcome in zip(planned_write_indices, written_outcomes, strict=True):
+            typed_outcomes[index] = CBZCompressionOutcome(outcome)
+
+        for gallery_folder, outcome in zip(
+            gallery_folders, typed_outcomes, strict=True
+        ):
+            self.logger.debug(
+                "CBZ compression result: "
+                f"gallery={gallery_folder.name!r} outcome={outcome.value}."
+            )
+        return CBZCompressionSummary.from_outcomes(
+            typed_outcomes,
+            db_gallery_ids,
+            invalidated_integrity_states,
         )
 
     def _get_galleries_with_excluded_files(self, exclude_hashs: set[bytes]) -> set[str]:
@@ -316,10 +571,7 @@ class H2HDBCBZFiles(BaseRepository):
     def get_stale_cbz_galleries(
         self, current_galleries_names: set[str], exclude_hashs: set[bytes], pool: Pool
     ) -> set[str]:
-        from .compress_gallery_to_cbz import (
-            expected_output_filename,
-            gallery_name_to_cbz_file_name,
-        )
+        from .compress_gallery_to_cbz import expected_output_filename
 
         assert self.config.h2h.cbz_path is not None
         if not exclude_hashs:
@@ -341,10 +593,9 @@ class H2HDBCBZFiles(BaseRepository):
             list(db_gallery_ids_by_name.values())
         )
 
-        current_cbzs: dict[str, Path] = dict()
-        for root, _, files in self.config.h2h.cbz_path.walk():
-            for file in files:
-                current_cbzs[file] = root
+        cbz_paths_by_id = self._get_cbz_output_paths_by_db_gallery_ids(
+            list(db_gallery_ids_by_name.values())
+        )
 
         candidates: list[tuple[str, Path, frozenset[str]]] = list()
         for gallery_name in affected_galleries:
@@ -354,10 +605,13 @@ class H2HDBCBZFiles(BaseRepository):
                 if db_gallery_id is not None
                 else []
             )
-            cbz_file_name = gallery_name_to_cbz_file_name(gallery_name)
-            if cbz_file_name not in current_cbzs:
+            cbz_path = (
+                cbz_paths_by_id.get(db_gallery_id)
+                if db_gallery_id is not None
+                else None
+            )
+            if cbz_path is None or not cbz_path.exists():
                 continue
-            cbz_path = current_cbzs[cbz_file_name] / cbz_file_name
             expected_names = frozenset(
                 expected_output_filename(file_name)
                 for file_name, file_hash in gallery_files

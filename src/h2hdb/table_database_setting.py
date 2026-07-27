@@ -22,7 +22,7 @@ class H2HDBCheckDatabaseSettings(BaseRepository):
                 message = f"Invalid database character set. Must be '{charset}' but is '{charset_result}'."
                 self.logger.error(message)
                 raise DatabaseConfigurationError(message)
-            self.logger.info("Database character set is valid.")
+            self.logger.info(f"Database character set verified: charset={charset}.")
 
     def check_database_collation(self) -> None:
         # SQLite has no database-level collation setting (collation is a
@@ -44,7 +44,7 @@ class H2HDBCheckDatabaseSettings(BaseRepository):
                 message = f"Invalid database collation. Must be '{collation}' but is '{collation_result}'."
                 self.logger.error(message)
                 raise DatabaseConfigurationError(message)
-            self.logger.info("Database character set and collation are valid.")
+            self.logger.info(f"Database collation verified: collation={collation}.")
 
     def _get_all_table_names(self) -> list[str]:
         # KEY_COLUMN_USAGE only lists tables that themselves declare an

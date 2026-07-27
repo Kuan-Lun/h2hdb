@@ -48,7 +48,7 @@ class H2HDBToDownloadQueue(BaseRepository):
                                  ORDER BY gut.time DESC
                     """
             connector.execute(query)
-        self.logger.info("pending_download_gids view created.")
+        self.logger.debug("Ensured database view exists: name=pending_download_gids.")
 
     def get_pending_download_gids(self) -> list[int]:
         with self.SQLConnector() as connector:
@@ -80,7 +80,7 @@ class H2HDBToDownloadQueue(BaseRepository):
                         )
                     """
             connector.execute(query)
-        self.logger.info(f"{table_name} table created.")
+        self.logger.debug(f"Ensured database table exists: name={table_name}.")
 
     def check_todownload_gid(self, gid: int, url: str) -> bool:
         with self.SQLConnector() as connector:

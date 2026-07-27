@@ -151,7 +151,7 @@ class H2HDBGalleryDeduplication(BaseRepository):
                         f"ON {table_name}(sha256)"
                     )
 
-        self.logger.info(f"{table_name} table created.")
+        self.logger.debug(f"Ensured database table exists: name={table_name}.")
 
     def _create_gallery_full_content_hashes_table(self) -> None:
         with self.SQLConnector() as connector:
@@ -187,7 +187,7 @@ class H2HDBGalleryDeduplication(BaseRepository):
                         f"ON {table_name}(sha256)"
                     )
 
-        self.logger.info(f"{table_name} table created.")
+        self.logger.debug(f"Ensured database table exists: name={table_name}.")
 
     def _create_gallery_full_duplicate_names_view(self) -> None:
         with self.SQLConnector() as connector:
@@ -211,7 +211,7 @@ class H2HDBGalleryDeduplication(BaseRepository):
                 WHERE dt.time < newest.max_download_time
             """
             connector.execute(query)
-        self.logger.info(f"{table_name} view created.")
+        self.logger.debug(f"Ensured database view exists: name={table_name}.")
 
     def _create_gallery_duplicate_warnings_table(self) -> None:
         with self.SQLConnector() as connector:
@@ -244,7 +244,7 @@ class H2HDBGalleryDeduplication(BaseRepository):
                         )
                     """
             connector.execute(query)
-        self.logger.info(f"{table_name} table created.")
+        self.logger.debug(f"Ensured database table exists: name={table_name}.")
 
     def _create_gallery_duplicate_warnings_names_view(self) -> None:
         with self.SQLConnector() as connector:
@@ -262,7 +262,7 @@ class H2HDBGalleryDeduplication(BaseRepository):
                             = gallery_duplicate_warnings.duplicate_of_db_gallery_id
             """
             connector.execute(query)
-        self.logger.info(f"{table_name} view created.")
+        self.logger.debug(f"Ensured database view exists: name={table_name}.")
 
     def _get_hash_owner(self, sha256: bytes) -> int | None:
         with self.SQLConnector() as connector:

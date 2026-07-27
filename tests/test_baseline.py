@@ -637,19 +637,82 @@ def test_insert_gallery_file_hash_hashes_and_persists_sha256(
 
 
 def test_refresh_current_cbz_files_removes_only_orphaned_files(
-    sqlite_config: H2HDBConfig, tmp_path: Path
+    sqlite_config: H2HDBConfig,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cbz_path = tmp_path / "cbz"
     cbz_path.mkdir()
     (cbz_path / "kept.cbz").write_bytes(b"kept")
     (cbz_path / "orphan.cbz").write_bytes(b"orphan")
+    legacy_directory = cbz_path / "legacy"
+    legacy_directory.mkdir()
+    (legacy_directory / "kept.cbz").write_bytes(b"duplicate")
+    for tmp_name in ("first", "second"):
+        tmp_directory = cbz_path / "tmp" / tmp_name
+        tmp_directory.mkdir(parents=True)
+        (tmp_directory / "001.jpg").write_bytes(b"temporary")
     sqlite_config.h2h.cbz_path = cbz_path
 
     with H2HDB(config=sqlite_config) as db:
+        info_messages: list[str] = []
+        monkeypatch.setattr(db.logger, "info", info_messages.append)
         db.cbz._refresh_current_cbz_files({"kept"})
 
     assert (cbz_path / "kept.cbz").exists()
     assert not (cbz_path / "orphan.cbz").exists()
+    assert not legacy_directory.exists()
+    assert not (cbz_path / "tmp").exists()
+    assert info_messages == [
+        "CBZ output reconciliation completed: scanned_files=5 "
+        "expected_cbz_files=1 unexpected_files_removed=4 "
+        "empty_directories_removed=4."
+    ]
+
+
+def test_get_scrub_candidates_preserves_global_order_across_query_batches(
+    sqlite_config: H2HDBConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("h2hdb.cbz_integrity.INTEGRITY_BATCH_SIZE", 2)
+
+    with H2HDB(config=sqlite_config) as db:
+        db.create_main_tables()
+        gallery_names = [f"scrub-candidate-{index}" for index in range(6)]
+        for gallery_name in gallery_names:
+            db.gallery_ids._insert_gallery_name(gallery_name)
+        db_gallery_ids = [
+            db.gallery_ids._get_db_gallery_id_by_gallery_name(gallery_name)
+            for gallery_name in gallery_names
+        ]
+
+        verification_times = {
+            db_gallery_ids[0]: "2024-01-01 00:00:00",
+            db_gallery_ids[2]: "2020-01-01 00:00:00",
+            db_gallery_ids[4]: "2022-01-01 00:00:00",
+            db_gallery_ids[5]: "2021-01-01 00:00:00",
+        }
+        with db.SQLConnector() as connector:
+            connector.execute_many(
+                """
+                    INSERT INTO cbz_verifications (
+                        db_gallery_id,
+                        last_verified_time
+                    )
+                    VALUES (%s, %s)
+                """,
+                list(verification_times.items()),
+            )
+
+        assert db.cbz_integrity._get_scrub_candidates(
+            list(reversed(db_gallery_ids)),
+            limit=4,
+        ) == [
+            db_gallery_ids[1],
+            db_gallery_ids[3],
+            db_gallery_ids[2],
+            db_gallery_ids[5],
+        ]
 
 
 def test_get_stale_cbz_galleries_flags_cbz_containing_newly_excluded_file(

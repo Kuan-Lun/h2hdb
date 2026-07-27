@@ -20,8 +20,13 @@ if __name__ == "__main__":
                 connector.reset_redownload_times()
                 connector.queue_redownload_for_pending_deletions()
                 connector.refresh_todelete_names_cache()
-                connector.logger.info("More downloads found, continuing immediately...")
-            connector.logger.info("Checking for new downloads...")
+                connector.logger.info(
+                    "Gallery changes detected; starting another scan immediately."
+                )
+            connector.logger.info(
+                "No gallery changes detected; running database maintenance "
+                "before the next scan."
+            )
             connector.optimize_database()
             connector.analyze_database()
             remaining_sleep_seconds = SLEEP_INTERVAL_SECONDS - (

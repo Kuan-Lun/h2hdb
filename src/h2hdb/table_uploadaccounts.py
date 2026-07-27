@@ -44,7 +44,7 @@ class H2HDBUploadAccounts(BaseRepository):
                         f"ON {table_name}(account)"
                     )
 
-            self.logger.info(f"{table_name} table created.")
+            self.logger.debug(f"Ensured database table exists: name={table_name}.")
 
     def _insert_gallery_upload_account(self, db_gallery_id: int, account: str) -> None:
         with self.SQLConnector() as connector:

@@ -46,7 +46,7 @@ class H2HDBGalleriesTitles(BaseRepository):
                         connector, table_name, "title", "db_gallery_id"
                     )
 
-            self.logger.info(f"{table_name} table created.")
+            self.logger.debug(f"Ensured database table exists: name={table_name}.")
 
     def _insert_gallery_title(self, db_gallery_id: int, title: str) -> None:
         with self.SQLConnector() as connector:

@@ -46,7 +46,7 @@ class H2HDBGalleriesComments(BaseRepository):
                         connector, table_name, "comment", "db_gallery_id"
                     )
 
-            self.logger.info(f"{table_name} table created.")
+            self.logger.debug(f"Ensured database table exists: name={table_name}.")
 
     def _insert_gallery_comment(self, db_gallery_id: int, comment: str) -> None:
         if comment != "":

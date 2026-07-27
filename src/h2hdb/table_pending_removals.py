@@ -49,7 +49,7 @@ class H2HDBPendingGalleryRemovals(BaseRepository):
                         connector, table_name, "full_name", "rowid"
                     )
 
-        self.logger.info(f"{table_name} table created.")
+        self.logger.debug(f"Ensured database table exists: name={table_name}.")
 
     def insert_pending_gallery_removal(self, gallery_name: str) -> None:
         if self.check_pending_gallery_removal(gallery_name) is True:
@@ -253,24 +253,28 @@ class H2HDBPendingGalleryRemovals(BaseRepository):
 
     def delete_gallery(self, gallery_name: str) -> None:
         if self._delete_gallery_row(gallery_name):
-            self.logger.info(f"Gallery '{gallery_name}' deleted.")
+            self.logger.info(
+                f"Gallery removed from database: gallery={gallery_name!r}."
+            )
 
     def delete_galleries(self, gallery_names: list[str]) -> None:
         for gallery_name in self._delete_existing_gallery_rows(gallery_names):
-            self.logger.info(f"Gallery '{gallery_name}' deleted.")
+            self.logger.info(
+                f"Gallery removed from database: gallery={gallery_name!r}."
+            )
 
     def refresh_gallery(self, gallery_name: str) -> None:
         if self._delete_gallery_row(gallery_name):
             self.logger.info(
-                f"Gallery '{gallery_name}' refreshed: galleryinfo.txt changed, "
-                "reinserting."
+                "Gallery metadata changed; existing database record removed "
+                f"for reinsertion: gallery={gallery_name!r}."
             )
 
     def refresh_galleries(self, gallery_names: list[str]) -> None:
         for gallery_name in self._delete_existing_gallery_rows(gallery_names):
             self.logger.info(
-                f"Gallery '{gallery_name}' refreshed: galleryinfo.txt changed, "
-                "reinserting."
+                "Gallery metadata changed; existing database record removed "
+                f"for reinsertion: gallery={gallery_name!r}."
             )
 
     def _delete_gallery_row(self, gallery_name: str) -> bool:

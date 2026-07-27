@@ -21,7 +21,7 @@ class H2HDBRemovedGalleries(BaseRepository):
                         )
                     """
             connector.execute(query)
-            self.logger.info(f"{table_name} table created.")
+            self.logger.debug(f"Ensured database table exists: name={table_name}.")
 
     def insert_removed_gallery_gid(self, gid: int) -> None:
         with self.SQLConnector() as connector:
@@ -53,7 +53,6 @@ class H2HDBRemovedGalleries(BaseRepository):
         query_result = self.__get_removed_gallery_gid(gid)
         if query_result:
             gid = int(query_result[0])
-            self.logger.warning(f"Removed gallery GID {gid} exists.")
         else:
             msg = f"Removed gallery GID {gid} does not exist."
             self.logger.error(msg)

@@ -25,7 +25,7 @@ class H2HDBToDeleteQueue(BaseRepository):
                         )
                     """
             connector.execute(query)
-        self.logger.info(f"{table_name} table created.")
+        self.logger.debug(f"Ensured database table exists: name={table_name}.")
 
     def _create_todelete_names_view(self) -> None:
         with self.SQLConnector() as connector:
@@ -61,7 +61,7 @@ class H2HDBToDeleteQueue(BaseRepository):
                         FROM gallery_full_duplicate_names
             """
             connector.execute(query)
-        self.logger.info(f"{table_name} table created.")
+        self.logger.debug(f"Ensured database view exists: name={table_name}.")
 
     def _create_todelete_names_cache_table(self) -> None:
         with self.SQLConnector() as connector:
@@ -76,7 +76,7 @@ class H2HDBToDeleteQueue(BaseRepository):
                 )
             """
             connector.execute(query)
-        self.logger.info(f"{table_name} table created.")
+        self.logger.debug(f"Ensured database table exists: name={table_name}.")
 
     def refresh_todelete_names_cache(self) -> None:
         with self.SQLConnector() as connector:
@@ -111,7 +111,7 @@ class H2HDBToDeleteQueue(BaseRepository):
                         FROM todelete_names_cache
                     """
             connector.execute(query)
-        self.logger.info(f"{table_name} table created.")
+        self.logger.debug(f"Ensured database view exists: name={table_name}.")
 
     def _queue_redownload_for_todelete_names(self) -> None:
         with self.SQLConnector() as connector:

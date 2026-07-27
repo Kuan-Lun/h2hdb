@@ -26,7 +26,7 @@ class H2HDBGalleriesInfos(BaseRepository):
                     LEFT JOIN galleries_access_times USING (db_gallery_id)
             """
             connector.execute(query)
-            self.logger.info("galleries_infos view created.")
+            self.logger.debug("Ensured database view exists: name=galleries_infos.")
 
     def _create_duplicate_hash_in_gallery_view(self) -> None:
         with self.SQLConnector() as connector:
@@ -71,4 +71,6 @@ class H2HDBGalleriesInfos(BaseRepository):
                 ORDER BY gid DESC;
             """
             connector.execute(query)
-            self.logger.info("duplicate_hash_in_gallery view created.")
+            self.logger.debug(
+                "Ensured database view exists: name=duplicate_hash_in_gallery."
+            )

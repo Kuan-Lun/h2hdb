@@ -39,7 +39,9 @@ class H2HDBGalleriesTags(BaseRepository):
                         )
                     """
             connector.execute(query)
-            self.logger.info(f"{tag_name_table_name} table created.")
+            self.logger.debug(
+                f"Ensured database table exists: name={tag_name_table_name}."
+            )
 
             tag_value_table_name = "galleries_tags_values"
             match self.config.database.sql_type.lower():
@@ -57,7 +59,9 @@ class H2HDBGalleriesTags(BaseRepository):
                         )
                     """
             connector.execute(query)
-            self.logger.info(f"{tag_value_table_name} table created.")
+            self.logger.debug(
+                f"Ensured database table exists: name={tag_value_table_name}."
+            )
 
             tag_pairs_table_name = "galleries_tag_pairs_dbids"
             match self.config.database.sql_type.lower():
@@ -100,7 +104,9 @@ class H2HDBGalleriesTags(BaseRepository):
                         f"ON {tag_pairs_table_name}(tag_value)"
                     )
 
-            self.logger.info(f"{tag_pairs_table_name} table created.")
+            self.logger.debug(
+                f"Ensured database table exists: name={tag_pairs_table_name}."
+            )
 
             table_name = "galleries_tags"
             match self.config.database.sql_type.lower():
@@ -133,7 +139,7 @@ class H2HDBGalleriesTags(BaseRepository):
                         )
                     """
             connector.execute(query)
-            self.logger.info(f"{table_name} table created.")
+            self.logger.debug(f"Ensured database table exists: name={table_name}.")
 
     @property
     def _insert_rows_batch_size(self) -> int:

@@ -70,7 +70,7 @@ class H2HDBGalleriesIDs(BaseRepository):
                         connector, table_name, "full_name", "db_gallery_id"
                     )
 
-            self.logger.info(f"{table_name} table created.")
+            self.logger.debug(f"Ensured database table exists: name={table_name}.")
 
     def _insert_gallery_name(self, gallery_name: str) -> None:
         with self.SQLConnector() as connector:
@@ -254,7 +254,7 @@ class H2HDBGalleriesGIDs(BaseRepository):
                         f"ON {table_name}(gid)"
                     )
 
-            self.logger.info(f"{table_name} table created.")
+            self.logger.debug(f"Ensured database table exists: name={table_name}.")
 
     def _insert_gallery_gid(self, db_gallery_id: int, gid: int) -> None:
         with self.SQLConnector() as connector:
