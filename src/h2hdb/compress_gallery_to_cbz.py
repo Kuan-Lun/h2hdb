@@ -6,7 +6,9 @@ __all__ = [
 
 import shutil
 import uuid
+import warnings
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -23,40 +25,87 @@ Image.MAX_IMAGE_PIXELS = None
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp")
+CORRUPT_EXIF_WARNING_PREFIXES = (
+    "Corrupt EXIF data.",
+    "Possibly corrupt EXIF data.",
+)
 
 
-def compress_image(image_path: Path, output_path: Path, max_size: int) -> None:
-    """Compress an image, saving it to the output path."""
-    with Image.open(image_path) as opened_image:
-        image = cast(Image.Image, opened_image)
-        if image.mode in ("RGBA", "LA"):
-            image = image.convert("RGBA")
-            white_bg = Image.new("RGBA", image.size, (255, 255, 255, 255))
-            image = Image.alpha_composite(white_bg, image)
-            image = image.convert("RGB")
-        if image.mode != "RGB":
-            image = image.convert("RGB")
-
-        max_width = max_size
-        max_height = max_size
-        if max_size >= 1:
-            if image.height >= image.width:
-                max_width = max_size
-                scale = max_size / image.width
-                max_height = int(image.height * scale)
+def _report_image_warnings(
+    image_path: Path,
+    caught_warnings: list[warnings.WarningMessage],
+    warning_logger: Callable[[str], None] | None,
+) -> None:
+    for caught_warning in caught_warnings:
+        warning_message = str(caught_warning.message).strip()
+        if issubclass(
+            caught_warning.category, UserWarning
+        ) and warning_message.startswith(CORRUPT_EXIF_WARNING_PREFIXES):
+            message = (
+                "Corrupt EXIF metadata ignored while compressing image: "
+                f"path={str(image_path.resolve())!r}; "
+                f"pillow_warning={warning_message!r}."
+            )
+            if warning_logger is None:
+                warnings.warn(message, caught_warning.category, stacklevel=3)
             else:
-                max_height = max_size
-                scale = max_size / image.height
-                max_width = int(image.width * scale)
+                warning_logger(message)
+            continue
 
-        unsuitable_formats = ["GIF", "TIFF", "ICO"]
-        image.thumbnail((max_width, max_height), resample=Image.Resampling.LANCZOS)
-        if image.format in unsuitable_formats:
-            image.save(output_path, image.format)
-        else:
-            if "xmp" in image.info:
-                del image.info["xmp"]
-            image.save(output_path, "JPEG")
+        warnings.warn_explicit(
+            caught_warning.message,
+            caught_warning.category,
+            caught_warning.filename,
+            caught_warning.lineno,
+            source=caught_warning.source,
+        )
+
+
+def compress_image(
+    image_path: Path,
+    output_path: Path,
+    max_size: int,
+    warning_logger: Callable[[str], None] | None = None,
+) -> None:
+    """Compress an image, saving it to the output path."""
+    caught_warnings: list[warnings.WarningMessage] = []
+    try:
+        with warnings.catch_warnings(record=True) as caught_warnings:
+            warnings.simplefilter("always")
+            with Image.open(image_path) as opened_image:
+                image = cast(Image.Image, opened_image)
+                if image.mode in ("RGBA", "LA"):
+                    image = image.convert("RGBA")
+                    white_bg = Image.new("RGBA", image.size, (255, 255, 255, 255))
+                    image = Image.alpha_composite(white_bg, image)
+                    image = image.convert("RGB")
+                if image.mode != "RGB":
+                    image = image.convert("RGB")
+
+                max_width = max_size
+                max_height = max_size
+                if max_size >= 1:
+                    if image.height >= image.width:
+                        max_width = max_size
+                        scale = max_size / image.width
+                        max_height = int(image.height * scale)
+                    else:
+                        max_height = max_size
+                        scale = max_size / image.height
+                        max_width = int(image.width * scale)
+
+                unsuitable_formats = ["GIF", "TIFF", "ICO"]
+                image.thumbnail(
+                    (max_width, max_height), resample=Image.Resampling.LANCZOS
+                )
+                if image.format in unsuitable_formats:
+                    image.save(output_path, image.format)
+                else:
+                    if "xmp" in image.info:
+                        del image.info["xmp"]
+                    image.save(output_path, "JPEG")
+    finally:
+        _report_image_warnings(image_path, caught_warnings, warning_logger)
 
 
 def create_cbz(
@@ -94,6 +143,7 @@ def hash_and_process_file(
     filename: str,
     exclude_hashs: set[bytes],
     max_size: int,
+    warning_logger: Callable[[str], None] | None = None,
 ) -> None:
     file_hash = hash_function_by_file(
         input_directory / filename, COMPARISON_HASH_ALGORITHM
@@ -105,12 +155,14 @@ def hash_and_process_file(
                 input_directory / filename,
                 tmp_cbz_directory / new_filename,
                 max_size,
+                warning_logger,
             )
         elif filename.lower().endswith(".gif"):
             compress_image(
                 input_directory / filename,
                 tmp_cbz_directory / filename,
                 max_size,
+                warning_logger,
             )
         else:
             shutil.copy(
@@ -126,6 +178,7 @@ def compress_images_and_create_cbz(
     max_size: int,
     exclude_hashs: set[bytes],
     input_manifest: bytes,
+    warning_logger: Callable[[str], None] | None = None,
 ) -> None:
     if len(set([input_directory, output_directory, tmp_directory])) < 2:
         raise ValueError("Input and output directories cannot be the same.")
@@ -138,7 +191,12 @@ def compress_images_and_create_cbz(
 
     for entry in input_directory.iterdir():
         hash_and_process_file(
-            input_directory, tmp_cbz_directory, entry.name, exclude_hashs, max_size
+            input_directory,
+            tmp_cbz_directory,
+            entry.name,
+            exclude_hashs,
+            max_size,
+            warning_logger,
         )
 
     output_directory.mkdir(parents=True, exist_ok=True)

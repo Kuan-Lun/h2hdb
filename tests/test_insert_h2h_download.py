@@ -8,6 +8,7 @@ smaller methods doesn't silently change behavior.
 
 import hashlib
 import io
+import warnings
 import zipfile
 from collections.abc import Iterator
 from multiprocessing.pool import Pool
@@ -59,6 +60,17 @@ def _write_galleryinfo(
 def _make_jpeg_bytes(seed: int) -> bytes:
     buf = io.BytesIO()
     Image.new("RGB", (8, 8), color=(seed % 256, 0, 0)).save(buf, "JPEG")
+    return buf.getvalue()
+
+
+def _make_jpeg_with_corrupt_exif_bytes() -> bytes:
+    buf = io.BytesIO()
+    malformed_exif = b"Exif\x00\x00II*\x00\x08\x00\x00\x00"
+    Image.new("RGB", (8, 8), color=(255, 0, 0)).save(
+        buf,
+        "JPEG",
+        exif=malformed_exif,
+    )
     return buf.getvalue()
 
 
@@ -236,6 +248,51 @@ def test_compress_gallery_to_cbz_reports_created_rebuilt_and_unchanged(
     )
     with zipfile.ZipFile(cbz_file) as cbz:
         assert set(cbz.namelist()) == expected_names
+
+
+def test_compress_gallery_to_cbz_logs_corrupt_exif_path_and_continues(
+    sqlite_config: H2HDBConfig,
+    download_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cbz_path = tmp_path / "cbz"
+    cbz_path.mkdir()
+    sqlite_config.h2h.download_path = download_path
+    sqlite_config.h2h.cbz_path = cbz_path
+
+    gallery_folder = download_path / "700031"
+    _write_galleryinfo(gallery_folder, title="Corrupt EXIF Gallery", pages=1)
+    source_image = gallery_folder / "000.jpg"
+    source_image.write_bytes(_make_jpeg_with_corrupt_exif_bytes())
+
+    instance = H2HDB(config=sqlite_config)
+    warning_messages: list[str] = []
+    monkeypatch.setattr(instance.logger, "warning", warning_messages.append)
+
+    with warnings.catch_warnings(record=True) as emitted_warnings:
+        warnings.simplefilter("always")
+        outcome = instance.cbz.compress_gallery_to_cbz(
+            gallery_folder,
+            set(),
+            frozenset({"galleryinfo.txt", "000.jpg"}),
+            None,
+        )
+
+    assert outcome == CBZCompressionOutcome.created
+    assert emitted_warnings == []
+    assert warning_messages == [
+        "Corrupt EXIF metadata ignored while compressing image: "
+        f"path={str(source_image.resolve())!r}; "
+        "pillow_warning='Corrupt EXIF data.  "
+        "Expecting to read 2 bytes but only got 0.'."
+    ]
+
+    cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_folder.name)
+    with zipfile.ZipFile(cbz_file) as cbz:
+        with Image.open(io.BytesIO(cbz.read("000.jpg"))) as output_image:
+            output_image.load()
+            assert output_image.size == (8, 8)
 
 
 def test_insert_h2h_download_logs_cbz_batch_outcome_counts(
@@ -1070,9 +1127,11 @@ def test_insert_h2h_download_reconciles_migrated_owner_before_compression(
                 Image.open(io.BytesIO(cbz.read("001.jpg"))) as actual_image,
                 Image.open(io.BytesIO(expected_content)) as expected_image,
             ):
-                actual_red = actual_image.convert("RGB").getpixel((0, 0))[0]
-                expected_red = expected_image.convert("RGB").getpixel((0, 0))[0]
-                assert abs(actual_red - expected_red) <= 2
+                actual_pixel = actual_image.convert("RGB").getpixel((0, 0))
+                expected_pixel = expected_image.convert("RGB").getpixel((0, 0))
+                assert isinstance(actual_pixel, tuple)
+                assert isinstance(expected_pixel, tuple)
+                assert abs(actual_pixel[0] - expected_pixel[0]) <= 2
 
 
 def test_insert_h2h_download_resolves_three_way_content_hash_collision(

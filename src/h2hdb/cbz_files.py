@@ -378,6 +378,7 @@ class H2HDBCBZFiles(BaseRepository):
                 self.config.h2h.cbz_max_size,
                 exclude_hashs,
                 input_manifest,
+                self.logger.warning,
             )
             return (
                 CBZCompressionOutcome.rebuilt
