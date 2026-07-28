@@ -74,7 +74,7 @@ def compress_image(
             warnings.simplefilter("always")
             with Image.open(image_path) as opened_image:
                 image = cast(Image.Image, opened_image)
-                if image.mode in ("RGBA", "LA"):
+                if image.has_transparency_data:
                     image = image.convert("RGBA")
                     white_bg = Image.new("RGBA", image.size, (255, 255, 255, 255))
                     image = Image.alpha_composite(white_bg, image)

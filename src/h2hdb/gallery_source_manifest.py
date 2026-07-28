@@ -6,7 +6,7 @@ from typing import Protocol
 from h2h_galleryinfo_parser import GalleryInfoParser
 
 SOURCE_MANIFEST_VERSION = b"h2hdb-gallery-source-manifest-v1"
-CBZ_INPUT_MANIFEST_VERSION = b"h2hdb-cbz-input-manifest-v1"
+CBZ_INPUT_MANIFEST_VERSION = b"h2hdb-cbz-input-manifest-v2"
 CBZ_INPUT_MANIFEST_COMMENT_PREFIX = b"h2hdb-cbz-input-manifest-sha256-v1:"
 
 

@@ -24,7 +24,10 @@ from h2hdb.cbz_files import (
     ExistingCBZPolicy,
 )
 from h2hdb.compress_gallery_to_cbz import gallery_name_to_cbz_file_name
-from h2hdb.gallery_source_manifest import GalleryChange
+from h2hdb.gallery_source_manifest import (
+    CBZ_INPUT_MANIFEST_COMMENT_PREFIX,
+    GalleryChange,
+)
 from h2hdb.hash_dict import FILE_CONTENT_HASH_ALGORITHM
 from h2hdb.settings import CBZ_GROUPING, CBZ_SORT
 
@@ -74,6 +77,25 @@ def _make_jpeg_with_corrupt_exif_bytes() -> bytes:
     return buf.getvalue()
 
 
+def _make_palette_png_with_byte_transparency() -> bytes:
+    width = 96
+    height = 32
+    image = Image.new("P", (width, height))
+    image.putpalette(
+        [0, 0, 0, 255, 0, 0, 0, 255, 0] + [0, 0, 0] * 253,
+    )
+    image.putdata(
+        ([0] * 32 + [1] * 32 + [2] * 32) * height,
+    )
+    buf = io.BytesIO()
+    image.save(
+        buf,
+        "PNG",
+        transparency=bytes([0, 128, 255]),
+    )
+    return buf.getvalue()
+
+
 def _make_png_bytes(seed: int) -> bytes:
     buf = io.BytesIO()
     Image.new("RGB", (8, 8), color=(seed % 256, 0, 0)).save(buf, "PNG")
@@ -101,6 +123,21 @@ def _remove_cbz_input_manifest(cbz_path: Path) -> None:
 def _effective_content_hash(*file_contents: bytes) -> bytes:
     file_hashes = sorted(hashlib.sha256(content).digest() for content in file_contents)
     return hashlib.sha256(b"".join(file_hashes)).digest()
+
+
+def _legacy_v1_cbz_manifest_comment(gallery_folder: Path) -> bytes:
+    hasher = hashlib.sha256()
+    for value in [b"h2hdb-cbz-input-manifest-v1"]:
+        hasher.update(len(value).to_bytes(8, "big"))
+        hasher.update(value)
+    for file_path in sorted(gallery_folder.iterdir()):
+        for value in (
+            file_path.name.encode("utf-8"),
+            hashlib.sha256(file_path.read_bytes()).digest(),
+        ):
+            hasher.update(len(value).to_bytes(8, "big"))
+            hasher.update(value)
+    return CBZ_INPUT_MANIFEST_COMMENT_PREFIX + hasher.hexdigest().encode("ascii")
 
 
 @pytest.fixture
@@ -293,6 +330,69 @@ def test_compress_gallery_to_cbz_logs_corrupt_exif_path_and_continues(
         with Image.open(io.BytesIO(cbz.read("000.jpg"))) as output_image:
             output_image.load()
             assert output_image.size == (8, 8)
+
+
+def test_compress_gallery_to_cbz_flattens_palette_transparency_onto_white(
+    sqlite_config: H2HDBConfig,
+    download_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cbz_path = tmp_path / "cbz"
+    cbz_path.mkdir()
+    sqlite_config.h2h.download_path = download_path
+    sqlite_config.h2h.cbz_path = cbz_path
+
+    gallery_folder = download_path / "700032"
+    _write_galleryinfo(gallery_folder, title="Palette Transparency Gallery")
+    (gallery_folder / "000.png").write_bytes(_make_palette_png_with_byte_transparency())
+
+    instance = H2HDB(config=sqlite_config)
+    warning_messages: list[str] = []
+    monkeypatch.setattr(instance.logger, "warning", warning_messages.append)
+
+    with warnings.catch_warnings(record=True) as emitted_warnings:
+        warnings.simplefilter("always")
+        outcome = instance.cbz.compress_gallery_to_cbz(
+            gallery_folder,
+            set(),
+            frozenset({"galleryinfo.txt", "000.jpg"}),
+            None,
+        )
+
+    assert outcome == CBZCompressionOutcome.created
+    assert emitted_warnings == []
+    assert warning_messages == []
+
+    cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_folder.name)
+    with zipfile.ZipFile(cbz_file) as cbz:
+        with Image.open(io.BytesIO(cbz.read("000.jpg"))) as output_image:
+            output_rgb = output_image.convert("RGB")
+            output_pixels = [
+                output_rgb.getpixel((16, 16)),
+                output_rgb.getpixel((48, 16)),
+                output_rgb.getpixel((80, 16)),
+            ]
+
+    expected_pixels = [
+        (255, 255, 255),
+        (255, 127, 127),
+        (0, 255, 0),
+    ]
+    for output_pixel, expected_pixel in zip(
+        output_pixels,
+        expected_pixels,
+        strict=True,
+    ):
+        assert isinstance(output_pixel, tuple)
+        assert all(
+            abs(output_channel - expected_channel) <= 2
+            for output_channel, expected_channel in zip(
+                output_pixel,
+                expected_pixel,
+                strict=True,
+            )
+        )
 
 
 def test_insert_h2h_download_logs_cbz_batch_outcome_counts(
@@ -766,6 +866,37 @@ def test_fresh_database_rebuilds_existing_cbz_without_input_manifest_once(
         assert instance.insert_h2h_download() is False
         assert [summary.write_operations for summary in compression_calls] == [0]
         assert [summary.unchanged for summary in compression_calls] == [1]
+
+
+def test_existing_cbz_with_v1_input_manifest_is_rebuilt_once(
+    sqlite_config: H2HDBConfig,
+    download_path: Path,
+    tmp_path: Path,
+) -> None:
+    cbz_path = tmp_path / "cbz"
+    cbz_path.mkdir()
+    sqlite_config.h2h.download_path = download_path
+    sqlite_config.h2h.cbz_path = cbz_path
+    gallery_name = "700040"
+    gallery_folder = download_path / gallery_name
+    _write_galleryinfo(gallery_folder, title="V1 Manifest Gallery", pages=1)
+
+    with H2HDB(config=sqlite_config) as instance:
+        instance.create_main_tables()
+        assert instance.insert_h2h_download() is True
+
+        cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
+        legacy_comment = _legacy_v1_cbz_manifest_comment(gallery_folder)
+        with zipfile.ZipFile(cbz_file, "a") as cbz:
+            cbz.comment = legacy_comment
+
+        assert instance.insert_h2h_download() is False
+        with zipfile.ZipFile(cbz_file) as cbz:
+            assert cbz.comment != legacy_comment
+        rebuilt_cbz = cbz_file.read_bytes()
+
+        assert instance.insert_h2h_download() is False
+        assert cbz_file.read_bytes() == rebuilt_cbz
 
 
 def test_interrupted_rename_rebuild_remains_pending_for_next_run(
