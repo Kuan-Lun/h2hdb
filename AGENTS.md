@@ -110,6 +110,28 @@ Gallery metadata is inserted with batched SQL. File-byte hashing uses a bounded
 and compute digests; hash catalog lookups and all database writes stay on the
 main thread.
 
+The main entry point is a resident 30-minute synchronization loop. Completed
+removal and changed-gallery batches add work to the singleton
+`database_maintenance_state` row; new galleries do not count. Automatic
+optimization requires the configured accumulated-work and minimum-interval
+thresholds, then filters
+MariaDB base tables by both absolute `DATA_FREE` bytes and free-space ratio;
+SQLite uses freelist pages for the same space test. An evaluation timestamp is
+persisted before inspection/DDL so a failed or unnecessary attempt is not
+retried every loop. Successful optimization subtracts the evaluated work
+snapshot rather than zeroing the counter, preserving increments from a
+concurrent scan. This additive singleton schema is created and seeded
+idempotently by `create_main_tables()`; it requires no separate migration.
+
+MariaDB maintenance and cooperating clients use
+`H2HDB.database_gate(timeout_seconds=...)`, backed by a database-specific
+server-wide named lock. The lock-holder connection stays open for the full
+context; SQL inside the context may use the repositories' ordinary short
+connections. A wait timeout is a logging interval and retries indefinitely,
+while a named-lock error still raises. Keep network requests, downloads, and
+sleeps outside this gate. SQLite currently treats the application gate as a
+no-op and relies on its own database locking.
+
 CBZ compression uses the shared `multiprocessing.Pool` owned by
 `synchronize_once` in `src/h2hdb/h2hdb_h2hdb.py`. With CBZ output enabled,
 progress chunks scale as `POOL_CPU_LIMIT * 16`, clamped to 64–500 galleries.

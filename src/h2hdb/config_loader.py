@@ -1,5 +1,6 @@
 __all__ = [
     "DatabaseConfig",
+    "DatabaseMaintenanceConfig",
     "LoggerConfig",
     "H2HConfig",
     "H2HDBConfig",
@@ -18,6 +19,11 @@ from .settings import CBZ_GROUPING, CBZ_SORT, LOG_LEVEL
 
 DEFAULT_FILE_HASH_WORKERS = min(4, os.process_cpu_count() or 1)
 MAX_FILE_HASH_WORKERS = 32
+DEFAULT_MAINTENANCE_INTERVAL_SECONDS = 7 * 24 * 60 * 60
+DEFAULT_MAINTENANCE_WORK_UNITS = 1000
+DEFAULT_MIN_DATA_FREE_BYTES = 256 * 1024 * 1024
+DEFAULT_MIN_DATA_FREE_RATIO = 0.20
+DEFAULT_DATABASE_GATE_TIMEOUT_SECONDS = 300
 
 
 class ConfigError(Exception):
@@ -59,6 +65,46 @@ class DatabaseConfig(ConfigModel):
     password: str = Field(
         default="password",
         description="Password for the SQL database",
+    )
+
+
+class DatabaseMaintenanceConfig(ConfigModel):
+    optimize_enabled: bool = Field(
+        default=True,
+        description="Whether the resident main loop may optimize the database.",
+    )
+    min_interval_seconds: int = Field(
+        default=DEFAULT_MAINTENANCE_INTERVAL_SECONDS,
+        ge=0,
+        description="Minimum time between automatic optimization evaluations.",
+    )
+    min_work_units: int = Field(
+        default=DEFAULT_MAINTENANCE_WORK_UNITS,
+        ge=1,
+        description=(
+            "Changed or removed galleries required before automatic optimization "
+            "is evaluated."
+        ),
+    )
+    min_data_free_bytes: int = Field(
+        default=DEFAULT_MIN_DATA_FREE_BYTES,
+        ge=0,
+        description="Minimum reclaimable bytes required for automatic optimization.",
+    )
+    min_data_free_ratio: float = Field(
+        default=DEFAULT_MIN_DATA_FREE_RATIO,
+        ge=0,
+        le=1,
+        description=(
+            "Minimum reclaimable fraction of allocated table or SQLite page space."
+        ),
+    )
+    lock_wait_seconds: int = Field(
+        default=DEFAULT_DATABASE_GATE_TIMEOUT_SECONDS,
+        ge=1,
+        description=(
+            "Seconds each database-gate wait attempt lasts before it logs and retries."
+        ),
     )
 
 
@@ -132,6 +178,10 @@ class H2HDBConfig(ConfigModel):
     database: DatabaseConfig = Field(
         default_factory=DatabaseConfig,
         description="Configuration for the database",
+    )
+    maintenance: DatabaseMaintenanceConfig = Field(
+        default_factory=DatabaseMaintenanceConfig,
+        description="Automatic database maintenance policy.",
     )
     logger: LoggerConfig = Field(
         default_factory=LoggerConfig,

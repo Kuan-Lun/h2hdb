@@ -2,6 +2,7 @@ __all__ = [
     "H2HDB",
     "GalleryScan",
     "SyncOutcome",
+    "DatabaseMaintenanceResult",
     "DownloadRequest",
     "GALLERY_INFO_FILE_NAME",
 ]
@@ -9,6 +10,7 @@ __all__ = [
 
 import contextlib
 import hashlib
+from collections.abc import Generator
 from dataclasses import dataclass
 from itertools import islice
 from multiprocessing import cpu_count
@@ -46,6 +48,10 @@ from .settings import (
     hash_function_by_file,
 )
 from .table_comments import H2HDBGalleriesComments
+from .table_database_maintenance import (
+    DatabaseMaintenanceResult,
+    H2HDBDatabaseMaintenance,
+)
 from .table_database_setting import H2HDBCheckDatabaseSettings
 from .table_files_dbids import H2HDBFiles
 from .table_gallery_source_manifests import H2HDBGallerySourceManifests
@@ -95,6 +101,10 @@ class SyncOutcome:
     def needs_immediate_rescan(self) -> bool:
         return bool(self.new_galleries or self.changed_galleries)
 
+    @property
+    def maintenance_work(self) -> int:
+        return self.changed_galleries + self.removed_galleries
+
 
 def _cbz_summary_fields(summary: CBZCompressionSummary) -> str:
     return (
@@ -109,6 +119,9 @@ class H2HDB(BaseRepository):
         super().__init__(context)
 
         self.database_settings = H2HDBCheckDatabaseSettings(context)
+        self.database_maintenance = H2HDBDatabaseMaintenance(
+            context, self.database_settings
+        )
         self.todownload_queue = H2HDBToDownloadQueue(context)
         self.todelete_queue = H2HDBToDeleteQueue(context)
         self.gallery_ids = H2HDBGalleriesIDs(context)
@@ -179,11 +192,20 @@ class H2HDB(BaseRepository):
     def refresh_galleries(self, gallery_names: list[str]) -> None:
         self.pending_removals.refresh_galleries(gallery_names)
 
-    def optimize_database(self) -> None:
-        self.database_settings.optimize_database()
+    def optimize_database(self) -> DatabaseMaintenanceResult:
+        return self.database_maintenance.optimize_now()
+
+    def run_scheduled_database_maintenance(self) -> DatabaseMaintenanceResult:
+        return self.database_maintenance.run_scheduled_optimization()
+
+    @contextlib.contextmanager
+    def database_gate(self, *, timeout_seconds: int | None = None) -> Generator[None]:
+        with self.database_maintenance.database_gate(timeout_seconds=timeout_seconds):
+            yield
 
     def analyze_database(self) -> None:
-        self.database_settings.analyze_database()
+        with self.database_gate():
+            self.database_settings.analyze_database()
 
     def get_pending_download_gids(self) -> list[int]:
         return self.todownload_queue.get_pending_download_gids()
@@ -208,6 +230,7 @@ class H2HDB(BaseRepository):
 
     def create_main_tables(self) -> None:
         self.logger.debug("Ensuring database schema objects exist...")
+        self.database_maintenance._create_database_maintenance_state_table()
         self.todownload_queue._create_todownload_gids_table()
         self.pending_removals._create_pending_gallery_removals_table()
         self.gallery_ids._create_galleries_names_table()
@@ -1134,6 +1157,10 @@ class H2HDB(BaseRepository):
         )
 
         gallery_scan = self.scan_current_galleries_folders()
+        self.database_maintenance.record_gallery_changes(
+            changed_galleries=0,
+            removed_galleries=gallery_scan.removed_galleries,
+        )
         current_galleries_folders = list(gallery_scan.folders)
         current_galleries_names = set(gallery_scan.names)
         self.pending_cbz_rebuilds.delete_stale_gallery_names(current_galleries_names)
@@ -1216,6 +1243,10 @@ class H2HDB(BaseRepository):
                 total_new_galleries += new_count
                 total_changed_galleries += changed_count
                 total_inserted_in_database += inserted_or_updated
+                self.database_maintenance.record_gallery_changes(
+                    changed_galleries=changed_count,
+                    removed_galleries=0,
+                )
 
                 if cbz_pool is not None:
                     provisional_galleries = [

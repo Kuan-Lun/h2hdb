@@ -3,7 +3,9 @@ __all__ = [
     "DownloadRequest",
     "GalleryScan",
     "SyncOutcome",
+    "DatabaseMaintenanceResult",
     "DatabaseConfig",
+    "DatabaseMaintenanceConfig",
     "LoggerConfig",
     "H2HConfig",
     "H2HDBConfig",
@@ -16,10 +18,17 @@ __author__ = "Kuan-Lun Wang"
 
 from .config_loader import (
     DatabaseConfig,
+    DatabaseMaintenanceConfig,
     H2HConfig,
     H2HDBConfig,
     LoggerConfig,
     load_config,
 )
-from .h2hdb_h2hdb import H2HDB, DownloadRequest, GalleryScan, SyncOutcome
+from .h2hdb_h2hdb import (
+    H2HDB,
+    DatabaseMaintenanceResult,
+    DownloadRequest,
+    GalleryScan,
+    SyncOutcome,
+)
 from .logger import HentaiDBLogger, setup_logger

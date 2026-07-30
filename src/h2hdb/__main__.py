@@ -25,12 +25,7 @@ if __name__ == "__main__":
                     "Gallery insertions or metadata changes detected; "
                     "starting another scan immediately."
                 )
-            connector.logger.info(
-                "Synchronization converged; running database maintenance "
-                "before the next scheduled scan."
-            )
-            connector.optimize_database()
-            connector.analyze_database()
+            connector.run_scheduled_database_maintenance()
             remaining_sleep_seconds = SLEEP_INTERVAL_SECONDS - (
                 monotonic() - cycle_start_time
             )
