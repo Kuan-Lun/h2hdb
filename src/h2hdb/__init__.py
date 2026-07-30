@@ -1,6 +1,9 @@
 __all__ = [
     "H2HDB",
     "DownloadRequest",
+    "DownloadTurn",
+    "GalleryIngestPhase",
+    "GalleryIngestState",
     "GalleryScan",
     "SyncOutcome",
     "DatabaseMaintenanceResult",
@@ -28,6 +31,9 @@ from .h2hdb_h2hdb import (
     H2HDB,
     DatabaseMaintenanceResult,
     DownloadRequest,
+    DownloadTurn,
+    GalleryIngestPhase,
+    GalleryIngestState,
     GalleryScan,
     SyncOutcome,
 )

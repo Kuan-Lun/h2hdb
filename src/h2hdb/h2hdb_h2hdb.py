@@ -4,6 +4,9 @@ __all__ = [
     "SyncOutcome",
     "DatabaseMaintenanceResult",
     "DownloadRequest",
+    "DownloadTurn",
+    "GalleryIngestPhase",
+    "GalleryIngestState",
     "GALLERY_INFO_FILE_NAME",
 ]
 
@@ -54,6 +57,13 @@ from .table_database_maintenance import (
 )
 from .table_database_setting import H2HDBCheckDatabaseSettings
 from .table_files_dbids import H2HDBFiles
+from .table_gallery_ingest_coordination import (
+    DownloadTurn,
+    GalleryIngestPhase,
+    GalleryIngestState,
+    GalleryIngestTurn,
+    H2HDBGalleryIngestCoordination,
+)
 from .table_gallery_source_manifests import H2HDBGallerySourceManifests
 from .table_gids import H2HDBGalleriesGIDs, H2HDBGalleriesIDs
 from .table_pending_cbz_rebuilds import H2HDBPendingCBZRebuilds
@@ -122,6 +132,7 @@ class H2HDB(BaseRepository):
         self.database_maintenance = H2HDBDatabaseMaintenance(
             context, self.database_settings
         )
+        self.gallery_ingest = H2HDBGalleryIngestCoordination(context)
         self.todownload_queue = H2HDBToDownloadQueue(context)
         self.todelete_queue = H2HDBToDeleteQueue(context)
         self.gallery_ids = H2HDBGalleriesIDs(context)
@@ -228,9 +239,98 @@ class H2HDB(BaseRepository):
     def get_download_requests(self) -> list[DownloadRequest]:
         return self.todownload_queue.get_download_requests()
 
+    def claim_download_turn(self, *, lease_seconds: int) -> DownloadTurn | None:
+        return self.gallery_ingest.claim_download_turn(lease_seconds=lease_seconds)
+
+    def renew_download_turn(
+        self,
+        turn: DownloadTurn,
+        *,
+        lease_seconds: int,
+    ) -> bool:
+        return self.gallery_ingest.renew_download_turn(
+            turn,
+            lease_seconds=lease_seconds,
+        )
+
+    def request_gallery_ingest(self, turn: DownloadTurn) -> bool:
+        return self.gallery_ingest.request_gallery_ingest(turn)
+
+    def finish_download_turn(
+        self,
+        turn: DownloadTurn,
+        request: DownloadRequest,
+    ) -> bool:
+        with self.SQLConnector() as connector:
+            with connector.transaction():
+                if not self.gallery_ingest._request_gallery_ingest_with_connector(
+                    connector,
+                    turn,
+                ):
+                    return False
+                # Exact-token deletion is deliberately a no-op when the same
+                # GID was re-enqueued with a newer token. The completed live
+                # turn still hands off immediately, while the newer request
+                # remains durable for a future turn.
+                self.todownload_queue._complete_download_request_with_connector(
+                    connector,
+                    request,
+                )
+        return True
+
+    def get_gallery_ingest_state(self) -> GalleryIngestState:
+        return self.gallery_ingest.get_state()
+
+    def _claim_gallery_ingest(
+        self,
+        *,
+        lease_seconds: int,
+        periodic_scan: bool,
+    ) -> GalleryIngestTurn | None:
+        return self.gallery_ingest.claim_gallery_ingest(
+            lease_seconds=lease_seconds,
+            periodic_scan=periodic_scan,
+        )
+
+    def _renew_gallery_ingest(
+        self,
+        turn: GalleryIngestTurn,
+        *,
+        lease_seconds: int,
+    ) -> bool:
+        return self.gallery_ingest.renew_gallery_ingest(
+            turn,
+            lease_seconds=lease_seconds,
+        )
+
+    def _renew_gallery_ingest_lease(
+        self,
+        turn: GalleryIngestTurn,
+        *,
+        lease_seconds: int,
+        sqlite_busy_timeout_ms: int | None = None,
+    ) -> int | None:
+        return self.gallery_ingest.renew_gallery_ingest_lease(
+            turn,
+            lease_seconds=lease_seconds,
+            sqlite_busy_timeout_ms=sqlite_busy_timeout_ms,
+        )
+
+    def _complete_gallery_ingest(
+        self,
+        turn: GalleryIngestTurn,
+        *,
+        allow_expired_sqlite_lease: bool = False,
+    ) -> bool:
+        return self.gallery_ingest.complete_gallery_ingest(
+            turn,
+            allow_expired_sqlite_lease=allow_expired_sqlite_lease,
+        )
+
     def create_main_tables(self) -> None:
         self.logger.debug("Ensuring database schema objects exist...")
         self.database_maintenance._create_database_maintenance_state_table()
+        self.gallery_ingest._create_gallery_ingest_state_table()
         self.todownload_queue._create_todownload_gids_table()
         self.pending_removals._create_pending_gallery_removals_table()
         self.gallery_ids._create_galleries_names_table()

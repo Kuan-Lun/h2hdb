@@ -107,11 +107,58 @@ database fields identify the server and database name. For SQLite, the
 Gallery metadata is inserted with batched SQL. File-byte hashing uses a bounded
 `ThreadPoolExecutor` in `src/h2hdb/table_files_dbids.py`;
 `h2h.file_hash_workers` controls the worker limit. Hash workers only read files
-and compute digests; hash catalog lookups and all database writes stay on the
-main thread.
+and compute digests; hash catalog lookups and gallery catalog writes stay on
+the main thread. The only background database writer is the resident loop's
+ingest-lease heartbeat; it uses independent short connections and only updates
+the coordination singleton.
 
-The main entry point is a resident 30-minute synchronization loop. Completed
-removal and changed-gallery batches add work to the singleton
+The main entry point is resident and keeps a 30-minute periodic synchronization
+deadline, but its wait is split into five-second coordination polls. The
+singleton `gallery_ingest_state` row serializes h2hdb-downloader deep-download
+turns with database-ingest turns through `INGEST_REQUESTED`, `INGESTING`,
+`READY`, and `DOWNLOADING`. A newly seeded row starts at `INGEST_REQUESTED`, so
+the catalog completes one baseline scan before a downloader can claim a turn.
+
+`claim_download_turn()` increments `generation` and returns an owner-token
+fenced `DownloadTurn`; only that live token can renew its lease or idempotently
+call `request_gallery_ingest()`. A successful root traversal instead calls
+`finish_download_turn()`, which performs the explicit handoff and exact-token
+request deletion in one transaction. Downloader callers wait for
+`completed_generation >= turn.generation` before claiming another root request.
+The main loop atomically claims requested ingestion, an expired downloader or
+ingester lease, or a due periodic scan. A fresh `DOWNLOADING` lease always
+blocks a periodic scan. It acknowledges a generation and returns the row to
+`READY` only after `synchronize_once()` converges to
+`needs_immediate_rescan == False` and scheduled maintenance succeeds. Failed
+synchronization or maintenance leaves `INGESTING` for lease-based recovery. A
+60-second background heartbeat renews the 300-second ingest lease throughout
+synchronization and, for MariaDB, scheduled maintenance. SQLite `BUSY` and
+`LOCKED` heartbeat errors are retried only within a conservative monotonic
+lease deadline; token, phase, and database-clock expiry failures remain
+terminal. Immediately before SQLite maintenance, h2hdb renews synchronously and
+stops the heartbeat, allowing `VACUUM`'s exclusive database lock to fence all
+coordination writers. If SQLite actually optimized, completion may tolerate an
+expired timestamp only while the same generation and owner token remain; a
+replacement claimant wins the row-lock race and the old completion fails.
+Another resident that encounters SQLite `BUSY` or `LOCKED` while claiming
+treats the turn as temporarily unavailable and continues its five-second poll;
+errors after a claim are not swallowed. Other heartbeat failures or expired
+leases prevent acknowledgement.
+
+Explicit handoff provenance is persisted as the downloader generation and
+owner token through `INGEST_REQUESTED`, `INGESTING`, and the following `READY`
+state; the next download claim clears it. This makes handoff retries
+idempotent, while a downloader recovered only because its lease expired cannot
+later claim that it explicitly handed off.
+
+Coordination transitions use the same managed-transaction pattern as other
+cross-table operations: MariaDB locks the singleton row with
+`SELECT ... FOR UPDATE`, while SQLite serializes writers with
+`BEGIN IMMEDIATE`. Lease timestamps come from the database clock and are
+computed only after the row lock is acquired. `create_main_tables()` creates
+and seeds this additive singleton idempotently.
+
+Completed removal and changed-gallery batches add work to the singleton
 `database_maintenance_state` row; new galleries do not count. Automatic
 optimization requires the configured accumulated-work and minimum-interval
 thresholds, then filters
@@ -197,6 +244,14 @@ so a pending folder that still exists must be recovered without enqueueing.
 carry a UUID token. Re-enqueueing a GID replaces the token, and completion
 deletes only a matching `(gid, request_token)` so an older worker cannot clear a
 newer request. Failed and cancelled downloads leave the row intact.
+
+One coordination download turn covers one root request and its complete deep
+traversal. Failed, cancelled, and interrupted traversals keep the root row
+retryable and may explicitly request ingest for any complete published files.
+Successful traversal calls `finish_download_turn()`, atomically recording the
+handoff and conditionally deleting the matching root token. If that GID already
+has a newer token, deletion is a no-op: the current live turn still hands off,
+and the newer request remains queued for a later turn.
 
 Cross-table enqueue/delete operations use `with connector.transaction():`.
 MariaDB suppresses per-statement auto-commit inside that block; SQLite uses

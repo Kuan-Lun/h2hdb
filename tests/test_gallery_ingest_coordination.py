@@ -1,0 +1,322 @@
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
+import pytest
+
+from h2hdb import (
+    H2HDB,
+    DownloadTurn,
+    GalleryIngestPhase,
+    H2HDBConfig,
+)
+from h2hdb.sql_connector import DatabaseDuplicateKeyError
+
+
+@pytest.fixture
+def db(db_config: H2HDBConfig) -> Iterator[H2HDB]:
+    instance = H2HDB(config=db_config)
+    with instance:
+        instance.create_main_tables()
+        yield instance
+
+
+def _complete_baseline_ingest(db: H2HDB) -> None:
+    turn = db._claim_gallery_ingest(
+        lease_seconds=60,
+        periodic_scan=False,
+    )
+    assert turn is not None
+    assert turn.generation == 0
+    assert turn.claimed_from_phase == GalleryIngestPhase.ingest_requested
+    assert db._complete_gallery_ingest(turn) is True
+
+
+def _expire_active_lease(db: H2HDB) -> None:
+    with db.SQLConnector() as connector:
+        connector.execute("""
+            UPDATE gallery_ingest_state
+            SET lease_expires_at = 0
+            WHERE state_id = 1
+            """)
+
+
+def test_initial_state_requires_baseline_ingest_before_downloads(
+    db: H2HDB,
+) -> None:
+    state = db.get_gallery_ingest_state()
+
+    assert state.phase == GalleryIngestPhase.ingest_requested
+    assert state.generation == 0
+    assert state.completed_generation == 0
+    assert state.owner_token is None
+    assert state.lease_expires_at is None
+    assert state.handoff_generation is None
+    assert state.handoff_owner_token is None
+    assert db.claim_download_turn(lease_seconds=60) is None
+
+    _complete_baseline_ingest(db)
+
+    state = db.get_gallery_ingest_state()
+    assert state.phase == GalleryIngestPhase.ready
+    assert state.completed_generation == 0
+    assert db.claim_download_turn(lease_seconds=60) is not None
+
+
+def test_create_main_tables_preserves_coordination_state(db: H2HDB) -> None:
+    _complete_baseline_ingest(db)
+    download_turn = db.claim_download_turn(lease_seconds=60)
+    assert download_turn is not None
+    assert db.request_gallery_ingest(download_turn) is True
+    expected_state = db.get_gallery_ingest_state()
+
+    db.create_main_tables()
+    db.create_main_tables()
+
+    assert db.get_gallery_ingest_state() == expected_state
+    with db.SQLConnector() as connector:
+        assert connector.fetch_one("SELECT COUNT(*) FROM gallery_ingest_state") == (1,)
+
+
+def test_coordination_schema_rejects_a_second_singleton_row(db: H2HDB) -> None:
+    with pytest.raises(DatabaseDuplicateKeyError):
+        with db.SQLConnector() as connector:
+            connector.execute(
+                """
+                INSERT INTO gallery_ingest_state (
+                    state_id,
+                    phase,
+                    generation,
+                    completed_generation,
+                    owner_token,
+                    lease_expires_at,
+                    last_transition_at
+                )
+                VALUES (2, %s, 0, 0, NULL, NULL, 0)
+                """,
+                (GalleryIngestPhase.ready.value,),
+            )
+
+
+def test_download_turn_handoff_is_fenced_and_idempotent(db: H2HDB) -> None:
+    _complete_baseline_ingest(db)
+
+    turn = db.claim_download_turn(lease_seconds=60)
+    assert turn is not None
+    assert turn.generation == 1
+    assert db.claim_download_turn(lease_seconds=60) is None
+    assert db.renew_download_turn(turn, lease_seconds=120) is True
+
+    stale_turn = DownloadTurn(
+        generation=turn.generation,
+        owner_token="stale-owner",
+        lease_expires_at=turn.lease_expires_at,
+    )
+    assert db.renew_download_turn(stale_turn, lease_seconds=120) is False
+    assert db.request_gallery_ingest(stale_turn) is False
+
+    assert db.request_gallery_ingest(turn) is True
+    assert db.request_gallery_ingest(turn) is True
+    assert db.renew_download_turn(turn, lease_seconds=120) is False
+    requested_state = db.get_gallery_ingest_state()
+    assert requested_state.handoff_generation == turn.generation
+    assert requested_state.handoff_owner_token == turn.owner_token
+
+    ingest_turn = db._claim_gallery_ingest(
+        lease_seconds=60,
+        periodic_scan=False,
+    )
+    assert ingest_turn is not None
+    assert ingest_turn.generation == turn.generation
+    assert db.request_gallery_ingest(turn) is True
+    assert db._complete_gallery_ingest(ingest_turn) is True
+
+    state = db.get_gallery_ingest_state()
+    assert state.phase == GalleryIngestPhase.ready
+    assert state.completed_generation == turn.generation
+    assert state.handoff_generation == turn.generation
+    assert state.handoff_owner_token == turn.owner_token
+    assert db.request_gallery_ingest(turn) is True
+
+    next_turn = db.claim_download_turn(lease_seconds=60)
+    assert next_turn is not None
+    next_state = db.get_gallery_ingest_state()
+    assert next_state.handoff_generation is None
+    assert next_state.handoff_owner_token is None
+    assert db.request_gallery_ingest(turn) is False
+
+
+def test_finish_download_turn_atomically_hands_off_and_deletes_root(
+    db: H2HDB,
+) -> None:
+    _complete_baseline_ingest(db)
+    request = db.request_download(845001)
+    turn = db.claim_download_turn(lease_seconds=60)
+    assert turn is not None
+
+    assert db.finish_download_turn(turn, request) is True
+    assert db.get_download_request(request.gid) is None
+    state = db.get_gallery_ingest_state()
+    assert state.phase == GalleryIngestPhase.ingest_requested
+    assert state.handoff_generation == turn.generation
+    assert state.handoff_owner_token == turn.owner_token
+    assert db.request_gallery_ingest(turn) is True
+
+
+def test_finish_download_turn_preserves_newer_root_request_while_handing_off(
+    db: H2HDB,
+) -> None:
+    _complete_baseline_ingest(db)
+    stale_request = db.request_download(845002)
+    turn = db.claim_download_turn(lease_seconds=60)
+    assert turn is not None
+    newer_request = db.request_download(
+        stale_request.gid,
+        "https://e-hentai.org/g/845002/abc123def4",
+    )
+    assert newer_request.token != stale_request.token
+
+    assert db.finish_download_turn(turn, stale_request) is True
+    assert db.get_download_request(stale_request.gid) == newer_request
+    state = db.get_gallery_ingest_state()
+    assert state.phase == GalleryIngestPhase.ingest_requested
+    assert state.handoff_generation == turn.generation
+    assert state.handoff_owner_token == turn.owner_token
+
+
+def test_finish_download_turn_rolls_back_handoff_when_delete_fails(
+    db: H2HDB,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _complete_baseline_ingest(db)
+    request = db.request_download(845003)
+    turn = db.claim_download_turn(lease_seconds=60)
+    assert turn is not None
+
+    def fail_delete(*args: object, **kwargs: object) -> bool:
+        raise RuntimeError("injected root delete failure")
+
+    monkeypatch.setattr(
+        db.todownload_queue,
+        "_complete_download_request_with_connector",
+        fail_delete,
+    )
+
+    with pytest.raises(RuntimeError, match="injected root delete failure"):
+        db.finish_download_turn(turn, request)
+
+    assert db.get_download_request(request.gid) == request
+    state = db.get_gallery_ingest_state()
+    assert state.phase == GalleryIngestPhase.downloading
+    assert state.handoff_generation is None
+    assert state.handoff_owner_token is None
+
+
+def test_downloader_and_periodic_scan_atomically_compete_for_ready(
+    db: H2HDB,
+) -> None:
+    _complete_baseline_ingest(db)
+    barrier = Barrier(2)
+
+    def claim_download() -> object:
+        barrier.wait()
+        return db.claim_download_turn(lease_seconds=60)
+
+    def claim_periodic_ingest() -> object:
+        barrier.wait()
+        return db._claim_gallery_ingest(
+            lease_seconds=60,
+            periodic_scan=True,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = [
+            executor.submit(claim_download),
+            executor.submit(claim_periodic_ingest),
+        ]
+
+    assert sum(result.result() is not None for result in results) == 1
+    assert db.get_gallery_ingest_state().phase in {
+        GalleryIngestPhase.downloading,
+        GalleryIngestPhase.ingesting,
+    }
+
+
+def test_fresh_download_blocks_periodic_ingest_and_expired_lease_is_recovered(
+    db: H2HDB,
+) -> None:
+    _complete_baseline_ingest(db)
+    request = db.request_download(812345)
+    turn = db.claim_download_turn(lease_seconds=60)
+    assert turn is not None
+
+    assert (
+        db._claim_gallery_ingest(
+            lease_seconds=60,
+            periodic_scan=True,
+        )
+        is None
+    )
+
+    _expire_active_lease(db)
+
+    assert db.renew_download_turn(turn, lease_seconds=60) is False
+    assert db.request_gallery_ingest(turn) is False
+    ingest_turn = db._claim_gallery_ingest(
+        lease_seconds=60,
+        periodic_scan=False,
+    )
+    assert ingest_turn is not None
+    assert ingest_turn.claimed_from_phase == GalleryIngestPhase.downloading
+    assert db.request_gallery_ingest(turn) is False
+    assert db.finish_download_turn(turn, request) is False
+
+    # A hard-killed downloader leaves its durable root request available for a
+    # later retry; lease recovery only hands its on-disk output to ingestion.
+    assert db.get_download_request(request.gid) == request
+    assert db._complete_gallery_ingest(ingest_turn) is True
+    state = db.get_gallery_ingest_state()
+    assert state.completed_generation == turn.generation
+    assert state.handoff_generation is None
+    assert state.handoff_owner_token is None
+    assert db.request_gallery_ingest(turn) is False
+
+
+def test_fresh_ingest_owner_cannot_be_replaced_but_expired_owner_can(
+    db: H2HDB,
+) -> None:
+    first_turn = db._claim_gallery_ingest(
+        lease_seconds=60,
+        periodic_scan=False,
+    )
+    assert first_turn is not None
+
+    assert (
+        db._claim_gallery_ingest(
+            lease_seconds=60,
+            periodic_scan=True,
+        )
+        is None
+    )
+
+    _expire_active_lease(db)
+    assert db._renew_gallery_ingest(first_turn, lease_seconds=60) is False
+    assert db._complete_gallery_ingest(first_turn) is False
+    replacement_turn = db._claim_gallery_ingest(
+        lease_seconds=60,
+        periodic_scan=False,
+    )
+    assert replacement_turn is not None
+    assert replacement_turn.claimed_from_phase == GalleryIngestPhase.ingesting
+    assert replacement_turn.owner_token != first_turn.owner_token
+    assert db._complete_gallery_ingest(first_turn) is False
+    assert db._complete_gallery_ingest(replacement_turn) is True
+
+
+@pytest.mark.parametrize("lease_seconds", [0, -1])
+def test_download_turn_rejects_non_positive_lease(
+    db: H2HDB,
+    lease_seconds: int,
+) -> None:
+    with pytest.raises(ValueError, match="greater than zero"):
+        db.claim_download_turn(lease_seconds=lease_seconds)

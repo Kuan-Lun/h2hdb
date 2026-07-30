@@ -213,13 +213,35 @@ class H2HDBToDownloadQueue(BaseRepository):
 
     def complete_download_request(self, request: DownloadRequest) -> None:
         with self.SQLConnector() as connector:
-            connector.execute(
-                """
-                DELETE FROM todownload_gids
-                WHERE gid = %s AND request_token = %s
-                """,
-                (request.gid, request.token),
-            )
+            with connector.transaction():
+                self._complete_download_request_with_connector(connector, request)
+
+    def _complete_download_request_with_connector(
+        self,
+        connector: SQLConnector,
+        request: DownloadRequest,
+    ) -> bool:
+        lock_clause = (
+            " FOR UPDATE" if self.config.database.sql_type.lower() == "mariadb" else ""
+        )
+        row = connector.fetch_one(
+            f"""
+            SELECT request_token
+            FROM todownload_gids
+            WHERE gid = %s{lock_clause}
+            """,
+            (request.gid,),
+        )
+        if not row or str(row[0]) != request.token:
+            return False
+        connector.execute(
+            """
+            DELETE FROM todownload_gids
+            WHERE gid = %s AND request_token = %s
+            """,
+            (request.gid, request.token),
+        )
+        return True
 
     def get_download_requests(self) -> list[DownloadRequest]:
         with self.SQLConnector() as connector:

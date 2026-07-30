@@ -14,6 +14,7 @@ collection is always organised and accessible.
 - [x] Add new galleries to the database
 - [x] Comporess H@H's galleries to a folder
 - [x] Record the removed GIDs in a separate list
+- [x] Coordinate bounded downloader and database-ingest turns
 - [ ] Write document (need?)
 
 ---
@@ -99,8 +100,57 @@ collection is always organised and accessible.
 - `logger.level`: one of `NOTSET`, `DEBUG`, `INFO`, `WARNING`, `ERROR`, or
   `CRITICAL`.
 
-The main entry point remains resident and scans every 30 minutes. Completed
-removal and changed-gallery batches add work to the singleton
+The main entry point remains resident and keeps its 30-minute periodic scan
+deadline, but it now polls the durable `gallery_ingest_state` every five seconds
+while waiting. A live downloader lease defers that scan; otherwise an ingest
+request wakes h2hdb without waiting for the old uninterruptible 30-minute
+sleep.
+
+The singleton coordination row moves through
+`INGEST_REQUESTED → INGESTING → READY → DOWNLOADING`. A newly added row starts
+at `INGEST_REQUESTED`, so an upgraded or new installation completes one
+baseline scan before a downloader can claim `READY`. Downloader integrations
+use these public methods:
+
+- `claim_download_turn(lease_seconds=...)` returns a generation-fenced
+  `DownloadTurn`, or `None` while h2hdb owns the turn.
+- `renew_download_turn(turn, lease_seconds=...)` extends a live downloader
+  lease and returns whether that token still owns the generation.
+- `request_gallery_ingest(turn)` idempotently hands the generation to h2hdb.
+- `finish_download_turn(turn, request)` atomically hands off a successful root
+  traversal and conditionally deletes only that request token.
+- `get_gallery_ingest_state()` exposes the durable phase and
+  `completed_generation`; a downloader may start its next root request only
+  after `completed_generation >= turn.generation`.
+
+A fresh `DOWNLOADING` lease prevents h2hdb from starting a scan until the
+downloader requests handoff; a periodic deadline does not override it. If the
+downloader terminates, h2hdb takes over after the lease expires and ingests any
+complete gallery folders already published. An ingest acknowledgement is
+written only after repeated `synchronize_once()` calls converge to a pass with
+no new or changed galleries and scheduled maintenance succeeds. A background
+heartbeat renews the ingest lease throughout synchronization and MariaDB
+maintenance. SQLite lock contention is retried only within the current lease;
+before SQLite maintenance h2hdb renews once and stops the heartbeat so
+`VACUUM`'s exclusive lock can fence competing coordination writers. A
+successful SQLite optimization can acknowledge after the timestamp expires
+only if its generation and owner token are still current. Another resident
+treats SQLite lock contention while claiming as temporarily unavailable and
+keeps polling. Owner tokens fence stale downloader and h2hdb processes from
+renewing or completing a newer turn. Persisted handoff provenance distinguishes
+an explicit live-token handoff from an expired downloader lease recovered by
+h2hdb, so a recovered stale token cannot later report success.
+
+One download turn covers one root `todownload_gids` request and its complete
+deep traversal. A failed, cancelled, or interrupted traversal leaves that
+durable request in the queue and may use `request_gallery_ingest()` to hand off
+any complete files. A successful traversal uses `finish_download_turn()` so
+handoff and exact-token deletion share one transaction. If the same GID was
+already re-enqueued with a newer request token, deletion is a no-op: the
+completed live turn still hands off immediately and the newer request remains
+queued.
+
+Completed removal and changed-gallery batches add work to the singleton
 `database_maintenance_state` row. Automatic optimization is evaluated only
 after both the work and time thresholds pass, and MariaDB runs `OPTIMIZE TABLE`
 only for base tables that also pass both reclaimable-space thresholds. h2hdb
