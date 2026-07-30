@@ -64,3 +64,38 @@ def test_data_persists_across_reconnects(connector: SQLiteConnector) -> None:
 
     with connector:
         assert connector.fetch_all("SELECT id FROM widgets") == [(1,)]
+
+
+def test_transaction_commits_all_writes(connector: SQLiteConnector) -> None:
+    with connector:
+        connector.execute("CREATE TABLE widgets (id INTEGER PRIMARY KEY)")
+        with connector.transaction():
+            connector.execute("INSERT INTO widgets (id) VALUES (%s)", (1,))
+            connector.execute("INSERT INTO widgets (id) VALUES (%s)", (2,))
+
+    with connector:
+        assert connector.fetch_all("SELECT id FROM widgets ORDER BY id") == [(1,), (2,)]
+
+
+def test_transaction_rolls_back_all_writes(connector: SQLiteConnector) -> None:
+    with connector:
+        connector.execute("CREATE TABLE widgets (id INTEGER PRIMARY KEY)")
+        with pytest.raises(RuntimeError, match="abort transaction"):
+            with connector.transaction():
+                connector.execute("INSERT INTO widgets (id) VALUES (%s)", (1,))
+                raise RuntimeError("abort transaction")
+        assert connector.fetch_all("SELECT id FROM widgets") == []
+
+
+def test_foreign_keys_are_enforced(connector: SQLiteConnector) -> None:
+    with connector:
+        connector.execute("CREATE TABLE parents (id INTEGER PRIMARY KEY)")
+        connector.execute("""
+            CREATE TABLE children (
+                parent_id INTEGER REFERENCES parents(id) ON DELETE CASCADE
+            )
+            """)
+        connector.execute("INSERT INTO parents (id) VALUES (%s)", (1,))
+        connector.execute("INSERT INTO children (parent_id) VALUES (%s)", (1,))
+        connector.execute("DELETE FROM parents WHERE id = %s", (1,))
+        assert connector.fetch_all("SELECT parent_id FROM children") == []

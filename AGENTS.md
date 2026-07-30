@@ -111,7 +111,7 @@ and compute digests; hash catalog lookups and all database writes stay on the
 main thread.
 
 CBZ compression uses the shared `multiprocessing.Pool` owned by
-`insert_h2h_download` in `src/h2hdb/h2hdb_h2hdb.py`. With CBZ output enabled,
+`synchronize_once` in `src/h2hdb/h2hdb_h2hdb.py`. With CBZ output enabled,
 progress chunks scale as `POOL_CPU_LIMIT * 16`, clamped to 64–500 galleries.
 After each chunk's metadata insert, the provisional CBZ pass considers only
 galleries whose database rows are new, creates their missing CBZ files, and
@@ -120,8 +120,8 @@ for the authoritative final exclusion set.
 
 After all insertion chunks finish, the pipeline freezes one final exclusion set
 and runs one stable global deduplication reconciliation across all current
-galleries. That reconciliation exact-syncs content ownership, full-content
-hashes, and duplicate warnings, deletes loser CBZ files, and repairs final
+galleries. That reconciliation exact-syncs content ownership and duplicate
+warnings, deletes loser CBZ files, and repairs final
 winners against the final exclusions. This final pass is the only pass that
 rebuilds existing CBZ files. A still-valid incumbent wins an exact priority tie
 for the same hash; otherwise the database gallery ID is the deterministic
@@ -146,7 +146,7 @@ not hash CBZ bytes, read member contents for scrubbing, or maintain an
 integrity baseline.
 
 Transient ownership and CBZ state during a run may be inconsistent, but a
-successful `main`/`insert_h2h_download` return must converge to the final
+successful `main`/`synchronize_once` return must converge to the final
 snapshot. Do not weaken that property by making reconciliation chunk-local.
 The exact-tie result is stable relative to prior ownership, not canonical
 across different prior histories.
@@ -154,6 +154,32 @@ across different prior histories.
 `compress_gallery_to_cbz.py` is imported lazily inside the method that needs it
 to avoid a hard Pillow import at package import time. Preserve that lazy-import
 behavior when touching compression code.
+
+## Gallery Deletion and Download Requests
+
+`todelete_gallery_candidates` derives live database gallery IDs only from
+explicit `todelete_gids`, older folders with the same GID, and
+`duplicate_hash_in_gallery`. Each successful `synchronize_once()` exact-syncs
+that view into `todelete_galleries`, which backs `todelete_rm_commands`.
+Full-content equality across different GIDs is not a raw-folder deletion
+reason.
+
+Publishing a deletion candidate must not enqueue a download. Only a later scan
+that confirms the folder is absent may delete the gallery row. A GID is
+enqueued atomically only after all of its active deletion candidates are gone,
+so candidates removed across separate administrator runs still produce one
+request. `pending_gallery_removals` also journals interrupted metadata writes,
+so a pending folder that still exists must be recovered without enqueueing.
+
+`todownload_gids` is the durable request queue, not an in-flight table. Requests
+carry a UUID token. Re-enqueueing a GID replaces the token, and completion
+deletes only a matching `(gid, request_token)` so an older worker cannot clear a
+newer request. Failed and cancelled downloads leave the row intact.
+
+Cross-table enqueue/delete operations use `with connector.transaction():`.
+MariaDB suppresses per-statement auto-commit inside that block; SQLite uses
+`BEGIN IMMEDIATE` and enables foreign keys on every connection. Do not open a
+second repository connection inside a managed transaction.
 
 ## Tooling and Style
 

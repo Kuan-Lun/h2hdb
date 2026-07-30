@@ -153,66 +153,6 @@ class H2HDBGalleryDeduplication(BaseRepository):
 
         self.logger.debug(f"Ensured database table exists: name={table_name}.")
 
-    def _create_gallery_full_content_hashes_table(self) -> None:
-        with self.SQLConnector() as connector:
-            table_name = "gallery_full_content_hashes"
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    query = f"""
-                        CREATE TABLE IF NOT EXISTS {table_name} (
-                            PRIMARY KEY (db_gallery_id),
-                            FOREIGN KEY (db_gallery_id) REFERENCES galleries_dbids(db_gallery_id)
-                                ON UPDATE CASCADE
-                                ON DELETE CASCADE,
-                            db_gallery_id INT UNSIGNED NOT NULL,
-                            sha256        BINARY(32)   NOT NULL,
-                            INDEX (sha256)
-                        )
-                    """
-                case "sqlite":
-                    query = f"""
-                        CREATE TABLE IF NOT EXISTS {table_name} (
-                            db_gallery_id INTEGER NOT NULL PRIMARY KEY
-                                REFERENCES galleries_dbids(db_gallery_id)
-                                ON UPDATE CASCADE ON DELETE CASCADE,
-                            sha256        BLOB    NOT NULL
-                        )
-                    """
-            connector.execute(query)
-
-            match self.config.database.sql_type.lower():
-                case "sqlite":
-                    connector.execute(
-                        f"CREATE INDEX IF NOT EXISTS idx_{table_name}_sha256 "
-                        f"ON {table_name}(sha256)"
-                    )
-
-        self.logger.debug(f"Ensured database table exists: name={table_name}.")
-
-    def _create_gallery_full_duplicate_names_view(self) -> None:
-        with self.SQLConnector() as connector:
-            table_name = "gallery_full_duplicate_names"
-            query = f"""
-                CREATE VIEW IF NOT EXISTS {table_name} AS
-                SELECT galleries_names.full_name AS full_name
-                FROM gallery_full_content_hashes AS h
-                    JOIN galleries_names
-                        ON galleries_names.db_gallery_id = h.db_gallery_id
-                    JOIN galleries_download_times AS dt
-                        ON dt.db_gallery_id = h.db_gallery_id
-                    JOIN (
-                        SELECT h2.sha256, MAX(dt2.time) AS max_download_time
-                        FROM gallery_full_content_hashes AS h2
-                            JOIN galleries_download_times AS dt2
-                                ON dt2.db_gallery_id = h2.db_gallery_id
-                        GROUP BY h2.sha256
-                        HAVING COUNT(*) > 1
-                    ) AS newest ON h.sha256 = newest.sha256
-                WHERE dt.time < newest.max_download_time
-            """
-            connector.execute(query)
-        self.logger.debug(f"Ensured database view exists: name={table_name}.")
-
     def _create_gallery_duplicate_warnings_table(self) -> None:
         with self.SQLConnector() as connector:
             table_name = "gallery_duplicate_warnings"
@@ -287,9 +227,6 @@ class H2HDBGalleryDeduplication(BaseRepository):
 
     def _claim_hash(self, db_gallery_id: int, sha256: bytes) -> None:
         self._upsert_hash("gallery_content_hashes", db_gallery_id, sha256)
-
-    def _set_full_content_hash(self, db_gallery_id: int, sha256: bytes) -> None:
-        self._upsert_hash("gallery_full_content_hashes", db_gallery_id, sha256)
 
     def get_duplicate_warning_db_gallery_ids(self) -> list[int]:
         """db_gallery_id of every gallery currently losing its content-hash
@@ -443,17 +380,11 @@ class H2HDBGalleryDeduplication(BaseRepository):
             ],
         )
 
-    def reconcile_many(
-        self,
-        claims: list[ContentClaim],
-        full_content_hashes_by_db_gallery_id: dict[int, bytes],
-    ) -> ReconciliationResult:
-        """Globally reconcile content ownership, full hashes, and warnings.
+    def reconcile_many(self, claims: list[ContentClaim]) -> ReconciliationResult:
+        """Globally reconcile content ownership and duplicate warnings.
 
         ``claims`` must contain exactly one entry for every live gallery;
-        contentless galleries use ``sha256=None``. The full-content mapping is
-        the exact subset of those galleries that have at least one
-        non-``galleryinfo.txt`` file.
+        contentless galleries use ``sha256=None``.
 
         Writes are exact, not upserts: stale and orphaned rows are removed,
         changed warning targets are replaced, and all conflicting content-hash
@@ -465,30 +396,16 @@ class H2HDBGalleryDeduplication(BaseRepository):
         claim_ids = {claim.db_gallery_id for claim in claims}
         if len(claim_ids) != len(claims):
             raise ValueError("Each gallery must have exactly one content claim.")
-        extra_full_hash_ids = full_content_hashes_by_db_gallery_id.keys() - claim_ids
-        if extra_full_hash_ids:
-            raise ValueError(
-                "Full-content hashes contain galleries without content claims: "
-                f"{sorted(extra_full_hash_ids)}"
-            )
 
         existing_content_hashes = self._get_all_hashes("gallery_content_hashes")
         result = select_reconciliation(claims, existing_content_hashes)
 
-        existing_full_content_hashes = self._get_all_hashes(
-            "gallery_full_content_hashes"
-        )
         existing_warnings = self._get_all_duplicate_warnings()
 
         self._sync_hashes(
             "gallery_content_hashes",
             existing_content_hashes,
             result.owner_hash_by_db_gallery_id,
-        )
-        self._sync_hashes(
-            "gallery_full_content_hashes",
-            existing_full_content_hashes,
-            full_content_hashes_by_db_gallery_id,
         )
         self._sync_duplicate_warnings(
             existing_warnings,

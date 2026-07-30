@@ -8,6 +8,8 @@ __all__ = [
 
 
 from abc import ABC, abstractmethod
+from collections.abc import Generator
+from contextlib import contextmanager
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
@@ -67,8 +69,23 @@ class SQLConnector(ABC):
         pass
 
     @abstractmethod
+    def begin(self) -> None:
+        pass
+
+    @abstractmethod
     def rollback(self) -> None:
         pass
+
+    @contextmanager
+    def transaction(self) -> Generator[None]:
+        self.begin()
+        try:
+            yield
+        except BaseException:
+            self.rollback()
+            raise
+        else:
+            self.commit()
 
     def __exit__(
         self,

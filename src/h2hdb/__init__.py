@@ -1,5 +1,8 @@
 __all__ = [
     "H2HDB",
+    "DownloadRequest",
+    "GalleryScan",
+    "SyncOutcome",
     "DatabaseConfig",
     "LoggerConfig",
     "H2HConfig",
@@ -18,5 +21,5 @@ from .config_loader import (
     LoggerConfig,
     load_config,
 )
-from .h2hdb_h2hdb import H2HDB
+from .h2hdb_h2hdb import H2HDB, DownloadRequest, GalleryScan, SyncOutcome
 from .logger import HentaiDBLogger, setup_logger

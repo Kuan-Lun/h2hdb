@@ -14,18 +14,20 @@ if __name__ == "__main__":
         connector.check_database_collation()
         connector.create_main_tables()
 
-        while connector.insert_h2h_download():
+        while True:
             cycle_start_time = monotonic()
-            while connector.insert_h2h_download():
+            while True:
+                outcome = connector.synchronize_once()
+                if not outcome.needs_immediate_rescan:
+                    break
                 connector.reset_redownload_times()
-                connector.queue_redownload_for_pending_deletions()
-                connector.refresh_todelete_names_cache()
                 connector.logger.info(
-                    "Gallery changes detected; starting another scan immediately."
+                    "Gallery insertions or metadata changes detected; "
+                    "starting another scan immediately."
                 )
             connector.logger.info(
-                "No gallery changes detected; running database maintenance "
-                "before the next scan."
+                "Synchronization converged; running database maintenance "
+                "before the next scheduled scan."
             )
             connector.optimize_database()
             connector.analyze_database()

@@ -1,8 +1,15 @@
-__all__ = ["H2HDB", "GALLERY_INFO_FILE_NAME"]
+__all__ = [
+    "H2HDB",
+    "GalleryScan",
+    "SyncOutcome",
+    "DownloadRequest",
+    "GALLERY_INFO_FILE_NAME",
+]
 
 
 import contextlib
 import hashlib
+from dataclasses import dataclass
 from itertools import islice
 from multiprocessing import cpu_count
 from multiprocessing.pool import Pool
@@ -51,7 +58,7 @@ from .table_times import H2HDBTimes
 from .table_titles import H2HDBGalleriesTitles
 from .table_uploadaccounts import H2HDBUploadAccounts
 from .todelete_queue import H2HDBToDeleteQueue
-from .todownload_queue import H2HDBToDownloadQueue
+from .todownload_queue import DownloadRequest, H2HDBToDownloadQueue
 from .view_ginfo import H2HDBGalleriesInfos
 
 GALLERY_METADATA_BATCH_SIZE = 500
@@ -63,6 +70,30 @@ PROGRESSIVE_GALLERY_CHUNK_SIZE = min(
     max(64, POOL_CPU_LIMIT * PROGRESSIVE_GALLERIES_PER_WORKER),
 )
 PERF_HEARTBEAT_SECONDS = 10.0
+
+
+@dataclass(frozen=True, slots=True)
+class GalleryScan:
+    folders: tuple[Path, ...]
+    names: frozenset[str]
+    removed_galleries: int
+
+
+@dataclass(frozen=True, slots=True)
+class SyncOutcome:
+    new_galleries: int
+    changed_galleries: int
+    removed_galleries: int
+
+    @property
+    def has_changes(self) -> bool:
+        return bool(
+            self.new_galleries or self.changed_galleries or self.removed_galleries
+        )
+
+    @property
+    def needs_immediate_rescan(self) -> bool:
+        return bool(self.new_galleries or self.changed_galleries)
 
 
 def _cbz_summary_fields(summary: CBZCompressionSummary) -> str:
@@ -81,7 +112,9 @@ class H2HDB(BaseRepository):
         self.todownload_queue = H2HDBToDownloadQueue(context)
         self.todelete_queue = H2HDBToDeleteQueue(context)
         self.gallery_ids = H2HDBGalleriesIDs(context)
-        self.pending_removals = H2HDBPendingGalleryRemovals(context, self.gallery_ids)
+        self.pending_removals = H2HDBPendingGalleryRemovals(
+            context, self.gallery_ids, self.todownload_queue
+        )
         self.gallery_gids = H2HDBGalleriesGIDs(context, self.gallery_ids)
         self.gallery_times = H2HDBTimes(context, self.gallery_ids)
         self.gallery_titles = H2HDBGalleriesTitles(context, self.gallery_ids)
@@ -140,15 +173,6 @@ class H2HDB(BaseRepository):
     ) -> None:
         self.pending_removals.delete_pending_gallery_removals_by_names(gallery_names)
 
-    def delete_pending_gallery_removals(self) -> None:
-        self.pending_removals.delete_pending_gallery_removals()
-
-    def delete_gallery(self, gallery_name: str) -> None:
-        self.pending_removals.delete_gallery(gallery_name)
-
-    def delete_galleries(self, gallery_names: list[str]) -> None:
-        self.pending_removals.delete_galleries(gallery_names)
-
     def refresh_gallery(self, gallery_name: str) -> None:
         self.pending_removals.refresh_gallery(gallery_name)
 
@@ -164,26 +188,23 @@ class H2HDB(BaseRepository):
     def get_pending_download_gids(self) -> list[int]:
         return self.todownload_queue.get_pending_download_gids()
 
-    def check_todelete_gid(self, gid: int) -> bool:
-        return self.todelete_queue.check_todelete_gid(gid)
+    def is_gallery_deletion_requested(self, gid: int) -> bool:
+        return self.todelete_queue.is_gallery_deletion_requested(gid)
 
-    def insert_todelete_gid(self, gid: int) -> None:
-        self.todelete_queue.insert_todelete_gid(gid)
+    def request_gallery_deletion(self, gid: int) -> None:
+        self.todelete_queue.request_gallery_deletion(gid)
 
-    def check_todownload_gid(self, gid: int, url: str) -> bool:
-        return self.todownload_queue.check_todownload_gid(gid, url)
+    def request_download(self, gid: int, url: str = "") -> DownloadRequest:
+        return self.todownload_queue.request_download(gid, url)
 
-    def insert_todownload_gid(self, gid: int, url: str) -> None:
-        self.todownload_queue.insert_todownload_gid(gid, url)
+    def get_download_request(self, gid: int) -> DownloadRequest | None:
+        return self.todownload_queue.get_download_request(gid)
 
-    def update_todownload_gid(self, gid: int, url: str) -> None:
-        self.todownload_queue.update_todownload_gid(gid, url)
+    def complete_download_request(self, request: DownloadRequest) -> None:
+        self.todownload_queue.complete_download_request(request)
 
-    def remove_todownload_gid(self, gid: int) -> None:
-        self.todownload_queue.remove_todownload_gid(gid)
-
-    def get_todownload_gids(self) -> list[tuple[int, str]]:
-        return self.todownload_queue.get_todownload_gids()
+    def get_download_requests(self) -> list[DownloadRequest]:
+        return self.todownload_queue.get_download_requests()
 
     def create_main_tables(self) -> None:
         self.logger.debug("Ensuring database schema objects exist...")
@@ -195,7 +216,7 @@ class H2HDB(BaseRepository):
         self.gallery_times._create_galleries_download_times_table()
         self.gallery_times._create_galleries_redownload_times_table()
         self.gallery_times._create_galleries_upload_times_table()
-        self.todownload_queue._create_pending_download_gids_view()
+        self.removed_galleries._create_removed_galleries_gids_table()
         self.gallery_times._create_galleries_modified_times_table()
         self.gallery_times._create_galleries_access_times_table()
         self.gallery_titles._create_galleries_titles_table()
@@ -209,14 +230,12 @@ class H2HDB(BaseRepository):
         self.files._create_gallery_image_hash_view()
         self.gallery_infos._create_duplicate_hash_in_gallery_view()
         self.gallery_deduplication._create_gallery_content_hashes_table()
-        self.gallery_deduplication._create_gallery_full_content_hashes_table()
-        self.gallery_deduplication._create_gallery_full_duplicate_names_view()
         self.gallery_deduplication._create_gallery_duplicate_warnings_table()
         self.gallery_deduplication._create_gallery_duplicate_warnings_names_view()
-        self.todelete_queue._create_todelete_names_view()
-        self.todelete_queue._create_todelete_names_cache_table()
+        self.todelete_queue._create_todelete_gallery_candidates_view()
+        self.todelete_queue._create_todelete_galleries_table()
         self.todelete_queue._create_todelete_rm_commands_view()
-        self.removed_galleries._create_removed_galleries_gids_table()
+        self.todownload_queue._create_pending_download_gids_view()
         self.gallery_tags._create_galleries_tags_table()
         self.logger.info(
             "Database schema initialization completed: "
@@ -529,10 +548,9 @@ class H2HDB(BaseRepository):
             f"galleries={gallery_count}"
         )
 
-        # Reads from galleries_dbids itself, not galleries_names: galleries_dbids
-        # is the table deletions actually hit, while galleries_names can carry
-        # stale orphaned rows on SQLite (its ON DELETE CASCADE is a no-op there
-        # since foreign key enforcement is never turned on).
+        # Read from galleries_dbids itself because it is the authoritative
+        # parent table that deletions target.  The migration also removes any
+        # historical SQLite orphans created before foreign keys were enabled.
         db_gallery_ids_by_name = (
             self.gallery_ids._get_db_gallery_ids_by_gallery_names_from_dbids(
                 [
@@ -673,13 +691,12 @@ class H2HDB(BaseRepository):
                 )
         return change_list
 
-    def scan_current_galleries_folders(self) -> tuple[list[Path], set[str]]:
+    def scan_current_galleries_folders(self) -> GalleryScan:
         scan_started = monotonic()
         self.logger.debug(
             "PERF event=start stage=scan "
             f"backend={self.config.database.sql_type.lower()}"
         )
-        self.delete_pending_gallery_removals()
 
         with self.SQLConnector() as connector:
             tmp_table_name = "tmp_current_galleries"
@@ -744,6 +761,12 @@ class H2HDB(BaseRepository):
                 f"elapsed_s={monotonic() - stage_started:.6f}"
             )
 
+            recovered_removed_count = (
+                self.pending_removals.recover_pending_gallery_removals(
+                    current_galleries_names
+                )
+            )
+
             group_size = 5000
             it = iter(data)
             stage_started = monotonic()
@@ -790,18 +813,25 @@ class H2HDB(BaseRepository):
                 f"elapsed_s={monotonic() - stage_started:.6f}"
             )
 
-        self.insert_pending_gallery_removals(removed_gallery_names)
-
-        self.delete_pending_gallery_removals()
+        removed_count = (
+            recovered_removed_count
+            + self.pending_removals.delete_confirmed_missing_galleries(
+                removed_gallery_names
+            )
+        )
 
         self.logger.debug(
             "PERF event=end stage=scan "
             f"galleries={len(current_galleries_folders)} "
             f"unique_names={len(current_galleries_names)} "
-            f"removed_galleries={len(removed_gallery_names)} "
+            f"removed_galleries={removed_count} "
             f"elapsed_s={monotonic() - scan_started:.6f}"
         )
-        return (current_galleries_folders, current_galleries_names)
+        return GalleryScan(
+            folders=tuple(current_galleries_folders),
+            names=frozenset(current_galleries_names),
+            removed_galleries=removed_count,
+        )
 
     def _refresh_current_files_hashs(self, algorithm: str) -> None:
         if algorithm not in HASH_ALGORITHMS:
@@ -931,9 +961,9 @@ class H2HDB(BaseRepository):
         self,
         gallery_chunk: list[Path],
         exclude_hashs: set[bytes],
-    ) -> tuple[list[ContentClaim], dict[int, bytes], dict[str, int]]:
+    ) -> tuple[list[ContentClaim], dict[str, int]]:
         if not gallery_chunk:
-            return ([], {}, {})
+            return ([], {})
 
         gallery_names = [folder.name for folder in gallery_chunk]
         db_gallery_ids_by_name = (
@@ -956,17 +986,14 @@ class H2HDB(BaseRepository):
         )
 
         claims: list[ContentClaim] = []
-        full_content_hashes_by_id: dict[int, bytes] = {}
         for folder in gallery_chunk:
             db_gallery_id = db_gallery_ids_by_name.get(folder.name)
             if db_gallery_id is None:
                 continue
 
-            # galleryinfo.txt is excluded from both hashes below: it embeds
+            # galleryinfo.txt is excluded from the content hash below: it embeds
             # this gallery's own GID/metadata, so it necessarily differs
-            # between galleries even when every other file is identical --
-            # including it would mean these hashes could never match across
-            # genuinely duplicate galleries.
+            # between galleries even when every other file is identical.
             gallery_files = [
                 (file_name, file_hash)
                 for file_name, file_hash in files_by_db_gallery_id.get(
@@ -974,11 +1001,6 @@ class H2HDB(BaseRepository):
                 )
                 if file_name != GALLERY_INFO_FILE_NAME
             ]
-
-            if gallery_files:
-                full_content_hashes_by_id[db_gallery_id] = hashlib.sha256(
-                    b"".join(sorted(file_hash for _, file_hash in gallery_files))
-                ).digest()
 
             content_files = [
                 file_hash
@@ -1003,7 +1025,7 @@ class H2HDB(BaseRepository):
                 )
             )
 
-        return (claims, full_content_hashes_by_id, db_gallery_ids_by_name)
+        return (claims, db_gallery_ids_by_name)
 
     def _filter_galleries_for_deduplication(
         self,
@@ -1012,7 +1034,6 @@ class H2HDB(BaseRepository):
     ) -> list[Path]:
         collection_started = monotonic()
         claims: list[ContentClaim] = []
-        full_content_hashes_by_id: dict[int, bytes] = {}
         db_gallery_ids_by_name: dict[str, int] = {}
         gallery_chunks = chunk_list(galleries, GALLERY_METADATA_BATCH_SIZE)
         self.logger.debug(
@@ -1023,13 +1044,10 @@ class H2HDB(BaseRepository):
         galleries_processed = 0
         for batch_index, gallery_chunk in enumerate(gallery_chunks, start=1):
             batch_started = monotonic()
-            (
-                chunk_claims,
-                chunk_full_content_hashes,
-                chunk_db_gallery_ids_by_name,
-            ) = self._collect_gallery_deduplication_batch(gallery_chunk, exclude_hashs)
+            chunk_claims, chunk_db_gallery_ids_by_name = (
+                self._collect_gallery_deduplication_batch(gallery_chunk, exclude_hashs)
+            )
             claims.extend(chunk_claims)
-            full_content_hashes_by_id.update(chunk_full_content_hashes)
             db_gallery_ids_by_name.update(chunk_db_gallery_ids_by_name)
             galleries_processed += len(gallery_chunk)
             self.logger.debug(
@@ -1043,7 +1061,6 @@ class H2HDB(BaseRepository):
         self.logger.debug(
             "PERF event=end stage=global_dedup_collection "
             f"galleries={len(galleries)} claims={len(claims)} "
-            f"full_content_hashes={len(full_content_hashes_by_id)} "
             f"elapsed_s={monotonic() - collection_started:.6f}"
         )
 
@@ -1058,13 +1075,9 @@ class H2HDB(BaseRepository):
 
         reconcile_started = monotonic()
         self.logger.debug(
-            "PERF event=start stage=global_dedup_reconcile "
-            f"claims={len(claims)} "
-            f"full_content_hashes={len(full_content_hashes_by_id)}"
+            f"PERF event=start stage=global_dedup_reconcile claims={len(claims)}"
         )
-        result = self.gallery_deduplication.reconcile_many(
-            claims, full_content_hashes_by_id
-        )
+        result = self.gallery_deduplication.reconcile_many(claims)
         self.logger.debug(
             "PERF event=end stage=global_dedup_reconcile "
             f"claims={len(claims)} "
@@ -1110,28 +1123,19 @@ class H2HDB(BaseRepository):
             f"targeted={len(target_file_names)} removed={removed}."
         )
 
-    def insert_h2h_download(self) -> bool:
+    def synchronize_once(self) -> SyncOutcome:
         run_started = monotonic()
         self.logger.debug(
-            "PERF event=start stage=insert_h2h_download "
+            "PERF event=start stage=synchronize_once "
             f"backend={self.config.database.sql_type.lower()} "
             f"cbz_enabled={self.config.h2h.cbz_path is not None} "
             f"cpu_count={CPU_NUM} pool_workers={POOL_CPU_LIMIT} "
             f"file_hash_workers={self.config.h2h.file_hash_workers}"
         )
 
-        stage_started = monotonic()
-        self.logger.debug("PERF event=start stage=insert_h2h_download_pending_cleanup")
-        self.delete_pending_gallery_removals()
-        self.logger.debug(
-            "PERF event=end stage=insert_h2h_download_pending_cleanup "
-            f"elapsed_s={monotonic() - stage_started:.6f}"
-        )
-
-        (
-            current_galleries_folders,
-            current_galleries_names,
-        ) = self.scan_current_galleries_folders()
+        gallery_scan = self.scan_current_galleries_folders()
+        current_galleries_folders = list(gallery_scan.folders)
+        current_galleries_names = set(gallery_scan.names)
         self.pending_cbz_rebuilds.delete_stale_gallery_names(current_galleries_names)
 
         current_galleries_folders = self._sort_galleries_for_processing(
@@ -1139,10 +1143,11 @@ class H2HDB(BaseRepository):
         )
 
         total_inserted_in_database = 0
+        total_new_galleries = 0
+        total_changed_galleries = 0
         total_cbz_summary = CBZCompressionSummary()
         provisional_cbz_summary = CBZCompressionSummary()
         final_cbz_summary = CBZCompressionSummary()
-        is_insert_limit_reached = False
         gallery_chunk_size = (
             PROGRESSIVE_GALLERY_CHUNK_SIZE
             if self.config.h2h.cbz_path is not None
@@ -1155,7 +1160,7 @@ class H2HDB(BaseRepository):
         total_galleries = len(current_galleries_folders)
         galleries_processed = 0
         self.logger.debug(
-            "PERF event=progress stage=insert_h2h_download "
+            "PERF event=progress stage=synchronize_once "
             f"step=chunk_plan galleries={total_galleries} chunks={total_chunks} "
             f"chunk_size={gallery_chunk_size}"
         )
@@ -1182,7 +1187,7 @@ class H2HDB(BaseRepository):
                 else set()
             )
             self.logger.debug(
-                "PERF event=progress stage=insert_h2h_download "
+                "PERF event=progress stage=synchronize_once "
                 f"step=provisional_exclusions "
                 f"excluded_hashes={len(provisional_exclude_hashs)}"
             )
@@ -1208,9 +1213,9 @@ class H2HDB(BaseRepository):
                 changed_count = change_list.count(GalleryChange.changed)
                 unchanged_count = change_list.count(GalleryChange.unchanged)
                 inserted_or_updated = new_count + changed_count
-                if inserted_or_updated:
-                    is_insert_limit_reached = True
-                    total_inserted_in_database += inserted_or_updated
+                total_new_galleries += new_count
+                total_changed_galleries += changed_count
+                total_inserted_in_database += inserted_or_updated
 
                 if cbz_pool is not None:
                     provisional_galleries = [
@@ -1396,22 +1401,23 @@ class H2HDB(BaseRepository):
             f"source_manifest_tables=1 elapsed_s={cleanup_elapsed:.3f}."
         )
 
+        self.todelete_queue.refresh_todelete_galleries()
+        outcome = SyncOutcome(
+            new_galleries=total_new_galleries,
+            changed_galleries=total_changed_galleries,
+            removed_galleries=gallery_scan.removed_galleries,
+        )
         self.logger.debug(
-            "PERF event=end stage=insert_h2h_download "
+            "PERF event=end stage=synchronize_once "
             f"galleries={total_galleries} "
-            f"inserted_or_updated={total_inserted_in_database} "
+            f"new={outcome.new_galleries} "
+            f"changed={outcome.changed_galleries} "
+            f"removed={outcome.removed_galleries} "
             f"cbz_write_operations={total_cbz_summary.write_operations} "
-            f"changed={is_insert_limit_reached} "
             f"elapsed_s={monotonic() - run_started:.6f}"
         )
 
-        return is_insert_limit_reached
-
-    def queue_redownload_for_pending_deletions(self) -> None:
-        self.todelete_queue._queue_redownload_for_todelete_names()
-
-    def refresh_todelete_names_cache(self) -> None:
-        self.todelete_queue.refresh_todelete_names_cache()
+        return outcome
 
     def reset_redownload_times(self) -> None:
         self.gallery_times._reset_redownload_times()

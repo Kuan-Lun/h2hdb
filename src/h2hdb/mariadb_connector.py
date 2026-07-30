@@ -70,6 +70,7 @@ class MariaDBConnector(SQLConnector):
 
     def connect(self) -> None:
         self.connection = SQLConnect(**self.params.model_dump())
+        self._in_transaction = False
 
     def close(self) -> None:
         self.connection.close()
@@ -77,13 +78,19 @@ class MariaDBConnector(SQLConnector):
     def check_table_exists(self, table_name: str) -> bool:
         query = f"SHOW TABLES LIKE '{table_name}'"
         result = self.fetch_one(query)
-        return result is not None
+        return bool(result)
 
     def commit(self) -> None:
         self.connection.commit()
+        self._in_transaction = False
+
+    def begin(self) -> None:
+        self.connection.start_transaction()
+        self._in_transaction = True
 
     def rollback(self) -> None:
         self.connection.rollback()
+        self._in_transaction = False
 
     def execute(self, query: str, data: tuple[Any, ...] = ()) -> None:
         with MariaDBCursor(self.connection) as cursor:
@@ -93,7 +100,9 @@ class MariaDBConnector(SQLConnector):
                 raise MariaDBDuplicateKeyError(str(e))
             except Exception as e:
                 raise e
-        if any(key in query.upper() for key in AUTO_COMMIT_KEYS):
+        if not self._in_transaction and any(
+            key in query.upper() for key in AUTO_COMMIT_KEYS
+        ):
             self.commit()
 
     def execute_many(self, query: str, data: list[tuple[Any, ...]]) -> None:
@@ -102,7 +111,9 @@ class MariaDBConnector(SQLConnector):
                 cursor.executemany(query, data)
             except IntegrityError as e:
                 raise MariaDBDuplicateKeyError(str(e))
-        if any(key in query.upper() for key in AUTO_COMMIT_KEYS):
+        if not self._in_transaction and any(
+            key in query.upper() for key in AUTO_COMMIT_KEYS
+        ):
             self.commit()
 
     def fetch_one(self, query: str, data: tuple[Any, ...] = ()) -> tuple[Any, ...]:

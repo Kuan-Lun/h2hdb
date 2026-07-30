@@ -812,31 +812,36 @@ def test_analyze_database_preserves_data(db: H2HDB) -> None:
 
 
 def test_todownload_gid_round_trip(db: H2HDB) -> None:
-    assert db.check_todownload_gid(111, "") is False
+    assert db.get_download_request(111) is None
 
-    db.insert_todownload_gid(111, "")
+    first_request = db.request_download(111)
+    assert db.get_download_request(111) == first_request
+    assert db.get_download_requests() == [first_request]
 
-    assert db.check_todownload_gid(111, "") is True
-    assert db.get_todownload_gids() == [(111, "")]
+    second_request = db.request_download(111, "https://e-hentai.org/g/111/abc123def4")
+    assert second_request.token != first_request.token
+    assert db.get_download_requests() == [second_request]
 
-    db.update_todownload_gid(111, "https://e-hentai.org/g/111/abc123def4")
-    assert db.get_todownload_gids() == [(111, "https://e-hentai.org/g/111/abc123def4")]
+    third_request = db.request_download(111)
+    assert third_request.url == second_request.url
+    assert third_request.token != second_request.token
 
-    db.remove_todownload_gid(111)
-    assert db.get_todownload_gids() == []
-
-
-def test_insert_todownload_gid_via_url_derives_gid(db: H2HDB) -> None:
-    db.insert_todownload_gid(0, "https://e-hentai.org/g/222/abc123def4")
-
-    assert db.get_todownload_gids() == [(222, "https://e-hentai.org/g/222/abc123def4")]
+    db.complete_download_request(third_request)
+    assert db.get_download_requests() == []
 
 
-def test_insert_todownload_gid_rejects_non_positive_gid_without_url(
+def test_request_download_via_url_derives_gid(db: H2HDB) -> None:
+    request = db.request_download(0, "https://e-hentai.org/g/222/abc123def4")
+
+    assert request.gid == 222
+    assert db.get_download_requests() == [request]
+
+
+def test_request_download_rejects_non_positive_gid_without_url(
     db: H2HDB,
 ) -> None:
     with pytest.raises(ValueError):
-        db.insert_todownload_gid(0, "")
+        db.request_download(0)
 
 
 def test_todelete_gid_round_trip(db: H2HDB) -> None:
@@ -845,14 +850,19 @@ def test_todelete_gid_round_trip(db: H2HDB) -> None:
     db_gallery_id = db.gallery_ids._get_db_gallery_id_by_gallery_name(gallery_name)
     db.gallery_gids._insert_gallery_gid(db_gallery_id, gid=333)
 
-    assert db.check_todelete_gid(333) is False
+    assert db.is_gallery_deletion_requested(333) is False
 
-    db.insert_todelete_gid(333)
+    db.request_gallery_deletion(333)
+    db.todelete_queue.refresh_todelete_galleries()
 
-    assert db.check_todelete_gid(333) is True
+    assert db.is_gallery_deletion_requested(333) is True
     with db.SQLConnector() as connector:
-        query_result = connector.fetch_all("SELECT full_name FROM todelete_names")
-    assert (gallery_name,) in query_result
+        query_result = connector.fetch_all("""
+            SELECT galleries_names.full_name
+            FROM todelete_galleries
+                JOIN galleries_names USING (db_gallery_id)
+            """)
+    assert query_result == [(gallery_name,)]
 
 
 def test_get_pending_download_gids_includes_overdue_redownload(db: H2HDB) -> None:
@@ -866,6 +876,10 @@ def test_get_pending_download_gids_includes_overdue_redownload(db: H2HDB) -> Non
     db.gallery_times.update_redownload_time(db_gallery_id, "2000-02-01 00:00:00")
 
     assert 444 in db.get_pending_download_gids()
+
+    db.request_gallery_deletion(444)
+
+    assert 444 not in db.get_pending_download_gids()
 
 
 def test_pending_gallery_removal_round_trip(db: H2HDB) -> None:
@@ -889,21 +903,6 @@ def test_insert_pending_gallery_removal_rejects_long_name(db: H2HDB) -> None:
         db.insert_pending_gallery_removal("a" * 300)
 
 
-def test_delete_gallery_removes_gallery(db: H2HDB) -> None:
-    gallery_name = "artist - delete gallery target"
-    db.gallery_ids._insert_gallery_name(gallery_name)
-
-    assert db.gallery_ids._check_galleries_dbids_by_gallery_name(gallery_name) is True
-
-    db.delete_gallery(gallery_name)
-
-    assert db.gallery_ids._check_galleries_dbids_by_gallery_name(gallery_name) is False
-
-
-def test_delete_gallery_on_missing_gallery_is_noop(db: H2HDB) -> None:
-    db.delete_gallery("artist - never existed")
-
-
 def test_delete_pending_gallery_removals_deletes_gallery_and_clears_queue(
     db: H2HDB,
 ) -> None:
@@ -911,7 +910,8 @@ def test_delete_pending_gallery_removals_deletes_gallery_and_clears_queue(
     db.gallery_ids._insert_gallery_name(gallery_name)
     db.insert_pending_gallery_removal(gallery_name)
 
-    db.delete_pending_gallery_removals()
+    removed = db.pending_removals.recover_pending_gallery_removals(set())
 
+    assert removed == 1
     assert db.gallery_ids._check_galleries_dbids_by_gallery_name(gallery_name) is False
     assert db.get_pending_gallery_removals() == []

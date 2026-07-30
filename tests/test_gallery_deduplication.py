@@ -53,10 +53,9 @@ def _claim(db: H2HDB, db_gallery_id: int, sha256: bytes | None) -> ContentClaim:
 
 def _dedup_state(
     db: H2HDB,
-) -> tuple[dict[int, bytes], dict[int, bytes], dict[int, int]]:
+) -> tuple[dict[int, bytes], dict[int, int]]:
     return (
         db.gallery_deduplication._get_all_hashes("gallery_content_hashes"),
-        db.gallery_deduplication._get_all_hashes("gallery_full_content_hashes"),
         db.gallery_deduplication._get_all_duplicate_warnings(),
     )
 
@@ -75,14 +74,7 @@ def test_reconcile_many_selects_higher_priority_independently_per_hash(
         _claim(db, strong_id, hash_x),
     ]
 
-    result = db.gallery_deduplication.reconcile_many(
-        claims,
-        {
-            weak_id: _sha256(b"full-weak"),
-            strong_id: _sha256(b"full-strong"),
-            independent_id: _sha256(b"full-independent"),
-        },
-    )
+    result = db.gallery_deduplication.reconcile_many(claims)
 
     assert result.owner_hash_by_db_gallery_id == {
         strong_id: hash_x,
@@ -91,7 +83,7 @@ def test_reconcile_many_selects_higher_priority_independently_per_hash(
     assert result.duplicate_of_by_db_gallery_id == {weak_id: strong_id}
     assert result.eligible_db_gallery_ids == frozenset({strong_id, independent_id})
     assert _dedup_state(db)[0] == result.owner_hash_by_db_gallery_id
-    assert _dedup_state(db)[2] == result.duplicate_of_by_db_gallery_id
+    assert _dedup_state(db)[1] == result.duplicate_of_by_db_gallery_id
 
 
 def test_reconcile_many_exact_tie_keeps_valid_incumbent(db: H2HDB) -> None:
@@ -111,11 +103,7 @@ def test_reconcile_many_exact_tie_keeps_valid_incumbent(db: H2HDB) -> None:
         [
             _claim(db, challenger_id, sha256),
             _claim(db, owner_id, sha256),
-        ],
-        {
-            owner_id: _sha256(b"full-owner"),
-            challenger_id: _sha256(b"full-challenger"),
-        },
+        ]
     )
 
     assert result.owner_hash_by_db_gallery_id == {owner_id: sha256}
@@ -140,11 +128,7 @@ def test_reconcile_many_exact_tie_without_incumbent_uses_max_gallery_id(
     loser_id = min(first_id, second_id)
 
     result = db.gallery_deduplication.reconcile_many(
-        [_claim(db, second_id, sha256), _claim(db, first_id, sha256)],
-        {
-            first_id: _sha256(b"full-first"),
-            second_id: _sha256(b"full-second"),
-        },
+        [_claim(db, second_id, sha256), _claim(db, first_id, sha256)]
     )
 
     assert result.owner_hash_by_db_gallery_id == {winner_id: sha256}
@@ -161,11 +145,7 @@ def test_reconcile_many_ignores_owner_that_migrated_to_another_hash(
     db.gallery_deduplication._claim_hash(gallery_a, hash_x)
 
     result = db.gallery_deduplication.reconcile_many(
-        [_claim(db, gallery_a, hash_y), _claim(db, gallery_b, hash_x)],
-        {
-            gallery_a: _sha256(b"full-a"),
-            gallery_b: _sha256(b"full-b"),
-        },
+        [_claim(db, gallery_a, hash_y), _claim(db, gallery_b, hash_x)]
     )
 
     assert result.owner_hash_by_db_gallery_id == {
@@ -188,11 +168,7 @@ def test_reconcile_many_handles_cross_swap_of_existing_hashes(
     db.gallery_deduplication._claim_hash(gallery_b, hash_y)
 
     result = db.gallery_deduplication.reconcile_many(
-        [_claim(db, gallery_a, hash_y), _claim(db, gallery_b, hash_x)],
-        {
-            gallery_a: _sha256(b"full-a"),
-            gallery_b: _sha256(b"full-b"),
-        },
+        [_claim(db, gallery_a, hash_y), _claim(db, gallery_b, hash_x)]
     )
 
     assert result.owner_hash_by_db_gallery_id == {
@@ -212,27 +188,19 @@ def test_reconcile_many_contentless_gallery_loses_no_cbz_eligibility(
     other_hash = _sha256(b"other-content")
     db.gallery_deduplication._claim_hash(contentless_id, old_hash)
     db.gallery_deduplication._claim_hash(other_id, other_hash)
-    db.gallery_deduplication._set_full_content_hash(
-        contentless_id, _sha256(b"stale-full")
-    )
     db.gallery_deduplication._record_duplicate_warning(contentless_id, other_id)
 
     result = db.gallery_deduplication.reconcile_many(
         [
             _claim(db, contentless_id, None),
             _claim(db, other_id, other_hash),
-        ],
-        {other_id: _sha256(b"full-other")},
+        ]
     )
 
     assert result.owner_hash_by_db_gallery_id == {other_id: other_hash}
     assert result.duplicate_of_by_db_gallery_id == {}
     assert result.eligible_db_gallery_ids == frozenset({contentless_id, other_id})
-    assert _dedup_state(db) == (
-        {other_id: other_hash},
-        {other_id: _sha256(b"full-other")},
-        {},
-    )
+    assert _dedup_state(db) == ({other_id: other_hash}, {})
 
 
 def test_reconcile_many_retargets_stale_warning_to_final_winner(
@@ -250,12 +218,7 @@ def test_reconcile_many_retargets_stale_warning_to_final_winner(
             _claim(db, weak_id, sha256),
             _claim(db, incumbent_id, sha256),
             _claim(db, winner_id, sha256),
-        ],
-        {
-            weak_id: _sha256(b"full-weak"),
-            incumbent_id: _sha256(b"full-incumbent"),
-            winner_id: _sha256(b"full-winner"),
-        },
+        ]
     )
 
     assert result.owner_hash_by_db_gallery_id == {winner_id: sha256}
@@ -263,31 +226,7 @@ def test_reconcile_many_retargets_stale_warning_to_final_winner(
         weak_id: winner_id,
         incumbent_id: winner_id,
     }
-    assert _dedup_state(db)[2] == result.duplicate_of_by_db_gallery_id
-
-
-def test_reconcile_many_exactly_syncs_full_content_hashes(db: H2HDB) -> None:
-    gallery_a = _make_gallery(db, "gallery-a")
-    gallery_b = _make_gallery(db, "gallery-b")
-    gallery_c = _make_gallery(db, "gallery-c")
-    db.gallery_deduplication._set_full_content_hash(gallery_a, _sha256(b"old-full-a"))
-    db.gallery_deduplication._set_full_content_hash(gallery_b, _sha256(b"stale-full-b"))
-    new_full_a = _sha256(b"new-full-a")
-    new_full_c = _sha256(b"new-full-c")
-
-    db.gallery_deduplication.reconcile_many(
-        [
-            _claim(db, gallery_a, _sha256(b"content-a")),
-            _claim(db, gallery_b, None),
-            _claim(db, gallery_c, _sha256(b"content-c")),
-        ],
-        {gallery_a: new_full_a, gallery_c: new_full_c},
-    )
-
-    assert _dedup_state(db)[1] == {
-        gallery_a: new_full_a,
-        gallery_c: new_full_c,
-    }
+    assert _dedup_state(db)[1] == result.duplicate_of_by_db_gallery_id
 
 
 def test_reconcile_many_rejects_duplicate_claim_ids(db: H2HDB) -> None:
@@ -295,18 +234,7 @@ def test_reconcile_many_rejects_duplicate_claim_ids(db: H2HDB) -> None:
     claim = _claim(db, gallery_id, _sha256(b"content"))
 
     with pytest.raises(ValueError, match="exactly one content claim"):
-        db.gallery_deduplication.reconcile_many([claim, claim], {})
-
-
-def test_reconcile_many_rejects_full_hash_without_claim(db: H2HDB) -> None:
-    claimed_id = _make_gallery(db, "gallery-claimed")
-    extra_id = _make_gallery(db, "gallery-extra")
-
-    with pytest.raises(ValueError, match="galleries without content claims"):
-        db.gallery_deduplication.reconcile_many(
-            [_claim(db, claimed_id, _sha256(b"content"))],
-            {extra_id: _sha256(b"extra-full")},
-        )
+        db.gallery_deduplication.reconcile_many([claim, claim])
 
 
 def test_reconcile_many_is_idempotent(db: H2HDB) -> None:
@@ -317,16 +245,9 @@ def test_reconcile_many_is_idempotent(db: H2HDB) -> None:
         _claim(db, weak_id, sha256),
         _claim(db, strong_id, sha256),
     ]
-    full_hashes = {
-        weak_id: _sha256(b"full-weak"),
-        strong_id: _sha256(b"full-strong"),
-    }
-
-    first_result = db.gallery_deduplication.reconcile_many(claims, full_hashes)
+    first_result = db.gallery_deduplication.reconcile_many(claims)
     first_state = _dedup_state(db)
-    second_result = db.gallery_deduplication.reconcile_many(
-        list(reversed(claims)), full_hashes
-    )
+    second_result = db.gallery_deduplication.reconcile_many(list(reversed(claims)))
 
     assert second_result == first_result
     assert _dedup_state(db) == first_state

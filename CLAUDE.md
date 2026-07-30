@@ -100,8 +100,8 @@ practical, but avoid adding new behavior through inheritance.
 ### SQL abstraction
 
 `sql_connector.py` defines an abstract `SQLConnector` interface
-(connect/close/execute/fetch/commit/rollback) plus a small exception hierarchy
-for key/table/configuration errors. Two concrete implementations exist:
+(connect/close/execute/fetch/begin/commit/rollback) plus a small exception
+hierarchy for key/table/configuration errors. Two concrete implementations exist:
 `mariadb_connector.py` (wraps `mysql-connector-python`, wire-protocol
 compatible with MariaDB) and `sqlite_connector.py` (wraps stdlib `sqlite3`).
 Every repository method opens a connector via
@@ -109,6 +109,14 @@ Every repository method opens a connector via
 `%s` placeholders (the canonical placeholder style across the whole codebase —
 `SQLiteConnector` translates `%s` to `sqlite3`'s `?` internally; nothing else
 needs to know about that difference).
+
+Normal repository writes retain their existing per-statement commit behavior.
+Workflows that must atomically coordinate multiple tables use
+`with connector.transaction():`; MariaDB suppresses its per-statement
+auto-commit inside that block, while SQLite uses `BEGIN IMMEDIATE`. SQLite
+connections always enable foreign-key enforcement. Do not call repository
+methods that open another connector from inside a managed transaction; use a
+connector-accepting internal method instead.
 
 Most query bodies are identical across both backends and are written once,
 unconditionally. A `match self.config.database.sql_type.lower(): ...` dispatch
@@ -157,7 +165,7 @@ Hash catalog lookups and all database writes remain on the main thread.
 
 CPU-bound CBZ compression across *galleries* is dispatched to a shared
 `multiprocessing.Pool` via `run_in_parallel` in `cbz_files.py`.
-`insert_h2h_download` in `h2hdb_h2hdb.py` owns that pool's lifetime when
+`synchronize_once` in `h2hdb_h2hdb.py` owns that pool's lifetime when
 `cbz_path` is configured. `POOL_CPU_LIMIT`/`CPU_NUM` live in
 `h2hdb_h2hdb.py` alongside it.
 
@@ -172,15 +180,39 @@ incomplete provisional set.
 
 After all insertion chunks finish, the pipeline freezes the final exclusion
 set and performs one stable, global deduplication reconciliation across all
-current galleries. It exact-syncs content ownership, full-content hashes, and
-duplicate warnings, deletes loser CBZ files, and repairs final winners against
+current galleries. It exact-syncs content ownership and duplicate warnings,
+deletes loser CBZ files, and repairs final winners against
 the final exclusions. This final pass is the only pass that rebuilds existing
 CBZ files. For equal priority claims, a still-valid incumbent for that same hash
 remains the owner; otherwise the database gallery ID is the deterministic
 tie-breaker. Intermediate ownership and provisional CBZ output may be
-inconsistent, but a successful `main`/`insert_h2h_download` return has converged
+inconsistent, but a successful `main`/`synchronize_once` return has converged
 to the final snapshot. This result is stable relative to the prior owner used
 for exact ties; it is not a history-independent canonical assignment.
+
+### Gallery deletion and durable download requests
+
+`todelete_gallery_candidates` computes live deletion candidates by database
+gallery ID from explicit `todelete_gids`, older folders with the same GID, and
+`duplicate_hash_in_gallery`. A successful `synchronize_once()` exact-syncs
+those IDs into `todelete_galleries`; `todelete_rm_commands` is generated from
+that active snapshot. Full-content equality across different GIDs is not a raw
+folder deletion reason. It may still select one CBZ content owner.
+
+Publishing a candidate does not enqueue a download. Administrators may execute
+the removal command days later. Only a later filesystem scan that confirms the
+folder is absent deletes its gallery row. Its GID is atomically enqueued only
+after every active deletion candidate for that GID has disappeared, so
+candidates removed in separate administrator runs still produce one request.
+`pending_gallery_removals` remains an interruption journal for metadata writes;
+present pending folders are recovered without creating download requests.
+
+`todownload_gids` is a durable request table, not an in-flight log. Each row has
+an immutable UUID request token exposed through `DownloadRequest`. Enqueuing an
+existing GID replaces its token (while a blank URL preserves an existing
+non-blank URL), and completion conditionally deletes by both GID and token.
+This prevents an older worker from acknowledging a newer request. Failed or
+cancelled downloads must leave their request row intact.
 
 ### CBZ compression
 

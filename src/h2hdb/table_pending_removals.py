@@ -1,18 +1,33 @@
+from dataclasses import dataclass
 from itertools import chain
 
 from .repository import BaseRepository, RepositoryContext
 from .settings import FOLDER_NAME_LENGTH_LIMIT, chunk_list
+from .sql_connector import SQLConnector
 from .table_gids import H2HDBGalleriesIDs
+from .todownload_queue import H2HDBToDownloadQueue
 
 PENDING_REMOVAL_BATCH_SIZE = 500
 
 
+@dataclass(frozen=True, slots=True)
+class GalleryRemovalRow:
+    db_gallery_id: int
+    gallery_name: str
+    gid: int | None
+    is_deletion_candidate: bool
+
+
 class H2HDBPendingGalleryRemovals(BaseRepository):
     def __init__(
-        self, context: RepositoryContext, gallery_ids: H2HDBGalleriesIDs
+        self,
+        context: RepositoryContext,
+        gallery_ids: H2HDBGalleriesIDs,
+        todownload_queue: H2HDBToDownloadQueue,
     ) -> None:
         super().__init__(context)
         self.gallery_ids = gallery_ids
+        self.todownload_queue = todownload_queue
 
     def _create_pending_gallery_removals_table(self) -> None:
         with self.SQLConnector() as connector:
@@ -243,25 +258,196 @@ class H2HDBPendingGalleryRemovals(BaseRepository):
                 )
                 connector.execute(delete_query, parameters)
 
-    def delete_pending_gallery_removals(self) -> None:
-        pending_gallery_removals = self.get_pending_gallery_removals()
-        if not pending_gallery_removals:
+    def recover_pending_gallery_removals(self, current_gallery_names: set[str]) -> int:
+        """Recover interrupted metadata writes after the filesystem scan.
+
+        A pending name whose folder still exists is an interrupted insert or
+        refresh and must be removed without creating a download request; the
+        scan will reinsert it. A pending name whose folder is gone is a
+        confirmed physical removal and follows the durable redownload path.
+        """
+
+        pending_names = self.get_pending_gallery_removals()
+        if not pending_names:
+            return 0
+
+        present_names = [
+            name for name in pending_names if name in current_gallery_names
+        ]
+        missing_names = [
+            name for name in pending_names if name not in current_gallery_names
+        ]
+
+        if present_names:
+            self.refresh_galleries(present_names)
+            self.delete_pending_gallery_removals_by_names(present_names)
+        return self.delete_confirmed_missing_galleries(missing_names)
+
+    def delete_confirmed_missing_galleries(self, gallery_names: list[str]) -> int:
+        """Atomically remove missing rows and enqueue fully cleared candidate GIDs."""
+
+        if not gallery_names:
+            return 0
+
+        existing_names: list[str] = []
+        candidate_gids: set[int] = set()
+        with self.SQLConnector() as connector:
+            with connector.transaction():
+                for batch in chunk_list(gallery_names, PENDING_REMOVAL_BATCH_SIZE):
+                    rows = self._get_gallery_removal_rows(connector, batch)
+                    if not rows:
+                        self._delete_pending_rows_with_connector(connector, batch)
+                        continue
+
+                    db_gallery_ids = [row.db_gallery_id for row in rows]
+                    existing_names.extend(row.gallery_name for row in rows)
+                    batch_candidate_gids = {
+                        row.gid
+                        for row in rows
+                        if row.gid is not None and row.is_deletion_candidate
+                    }
+                    candidate_gids.update(batch_candidate_gids)
+
+                    placeholders = ", ".join(["%s"] * len(db_gallery_ids))
+                    connector.execute(
+                        f"""
+                        DELETE FROM todelete_galleries
+                        WHERE db_gallery_id IN ({placeholders})
+                        """,
+                        tuple(db_gallery_ids),
+                    )
+                    connector.execute(
+                        f"""
+                        DELETE FROM galleries_dbids
+                        WHERE db_gallery_id IN ({placeholders})
+                        """,
+                        tuple(db_gallery_ids),
+                    )
+                    self._delete_pending_rows_with_connector(connector, batch)
+
+                remaining_candidate_gids: set[int] = set()
+                for gid_batch in chunk_list(
+                    sorted(candidate_gids), PENDING_REMOVAL_BATCH_SIZE
+                ):
+                    placeholders = ", ".join(["%s"] * len(gid_batch))
+                    remaining_rows = connector.fetch_all(
+                        f"""
+                        SELECT DISTINCT galleries_gids.gid
+                        FROM todelete_galleries
+                            JOIN galleries_gids USING (db_gallery_id)
+                        WHERE galleries_gids.gid IN ({placeholders})
+                        """,
+                        tuple(gid_batch),
+                    )
+                    remaining_candidate_gids.update(
+                        int(row[0]) for row in remaining_rows
+                    )
+
+                queued_gids = candidate_gids.difference(remaining_candidate_gids)
+                for gid in sorted(queued_gids):
+                    self.todownload_queue._request_download_with_connector(
+                        connector, gid
+                    )
+
+                for gid_batch in chunk_list(
+                    sorted(queued_gids), PENDING_REMOVAL_BATCH_SIZE
+                ):
+                    placeholders = ", ".join(["%s"] * len(gid_batch))
+                    connector.execute(
+                        f"""
+                        DELETE FROM todelete_gids
+                        WHERE gid IN ({placeholders})
+                            AND NOT EXISTS (
+                                SELECT 1
+                                FROM galleries_gids
+                                WHERE galleries_gids.gid = todelete_gids.gid
+                            )
+                        """,
+                        tuple(gid_batch),
+                    )
+
+        for gallery_name in existing_names:
+            self.logger.info(
+                f"Gallery removed from database: gallery={gallery_name!r}."
+            )
+        return len(existing_names)
+
+    def _get_gallery_removal_rows(
+        self, connector: SQLConnector, gallery_names: list[str]
+    ) -> list[GalleryRemovalRow]:
+        match self.config.database.sql_type.lower():
+            case "mariadb":
+                column_name_parts, _ = self.mariadb_split_gallery_name_based_on_limit(
+                    "name"
+                )
+            case "sqlite":
+                column_name_parts, _ = self.sqlite_name_columns("name")
+
+        where_clause = " OR ".join(
+            "(" + " AND ".join(f"d.{part} = %s" for part in column_name_parts) + ")"
+            for _ in gallery_names
+        )
+        parameters = tuple(
+            chain.from_iterable(
+                self._split_gallery_name(gallery_name) for gallery_name in gallery_names
+            )
+        )
+        rows = connector.fetch_all(
+            f"""
+            SELECT
+                d.db_gallery_id,
+                {", ".join(f"d.{part}" for part in column_name_parts)},
+                g.gid,
+                CASE WHEN td.db_gallery_id IS NULL THEN 0 ELSE 1 END
+            FROM galleries_dbids AS d
+                LEFT JOIN galleries_gids AS g USING (db_gallery_id)
+                LEFT JOIN todelete_galleries AS td USING (db_gallery_id)
+            WHERE {where_clause}
+            """,
+            parameters,
+        )
+        name_part_count = len(column_name_parts)
+        return [
+            GalleryRemovalRow(
+                db_gallery_id=int(row[0]),
+                gallery_name="".join(
+                    str(part) for part in row[1 : 1 + name_part_count]
+                ),
+                gid=(
+                    int(row[1 + name_part_count])
+                    if row[1 + name_part_count] is not None
+                    else None
+                ),
+                is_deletion_candidate=bool(row[2 + name_part_count]),
+            )
+            for row in rows
+        ]
+
+    def _delete_pending_rows_with_connector(
+        self, connector: SQLConnector, gallery_names: list[str]
+    ) -> None:
+        if not gallery_names:
             return
-
-        self.delete_galleries(pending_gallery_removals)
-        self.delete_pending_gallery_removals_by_names(pending_gallery_removals)
-
-    def delete_gallery(self, gallery_name: str) -> None:
-        if self._delete_gallery_row(gallery_name):
-            self.logger.info(
-                f"Gallery removed from database: gallery={gallery_name!r}."
+        match self.config.database.sql_type.lower():
+            case "mariadb":
+                column_name_parts, _ = self.mariadb_split_gallery_name_based_on_limit(
+                    "name"
+                )
+            case "sqlite":
+                column_name_parts, _ = self.sqlite_name_columns("name")
+        where_clause = " OR ".join(
+            "(" + " AND ".join(f"{part} = %s" for part in column_name_parts) + ")"
+            for _ in gallery_names
+        )
+        parameters = tuple(
+            chain.from_iterable(
+                self._split_gallery_name(gallery_name) for gallery_name in gallery_names
             )
-
-    def delete_galleries(self, gallery_names: list[str]) -> None:
-        for gallery_name in self._delete_existing_gallery_rows(gallery_names):
-            self.logger.info(
-                f"Gallery removed from database: gallery={gallery_name!r}."
-            )
+        )
+        connector.execute(
+            f"DELETE FROM pending_gallery_removals WHERE {where_clause}",
+            parameters,
+        )
 
     def refresh_gallery(self, gallery_name: str) -> None:
         if self._delete_gallery_row(gallery_name):

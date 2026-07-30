@@ -54,6 +54,7 @@ class SQLiteConnector(SQLConnector):
             isolation_level=None,
             detect_types=sqlite3.PARSE_DECLTYPES,
         )
+        self.connection.execute("PRAGMA foreign_keys = ON")
 
     def close(self) -> None:
         self.connection.close()
@@ -67,6 +68,9 @@ class SQLiteConnector(SQLConnector):
 
     def commit(self) -> None:
         self.connection.commit()
+
+    def begin(self) -> None:
+        self.connection.execute("BEGIN IMMEDIATE")
 
     def rollback(self) -> None:
         self.connection.rollback()

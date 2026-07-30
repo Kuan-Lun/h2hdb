@@ -1,6 +1,6 @@
-"""Characterization tests for H2HDB.insert_h2h_download().
+"""Characterization tests for H2HDB.synchronize_once().
 
-These pin today's externally-observable behavior of the pipeline (gallery
+These pin the externally observable behavior of the pipeline (gallery
 scanning/sorting, global content-ownership reconciliation, CBZ compression,
 and duplicate-spam-image exclusion) so that extracting pieces of it into
 smaller methods doesn't silently change behavior.
@@ -156,35 +156,35 @@ def db(db_config: H2HDBConfig, download_path: Path) -> Iterator[H2HDB]:
         yield instance
 
 
-def test_insert_h2h_download_inserts_new_galleries_and_is_idempotent(
+def test_synchronize_once_inserts_new_galleries_and_is_idempotent(
     db: H2HDB, download_path: Path
 ) -> None:
     _write_galleryinfo(download_path / "700001", title="Gallery One")
     _write_galleryinfo(download_path / "700002", title="Gallery Two")
 
-    assert db.insert_h2h_download() is True
+    assert db.synchronize_once().has_changes is True
     assert sorted(db.gallery_gids.get_gids()) == [700001, 700002]
 
     # Nothing changed on disk, so the second pass must not find new work.
-    assert db.insert_h2h_download() is False
+    assert db.synchronize_once().has_changes is False
     assert sorted(db.gallery_gids.get_gids()) == [700001, 700002]
 
 
-def test_insert_h2h_download_reimports_changed_galleryinfo_with_sha256(
+def test_synchronize_once_reimports_changed_galleryinfo_with_sha256(
     db: H2HDB, download_path: Path
 ) -> None:
     gallery_folder = download_path / "700003"
     _write_galleryinfo(gallery_folder, title="Original title")
     galleryinfo_path = gallery_folder / "galleryinfo.txt"
 
-    assert db.insert_h2h_download() is True
+    assert db.synchronize_once().has_changes is True
 
     updated_text = galleryinfo_path.read_text(encoding="utf-8").replace(
         "Title: Original title", "Title: Updated title"
     )
     galleryinfo_path.write_text(updated_text, encoding="utf-8")
 
-    assert db.insert_h2h_download() is True
+    assert db.synchronize_once().has_changes is True
     assert db.gallery_titles.get_title_by_gallery_name("700003") == "Updated title"
 
     db_gallery_id = db.gallery_ids._get_db_gallery_id_by_gallery_name("700003")
@@ -193,10 +193,10 @@ def test_insert_h2h_download_reimports_changed_galleryinfo_with_sha256(
         db.files.get_hash_value_by_file_id(db_file_id, FILE_CONTENT_HASH_ALGORITHM)
         == hashlib.sha256(galleryinfo_path.read_bytes()).digest()
     )
-    assert db.insert_h2h_download() is False
+    assert db.synchronize_once().has_changes is False
 
 
-def test_insert_h2h_download_emits_perf_debug_stages(
+def test_synchronize_once_emits_perf_debug_stages(
     sqlite_config: H2HDBConfig,
     download_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -209,25 +209,25 @@ def test_insert_h2h_download_emits_perf_debug_stages(
         debug_messages: list[str] = []
         monkeypatch.setattr(instance.logger, "debug", debug_messages.append)
 
-        assert instance.insert_h2h_download() is True
+        assert instance.synchronize_once().has_changes is True
 
     perf_messages = [
         message for message in debug_messages if message.startswith("PERF ")
     ]
     for expected_message in (
-        "event=start stage=insert_h2h_download",
+        "event=start stage=synchronize_once",
         "event=end stage=sql_insert",
         "event=end stage=gallery_files",
         "event=end stage=file_byte_hashing",
         "event=end stage=hash_association_insert",
         "event=end stage=final_dedup",
         "event=end stage=cleanup_file_hashes",
-        "event=end stage=insert_h2h_download",
+        "event=end stage=synchronize_once",
     ):
         assert any(expected_message in message for message in perf_messages)
 
 
-def test_insert_h2h_download_creates_cbz_files_when_cbz_path_configured(
+def test_synchronize_once_creates_cbz_files_when_cbz_path_configured(
     db: H2HDB, download_path: Path, tmp_path: Path
 ) -> None:
     cbz_path = tmp_path / "cbz"
@@ -237,7 +237,7 @@ def test_insert_h2h_download_creates_cbz_files_when_cbz_path_configured(
     gallery_folder = download_path / "700003"
     _write_galleryinfo(gallery_folder, title="Gallery Three", pages=1)
 
-    assert db.insert_h2h_download() is True
+    assert db.synchronize_once().has_changes is True
 
     cbz_file = cbz_path / gallery_name_to_cbz_file_name("700003")
     assert cbz_file.exists()
@@ -395,7 +395,7 @@ def test_compress_gallery_to_cbz_flattens_palette_transparency_onto_white(
         )
 
 
-def test_insert_h2h_download_logs_cbz_batch_outcome_counts(
+def test_synchronize_once_logs_cbz_batch_outcome_counts(
     sqlite_config: H2HDBConfig,
     download_path: Path,
     tmp_path: Path,
@@ -412,7 +412,7 @@ def test_insert_h2h_download_logs_cbz_batch_outcome_counts(
         info_messages: list[str] = []
         monkeypatch.setattr(instance.logger, "info", info_messages.append)
 
-        assert instance.insert_h2h_download() is True
+        assert instance.synchronize_once().has_changes is True
 
         assert any(
             "Provisional CBZ check for gallery chunk 1/1 completed: "
@@ -448,13 +448,13 @@ def test_source_filename_rename_updates_database_and_rebuilds_cbz(
 
     with H2HDB(config=sqlite_config) as instance:
         instance.create_main_tables()
-        assert instance.insert_h2h_download() is True
+        assert instance.synchronize_once().has_changes is True
 
         (gallery_folder / "000.jpg").rename(gallery_folder / "renamed.jpg")
         info_messages: list[str] = []
         monkeypatch.setattr(instance.logger, "info", info_messages.append)
 
-        assert instance.insert_h2h_download() is True
+        assert instance.synchronize_once().has_changes is True
         assert set(instance.files.get_files_by_gallery_name(gallery_name)) == {
             "galleryinfo.txt",
             "renamed.jpg",
@@ -489,7 +489,7 @@ def test_normalized_png_to_jpg_rename_forces_cbz_rebuild(
 
     with H2HDB(config=sqlite_config) as instance:
         instance.create_main_tables()
-        assert instance.insert_h2h_download() is True
+        assert instance.synchronize_once().has_changes is True
 
         cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
         _replace_cbz_member(cbz_file, "001.jpg", b"stale-but-same-member-name")
@@ -526,7 +526,7 @@ def test_normalized_png_to_jpg_rename_forces_cbz_rebuild(
             record_compression_policy,
         )
 
-        assert instance.insert_h2h_download() is True
+        assert instance.synchronize_once().has_changes is True
         assert compression_calls == [
             (ExistingCBZPolicy.reconcile, frozenset({gallery_name}))
         ]
@@ -559,7 +559,7 @@ def test_cbz_disabled_keeps_rename_pending_until_cbz_is_enabled(
 
     with H2HDB(config=sqlite_config) as instance:
         instance.create_main_tables()
-        assert instance.insert_h2h_download() is True
+        assert instance.synchronize_once().has_changes is True
 
         cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
         stale_member = b"stale-while-cbz-output-is-disabled"
@@ -567,7 +567,7 @@ def test_cbz_disabled_keeps_rename_pending_until_cbz_is_enabled(
         source_path.rename(gallery_folder / "002.jpg")
 
         instance.config.h2h.cbz_path = None
-        assert instance.insert_h2h_download() is True
+        assert instance.synchronize_once().has_changes is True
         assert instance.pending_cbz_rebuilds.get_pending_gallery_names() == {
             gallery_name
         }
@@ -579,7 +579,7 @@ def test_cbz_disabled_keeps_rename_pending_until_cbz_is_enabled(
             assert cbz.read("002.jpg") == stale_member
 
         instance.config.h2h.cbz_path = cbz_path
-        assert instance.insert_h2h_download() is False
+        assert instance.synchronize_once().has_changes is False
         assert instance.pending_cbz_rebuilds.get_pending_gallery_names() == set()
         with zipfile.ZipFile(cbz_file) as cbz:
             rebuilt_image = cbz.read("002.jpg")
@@ -604,7 +604,7 @@ def test_fresh_database_preserves_existing_correct_cbz_during_provisional_check(
 
     with H2HDB(config=sqlite_config) as original_instance:
         original_instance.create_main_tables()
-        assert original_instance.insert_h2h_download() is True
+        assert original_instance.synchronize_once().has_changes is True
 
     cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
     with zipfile.ZipFile(cbz_file) as cbz:
@@ -649,7 +649,7 @@ def test_fresh_database_preserves_existing_correct_cbz_during_provisional_check(
             record_compression_policy,
         )
 
-        assert instance.insert_h2h_download() is True
+        assert instance.synchronize_once().has_changes is True
 
     assert [
         (policy, forced_names) for policy, forced_names, _ in compression_calls
@@ -679,7 +679,7 @@ def test_fresh_database_rebuilds_cbz_after_normalized_source_rename(
 
     with H2HDB(config=sqlite_config) as original_instance:
         original_instance.create_main_tables()
-        assert original_instance.insert_h2h_download() is True
+        assert original_instance.synchronize_once().has_changes is True
 
     cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
     with zipfile.ZipFile(cbz_file) as cbz:
@@ -717,7 +717,7 @@ def test_fresh_database_rebuilds_cbz_after_normalized_source_rename(
             record_compression_policy,
         )
 
-        assert instance.insert_h2h_download() is True
+        assert instance.synchronize_once().has_changes is True
 
     assert [policy for policy, _ in compression_calls] == [
         ExistingCBZPolicy.preserve,
@@ -750,7 +750,7 @@ def test_fresh_database_rebuilds_cbz_after_source_filenames_are_swapped(
 
     with H2HDB(config=sqlite_config) as original_instance:
         original_instance.create_main_tables()
-        assert original_instance.insert_h2h_download() is True
+        assert original_instance.synchronize_once().has_changes is True
 
     cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
     with zipfile.ZipFile(cbz_file) as cbz:
@@ -794,7 +794,7 @@ def test_fresh_database_rebuilds_cbz_after_source_filenames_are_swapped(
             record_compression_summary,
         )
 
-        assert instance.insert_h2h_download() is True
+        assert instance.synchronize_once().has_changes is True
 
     assert [summary.write_operations for summary in compression_calls] == [0, 1]
     assert [summary.rebuilt for summary in compression_calls] == [0, 1]
@@ -821,7 +821,7 @@ def test_fresh_database_rebuilds_existing_cbz_without_input_manifest_once(
 
     with H2HDB(config=sqlite_config) as original_instance:
         original_instance.create_main_tables()
-        assert original_instance.insert_h2h_download() is True
+        assert original_instance.synchronize_once().has_changes is True
 
     cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
     _remove_cbz_input_manifest(cbz_file)
@@ -856,14 +856,14 @@ def test_fresh_database_rebuilds_existing_cbz_without_input_manifest_once(
             record_compression_summary,
         )
 
-        assert instance.insert_h2h_download() is True
+        assert instance.synchronize_once().has_changes is True
         assert [summary.write_operations for summary in compression_calls] == [0, 1]
         assert [summary.rebuilt for summary in compression_calls] == [0, 1]
         with zipfile.ZipFile(cbz_file) as cbz:
             assert cbz.comment
 
         compression_calls.clear()
-        assert instance.insert_h2h_download() is False
+        assert instance.synchronize_once().has_changes is False
         assert [summary.write_operations for summary in compression_calls] == [0]
         assert [summary.unchanged for summary in compression_calls] == [1]
 
@@ -883,19 +883,19 @@ def test_existing_cbz_with_v1_input_manifest_is_rebuilt_once(
 
     with H2HDB(config=sqlite_config) as instance:
         instance.create_main_tables()
-        assert instance.insert_h2h_download() is True
+        assert instance.synchronize_once().has_changes is True
 
         cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
         legacy_comment = _legacy_v1_cbz_manifest_comment(gallery_folder)
         with zipfile.ZipFile(cbz_file, "a") as cbz:
             cbz.comment = legacy_comment
 
-        assert instance.insert_h2h_download() is False
+        assert instance.synchronize_once().has_changes is False
         with zipfile.ZipFile(cbz_file) as cbz:
             assert cbz.comment != legacy_comment
         rebuilt_cbz = cbz_file.read_bytes()
 
-        assert instance.insert_h2h_download() is False
+        assert instance.synchronize_once().has_changes is False
         assert cbz_file.read_bytes() == rebuilt_cbz
 
 
@@ -917,7 +917,7 @@ def test_interrupted_rename_rebuild_remains_pending_for_next_run(
 
     with H2HDB(config=sqlite_config) as instance:
         instance.create_main_tables()
-        assert instance.insert_h2h_download() is True
+        assert instance.synchronize_once().has_changes is True
 
         cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
         stale_member = b"stale-before-simulated-forced-termination"
@@ -952,7 +952,7 @@ def test_interrupted_rename_rebuild_remains_pending_for_next_run(
             RuntimeError,
             match="simulated forced termination before CBZ rebuild",
         ):
-            instance.insert_h2h_download()
+            instance.synchronize_once()
 
         assert instance.pending_cbz_rebuilds.get_pending_gallery_names() == {
             gallery_name
@@ -965,7 +965,7 @@ def test_interrupted_rename_rebuild_remains_pending_for_next_run(
             "compress_galleries_to_cbz",
             original_compress,
         )
-        assert instance.insert_h2h_download() is False
+        assert instance.synchronize_once().has_changes is False
         assert instance.pending_cbz_rebuilds.get_pending_gallery_names() == set()
         with zipfile.ZipFile(cbz_file) as cbz:
             rebuilt_image = cbz.read("003.jpg")
@@ -974,7 +974,7 @@ def test_interrupted_rename_rebuild_remains_pending_for_next_run(
             image.verify()
 
 
-def test_insert_h2h_download_creates_provisional_cbz_between_progress_chunks(
+def test_synchronize_once_creates_provisional_cbz_between_progress_chunks(
     db: H2HDB,
     download_path: Path,
     tmp_path: Path,
@@ -1014,7 +1014,7 @@ def test_insert_h2h_download_creates_provisional_cbz_between_progress_chunks(
         observe_before_inserting_next_chunk,
     )
 
-    assert db.insert_h2h_download() is True
+    assert db.synchronize_once().has_changes is True
 
     assert len(seen_chunks) == 2
     assert all(len(chunk) == 1 for chunk in seen_chunks)
@@ -1027,7 +1027,7 @@ def test_insert_h2h_download_creates_provisional_cbz_between_progress_chunks(
             assert set(cbz.namelist()) == {"galleryinfo.txt", "001.jpg"}
 
 
-def test_insert_h2h_download_keeps_galleryinfo_only_gallery_eligible_for_cbz(
+def test_synchronize_once_keeps_galleryinfo_only_gallery_eligible_for_cbz(
     db: H2HDB, download_path: Path, tmp_path: Path
 ) -> None:
     cbz_path = tmp_path / "cbz"
@@ -1040,12 +1040,11 @@ def test_insert_h2h_download_keeps_galleryinfo_only_gallery_eligible_for_cbz(
         title="Gallery With Metadata Only",
     )
 
-    assert db.insert_h2h_download() is True
+    assert db.synchronize_once().has_changes is True
 
     db_gallery_id = db.gallery_ids._get_db_gallery_id_by_gallery_name(gallery_name)
     assert db_gallery_id > 0
     assert db.gallery_deduplication._get_all_hashes("gallery_content_hashes") == {}
-    assert db.gallery_deduplication._get_all_hashes("gallery_full_content_hashes") == {}
     assert db.gallery_deduplication.get_duplicate_warning_db_gallery_ids() == []
 
     cbz_file = cbz_path / gallery_name_to_cbz_file_name(gallery_name)
@@ -1054,7 +1053,7 @@ def test_insert_h2h_download_keeps_galleryinfo_only_gallery_eligible_for_cbz(
         assert cbz.namelist() == ["galleryinfo.txt"]
 
 
-def test_insert_h2h_download_groups_cbz_by_upload_time_when_configured(
+def test_synchronize_once_groups_cbz_by_upload_time_when_configured(
     db: H2HDB,
     download_path: Path,
     tmp_path: Path,
@@ -1075,7 +1074,7 @@ def test_insert_h2h_download_groups_cbz_by_upload_time_when_configured(
         pages=1,
     )
 
-    assert db.insert_h2h_download() is True
+    assert db.synchronize_once().has_changes is True
 
     cbz_file = cbz_path / "2023" / "05" / "17" / gallery_name_to_cbz_file_name("700004")
     assert cbz_file.exists()
@@ -1085,14 +1084,14 @@ def test_insert_h2h_download_groups_cbz_by_upload_time_when_configured(
     # Changing the grouping must move the expected output rather than retaining
     # an old same-named CBZ that a basename-only lookup could later scrub.
     db.config.h2h.cbz_grouping = CBZ_GROUPING.date_yyyy
-    assert db.insert_h2h_download() is False
+    assert db.synchronize_once().has_changes is False
 
     regrouped_cbz_file = cbz_path / "2023" / gallery_name_to_cbz_file_name("700004")
     assert not cbz_file.exists()
     assert regrouped_cbz_file.exists()
 
 
-def test_insert_h2h_download_excludes_and_recovers_duplicate_spam_images(
+def test_synchronize_once_excludes_and_recovers_duplicate_spam_images(
     db: H2HDB,
     download_path: Path,
     tmp_path: Path,
@@ -1140,7 +1139,7 @@ def test_insert_h2h_download_excludes_and_recovers_duplicate_spam_images(
         observe_provisional_cbzs_before_final_reconciliation,
     )
 
-    assert db.insert_h2h_download() is True
+    assert db.synchronize_once().has_changes is True
     assert saw_unreconciled_provisional_cbzs
 
     db_gallery_ids = {
@@ -1158,7 +1157,7 @@ def test_insert_h2h_download_excludes_and_recovers_duplicate_spam_images(
 
     # A no-op pass must use the same final exclusion snapshot and preserve both
     # contentless eligibility and the metadata-only CBZ result.
-    assert db.insert_h2h_download() is False
+    assert db.synchronize_once().has_changes is False
 
     for name in gallery_names:
         cbz_file = cbz_path / gallery_name_to_cbz_file_name(name)
@@ -1166,7 +1165,7 @@ def test_insert_h2h_download_excludes_and_recovers_duplicate_spam_images(
             assert cbz.namelist() == ["galleryinfo.txt"]
 
 
-def test_insert_h2h_download_reconciles_migrated_owner_before_compression(
+def test_synchronize_once_reconciles_migrated_owner_before_compression(
     db: H2HDB,
     download_path: Path,
     tmp_path: Path,
@@ -1199,7 +1198,7 @@ def test_insert_h2h_download_reconciles_migrated_owner_before_compression(
     a_page = a_folder / "001.jpg"
     a_page.write_bytes(content_x)
 
-    assert db.insert_h2h_download() is True
+    assert db.synchronize_once().has_changes is True
 
     a_id = db.gallery_ids._get_db_gallery_id_by_gallery_name(a_name)
     assert db.gallery_deduplication._get_all_hashes("gallery_content_hashes") == {
@@ -1236,7 +1235,7 @@ def test_insert_h2h_download_reconciles_migrated_owner_before_compression(
 
     # This single successful return must be the convergence point; no repair
     # run is allowed or needed.
-    assert db.insert_h2h_download() is True
+    assert db.synchronize_once().has_changes is True
 
     assert db.gallery_ids._get_db_gallery_id_by_gallery_name(a_name) == a_id
     b_id = db.gallery_ids._get_db_gallery_id_by_gallery_name(b_name)
@@ -1265,7 +1264,7 @@ def test_insert_h2h_download_reconciles_migrated_owner_before_compression(
                 assert abs(actual_pixel[0] - expected_pixel[0]) <= 2
 
 
-def test_insert_h2h_download_resolves_three_way_content_hash_collision(
+def test_synchronize_once_resolves_three_way_content_hash_collision(
     db: H2HDB, download_path: Path, tmp_path: Path
 ) -> None:
     """Three brand-new galleries in one chunk share byte-identical file
@@ -1289,7 +1288,7 @@ def test_insert_h2h_download_resolves_three_way_content_hash_collision(
         _write_galleryinfo(folder, title=title)
         (folder / "001.jpg").write_bytes(shared_image)
 
-    assert db.insert_h2h_download() is True
+    assert db.synchronize_once().has_changes is True
 
     winner_name, loser_names = "700042", ["700040", "700041"]
     winner_cbz = cbz_path / gallery_name_to_cbz_file_name(winner_name)
@@ -1312,7 +1311,7 @@ def test_insert_h2h_download_resolves_three_way_content_hash_collision(
     assert winner_id not in loser_ids
 
 
-def test_insert_h2h_download_sorts_by_upload_time_descending(
+def test_synchronize_once_sorts_by_upload_time_descending(
     db: H2HDB, download_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db.config.h2h.cbz_sort = CBZ_SORT.upload_time
@@ -1335,12 +1334,12 @@ def test_insert_h2h_download_sorts_by_upload_time_descending(
 
     monkeypatch.setattr(db, "_insert_gallery_chunk_with_split_retry", recording)
 
-    db.insert_h2h_download()
+    db.synchronize_once()
 
     assert seen_orders == [["700021", "700022", "700020"]]
 
 
-def test_insert_h2h_download_sorts_by_pages_distance_from_adjustment(
+def test_synchronize_once_sorts_by_pages_distance_from_adjustment(
     db: H2HDB, download_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db.config.h2h.cbz_sort = "pages+5"  # type: ignore[assignment]
@@ -1357,6 +1356,6 @@ def test_insert_h2h_download_sorts_by_pages_distance_from_adjustment(
 
     monkeypatch.setattr(db, "_insert_gallery_chunk_with_split_retry", recording)
 
-    db.insert_h2h_download()
+    db.synchronize_once()
 
     assert seen_orders == [["700030", "700031", "700032"]]
