@@ -177,7 +177,15 @@ the catalog completes one baseline scan before a downloader can claim a turn.
 fenced `DownloadTurn`; only that live token can renew its lease or idempotently
 call `request_gallery_ingest()`. A successful root traversal instead calls
 `finish_download_turn()`, which performs the explicit handoff and exact-token
-request deletion in one transaction. Downloader callers wait for
+request deletion in one transaction. A confirmed missing root instead calls
+`finish_missing_download_turn()`, which first fences and records that handoff,
+then, only if the exact request token remains current, writes the removed marker
+and deletes that request in the same transaction. A direct missing lookup uses
+`complete_missing_download_request()` with the same token fence; a later
+successful lookup clears the stale marker with `clear_removed_gallery_gid()`,
+and replaying an older completion cannot restore it. Once any handoff for a turn
+is already committed, later finish calls are idempotent no-ops and must not
+perform success or missing mutations. Downloader callers wait for
 `completed_generation >= turn.generation` before claiming another root request.
 The main loop atomically claims requested ingestion, an expired downloader or
 ingester lease, or a due periodic scan. A fresh `DOWNLOADING` lease always
@@ -290,7 +298,14 @@ retryable and may explicitly request ingest for any complete published files.
 Successful traversal calls `finish_download_turn()`, atomically recording the
 handoff and conditionally deleting the matching root token. If that GID already
 has a newer token, deletion is a no-op: the current live turn still hands off,
-and the newer request remains queued for a later turn.
+and the newer request remains queued for a later turn. Confirmed missing results
+atomically add the GID to `removed_galleries_gids` and exact-delete the request
+only if that request token is still current; otherwise both mutations are
+skipped. The coordinated variant performs its fenced handoff first in that same
+transaction. If a later lookup finds the gallery, it clears the removed marker;
+an idempotent replay of the older completion cannot add it again. A finish call
+made after the same turn already used the generic failure handoff also performs
+no request or removed-marker mutations.
 
 ### CBZ compression
 

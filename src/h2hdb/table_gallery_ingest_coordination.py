@@ -6,7 +6,7 @@ __all__ = [
 
 
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import Enum, StrEnum, auto
 from uuid import uuid4
 
 from .repository import BaseRepository
@@ -21,6 +21,12 @@ class GalleryIngestPhase(StrEnum):
     downloading = "DOWNLOADING"
     ingest_requested = "INGEST_REQUESTED"
     ingesting = "INGESTING"
+
+
+class _DownloadHandoffResult(Enum):
+    accepted = auto()
+    already_accepted = auto()
+    rejected = auto()
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,7 +400,8 @@ class H2HDBGalleryIngestCoordination(BaseRepository):
     def request_gallery_ingest(self, turn: DownloadTurn) -> bool:
         with self.SQLConnector() as connector:
             with connector.transaction():
-                return self._request_gallery_ingest_with_connector(connector, turn)
+                result = self._handoff_download_turn_with_connector(connector, turn)
+        return result is not _DownloadHandoffResult.rejected
 
     @staticmethod
     def _handoff_matches(
@@ -406,24 +413,24 @@ class H2HDBGalleryIngestCoordination(BaseRepository):
             and state.handoff_owner_token == turn.owner_token
         )
 
-    def _request_gallery_ingest_with_connector(
+    def _handoff_download_turn_with_connector(
         self,
         connector: SQLConnector,
         turn: DownloadTurn,
-    ) -> bool:
+    ) -> _DownloadHandoffResult:
         state = self._select_state(connector, for_update=True)
         if self._handoff_matches(state, turn):
-            return True
+            return _DownloadHandoffResult.already_accepted
         if (
             state.phase != GalleryIngestPhase.downloading
             or state.generation != turn.generation
             or state.owner_token != turn.owner_token
         ):
-            return False
+            return _DownloadHandoffResult.rejected
 
         now = self._database_time(connector)
         if state.lease_expires_at is None or state.lease_expires_at <= now:
-            return False
+            return _DownloadHandoffResult.rejected
         connector.execute(
             f"""
             UPDATE {GALLERY_INGEST_STATE_TABLE}
@@ -442,7 +449,7 @@ class H2HDBGalleryIngestCoordination(BaseRepository):
                 GALLERY_INGEST_STATE_ID,
             ),
         )
-        return True
+        return _DownloadHandoffResult.accepted
 
     @staticmethod
     def _lease_is_expired(state: GalleryIngestState, *, now: int) -> bool:

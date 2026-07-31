@@ -99,9 +99,14 @@ def test_gallery_gid_duplicate_raises(db: H2HDB) -> None:
 
 def test_removed_gallery_gid_round_trip(db: H2HDB) -> None:
     db.removed_galleries.insert_removed_gallery_gid(42)
+    db.removed_galleries.insert_removed_gallery_gid(42)
 
     assert db.removed_galleries._check_removed_gallery_gid(42) is True
     assert db.removed_galleries.select_removed_gallery_gid(42) == 42
+
+    db.removed_galleries.delete_removed_gallery_gid(42)
+    db.removed_galleries.delete_removed_gallery_gid(42)
+    assert db.removed_galleries._check_removed_gallery_gid(42) is False
 
 
 def test_removed_gallery_gid_missing_raises(db: H2HDB) -> None:

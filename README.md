@@ -119,6 +119,14 @@ use these public methods:
 - `request_gallery_ingest(turn)` idempotently hands the generation to h2hdb.
 - `finish_download_turn(turn, request)` atomically hands off a successful root
   traversal and conditionally deletes only that request token.
+- `finish_missing_download_turn(turn, request, gid)` atomically fences and hands
+  off a coordinated lookup; only while that exact request token is still current
+  does it record the GID as removed and delete the request.
+- `complete_missing_download_request(request, gid)` records a confirmed missing
+  gallery and deletes a direct request in one transaction, only while that exact
+  token is still current.
+- `clear_removed_gallery_gid(gid)` clears a prior missing result after a later
+  lookup finds the gallery again.
 - `get_gallery_ingest_state()` exposes the durable phase and
   `completed_generation`; a downloader may start its next root request only
   after `completed_generation >= turn.generation`.
@@ -148,7 +156,14 @@ any complete files. A successful traversal uses `finish_download_turn()` so
 handoff and exact-token deletion share one transaction. If the same GID was
 already re-enqueued with a newer request token, deletion is a no-op: the
 completed live turn still hands off immediately and the newer request remains
-queued.
+queued. A confirmed missing result uses `finish_missing_download_turn()` for a
+coordinated root or `complete_missing_download_request()` for a direct request,
+so the removed marker and exact-token deletion cannot be partially committed
+and a stale token cannot write either. A later successful lookup calls
+`clear_removed_gallery_gid()` to repair that marker; replaying the older
+completion cannot restore it. If the turn was already handed off by the generic
+failure path, a later finish call acknowledges that handoff without performing
+any success or missing mutations.
 
 Completed removal and changed-gallery batches add work to the singleton
 `database_maintenance_state` row. Automatic optimization is evaluated only

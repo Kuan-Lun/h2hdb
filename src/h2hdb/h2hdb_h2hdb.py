@@ -63,6 +63,7 @@ from .table_gallery_ingest_coordination import (
     GalleryIngestState,
     GalleryIngestTurn,
     H2HDBGalleryIngestCoordination,
+    _DownloadHandoffResult,
 )
 from .table_gallery_source_manifests import H2HDBGallerySourceManifests
 from .table_gids import H2HDBGalleriesGIDs, H2HDBGalleriesIDs
@@ -236,6 +237,37 @@ class H2HDB(BaseRepository):
     def complete_download_request(self, request: DownloadRequest) -> None:
         self.todownload_queue.complete_download_request(request)
 
+    @staticmethod
+    def _validate_missing_download_request(
+        request: DownloadRequest,
+        gid: int,
+    ) -> None:
+        if request.gid != gid:
+            raise ValueError(
+                f"Download request GID {request.gid} does not match missing "
+                f"gallery GID {gid}."
+            )
+
+    def complete_missing_download_request(
+        self,
+        request: DownloadRequest,
+        gid: int,
+    ) -> None:
+        self._validate_missing_download_request(request, gid)
+        with self.SQLConnector() as connector:
+            with connector.transaction():
+                if self.todownload_queue._complete_download_request_with_connector(
+                    connector,
+                    request,
+                ):
+                    self.removed_galleries._insert_removed_gallery_gid_with_connector(
+                        connector,
+                        gid,
+                    )
+
+    def clear_removed_gallery_gid(self, gid: int) -> None:
+        self.removed_galleries.delete_removed_gallery_gid(gid)
+
     def get_download_requests(self) -> list[DownloadRequest]:
         return self.todownload_queue.get_download_requests()
 
@@ -263,11 +295,14 @@ class H2HDB(BaseRepository):
     ) -> bool:
         with self.SQLConnector() as connector:
             with connector.transaction():
-                if not self.gallery_ingest._request_gallery_ingest_with_connector(
+                handoff = self.gallery_ingest._handoff_download_turn_with_connector(
                     connector,
                     turn,
-                ):
+                )
+                if handoff is _DownloadHandoffResult.rejected:
                     return False
+                if handoff is _DownloadHandoffResult.already_accepted:
+                    return True
                 # Exact-token deletion is deliberately a no-op when the same
                 # GID was re-enqueued with a newer token. The completed live
                 # turn still hands off immediately, while the newer request
@@ -276,6 +311,33 @@ class H2HDB(BaseRepository):
                     connector,
                     request,
                 )
+        return True
+
+    def finish_missing_download_turn(
+        self,
+        turn: DownloadTurn,
+        request: DownloadRequest,
+        gid: int,
+    ) -> bool:
+        self._validate_missing_download_request(request, gid)
+        with self.SQLConnector() as connector:
+            with connector.transaction():
+                handoff = self.gallery_ingest._handoff_download_turn_with_connector(
+                    connector,
+                    turn,
+                )
+                if handoff is _DownloadHandoffResult.rejected:
+                    return False
+                if handoff is _DownloadHandoffResult.already_accepted:
+                    return True
+                if self.todownload_queue._complete_download_request_with_connector(
+                    connector,
+                    request,
+                ):
+                    self.removed_galleries._insert_removed_gallery_gid_with_connector(
+                        connector,
+                        gid,
+                    )
         return True
 
     def get_gallery_ingest_state(self) -> GalleryIngestState:

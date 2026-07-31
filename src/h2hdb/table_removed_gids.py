@@ -1,56 +1,98 @@
 from .repository import BaseRepository
-from .sql_connector import DatabaseKeyError
+from .sql_connector import DatabaseKeyError, SQLConnector
+
+REMOVED_GALLERIES_TABLE = "removed_galleries_gids"
 
 
 class H2HDBRemovedGalleries(BaseRepository):
     def _create_removed_galleries_gids_table(self) -> None:
         with self.SQLConnector() as connector:
-            table_name = "removed_galleries_gids"
             match self.config.database.sql_type.lower():
                 case "mariadb":
                     query = f"""
-                        CREATE TABLE IF NOT EXISTS {table_name} (
+                        CREATE TABLE IF NOT EXISTS {REMOVED_GALLERIES_TABLE} (
                             PRIMARY KEY (gid),
                             gid INT UNSIGNED NOT NULL
                         )
                     """
                 case "sqlite":
                     query = f"""
-                        CREATE TABLE IF NOT EXISTS {table_name} (
+                        CREATE TABLE IF NOT EXISTS {REMOVED_GALLERIES_TABLE} (
                             gid INTEGER NOT NULL PRIMARY KEY
                         )
                     """
             connector.execute(query)
-            self.logger.debug(f"Ensured database table exists: name={table_name}.")
+            self.logger.debug(
+                f"Ensured database table exists: name={REMOVED_GALLERIES_TABLE}."
+            )
 
     def insert_removed_gallery_gid(self, gid: int) -> None:
         with self.SQLConnector() as connector:
-            table_name = "removed_galleries_gids"
-            insert_query = f"""
-                INSERT INTO {table_name} (gid) VALUES (%s)
-            """
-            if self._check_removed_gallery_gid(gid):
-                self.logger.warning(f"Removed gallery GID {gid} already exists.")
-            else:
-                connector.execute(insert_query, (gid,))
+            with connector.transaction():
+                self._insert_removed_gallery_gid_with_connector(connector, gid)
 
-    def __get_removed_gallery_gid(self, gid: int) -> tuple[int, ...]:
+    def _insert_removed_gallery_gid_with_connector(
+        self,
+        connector: SQLConnector,
+        gid: int,
+    ) -> None:
+        match self.config.database.sql_type.lower():
+            case "mariadb":
+                query = f"""
+                    INSERT INTO {REMOVED_GALLERIES_TABLE} (gid)
+                    VALUES (%s)
+                    ON DUPLICATE KEY UPDATE gid = VALUES(gid)
+                """
+            case "sqlite":
+                query = f"""
+                    INSERT INTO {REMOVED_GALLERIES_TABLE} (gid)
+                    VALUES (%s)
+                    ON CONFLICT(gid) DO NOTHING
+                """
+        connector.execute(query, (gid,))
+
+    def delete_removed_gallery_gid(self, gid: int) -> None:
         with self.SQLConnector() as connector:
-            table_name = "removed_galleries_gids"
-            select_query = f"""
-                SELECT gid
-                FROM {table_name}
-                WHERE gid = %s
-            """
-            query_result = connector.fetch_one(select_query, (gid,))
-        return query_result
+            with connector.transaction():
+                self._delete_removed_gallery_gid_with_connector(connector, gid)
+
+    @staticmethod
+    def _delete_removed_gallery_gid_with_connector(
+        connector: SQLConnector,
+        gid: int,
+    ) -> None:
+        connector.execute(
+            f"""
+            DELETE FROM {REMOVED_GALLERIES_TABLE}
+            WHERE gid = %s
+            """,
+            (gid,),
+        )
+
+    @staticmethod
+    def _get_removed_gallery_gid_with_connector(
+        connector: SQLConnector,
+        gid: int,
+    ) -> tuple[int, ...]:
+        return connector.fetch_one(
+            f"""
+            SELECT gid
+            FROM {REMOVED_GALLERIES_TABLE}
+            WHERE gid = %s
+            """,
+            (gid,),
+        )
+
+    def _get_removed_gallery_gid(self, gid: int) -> tuple[int, ...]:
+        with self.SQLConnector() as connector:
+            return self._get_removed_gallery_gid_with_connector(connector, gid)
 
     def _check_removed_gallery_gid(self, gid: int) -> bool:
-        query_result = self.__get_removed_gallery_gid(gid)
+        query_result = self._get_removed_gallery_gid(gid)
         return len(query_result) != 0
 
     def select_removed_gallery_gid(self, gid: int) -> int:
-        query_result = self.__get_removed_gallery_gid(gid)
+        query_result = self._get_removed_gallery_gid(gid)
         if query_result:
             gid = int(query_result[0])
         else:
