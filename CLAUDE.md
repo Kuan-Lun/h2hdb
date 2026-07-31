@@ -175,18 +175,25 @@ the catalog completes one baseline scan before a downloader can claim a turn.
 
 `claim_download_turn()` increments `generation` and returns an owner-token
 fenced `DownloadTurn`; only that live token can renew its lease or idempotently
-call `request_gallery_ingest()`. A successful root traversal instead calls
-`finish_download_turn()`, which performs the explicit handoff and exact-token
-request deletion in one transaction. A confirmed missing root instead calls
-`finish_missing_download_turn()`, which first fences and records that handoff,
-then, only if the exact request token remains current, writes the removed marker
-and deletes that request in the same transaction. A direct missing lookup uses
-`complete_missing_download_request()` with the same token fence; a later
-successful lookup clears the stale marker with `clear_removed_gallery_gid()`,
-and replaying an older completion cannot restore it. Once any handoff for a turn
-is already committed, later finish calls are idempotent no-ops and must not
-perform success or missing mutations. Downloader callers wait for
-`completed_generation >= turn.generation` before claiming another root request.
+call `request_gallery_ingest()`. `ensure_download_request()` atomically creates
+a request only when absent and otherwise preserves the current token, allowing a
+related-gallery download to reuse work without fencing out a queued root. One
+turn may cover a single independent root or a bounded batch of complete root
+traversals. Between batch roots,
+`complete_download_request_in_turn()` exact-deletes a successful request only
+while that live turn still owns `DOWNLOADING`;
+`complete_missing_download_request_in_turn()` applies the same turn and request
+token fences before atomically adding the removed marker. The final batch
+boundary calls `request_gallery_ingest()` once. Single-root callers instead use
+`finish_download_turn()` or `finish_missing_download_turn()` so their request
+mutation and explicit handoff share one transaction. A direct missing lookup
+uses `complete_missing_download_request()` with the same request-token fence; a
+later successful lookup clears the stale marker with
+`clear_removed_gallery_gid()`, and replaying an older completion cannot restore
+it. Once any handoff for a turn is already committed, later finish calls are
+idempotent no-ops and must not perform success or missing mutations. Downloader
+callers wait for `completed_generation >= turn.generation` before claiming the
+next batch or independent root.
 The main loop atomically claims requested ingestion, an expired downloader or
 ingester lease, or a due periodic scan. A fresh `DOWNLOADING` lease always
 blocks a periodic scan. It acknowledges a generation and returns the row to
@@ -292,20 +299,22 @@ non-blank URL), and completion conditionally deletes by both GID and token.
 This prevents an older worker from acknowledging a newer request. Failed or
 cancelled downloads must leave their request row intact.
 
-One coordination download turn covers one root request and its complete deep
-traversal. Failed, cancelled, and interrupted traversals keep the root row
+One coordination download turn may cover one independent root or a bounded
+batch of root requests, but each root's complete deep traversal remains
+indivisible. Failed, cancelled, and interrupted traversals keep their root row
 retryable and may explicitly request ingest for any complete published files.
-Successful traversal calls `finish_download_turn()`, atomically recording the
-handoff and conditionally deleting the matching root token. If that GID already
-has a newer token, deletion is a no-op: the current live turn still hands off,
-and the newer request remains queued for a later turn. Confirmed missing results
-atomically add the GID to `removed_galleries_gids` and exact-delete the request
-only if that request token is still current; otherwise both mutations are
-skipped. The coordinated variant performs its fenced handoff first in that same
-transaction. If a later lookup finds the gallery, it clears the removed marker;
-an idempotent replay of the older completion cannot add it again. A finish call
-made after the same turn already used the generic failure handoff also performs
-no request or removed-marker mutations.
+Successful intermediate batch roots use
+`complete_download_request_in_turn()`; confirmed-missing roots use
+`complete_missing_download_request_in_turn()`. Both first fence the live turn,
+then conditionally mutate only the exact request token while retaining
+`DOWNLOADING` for the next root. A newer token makes those request and missing
+mutations no-ops. At the batch boundary, snapshot exhaustion, or a controlled
+stop, the downloader hands off once. If it is terminated before that handoff,
+lease expiry lets h2hdb recover and scan; already completed root mutations are
+durable, while the unfinished root remains queued. Single-root callers retain
+the atomic `finish_download_turn()` and `finish_missing_download_turn()`
+handoffs. A finish call made after the same turn already used the generic
+failure handoff performs no request or removed-marker mutations.
 
 ### CBZ compression
 

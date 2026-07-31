@@ -397,6 +397,21 @@ class H2HDBGalleryIngestCoordination(BaseRepository):
                 )
         return True
 
+    def _download_turn_is_live_with_connector(
+        self,
+        connector: SQLConnector,
+        turn: DownloadTurn,
+    ) -> bool:
+        state = self._select_state(connector, for_update=True)
+        if (
+            state.phase != GalleryIngestPhase.downloading
+            or state.generation != turn.generation
+            or state.owner_token != turn.owner_token
+        ):
+            return False
+        now = self._database_time(connector)
+        return state.lease_expires_at is not None and state.lease_expires_at > now
+
     def request_gallery_ingest(self, turn: DownloadTurn) -> bool:
         with self.SQLConnector() as connector:
             with connector.transaction():

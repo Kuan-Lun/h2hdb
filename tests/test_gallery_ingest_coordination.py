@@ -7,6 +7,7 @@ import pytest
 from h2hdb import (
     H2HDB,
     DownloadTurn,
+    EnsureDownloadRequestResult,
     GalleryIngestPhase,
     H2HDBConfig,
 )
@@ -144,6 +145,296 @@ def test_download_turn_handoff_is_fenced_and_idempotent(db: H2HDB) -> None:
     assert next_state.handoff_generation is None
     assert next_state.handoff_owner_token is None
     assert db.request_gallery_ingest(turn) is False
+
+
+def test_ensure_download_request_creates_then_preserves_token_and_enriches_url(
+    db: H2HDB,
+) -> None:
+    gid = 844990
+    url = f"https://e-hentai.org/g/{gid}/abc123def4"
+
+    created = db.ensure_download_request(gid)
+    assert isinstance(created, EnsureDownloadRequestResult)
+    assert created.created is True
+    assert created.request.gid == gid
+    assert created.request.url == ""
+
+    enriched = db.ensure_download_request(gid, url)
+    assert enriched.created is False
+    assert enriched.request.token == created.request.token
+    assert enriched.request.url == url
+
+    preserved = db.ensure_download_request(
+        gid,
+        f"https://e-hentai.org/g/{gid}/ffffffffff",
+    )
+    assert preserved.created is False
+    assert preserved.request == enriched.request
+    assert db.get_download_request(gid) == enriched.request
+
+
+def test_ensure_download_request_is_atomic_for_concurrent_creators(
+    db: H2HDB,
+) -> None:
+    gid = 844991
+    url = f"https://e-hentai.org/g/{gid}/abc123def4"
+    barrier = Barrier(2)
+
+    def ensure() -> EnsureDownloadRequestResult:
+        barrier.wait()
+        return db.ensure_download_request(gid, url)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(ensure), executor.submit(ensure)]
+        results = [future.result() for future in futures]
+
+    assert sum(result.created for result in results) == 1
+    assert results[0].request == results[1].request
+    assert db.get_download_request(gid) == results[0].request
+
+
+def test_complete_download_request_in_turn_keeps_live_turn_and_is_idempotent(
+    db: H2HDB,
+) -> None:
+    _complete_baseline_ingest(db)
+    request = db.request_download(844992)
+    turn = db.claim_download_turn(lease_seconds=60)
+    assert turn is not None
+
+    assert db.complete_download_request_in_turn(turn, request) is True
+    assert db.complete_download_request_in_turn(turn, request) is True
+
+    assert db.get_download_request(request.gid) is None
+    state = db.get_gallery_ingest_state()
+    assert state.phase == GalleryIngestPhase.downloading
+    assert state.generation == turn.generation
+    assert state.owner_token == turn.owner_token
+    assert state.handoff_generation is None
+    assert state.handoff_owner_token is None
+
+
+def test_complete_download_request_in_turn_preserves_a_newer_request(
+    db: H2HDB,
+) -> None:
+    _complete_baseline_ingest(db)
+    stale_request = db.request_download(844993)
+    turn = db.claim_download_turn(lease_seconds=60)
+    assert turn is not None
+    newer_request = db.request_download(
+        stale_request.gid,
+        "https://e-hentai.org/g/844993/abc123def4",
+    )
+
+    assert db.complete_download_request_in_turn(turn, stale_request) is True
+
+    assert db.get_download_request(stale_request.gid) == newer_request
+    assert db.get_gallery_ingest_state().phase == GalleryIngestPhase.downloading
+
+
+def test_complete_download_request_in_turn_rejects_stale_and_expired_turns(
+    db: H2HDB,
+) -> None:
+    _complete_baseline_ingest(db)
+    request = db.request_download(844994)
+    turn = db.claim_download_turn(lease_seconds=60)
+    assert turn is not None
+    stale_turn = DownloadTurn(
+        generation=turn.generation,
+        owner_token="stale-owner",
+        lease_expires_at=turn.lease_expires_at,
+    )
+
+    assert db.complete_download_request_in_turn(stale_turn, request) is False
+    assert db.get_download_request(request.gid) == request
+
+    _expire_active_lease(db)
+    assert db.complete_download_request_in_turn(turn, request) is False
+    assert db.get_download_request(request.gid) == request
+    assert db.get_gallery_ingest_state().phase == GalleryIngestPhase.downloading
+
+
+def test_complete_download_request_in_turn_rejects_after_handoff(
+    db: H2HDB,
+) -> None:
+    _complete_baseline_ingest(db)
+    request = db.request_download(844995)
+    turn = db.claim_download_turn(lease_seconds=60)
+    assert turn is not None
+    assert db.request_gallery_ingest(turn) is True
+
+    assert db.complete_download_request_in_turn(turn, request) is False
+
+    assert db.get_download_request(request.gid) == request
+    assert db.get_gallery_ingest_state().phase == GalleryIngestPhase.ingest_requested
+
+
+def test_complete_download_request_in_turn_propagates_delete_failure_without_handoff(
+    db: H2HDB,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _complete_baseline_ingest(db)
+    request = db.request_download(845018)
+    turn = db.claim_download_turn(lease_seconds=60)
+    assert turn is not None
+
+    def fail_delete(*args: object, **kwargs: object) -> bool:
+        raise RuntimeError("injected batch root delete failure")
+
+    monkeypatch.setattr(
+        db.todownload_queue,
+        "_complete_download_request_with_connector",
+        fail_delete,
+    )
+
+    with pytest.raises(RuntimeError, match="injected batch root delete failure"):
+        db.complete_download_request_in_turn(turn, request)
+
+    assert db.get_download_request(request.gid) == request
+    state = db.get_gallery_ingest_state()
+    assert state.phase == GalleryIngestPhase.downloading
+    assert state.handoff_generation is None
+    assert state.handoff_owner_token is None
+
+
+def test_complete_missing_download_request_in_turn_marks_and_is_idempotent(
+    db: H2HDB,
+) -> None:
+    _complete_baseline_ingest(db)
+    request = db.request_download(844996)
+    turn = db.claim_download_turn(lease_seconds=60)
+    assert turn is not None
+
+    assert (
+        db.complete_missing_download_request_in_turn(turn, request, request.gid) is True
+    )
+    assert db.removed_galleries._check_removed_gallery_gid(request.gid) is True
+    assert db.get_download_request(request.gid) is None
+    assert db.get_gallery_ingest_state().phase == GalleryIngestPhase.downloading
+
+    db.clear_removed_gallery_gid(request.gid)
+    assert (
+        db.complete_missing_download_request_in_turn(turn, request, request.gid) is True
+    )
+    assert db.removed_galleries._check_removed_gallery_gid(request.gid) is False
+
+
+def test_complete_missing_download_request_in_turn_preserves_newer_token(
+    db: H2HDB,
+) -> None:
+    _complete_baseline_ingest(db)
+    stale_request = db.request_download(844997)
+    turn = db.claim_download_turn(lease_seconds=60)
+    assert turn is not None
+    newer_request = db.request_download(
+        stale_request.gid,
+        "https://e-hentai.org/g/844997/abc123def4",
+    )
+
+    assert (
+        db.complete_missing_download_request_in_turn(
+            turn,
+            stale_request,
+            stale_request.gid,
+        )
+        is True
+    )
+
+    assert db.get_download_request(stale_request.gid) == newer_request
+    assert db.removed_galleries._check_removed_gallery_gid(stale_request.gid) is False
+    assert db.get_gallery_ingest_state().phase == GalleryIngestPhase.downloading
+
+
+def test_complete_missing_download_request_in_turn_rejects_stale_or_expired_turn(
+    db: H2HDB,
+) -> None:
+    _complete_baseline_ingest(db)
+    request = db.request_download(844998)
+    turn = db.claim_download_turn(lease_seconds=60)
+    assert turn is not None
+    stale_turn = DownloadTurn(
+        generation=turn.generation,
+        owner_token="stale-owner",
+        lease_expires_at=turn.lease_expires_at,
+    )
+
+    assert (
+        db.complete_missing_download_request_in_turn(
+            stale_turn,
+            request,
+            request.gid,
+        )
+        is False
+    )
+    assert db.get_download_request(request.gid) == request
+    assert db.removed_galleries._check_removed_gallery_gid(request.gid) is False
+
+    _expire_active_lease(db)
+    assert (
+        db.complete_missing_download_request_in_turn(turn, request, request.gid)
+        is False
+    )
+    assert db.get_download_request(request.gid) == request
+    assert db.removed_galleries._check_removed_gallery_gid(request.gid) is False
+
+
+def test_complete_missing_download_request_in_turn_rolls_back_delete_on_marker_failure(
+    db: H2HDB,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _complete_baseline_ingest(db)
+    request = db.request_download(844999)
+    turn = db.claim_download_turn(lease_seconds=60)
+    assert turn is not None
+
+    def fail_marker(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("injected batch missing marker failure")
+
+    monkeypatch.setattr(
+        db.removed_galleries,
+        "_insert_removed_gallery_gid_with_connector",
+        fail_marker,
+    )
+
+    with pytest.raises(RuntimeError, match="injected batch missing marker failure"):
+        db.complete_missing_download_request_in_turn(turn, request, request.gid)
+
+    assert db.get_download_request(request.gid) == request
+    assert db.removed_galleries._check_removed_gallery_gid(request.gid) is False
+    assert db.get_gallery_ingest_state().phase == GalleryIngestPhase.downloading
+
+
+def test_settled_roots_survive_expired_turn_recovery_and_unfinished_root_remains(
+    db: H2HDB,
+) -> None:
+    _complete_baseline_ingest(db)
+    completed_request = db.request_download(845000)
+    missing_request = db.request_download(845016)
+    unfinished_request = db.request_download(845017)
+    turn = db.claim_download_turn(lease_seconds=60)
+    assert turn is not None
+
+    assert db.complete_download_request_in_turn(turn, completed_request) is True
+    assert (
+        db.complete_missing_download_request_in_turn(
+            turn,
+            missing_request,
+            missing_request.gid,
+        )
+        is True
+    )
+    _expire_active_lease(db)
+
+    ingest_turn = db._claim_gallery_ingest(
+        lease_seconds=60,
+        periodic_scan=False,
+    )
+    assert ingest_turn is not None
+    assert ingest_turn.claimed_from_phase == GalleryIngestPhase.downloading
+    assert db.get_download_request(completed_request.gid) is None
+    assert db.get_download_request(missing_request.gid) is None
+    assert db.removed_galleries._check_removed_gallery_gid(missing_request.gid) is True
+    assert db.get_download_request(unfinished_request.gid) == unfinished_request
+    assert db._complete_gallery_ingest(ingest_turn) is True
 
 
 def test_finish_download_turn_atomically_hands_off_and_deletes_root(
@@ -463,6 +754,12 @@ def test_missing_download_completion_rejects_a_mismatched_gid_without_writes(
 
     with pytest.raises(ValueError, match="does not match"):
         db.complete_missing_download_request(request, mismatched_gid)
+    with pytest.raises(ValueError, match="does not match"):
+        db.complete_missing_download_request_in_turn(
+            turn,
+            request,
+            mismatched_gid,
+        )
     with pytest.raises(ValueError, match="does not match"):
         db.finish_missing_download_turn(turn, request, mismatched_gid)
 

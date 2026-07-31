@@ -116,6 +116,13 @@ use these public methods:
   `DownloadTurn`, or `None` while h2hdb owns the turn.
 - `renew_download_turn(turn, lease_seconds=...)` extends a live downloader
   lease and returns whether that token still owns the generation.
+- `ensure_download_request(gid, url="")` atomically reuses an existing durable
+  request without replacing its token, or creates one and reports that it was
+  newly created.
+- `complete_download_request_in_turn(turn, request)` exact-deletes a completed
+  root request while its fenced turn remains in `DOWNLOADING` for more roots.
+- `complete_missing_download_request_in_turn(turn, request, gid)` performs the
+  equivalent live-turn-fenced exact deletion and missing-marker write.
 - `request_gallery_ingest(turn)` idempotently hands the generation to h2hdb.
 - `finish_download_turn(turn, request)` atomically hands off a successful root
   traversal and conditionally deletes only that request token.
@@ -128,8 +135,8 @@ use these public methods:
 - `clear_removed_gallery_gid(gid)` clears a prior missing result after a later
   lookup finds the gallery again.
 - `get_gallery_ingest_state()` exposes the durable phase and
-  `completed_generation`; a downloader may start its next root request only
-  after `completed_generation >= turn.generation`.
+  `completed_generation`; a downloader may start its next batch or independent
+  root only after `completed_generation >= turn.generation`.
 
 A fresh `DOWNLOADING` lease prevents h2hdb from starting a scan until the
 downloader requests handoff; a periodic deadline does not override it. If the
@@ -149,21 +156,28 @@ renewing or completing a newer turn. Persisted handoff provenance distinguishes
 an explicit live-token handoff from an expired downloader lease recovered by
 h2hdb, so a recovered stale token cannot later report success.
 
-One download turn covers one root `todownload_gids` request and its complete
-deep traversal. A failed, cancelled, or interrupted traversal leaves that
-durable request in the queue and may use `request_gallery_ingest()` to hand off
-any complete files. A successful traversal uses `finish_download_turn()` so
-handoff and exact-token deletion share one transaction. If the same GID was
-already re-enqueued with a newer request token, deletion is a no-op: the
-completed live turn still hands off immediately and the newer request remains
-queued. A confirmed missing result uses `finish_missing_download_turn()` for a
-coordinated root or `complete_missing_download_request()` for a direct request,
-so the removed marker and exact-token deletion cannot be partially committed
-and a stale token cannot write either. A later successful lookup calls
-`clear_removed_gallery_gid()` to repair that marker; replaying the older
-completion cannot restore it. If the turn was already handed off by the generic
-failure path, a later finish call acknowledges that handoff without performing
-any success or missing mutations.
+A download turn may cover one independent root or a bounded batch of
+`todownload_gids` roots; every root's complete deep traversal remains an
+indivisible unit. Between roots, a batch uses the live-turn-fenced
+`complete_download_request_in_turn()` or
+`complete_missing_download_request_in_turn()` operation to persist completed
+work without handing off `DOWNLOADING`. At its root-count boundary, snapshot
+exhaustion, cancellation, or failure, it calls `request_gallery_ingest()` once.
+The single-root APIs retain `finish_download_turn()` and
+`finish_missing_download_turn()`, where final request mutation and handoff share
+one transaction.
+
+All request completion remains exact-token conditional. If the same GID was
+already re-enqueued with a newer token, success deletion is a no-op and a stale
+missing result writes no marker. A later successful lookup calls
+`clear_removed_gallery_gid()` to repair a prior marker; replaying the older
+completion cannot restore it. Interrupting an in-turn completion commits both
+its fenced request mutation and missing marker or neither. If a downloader
+stops before handoff, the durable `DOWNLOADING` lease eventually expires so
+h2hdb scans already published files; completed roots stay settled while the
+unfinished root remains queued. If h2hdb itself stops in `INGESTING`, its lease
+recovery repeats synchronization until convergence before acknowledging the
+generation.
 
 Completed removal and changed-gallery batches add work to the singleton
 `database_maintenance_state` row. Automatic optimization is evaluated only

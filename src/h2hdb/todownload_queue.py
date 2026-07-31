@@ -14,6 +14,12 @@ class DownloadRequest:
     token: str
 
 
+@dataclass(frozen=True, slots=True)
+class EnsureDownloadRequestResult:
+    request: DownloadRequest
+    created: bool
+
+
 class H2HDBToDownloadQueue(BaseRepository):
     def _create_pending_download_gids_view(self) -> None:
         with self.SQLConnector() as connector:
@@ -165,6 +171,64 @@ class H2HDBToDownloadQueue(BaseRepository):
         with self.SQLConnector() as connector:
             with connector.transaction():
                 return self._request_download_with_connector(connector, gid, url)
+
+    def ensure_download_request(
+        self,
+        gid: int,
+        url: str = "",
+    ) -> EnsureDownloadRequestResult:
+        with self.SQLConnector() as connector:
+            with connector.transaction():
+                return self._ensure_download_request_with_connector(
+                    connector,
+                    gid,
+                    url,
+                )
+
+    def _ensure_download_request_with_connector(
+        self,
+        connector: SQLConnector,
+        gid: int,
+        url: str = "",
+    ) -> EnsureDownloadRequestResult:
+        gid = self._normalized_gid(gid, url)
+        candidate = DownloadRequest(gid, url, uuid4().hex)
+        match self.config.database.sql_type.lower():
+            case "mariadb":
+                query = """
+                    INSERT INTO todownload_gids (gid, url, request_token)
+                    VALUES (%s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        url = IF(url = '', VALUES(url), url)
+                """
+            case "sqlite":
+                query = """
+                    INSERT INTO todownload_gids (gid, url, request_token)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT(gid) DO UPDATE SET
+                        url = CASE
+                            WHEN todownload_gids.url = '' THEN excluded.url
+                            ELSE todownload_gids.url
+                        END
+                """
+        connector.execute(query, (candidate.gid, candidate.url, candidate.token))
+        row = connector.fetch_one(
+            """
+            SELECT gid, url, request_token
+            FROM todownload_gids
+            WHERE gid = %s
+            """,
+            (gid,),
+        )
+        if not row:
+            raise RuntimeError(
+                f"Download request for gallery GID {gid} disappeared after ensure."
+            )
+        request = DownloadRequest(int(row[0]), str(row[1]), str(row[2]))
+        return EnsureDownloadRequestResult(
+            request=request,
+            created=request.token == candidate.token,
+        )
 
     def _request_download_with_connector(
         self, connector: SQLConnector, gid: int, url: str = ""

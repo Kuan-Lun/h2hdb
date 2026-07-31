@@ -4,6 +4,7 @@ __all__ = [
     "SyncOutcome",
     "DatabaseMaintenanceResult",
     "DownloadRequest",
+    "EnsureDownloadRequestResult",
     "DownloadTurn",
     "GalleryIngestPhase",
     "GalleryIngestState",
@@ -75,7 +76,11 @@ from .table_times import H2HDBTimes
 from .table_titles import H2HDBGalleriesTitles
 from .table_uploadaccounts import H2HDBUploadAccounts
 from .todelete_queue import H2HDBToDeleteQueue
-from .todownload_queue import DownloadRequest, H2HDBToDownloadQueue
+from .todownload_queue import (
+    DownloadRequest,
+    EnsureDownloadRequestResult,
+    H2HDBToDownloadQueue,
+)
 from .view_ginfo import H2HDBGalleriesInfos
 
 GALLERY_METADATA_BATCH_SIZE = 500
@@ -231,6 +236,13 @@ class H2HDB(BaseRepository):
     def request_download(self, gid: int, url: str = "") -> DownloadRequest:
         return self.todownload_queue.request_download(gid, url)
 
+    def ensure_download_request(
+        self,
+        gid: int,
+        url: str = "",
+    ) -> EnsureDownloadRequestResult:
+        return self.todownload_queue.ensure_download_request(gid, url)
+
     def get_download_request(self, gid: int) -> DownloadRequest | None:
         return self.todownload_queue.get_download_request(gid)
 
@@ -287,6 +299,48 @@ class H2HDB(BaseRepository):
 
     def request_gallery_ingest(self, turn: DownloadTurn) -> bool:
         return self.gallery_ingest.request_gallery_ingest(turn)
+
+    def complete_download_request_in_turn(
+        self,
+        turn: DownloadTurn,
+        request: DownloadRequest,
+    ) -> bool:
+        with self.SQLConnector() as connector:
+            with connector.transaction():
+                if not self.gallery_ingest._download_turn_is_live_with_connector(
+                    connector,
+                    turn,
+                ):
+                    return False
+                self.todownload_queue._complete_download_request_with_connector(
+                    connector,
+                    request,
+                )
+        return True
+
+    def complete_missing_download_request_in_turn(
+        self,
+        turn: DownloadTurn,
+        request: DownloadRequest,
+        gid: int,
+    ) -> bool:
+        self._validate_missing_download_request(request, gid)
+        with self.SQLConnector() as connector:
+            with connector.transaction():
+                if not self.gallery_ingest._download_turn_is_live_with_connector(
+                    connector,
+                    turn,
+                ):
+                    return False
+                if self.todownload_queue._complete_download_request_with_connector(
+                    connector,
+                    request,
+                ):
+                    self.removed_galleries._insert_removed_gallery_gid_with_connector(
+                        connector,
+                        gid,
+                    )
+        return True
 
     def finish_download_turn(
         self,
