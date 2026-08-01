@@ -14,7 +14,7 @@ collection is always organised and accessible.
 - [x] Add new galleries to the database
 - [x] Comporess H@H's galleries to a folder
 - [x] Record the removed GIDs in a separate list
-- [x] Coordinate bounded downloader and database-ingest turns
+- [x] Coordinate batched downloader and database-ingest turns
 - [ ] Write document (need?)
 
 ---
@@ -156,13 +156,17 @@ renewing or completing a newer turn. Persisted handoff provenance distinguishes
 an explicit live-token handoff from an expired downloader lease recovered by
 h2hdb, so a recovered stale token cannot later report success.
 
-A download turn may cover one independent root or a bounded batch of
-`todownload_gids` roots; every root's complete deep traversal remains an
-indivisible unit. Between roots, a batch uses the live-turn-fenced
+A download turn may cover one independent root or a batch of complete root
+traversals governed by the downloader's accepted-submission soft threshold;
+every root and its full related-tag cascade remain an indivisible unit. Between
+roots, a batch uses the live-turn-fenced
 `complete_download_request_in_turn()` or
 `complete_missing_download_request_in_turn()` operation to persist completed
-work without handing off `DOWNLOADING`. At its root-count boundary, snapshot
-exhaustion, cancellation, or failure, it calls `request_gallery_ingest()` once.
+work without handing off `DOWNLOADING`. The downloader counts unique GIDs for
+which H@H accepted a submission, checks the threshold only after a root returns,
+and does not advance it for a root with zero accepted submissions. At its soft
+submission boundary, snapshot exhaustion, cancellation, or failure, it calls
+`request_gallery_ingest()` once.
 The single-root APIs retain `finish_download_turn()` and
 `finish_missing_download_turn()`, where final request mutation and handoff share
 one transaction.

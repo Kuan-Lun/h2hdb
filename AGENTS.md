@@ -124,13 +124,18 @@ fenced `DownloadTurn`; only that live token can renew its lease or idempotently
 call `request_gallery_ingest()`. `ensure_download_request()` atomically creates
 a request only when absent and otherwise preserves the current token, allowing a
 related-gallery download to reuse work without fencing out a queued root. One
-turn may cover a single independent root or a bounded batch of complete root
-traversals. Between batch roots,
+turn may cover a single independent root or a batch of complete root traversals
+governed by the downloader's accepted-submission soft threshold. Each root and
+its full related-tag cascade remain indivisible; the downloader counts unique
+GIDs for which H@H accepted a submission, checks the threshold only after the
+root returns, and does not advance it for a zero-submission root. Between batch
+roots,
 `complete_download_request_in_turn()` exact-deletes a successful request only
 while that live turn still owns `DOWNLOADING`;
 `complete_missing_download_request_in_turn()` applies the same turn and request
-token fences before atomically adding the removed marker. The final batch
-boundary calls `request_gallery_ingest()` once. Single-root callers instead use
+token fences before atomically adding the removed marker. A soft-threshold or
+snapshot-exhaustion boundary calls `request_gallery_ingest()` once. Single-root
+callers instead use
 `finish_download_turn()` or `finish_missing_download_turn()` so their request
 mutation and explicit handoff share one transaction. A direct missing lookup
 uses `complete_missing_download_request()` with the same request-token fence; a
@@ -260,17 +265,23 @@ carry a UUID token. Re-enqueueing a GID replaces the token, and completion
 deletes only a matching `(gid, request_token)` so an older worker cannot clear a
 newer request. Failed and cancelled downloads leave the row intact.
 
-One coordination download turn may cover one independent root or a bounded
-batch of root requests, but each root's complete deep traversal remains
-indivisible. Failed, cancelled, and interrupted traversals keep their root row
-retryable and may explicitly request ingest for any complete published files.
+One coordination download turn may cover one independent root or a batch of
+root requests governed by the downloader's accepted-submission soft threshold,
+but each root's complete deep traversal remains indivisible. The threshold
+counts unique H@H-accepted submissions, is checked after each root returns, and
+therefore may be exceeded by the final root by any amount; a root that produces
+no accepted submission does not advance it. Failed, cancelled, and interrupted
+traversals
+keep their root row retryable and may explicitly request ingest for any complete
+published files.
 Successful intermediate batch roots use
 `complete_download_request_in_turn()`; confirmed-missing roots use
 `complete_missing_download_request_in_turn()`. Both first fence the live turn,
 then conditionally mutate only the exact request token while retaining
 `DOWNLOADING` for the next root. A newer token makes those request and missing
-mutations no-ops. At the batch boundary, snapshot exhaustion, or a controlled
-stop, the downloader hands off once. If it is terminated before that handoff,
+mutations no-ops. At the soft submission boundary, snapshot exhaustion, or a
+controlled stop, the downloader hands off once. If it is terminated before that
+handoff,
 lease expiry lets h2hdb recover and scan; already completed root mutations are
 durable, while the unfinished root remains queued. Single-root callers retain
 the atomic `finish_download_turn()` and `finish_missing_download_turn()`
