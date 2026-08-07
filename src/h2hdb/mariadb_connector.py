@@ -3,7 +3,7 @@ from typing import Any, cast
 
 from mysql.connector import connect as SQLConnect
 from mysql.connector.abstracts import MySQLConnectionAbstract, MySQLCursorAbstract
-from mysql.connector.errors import IntegrityError
+from mysql.connector.errors import IntegrityError, ProgrammingError
 from mysql.connector.pooling import PooledMySQLConnection
 from pydantic import Field
 
@@ -114,7 +114,16 @@ class MariaDBConnector(SQLConnector):
         self._in_transaction = True
 
     def begin_read(self) -> None:
-        self.connection.start_transaction(readonly=True, consistent_snapshot=True)
+        if self.connection.in_transaction:
+            raise ProgrammingError("Transaction already in progress")
+        # MariaDB 10.x can expose a MySQL-compatible ``5.5.5-`` handshake
+        # prefix. Connector/Python consequently misclassifies the server as
+        # MySQL 5.5.5 and rejects its ``readonly=True`` option before sending
+        # SQL. MariaDB supports both characteristics directly in START
+        # TRANSACTION, so bypass that client-side version gate while retaining
+        # the database-enforced read-only consistent snapshot.
+        with MariaDBCursor(self.connection) as cursor:
+            cursor.execute("START TRANSACTION READ ONLY, WITH CONSISTENT SNAPSHOT")
         self._in_transaction = True
 
     def rollback(self) -> None:
