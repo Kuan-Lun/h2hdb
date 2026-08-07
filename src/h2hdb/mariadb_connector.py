@@ -7,7 +7,12 @@ from mysql.connector.errors import IntegrityError
 from mysql.connector.pooling import PooledMySQLConnection
 from pydantic import Field
 
-from .sql_connector import DatabaseDuplicateKeyError, SQLConnector, SQLConnectorParams
+from .sql_connector import (
+    DatabaseDuplicateKeyError,
+    DatabaseReadOnlyError,
+    SQLConnector,
+    SQLConnectorParams,
+)
 
 AUTO_COMMIT_KEYS = ["INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER"]
 
@@ -39,6 +44,7 @@ class MariaDBConnectorParams(SQLConnectorParams):
         min_length=1,
         description="Database name for the MariaDB database",
     )
+    read_only: bool = False
 
 
 class MariaDBCursor:
@@ -62,15 +68,30 @@ class MariaDBCursor:
 
 class MariaDBConnector(SQLConnector):
     def __init__(
-        self, host: str, port: int, user: str, password: str, database: str
+        self,
+        host: str,
+        port: int,
+        user: str,
+        password: str,
+        database: str,
+        read_only: bool = False,
     ) -> None:
         self.params = MariaDBConnectorParams(
-            host=host, port=port, user=user, password=password, database=database
+            host=host,
+            port=port,
+            user=user,
+            password=password,
+            database=database,
+            read_only=read_only,
         )
 
     def connect(self) -> None:
-        self.connection = SQLConnect(**self.params.model_dump())
+        connection_params = self.params.model_dump(exclude={"read_only"})
+        self.connection = SQLConnect(**connection_params)
         self._in_transaction = False
+        if self.params.read_only:
+            with MariaDBCursor(self.connection) as cursor:
+                cursor.execute("SET SESSION TRANSACTION READ ONLY")
 
     def close(self) -> None:
         self.connection.close()
@@ -85,7 +106,15 @@ class MariaDBConnector(SQLConnector):
         self._in_transaction = False
 
     def begin(self) -> None:
+        if self.params.read_only:
+            raise DatabaseReadOnlyError(
+                "Cannot start a write transaction in read-only mode"
+            )
         self.connection.start_transaction()
+        self._in_transaction = True
+
+    def begin_read(self) -> None:
+        self.connection.start_transaction(readonly=True, consistent_snapshot=True)
         self._in_transaction = True
 
     def rollback(self) -> None:
@@ -93,6 +122,7 @@ class MariaDBConnector(SQLConnector):
         self._in_transaction = False
 
     def execute(self, query: str, data: tuple[Any, ...] = ()) -> None:
+        self._ensure_writable(query)
         with MariaDBCursor(self.connection) as cursor:
             try:
                 cursor.execute(query, data)
@@ -106,6 +136,7 @@ class MariaDBConnector(SQLConnector):
             self.commit()
 
     def execute_many(self, query: str, data: list[tuple[Any, ...]]) -> None:
+        self._ensure_writable(query)
         with MariaDBCursor(self.connection) as cursor:
             try:
                 cursor.executemany(query, data)
@@ -132,3 +163,12 @@ class MariaDBConnector(SQLConnector):
             cursor.execute(query, data)
             vlist = cursor.fetchall()
         return cast(list[tuple[Any, ...]], vlist)
+
+    def _ensure_writable(self, query: str) -> None:
+        if not self.params.read_only:
+            return
+        keyword = query.lstrip().split(maxsplit=1)[0].upper()
+        if keyword not in {"SELECT", "SHOW", "EXPLAIN", "WITH"}:
+            raise DatabaseReadOnlyError(
+                f"Statement {keyword or '<empty>'} is not allowed in read-only mode"
+            )

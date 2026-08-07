@@ -3,53 +3,112 @@ name: Publish to PyPI
 on:
   push:
     branches: [master]
-    paths: [pyproject.toml]
+    paths:
+      - pyproject.toml
+
+permissions:
+  contents: read
 
 jobs:
-  publish:
+  validate:
     runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write
+    outputs:
+      bumped: ${{ steps.version.outputs.bumped }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
 
-      - name: Check version bump
-        id: version
-        run: |
-          CURRENT=$(python -c "
-          import tomllib
-          with open('pyproject.toml', 'rb') as f:
-              print(tomllib.load(f)['project']['version'])
-          ")
-          PREVIOUS=$(git show HEAD~1:pyproject.toml | python -c "
-          import tomllib, sys
-          print(tomllib.load(sys.stdin.buffer)['project']['version'])
-          ")
-          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "previous=$PREVIOUS" >> "$GITHUB_OUTPUT"
-          if [ "$CURRENT" != "$PREVIOUS" ]; then
-            python -c "
-          from packaging.version import Version
-          current, previous = Version('$CURRENT'), Version('$PREVIOUS')
-          exit(0 if current > previous else 1)
-          "
-            echo "bumped=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "bumped=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - uses: actions/setup-python@v5
-        if: steps.version.outputs.bumped == 'true'
         with:
           python-version: "3.14"
 
-      - name: Build
-        if: steps.version.outputs.bumped == 'true'
-        run: pip install build && python -m build
+      - name: Install packaging tools
+        run: python -m pip install --upgrade packaging build
 
-      - name: Publish
+      - name: Check version bump
+        id: version
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import subprocess
+          import tomllib
+
+          from packaging.version import Version
+
+
+          def project_version(document: str) -> Version:
+              return Version(str(tomllib.loads(document)["project"]["version"]))
+
+
+          current = project_version(
+              Path("pyproject.toml").read_text(encoding="utf-8")
+          )
+          previous_document = subprocess.run(
+              ["git", "show", "HEAD~1:pyproject.toml"],
+              check=False,
+              capture_output=True,
+              text=True,
+          )
+          previous = (
+              project_version(previous_document.stdout)
+              if previous_document.returncode == 0
+              else None
+          )
+          if previous is not None and current < previous:
+              raise SystemExit(
+                  f"project.version decreased from {previous} to {current}"
+              )
+
+          bumped = previous is None or current > previous
+          output_path = Path(os.environ["GITHUB_OUTPUT"])
+          with output_path.open("a", encoding="utf-8") as output:
+              print(f"current={current}", file=output)
+              print(f"previous={previous or ''}", file=output)
+              print(f"bumped={'true' if bumped else 'false'}", file=output)
+          PY
+
+      - name: Install project and development dependencies
+        run: python -m pip install -e ".[dev]"
+
+      - name: Check formatting
+        run: python -m black --check src tests scripts
+
+      - name: Lint
+        run: python -m ruff check src tests scripts
+
+      - name: Type-check
+        run: python -m mypy src tests scripts
+
+      - name: Test
+        run: python -m pytest
+
+      - name: Build and smoke-test distributions
+        run: |
+          python scripts/build-and-verify-distributions.py \
+            --output-directory dist
+
+      - name: Store distributions
         if: steps.version.outputs.bumped == 'true'
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: actions/upload-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: validate
+    if: needs.validate.outputs.bumped == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

@@ -147,3 +147,8 @@ class H2HDBToDeleteQueue(BaseRepository):
                         ON CONFLICT(gid) DO NOTHING
                     """
             connector.execute(query, (gid,))
+
+    def get_gallery_deletion_requests(self) -> list[int]:
+        with self.SQLConnector() as connector:
+            rows = connector.fetch_all("SELECT gid FROM todelete_gids ORDER BY gid")
+        return [int(row[0]) for row in rows]

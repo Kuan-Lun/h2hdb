@@ -4,6 +4,8 @@ __pycache__
 *.pyo
 *.egg-info
 tmp
+build/
+dist/
 
 !/.gitignore
 !/.github/

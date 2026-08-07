@@ -4,6 +4,7 @@ __all__ = [
     "DatabaseConfigurationError",
     "DatabaseKeyError",
     "DatabaseTableError",
+    "DatabaseReadOnlyError",
 ]
 
 
@@ -37,6 +38,10 @@ class DatabaseTableError(Exception):
     def __init__(self, message: str) -> None:
         self.message = message
         super().__init__(self.message)
+
+
+class DatabaseReadOnlyError(PermissionError):
+    pass
 
 
 class SQLConnectorParams(BaseModel):
@@ -79,6 +84,20 @@ class SQLConnector(ABC):
     @contextmanager
     def transaction(self) -> Generator[None]:
         self.begin()
+        try:
+            yield
+        except BaseException:
+            self.rollback()
+            raise
+        else:
+            self.commit()
+
+    def begin_read(self) -> None:
+        self.begin()
+
+    @contextmanager
+    def read_transaction(self) -> Generator[None]:
+        self.begin_read()
         try:
             yield
         except BaseException:

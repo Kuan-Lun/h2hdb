@@ -1,103 +1,74 @@
 __all__ = ["HentaiDBLogger", "setup_logger"]
 
-
 import logging
-from abc import ABCMeta, abstractmethod
-from logging.handlers import MemoryHandler
+from pathlib import Path
 
 from .config_loader import LoggerConfig
 
 
-def setup_screen_logger(level: int) -> logging.Logger:
-    screen_logger = logging.getLogger("display_on_screen")
-    screen_logger.setLevel(level)
-
-    if not screen_logger.handlers:
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-        handler.setFormatter(formatter)
-        screen_logger.addHandler(handler)
-    return screen_logger
+def _build_logger(name: str, level: int, handler: logging.Handler) -> logging.Logger:
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+    logger.propagate = False
+    if not logger.handlers:
+        logger.addHandler(handler)
+    return logger
 
 
-def setup_file_logger(level: int) -> logging.Logger:
-    log_filename = "h2hdb.log"
-    file_logger = logging.getLogger("write_to_file")
-    file_logger.setLevel(level)
-
-    if not file_logger.handlers:
-        with open(log_filename, "w", encoding="utf-8") as f:
-            f.write('"time stamp","level","message"\n')
-
-        file_handler = logging.FileHandler(log_filename, mode="a+", encoding="utf-8")
-        formatter = logging.Formatter('"%(asctime)s","%(levelname)-8s","%(message)s"')
-        file_handler.setFormatter(formatter)
-
-        memory_handler = MemoryHandler(
-            capacity=1024, target=file_handler, flushLevel=logging.ERROR
+class HentaiDBLogger:
+    def __init__(self, level: int, file: Path | None = None) -> None:
+        screen_handler = logging.StreamHandler()
+        screen_handler.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
         )
-        file_logger.addHandler(memory_handler)
-
-    return file_logger
-
-
-class AbstractLogger(metaclass=ABCMeta):
-    @abstractmethod
-    def debug(self, message: str) -> None: ...
-
-    @abstractmethod
-    def info(self, message: str) -> None: ...
-
-    @abstractmethod
-    def warning(self, message: str) -> None: ...
-
-    @abstractmethod
-    def error(self, message: str) -> None: ...
-
-    @abstractmethod
-    def critical(self, message: str) -> None: ...
-
-
-class HentaiDBLogger(AbstractLogger):
-    def __init__(self, level: int) -> None:
-        self.screen_logger = setup_screen_logger(level)
-        self.file_logger = setup_file_logger(level)
+        self.screen_logger = _build_logger("h2hdb.screen", level, screen_handler)
+        self.file_logger: logging.Logger | None = None
+        if file is not None:
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file_handler = logging.FileHandler(file, encoding="utf-8")
+            file_handler.setFormatter(
+                logging.Formatter('"%(asctime)s","%(levelname)s","%(message)s"')
+            )
+            self.file_logger = _build_logger(
+                f"h2hdb.file.{file.resolve()}", level, file_handler
+            )
 
     def debug(self, message: str) -> None:
-        self._log_method("debug", message)
+        self._log(logging.DEBUG, message)
 
     def info(self, message: str) -> None:
-        self._log_method("info", message)
+        self._log(logging.INFO, message)
 
     def warning(self, message: str) -> None:
-        self._log_method("warning", message)
+        self._log(logging.WARNING, message)
 
     def error(self, message: str) -> None:
-        self._log_method("error", message)
+        self._log(logging.ERROR, message)
 
     def critical(self, message: str) -> None:
-        self._log_method("critical", message)
+        self._log(logging.CRITICAL, message)
 
-    def _log_method(self, level: str, message: str) -> None:
-        log_method_screen = getattr(self.screen_logger, level)
-        log_method_file = getattr(self.file_logger, level)
-        log_method_screen(message)
-        log_method_file(message)
+    def _log(self, level: int, message: str) -> None:
+        self.screen_logger.log(level, message)
+        if self.file_logger is not None:
+            self.file_logger.log(level, message)
 
     def hasHandlers(self) -> bool:
-        return self.screen_logger.hasHandlers() or self.file_logger.hasHandlers()
+        return self.screen_logger.hasHandlers() or (
+            self.file_logger is not None and self.file_logger.hasHandlers()
+        )
 
     def removeHandlers(self) -> None:
-        while self.hasHandlers():
-            self.screen_logger.removeHandler(self.screen_logger.handlers[0])
-            self.file_logger.removeHandler(self.file_logger.handlers[0])
+        for logger in (self.screen_logger, self.file_logger):
+            if logger is None:
+                continue
+            for handler in tuple(logger.handlers):
+                logger.removeHandler(handler)
+                handler.close()
 
     def addHandler(self, handler: logging.Handler) -> None:
         self.screen_logger.addHandler(handler)
-        self.file_logger.addHandler(handler)
 
 
-def setup_logger(
-    logger_config: LoggerConfig,
-) -> HentaiDBLogger:
-    return HentaiDBLogger(level=logger_config.level)
+def setup_logger(logger_config: LoggerConfig) -> HentaiDBLogger:
+    return HentaiDBLogger(level=logger_config.level, file=logger_config.file)

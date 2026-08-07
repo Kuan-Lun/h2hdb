@@ -307,8 +307,8 @@ class H2HDBGalleryIngestCoordination(BaseRepository):
         )
         if not row:
             raise DatabaseConfigurationError(
-                "Gallery ingest coordination state is missing; "
-                "run create_main_tables()."
+                "Gallery ingest coordination state is missing; run the h2hdb schema "
+                "migration command."
             )
         return GalleryIngestState(
             phase=GalleryIngestPhase(str(row[0])),
@@ -537,6 +537,21 @@ class H2HDBGalleryIngestCoordination(BaseRepository):
             )
             is not None
         )
+
+    def _gallery_ingest_turn_is_live_with_connector(
+        self,
+        connector: SQLConnector,
+        turn: GalleryIngestTurn,
+    ) -> bool:
+        state = self._select_state(connector, for_update=True)
+        if (
+            state.phase != GalleryIngestPhase.ingesting
+            or state.generation != turn.generation
+            or state.owner_token != turn.owner_token
+        ):
+            return False
+        now = self._database_time(connector)
+        return state.lease_expires_at is not None and state.lease_expires_at > now
 
     def renew_gallery_ingest_lease(
         self,

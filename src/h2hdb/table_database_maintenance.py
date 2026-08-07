@@ -1,6 +1,8 @@
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from hashlib import sha256
+from secrets import randbelow
 from time import time
 
 from .repository import BaseRepository, RepositoryContext
@@ -12,6 +14,7 @@ from .table_database_setting import (
 
 MAINTENANCE_STATE_ID = 1
 MAINTENANCE_STATE_TABLE = "database_maintenance_state"
+DATABASE_GATE_SLOT_COUNT = 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,7 +99,8 @@ class H2HDBDatabaseMaintenance(BaseRepository):
             )
         if not row:
             raise DatabaseConfigurationError(
-                "Database maintenance state is missing; run create_main_tables()."
+                "Database maintenance state is missing; run the h2hdb schema "
+                "migration command."
             )
         return DatabaseMaintenanceState(
             accumulated_work=int(row[0]),
@@ -183,21 +187,33 @@ class H2HDBDatabaseMaintenance(BaseRepository):
         ]
 
     def run_scheduled_optimization(self) -> DatabaseMaintenanceResult:
-        state = self.get_state()
-        config = self.config.maintenance
-        if not config.optimize_enabled:
-            return DatabaseMaintenanceResult(False, tuple(), state.accumulated_work)
-
-        now = int(time())
-        if not self._is_due(
-            state,
-            now=now,
-            min_work_units=config.min_work_units,
-            min_interval_seconds=config.min_interval_seconds,
-        ):
-            return DatabaseMaintenanceResult(False, tuple(), state.accumulated_work)
-
+        # Even the cheap readiness read participates in the cooperative gate.
+        # Release its shared slot before upgrading to the all-slot exclusive
+        # gate below, otherwise this operation could deadlock against itself.
         with self.database_gate():
+            state = self.get_state()
+            config = self.config.maintenance
+            if not config.optimize_enabled:
+                return DatabaseMaintenanceResult(
+                    False,
+                    tuple(),
+                    state.accumulated_work,
+                )
+
+            now = int(time())
+            if not self._is_due(
+                state,
+                now=now,
+                min_work_units=config.min_work_units,
+                min_interval_seconds=config.min_interval_seconds,
+            ):
+                return DatabaseMaintenanceResult(
+                    False,
+                    tuple(),
+                    state.accumulated_work,
+                )
+
+        with self.maintenance_gate():
             state = self.get_state()
             now = int(time())
             if not self._is_due(
@@ -241,7 +257,7 @@ class H2HDBDatabaseMaintenance(BaseRepository):
             return DatabaseMaintenanceResult(True, tuple(targets), remaining_work)
 
     def optimize_now(self) -> DatabaseMaintenanceResult:
-        with self.database_gate():
+        with self.maintenance_gate():
             state = self.get_state()
             match self.config.database.sql_type.lower():
                 case "mariadb":
@@ -263,8 +279,11 @@ class H2HDBDatabaseMaintenance(BaseRepository):
         )
         return DatabaseMaintenanceResult(True, tuple(targets), remaining_work)
 
-    def _maintenance_lock_name(self) -> str:
-        return f"h2hdb:{self.config.database.database}:maintenance"
+    def _maintenance_lock_name(self, slot: int) -> str:
+        database_key = sha256(
+            self.config.database.database.encode("utf-8")
+        ).hexdigest()[:32]
+        return f"h2hdb:{database_key}:maintenance:{slot}"
 
     @staticmethod
     def _get_named_lock(
@@ -299,6 +318,39 @@ class H2HDBDatabaseMaintenance(BaseRepository):
 
     @contextmanager
     def database_gate(self, *, timeout_seconds: int | None = None) -> Generator[None]:
+        """Hold one shared operation slot while a public database call runs.
+
+        MariaDB named locks are exclusive, so one global name would serialize
+        every OPDS read, queue operation, and ingest heartbeat. Operations
+        instead spread over independent slots; maintenance acquires every slot
+        before DDL and therefore still waits for all in-flight participants.
+        """
+
+        slot = randbelow(DATABASE_GATE_SLOT_COUNT)
+        with self._database_gate_slots((slot,), timeout_seconds=timeout_seconds):
+            yield
+
+    @contextmanager
+    def maintenance_gate(
+        self,
+        *,
+        timeout_seconds: int | None = None,
+    ) -> Generator[None]:
+        """Exclusively stop all participating public operations for maintenance."""
+
+        with self._database_gate_slots(
+            tuple(range(DATABASE_GATE_SLOT_COUNT)),
+            timeout_seconds=timeout_seconds,
+        ):
+            yield
+
+    @contextmanager
+    def _database_gate_slots(
+        self,
+        slots: tuple[int, ...],
+        *,
+        timeout_seconds: int | None,
+    ) -> Generator[None]:
         if self.config.database.sql_type.lower() == "sqlite":
             yield
             return
@@ -313,27 +365,30 @@ class H2HDBDatabaseMaintenance(BaseRepository):
         if wait_seconds < 1:
             raise ValueError("Database gate timeout must be at least one second.")
 
-        lock_name = self._maintenance_lock_name()
+        lock_names = tuple(self._maintenance_lock_name(slot) for slot in slots)
         with self.SQLConnector() as connector:
-            acquired = self._get_named_lock(
-                connector, lock_name=lock_name, timeout_seconds=0
-            )
-            if not acquired:
-                self.logger.info(
-                    "Database maintenance is in progress; "
-                    f"waiting in {wait_seconds}-second intervals."
-                )
-            while not acquired:
+            acquired_names: list[str] = []
+            for lock_name in lock_names:
                 acquired = self._get_named_lock(
-                    connector,
-                    lock_name=lock_name,
-                    timeout_seconds=wait_seconds,
+                    connector, lock_name=lock_name, timeout_seconds=0
                 )
                 if not acquired:
-                    self.logger.warning(
-                        "Database maintenance is still in progress after "
-                        f"{wait_seconds} seconds; continuing to wait."
+                    self.logger.info(
+                        "Database maintenance gate is occupied; "
+                        f"waiting in {wait_seconds}-second intervals."
                     )
+                while not acquired:
+                    acquired = self._get_named_lock(
+                        connector,
+                        lock_name=lock_name,
+                        timeout_seconds=wait_seconds,
+                    )
+                    if not acquired:
+                        self.logger.warning(
+                            "Database maintenance gate is still occupied after "
+                            f"{wait_seconds} seconds; continuing to wait."
+                        )
+                acquired_names.append(lock_name)
 
             body_raised = False
             try:
@@ -342,25 +397,28 @@ class H2HDBDatabaseMaintenance(BaseRepository):
                 body_raised = True
                 raise
             finally:
-                try:
-                    row = connector.fetch_one(
-                        "SELECT RELEASE_LOCK(%s)",
-                        (lock_name,),
-                    )
-                    released_normally = bool(
-                        row and row[0] is not None and int(row[0]) == 1
-                    )
-                except Exception as error:
-                    self.logger.error(
-                        f"MariaDB database gate {lock_name!r} could not be "
-                        "explicitly released; closing its connection: "
-                        f"{error!r}."
-                    )
-                    if not body_raised:
-                        raise
-                else:
-                    if not released_normally:
-                        self.logger.warning(
-                            f"MariaDB database gate {lock_name!r} was not released "
-                            "normally; closing its connection."
+                release_error: Exception | None = None
+                for lock_name in reversed(acquired_names):
+                    try:
+                        row = connector.fetch_one(
+                            "SELECT RELEASE_LOCK(%s)",
+                            (lock_name,),
                         )
+                        released_normally = bool(
+                            row and row[0] is not None and int(row[0]) == 1
+                        )
+                    except Exception as error:
+                        release_error = error
+                        self.logger.error(
+                            f"MariaDB database gate {lock_name!r} could not be "
+                            "explicitly released; closing its connection: "
+                            f"{error!r}."
+                        )
+                    else:
+                        if not released_normally:
+                            self.logger.warning(
+                                f"MariaDB database gate {lock_name!r} was not "
+                                "released normally; closing its connection."
+                            )
+                if release_error is not None and not body_raised:
+                    raise release_error

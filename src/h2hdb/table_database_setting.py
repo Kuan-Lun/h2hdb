@@ -48,18 +48,23 @@ class H2HDBCheckDatabaseSettings(BaseRepository):
                 return
 
         with self.SQLConnector() as connector:
-            match self.config.database.sql_type.lower():
-                case "mariadb":
-                    query = "SHOW VARIABLES LIKE 'collation_database';"
-                    collation = "utf8mb4_bin"
-
-            collation_result: str = connector.fetch_one(query)[1]
-            is_collation_valid: bool = collation_result == collation
-            if not is_collation_valid:
-                message = f"Invalid database collation. Must be '{collation}' but is '{collation_result}'."
-                self.logger.error(message)
-                raise DatabaseConfigurationError(message)
-            self.logger.info(f"Database collation verified: collation={collation}.")
+            row = connector.fetch_one("SHOW VARIABLES LIKE 'collation_database';")
+        if not row:
+            raise DatabaseConfigurationError(
+                "MariaDB did not report its database collation."
+            )
+        collation = str(row[1])
+        expected_collation = "utf8mb4_bin"
+        if collation != expected_collation:
+            message = (
+                "Invalid database collation. "
+                f"Must be {expected_collation!r} but is {collation!r}."
+            )
+            self.logger.error(message)
+            raise DatabaseConfigurationError(message)
+        self.logger.info(
+            f"Database collation verified: collation={expected_collation}."
+        )
 
     def _get_all_table_names(self) -> list[str]:
         # KEY_COLUMN_USAGE only lists tables that themselves declare an

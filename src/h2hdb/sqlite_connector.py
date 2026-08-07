@@ -1,10 +1,16 @@
 import datetime
 import sqlite3
+from pathlib import Path
 from typing import Any
 
 from pydantic import Field
 
-from .sql_connector import DatabaseDuplicateKeyError, SQLConnector, SQLConnectorParams
+from .sql_connector import (
+    DatabaseDuplicateKeyError,
+    DatabaseReadOnlyError,
+    SQLConnector,
+    SQLConnectorParams,
+)
 
 
 def _adapt_datetime(value: datetime.datetime) -> str:
@@ -38,6 +44,7 @@ class SQLiteConnectorParams(SQLConnectorParams):
         min_length=1,
         description="Filesystem path to the SQLite database file",
     )
+    read_only: bool = False
 
 
 def _to_qmark(query: str) -> str:
@@ -45,16 +52,24 @@ def _to_qmark(query: str) -> str:
 
 
 class SQLiteConnector(SQLConnector):
-    def __init__(self, database: str) -> None:
-        self.params = SQLiteConnectorParams(database=database)
+    def __init__(self, database: str, read_only: bool = False) -> None:
+        self.params = SQLiteConnectorParams(database=database, read_only=read_only)
 
     def connect(self) -> None:
+        database = self.params.database
+        uri = False
+        if self.params.read_only:
+            database = f"{Path(database).resolve().as_uri()}?mode=ro"
+            uri = True
         self.connection = sqlite3.connect(
-            self.params.database,
+            database,
             isolation_level=None,
             detect_types=sqlite3.PARSE_DECLTYPES,
+            uri=uri,
         )
         self.connection.execute("PRAGMA foreign_keys = ON")
+        if self.params.read_only:
+            self.connection.execute("PRAGMA query_only = ON")
 
     def close(self) -> None:
         self.connection.close()
@@ -70,18 +85,27 @@ class SQLiteConnector(SQLConnector):
         self.connection.commit()
 
     def begin(self) -> None:
+        if self.params.read_only:
+            raise DatabaseReadOnlyError(
+                "Cannot start a write transaction in read-only mode"
+            )
         self.connection.execute("BEGIN IMMEDIATE")
+
+    def begin_read(self) -> None:
+        self.connection.execute("BEGIN")
 
     def rollback(self) -> None:
         self.connection.rollback()
 
     def execute(self, query: str, data: tuple[Any, ...] = ()) -> None:
+        self._ensure_writable(query)
         try:
             self.connection.execute(_to_qmark(query), data)
         except sqlite3.IntegrityError as e:
             raise SQLiteDuplicateKeyError(str(e))
 
     def execute_many(self, query: str, data: list[tuple[Any, ...]]) -> None:
+        self._ensure_writable(query)
         try:
             self.connection.executemany(_to_qmark(query), data)
         except sqlite3.IntegrityError as e:
@@ -97,3 +121,12 @@ class SQLiteConnector(SQLConnector):
     ) -> list[tuple[Any, ...]]:
         cursor = self.connection.execute(_to_qmark(query), data)
         return cursor.fetchall()
+
+    def _ensure_writable(self, query: str) -> None:
+        if not self.params.read_only:
+            return
+        keyword = query.lstrip().split(maxsplit=1)[0].upper()
+        if keyword not in {"SELECT", "PRAGMA", "EXPLAIN", "WITH"}:
+            raise DatabaseReadOnlyError(
+                f"Statement {keyword or '<empty>'} is not allowed in read-only mode"
+            )

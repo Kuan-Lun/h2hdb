@@ -1,231 +1,185 @@
-# H2HDB
+# h2hdb
 
-## Description
+`h2hdb` is the database and coordination core for the H2HDB multi-repository
+system. It owns the durable schema and exposes backend-neutral public ports to
+ingest, download, Komga, and OPDS consumers.
 
-The `H2HDB` is a comprehensive database for organising and managing H@H comic
-collections. It offers a streamlined way to catalogue your comics, providing
-key information such as GID (Gallery ID), title, tags and more, ensuring your
-collection is always organised and accessible.
+It deliberately does **not** scan files, parse `galleryinfo.txt`, manipulate
+images or CBZ files, serve HTTP, serialize OPDS documents, or depend on
+`hbrowser`. Those responsibilities live in sibling packages.
 
----
+## Core responsibilities
 
-## Features
+- MariaDB and SQLite connectors, transactions, and read-only access.
+- Forward-only, versioned schema migrations.
+- Durable download queue and token-fenced download/ingest leases.
+- Database maintenance gate and scheduling state. Core public operations own
+  participation; consumers do not wrap calls themselves.
+- Neutral catalog domain models and revision-based projection.
+- Public ports: `CatalogReader`, `CatalogPublisher`, `DownloadCoordinator`, and
+  `DatabaseAdmin`.
 
-- [x] Add new galleries to the database
-- [x] Comporess H@H's galleries to a folder
-- [x] Record the removed GIDs in a separate list
-- [x] Coordinate batched downloader and database-ingest turns
-- [ ] Write document (need?)
+The catalog projection consists of `catalog_publications`,
+`catalog_contributors`, `catalog_subjects`, `catalog_artifacts`, and the
+singleton `catalog_revision` pointer. Immutable descriptors for every published
+revision live in `catalog_revision_history`. A complete snapshot and its history
+entry are inserted before the pointer advances in one transaction. The publish
+is fenced by a live ingest lease, unchanged projections reuse the current
+revision, and readers only see fully published revisions. Every newly published
+publication records its exact canonical `source_gallery_name` and, when content
+exists, `content_sha256`, so ingest can preserve deduplication incumbents.
 
----
+## Installation
 
-## Installation and Usage
+This repository uses a src layout: the import package is `h2hdb`, while its
+source lives under `src/h2hdb`.
 
-1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/).
-   It manages the Python version and dependencies for you.
-1. Install the required packages.
+```bash
+uv venv --python 3.14
+uv pip install -e ".[dev]"
+```
 
-    ```bash
-    uv pip install h2hdb
-    ```
+`uv.lock` is intentionally ignored. Rebuild the local environment with:
 
-1. Run the script.
+```bash
+./scripts/rebuild-env.sh
+```
 
-    ```bash
-    uv run python -m h2hdb --config [json-path]
-    ```
-
-### Config
+## Configuration and schema administration
 
 ```json
 {
-    "h2h": {
-        "download_path": "download",
-        "cbz_max_size": 768,
-        "cbz_grouping": "flat",
-        "cbz_sort": "no"
-    },
-    "database": {
-        "sql_type": "mariadb",
-        "host": "localhost",
-        "port": 3306,
-        "user": "root",
-        "password": "password",
-        "database": "h2h"
-    },
-    "maintenance": {
-        "optimize_enabled": true,
-        "min_interval_seconds": 604800,
-        "min_work_units": 1000,
-        "min_data_free_bytes": 268435456,
-        "min_data_free_ratio": 0.2,
-        "lock_wait_seconds": 300
-    },
-    "logger": {
-        "level": "INFO"
-    }
+  "database": {
+    "sql_type": "sqlite",
+    "database": "/var/lib/h2hdb/catalog.sqlite3",
+    "access_mode": "read-write"
+  },
+  "maintenance": {
+    "optimize_enabled": true
+  },
+  "logger": {
+    "level": "INFO",
+    "file": null
+  }
 }
 ```
 
-- `h2h.download_path`: H@H download path. The default is `download`.
-- `h2h.cbz_path`: directory for CBZ output. Unset (the default) disables CBZ
-  output entirely; if given, it must be a non-empty path (`""` is rejected).
-- `h2h.cbz_max_size`: maximum image size. The default is `768`.
-- `h2h.cbz_grouping`: `flat`, `date-yyyy`, `date-yyyy-mm`, or
-  `date-yyyy-mm-dd`. The default is `flat`.
-- `h2h.cbz_sort`: `no`, `upload_time`, `download_time`, `gid`, `title`,
-  `pages`, or `pages+[num]`. The default is `no`.
-- `h2h.file_hash_workers`: maximum number of files read and hashed
-  concurrently. The default is the smaller of `4` and the available CPU count;
-  set it to `1` for serial hashing. Valid values are `1`–`32`.
-- `database.sql_type`: `mariadb` or `sqlite`. The default is `mariadb`.
-  Existing config files that still use `mysql` must update this field.
-- `database.host`, `database.port`, `database.user`, and `database.password`
-  are only used for `mariadb`.
-- `database.database`: for `mariadb`, this is the database name. For `sqlite`,
-  this is the path to the database file.
-- `maintenance.optimize_enabled`: enables automatic optimization in the
-  resident main loop. Manual `H2HDB.optimize_database()` calls remain
-  unconditional.
-- `maintenance.min_interval_seconds`: minimum time between automatic
-  optimization evaluations. The default is seven days (`604800`).
-- `maintenance.min_work_units`: changed or removed galleries accumulated
-  before an evaluation. New galleries do not count. The default is `1000`.
-- `maintenance.min_data_free_bytes` and `maintenance.min_data_free_ratio`:
-  minimum reclaimable space a table (or the SQLite database) must satisfy.
-  Both thresholds must pass; the defaults are 256 MiB and 20%.
-- `maintenance.lock_wait_seconds`: one wait interval for the MariaDB
-  cross-process database gate. The default is 300 seconds. A timeout is logged
-  and retried rather than terminating the caller.
-- `logger.level`: one of `NOTSET`, `DEBUG`, `INFO`, `WARNING`, `ERROR`, or
-  `CRITICAL`.
+JSON string values that consist exactly of `${ENV_NAME}` are resolved from the
+process environment before validation, including values nested inside objects
+and arrays. Variable names must match `[A-Za-z_][A-Za-z0-9_]*`; a missing or
+invalid name stops startup without including the environment value in the
+error. Inline interpolation is deliberately unsupported, so strings such as
+`db-${INSTANCE}` remain literal. For example, keep a MariaDB password out of
+the file with `"password": "${H2HDB_RW_DB_PASSWORD}"`.
+Unknown JSON fields are still rejected after placeholder resolution.
 
-The main entry point remains resident and keeps its 30-minute periodic scan
-deadline, but it now polls the durable `gallery_ingest_state` every five seconds
-while waiting. A live downloader lease defers that scan; otherwise an ingest
-request wakes h2hdb without waiting for the old uninterruptible 30-minute
-sleep.
+For MariaDB, set `host`, `port`, `user`, `password`, and `database`. Consumers
+such as OPDS should use `"access_mode": "read-only"`; their database account
+needs `SELECT` plus `SHOW VIEW` so compatibility checks can validate critical
+view definitions without write privileges.
 
-The singleton coordination row moves through
-`INGEST_REQUESTED → INGESTING → READY → DOWNLOADING`. A newly added row starts
-at `INGEST_REQUESTED`, so an upgraded or new installation completes one
-baseline scan before a downloader can claim `READY`. Downloader integrations
-use these public methods:
+Only the core administration command migrates current, versioned schema. Its
+two runtime operations are:
 
-- `claim_download_turn(lease_seconds=...)` returns a generation-fenced
-  `DownloadTurn`, or `None` while h2hdb owns the turn.
-- `renew_download_turn(turn, lease_seconds=...)` extends a live downloader
-  lease and returns whether that token still owns the generation.
-- `ensure_download_request(gid, url="")` atomically reuses an existing durable
-  request without replacing its token, or creates one and reports that it was
-  newly created.
-- `complete_download_request_in_turn(turn, request)` exact-deletes a completed
-  root request while its fenced turn remains in `DOWNLOADING` for more roots.
-- `complete_missing_download_request_in_turn(turn, request, gid)` performs the
-  equivalent live-turn-fenced exact deletion and missing-marker write.
-- `request_gallery_ingest(turn)` idempotently hands the generation to h2hdb.
-- `finish_download_turn(turn, request)` atomically hands off a successful root
-  traversal and conditionally deletes only that request token.
-- `finish_missing_download_turn(turn, request, gid)` atomically fences and hands
-  off a coordinated lookup; only while that exact request token is still current
-  does it record the GID as removed and delete the request.
-- `complete_missing_download_request(request, gid)` records a confirmed missing
-  gallery and deletes a direct request in one transaction, only while that exact
-  token is still current.
-- `clear_removed_gallery_gid(gid)` clears a prior missing result after a later
-  lookup finds the gallery again.
-- `get_gallery_ingest_state()` exposes the durable phase and
-  `completed_generation`; a downloader may start its next batch or independent
-  root only after `completed_generation >= turn.generation`.
+```bash
+uv run --no-sync python -m h2hdb migrate --config config.json
+uv run --no-sync python -m h2hdb check --config config.json
+```
 
-A fresh `DOWNLOADING` lease prevents h2hdb from starting a scan until the
-downloader requests handoff; a periodic deadline does not override it. If the
-downloader terminates, h2hdb takes over after the lease expires and ingests any
-complete gallery folders already published. An ingest acknowledgement is
-written only after repeated `synchronize_once()` calls converge to a pass with
-no new or changed galleries and scheduled maintenance succeeds. A background
-heartbeat renews the ingest lease throughout synchronization and MariaDB
-maintenance. SQLite lock contention is retried only within the current lease;
-before SQLite maintenance h2hdb renews once and stops the heartbeat so
-`VACUUM`'s exclusive lock can fence competing coordination writers. A
-successful SQLite optimization can acknowledge after the timestamp expires
-only if its generation and owner token are still current. Another resident
-treats SQLite lock contention while claiming as temporarily unavailable and
-keeps polling. Owner tokens fence stale downloader and h2hdb processes from
-renewing or completing a newer turn. Persisted handoff provenance distinguishes
-an explicit live-token handoff from an expired downloader lease recovered by
-h2hdb, so a recovered stale token cannot later report success.
+Choose the operation from database state, not from container lifecycle:
 
-A download turn may cover one independent root or a batch of complete root
-traversals governed by the downloader's accepted-submission soft threshold;
-every root and its full related-tag cascade remain an indivisible unit. Between
-roots, a batch uses the live-turn-fenced
-`complete_download_request_in_turn()` or
-`complete_missing_download_request_in_turn()` operation to persist completed
-work without handing off `DOWNLOADING`. The downloader counts unique GIDs for
-which H@H accepted a submission, checks the threshold only after a root returns,
-and does not advance it for a root with zero accepted submissions. At its soft
-submission boundary, snapshot exhaustion, cancellation, or failure, it calls
-`request_gallery_ingest()` once.
-The single-root APIs retain `finish_download_turn()` and
-`finish_missing_download_turn()`, where final request mutation and handoff share
-one transaction.
+| Database state | Operation |
+| --- | --- |
+| Empty | Run `python -m h2hdb migrate` once |
+| Non-empty and has the supported `h2hdb_schema_migrations` ledger | Run the same forward-only `migrate` command |
+| Consumer startup | Run `python -m h2hdb check`; never migrate |
 
-All request completion remains exact-token conditional. If the same GID was
-already re-enqueued with a newer token, success deletion is a no-op and a stale
-missing result writes no marker. A later successful lookup calls
-`clear_removed_gallery_gid()` to repair a prior marker; replaying the older
-completion cannot restore it. Interrupting an in-turn completion commits both
-its fenced request mutation and missing marker or neither. If a downloader
-stops before handoff, the durable `DOWNLOADING` lease eventually expires so
-h2hdb scans already published files; completed roots stay settled while the
-unfinished root remains queued. If h2hdb itself stops in `INGESTING`, its lease
-recovery repeats synchronization until convergence before acknowledging the
-generation.
+`migrate` deliberately refuses a non-empty database without
+`h2hdb_schema_migrations`. There is no old-schema recognition, adoption,
+backfill, config fallback, or upgrade command. Replace an old database with an
+empty one and rebuild it through the current ingest workflow. A database that
+already has the current ledger may use later forward-only migrations as they
+are added.
 
-Completed removal and changed-gallery batches add work to the singleton
-`database_maintenance_state` row. Automatic optimization is evaluated only
-after both the work and time thresholds pass, and MariaDB runs `OPTIMIZE TABLE`
-only for base tables that also pass both reclaimable-space thresholds. h2hdb
-clients can wrap short database work in `H2HDB.database_gate()` so it waits
-while maintenance owns the same MariaDB named lock.
+The schema version is stored in the append-only `h2hdb_schema_migrations`
+ledger and is independent of the Python package version. Consumer startup must
+call `check_compatibility()`; it must not migrate.
+The later ingest `bootstrap-catalog.py` command is a separate data operation: it
+does not create schema or write the schema ledger.
 
-H2HDB records a source-filename manifest for each gallery. Adding, deleting, or
-renaming a source file marks that gallery's CBZ for rebuilding. This pending
-state remains in the database if CBZ output is disabled or a run is interrupted.
-During ingestion, the provisional pass creates only missing CBZ files for new
-galleries and preserves existing CBZ files. After all galleries have been
-processed, one final pass uses the stable exclusion set to perform any required
-rebuilds. Created CBZ files carry a small input-layout marker in their ZIP
-comment, allowing the final pass to detect normalized renames and filename
-swaps even after the database has been deleted and rebuilt. H2HDB does not hash
-or scrub CBZ file contents.
+## Public API
 
----
+Create the facade from `CoreConfig` or `load_config()`:
 
-## Q & A
+```python
+from h2hdb import H2HDB, load_config
 
-- Why are some images missing from the CBZ-files?
+database = H2HDB(load_config("config.json"))
+database.check_compatibility()
+page = database.list_publications(limit=50)
+historical = database.get_catalog_revision(1)
+historical_page = database.list_publications(revision=historical, limit=50)
+acquirable_page = database.list_publications(
+    revision=historical,
+    limit=50,
+    require_artifact=True,
+)
+```
 
-`H2HDB` does not compress images that are considered spam according to certain
-rules. If you encounter any images that you believe should have been included,
-please report the issue.
+`get_catalog_revision()` resolves the current pointer;
+`get_catalog_revision(revision_number)` loads a durable historical descriptor
+or raises `CatalogRevisionNotFoundError`.
 
-- Why are some images in some CBZ files and not in other CBZ-files?
+`get_publications_by_artifact_names(..., revision=descriptor)` participates in
+the same revision pinning contract. `require_artifact=True` applies the artifact
+predicate to both page rows and `total`, which lets acquisition-feed consumers
+paginate without post-filtering.
 
-`H2HDB` learns the spam rule from the previous CBZ files. If you kill the CBZ
-files containing these images, the new CBZ files will not contain these images.
+Every supported revision persists exact `source_gallery_name`; consumers never
+infer it from mutable canonical tables. `content_sha256` is nullable only for a
+current-domain reason: a gallery can have no non-galleryinfo content after
+exclusions.
 
----
+Consumers should type against the exported protocols and domain models. Do not
+import connector, repository, or table implementation modules from another
+repository.
 
-## Credits
+## Multi-repository development
 
-The project was created by [Kuan-Lun Wang](https://www.klwang.tw/home/).
+The repositories remain independent projects; this is not a uv workspace. To
+create an isolated editable-install integration environment for all local
+packages, run:
 
----
+```bash
+./scripts/rebuild-multirepo-integration.sh
+```
+
+The script uses `uv venv` and `uv pip install -e` for each repository and does
+not create or consume a lock file. See
+[`docs/multi-repo-deployment.md`](docs/multi-repo-deployment.md) for the
+container split, fresh database initialization, shared database, and CBZ mount
+rules.
+
+## Verification
+
+```bash
+uv run --no-sync black --check src tests scripts
+uv run --no-sync ruff check src tests scripts
+uv run --no-sync mypy src tests scripts
+uv run --no-sync pytest
+uv run --no-sync python -m build
+uv run --no-sync python scripts/build-and-verify-distributions.py \
+  --output-directory /path/to/empty/output-directory
+```
+
+The final command always builds in a fresh temporary directory. It verifies the
+wheel boundary and confirms that an installation taken from that wheel exposes
+only the `migrate` and `check` CLI operations. It copies artifacts to the
+requested empty output directory only after every check passes.
+
+SQLite runs locally. Set `H2HDB_TEST_MARIADB=1` with a running Docker daemon to
+include the MariaDB testcontainer cases.
 
 ## License
 
-This project is distributed under the terms of the GNU General Public Licence
-(GPL). For detailed licence terms, see the `LICENSE` file included in this
-distribution.
+GNU Affero General Public License v3 or later. See `LICENSE`.

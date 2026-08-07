@@ -1,13 +1,12 @@
+import os
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
-import mysql.connector
 import pytest
-from testcontainers.mysql import MySqlContainer
 
-from h2hdb import DatabaseConfig, H2HDBConfig
+from h2hdb import CoreConfig, DatabaseConfig
 
 MARIADB_IMAGE = "mariadb:11"
 MARIADB_ROOT_PASSWORD = "h2hdb-test-root"
@@ -16,20 +15,36 @@ MARIADB_PASSWORD = "h2hdb-test-password"
 
 
 @pytest.fixture(scope="session")
-def mariadb_container() -> Iterator[MySqlContainer]:
-    container = MySqlContainer(
-        image=MARIADB_IMAGE,
-        username=MARIADB_USER,
-        password=MARIADB_PASSWORD,
-        root_password=MARIADB_ROOT_PASSWORD,
-        dbname="h2hdb_template",
-    )
-    with container as started:
+def mariadb_container() -> Iterator[Any]:
+    if os.environ.get("H2HDB_TEST_MARIADB") != "1":
+        pytest.skip("set H2HDB_TEST_MARIADB=1 to run MariaDB integration tests")
+    try:
+        from testcontainers.community.mysql import MySqlContainer
+    except ImportError as error:
+        pytest.skip(f"MariaDB test dependencies are unavailable: {error}")
+    try:
+        container = MySqlContainer(
+            image=MARIADB_IMAGE,
+            username=MARIADB_USER,
+            password=MARIADB_PASSWORD,
+            root_password=MARIADB_ROOT_PASSWORD,
+            dbname="h2hdb_template",
+        )
+        started = container.start()
+    except Exception as error:
+        pytest.skip(f"MariaDB testcontainer is unavailable: {error}")
+    try:
         yield started
+    finally:
+        container.stop()
 
 
 @pytest.fixture
-def mariadb_config(mariadb_container: MySqlContainer) -> Iterator[H2HDBConfig]:
+def mariadb_config(mariadb_container: Any) -> Iterator[CoreConfig]:
+    try:
+        import mysql.connector
+    except ImportError as error:
+        pytest.skip(f"MariaDB connector is unavailable: {error}")
     host = mariadb_container.get_container_host_ip()
     port = int(mariadb_container.get_exposed_port(mariadb_container.port))
     database = f"h2hdb_test_{uuid.uuid4().hex[:12]}"
@@ -39,7 +54,10 @@ def mariadb_config(mariadb_container: MySqlContainer) -> Iterator[H2HDBConfig]:
     )
     try:
         with admin_connection.cursor() as cursor:
-            cursor.execute(f"CREATE DATABASE `{database}`")
+            cursor.execute(
+                f"CREATE DATABASE `{database}` "
+                "CHARACTER SET utf8mb4 COLLATE utf8mb4_bin"
+            )
             cursor.execute(
                 f"GRANT ALL PRIVILEGES ON `{database}`.* TO %s",
                 (MARIADB_USER,),
@@ -48,7 +66,7 @@ def mariadb_config(mariadb_container: MySqlContainer) -> Iterator[H2HDBConfig]:
     finally:
         admin_connection.close()
 
-    config = H2HDBConfig(
+    config = CoreConfig(
         database=DatabaseConfig(
             sql_type="mariadb",
             host=host,
@@ -73,17 +91,15 @@ def mariadb_config(mariadb_container: MySqlContainer) -> Iterator[H2HDBConfig]:
 
 
 @pytest.fixture
-def sqlite_config(tmp_path: Path) -> H2HDBConfig:
+def sqlite_config(tmp_path: Path) -> CoreConfig:
     # Must be a real file, not `:memory:`: every H2HDB method opens its own
     # connection, and SQLite's in-memory databases are connection-scoped.
     database_path = tmp_path / "h2hdb_test.sqlite3"
-    return H2HDBConfig(
+    return CoreConfig(
         database=DatabaseConfig(sql_type="sqlite", database=str(database_path))
     )
 
 
-@pytest.fixture(params=["mariadb", "sqlite"])
-def db_config(request: pytest.FixtureRequest) -> H2HDBConfig:
-    # Lazily resolves only the fixture for the requested backend, so a
-    # sqlite-only test run never has to spin up a MariaDB container.
-    return cast(H2HDBConfig, request.getfixturevalue(f"{request.param}_config"))
+@pytest.fixture(params=["sqlite", "mariadb"])
+def db_config(request: pytest.FixtureRequest) -> CoreConfig:
+    return cast(CoreConfig, request.getfixturevalue(f"{request.param}_config"))

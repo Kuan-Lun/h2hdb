@@ -7,7 +7,7 @@ from itertools import chain
 from time import monotonic
 from typing import Any, cast
 
-from .config_loader import H2HDBConfig
+from .config_loader import CoreConfig, DatabaseAccessMode
 from .logger import HentaiDBLogger, setup_logger
 from .settings import FILE_NAME_LENGTH_LIMIT, FOLDER_NAME_LENGTH_LIMIT
 from .sql_connector import SQLConnector as AbstractSQLConnector
@@ -16,20 +16,20 @@ from .sql_connector import SQLConnectorParams
 
 @dataclass(frozen=True)
 class RepositoryContext:
-    config: H2HDBConfig
+    config: CoreConfig
     logger: HentaiDBLogger
     sql_connection_params: SQLConnectorParams
     SQLConnector: Callable[[], AbstractSQLConnector]
     mariadb_index_prefix_limit: int = 191
 
     @classmethod
-    def from_config(cls, config: H2HDBConfig) -> RepositoryContext:
+    def from_config(cls, config: CoreConfig) -> RepositoryContext:
         logger = setup_logger(config.logger)
 
         sql_connection_params: SQLConnectorParams
         connector_factory: Callable[[], AbstractSQLConnector]
 
-        match config.database.sql_type.lower():
+        match config.database.sql_type:
             case "mariadb":
                 from .mariadb_connector import MariaDBConnector, MariaDBConnectorParams
 
@@ -39,6 +39,9 @@ class RepositoryContext:
                     user=config.database.user,
                     password=config.database.password,
                     database=config.database.database,
+                    read_only=(
+                        config.database.access_mode is DatabaseAccessMode.read_only
+                    ),
                 )
                 connector_factory = cast(
                     Callable[[], AbstractSQLConnector],
@@ -49,6 +52,9 @@ class RepositoryContext:
 
                 sql_connection_params = SQLiteConnectorParams(
                     database=config.database.database,
+                    read_only=(
+                        config.database.access_mode is DatabaseAccessMode.read_only
+                    ),
                 )
                 connector_factory = cast(
                     Callable[[], AbstractSQLConnector],
@@ -66,7 +72,7 @@ class RepositoryContext:
 
     @property
     def sql_type(self) -> str:
-        return self.config.database.sql_type.lower()
+        return self.config.database.sql_type
 
 
 class BaseRepository:
@@ -74,7 +80,7 @@ class BaseRepository:
         self._context = context
 
     @property
-    def config(self) -> H2HDBConfig:
+    def config(self) -> CoreConfig:
         return self._context.config
 
     @property
@@ -135,7 +141,7 @@ class BaseRepository:
         )
 
     def _split_gallery_name(self, gallery_name: str) -> list[str]:
-        match self.config.database.sql_type.lower():
+        match self.config.database.sql_type:
             case "mariadb":
                 return self._mariadb_split_name_value(gallery_name)
             case "sqlite":
@@ -144,9 +150,7 @@ class BaseRepository:
                 raise ValueError("Unsupported SQL type")
 
     def _mariadb_split_name_value(self, gallery_name: str) -> list[str]:
-        size = FOLDER_NAME_LENGTH_LIMIT // self.mariadb_index_prefix_limit + (
-            FOLDER_NAME_LENGTH_LIMIT % self.mariadb_index_prefix_limit > 0
-        )
+        size = math.ceil(FOLDER_NAME_LENGTH_LIMIT / self.mariadb_index_prefix_limit)
         gallery_name_parts = re.findall(
             f".{{1,{self.mariadb_index_prefix_limit}}}", gallery_name
         )
@@ -163,11 +167,11 @@ class BaseRepository:
         ]
         if name_length_limit % self.mariadb_index_prefix_limit > 0:
             name_parts.append(
-                f"{name}_part{num_parts} CHAR({name_length_limit % self.mariadb_index_prefix_limit}) NOT NULL"
+                f"{name}_part{num_parts} "
+                f"CHAR({name_length_limit % self.mariadb_index_prefix_limit}) NOT NULL"
             )
         column_name_parts = [f"{name}_part{i}" for i in range(1, num_parts + 1)]
-        create_name_parts_sql = ", ".join(name_parts)
-        return column_name_parts, create_name_parts_sql
+        return column_name_parts, ", ".join(name_parts)
 
     def mariadb_split_gallery_name_based_on_limit(
         self, name: str
@@ -179,11 +183,12 @@ class BaseRepository:
     ) -> tuple[list[str], str]:
         return self._mariadb_split_name_based_on_limit(name, FILE_NAME_LENGTH_LIMIT)
 
-    def sqlite_name_columns(self, name: str) -> tuple[list[str], str]:
+    @staticmethod
+    def sqlite_name_columns(name: str) -> tuple[list[str], str]:
         return [name], f"{name} TEXT NOT NULL"
 
+    @staticmethod
     def _create_sqlite_fts5_sync(
-        self,
         connector: AbstractSQLConnector,
         table_name: str,
         column_name: str,
@@ -196,19 +201,22 @@ class BaseRepository:
             )
             """)
         connector.execute(f"""
-            CREATE TRIGGER IF NOT EXISTS {table_name}_ai AFTER INSERT ON {table_name} BEGIN
+            CREATE TRIGGER IF NOT EXISTS {table_name}_ai
+            AFTER INSERT ON {table_name} BEGIN
                 INSERT INTO {fts_table_name}(rowid, {column_name})
                 VALUES (new.{rowid_column}, new.{column_name});
             END
             """)
         connector.execute(f"""
-            CREATE TRIGGER IF NOT EXISTS {table_name}_ad AFTER DELETE ON {table_name} BEGIN
+            CREATE TRIGGER IF NOT EXISTS {table_name}_ad
+            AFTER DELETE ON {table_name} BEGIN
                 INSERT INTO {fts_table_name}({fts_table_name}, rowid, {column_name})
                 VALUES ('delete', old.{rowid_column}, old.{column_name});
             END
             """)
         connector.execute(f"""
-            CREATE TRIGGER IF NOT EXISTS {table_name}_au AFTER UPDATE ON {table_name} BEGIN
+            CREATE TRIGGER IF NOT EXISTS {table_name}_au
+            AFTER UPDATE ON {table_name} BEGIN
                 INSERT INTO {fts_table_name}({fts_table_name}, rowid, {column_name})
                 VALUES ('delete', old.{rowid_column}, old.{column_name});
                 INSERT INTO {fts_table_name}(rowid, {column_name})
