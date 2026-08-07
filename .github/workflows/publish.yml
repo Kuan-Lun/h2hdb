@@ -81,7 +81,9 @@ jobs:
       - name: Type-check
         run: python -m mypy src tests scripts
 
-      - name: Test
+      - name: Test (SQLite and MariaDB)
+        env:
+          H2HDB_TEST_MARIADB: "1"
         run: python -m pytest
 
       - name: Build and smoke-test distributions

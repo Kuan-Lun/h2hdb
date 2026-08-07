@@ -21,7 +21,10 @@ def mariadb_container() -> Iterator[Any]:
     try:
         from testcontainers.community.mysql import MySqlContainer
     except ImportError as error:
-        pytest.skip(f"MariaDB test dependencies are unavailable: {error}")
+        pytest.fail(
+            f"MariaDB tests were enabled but dependencies are unavailable: {error}",
+            pytrace=False,
+        )
     try:
         container = MySqlContainer(
             image=MARIADB_IMAGE,
@@ -32,7 +35,11 @@ def mariadb_container() -> Iterator[Any]:
         )
         started = container.start()
     except Exception as error:
-        pytest.skip(f"MariaDB testcontainer is unavailable: {error}")
+        pytest.fail(
+            f"MariaDB tests were enabled but the testcontainer is unavailable: "
+            f"{error}",
+            pytrace=False,
+        )
     try:
         yield started
     finally:
@@ -44,7 +51,10 @@ def mariadb_config(mariadb_container: Any) -> Iterator[CoreConfig]:
     try:
         import mysql.connector
     except ImportError as error:
-        pytest.skip(f"MariaDB connector is unavailable: {error}")
+        pytest.fail(
+            f"MariaDB tests were enabled but the connector is unavailable: {error}",
+            pytrace=False,
+        )
     host = mariadb_container.get_container_host_ip()
     port = int(mariadb_container.get_exposed_port(mariadb_container.port))
     database = f"h2hdb_test_{uuid.uuid4().hex[:12]}"

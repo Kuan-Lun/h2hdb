@@ -50,19 +50,50 @@ def test_database_touching_facade_methods_are_guarded() -> None:
         "optimize_database",
         "run_scheduled_database_maintenance",
     }
+    intentionally_ungated_database_methods = {"check_readiness"}
     non_database_methods = {"database_gate"}
     methods = {
         name: member
         for name, member in vars(H2HDB).items()
         if callable(member)
         and not name.startswith("_")
-        and name not in intentionally_self_gated | non_database_methods
+        and name
+        not in (
+            intentionally_self_gated
+            | intentionally_ungated_database_methods
+            | non_database_methods
+        )
     }
 
     assert methods
     assert {
         name for name, method in methods.items() if not hasattr(method, "__wrapped__")
     } == set()
+
+
+def test_schema_readiness_check_bypasses_maintenance_gate(
+    sqlite_config: CoreConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = H2HDB(sqlite_config)
+    database.migrate()
+    acquisitions = 0
+
+    @contextmanager
+    def observed_gate(*, timeout_seconds: int | None = None) -> Generator[None]:
+        nonlocal acquisitions
+        del timeout_seconds
+        acquisitions += 1
+        yield
+
+    monkeypatch.setattr(
+        database._database_maintenance,
+        "database_gate",
+        observed_gate,
+    )
+
+    assert database.check_readiness().database_version == 1
+    assert acquisitions == 0
 
 
 def test_scheduled_maintenance_readiness_check_uses_shared_gate(

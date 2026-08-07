@@ -208,6 +208,11 @@ class H2HDB:
     def check_compatibility(self) -> SchemaCompatibility:
         return self._migrations.check_compatibility()
 
+    def check_readiness(self) -> SchemaCompatibility:
+        """Check the schema ledger without waiting on the maintenance gate."""
+
+        return self._migrations.check_readiness()
+
     @contextmanager
     def database_gate(
         self,

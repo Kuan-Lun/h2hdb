@@ -131,6 +131,7 @@ def test_sqlite_current_schema_is_complete_and_idempotent(
     assert first.database_version == 1
     assert first.minimum_supported <= first.database_version
     assert first.database_version <= first.maximum_supported
+    assert database.check_readiness() == first
     tables = _sqlite_tables(database_path)
     assert EXPECTED_CANONICAL_TABLES <= tables
     assert EXPECTED_PROJECTION_TABLES <= tables
@@ -172,8 +173,11 @@ def test_read_only_compatibility_check_does_not_create_schema_objects(
         )
     )
 
+    database = H2HDB(config)
     with pytest.raises(SchemaCompatibilityError, match="database=0"):
-        H2HDB(config).check_compatibility()
+        database.check_readiness()
+    with pytest.raises(SchemaCompatibilityError, match="database=0"):
+        database.check_compatibility()
 
     assert _sqlite_tables(database_path) == set()
 
@@ -261,6 +265,7 @@ def test_compatibility_rejects_missing_critical_catalog_index(
     with sqlite3.connect(Path(sqlite_config.database.database)) as connection:
         connection.execute("DROP INDEX catalog_artifacts_name")
 
+    assert database.check_readiness().database_version == 1
     with pytest.raises(SchemaCompatibilityError, match="indexes="):
         database.check_compatibility()
 

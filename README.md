@@ -79,11 +79,12 @@ needs `SELECT` plus `SHOW VIEW` so compatibility checks can validate critical
 view definitions without write privileges.
 
 Only the core administration command migrates current, versioned schema. Its
-two runtime operations are:
+three runtime operations are:
 
 ```bash
 uv run --no-sync python -m h2hdb migrate --config config.json
 uv run --no-sync python -m h2hdb check --config config.json
+uv run --no-sync python -m h2hdb ready --config config.json
 ```
 
 Choose the operation from database state, not from container lifecycle:
@@ -93,6 +94,7 @@ Choose the operation from database state, not from container lifecycle:
 | Empty | Run `python -m h2hdb migrate` once |
 | Non-empty and has the supported `h2hdb_schema_migrations` ledger | Run the same forward-only `migrate` command |
 | Consumer startup | Run `python -m h2hdb check`; never migrate |
+| Container readiness probe | Run `python -m h2hdb ready` |
 
 `migrate` deliberately refuses a non-empty database without
 `h2hdb_schema_migrations`. There is no old-schema recognition, adoption,
@@ -104,6 +106,9 @@ are added.
 The schema version is stored in the append-only `h2hdb_schema_migrations`
 ledger and is independent of the Python package version. Consumer startup must
 call `check_compatibility()`; it must not migrate.
+The lightweight `ready` command checks only that ledger and deliberately does
+not wait on the database maintenance gate. It is suitable for a frequently
+repeated orchestrator probe; `check` remains the full schema-structure audit.
 The later ingest `bootstrap-catalog.py` command is a separate data operation: it
 does not create schema or write the schema ledger.
 
@@ -174,8 +179,8 @@ uv run --no-sync python scripts/build-and-verify-distributions.py \
 
 The final command always builds in a fresh temporary directory. It verifies the
 wheel boundary and confirms that an installation taken from that wheel exposes
-only the `migrate` and `check` CLI operations. It copies artifacts to the
-requested empty output directory only after every check passes.
+only the `migrate`, `check`, and `ready` CLI operations. It copies artifacts to
+the requested empty output directory only after every check passes.
 
 SQLite runs locally. Set `H2HDB_TEST_MARIADB=1` with a running Docker daemon to
 include the MariaDB testcontainer cases.

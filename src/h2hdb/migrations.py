@@ -569,7 +569,9 @@ class MigrationRunner:
         applied = self._applied_migrations()
         return max(applied, default=0)
 
-    def check_compatibility(self) -> SchemaCompatibility:
+    def check_readiness(self) -> SchemaCompatibility:
+        """Validate only the migration ledger used as the schema commit marker."""
+
         applied = self._applied_migrations() if self._migration_ledger_exists() else {}
         self._validate_applied_migrations(applied)
         version = max(applied, default=0)
@@ -584,6 +586,10 @@ class MigrationRunner:
                 f"database={version} recorded={sorted(applied.items())} "
                 f"supported={LATEST_SCHEMA_VERSION}."
             )
+        return compatibility
+
+    def check_compatibility(self) -> SchemaCompatibility:
+        compatibility = self.check_readiness()
         for migration in _MIGRATION_REGISTRY:
             self._validate_migration_result(migration)
         return compatibility
@@ -965,21 +971,21 @@ class MigrationRunner:
                 rows = connector.fetch_all(
                     """
                     SELECT
-                        usage.CONSTRAINT_NAME,
-                        usage.COLUMN_NAME,
-                        usage.REFERENCED_TABLE_NAME,
-                        usage.REFERENCED_COLUMN_NAME,
-                        usage.ORDINAL_POSITION,
+                        kcu.CONSTRAINT_NAME,
+                        kcu.COLUMN_NAME,
+                        kcu.REFERENCED_TABLE_NAME,
+                        kcu.REFERENCED_COLUMN_NAME,
+                        kcu.ORDINAL_POSITION,
                         rules.UPDATE_RULE,
                         rules.DELETE_RULE
-                    FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE AS usage
+                    FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE AS kcu
                     JOIN INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS AS rules
-                        ON rules.CONSTRAINT_SCHEMA = usage.CONSTRAINT_SCHEMA
-                        AND rules.CONSTRAINT_NAME = usage.CONSTRAINT_NAME
-                    WHERE usage.TABLE_SCHEMA = %s
-                        AND usage.TABLE_NAME = %s
-                        AND usage.REFERENCED_TABLE_NAME IS NOT NULL
-                    ORDER BY usage.CONSTRAINT_NAME, usage.ORDINAL_POSITION
+                        ON rules.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA
+                        AND rules.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
+                    WHERE kcu.TABLE_SCHEMA = %s
+                        AND kcu.TABLE_NAME = %s
+                        AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
+                    ORDER BY kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION
                     """,
                     (self._context.config.database.database, table_name),
                 )

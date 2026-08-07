@@ -126,7 +126,7 @@ print(json.dumps({
         cwd=scratch,
         env=environment,
     )
-    if "{migrate,check}" not in help_text:
+    if "{migrate,check,ready}" not in help_text:
         raise RuntimeError(f"Unexpected h2hdb CLI commands:\n{help_text}")
 
 
@@ -175,7 +175,10 @@ def main() -> None:
             output_directory=args.output_directory.resolve(),
         )
 
-    print("Verified fresh h2hdb distributions; wheel CLI limited to migrate/check.")
+    print(
+        "Verified fresh h2hdb distributions; "
+        "wheel CLI limited to migrate/check/ready."
+    )
 
 
 if __name__ == "__main__":
