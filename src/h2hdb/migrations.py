@@ -8,7 +8,9 @@ __all__ = [
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from hashlib import sha256
 
+from .catalog_repository import CatalogProjectionRepository
 from .domain import SchemaCompatibility
 from .gallery_deduplication import H2HDBGalleryDeduplication
 from .repository import RepositoryContext
@@ -41,9 +43,16 @@ class _SchemaMigration:
 # This is the fresh-database schema baseline. Append future forward-only
 # migrations here; do not teach the runtime how to adopt an older or
 # unversioned schema.
-_MIGRATION_REGISTRY = (_SchemaMigration(1, "current-schema-baseline"),)
-MINIMUM_SCHEMA_VERSION = _MIGRATION_REGISTRY[0].version
+_MIGRATION_REGISTRY = (
+    _SchemaMigration(1, "current-schema-baseline"),
+    _SchemaMigration(2, "durable-catalog-source-builds"),
+    _SchemaMigration(3, "durable-catalog-build-analysis"),
+    _SchemaMigration(4, "durable-catalog-build-projections"),
+    _SchemaMigration(5, "catalog-operational-authority"),
+    _SchemaMigration(6, "active-source-deletion-command-view"),
+)
 LATEST_SCHEMA_VERSION = _MIGRATION_REGISTRY[-1].version
+MINIMUM_SCHEMA_VERSION = LATEST_SCHEMA_VERSION
 
 _V1_REQUIRED_TABLES = frozenset(
     {
@@ -201,6 +210,582 @@ _V1_BACKEND_REQUIRED_COLUMNS = {
         "files_dbids": frozenset({"name"}),
         "galleries_dbids": frozenset({"name"}),
     },
+}
+
+_V2_REQUIRED_TABLES = frozenset(
+    {
+        "catalog_build_batches",
+        "catalog_build_control",
+        "catalog_build_discoveries",
+        "catalog_builds",
+        "catalog_file_hash_cache",
+        "catalog_source_files",
+        "catalog_source_galleries",
+        "catalog_source_revision",
+        "catalog_source_revision_history",
+        "catalog_source_tags",
+    }
+)
+
+_V2_REQUIRED_COLUMNS = {
+    "catalog_builds": frozenset(
+        {
+            "build_id",
+            "scope_key",
+            "discovery_epoch",
+            "discovery_tree_sha256",
+            "phase",
+            "ingest_generation",
+            "owner_token",
+            "base_source_revision",
+            "base_active_build_id",
+            "discovered_gallery_count",
+            "expected_gallery_count",
+            "staged_gallery_count",
+            "staged_file_count",
+            "analyzed_gallery_count",
+            "created_at",
+            "updated_at",
+            "published_source_revision",
+            "seal_sha256",
+        }
+    ),
+    "catalog_build_control": frozenset({"singleton_id", "working_build_id"}),
+    "catalog_build_discoveries": frozenset(
+        {
+            "build_id",
+            "gallery_key",
+            "gallery_name",
+            "source_locator",
+            "metadata_fingerprint",
+        }
+    ),
+    "catalog_build_batches": frozenset(
+        {
+            "build_id",
+            "batch_kind",
+            "batch_id",
+            "payload_sha256",
+            "item_count",
+            "file_count",
+        }
+    ),
+    "catalog_source_galleries": frozenset(
+        {
+            "build_id",
+            "gallery_key",
+            "gallery_name",
+            "gid",
+            "title",
+            "comment",
+            "upload_account",
+            "upload_time",
+            "download_time",
+            "modified_time",
+            "source_manifest_sha256",
+            "source_manifest_version",
+            "scan_observation_sha256",
+            "scan_observation_version",
+            "metadata_sha256",
+            "page_count",
+            "directory_entry_count",
+            "directory_observation_sha256",
+            "raw_content_sha256",
+            "content_sha256",
+            "duplicate_of_gallery_name",
+            "duplicate_of_gallery_key",
+            "expected_file_count",
+            "staged_file_count",
+            "source_complete",
+            "analysis_complete",
+            "selected",
+        }
+    ),
+    "catalog_source_files": frozenset(
+        {
+            "build_id",
+            "gallery_key",
+            "file_key",
+            "file_sort_key",
+            "file_name",
+            "relative_locator",
+            "device",
+            "inode",
+            "modified_ns",
+            "changed_ns",
+            "size_bytes",
+            "sha256",
+        }
+    ),
+    "catalog_source_tags": frozenset(
+        {"build_id", "gallery_key", "position", "tag_name", "tag_value"}
+    ),
+    "catalog_file_hash_cache": frozenset(
+        {"cache_key", "source_key", "fingerprint", "sha256", "cached_at"}
+    ),
+    "catalog_source_revision": frozenset(
+        {
+            "singleton_id",
+            "current_revision",
+            "active_build_id",
+            "published_at",
+            "gallery_count",
+            "file_count",
+        }
+    ),
+    "catalog_source_revision_history": frozenset(
+        {"revision", "build_id", "published_at", "gallery_count", "file_count"}
+    ),
+}
+
+_V2_REQUIRED_PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
+    "catalog_builds": ("build_id",),
+    "catalog_build_control": ("singleton_id",),
+    "catalog_build_discoveries": ("build_id", "gallery_key"),
+    "catalog_build_batches": ("build_id", "batch_kind", "batch_id"),
+    "catalog_source_galleries": ("build_id", "gallery_key"),
+    "catalog_source_files": ("build_id", "gallery_key", "file_key"),
+    "catalog_source_tags": ("build_id", "gallery_key", "position"),
+    "catalog_file_hash_cache": ("cache_key",),
+    "catalog_source_revision_history": ("revision",),
+    "catalog_source_revision": ("singleton_id",),
+}
+
+_V2_REQUIRED_INDEXES: dict[str, tuple[tuple[tuple[str, ...], bool], ...]] = {
+    "catalog_source_galleries": (
+        (("build_id", "gid"), False),
+        (("build_id", "content_sha256"), False),
+    ),
+    "catalog_source_files": (
+        (("build_id", "gallery_key", "file_name"), True),
+        (
+            ("build_id", "gallery_key", "file_sort_key", "file_name", "file_key"),
+            False,
+        ),
+        (("build_id", "sha256", "gallery_key", "file_key"), False),
+    ),
+    "catalog_source_revision_history": ((("build_id",), True),),
+}
+
+_V2_REQUIRED_FOREIGN_KEYS = {
+    "catalog_build_control": (
+        (
+            ("working_build_id",),
+            "catalog_builds",
+            ("build_id",),
+            "NO ACTION",
+            "NO ACTION",
+        ),
+    ),
+    "catalog_build_discoveries": (
+        (("build_id",), "catalog_builds", ("build_id",), "NO ACTION", "CASCADE"),
+    ),
+    "catalog_build_batches": (
+        (("build_id",), "catalog_builds", ("build_id",), "NO ACTION", "CASCADE"),
+    ),
+    "catalog_source_galleries": (
+        (("build_id",), "catalog_builds", ("build_id",), "NO ACTION", "CASCADE"),
+    ),
+    "catalog_source_files": (
+        (
+            ("build_id", "gallery_key"),
+            "catalog_source_galleries",
+            ("build_id", "gallery_key"),
+            "NO ACTION",
+            "CASCADE",
+        ),
+    ),
+    "catalog_source_tags": (
+        (
+            ("build_id", "gallery_key"),
+            "catalog_source_galleries",
+            ("build_id", "gallery_key"),
+            "NO ACTION",
+            "CASCADE",
+        ),
+    ),
+    "catalog_source_revision_history": (
+        (("build_id",), "catalog_builds", ("build_id",), "NO ACTION", "NO ACTION"),
+    ),
+    "catalog_source_revision": (
+        (
+            ("current_revision",),
+            "catalog_source_revision_history",
+            ("revision",),
+            "NO ACTION",
+            "NO ACTION",
+        ),
+        (
+            ("active_build_id",),
+            "catalog_builds",
+            ("build_id",),
+            "NO ACTION",
+            "NO ACTION",
+        ),
+    ),
+}
+
+_V3_REQUIRED_TABLES = frozenset(
+    {
+        "catalog_build_analysis_phases",
+        "catalog_build_content_digests",
+        "catalog_build_content_owners",
+        "catalog_build_excluded_file_hashes",
+        "catalog_build_gid_winners",
+    }
+)
+
+_V3_REQUIRED_COLUMNS = {
+    "catalog_build_analysis_phases": frozenset({"build_id", "phase", "completed_at"}),
+    "catalog_build_excluded_file_hashes": frozenset({"build_id", "sha256"}),
+    "catalog_build_content_digests": frozenset(
+        {"build_id", "gallery_key", "gallery_name", "content_sha256"}
+    ),
+    "catalog_build_content_owners": frozenset(
+        {
+            "build_id",
+            "content_sha256",
+            "owner_gallery_key",
+            "owner_gallery_name",
+        }
+    ),
+    "catalog_build_gid_winners": frozenset(
+        {"build_id", "gid", "winner_gallery_key", "winner_gallery_name"}
+    ),
+}
+
+_V3_REQUIRED_PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
+    "catalog_build_analysis_phases": ("build_id", "phase"),
+    "catalog_build_excluded_file_hashes": ("build_id", "sha256"),
+    "catalog_build_content_digests": ("build_id", "gallery_key"),
+    "catalog_build_content_owners": ("build_id", "content_sha256"),
+    "catalog_build_gid_winners": ("build_id", "gid"),
+}
+
+_V3_REQUIRED_INDEXES: dict[str, tuple[tuple[tuple[str, ...], bool], ...]] = {
+    "catalog_source_galleries": (
+        (("build_id", "gallery_name", "gallery_key"), False),
+        (("build_id", "gid", "gallery_name", "gallery_key"), False),
+    ),
+    "catalog_source_files": (
+        (("build_id", "gallery_key", "sha256", "file_key"), False),
+    ),
+    "catalog_build_content_digests": (
+        (("build_id", "content_sha256", "gallery_name"), False),
+    ),
+    "catalog_build_content_owners": ((("build_id", "owner_gallery_key"), False),),
+    "catalog_build_gid_winners": ((("build_id", "winner_gallery_key"), False),),
+}
+
+_V3_REQUIRED_FOREIGN_KEYS = {
+    "catalog_build_analysis_phases": (
+        (("build_id",), "catalog_builds", ("build_id",), "NO ACTION", "CASCADE"),
+    ),
+    "catalog_build_excluded_file_hashes": (
+        (("build_id",), "catalog_builds", ("build_id",), "NO ACTION", "CASCADE"),
+    ),
+    "catalog_build_content_digests": (
+        (
+            ("build_id", "gallery_key"),
+            "catalog_source_galleries",
+            ("build_id", "gallery_key"),
+            "NO ACTION",
+            "CASCADE",
+        ),
+    ),
+    "catalog_build_content_owners": (
+        (
+            ("build_id", "owner_gallery_key"),
+            "catalog_source_galleries",
+            ("build_id", "gallery_key"),
+            "NO ACTION",
+            "CASCADE",
+        ),
+    ),
+    "catalog_build_gid_winners": (
+        (
+            ("build_id", "winner_gallery_key"),
+            "catalog_source_galleries",
+            ("build_id", "gallery_key"),
+            "NO ACTION",
+            "CASCADE",
+        ),
+    ),
+}
+
+_V4_REQUIRED_TABLES = frozenset(
+    {
+        "catalog_revision_allocator",
+        "catalog_build_projections",
+        "catalog_build_prepared_artifacts",
+        "catalog_build_projection_items",
+        "catalog_build_projection_batches",
+        "catalog_projection_publication_receipts",
+    }
+)
+
+_V4_REQUIRED_COLUMNS = {
+    "catalog_revision_allocator": frozenset({"singleton_id", "next_revision"}),
+    "catalog_build_projections": frozenset(
+        {
+            "build_id",
+            "reserved_revision",
+            "base_catalog_revision",
+            "artifacts_required",
+            "phase",
+            "artifact_after_gallery_key",
+            "selection_after_gallery_key",
+            "selected_gallery_count",
+            "protected_artifact_count",
+            "staged_selection_count",
+            "projection_chain_sha256",
+            "projection_xor_sha256",
+            "projection_sum_sha256",
+            "projection_sha256",
+            "new_galleries",
+            "changed_galleries",
+            "removed_galleries",
+            "duplicate_losers",
+            "published_catalog_revision",
+            "created_at",
+            "updated_at",
+            "sealed_at",
+            "published_at",
+        }
+    ),
+    "catalog_build_prepared_artifacts": frozenset(
+        {
+            "build_id",
+            "gallery_key",
+            "payload_sha256",
+            "artifact_key",
+            "artifact_name_key",
+            "artifact_id",
+            "name",
+            "location",
+            "media_type",
+            "size_bytes",
+            "sha256",
+            "modified_at",
+            "protected",
+        }
+    ),
+    "catalog_build_projection_items": frozenset(
+        {"build_id", "gallery_key", "publication_key", "item_sha256"}
+    ),
+    "catalog_build_projection_batches": frozenset(
+        {"build_id", "batch_kind", "batch_id", "payload_sha256", "item_count"}
+    ),
+    "catalog_projection_publication_receipts": frozenset(
+        {
+            "build_id",
+            "source_revision",
+            "catalog_revision",
+            "projection_sha256",
+            "state",
+            "new_galleries",
+            "changed_galleries",
+            "removed_galleries",
+            "duplicate_losers",
+            "selected_galleries",
+            "committed_at",
+            "finalized_at",
+        }
+    ),
+    "catalog_revision_history": frozenset({"projection_sha256"}),
+}
+
+_V4_REQUIRED_PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
+    "catalog_revision_allocator": ("singleton_id",),
+    "catalog_build_projections": ("build_id",),
+    "catalog_build_prepared_artifacts": ("build_id", "gallery_key"),
+    "catalog_build_projection_items": ("build_id", "gallery_key"),
+    "catalog_build_projection_batches": ("build_id", "batch_kind", "batch_id"),
+    "catalog_projection_publication_receipts": ("build_id",),
+}
+
+_V4_REQUIRED_INDEXES: dict[str, tuple[tuple[tuple[str, ...], bool], ...]] = {
+    "catalog_build_projections": ((("reserved_revision",), True),),
+    "catalog_build_prepared_artifacts": (
+        (("build_id", "artifact_key"), True),
+        (("build_id", "artifact_name_key"), True),
+    ),
+    "catalog_build_projection_items": ((("build_id", "publication_key"), True),),
+    "catalog_artifacts": ((("revision", "artifact_name_key"), True),),
+    "catalog_publications": (
+        (("revision", "content_sha256", "source_gallery_name"), False),
+    ),
+    "catalog_build_content_digests": (
+        (("build_id", "content_sha256", "gallery_key"), False),
+    ),
+    "catalog_source_galleries": ((("build_id", "gid", "gallery_key"), False),),
+}
+
+_V4_REQUIRED_FOREIGN_KEYS = {
+    "catalog_build_projections": (
+        (("build_id",), "catalog_builds", ("build_id",), "NO ACTION", "NO ACTION"),
+        (
+            ("base_catalog_revision",),
+            "catalog_revision_history",
+            ("revision",),
+            "NO ACTION",
+            "NO ACTION",
+        ),
+        (
+            ("published_catalog_revision",),
+            "catalog_revision_history",
+            ("revision",),
+            "NO ACTION",
+            "NO ACTION",
+        ),
+    ),
+    "catalog_build_prepared_artifacts": (
+        (
+            ("build_id",),
+            "catalog_build_projections",
+            ("build_id",),
+            "NO ACTION",
+            "NO ACTION",
+        ),
+        (
+            ("build_id", "gallery_key"),
+            "catalog_source_galleries",
+            ("build_id", "gallery_key"),
+            "NO ACTION",
+            "NO ACTION",
+        ),
+    ),
+    "catalog_build_projection_items": (
+        (
+            ("build_id",),
+            "catalog_build_projections",
+            ("build_id",),
+            "NO ACTION",
+            "NO ACTION",
+        ),
+        (
+            ("build_id", "gallery_key"),
+            "catalog_source_galleries",
+            ("build_id", "gallery_key"),
+            "NO ACTION",
+            "NO ACTION",
+        ),
+    ),
+    "catalog_build_projection_batches": (
+        (
+            ("build_id",),
+            "catalog_build_projections",
+            ("build_id",),
+            "NO ACTION",
+            "NO ACTION",
+        ),
+    ),
+    "catalog_projection_publication_receipts": (
+        (
+            ("build_id",),
+            "catalog_builds",
+            ("build_id",),
+            "NO ACTION",
+            "NO ACTION",
+        ),
+        (
+            ("source_revision",),
+            "catalog_source_revision_history",
+            ("revision",),
+            "NO ACTION",
+            "NO ACTION",
+        ),
+        (
+            ("catalog_revision",),
+            "catalog_revision_history",
+            ("revision",),
+            "NO ACTION",
+            "NO ACTION",
+        ),
+    ),
+}
+
+_V5_REQUIRED_TABLES = frozenset(
+    {
+        "catalog_build_operational_state",
+        "catalog_build_removed_gid_requests",
+        "catalog_build_deletion_consumptions",
+        "catalog_operational_activations",
+        "catalog_removed_gid_request_acks",
+        "catalog_gallery_redownload_times",
+    }
+)
+
+_V5_REQUIRED_COLUMNS = {
+    "catalog_build_operational_state": frozenset(
+        {
+            "build_id",
+            "preparation_id",
+            "operational_schema_version",
+            "phase",
+            "deletion_request_generation",
+            "after_gallery_key",
+            "after_gid",
+            "normalized_gallery_count",
+            "removed_gid_request_count",
+            "deletion_consumption_count",
+            "prepared_at",
+            "completed_at",
+        }
+    ),
+    "catalog_build_removed_gid_requests": frozenset(
+        {"build_id", "preparation_id", "gid", "url", "request_token"}
+    ),
+    "catalog_build_deletion_consumptions": frozenset(
+        {
+            "build_id",
+            "preparation_id",
+            "gid",
+            "deletion_request_token",
+        }
+    ),
+    "catalog_operational_activations": frozenset(
+        {
+            "build_id",
+            "source_revision",
+            "preparation_id",
+            "operational_schema_version",
+            "activated_at",
+        }
+    ),
+    "catalog_removed_gid_request_acks": frozenset({"gid", "through_source_revision"}),
+    "catalog_gallery_redownload_times": frozenset(
+        {"gallery_key", "gallery_name", "redownload_time_utc"}
+    ),
+    "catalog_source_revision": frozenset({"deletion_request_generation"}),
+    "catalog_source_galleries": frozenset({"upload_time_utc", "download_time_utc"}),
+    "catalog_build_content_digests": frozenset({"duplicate_hash_deletion_candidate"}),
+    "todelete_gids": frozenset({"request_token"}),
+}
+
+_V5_REQUIRED_PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
+    "catalog_build_operational_state": ("build_id",),
+    "catalog_build_removed_gid_requests": ("build_id", "preparation_id", "gid"),
+    "catalog_build_deletion_consumptions": ("build_id", "preparation_id", "gid"),
+    "catalog_operational_activations": ("build_id",),
+    "catalog_removed_gid_request_acks": ("gid",),
+    "catalog_gallery_redownload_times": ("gallery_key",),
+}
+
+_V5_REQUIRED_INDEXES: dict[str, tuple[tuple[tuple[str, ...], bool], ...]] = {
+    "catalog_build_removed_gid_requests": (
+        (("request_token",), True),
+        (("gid", "build_id", "preparation_id"), False),
+    ),
+    "catalog_build_deletion_consumptions": (
+        (("gid", "deletion_request_token", "build_id", "preparation_id"), False),
+    ),
+    "catalog_operational_activations": ((("source_revision",), True),),
+    "catalog_gallery_redownload_times": ((("gallery_name",), False),),
+    "catalog_source_galleries": (
+        (("build_id", "gid", "download_time_utc", "gallery_key"), False),
+    ),
+    "todelete_gids": ((("request_token",), True),),
 }
 
 _REQUIRED_PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
@@ -507,6 +1092,26 @@ _REQUIRED_VIEW_DEFINITION_FRAGMENTS = {
     "todelete_rm_commands": ("todelete_galleries", "galleries_names", "rm -rf"),
 }
 
+_V6_TODELETE_VIEW_DEFINITION_FRAGMENTS = (
+    "catalog_source_revision",
+    "catalog_operational_activations",
+    "activation.build_id = source_revision.active_build_id",
+    "activation.source_revision = source_revision.current_revision",
+    "catalog_source_galleries",
+    "catalog_build_discoveries",
+    "source_locator",
+    "catalog_build_deletion_consumptions",
+    "consumption.deletion_request_token = marker.request_token",
+    "newer.download_time_utc > source.download_time_utc",
+    "digest.duplicate_hash_deletion_candidate = 1",
+    "fallback_activation.build_id = fallback_source_revision.active_build_id",
+    "fallback_activation.source_revision = "
+    "fallback_source_revision.current_revision",
+    "todelete_galleries",
+    "galleries_names",
+    "rm -rf",
+)
+
 
 class SchemaCompatibilityError(RuntimeError):
     pass
@@ -558,6 +1163,9 @@ class MigrationRunner:
         for migration in _MIGRATION_REGISTRY:
             if migration.version in applied:
                 continue
+            if migration.version > 1:
+                predecessor = _MIGRATION_REGISTRY[migration.version - 2]
+                self._validate_migration_result(predecessor)
             self._apply_migration(migration)
             self._validate_migration_result(migration)
             self._record_migration(migration)
@@ -887,6 +1495,377 @@ class MigrationRunner:
                 f"nullability={invalid_nullability}."
             )
 
+    def _validate_catalog_build_schema_contracts(self) -> None:
+        invalid_primary_keys = {
+            table_name: (expected, self._primary_key(table_name))
+            for table_name, expected in _V2_REQUIRED_PRIMARY_KEYS.items()
+            if self._primary_key(table_name) != expected
+        }
+        missing_indexes: dict[str, list[tuple[str, ...]]] = {}
+        for table_name, expected_indexes in _V2_REQUIRED_INDEXES.items():
+            actual_indexes = self._indexes(table_name)
+            for expected_columns, unique in expected_indexes:
+                if not any(
+                    actual_columns == expected_columns and actual_unique == unique
+                    for actual_columns, actual_unique in actual_indexes
+                ):
+                    missing_indexes.setdefault(table_name, []).append(expected_columns)
+        missing_foreign_keys: dict[
+            str,
+            list[tuple[tuple[str, ...], str, tuple[str, ...], str, str]],
+        ] = {}
+        for table_name, expected_keys in _V2_REQUIRED_FOREIGN_KEYS.items():
+            actual_keys = self._foreign_keys(table_name)
+            for expected in expected_keys:
+                if expected not in actual_keys:
+                    missing_foreign_keys.setdefault(table_name, []).append(expected)
+        required_nonnullable = {
+            "catalog_builds": (
+                "build_id",
+                "scope_key",
+                "discovery_epoch",
+                "phase",
+                "ingest_generation",
+                "owner_token",
+                "base_source_revision",
+                "discovered_gallery_count",
+                "staged_gallery_count",
+                "staged_file_count",
+                "analyzed_gallery_count",
+                "created_at",
+                "updated_at",
+            ),
+            "catalog_build_discoveries": (
+                "build_id",
+                "gallery_key",
+                "gallery_name",
+                "source_locator",
+            ),
+            "catalog_build_batches": (
+                "build_id",
+                "batch_kind",
+                "batch_id",
+                "payload_sha256",
+                "item_count",
+                "file_count",
+            ),
+            "catalog_source_galleries": (
+                "build_id",
+                "gallery_key",
+                "gallery_name",
+                "gid",
+                "staged_file_count",
+                "source_complete",
+                "analysis_complete",
+                "selected",
+            ),
+            "catalog_source_files": (
+                "build_id",
+                "gallery_key",
+                "file_key",
+                "file_sort_key",
+                "file_name",
+                "size_bytes",
+                "sha256",
+            ),
+        }
+        invalid_nullability = {
+            table_name: tuple(
+                column
+                for column in columns
+                if column in self._nullable_columns(table_name)
+            )
+            for table_name, columns in required_nonnullable.items()
+        }
+        invalid_nullability = {
+            table_name: columns
+            for table_name, columns in invalid_nullability.items()
+            if columns
+        }
+        invalid_checks: dict[str, tuple[str, ...]] = {}
+        if self._context.sql_type == "sqlite":
+            check_fragments = {
+                "catalog_builds": (
+                    "checklengthbuild_id=32",
+                    "phaseindiscovering",
+                    "checkdiscovered_gallery_count>=0",
+                    "checkstaged_file_count>=0",
+                ),
+                "catalog_build_control": ("checksingleton_id=1",),
+                "catalog_build_batches": (
+                    "checklengthpayload_sha256=64",
+                    "checkitem_count>=0",
+                    "checkfile_count>=0",
+                ),
+                "catalog_source_galleries": (
+                    "checkgid>0",
+                    "checkstaged_file_count>=0",
+                    "checksource_completein0,1",
+                    "checkanalysis_completein0,1",
+                    "checkselectedin0,1",
+                ),
+                "catalog_source_files": (
+                    "checksize_bytes>=0",
+                    "checklengthsha256=64",
+                ),
+                "catalog_source_revision": ("checksingleton_id=1",),
+            }
+            for table_name, fragments in check_fragments.items():
+                definition = self._normalized_definition(
+                    table_name,
+                    object_type="table",
+                )
+                missing = tuple(
+                    fragment for fragment in fragments if fragment not in definition
+                )
+                if missing:
+                    invalid_checks[table_name] = missing
+        if (
+            invalid_primary_keys
+            or missing_indexes
+            or missing_foreign_keys
+            or invalid_nullability
+            or invalid_checks
+        ):
+            raise SchemaCompatibilityError(
+                "The durable catalog build schema does not satisfy its structural "
+                "contracts: "
+                f"primary_keys={invalid_primary_keys} "
+                f"indexes={missing_indexes} "
+                f"foreign_keys={missing_foreign_keys} "
+                f"nullability={invalid_nullability} "
+                f"checks={invalid_checks}."
+            )
+
+    def _validate_catalog_analysis_schema_contracts(self) -> None:
+        invalid_primary_keys = {
+            table_name: (expected, self._primary_key(table_name))
+            for table_name, expected in _V3_REQUIRED_PRIMARY_KEYS.items()
+            if self._primary_key(table_name) != expected
+        }
+        missing_indexes: dict[str, list[tuple[str, ...]]] = {}
+        for table_name, expected_indexes in _V3_REQUIRED_INDEXES.items():
+            actual_indexes = self._indexes(table_name)
+            for expected_columns, unique in expected_indexes:
+                if not any(
+                    actual_columns == expected_columns and actual_unique == unique
+                    for actual_columns, actual_unique in actual_indexes
+                ):
+                    missing_indexes.setdefault(table_name, []).append(expected_columns)
+        missing_foreign_keys: dict[
+            str,
+            list[tuple[tuple[str, ...], str, tuple[str, ...], str, str]],
+        ] = {}
+        for table_name, expected_keys in _V3_REQUIRED_FOREIGN_KEYS.items():
+            actual_keys = self._foreign_keys(table_name)
+            for expected in expected_keys:
+                if expected not in actual_keys:
+                    missing_foreign_keys.setdefault(table_name, []).append(expected)
+        required_nonnullable = {
+            table_name: tuple(columns)
+            for table_name, columns in _V3_REQUIRED_COLUMNS.items()
+        }
+        # Null is a meaningful content digest for an empty/effectively empty gallery.
+        required_nonnullable["catalog_build_content_digests"] = (
+            "build_id",
+            "gallery_key",
+            "gallery_name",
+        )
+        invalid_nullability = {
+            table_name: tuple(
+                column
+                for column in columns
+                if column in self._nullable_columns(table_name)
+            )
+            for table_name, columns in required_nonnullable.items()
+        }
+        invalid_nullability = {
+            table_name: columns
+            for table_name, columns in invalid_nullability.items()
+            if columns
+        }
+        invalid_checks: dict[str, tuple[str, ...]] = {}
+        if self._context.sql_type == "sqlite":
+            check_fragments = {
+                "catalog_build_analysis_phases": ("phaseinsource_manifests",),
+                "catalog_build_excluded_file_hashes": ("checklengthsha256=64",),
+                "catalog_build_content_digests": (
+                    "content_sha256isnullorlengthcontent_sha256=64",
+                ),
+                "catalog_build_content_owners": ("checklengthcontent_sha256=64",),
+                "catalog_build_gid_winners": ("checkgid>0",),
+            }
+            for table_name, fragments in check_fragments.items():
+                definition = self._normalized_definition(
+                    table_name,
+                    object_type="table",
+                )
+                missing = tuple(
+                    fragment for fragment in fragments if fragment not in definition
+                )
+                if missing:
+                    invalid_checks[table_name] = missing
+        if (
+            invalid_primary_keys
+            or missing_indexes
+            or missing_foreign_keys
+            or invalid_nullability
+            or invalid_checks
+        ):
+            raise SchemaCompatibilityError(
+                "The durable catalog analysis schema does not satisfy its structural "
+                "contracts: "
+                f"primary_keys={invalid_primary_keys} "
+                f"indexes={missing_indexes} "
+                f"foreign_keys={missing_foreign_keys} "
+                f"nullability={invalid_nullability} "
+                f"checks={invalid_checks}."
+            )
+
+    def _validate_catalog_projection_build_schema_contracts(self) -> None:
+        invalid_primary_keys = {
+            table_name: (expected, self._primary_key(table_name))
+            for table_name, expected in _V4_REQUIRED_PRIMARY_KEYS.items()
+            if self._primary_key(table_name) != expected
+        }
+        missing_indexes: dict[str, list[tuple[str, ...]]] = {}
+        for table_name, expected_indexes in _V4_REQUIRED_INDEXES.items():
+            actual_indexes = self._indexes(table_name)
+            for expected_columns, unique in expected_indexes:
+                if (expected_columns, unique) not in actual_indexes:
+                    missing_indexes.setdefault(table_name, []).append(expected_columns)
+        missing_foreign_keys: dict[
+            str,
+            list[tuple[tuple[str, ...], str, tuple[str, ...], str, str]],
+        ] = {}
+        for table_name, expected_keys in _V4_REQUIRED_FOREIGN_KEYS.items():
+            actual_keys = self._foreign_keys(table_name)
+            for expected in expected_keys:
+                if expected not in actual_keys:
+                    missing_foreign_keys.setdefault(table_name, []).append(expected)
+        required_nonnullable = {
+            "catalog_revision_allocator": ("singleton_id", "next_revision"),
+            "catalog_build_projections": (
+                "build_id",
+                "reserved_revision",
+                "base_catalog_revision",
+                "artifacts_required",
+                "phase",
+                "selected_gallery_count",
+                "protected_artifact_count",
+                "staged_selection_count",
+                "projection_chain_sha256",
+                "projection_xor_sha256",
+                "projection_sum_sha256",
+                "new_galleries",
+                "changed_galleries",
+                "removed_galleries",
+                "duplicate_losers",
+                "created_at",
+                "updated_at",
+            ),
+            "catalog_build_prepared_artifacts": tuple(
+                _V4_REQUIRED_COLUMNS["catalog_build_prepared_artifacts"]
+            ),
+            "catalog_build_projection_items": tuple(
+                _V4_REQUIRED_COLUMNS["catalog_build_projection_items"]
+            ),
+            "catalog_build_projection_batches": tuple(
+                _V4_REQUIRED_COLUMNS["catalog_build_projection_batches"]
+            ),
+            "catalog_projection_publication_receipts": tuple(
+                _V4_REQUIRED_COLUMNS["catalog_projection_publication_receipts"]
+                - {"finalized_at"}
+            ),
+        }
+        invalid_nullability = {
+            table_name: tuple(
+                column
+                for column in columns
+                if column in self._nullable_columns(table_name)
+            )
+            for table_name, columns in required_nonnullable.items()
+        }
+        invalid_nullability = {
+            table_name: columns
+            for table_name, columns in invalid_nullability.items()
+            if columns
+        }
+        if (
+            invalid_primary_keys
+            or missing_indexes
+            or missing_foreign_keys
+            or invalid_nullability
+        ):
+            raise SchemaCompatibilityError(
+                "The durable catalog projection schema does not satisfy its "
+                "structural contracts: "
+                f"primary_keys={invalid_primary_keys} "
+                f"indexes={missing_indexes} "
+                f"foreign_keys={missing_foreign_keys} "
+                f"nullability={invalid_nullability}."
+            )
+
+    def _validate_catalog_operational_schema_contracts(self) -> None:
+        invalid_primary_keys = {
+            table_name: (expected, self._primary_key(table_name))
+            for table_name, expected in _V5_REQUIRED_PRIMARY_KEYS.items()
+            if self._primary_key(table_name) != expected
+        }
+        missing_indexes: dict[str, list[tuple[str, ...]]] = {}
+        for table_name, expected_indexes in _V5_REQUIRED_INDEXES.items():
+            actual_indexes = self._indexes(table_name)
+            for expected_columns, unique in expected_indexes:
+                if (expected_columns, unique) not in actual_indexes:
+                    missing_indexes.setdefault(table_name, []).append(expected_columns)
+        required_nonnullable = {
+            "catalog_build_operational_state": tuple(
+                _V5_REQUIRED_COLUMNS["catalog_build_operational_state"]
+                - {"after_gallery_key", "after_gid", "completed_at"}
+            ),
+            "catalog_build_removed_gid_requests": tuple(
+                _V5_REQUIRED_COLUMNS["catalog_build_removed_gid_requests"]
+            ),
+            "catalog_build_deletion_consumptions": tuple(
+                _V5_REQUIRED_COLUMNS["catalog_build_deletion_consumptions"]
+            ),
+            "catalog_operational_activations": tuple(
+                _V5_REQUIRED_COLUMNS["catalog_operational_activations"]
+            ),
+            "catalog_removed_gid_request_acks": tuple(
+                _V5_REQUIRED_COLUMNS["catalog_removed_gid_request_acks"]
+            ),
+            "catalog_gallery_redownload_times": tuple(
+                _V5_REQUIRED_COLUMNS["catalog_gallery_redownload_times"]
+            ),
+        }
+        invalid_nullability = {
+            table_name: tuple(
+                column
+                for column in columns
+                if column in self._nullable_columns(table_name)
+            )
+            for table_name, columns in required_nonnullable.items()
+        }
+        invalid_nullability = {
+            table_name: columns
+            for table_name, columns in invalid_nullability.items()
+            if columns
+        }
+        with self._context.SQLConnector() as connector:
+            null_token = connector.fetch_one(
+                "SELECT gid FROM todelete_gids WHERE request_token IS NULL LIMIT 1"
+            )
+        if invalid_primary_keys or missing_indexes or invalid_nullability or null_token:
+            raise SchemaCompatibilityError(
+                "The catalog operational schema does not satisfy its structural "
+                "contracts: "
+                f"primary_keys={invalid_primary_keys} "
+                f"indexes={missing_indexes} "
+                f"nullability={invalid_nullability} "
+                f"null_deletion_token={bool(null_token)}."
+            )
+
     def _nullable_columns(self, table_name: str) -> set[str]:
         with self._context.SQLConnector() as connector:
             if self._context.sql_type == "mariadb":
@@ -1116,6 +2095,16 @@ class MigrationRunner:
         match migration.version:
             case 1:
                 self._apply_current_schema()
+            case 2:
+                self._apply_catalog_build_schema()
+            case 3:
+                self._apply_catalog_analysis_schema()
+            case 4:
+                self._apply_catalog_projection_build_schema()
+            case 5:
+                self._apply_catalog_operational_schema()
+            case 6:
+                self._apply_active_source_deletion_command_view()
             case _:
                 raise AssertionError(
                     f"No migration implementation for version {migration.version}."
@@ -1149,10 +2138,1504 @@ class MigrationRunner:
                         f"missing_columns={missing_columns}."
                     )
                 self._validate_schema_contracts()
+            case 2:
+                tables, _views = self._table_and_view_names()
+                missing_tables = sorted(_V2_REQUIRED_TABLES - tables)
+                v2_missing_columns: dict[str, list[str]] = {}
+                for table_name, required_columns in _V2_REQUIRED_COLUMNS.items():
+                    if table_name not in tables:
+                        continue
+                    missing = sorted(required_columns - self._table_columns(table_name))
+                    if missing:
+                        v2_missing_columns[table_name] = missing
+                if missing_tables or v2_missing_columns:
+                    raise SchemaCompatibilityError(
+                        "The durable catalog build migration is incomplete: "
+                        f"missing_tables={missing_tables} "
+                        f"missing_columns={v2_missing_columns}."
+                    )
+                self._validate_catalog_build_schema_contracts()
+            case 3:
+                tables, _views = self._table_and_view_names()
+                missing_tables = sorted(_V3_REQUIRED_TABLES - tables)
+                missing_analysis_columns: dict[str, list[str]] = {}
+                for table_name, required_columns in _V3_REQUIRED_COLUMNS.items():
+                    if table_name not in tables:
+                        continue
+                    missing = sorted(required_columns - self._table_columns(table_name))
+                    if missing:
+                        missing_analysis_columns[table_name] = missing
+                if missing_tables or missing_analysis_columns:
+                    raise SchemaCompatibilityError(
+                        "The durable catalog analysis schema is incomplete: "
+                        f"tables={missing_tables} columns={missing_analysis_columns}."
+                    )
+                self._validate_catalog_analysis_schema_contracts()
+            case 4:
+                tables, _views = self._table_and_view_names()
+                missing_tables = sorted(_V4_REQUIRED_TABLES - tables)
+                missing_projection_columns: dict[str, list[str]] = {}
+                for table_name, required_columns in _V4_REQUIRED_COLUMNS.items():
+                    if table_name not in tables:
+                        continue
+                    missing = sorted(required_columns - self._table_columns(table_name))
+                    if missing:
+                        missing_projection_columns[table_name] = missing
+                if missing_tables or missing_projection_columns:
+                    raise SchemaCompatibilityError(
+                        "The durable catalog projection schema is incomplete: "
+                        f"tables={missing_tables} columns={missing_projection_columns}."
+                    )
+                self._validate_catalog_projection_build_schema_contracts()
+            case 5:
+                tables, _views = self._table_and_view_names()
+                missing_tables = sorted(_V5_REQUIRED_TABLES - tables)
+                missing_operational_columns: dict[str, list[str]] = {}
+                for table_name, required_columns in _V5_REQUIRED_COLUMNS.items():
+                    if table_name not in tables:
+                        continue
+                    missing = sorted(required_columns - self._table_columns(table_name))
+                    if missing:
+                        missing_operational_columns[table_name] = missing
+                if missing_tables or missing_operational_columns:
+                    raise SchemaCompatibilityError(
+                        "The catalog operational authority schema is incomplete: "
+                        f"tables={missing_tables} "
+                        f"columns={missing_operational_columns}."
+                    )
+                self._validate_catalog_operational_schema_contracts()
+            case 6:
+                _tables, views = self._table_and_view_names()
+                missing_views = (
+                    [] if "todelete_rm_commands" in views else ["todelete_rm_commands"]
+                )
+                definition = (
+                    ""
+                    if missing_views
+                    else self._normalized_definition(
+                        "todelete_rm_commands",
+                        object_type="view",
+                    )
+                )
+                missing_fragments = tuple(
+                    self._normalize_sql(fragment)
+                    for fragment in _V6_TODELETE_VIEW_DEFINITION_FRAGMENTS
+                    if self._normalize_sql(fragment) not in definition
+                )
+                if missing_views or missing_fragments:
+                    raise SchemaCompatibilityError(
+                        "The active-source deletion command view is incomplete: "
+                        f"missing_views={missing_views} "
+                        f"missing_fragments={missing_fragments}."
+                    )
             case _:
                 raise AssertionError(
                     f"No migration validation for version {migration.version}."
                 )
+
+    def _apply_catalog_analysis_schema(self) -> None:
+        with self._context.SQLConnector() as connector:
+            for statement in self._catalog_analysis_statements():
+                connector.execute(statement)
+
+    def _apply_catalog_projection_build_schema(self) -> None:
+        """Create resumable projection state after safely extending history.
+
+        MariaDB and SQLite both auto-commit some DDL paths.  Every step is
+        therefore independently rerunnable after an interrupted migration.
+        """
+
+        with self._context.SQLConnector() as connector:
+            if "projection_sha256" not in self._table_columns(
+                "catalog_revision_history"
+            ):
+                connector.execute(
+                    "ALTER TABLE catalog_revision_history "
+                    "ADD COLUMN projection_sha256 VARCHAR(64) NULL"
+                    if self._context.sql_type == "mariadb"
+                    else "ALTER TABLE catalog_revision_history "
+                    "ADD COLUMN projection_sha256 TEXT NULL"
+                )
+            for statement in self._catalog_projection_build_statements():
+                connector.execute(statement)
+            empty_projection_sha256 = (
+                "1837ec8c05bd8de86daee2888f575d68c04306633946aeac22a07316b607ae0e"
+            )
+            connector.execute(
+                """
+                UPDATE catalog_revision_history
+                SET projection_sha256 = %s
+                WHERE revision = 0 AND projection_sha256 IS NULL
+                """,
+                (empty_projection_sha256,),
+            )
+            current_row = connector.fetch_one("""
+                SELECT current_revision
+                FROM catalog_revision
+                WHERE singleton_id = 1
+                """)
+            if current_row:
+                CatalogProjectionRepository(
+                    self._context
+                )._revision_projection_sha256_with_connector(
+                    connector,
+                    int(current_row[0]),
+                )
+            max_row = connector.fetch_one("""
+                SELECT MAX(revision)
+                FROM (
+                    SELECT revision FROM catalog_revision_history
+                    UNION ALL
+                    SELECT current_revision AS revision FROM catalog_revision
+                ) AS revisions
+                """)
+            next_revision = max(1, int(max_row[0] or 0) + 1) if max_row else 1
+            match self._context.sql_type:
+                case "mariadb":
+                    connector.execute(
+                        """
+                        INSERT IGNORE INTO catalog_revision_allocator (
+                            singleton_id, next_revision
+                        ) VALUES (1, %s)
+                        """,
+                        (next_revision,),
+                    )
+                case "sqlite":
+                    connector.execute(
+                        """
+                        INSERT OR IGNORE INTO catalog_revision_allocator (
+                            singleton_id, next_revision
+                        ) VALUES (1, %s)
+                        """,
+                        (next_revision,),
+                    )
+
+    def _apply_catalog_operational_schema(self) -> None:
+        """Install operational cutover storage without materializing source rows."""
+
+        with self._context.SQLConnector() as connector:
+            extensions = (
+                (
+                    "catalog_source_revision",
+                    "deletion_request_generation",
+                    (
+                        "BIGINT UNSIGNED NOT NULL DEFAULT 0"
+                        if self._context.sql_type == "mariadb"
+                        else "INTEGER NOT NULL DEFAULT 0"
+                    ),
+                ),
+                (
+                    "catalog_source_galleries",
+                    "upload_time_utc",
+                    (
+                        "DATETIME NULL"
+                        if self._context.sql_type == "mariadb"
+                        else "TEXT NULL"
+                    ),
+                ),
+                (
+                    "catalog_source_galleries",
+                    "download_time_utc",
+                    (
+                        "DATETIME NULL"
+                        if self._context.sql_type == "mariadb"
+                        else "TEXT NULL"
+                    ),
+                ),
+                (
+                    "catalog_build_content_digests",
+                    "duplicate_hash_deletion_candidate",
+                    (
+                        "BOOLEAN NOT NULL DEFAULT FALSE"
+                        if self._context.sql_type == "mariadb"
+                        else "INTEGER NOT NULL DEFAULT 0"
+                    ),
+                ),
+                (
+                    "todelete_gids",
+                    "request_token",
+                    (
+                        "CHAR(32) CHARACTER SET ascii COLLATE ascii_bin NULL"
+                        if self._context.sql_type == "mariadb"
+                        else "TEXT NULL"
+                    ),
+                ),
+            )
+            for table_name, column_name, definition in extensions:
+                if column_name not in self._table_columns(table_name):
+                    connector.execute(
+                        f"ALTER TABLE {table_name} ADD COLUMN "
+                        f"{column_name} {definition}"
+                    )
+
+            # Explicit deletion requests are normally tiny.  Still perform the
+            # legacy token adoption in bounded statements so migration never
+            # constructs or updates an unbounded in-memory batch.
+            while True:
+                rows = connector.fetch_all("""
+                    SELECT gid
+                    FROM todelete_gids
+                    WHERE request_token IS NULL
+                    ORDER BY gid
+                    LIMIT 1000
+                    """)
+                if not rows:
+                    break
+                connector.execute_many(
+                    """
+                    UPDATE todelete_gids
+                    SET request_token = %s
+                    WHERE gid = %s AND request_token IS NULL
+                    """,
+                    [
+                        (
+                            sha256(
+                                f"legacy-deletion:{int(row[0])}".encode()
+                            ).hexdigest()[:32],
+                            int(row[0]),
+                        )
+                        for row in rows
+                    ],
+                )
+            for statement in self._catalog_operational_statements():
+                connector.execute(statement)
+
+    def _apply_active_source_deletion_command_view(self) -> None:
+        """Replace the legacy-only deletion view after v5 tables exist."""
+
+        self._to_delete._replace_todelete_rm_commands_with_active_authority_view()
+
+    def _catalog_operational_statements(self) -> tuple[str, ...]:
+        phases = (
+            "'NORMALIZING_TIMES', 'REMOVED_GID_REQUESTS', "
+            "'DELETION_CONSUMPTIONS', 'COMPLETE'"
+        )
+        if self._context.sql_type == "mariadb":
+            return (
+                f"""
+                CREATE TABLE IF NOT EXISTS catalog_build_operational_state (
+                    build_id CHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    preparation_id CHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    operational_schema_version INT UNSIGNED NOT NULL,
+                    phase VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    deletion_request_generation BIGINT UNSIGNED NOT NULL,
+                    after_gallery_key CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NULL,
+                    after_gid INT UNSIGNED NULL,
+                    normalized_gallery_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                    removed_gid_request_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                    deletion_consumption_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                    prepared_at VARCHAR(40) NOT NULL,
+                    completed_at VARCHAR(40) NULL,
+                    PRIMARY KEY (build_id),
+                    CONSTRAINT catalog_build_operational_phase
+                        CHECK (phase IN ({phases}))
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS catalog_build_removed_gid_requests (
+                    build_id CHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    preparation_id CHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    gid INT UNSIGNED NOT NULL,
+                    url TEXT NOT NULL,
+                    request_token CHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    PRIMARY KEY (build_id, preparation_id, gid),
+                    UNIQUE INDEX catalog_removed_gid_request_token (request_token),
+                    INDEX catalog_removed_gid_request_lookup (
+                        gid, build_id, preparation_id
+                    )
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS catalog_build_deletion_consumptions (
+                    build_id CHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    preparation_id CHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    gid INT UNSIGNED NOT NULL,
+                    deletion_request_token CHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    PRIMARY KEY (build_id, preparation_id, gid),
+                    INDEX catalog_deletion_consumption_lookup (
+                        gid, deletion_request_token, build_id, preparation_id
+                    )
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS catalog_operational_activations (
+                    build_id CHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    source_revision BIGINT UNSIGNED NOT NULL,
+                    preparation_id CHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    operational_schema_version INT UNSIGNED NOT NULL,
+                    activated_at VARCHAR(40) NOT NULL,
+                    PRIMARY KEY (build_id),
+                    UNIQUE INDEX catalog_operational_activation_revision (
+                        source_revision
+                    )
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS catalog_removed_gid_request_acks (
+                    gid INT UNSIGNED NOT NULL PRIMARY KEY,
+                    through_source_revision BIGINT UNSIGNED NOT NULL
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS catalog_gallery_redownload_times (
+                    gallery_key CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+                    gallery_name VARCHAR(255) COLLATE utf8mb4_bin NOT NULL,
+                    redownload_time_utc DATETIME NOT NULL,
+                    INDEX catalog_gallery_redownload_name (gallery_name(191))
+                )
+                """,
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS todelete_gids_request_token
+                ON todelete_gids (request_token)
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS catalog_source_galleries_gid_download
+                ON catalog_source_galleries (
+                    build_id, gid, download_time_utc, gallery_key
+                )
+                """,
+            )
+        return (
+            f"""
+            CREATE TABLE IF NOT EXISTS catalog_build_operational_state (
+                build_id TEXT NOT NULL PRIMARY KEY,
+                preparation_id TEXT NOT NULL CHECK (length(preparation_id) = 32),
+                operational_schema_version INTEGER NOT NULL
+                    CHECK (operational_schema_version > 0),
+                phase TEXT NOT NULL CHECK (phase IN ({phases})),
+                deletion_request_generation INTEGER NOT NULL
+                    CHECK (deletion_request_generation >= 0),
+                after_gallery_key TEXT NULL,
+                after_gid INTEGER NULL CHECK (after_gid > 0),
+                normalized_gallery_count INTEGER NOT NULL DEFAULT 0
+                    CHECK (normalized_gallery_count >= 0),
+                removed_gid_request_count INTEGER NOT NULL DEFAULT 0
+                    CHECK (removed_gid_request_count >= 0),
+                deletion_consumption_count INTEGER NOT NULL DEFAULT 0
+                    CHECK (deletion_consumption_count >= 0),
+                prepared_at TEXT NOT NULL,
+                completed_at TEXT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS catalog_build_removed_gid_requests (
+                build_id TEXT NOT NULL,
+                preparation_id TEXT NOT NULL,
+                gid INTEGER NOT NULL CHECK (gid > 0),
+                url TEXT NOT NULL,
+                request_token TEXT NOT NULL,
+                PRIMARY KEY (build_id, preparation_id, gid),
+                UNIQUE (request_token)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS catalog_removed_gid_request_lookup
+            ON catalog_build_removed_gid_requests (
+                gid, build_id, preparation_id
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS catalog_build_deletion_consumptions (
+                build_id TEXT NOT NULL,
+                preparation_id TEXT NOT NULL,
+                gid INTEGER NOT NULL CHECK (gid > 0),
+                deletion_request_token TEXT NOT NULL,
+                PRIMARY KEY (build_id, preparation_id, gid)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS catalog_deletion_consumption_lookup
+            ON catalog_build_deletion_consumptions (
+                gid, deletion_request_token, build_id, preparation_id
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS catalog_operational_activations (
+                build_id TEXT NOT NULL PRIMARY KEY,
+                source_revision INTEGER NOT NULL UNIQUE CHECK (source_revision > 0),
+                preparation_id TEXT NOT NULL,
+                operational_schema_version INTEGER NOT NULL
+                    CHECK (operational_schema_version > 0),
+                activated_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS catalog_removed_gid_request_acks (
+                gid INTEGER NOT NULL PRIMARY KEY CHECK (gid > 0),
+                through_source_revision INTEGER NOT NULL
+                    CHECK (through_source_revision > 0)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS catalog_gallery_redownload_times (
+                gallery_key TEXT NOT NULL PRIMARY KEY,
+                gallery_name TEXT NOT NULL,
+                redownload_time_utc TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS catalog_gallery_redownload_name
+            ON catalog_gallery_redownload_times (gallery_name)
+            """,
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS todelete_gids_request_token
+            ON todelete_gids (request_token)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS catalog_source_galleries_gid_download
+            ON catalog_source_galleries (
+                build_id, gid, download_time_utc, gallery_key
+            )
+            """,
+        )
+
+    def _catalog_projection_build_statements(self) -> tuple[str, ...]:
+        phases = (
+            "'PREPARING_ARTIFACTS', 'STAGING_SELECTIONS', 'COMPLETE', "
+            "'SEALED', 'PUBLISHED'"
+        )
+        states = "'DB_COMMITTED', 'PROJECTION_FINALIZED'"
+        if self._context.sql_type == "mariadb":
+            return (
+                """
+                CREATE TABLE IF NOT EXISTS catalog_revision_allocator (
+                    singleton_id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
+                    next_revision BIGINT UNSIGNED NOT NULL,
+                    CONSTRAINT catalog_revision_allocator_singleton
+                        CHECK (singleton_id = 1)
+                )
+                """,
+                f"""
+                CREATE TABLE IF NOT EXISTS catalog_build_projections (
+                    build_id CHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    reserved_revision BIGINT UNSIGNED NOT NULL,
+                    base_catalog_revision BIGINT UNSIGNED NOT NULL,
+                    artifacts_required BOOLEAN NOT NULL,
+                    phase VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    artifact_after_gallery_key CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NULL,
+                    selection_after_gallery_key CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NULL,
+                    selected_gallery_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                    protected_artifact_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                    staged_selection_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                    projection_chain_sha256 CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    projection_xor_sha256 CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    projection_sum_sha256 CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    projection_sha256 CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NULL,
+                    new_galleries BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                    changed_galleries BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                    removed_galleries BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                    duplicate_losers BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                    published_catalog_revision BIGINT UNSIGNED NULL,
+                    created_at VARCHAR(40) NOT NULL,
+                    updated_at VARCHAR(40) NOT NULL,
+                    sealed_at VARCHAR(40) NULL,
+                    published_at VARCHAR(40) NULL,
+                    PRIMARY KEY (build_id),
+                    UNIQUE INDEX catalog_build_projection_revision (
+                        reserved_revision
+                    ),
+                    CONSTRAINT catalog_build_projection_phase
+                        CHECK (phase IN ({phases})),
+                    CONSTRAINT catalog_build_projection_build_fk
+                        FOREIGN KEY (build_id) REFERENCES catalog_builds (build_id)
+                        ON DELETE RESTRICT,
+                    CONSTRAINT catalog_build_projection_base_revision_fk
+                        FOREIGN KEY (base_catalog_revision)
+                        REFERENCES catalog_revision_history (revision)
+                        ON DELETE RESTRICT,
+                    CONSTRAINT catalog_build_projection_published_revision_fk
+                        FOREIGN KEY (published_catalog_revision)
+                        REFERENCES catalog_revision_history (revision)
+                        ON DELETE RESTRICT
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS catalog_build_prepared_artifacts (
+                    build_id CHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    gallery_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    payload_sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    artifact_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    artifact_name_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    artifact_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    location TEXT NOT NULL,
+                    media_type VARCHAR(191) NOT NULL,
+                    size_bytes BIGINT UNSIGNED NOT NULL,
+                    sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    modified_at VARCHAR(40) NOT NULL,
+                    protected BOOLEAN NOT NULL DEFAULT FALSE,
+                    PRIMARY KEY (build_id, gallery_key),
+                    UNIQUE INDEX catalog_build_prepared_artifact_id (
+                        build_id, artifact_key
+                    ),
+                    UNIQUE INDEX catalog_build_prepared_artifact_name (
+                        build_id, artifact_name_key
+                    ),
+                    CONSTRAINT catalog_build_prepared_artifacts_projection_fk
+                        FOREIGN KEY (build_id)
+                        REFERENCES catalog_build_projections (build_id)
+                        ON DELETE RESTRICT,
+                    CONSTRAINT catalog_build_prepared_artifacts_source_fk
+                        FOREIGN KEY (build_id, gallery_key)
+                        REFERENCES catalog_source_galleries (build_id, gallery_key)
+                        ON DELETE RESTRICT
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS catalog_build_projection_items (
+                    build_id CHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    gallery_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    publication_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    item_sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    PRIMARY KEY (build_id, gallery_key),
+                    UNIQUE INDEX catalog_build_projection_publication (
+                        build_id, publication_key
+                    ),
+                    CONSTRAINT catalog_build_projection_items_projection_fk
+                        FOREIGN KEY (build_id)
+                        REFERENCES catalog_build_projections (build_id)
+                        ON DELETE RESTRICT,
+                    CONSTRAINT catalog_build_projection_items_source_fk
+                        FOREIGN KEY (build_id, gallery_key)
+                        REFERENCES catalog_source_galleries (build_id, gallery_key)
+                        ON DELETE RESTRICT
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS catalog_build_projection_batches (
+                    build_id CHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    batch_kind VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    batch_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL,
+                    payload_sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    item_count BIGINT UNSIGNED NOT NULL,
+                    PRIMARY KEY (build_id, batch_kind, batch_id),
+                    CONSTRAINT catalog_build_projection_batches_projection_fk
+                        FOREIGN KEY (build_id)
+                        REFERENCES catalog_build_projections (build_id)
+                        ON DELETE RESTRICT
+                )
+                """,
+                f"""
+                CREATE TABLE IF NOT EXISTS catalog_projection_publication_receipts (
+                    build_id CHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+                    source_revision BIGINT UNSIGNED NOT NULL,
+                    catalog_revision BIGINT UNSIGNED NOT NULL,
+                    projection_sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    state VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    new_galleries BIGINT UNSIGNED NOT NULL,
+                    changed_galleries BIGINT UNSIGNED NOT NULL,
+                    removed_galleries BIGINT UNSIGNED NOT NULL,
+                    duplicate_losers BIGINT UNSIGNED NOT NULL,
+                    selected_galleries BIGINT UNSIGNED NOT NULL,
+                    committed_at VARCHAR(40) NOT NULL,
+                    finalized_at VARCHAR(40) NULL,
+                    CONSTRAINT catalog_projection_receipt_state
+                        CHECK (state IN ({states})),
+                    CONSTRAINT catalog_projection_receipt_build_fk
+                        FOREIGN KEY (build_id) REFERENCES catalog_builds (build_id)
+                        ON DELETE RESTRICT,
+                    CONSTRAINT catalog_projection_receipt_source_revision_fk
+                        FOREIGN KEY (source_revision)
+                        REFERENCES catalog_source_revision_history (revision)
+                        ON DELETE RESTRICT,
+                    CONSTRAINT catalog_projection_receipt_catalog_revision_fk
+                        FOREIGN KEY (catalog_revision)
+                        REFERENCES catalog_revision_history (revision)
+                        ON DELETE RESTRICT
+                )
+                """,
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS catalog_artifacts_revision_name_unique
+                ON catalog_artifacts (revision, artifact_name_key)
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS catalog_publications_revision_content_source
+                ON catalog_publications (
+                    revision, content_sha256, source_gallery_name(191)
+                )
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS catalog_build_content_digest_key_order
+                ON catalog_build_content_digests (
+                    build_id, content_sha256, gallery_key
+                )
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS catalog_source_galleries_gid_key_order
+                ON catalog_source_galleries (build_id, gid, gallery_key)
+                """,
+            )
+        return (
+            """
+            CREATE TABLE IF NOT EXISTS catalog_revision_allocator (
+                singleton_id INTEGER NOT NULL PRIMARY KEY CHECK (singleton_id = 1),
+                next_revision INTEGER NOT NULL CHECK (next_revision > 0)
+            )
+            """,
+            f"""
+            CREATE TABLE IF NOT EXISTS catalog_build_projections (
+                build_id TEXT NOT NULL PRIMARY KEY,
+                reserved_revision INTEGER NOT NULL UNIQUE CHECK (reserved_revision > 0),
+                base_catalog_revision INTEGER NOT NULL CHECK (base_catalog_revision >= 0),
+                artifacts_required INTEGER NOT NULL CHECK (artifacts_required IN (0, 1)),
+                phase TEXT NOT NULL CHECK (phase IN ({phases})),
+                artifact_after_gallery_key TEXT NULL,
+                selection_after_gallery_key TEXT NULL,
+                selected_gallery_count INTEGER NOT NULL DEFAULT 0
+                    CHECK (selected_gallery_count >= 0),
+                protected_artifact_count INTEGER NOT NULL DEFAULT 0
+                    CHECK (protected_artifact_count >= 0),
+                staged_selection_count INTEGER NOT NULL DEFAULT 0
+                    CHECK (staged_selection_count >= 0),
+                projection_chain_sha256 TEXT NOT NULL
+                    CHECK (length(projection_chain_sha256) = 64),
+                projection_xor_sha256 TEXT NOT NULL
+                    CHECK (length(projection_xor_sha256) = 64),
+                projection_sum_sha256 TEXT NOT NULL
+                    CHECK (length(projection_sum_sha256) = 64),
+                projection_sha256 TEXT NULL CHECK (
+                    projection_sha256 IS NULL OR length(projection_sha256) = 64
+                ),
+                new_galleries INTEGER NOT NULL DEFAULT 0 CHECK (new_galleries >= 0),
+                changed_galleries INTEGER NOT NULL DEFAULT 0 CHECK (changed_galleries >= 0),
+                removed_galleries INTEGER NOT NULL DEFAULT 0 CHECK (removed_galleries >= 0),
+                duplicate_losers INTEGER NOT NULL DEFAULT 0 CHECK (duplicate_losers >= 0),
+                published_catalog_revision INTEGER NULL CHECK (published_catalog_revision >= 0),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                sealed_at TEXT NULL,
+                published_at TEXT NULL,
+                FOREIGN KEY (build_id) REFERENCES catalog_builds (build_id)
+                    ON DELETE RESTRICT,
+                FOREIGN KEY (base_catalog_revision)
+                    REFERENCES catalog_revision_history (revision)
+                    ON DELETE RESTRICT,
+                FOREIGN KEY (published_catalog_revision)
+                    REFERENCES catalog_revision_history (revision)
+                    ON DELETE RESTRICT
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS catalog_build_prepared_artifacts (
+                build_id TEXT NOT NULL,
+                gallery_key TEXT NOT NULL,
+                payload_sha256 TEXT NOT NULL CHECK (length(payload_sha256) = 64),
+                artifact_key TEXT NOT NULL,
+                artifact_name_key TEXT NOT NULL,
+                artifact_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                location TEXT NOT NULL,
+                media_type TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+                sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+                modified_at TEXT NOT NULL,
+                protected INTEGER NOT NULL DEFAULT 0 CHECK (protected IN (0, 1)),
+                PRIMARY KEY (build_id, gallery_key),
+                UNIQUE (build_id, artifact_key),
+                UNIQUE (build_id, artifact_name_key),
+                FOREIGN KEY (build_id) REFERENCES catalog_build_projections (build_id)
+                    ON DELETE RESTRICT,
+                FOREIGN KEY (build_id, gallery_key)
+                    REFERENCES catalog_source_galleries (build_id, gallery_key)
+                    ON DELETE RESTRICT
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS catalog_build_projection_items (
+                build_id TEXT NOT NULL,
+                gallery_key TEXT NOT NULL,
+                publication_key TEXT NOT NULL,
+                item_sha256 TEXT NOT NULL CHECK (length(item_sha256) = 64),
+                PRIMARY KEY (build_id, gallery_key),
+                UNIQUE (build_id, publication_key),
+                FOREIGN KEY (build_id) REFERENCES catalog_build_projections (build_id)
+                    ON DELETE RESTRICT,
+                FOREIGN KEY (build_id, gallery_key)
+                    REFERENCES catalog_source_galleries (build_id, gallery_key)
+                    ON DELETE RESTRICT
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS catalog_build_projection_batches (
+                build_id TEXT NOT NULL,
+                batch_kind TEXT NOT NULL,
+                batch_id TEXT NOT NULL,
+                payload_sha256 TEXT NOT NULL CHECK (length(payload_sha256) = 64),
+                item_count INTEGER NOT NULL CHECK (item_count >= 0),
+                PRIMARY KEY (build_id, batch_kind, batch_id),
+                FOREIGN KEY (build_id) REFERENCES catalog_build_projections (build_id)
+                    ON DELETE RESTRICT
+            )
+            """,
+            f"""
+            CREATE TABLE IF NOT EXISTS catalog_projection_publication_receipts (
+                build_id TEXT NOT NULL PRIMARY KEY,
+                source_revision INTEGER NOT NULL CHECK (source_revision > 0),
+                catalog_revision INTEGER NOT NULL CHECK (catalog_revision >= 0),
+                projection_sha256 TEXT NOT NULL CHECK (length(projection_sha256) = 64),
+                state TEXT NOT NULL CHECK (state IN ({states})),
+                new_galleries INTEGER NOT NULL CHECK (new_galleries >= 0),
+                changed_galleries INTEGER NOT NULL CHECK (changed_galleries >= 0),
+                removed_galleries INTEGER NOT NULL CHECK (removed_galleries >= 0),
+                duplicate_losers INTEGER NOT NULL CHECK (duplicate_losers >= 0),
+                selected_galleries INTEGER NOT NULL CHECK (selected_galleries >= 0),
+                committed_at TEXT NOT NULL,
+                finalized_at TEXT NULL,
+                FOREIGN KEY (build_id) REFERENCES catalog_builds (build_id)
+                    ON DELETE RESTRICT,
+                FOREIGN KEY (source_revision)
+                    REFERENCES catalog_source_revision_history (revision)
+                    ON DELETE RESTRICT,
+                FOREIGN KEY (catalog_revision)
+                    REFERENCES catalog_revision_history (revision)
+                    ON DELETE RESTRICT
+            )
+            """,
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS catalog_artifacts_revision_name_unique
+            ON catalog_artifacts (revision, artifact_name_key)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS catalog_publications_revision_content_source
+            ON catalog_publications (revision, content_sha256, source_gallery_name)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS catalog_build_content_digest_key_order
+            ON catalog_build_content_digests (build_id, content_sha256, gallery_key)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS catalog_source_galleries_gid_key_order
+            ON catalog_source_galleries (build_id, gid, gallery_key)
+            """,
+        )
+
+    def _catalog_analysis_statements(self) -> tuple[str, ...]:
+        phases = (
+            "'SOURCE_MANIFESTS', 'FILE_SPAM', 'CONTENT_DIGESTS', "
+            "'CONTENT_OWNERS', 'GID_WINNERS', 'FINAL_ANALYSES'"
+        )
+        if self._context.sql_type == "mariadb":
+            return (
+                f"""
+                CREATE TABLE IF NOT EXISTS catalog_build_analysis_phases (
+                    build_id CHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    phase VARCHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    completed_at VARCHAR(40) NOT NULL,
+                    PRIMARY KEY (build_id, phase),
+                    CONSTRAINT catalog_build_analysis_phase_value
+                        CHECK (phase IN ({phases})),
+                    CONSTRAINT catalog_build_analysis_phases_build_fk
+                        FOREIGN KEY (build_id)
+                        REFERENCES catalog_builds (build_id)
+                        ON DELETE CASCADE
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS catalog_build_excluded_file_hashes (
+                    build_id CHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    sha256 CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    PRIMARY KEY (build_id, sha256),
+                    CONSTRAINT catalog_build_excluded_hashes_build_fk
+                        FOREIGN KEY (build_id)
+                        REFERENCES catalog_builds (build_id)
+                        ON DELETE CASCADE
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS catalog_build_content_digests (
+                    build_id CHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    gallery_key CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    gallery_name VARCHAR(255) COLLATE utf8mb4_bin NOT NULL,
+                    content_sha256 CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NULL,
+                    PRIMARY KEY (build_id, gallery_key),
+                    INDEX catalog_build_content_digest_order (
+                        build_id, content_sha256, gallery_name
+                    ),
+                    CONSTRAINT catalog_build_content_digests_gallery_fk
+                        FOREIGN KEY (build_id, gallery_key)
+                        REFERENCES catalog_source_galleries (
+                            build_id, gallery_key
+                        )
+                        ON DELETE CASCADE
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS catalog_build_content_owners (
+                    build_id CHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    content_sha256 CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    owner_gallery_key CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    owner_gallery_name VARCHAR(255) COLLATE utf8mb4_bin NOT NULL,
+                    PRIMARY KEY (build_id, content_sha256),
+                    INDEX catalog_build_content_owner_gallery (
+                        build_id, owner_gallery_key
+                    ),
+                    CONSTRAINT catalog_build_content_owners_gallery_fk
+                        FOREIGN KEY (build_id, owner_gallery_key)
+                        REFERENCES catalog_source_galleries (
+                            build_id, gallery_key
+                        )
+                        ON DELETE CASCADE
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS catalog_build_gid_winners (
+                    build_id CHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    gid INT UNSIGNED NOT NULL,
+                    winner_gallery_key CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    winner_gallery_name VARCHAR(255) COLLATE utf8mb4_bin NOT NULL,
+                    PRIMARY KEY (build_id, gid),
+                    INDEX catalog_build_gid_winner_gallery (
+                        build_id, winner_gallery_key
+                    ),
+                    CONSTRAINT catalog_build_gid_winners_gallery_fk
+                        FOREIGN KEY (build_id, winner_gallery_key)
+                        REFERENCES catalog_source_galleries (
+                            build_id, gallery_key
+                        )
+                        ON DELETE CASCADE
+                )
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS catalog_source_galleries_name_order
+                ON catalog_source_galleries (
+                    build_id, gallery_name(255), gallery_key
+                )
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS catalog_source_galleries_gid_name_order
+                ON catalog_source_galleries (
+                    build_id, gid, gallery_name(255), gallery_key
+                )
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS catalog_source_files_gallery_hash_order
+                ON catalog_source_files (
+                    build_id, gallery_key, sha256, file_key
+                )
+                """,
+            )
+        return (
+            f"""
+            CREATE TABLE IF NOT EXISTS catalog_build_analysis_phases (
+                build_id TEXT NOT NULL,
+                phase TEXT NOT NULL CHECK (phase IN ({phases})),
+                completed_at TEXT NOT NULL,
+                PRIMARY KEY (build_id, phase),
+                FOREIGN KEY (build_id)
+                    REFERENCES catalog_builds (build_id)
+                    ON DELETE CASCADE
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS catalog_build_excluded_file_hashes (
+                build_id TEXT NOT NULL,
+                sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+                PRIMARY KEY (build_id, sha256),
+                FOREIGN KEY (build_id)
+                    REFERENCES catalog_builds (build_id)
+                    ON DELETE CASCADE
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS catalog_build_content_digests (
+                build_id TEXT NOT NULL,
+                gallery_key TEXT NOT NULL,
+                gallery_name TEXT NOT NULL,
+                content_sha256 TEXT NULL CHECK (
+                    content_sha256 IS NULL OR length(content_sha256) = 64
+                ),
+                PRIMARY KEY (build_id, gallery_key),
+                FOREIGN KEY (build_id, gallery_key)
+                    REFERENCES catalog_source_galleries (build_id, gallery_key)
+                    ON DELETE CASCADE
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS catalog_build_content_digest_order
+            ON catalog_build_content_digests (
+                build_id, content_sha256, gallery_name
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS catalog_build_content_owners (
+                build_id TEXT NOT NULL,
+                content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+                owner_gallery_key TEXT NOT NULL,
+                owner_gallery_name TEXT NOT NULL,
+                PRIMARY KEY (build_id, content_sha256),
+                FOREIGN KEY (build_id, owner_gallery_key)
+                    REFERENCES catalog_source_galleries (build_id, gallery_key)
+                    ON DELETE CASCADE
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS catalog_build_content_owner_gallery
+            ON catalog_build_content_owners (build_id, owner_gallery_key)
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS catalog_build_gid_winners (
+                build_id TEXT NOT NULL,
+                gid INTEGER NOT NULL CHECK (gid > 0),
+                winner_gallery_key TEXT NOT NULL,
+                winner_gallery_name TEXT NOT NULL,
+                PRIMARY KEY (build_id, gid),
+                FOREIGN KEY (build_id, winner_gallery_key)
+                    REFERENCES catalog_source_galleries (build_id, gallery_key)
+                    ON DELETE CASCADE
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS catalog_build_gid_winner_gallery
+            ON catalog_build_gid_winners (build_id, winner_gallery_key)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS catalog_source_galleries_name_order
+            ON catalog_source_galleries (build_id, gallery_name, gallery_key)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS catalog_source_galleries_gid_name_order
+            ON catalog_source_galleries (
+                build_id, gid, gallery_name, gallery_key
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS catalog_source_files_gallery_hash_order
+            ON catalog_source_files (build_id, gallery_key, sha256, file_key)
+            """,
+        )
+
+    def _apply_catalog_build_schema(self) -> None:
+        with self._context.SQLConnector() as connector:
+            for statement in self._catalog_build_statements():
+                connector.execute(statement)
+            if self._context.sql_type == "mariadb":
+                connector.execute("""
+                    INSERT IGNORE INTO catalog_build_control (
+                        singleton_id, working_build_id
+                    ) VALUES (1, NULL)
+                    """)
+                connector.execute("""
+                    INSERT IGNORE INTO catalog_source_revision_history (
+                        revision, build_id, published_at, gallery_count, file_count
+                    ) VALUES (0, NULL, '1970-01-01T00:00:00+00:00', 0, 0)
+                    """)
+                connector.execute("""
+                    INSERT IGNORE INTO catalog_source_revision (
+                        singleton_id,
+                        current_revision,
+                        active_build_id,
+                        published_at,
+                        gallery_count,
+                        file_count
+                    ) VALUES (
+                        1, 0, NULL, '1970-01-01T00:00:00+00:00', 0, 0
+                    )
+                    """)
+            else:
+                connector.execute("""
+                    INSERT OR IGNORE INTO catalog_build_control (
+                        singleton_id, working_build_id
+                    ) VALUES (1, NULL)
+                    """)
+                connector.execute("""
+                    INSERT OR IGNORE INTO catalog_source_revision_history (
+                        revision, build_id, published_at, gallery_count, file_count
+                    ) VALUES (0, NULL, '1970-01-01T00:00:00+00:00', 0, 0)
+                    """)
+                connector.execute("""
+                    INSERT OR IGNORE INTO catalog_source_revision (
+                        singleton_id,
+                        current_revision,
+                        active_build_id,
+                        published_at,
+                        gallery_count,
+                        file_count
+                    ) VALUES (
+                        1, 0, NULL, '1970-01-01T00:00:00+00:00', 0, 0
+                    )
+                    """)
+
+    def _catalog_build_statements(self) -> tuple[str, ...]:
+        phases = (
+            "'DISCOVERING', 'STAGING', 'ANALYZING', "
+            "'ARTIFACTS', 'SEALED', 'PUBLISHED', 'ABANDONED'"
+        )
+        if self._context.sql_type == "mariadb":
+            return (
+                f"""
+                CREATE TABLE IF NOT EXISTS catalog_builds (
+                    build_id CHAR(32) CHARACTER SET ascii COLLATE ascii_bin
+                        NOT NULL PRIMARY KEY,
+                    scope_key TEXT NOT NULL,
+                    discovery_epoch VARCHAR(191) COLLATE utf8mb4_bin NOT NULL,
+                    discovery_tree_sha256 CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NULL,
+                    phase VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    ingest_generation BIGINT UNSIGNED NOT NULL,
+                    owner_token VARCHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    base_source_revision BIGINT UNSIGNED NOT NULL,
+                    base_active_build_id CHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NULL,
+                    discovered_gallery_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                    expected_gallery_count BIGINT UNSIGNED NULL,
+                    staged_gallery_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                    staged_file_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                    analyzed_gallery_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                    created_at VARCHAR(40) NOT NULL,
+                    updated_at VARCHAR(40) NOT NULL,
+                    published_source_revision BIGINT UNSIGNED NULL,
+                    seal_sha256 CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NULL,
+                    CONSTRAINT catalog_build_phase CHECK (phase IN ({phases})),
+                    CONSTRAINT catalog_build_seal_length CHECK (
+                        seal_sha256 IS NULL OR CHAR_LENGTH(seal_sha256) = 64
+                    )
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS catalog_build_control (
+                    singleton_id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
+                    working_build_id CHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NULL,
+                    CONSTRAINT catalog_build_control_singleton
+                        CHECK (singleton_id = 1),
+                    CONSTRAINT catalog_build_control_working_fk
+                        FOREIGN KEY (working_build_id)
+                        REFERENCES catalog_builds (build_id)
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS catalog_build_discoveries (
+                    build_id CHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    gallery_key CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    gallery_name TEXT NOT NULL,
+                    source_locator LONGTEXT NOT NULL,
+                    metadata_fingerprint LONGTEXT NULL,
+                    PRIMARY KEY (build_id, gallery_key),
+                    CONSTRAINT catalog_build_discoveries_build_fk
+                        FOREIGN KEY (build_id)
+                        REFERENCES catalog_builds (build_id)
+                        ON DELETE CASCADE
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS catalog_build_batches (
+                    build_id CHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    batch_kind VARCHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    batch_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL,
+                    payload_sha256 CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    item_count BIGINT UNSIGNED NOT NULL,
+                    file_count BIGINT UNSIGNED NOT NULL,
+                    PRIMARY KEY (build_id, batch_kind, batch_id),
+                    CONSTRAINT catalog_build_batches_build_fk
+                        FOREIGN KEY (build_id)
+                        REFERENCES catalog_builds (build_id)
+                        ON DELETE CASCADE
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS catalog_source_galleries (
+                    build_id CHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    gallery_key CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    gallery_name TEXT NOT NULL,
+                    gid INT UNSIGNED NOT NULL,
+                    title TEXT NOT NULL,
+                    comment LONGTEXT NOT NULL,
+                    upload_account TEXT NOT NULL,
+                    upload_time VARCHAR(40) NOT NULL,
+                    download_time VARCHAR(40) NOT NULL,
+                    modified_time VARCHAR(40) NOT NULL,
+                    source_manifest_sha256 CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NULL,
+                    source_manifest_version INT UNSIGNED NULL,
+                    scan_observation_sha256 CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NULL,
+                    scan_observation_version INT UNSIGNED NULL,
+                    metadata_sha256 CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NULL,
+                    page_count BIGINT UNSIGNED NULL,
+                    directory_entry_count BIGINT UNSIGNED NULL,
+                    directory_observation_sha256 CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NULL,
+                    raw_content_sha256 CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NULL,
+                    content_sha256 CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NULL,
+                    duplicate_of_gallery_name TEXT NULL,
+                    duplicate_of_gallery_key CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NULL,
+                    expected_file_count BIGINT UNSIGNED NULL,
+                    staged_file_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                    source_complete BOOLEAN NOT NULL DEFAULT FALSE,
+                    analysis_complete BOOLEAN NOT NULL DEFAULT FALSE,
+                    selected BOOLEAN NOT NULL DEFAULT FALSE,
+                    PRIMARY KEY (build_id, gallery_key),
+                    INDEX catalog_source_galleries_gid (build_id, gid),
+                    INDEX catalog_source_galleries_content (
+                        build_id, content_sha256
+                    ),
+                    CONSTRAINT catalog_source_galleries_build_fk
+                        FOREIGN KEY (build_id)
+                        REFERENCES catalog_builds (build_id)
+                        ON DELETE CASCADE
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS catalog_source_files (
+                    build_id CHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    gallery_key CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    file_key CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    file_sort_key VARCHAR(255) COLLATE utf8mb4_bin NOT NULL,
+                    file_name VARCHAR(255) COLLATE utf8mb4_bin NOT NULL,
+                    relative_locator LONGTEXT NULL,
+                    device VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NULL,
+                    inode VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NULL,
+                    modified_ns VARCHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NULL,
+                    changed_ns VARCHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NULL,
+                    size_bytes BIGINT UNSIGNED NOT NULL,
+                    sha256 CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    PRIMARY KEY (build_id, gallery_key, file_key),
+                    UNIQUE INDEX catalog_source_files_name (
+                        build_id, gallery_key, file_name
+                    ),
+                    INDEX catalog_source_files_order (
+                        build_id, gallery_key, file_sort_key, file_name, file_key
+                    ),
+                    INDEX catalog_source_files_hash_order (
+                        build_id, sha256, gallery_key, file_key
+                    ),
+                    CONSTRAINT catalog_source_files_gallery_fk
+                        FOREIGN KEY (build_id, gallery_key)
+                        REFERENCES catalog_source_galleries (
+                            build_id, gallery_key
+                        )
+                        ON DELETE CASCADE
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS catalog_source_tags (
+                    build_id CHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    gallery_key CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    position INT UNSIGNED NOT NULL,
+                    tag_name TEXT NOT NULL,
+                    tag_value TEXT NOT NULL,
+                    PRIMARY KEY (build_id, gallery_key, position),
+                    CONSTRAINT catalog_source_tags_gallery_fk
+                        FOREIGN KEY (build_id, gallery_key)
+                        REFERENCES catalog_source_galleries (
+                            build_id, gallery_key
+                        )
+                        ON DELETE CASCADE
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS catalog_file_hash_cache (
+                    cache_key CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+                    source_key LONGTEXT NOT NULL,
+                    fingerprint LONGTEXT NOT NULL,
+                    sha256 CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    cached_at VARCHAR(40) NOT NULL
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS catalog_source_revision_history (
+                    revision BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+                    build_id CHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NULL,
+                    published_at VARCHAR(40) NOT NULL,
+                    gallery_count BIGINT UNSIGNED NOT NULL,
+                    file_count BIGINT UNSIGNED NOT NULL,
+                    UNIQUE INDEX catalog_source_revision_build (build_id),
+                    CONSTRAINT catalog_source_revision_history_build_fk
+                        FOREIGN KEY (build_id)
+                        REFERENCES catalog_builds (build_id)
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS catalog_source_revision (
+                    singleton_id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
+                    current_revision BIGINT UNSIGNED NOT NULL,
+                    active_build_id CHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NULL,
+                    published_at VARCHAR(40) NOT NULL,
+                    gallery_count BIGINT UNSIGNED NOT NULL,
+                    file_count BIGINT UNSIGNED NOT NULL,
+                    CONSTRAINT catalog_source_revision_singleton
+                        CHECK (singleton_id = 1),
+                    CONSTRAINT catalog_source_revision_history_fk
+                        FOREIGN KEY (current_revision)
+                        REFERENCES catalog_source_revision_history (revision),
+                    CONSTRAINT catalog_source_revision_build_fk
+                        FOREIGN KEY (active_build_id)
+                        REFERENCES catalog_builds (build_id)
+                )
+                """,
+            )
+        return (
+            f"""
+            CREATE TABLE IF NOT EXISTS catalog_builds (
+                build_id TEXT NOT NULL PRIMARY KEY CHECK (length(build_id) = 32),
+                scope_key TEXT NOT NULL CHECK (length(scope_key) > 0),
+                discovery_epoch TEXT NOT NULL CHECK (length(discovery_epoch) > 0),
+                discovery_tree_sha256 TEXT NULL CHECK (
+                    discovery_tree_sha256 IS NULL
+                    OR length(discovery_tree_sha256) = 64
+                ),
+                phase TEXT NOT NULL CHECK (phase IN ({phases})),
+                ingest_generation INTEGER NOT NULL CHECK (ingest_generation >= 0),
+                owner_token TEXT NOT NULL,
+                base_source_revision INTEGER NOT NULL
+                    CHECK (base_source_revision >= 0),
+                base_active_build_id TEXT NULL,
+                discovered_gallery_count INTEGER NOT NULL DEFAULT 0
+                    CHECK (discovered_gallery_count >= 0),
+                expected_gallery_count INTEGER NULL
+                    CHECK (expected_gallery_count >= 0),
+                staged_gallery_count INTEGER NOT NULL DEFAULT 0
+                    CHECK (staged_gallery_count >= 0),
+                staged_file_count INTEGER NOT NULL DEFAULT 0
+                    CHECK (staged_file_count >= 0),
+                analyzed_gallery_count INTEGER NOT NULL DEFAULT 0
+                    CHECK (analyzed_gallery_count >= 0),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                published_source_revision INTEGER NULL
+                    CHECK (published_source_revision > 0),
+                seal_sha256 TEXT NULL
+                    CHECK (seal_sha256 IS NULL OR length(seal_sha256) = 64)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS catalog_build_control (
+                singleton_id INTEGER NOT NULL PRIMARY KEY
+                    CHECK (singleton_id = 1),
+                working_build_id TEXT NULL,
+                FOREIGN KEY (working_build_id)
+                    REFERENCES catalog_builds (build_id)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS catalog_build_discoveries (
+                build_id TEXT NOT NULL,
+                gallery_key TEXT NOT NULL,
+                gallery_name TEXT NOT NULL,
+                source_locator TEXT NOT NULL,
+                metadata_fingerprint TEXT NULL,
+                PRIMARY KEY (build_id, gallery_key),
+                FOREIGN KEY (build_id)
+                    REFERENCES catalog_builds (build_id)
+                    ON DELETE CASCADE
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS catalog_build_batches (
+                build_id TEXT NOT NULL,
+                batch_kind TEXT NOT NULL,
+                batch_id TEXT NOT NULL,
+                payload_sha256 TEXT NOT NULL
+                    CHECK (length(payload_sha256) = 64),
+                item_count INTEGER NOT NULL CHECK (item_count >= 0),
+                file_count INTEGER NOT NULL CHECK (file_count >= 0),
+                PRIMARY KEY (build_id, batch_kind, batch_id),
+                FOREIGN KEY (build_id)
+                    REFERENCES catalog_builds (build_id)
+                    ON DELETE CASCADE
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS catalog_source_galleries (
+                build_id TEXT NOT NULL,
+                gallery_key TEXT NOT NULL,
+                gallery_name TEXT NOT NULL,
+                gid INTEGER NOT NULL CHECK (gid > 0),
+                title TEXT NOT NULL,
+                comment TEXT NOT NULL,
+                upload_account TEXT NOT NULL,
+                upload_time TEXT NOT NULL,
+                download_time TEXT NOT NULL,
+                modified_time TEXT NOT NULL,
+                source_manifest_sha256 TEXT NULL CHECK (
+                    source_manifest_sha256 IS NULL
+                    OR length(source_manifest_sha256) = 64
+                ),
+                source_manifest_version INTEGER NULL
+                    CHECK (source_manifest_version > 0),
+                scan_observation_sha256 TEXT NULL CHECK (
+                    scan_observation_sha256 IS NULL
+                    OR length(scan_observation_sha256) = 64
+                ),
+                scan_observation_version INTEGER NULL
+                    CHECK (scan_observation_version > 0),
+                metadata_sha256 TEXT NULL CHECK (
+                    metadata_sha256 IS NULL OR length(metadata_sha256) = 64
+                ),
+                page_count INTEGER NULL CHECK (page_count >= 0),
+                directory_entry_count INTEGER NULL
+                    CHECK (directory_entry_count >= 0),
+                directory_observation_sha256 TEXT NULL CHECK (
+                    directory_observation_sha256 IS NULL
+                    OR length(directory_observation_sha256) = 64
+                ),
+                raw_content_sha256 TEXT NULL CHECK (
+                    raw_content_sha256 IS NULL
+                    OR length(raw_content_sha256) = 64
+                ),
+                content_sha256 TEXT NULL CHECK (
+                    content_sha256 IS NULL OR length(content_sha256) = 64
+                ),
+                duplicate_of_gallery_name TEXT NULL,
+                duplicate_of_gallery_key TEXT NULL,
+                expected_file_count INTEGER NULL
+                    CHECK (expected_file_count >= 0),
+                staged_file_count INTEGER NOT NULL DEFAULT 0
+                    CHECK (staged_file_count >= 0),
+                source_complete INTEGER NOT NULL DEFAULT 0
+                    CHECK (source_complete IN (0, 1)),
+                analysis_complete INTEGER NOT NULL DEFAULT 0
+                    CHECK (analysis_complete IN (0, 1)),
+                selected INTEGER NOT NULL DEFAULT 0
+                    CHECK (selected IN (0, 1)),
+                PRIMARY KEY (build_id, gallery_key),
+                FOREIGN KEY (build_id)
+                    REFERENCES catalog_builds (build_id)
+                    ON DELETE CASCADE
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS catalog_source_galleries_gid
+            ON catalog_source_galleries (build_id, gid)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS catalog_source_galleries_content
+            ON catalog_source_galleries (build_id, content_sha256)
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS catalog_source_files (
+                build_id TEXT NOT NULL,
+                gallery_key TEXT NOT NULL,
+                file_key TEXT NOT NULL,
+                file_sort_key TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                relative_locator TEXT NULL,
+                device TEXT NULL,
+                inode TEXT NULL,
+                modified_ns TEXT NULL,
+                changed_ns TEXT NULL,
+                size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+                sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+                PRIMARY KEY (build_id, gallery_key, file_key),
+                FOREIGN KEY (build_id, gallery_key)
+                    REFERENCES catalog_source_galleries (build_id, gallery_key)
+                    ON DELETE CASCADE
+            )
+            """,
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS catalog_source_files_name
+            ON catalog_source_files (build_id, gallery_key, file_name)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS catalog_source_files_order
+            ON catalog_source_files (
+                build_id, gallery_key, file_sort_key, file_name, file_key
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS catalog_source_files_hash_order
+            ON catalog_source_files (build_id, sha256, gallery_key, file_key)
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS catalog_source_tags (
+                build_id TEXT NOT NULL,
+                gallery_key TEXT NOT NULL,
+                position INTEGER NOT NULL CHECK (position >= 0),
+                tag_name TEXT NOT NULL,
+                tag_value TEXT NOT NULL,
+                PRIMARY KEY (build_id, gallery_key, position),
+                FOREIGN KEY (build_id, gallery_key)
+                    REFERENCES catalog_source_galleries (build_id, gallery_key)
+                    ON DELETE CASCADE
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS catalog_file_hash_cache (
+                cache_key TEXT NOT NULL PRIMARY KEY
+                    CHECK (length(cache_key) = 64),
+                source_key TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+                cached_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS catalog_source_revision_history (
+                revision INTEGER NOT NULL PRIMARY KEY CHECK (revision >= 0),
+                build_id TEXT NULL UNIQUE,
+                published_at TEXT NOT NULL,
+                gallery_count INTEGER NOT NULL CHECK (gallery_count >= 0),
+                file_count INTEGER NOT NULL CHECK (file_count >= 0),
+                FOREIGN KEY (build_id) REFERENCES catalog_builds (build_id)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS catalog_source_revision (
+                singleton_id INTEGER NOT NULL PRIMARY KEY
+                    CHECK (singleton_id = 1),
+                current_revision INTEGER NOT NULL CHECK (current_revision >= 0),
+                active_build_id TEXT NULL,
+                published_at TEXT NOT NULL,
+                gallery_count INTEGER NOT NULL CHECK (gallery_count >= 0),
+                file_count INTEGER NOT NULL CHECK (file_count >= 0),
+                FOREIGN KEY (current_revision)
+                    REFERENCES catalog_source_revision_history (revision),
+                FOREIGN KEY (active_build_id)
+                    REFERENCES catalog_builds (build_id)
+            )
+            """,
+        )
 
     def _apply_current_schema(self) -> None:
         self._maintenance._create_database_maintenance_state_table()

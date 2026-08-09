@@ -92,7 +92,7 @@ def test_schema_readiness_check_bypasses_maintenance_gate(
         observed_gate,
     )
 
-    assert database.check_readiness().database_version == 1
+    assert database.check_readiness().database_version == 6
     assert acquisitions == 0
 
 

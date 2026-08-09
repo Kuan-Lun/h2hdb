@@ -61,6 +61,71 @@ EXPECTED_PROJECTION_TABLES = {
     "catalog_subjects",
 }
 
+EXPECTED_BUILD_TABLES = {
+    "catalog_build_analysis_phases",
+    "catalog_build_batches",
+    "catalog_build_content_digests",
+    "catalog_build_content_owners",
+    "catalog_build_control",
+    "catalog_build_discoveries",
+    "catalog_build_excluded_file_hashes",
+    "catalog_build_gid_winners",
+    "catalog_builds",
+    "catalog_build_prepared_artifacts",
+    "catalog_build_projection_batches",
+    "catalog_build_projection_items",
+    "catalog_build_projections",
+    "catalog_file_hash_cache",
+    "catalog_source_files",
+    "catalog_source_galleries",
+    "catalog_source_revision",
+    "catalog_source_revision_history",
+    "catalog_source_tags",
+    "catalog_projection_publication_receipts",
+    "catalog_revision_allocator",
+}
+
+CATALOG_BUILD_DROP_ORDER = (
+    "catalog_build_prepared_artifacts",
+    "catalog_build_projection_items",
+    "catalog_build_projection_batches",
+    "catalog_build_projections",
+    "catalog_projection_publication_receipts",
+    "catalog_revision_allocator",
+    "catalog_source_revision",
+    "catalog_source_revision_history",
+    "catalog_build_analysis_phases",
+    "catalog_build_excluded_file_hashes",
+    "catalog_build_content_owners",
+    "catalog_build_gid_winners",
+    "catalog_build_content_digests",
+    "catalog_source_files",
+    "catalog_source_tags",
+    "catalog_source_galleries",
+    "catalog_build_batches",
+    "catalog_build_discoveries",
+    "catalog_build_control",
+    "catalog_file_hash_cache",
+    "catalog_builds",
+)
+
+V4_DROP_ORDER = (
+    "catalog_build_prepared_artifacts",
+    "catalog_build_projection_items",
+    "catalog_build_projection_batches",
+    "catalog_projection_publication_receipts",
+    "catalog_build_projections",
+    "catalog_revision_allocator",
+)
+
+V3_DROP_ORDER = (
+    "catalog_build_content_owners",
+    "catalog_build_gid_winners",
+    "catalog_build_content_digests",
+    "catalog_build_excluded_file_hashes",
+    "catalog_build_analysis_phases",
+)
+
 EXPECTED_SCHEMA_VIEWS = {
     "duplicate_hash_in_gallery",
     "files_hashs",
@@ -126,15 +191,16 @@ def test_sqlite_current_schema_is_complete_and_idempotent(
     database_path = Path(sqlite_config.database.database)
     database = H2HDB(sqlite_config)
 
-    assert database.migrate() == 1
+    assert database.migrate() == 6
     first = database.check_compatibility()
-    assert first.database_version == 1
+    assert first.database_version == 6
     assert first.minimum_supported <= first.database_version
     assert first.database_version <= first.maximum_supported
     assert database.check_readiness() == first
     tables = _sqlite_tables(database_path)
     assert EXPECTED_CANONICAL_TABLES <= tables
     assert EXPECTED_PROJECTION_TABLES <= tables
+    assert EXPECTED_BUILD_TABLES <= tables
     assert "h2hdb_schema_migrations" in tables
     assert {"pending_cbz_rebuilds", "pending_gallery_removals"}.isdisjoint(tables)
     assert EXPECTED_SCHEMA_VIEWS <= _sqlite_views(database_path)
@@ -144,7 +210,14 @@ def test_sqlite_current_schema_is_complete_and_idempotent(
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT version, name FROM h2hdb_schema_migrations ORDER BY version"
-        ).fetchall() == [(1, "current-schema-baseline")]
+        ).fetchall() == [
+            (1, "current-schema-baseline"),
+            (2, "durable-catalog-source-builds"),
+            (3, "durable-catalog-build-analysis"),
+            (4, "durable-catalog-build-projections"),
+            (5, "catalog-operational-authority"),
+            (6, "active-source-deletion-command-view"),
+        ]
         assert connection.execute(
             "SELECT current_revision, publication_count FROM catalog_revision"
         ).fetchone() == (0, 0)
@@ -220,7 +293,7 @@ def test_compatibility_rejects_obsolete_migration_identity(
         database.check_compatibility()
 
 
-@pytest.mark.parametrize("database_version", [2, 999])
+@pytest.mark.parametrize("database_version", [7, 999])
 def test_read_only_compatibility_rejects_unsupported_schema_versions(
     sqlite_config: CoreConfig,
     database_version: int,
@@ -253,7 +326,7 @@ def test_migrated_sqlite_opens_with_read_only_credentials(
 
     reader = open_database(_read_only_config(sqlite_config))
 
-    assert reader.check_compatibility().database_version == 1
+    assert reader.check_compatibility().database_version == 6
     assert reader.get_catalog_revision().revision == 0
 
 
@@ -265,9 +338,320 @@ def test_compatibility_rejects_missing_critical_catalog_index(
     with sqlite3.connect(Path(sqlite_config.database.database)) as connection:
         connection.execute("DROP INDEX catalog_artifacts_name")
 
-    assert database.check_readiness().database_version == 1
+    assert database.check_readiness().database_version == 6
     with pytest.raises(SchemaCompatibilityError, match="indexes="):
         database.check_compatibility()
+
+
+def test_compatibility_rejects_missing_catalog_build_index(
+    sqlite_config: CoreConfig,
+) -> None:
+    database = H2HDB(sqlite_config)
+    database.migrate()
+    with sqlite3.connect(Path(sqlite_config.database.database)) as connection:
+        connection.execute("DROP INDEX catalog_source_galleries_gid")
+
+    assert database.check_readiness().database_version == 6
+    with pytest.raises(SchemaCompatibilityError, match="indexes="):
+        database.check_compatibility()
+
+
+def test_compatibility_rejects_missing_catalog_analysis_index(
+    sqlite_config: CoreConfig,
+) -> None:
+    database = H2HDB(sqlite_config)
+    database.migrate()
+    with sqlite3.connect(Path(sqlite_config.database.database)) as connection:
+        connection.execute("DROP INDEX catalog_build_content_digest_order")
+
+    assert database.check_readiness().database_version == 6
+    with pytest.raises(SchemaCompatibilityError, match="indexes="):
+        database.check_compatibility()
+
+
+def test_compatibility_rejects_catalog_source_files_without_foreign_key(
+    sqlite_config: CoreConfig,
+) -> None:
+    database = H2HDB(sqlite_config)
+    database.migrate()
+    with sqlite3.connect(Path(sqlite_config.database.database)) as connection:
+        connection.execute("DROP TABLE catalog_source_files")
+        connection.execute("""
+            CREATE TABLE catalog_source_files (
+                build_id TEXT NOT NULL,
+                gallery_key TEXT NOT NULL,
+                file_key TEXT NOT NULL,
+                file_sort_key TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                relative_locator TEXT NULL,
+                device TEXT NULL,
+                inode TEXT NULL,
+                modified_ns TEXT NULL,
+                changed_ns TEXT NULL,
+                size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+                sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+                PRIMARY KEY (build_id, gallery_key, file_key)
+            )
+            """)
+        connection.execute("""
+            CREATE UNIQUE INDEX catalog_source_files_name
+            ON catalog_source_files (build_id, gallery_key, file_name)
+            """)
+        connection.execute("""
+            CREATE INDEX catalog_source_files_order
+            ON catalog_source_files (
+                build_id, gallery_key, file_sort_key, file_name, file_key
+            )
+            """)
+        connection.execute("""
+            CREATE INDEX catalog_source_files_hash_order
+            ON catalog_source_files (build_id, sha256, gallery_key, file_key)
+            """)
+
+    with pytest.raises(SchemaCompatibilityError, match="foreign_keys="):
+        database.check_compatibility()
+
+
+def test_catalog_build_migration_recovers_from_partial_ddl(
+    sqlite_config: CoreConfig,
+) -> None:
+    database = H2HDB(sqlite_config)
+    database.migrate()
+    database_path = Path(sqlite_config.database.database)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("DELETE FROM h2hdb_schema_migrations WHERE version >= 2")
+        for table_name in CATALOG_BUILD_DROP_ORDER[:-1]:
+            connection.execute(f"DROP TABLE {table_name}")
+
+    assert database.migrate() == 6
+    assert EXPECTED_BUILD_TABLES <= _sqlite_tables(database_path)
+    assert database.check_compatibility().database_version == 6
+
+
+def test_catalog_build_forward_migrates_a_v1_ledger(
+    sqlite_config: CoreConfig,
+) -> None:
+    database = H2HDB(sqlite_config)
+    database.migrate()
+    database_path = Path(sqlite_config.database.database)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("DELETE FROM h2hdb_schema_migrations WHERE version >= 2")
+        for table_name in CATALOG_BUILD_DROP_ORDER:
+            connection.execute(f"DROP TABLE {table_name}")
+        assert connection.execute(
+            "SELECT version, name FROM h2hdb_schema_migrations"
+        ).fetchall() == [(1, "current-schema-baseline")]
+
+    assert database.migrate() == 6
+    assert EXPECTED_BUILD_TABLES <= _sqlite_tables(database_path)
+    assert database.check_compatibility().database_version == 6
+
+
+@pytest.mark.parametrize("ledger_version", [2, 3])
+def test_catalog_projection_forward_migrates_v2_and_v3_ledgers(
+    sqlite_config: CoreConfig,
+    ledger_version: int,
+) -> None:
+    database = H2HDB(sqlite_config)
+    database.migrate()
+    database_path = Path(sqlite_config.database.database)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute(
+            "DELETE FROM h2hdb_schema_migrations WHERE version > ?",
+            (ledger_version,),
+        )
+        for table_name in V4_DROP_ORDER:
+            connection.execute(f"DROP TABLE {table_name}")
+        if ledger_version == 2:
+            for table_name in V3_DROP_ORDER:
+                connection.execute(f"DROP TABLE {table_name}")
+
+    assert database.migrate() == 6
+    assert EXPECTED_BUILD_TABLES <= _sqlite_tables(database_path)
+    assert database.check_compatibility().database_version == 6
+
+
+def test_v4_migration_backfills_the_current_legacy_projection_digest(
+    sqlite_config: CoreConfig,
+) -> None:
+    database = H2HDB(sqlite_config)
+    database.migrate()
+    timestamp = datetime(2026, 8, 9, tzinfo=UTC)
+    gallery = GallerySourceRecord(
+        gallery_name="legacy-backfill",
+        gid=808,
+        title="Legacy",
+        comment="",
+        upload_account="",
+        upload_time=timestamp,
+        download_time=timestamp,
+        modified_time=timestamp,
+        tags=(),
+        files=(),
+        source_manifest_sha256=sha256(b"legacy-manifest").hexdigest(),
+    )
+    turn = database.claim_gallery_ingest(lease_seconds=30, periodic_scan=False)
+    assert turn is not None
+    revision = database.publish_snapshot(
+        CatalogSnapshot(
+            galleries=(gallery,),
+            selections=(CatalogPublicationSelection("legacy-backfill"),),
+        ),
+        ingest_turn=turn,
+    ).revision.revision
+    database_path = Path(sqlite_config.database.database)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("DELETE FROM h2hdb_schema_migrations WHERE version >= 4")
+        for table_name in V4_DROP_ORDER:
+            connection.execute(f"DROP TABLE {table_name}")
+        connection.execute(
+            "ALTER TABLE catalog_revision_history DROP COLUMN projection_sha256"
+        )
+
+    assert database.migrate() == 6
+    with sqlite3.connect(database_path) as connection:
+        digest = connection.execute(
+            "SELECT projection_sha256 FROM catalog_revision_history WHERE revision = ?",
+            (revision,),
+        ).fetchone()
+        assert digest is not None
+        assert len(str(digest[0])) == 64
+        assert connection.execute(
+            "SELECT next_revision FROM catalog_revision_allocator"
+        ).fetchone() == (revision + 1,)
+
+
+def test_v5_forward_migration_adopts_legacy_deletion_markers(
+    sqlite_config: CoreConfig,
+) -> None:
+    database = H2HDB(sqlite_config)
+    database.migrate()
+    database_path = Path(sqlite_config.database.database)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("INSERT INTO todelete_gids (gid) VALUES (909)")
+        connection.execute("DELETE FROM h2hdb_schema_migrations WHERE version >= 5")
+        connection.execute("DROP VIEW todelete_rm_commands")
+        connection.execute("""
+            CREATE VIEW todelete_rm_commands AS
+            SELECT 'rm -rf -- ' || galleries_names.full_name AS cmd
+            FROM todelete_galleries
+                JOIN galleries_names USING (db_gallery_id)
+            """)
+        connection.execute("DROP INDEX todelete_gids_request_token")
+        connection.execute("DROP INDEX catalog_source_galleries_gid_download")
+        for table_name in (
+            "catalog_build_operational_state",
+            "catalog_build_removed_gid_requests",
+            "catalog_build_deletion_consumptions",
+            "catalog_operational_activations",
+            "catalog_removed_gid_request_acks",
+            "catalog_gallery_redownload_times",
+        ):
+            connection.execute(f"DROP TABLE {table_name}")
+        connection.execute(
+            "ALTER TABLE catalog_source_revision "
+            "DROP COLUMN deletion_request_generation"
+        )
+        connection.execute(
+            "ALTER TABLE catalog_source_galleries DROP COLUMN upload_time_utc"
+        )
+        connection.execute(
+            "ALTER TABLE catalog_source_galleries DROP COLUMN download_time_utc"
+        )
+        connection.execute(
+            "ALTER TABLE catalog_build_content_digests "
+            "DROP COLUMN duplicate_hash_deletion_candidate"
+        )
+        connection.execute("ALTER TABLE todelete_gids DROP COLUMN request_token")
+
+    assert database.migrate() == 6
+    assert database.check_compatibility().database_version == 6
+    with sqlite3.connect(database_path) as connection:
+        token = connection.execute(
+            "SELECT request_token FROM todelete_gids WHERE gid = 909"
+        ).fetchone()
+    assert token is not None and len(str(token[0])) == 32
+
+
+def test_v6_forward_migration_replaces_the_legacy_deletion_command_view(
+    sqlite_config: CoreConfig,
+) -> None:
+    database = H2HDB(sqlite_config)
+    database.migrate()
+    database_path = Path(sqlite_config.database.database)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("DELETE FROM h2hdb_schema_migrations WHERE version = 6")
+        connection.execute("DROP VIEW todelete_rm_commands")
+        connection.execute("""
+            CREATE VIEW todelete_rm_commands AS
+            SELECT 'rm -rf -- ' || galleries_names.full_name AS cmd
+            FROM todelete_galleries
+                JOIN galleries_names USING (db_gallery_id)
+            """)
+        legacy_definition = connection.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'view' AND name = 'todelete_rm_commands'"
+        ).fetchone()
+    assert legacy_definition is not None
+    assert "catalog_operational_activations" not in str(legacy_definition[0])
+
+    assert database.migrate() == 6
+    assert database.check_compatibility().database_version == 6
+    with sqlite3.connect(database_path) as connection:
+        active_definition = connection.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'view' AND name = 'todelete_rm_commands'"
+        ).fetchone()
+    assert active_definition is not None
+    assert "catalog_operational_activations" in str(active_definition[0])
+    assert "catalog_build_discoveries" in str(active_definition[0])
+
+
+def test_compatibility_rejects_legacy_only_deletion_command_view_at_v6(
+    sqlite_config: CoreConfig,
+) -> None:
+    database = H2HDB(sqlite_config)
+    database.migrate()
+    with sqlite3.connect(Path(sqlite_config.database.database)) as connection:
+        connection.execute("DROP VIEW todelete_rm_commands")
+        connection.execute("""
+            CREATE VIEW todelete_rm_commands AS
+            SELECT 'rm -rf -- ' || galleries_names.full_name AS cmd
+            FROM todelete_galleries
+                JOIN galleries_names USING (db_gallery_id)
+            """)
+
+    assert database.check_readiness().database_version == 6
+    with pytest.raises(
+        SchemaCompatibilityError,
+        match="active-source deletion command view",
+    ):
+        database.check_compatibility()
+
+
+def test_catalog_build_forward_migration_refuses_a_corrupt_v1_schema(
+    sqlite_config: CoreConfig,
+) -> None:
+    database = H2HDB(sqlite_config)
+    database.migrate()
+    database_path = Path(sqlite_config.database.database)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("DELETE FROM h2hdb_schema_migrations WHERE version >= 2")
+        for table_name in CATALOG_BUILD_DROP_ORDER:
+            connection.execute(f"DROP TABLE {table_name}")
+        connection.execute("DROP INDEX catalog_artifacts_name")
+
+    with pytest.raises(SchemaCompatibilityError, match="indexes="):
+        database.migrate()
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version FROM h2hdb_schema_migrations ORDER BY version"
+        ).fetchall() == [(1,)]
 
 
 def test_compatibility_rejects_canonical_table_without_foreign_key(
@@ -425,7 +809,7 @@ def test_public_backend_contract_smoke(
     revision = publish_result.revision
     assert database.complete_gallery_ingest(ingest_turn)
 
-    assert version == 1
+    assert version == 6
     assert database.check_compatibility().database_version == version
     assert revision.revision == 1
     assert database.list_publications(limit=10).publications == (publication,)

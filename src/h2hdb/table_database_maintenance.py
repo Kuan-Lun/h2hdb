@@ -111,18 +111,31 @@ class H2HDBDatabaseMaintenance(BaseRepository):
     def record_gallery_changes(
         self, *, changed_galleries: int, removed_galleries: int
     ) -> None:
+        with self.SQLConnector() as connector:
+            self._record_gallery_changes_with_connector(
+                connector,
+                changed_galleries=changed_galleries,
+                removed_galleries=removed_galleries,
+            )
+
+    def _record_gallery_changes_with_connector(
+        self,
+        connector: SQLConnector,
+        *,
+        changed_galleries: int,
+        removed_galleries: int,
+    ) -> None:
         work = changed_galleries + removed_galleries
         if work <= 0:
             return
-        with self.SQLConnector() as connector:
-            connector.execute(
-                f"""
-                UPDATE {MAINTENANCE_STATE_TABLE}
-                SET accumulated_work = accumulated_work + %s
-                WHERE state_id = %s
-                """,
-                (work, MAINTENANCE_STATE_ID),
-            )
+        connector.execute(
+            f"""
+            UPDATE {MAINTENANCE_STATE_TABLE}
+            SET accumulated_work = accumulated_work + %s
+            WHERE state_id = %s
+            """,
+            (work, MAINTENANCE_STATE_ID),
+        )
         self.logger.debug(
             "Recorded database maintenance work: "
             f"changed={changed_galleries} removed={removed_galleries} "

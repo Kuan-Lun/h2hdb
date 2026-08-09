@@ -17,22 +17,82 @@ from types import TracebackType
 from typing import Concatenate
 
 from .canonical_repository import CanonicalSnapshotRepository
+from .catalog_analysis_repository import CatalogAnalysisRepository
+from .catalog_build_repository import CatalogBuildRepository, CatalogBuildStateError
+from .catalog_operational_repository import CatalogOperationalRepository
+from .catalog_projection_build_repository import CatalogBuildProjectionRepository
 from .catalog_repository import CatalogProjectionRepository
 from .config_loader import CoreConfig
 from .domain import (
+    CatalogAnalysisPhase,
+    CatalogAnalysisPhaseCheckpoint,
+    CatalogAnalysisScanCompletion,
     CatalogArtifact,
+    CatalogBuild,
+    CatalogBuildBatchResult,
+    CatalogBuildOperationalState,
+    CatalogBuildProjection,
+    CatalogBuildProjectionBatchResult,
+    CatalogBuildProjectionPruneResult,
+    CatalogBuildProjectionPublishResult,
+    CatalogBuildPruneResult,
+    CatalogBuildPublishResult,
+    CatalogBuildSourcePage,
+    CatalogContentCandidateCursor,
+    CatalogContentCandidatePage,
+    CatalogContentDigest,
+    CatalogContentOwner,
     CatalogContributor,
+    CatalogFileHashAggregateCursor,
+    CatalogFileHashAggregatePage,
+    CatalogFinalAnalysisCursor,
+    CatalogFinalAnalysisPage,
+    CatalogGalleryFileHashCursor,
+    CatalogGalleryFileHashPage,
+    CatalogGidCandidateCursor,
+    CatalogGidCandidatePage,
+    CatalogGidWinner,
     CatalogPage,
+    CatalogPendingGalleryPage,
+    CatalogPreparedArtifact,
+    CatalogProjectionArtifactCursor,
+    CatalogProjectionArtifactPage,
+    CatalogProjectionCheckpoint,
+    CatalogProjectionPublicationReceipt,
+    CatalogProjectionSelectedFileCursor,
+    CatalogProjectionSelectedFilePage,
+    CatalogProjectionSelectedGalleryCursor,
+    CatalogProjectionSelectedGalleryPage,
+    CatalogProjectionSelection,
+    CatalogProjectionSelectionCursor,
+    CatalogProjectionSelectionPage,
     CatalogPublication,
     CatalogPublishResult,
     CatalogRevision,
     CatalogSnapshot,
+    CatalogSourceDiscoveryCompletion,
+    CatalogSourceFileChunk,
+    CatalogSourceFileCursor,
+    CatalogSourceFilePage,
+    CatalogSourceGalleryAnalysis,
+    CatalogSourceGalleryCompletion,
+    CatalogSourceGalleryDiscovery,
+    CatalogSourceGalleryHeader,
+    CatalogSourceManifest,
+    CatalogSourceManifestCursor,
+    CatalogSourceManifestPage,
+    CatalogSourcePage,
+    CatalogSourceRevision,
     CatalogSubject,
     DownloadCandidateState,
+    FileHashCacheEntry,
+    FileHashCacheKey,
+    GallerySourceFile,
     SchemaCompatibility,
 )
 from .migrations import MigrationRunner
 from .repository import RepositoryContext
+from .sql_connector import SQLConnector
 from .table_database_maintenance import (
     DatabaseMaintenanceResult,
     H2HDBDatabaseMaintenance,
@@ -181,6 +241,21 @@ class H2HDB:
         self._removed_galleries = H2HDBRemovedGalleries(self._context)
         self._canonical = CanonicalSnapshotRepository(self._context)
         self._catalog = CatalogProjectionRepository(self._context)
+        self._catalog_builds = CatalogBuildRepository(self._context)
+        self._catalog_operations = CatalogOperationalRepository(
+            self._context,
+            self._catalog_builds,
+            self._download_queue,
+        )
+        self._catalog_build_projections = CatalogBuildProjectionRepository(
+            self._context,
+            self._catalog_builds,
+            self._catalog,
+        )
+        self._catalog_analysis = CatalogAnalysisRepository(
+            self._context,
+            self._catalog_builds,
+        )
         self._migrations = MigrationRunner(self._context)
         self._database_gate_depth: ContextVar[int] = ContextVar(
             f"h2hdb_database_gate_depth_{id(self)}",
@@ -269,6 +344,30 @@ class H2HDB:
                         "Catalog revision publish rejected because the ingest turn "
                         "is no longer live"
                     )
+                lock = (
+                    " FOR UPDATE" if self.config.database.sql_type == "mariadb" else ""
+                )
+                source_pointer = connector.fetch_one("""
+                    SELECT active_build_id
+                    FROM catalog_source_revision
+                    WHERE singleton_id = 1
+                    """ + lock)
+                if not source_pointer:
+                    raise RuntimeError("catalog_source_revision singleton is missing")
+                if source_pointer[0] is not None:
+                    raise CatalogBuildStateError(
+                        "Legacy snapshot publication is disabled after source-build "
+                        "activation"
+                    )
+                # Legacy publication may consume deletion markers.  Advancing
+                # this scalar fence makes any concurrently prepared staged
+                # effects refresh before their pointer cutover.
+                connector.execute("""
+                    UPDATE catalog_source_revision
+                    SET deletion_request_generation =
+                        deletion_request_generation + 1
+                    WHERE singleton_id = 1
+                    """)
                 diff = self._canonical._sync_snapshot_with_connector(
                     connector,
                     snapshot.galleries,
@@ -294,6 +393,1032 @@ class H2HDB:
             changed_galleries=diff.changed,
             removed_galleries=diff.removed,
         )
+
+    @contextmanager
+    def _catalog_build_transaction(
+        self,
+        ingest_turn: GalleryIngestTurn,
+    ) -> Generator[SQLConnector]:
+        """Open one write transaction fenced by the database's live lease."""
+
+        with self._context.SQLConnector() as connector:
+            with connector.transaction():
+                if not self._gallery_ingest._gallery_ingest_turn_is_live_with_connector(
+                    connector,
+                    ingest_turn,
+                ):
+                    raise IngestTurnLostError(
+                        "Catalog build mutation rejected because the ingest turn "
+                        "is no longer live"
+                    )
+                yield connector
+
+    @_database_operation
+    def begin_catalog_build(
+        self,
+        *,
+        scope_key: str,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuild:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_builds._begin_with_connector(
+                connector,
+                ingest_turn,
+                scope_key,
+            )
+
+    @_database_operation
+    def resume_catalog_build(
+        self,
+        *,
+        scope_key: str,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuild | None:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_builds._resume_with_connector(
+                connector,
+                ingest_turn,
+                scope_key,
+            )
+
+    @_database_operation
+    def discover_catalog_galleries(
+        self,
+        build: CatalogBuild,
+        gallery_names: Sequence[str],
+        *,
+        batch_id: str,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildBatchResult:
+        """Compatibility helper for flat roots without source observations."""
+
+        discoveries = tuple(
+            CatalogSourceGalleryDiscovery(
+                gallery_name=name,
+                source_locator=name,
+            )
+            for name in gallery_names
+        )
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_builds._discover_with_connector(
+                connector,
+                build.build_id,
+                discoveries,
+                batch_id=batch_id,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def discover_catalog_sources(
+        self,
+        build: CatalogBuild,
+        discoveries: Sequence[CatalogSourceGalleryDiscovery],
+        *,
+        batch_id: str,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildBatchResult:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_builds._discover_with_connector(
+                connector,
+                build.build_id,
+                discoveries,
+                batch_id=batch_id,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def complete_catalog_discovery(
+        self,
+        build: CatalogBuild,
+        *,
+        ingest_turn: GalleryIngestTurn,
+        completion: CatalogSourceDiscoveryCompletion | None = None,
+    ) -> CatalogBuild:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_builds._complete_discovery_with_connector(
+                connector,
+                build.build_id,
+                ingest_turn,
+                completion,
+            )
+
+    @_database_operation
+    def begin_catalog_gallery(
+        self,
+        build: CatalogBuild,
+        header: CatalogSourceGalleryHeader,
+        *,
+        batch_id: str,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildBatchResult:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_builds._begin_gallery_with_connector(
+                connector,
+                build.build_id,
+                header,
+                batch_id=batch_id,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def stage_catalog_gallery_headers(
+        self,
+        build: CatalogBuild,
+        headers: Sequence[CatalogSourceGalleryHeader],
+        *,
+        batch_id: str,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildBatchResult:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_builds._stage_gallery_headers_with_connector(
+                connector,
+                build.build_id,
+                headers,
+                batch_id=batch_id,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def stage_catalog_file_chunk(
+        self,
+        build: CatalogBuild,
+        gallery_name: str,
+        files: Sequence[GallerySourceFile],
+        *,
+        batch_id: str,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildBatchResult:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_builds._stage_file_chunk_with_connector(
+                connector,
+                build.build_id,
+                gallery_name,
+                files,
+                batch_id=batch_id,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def stage_catalog_file_chunks(
+        self,
+        build: CatalogBuild,
+        chunks: Sequence[CatalogSourceFileChunk],
+        *,
+        batch_id: str,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildBatchResult:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_builds._stage_file_chunks_with_connector(
+                connector,
+                build.build_id,
+                chunks,
+                batch_id=batch_id,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def complete_catalog_gallery(
+        self,
+        build: CatalogBuild,
+        completion: CatalogSourceGalleryCompletion,
+        *,
+        batch_id: str,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildBatchResult:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_builds._complete_gallery_with_connector(
+                connector,
+                build.build_id,
+                completion,
+                batch_id=batch_id,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def complete_catalog_galleries(
+        self,
+        build: CatalogBuild,
+        completions: Sequence[CatalogSourceGalleryCompletion],
+        *,
+        batch_id: str,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildBatchResult:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_builds._complete_galleries_with_connector(
+                connector,
+                build.build_id,
+                completions,
+                batch_id=batch_id,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def complete_catalog_source_staging(
+        self,
+        build: CatalogBuild,
+        *,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuild:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_builds._complete_source_staging_with_connector(
+                connector,
+                build.build_id,
+                ingest_turn,
+            )
+
+    @_database_operation
+    def stage_catalog_analysis(
+        self,
+        build: CatalogBuild,
+        analyses: Sequence[CatalogSourceGalleryAnalysis],
+        *,
+        batch_id: str,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildBatchResult:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_builds._stage_analysis_with_connector(
+                connector,
+                build.build_id,
+                analyses,
+                batch_id=batch_id,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def complete_catalog_analysis(
+        self,
+        build: CatalogBuild,
+        *,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuild:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_builds._complete_analysis_with_connector(
+                connector,
+                build.build_id,
+                ingest_turn,
+            )
+
+    @_database_operation
+    def cache_catalog_file_hashes(
+        self,
+        build: CatalogBuild,
+        entries: Sequence[FileHashCacheEntry],
+        *,
+        batch_id: str,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildBatchResult:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_builds._cache_hashes_with_connector(
+                connector,
+                build.build_id,
+                entries,
+                batch_id=batch_id,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def get_catalog_file_hashes(
+        self,
+        keys: Sequence[FileHashCacheKey],
+    ) -> Mapping[FileHashCacheKey, str]:
+        return self._catalog_builds.get_file_hashes(keys)
+
+    @_database_operation
+    def seal_catalog_build(
+        self,
+        build: CatalogBuild,
+        *,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuild:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_builds._seal_with_connector(
+                connector,
+                build.build_id,
+                ingest_turn,
+            )
+
+    @_database_operation
+    def prepare_catalog_build_operations(
+        self,
+        build: CatalogBuild,
+        *,
+        max_rows: int = 1000,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildOperationalState:
+        """Advance one bounded page of invisible operational cutover work.
+
+        The same SEALED build may be refreshed after a deletion-generation
+        race.  Callers repeat this operation until ``state.complete`` before
+        attempting joint publication.
+        """
+
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_operations.prepare(
+                connector,
+                build.build_id,
+                max_rows=max_rows,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def abandon_catalog_build(
+        self,
+        build: CatalogBuild,
+        *,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuild:
+        """Terminally abandon partial source rows while retaining hash cache."""
+
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_builds._abandon_with_connector(
+                connector,
+                build.build_id,
+                ingest_turn,
+            )
+
+    @_database_operation
+    def publish_catalog_build(
+        self,
+        build: CatalogBuild,
+        *,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildPublishResult:
+        """Activate a sealed source snapshot with a short pointer transaction.
+
+        This does not publish the legacy/user-facing catalog projection. That
+        projection needs its own pre-staged immutable rows before both pointers
+        can be swapped as one complete catalog publication.
+        """
+
+        # Source-only publication is retained for compatibility.  It performs
+        # the same bounded operational preparation as joint publication before
+        # entering its short pointer transaction.
+        if build.phase.value != "PUBLISHED":
+            while True:
+                with self._catalog_build_transaction(ingest_turn) as connector:
+                    state = self._catalog_operations.prepare(
+                        connector,
+                        build.build_id,
+                        max_rows=1000,
+                        turn=ingest_turn,
+                    )
+                if state.complete:
+                    break
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            self._catalog_builds._require_owned_build(
+                connector,
+                build.build_id,
+                ingest_turn,
+            )
+            authority = self._catalog_operations.active_authority(
+                connector,
+                for_update=True,
+            )
+            if authority is not None and authority[0] == build.build_id:
+                return self._catalog_builds._publish_with_connector(
+                    connector,
+                    build.build_id,
+                    ingest_turn,
+                )
+            state = self._catalog_operations.require_ready_for_activation(
+                connector,
+                build.build_id,
+            )
+            result = self._catalog_builds._publish_with_connector(
+                connector,
+                build.build_id,
+                ingest_turn,
+            )
+            self._catalog_operations.activate(
+                connector,
+                state,
+                source_revision=result.source_revision,
+                activated_at=result.build.updated_at,
+            )
+            return result
+
+    @_database_operation
+    def prune_catalog_build(
+        self,
+        build_id: str,
+        *,
+        max_rows: int = 1000,
+    ) -> CatalogBuildPruneResult:
+        return self._catalog_builds.prune_build(build_id, max_rows=max_rows)
+
+    @_database_operation
+    def list_catalog_build_cleanup_candidates(
+        self,
+        *,
+        limit: int = 100,
+    ) -> tuple[CatalogBuild, ...]:
+        return self._catalog_builds.list_cleanup_candidates(limit=limit)
+
+    @_database_operation
+    def get_catalog_build(self, build_id: str) -> CatalogBuild | None:
+        return self._catalog_builds.get_build(build_id)
+
+    @_database_operation
+    def get_working_catalog_build(self) -> CatalogBuild | None:
+        return self._catalog_builds.get_working_build()
+
+    @_database_operation
+    def get_active_catalog_build(self) -> CatalogBuild | None:
+        return self._catalog_builds.get_active_build()
+
+    @_database_operation
+    def get_catalog_source_revision(
+        self,
+        revision: int | None = None,
+    ) -> CatalogSourceRevision:
+        return self._catalog_builds.get_source_revision(revision)
+
+    @_database_operation
+    def list_catalog_sources(
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 50,
+        revision: CatalogSourceRevision | None = None,
+    ) -> CatalogSourcePage:
+        return self._catalog_builds.list_sources(
+            offset=offset,
+            limit=limit,
+            revision=revision,
+        )
+
+    @_database_operation
+    def list_catalog_build_sources(
+        self,
+        build_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> CatalogBuildSourcePage:
+        return self._catalog_builds.list_build_sources(
+            build_id,
+            offset=offset,
+            limit=limit,
+        )
+
+    @_database_operation
+    def list_pending_catalog_galleries(
+        self,
+        build_id: str,
+        *,
+        after_gallery_name: str | None = None,
+        limit: int = 100,
+    ) -> CatalogPendingGalleryPage:
+        return self._catalog_builds.list_pending_galleries(
+            build_id,
+            after_gallery_name=after_gallery_name,
+            limit=limit,
+        )
+
+    @_database_operation
+    def list_catalog_build_files(
+        self,
+        build_id: str,
+        gallery_name: str,
+        *,
+        after: CatalogSourceFileCursor | None = None,
+        limit: int = 100,
+    ) -> CatalogSourceFilePage:
+        return self._catalog_builds.list_build_files(
+            build_id,
+            gallery_name,
+            after=after,
+            limit=limit,
+        )
+
+    @_database_operation
+    def is_catalog_analysis_phase_complete(
+        self,
+        build_id: str,
+        phase: CatalogAnalysisPhase,
+    ) -> bool:
+        return self._catalog_analysis.is_phase_complete(build_id, phase)
+
+    @_database_operation
+    def list_catalog_source_manifest_rows(
+        self,
+        build_id: str,
+        *,
+        after: CatalogSourceManifestCursor | None = None,
+        limit: int = 1000,
+    ) -> CatalogSourceManifestPage:
+        return self._catalog_analysis.list_source_manifest_rows(
+            build_id,
+            after=after,
+            limit=limit,
+        )
+
+    @_database_operation
+    def stage_catalog_source_manifests(
+        self,
+        build: CatalogBuild,
+        manifests: Sequence[CatalogSourceManifest],
+        *,
+        batch_id: str,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildBatchResult:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_analysis.stage_source_manifests(
+                connector,
+                build.build_id,
+                manifests,
+                batch_id=batch_id,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def list_catalog_file_hash_aggregates(
+        self,
+        build_id: str,
+        *,
+        after: CatalogFileHashAggregateCursor | None = None,
+        limit: int = 1000,
+    ) -> CatalogFileHashAggregatePage:
+        return self._catalog_analysis.list_file_hash_aggregates(
+            build_id,
+            after=after,
+            limit=limit,
+        )
+
+    @_database_operation
+    def stage_catalog_excluded_file_hashes(
+        self,
+        build: CatalogBuild,
+        hashes: Sequence[str],
+        *,
+        batch_id: str,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildBatchResult:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_analysis.stage_excluded_file_hashes(
+                connector,
+                build.build_id,
+                hashes,
+                batch_id=batch_id,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def list_catalog_gallery_file_hashes(
+        self,
+        build_id: str,
+        *,
+        after: CatalogGalleryFileHashCursor | None = None,
+        limit: int = 1000,
+    ) -> CatalogGalleryFileHashPage:
+        return self._catalog_analysis.list_gallery_file_hashes(
+            build_id,
+            after=after,
+            limit=limit,
+        )
+
+    @_database_operation
+    def stage_catalog_content_digests(
+        self,
+        build: CatalogBuild,
+        digests: Sequence[CatalogContentDigest],
+        *,
+        batch_id: str,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildBatchResult:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_analysis.stage_content_digests(
+                connector,
+                build.build_id,
+                digests,
+                batch_id=batch_id,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def list_catalog_content_candidates(
+        self,
+        build_id: str,
+        *,
+        after: CatalogContentCandidateCursor | None = None,
+        limit: int = 1000,
+    ) -> CatalogContentCandidatePage:
+        return self._catalog_analysis.list_content_candidates(
+            build_id,
+            after=after,
+            limit=limit,
+        )
+
+    @_database_operation
+    def stage_catalog_content_owners(
+        self,
+        build: CatalogBuild,
+        owners: Sequence[CatalogContentOwner],
+        *,
+        batch_id: str,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildBatchResult:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_analysis.stage_content_owners(
+                connector,
+                build.build_id,
+                owners,
+                batch_id=batch_id,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def list_catalog_gid_candidates(
+        self,
+        build_id: str,
+        *,
+        after: CatalogGidCandidateCursor | None = None,
+        limit: int = 1000,
+    ) -> CatalogGidCandidatePage:
+        return self._catalog_analysis.list_gid_candidates(
+            build_id,
+            after=after,
+            limit=limit,
+        )
+
+    @_database_operation
+    def stage_catalog_gid_winners(
+        self,
+        build: CatalogBuild,
+        winners: Sequence[CatalogGidWinner],
+        *,
+        batch_id: str,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildBatchResult:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_analysis.stage_gid_winners(
+                connector,
+                build.build_id,
+                winners,
+                batch_id=batch_id,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def list_catalog_final_analyses(
+        self,
+        build_id: str,
+        *,
+        after: CatalogFinalAnalysisCursor | None = None,
+        limit: int = 1000,
+    ) -> CatalogFinalAnalysisPage:
+        return self._catalog_analysis.list_final_analyses(
+            build_id,
+            after=after,
+            limit=limit,
+        )
+
+    @_database_operation
+    def stage_catalog_final_analyses(
+        self,
+        build: CatalogBuild,
+        analyses: Sequence[CatalogSourceGalleryAnalysis],
+        *,
+        batch_id: str,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildBatchResult:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_analysis.stage_final_analyses(
+                connector,
+                build.build_id,
+                analyses,
+                batch_id=batch_id,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def complete_catalog_analysis_phase(
+        self,
+        build: CatalogBuild,
+        phase: CatalogAnalysisPhase,
+        *,
+        ingest_turn: GalleryIngestTurn,
+        scan_completion: CatalogAnalysisScanCompletion | None = None,
+    ) -> CatalogAnalysisPhaseCheckpoint:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_analysis.complete_phase(
+                connector,
+                build.build_id,
+                phase,
+                turn=ingest_turn,
+                scan_completion=scan_completion,
+            )
+
+    @_database_operation
+    def begin_catalog_build_projection(
+        self,
+        build: CatalogBuild,
+        *,
+        artifacts_required: bool,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildProjection:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_build_projections._begin_with_connector(
+                connector,
+                build.build_id,
+                artifacts_required=artifacts_required,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def get_catalog_build_projection(
+        self,
+        build_id: str,
+    ) -> CatalogBuildProjection | None:
+        return self._catalog_build_projections.get_projection(build_id)
+
+    @_database_operation
+    def get_catalog_projection_checkpoint(
+        self,
+        build_id: str,
+    ) -> CatalogProjectionCheckpoint:
+        return self._catalog_build_projections.get_checkpoint(build_id)
+
+    @_database_operation
+    def list_catalog_projection_selected_galleries(
+        self,
+        build_id: str,
+        *,
+        after: CatalogProjectionSelectedGalleryCursor | None = None,
+        limit: int = 100,
+    ) -> CatalogProjectionSelectedGalleryPage:
+        return self._catalog_build_projections.page_selected_galleries(
+            build_id,
+            after=after,
+            limit=limit,
+        )
+
+    @_database_operation
+    def list_catalog_projection_selected_files(
+        self,
+        build_id: str,
+        gallery_key: str,
+        *,
+        after: CatalogProjectionSelectedFileCursor | None = None,
+        limit: int = 100,
+    ) -> CatalogProjectionSelectedFilePage:
+        return self._catalog_build_projections.page_selected_files(
+            build_id,
+            gallery_key,
+            after=after,
+            limit=limit,
+        )
+
+    @_database_operation
+    def record_catalog_prepared_artifact(
+        self,
+        build: CatalogBuild,
+        prepared: CatalogPreparedArtifact,
+        *,
+        batch_id: str,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildProjectionBatchResult:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_build_projections.record_prepared_artifact(
+                connector,
+                build.build_id,
+                prepared,
+                batch_id=batch_id,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def record_catalog_prepared_artifacts(
+        self,
+        build: CatalogBuild,
+        prepared: Sequence[CatalogPreparedArtifact],
+        *,
+        batch_id: str,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildProjectionBatchResult:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_build_projections.record_prepared_artifacts(
+                connector,
+                build.build_id,
+                prepared,
+                batch_id=batch_id,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def advance_catalog_artifact_checkpoint(
+        self,
+        build: CatalogBuild,
+        *,
+        expected_after: CatalogProjectionSelectedGalleryCursor | None,
+        after: CatalogProjectionSelectedGalleryCursor,
+        batch_id: str,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildProjectionBatchResult:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_build_projections.advance_artifact_checkpoint(
+                connector,
+                build.build_id,
+                expected_after=expected_after,
+                after=after,
+                batch_id=batch_id,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def complete_catalog_artifact_preparation(
+        self,
+        build: CatalogBuild,
+        *,
+        expected_after: CatalogProjectionSelectedGalleryCursor | None,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildProjection:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_build_projections.complete_artifact_preparation(
+                connector,
+                build.build_id,
+                expected_after=expected_after,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def list_catalog_projection_selections(
+        self,
+        build_id: str,
+        *,
+        after: CatalogProjectionSelectionCursor | None = None,
+        limit: int = 100,
+    ) -> CatalogProjectionSelectionPage:
+        return self._catalog_build_projections.page_projection_selections(
+            build_id,
+            after=after,
+            limit=limit,
+        )
+
+    @_database_operation
+    def stage_catalog_projection_selections(
+        self,
+        build: CatalogBuild,
+        selections: Sequence[CatalogProjectionSelection],
+        *,
+        expected_after: CatalogProjectionSelectionCursor | None,
+        after: CatalogProjectionSelectionCursor,
+        batch_id: str,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildProjectionBatchResult:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_build_projections.stage_projection_selections(
+                connector,
+                build.build_id,
+                selections,
+                expected_after=expected_after,
+                after=after,
+                batch_id=batch_id,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def complete_catalog_projection_staging(
+        self,
+        build: CatalogBuild,
+        *,
+        expected_after: CatalogProjectionSelectionCursor | None,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildProjection:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_build_projections.complete_projection_staging(
+                connector,
+                build.build_id,
+                expected_after=expected_after,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def seal_catalog_build_projection(
+        self,
+        build: CatalogBuild,
+        *,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildProjection:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_build_projections.seal_projection(
+                connector,
+                build.build_id,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def publish_catalog_build_with_projection(
+        self,
+        build: CatalogBuild,
+        *,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildProjectionPublishResult:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            existing_receipt = connector.fetch_one(
+                """
+                SELECT 1
+                FROM catalog_projection_publication_receipts
+                WHERE build_id = %s
+                """,
+                (build.build_id,),
+            )
+            if existing_receipt:
+                return self._catalog_build_projections.publish_with_projection(
+                    connector,
+                    build.build_id,
+                    turn=ingest_turn,
+                )
+            self._catalog_builds._require_owned_build(
+                connector,
+                build.build_id,
+                ingest_turn,
+            )
+            self._catalog_build_projections._require_projection(
+                connector,
+                build.build_id,
+                for_update=True,
+            )
+            state = self._catalog_operations.require_ready_for_activation(
+                connector,
+                build.build_id,
+            )
+            result = self._catalog_build_projections.publish_with_projection(
+                connector,
+                build.build_id,
+                turn=ingest_turn,
+            )
+            self._catalog_operations.activate(
+                connector,
+                state,
+                source_revision=result.receipt.source_revision,
+                activated_at=result.receipt.committed_at,
+            )
+            self._database_maintenance._record_gallery_changes_with_connector(
+                connector,
+                changed_galleries=(
+                    result.receipt.new_galleries + result.receipt.changed_galleries
+                ),
+                removed_galleries=result.receipt.removed_galleries,
+            )
+            return result
+
+    @_database_operation
+    def get_catalog_projection_publication_receipt(
+        self,
+        build_id: str | None = None,
+        *,
+        pending_only: bool = False,
+    ) -> CatalogProjectionPublicationReceipt | None:
+        return self._catalog_build_projections.get_publication_receipt(
+            build_id,
+            pending_only=pending_only,
+        )
+
+    @_database_operation
+    def list_published_catalog_projection_artifacts(
+        self,
+        build_id: str,
+        *,
+        after: CatalogProjectionArtifactCursor | None = None,
+        limit: int = 100,
+    ) -> CatalogProjectionArtifactPage:
+        return self._catalog_build_projections.page_published_artifacts(
+            build_id,
+            after=after,
+            limit=limit,
+        )
+
+    @_database_operation
+    def acknowledge_catalog_projection_finalized(
+        self,
+        build: CatalogBuild,
+        *,
+        catalog_revision: int,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogProjectionPublicationReceipt:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_build_projections.acknowledge_finalized(
+                connector,
+                build.build_id,
+                catalog_revision=catalog_revision,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def prune_catalog_build_projection(
+        self,
+        build: CatalogBuild,
+        *,
+        max_rows: int = 1000,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogBuildProjectionPruneResult:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_build_projections.prune_projection(
+                connector,
+                build.build_id,
+                max_rows=max_rows,
+            )
 
     @_database_operation
     def get_catalog_revision(self, revision: int | None = None) -> CatalogRevision:
@@ -349,7 +1474,13 @@ class H2HDB:
 
     @_database_operation
     def request_download(self, gid: int, url: str = "") -> DownloadRequest:
-        return self._download_queue.request_download(gid, url)
+        with self._context.SQLConnector() as connector:
+            with connector.transaction():
+                return self._catalog_operations.request_download_with_connector(
+                    connector,
+                    gid,
+                    url,
+                )
 
     @_database_operation
     def ensure_download_request(
@@ -357,15 +1488,30 @@ class H2HDB:
         gid: int,
         url: str = "",
     ) -> EnsureDownloadRequestResult:
-        return self._download_queue.ensure_download_request(gid, url)
+        with self._context.SQLConnector() as connector:
+            with connector.transaction():
+                return self._catalog_operations.ensure_download_request_with_connector(
+                    connector,
+                    gid,
+                    url,
+                )
 
     @_database_operation
     def get_download_request(self, gid: int) -> DownloadRequest | None:
-        return self._download_queue.get_download_request(gid)
+        with self._context.SQLConnector() as connector:
+            with connector.read_transaction():
+                return self._catalog_operations.get_download_request_with_connector(
+                    connector,
+                    gid,
+                )
 
     @_database_operation
     def get_download_requests(self) -> list[DownloadRequest]:
-        return self._download_queue.get_download_requests()
+        with self._context.SQLConnector() as connector:
+            with connector.read_transaction():
+                return self._catalog_operations.get_download_requests_with_connector(
+                    connector
+                )
 
     @_database_operation
     def get_candidate_states(
@@ -377,25 +1523,22 @@ class H2HDB:
             raise ValueError("Candidate GIDs must be positive")
         if not ordered_gids:
             return {}
-        placeholders = ", ".join("%s" for _ in ordered_gids)
         with self._context.SQLConnector() as connector:
             with connector.read_transaction():
-                catalog_rows = connector.fetch_all(
-                    f"SELECT gid FROM galleries_gids WHERE gid IN ({placeholders})",
+                cataloged = self._catalog_operations.cataloged_gids(
+                    connector,
                     ordered_gids,
                 )
-                redownload_rows = connector.fetch_all(
-                    f"SELECT gid FROM pending_download_gids "
-                    f"WHERE gid IN ({placeholders})",
+                redownload_required = set(
+                    self._catalog_operations.pending_redownload_gids(
+                        connector,
+                        ordered_gids,
+                    )
+                )
+                requested = self._catalog_operations.requested_gids(
+                    connector,
                     ordered_gids,
                 )
-                request_rows = connector.fetch_all(
-                    f"SELECT gid FROM todownload_gids WHERE gid IN ({placeholders})",
-                    ordered_gids,
-                )
-        cataloged = {int(row[0]) for row in catalog_rows}
-        redownload_required = {int(row[0]) for row in redownload_rows}
-        requested = {int(row[0]) for row in request_rows}
         return {
             gid: DownloadCandidateState(
                 gid=gid,
@@ -408,11 +1551,18 @@ class H2HDB:
 
     @_database_operation
     def get_pending_redownload_gids(self) -> list[int]:
-        return self._download_queue.get_pending_download_gids()
+        with self._context.SQLConnector() as connector:
+            with connector.read_transaction():
+                return self._catalog_operations.pending_redownload_gids(connector)
 
     @_database_operation
     def complete_download_request(self, request: DownloadRequest) -> None:
-        self._download_queue.complete_download_request(request)
+        with self._context.SQLConnector() as connector:
+            with connector.transaction():
+                self._catalog_operations.complete_download_request_with_connector(
+                    connector,
+                    request,
+                )
 
     @staticmethod
     def _validate_missing_request(request: DownloadRequest, gid: int) -> None:
@@ -430,7 +1580,7 @@ class H2HDB:
         self._validate_missing_request(request, gid)
         with self._context.SQLConnector() as connector:
             with connector.transaction():
-                if self._download_queue._complete_download_request_with_connector(
+                if self._catalog_operations.complete_download_request_with_connector(
                     connector,
                     request,
                 ):
@@ -465,9 +1615,13 @@ class H2HDB:
             self._validate_missing_request(request, gid)
         with self._context.SQLConnector() as connector:
             with connector.transaction():
+                self._catalog_operations.active_authority(
+                    connector,
+                    for_update=True,
+                )
                 if (
                     request is not None
-                    and not self._download_queue._complete_download_request_with_connector(
+                    and not self._catalog_operations.complete_download_request_with_connector(
                         connector,
                         request,
                     )
@@ -477,6 +1631,8 @@ class H2HDB:
                     connector,
                     gid,
                 )
+                if self._catalog_operations.record_accepted_runtime(connector, gid):
+                    return
                 match self.config.database.sql_type:
                     case "mariadb":
                         connector.execute(
@@ -505,11 +1661,18 @@ class H2HDB:
 
     @_database_operation
     def request_gallery_deletion(self, gid: int) -> None:
-        self._to_delete_queue.request_gallery_deletion(gid)
+        with self._context.SQLConnector() as connector:
+            with connector.transaction():
+                self._catalog_operations.request_gallery_deletion_with_connector(
+                    connector,
+                    gid,
+                )
 
     @_database_operation
     def get_gallery_deletion_requests(self) -> list[int]:
-        return self._to_delete_queue.get_gallery_deletion_requests()
+        with self._context.SQLConnector() as connector:
+            with connector.read_transaction():
+                return self._catalog_operations.effective_deletion_gids(connector)
 
     @_database_operation
     def claim_download_turn(self, *, lease_seconds: int) -> DownloadTurn | None:
@@ -554,7 +1717,7 @@ class H2HDB:
                     turn,
                 ):
                     return False
-                self._download_queue._complete_download_request_with_connector(
+                self._catalog_operations.complete_download_request_with_connector(
                     connector,
                     request,
                 )
@@ -575,7 +1738,7 @@ class H2HDB:
                     turn,
                 ):
                     return False
-                if self._download_queue._complete_download_request_with_connector(
+                if self._catalog_operations.complete_download_request_with_connector(
                     connector,
                     request,
                 ):
@@ -600,7 +1763,7 @@ class H2HDB:
                 if handoff is _DownloadHandoffResult.rejected:
                     return False
                 if handoff is _DownloadHandoffResult.accepted:
-                    self._download_queue._complete_download_request_with_connector(
+                    self._catalog_operations.complete_download_request_with_connector(
                         connector,
                         request,
                     )
@@ -623,7 +1786,7 @@ class H2HDB:
                 if handoff is _DownloadHandoffResult.rejected:
                     return False
                 if handoff is _DownloadHandoffResult.accepted:
-                    if self._download_queue._complete_download_request_with_connector(
+                    if self._catalog_operations.complete_download_request_with_connector(
                         connector,
                         request,
                     ):

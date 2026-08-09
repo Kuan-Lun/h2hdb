@@ -1,5 +1,6 @@
 __all__ = ["CatalogRevisionNotFoundError"]
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -49,6 +50,100 @@ def _projection_datetime(value: datetime) -> str:
     return aware.isoformat()
 
 
+def _publication_identity_payload(
+    publication: CatalogPublication,
+) -> tuple[object, ...]:
+    """Canonical, backend-neutral identity of one immutable publication rowset."""
+
+    return (
+        publication.publication_id,
+        publication.gid,
+        publication.title,
+        publication.source_title,
+        publication.source_gallery_name,
+        publication.content_sha256,
+        publication.sort_title,
+        publication.summary,
+        publication.language,
+        _projection_datetime(publication.published_at),
+        _projection_datetime(publication.modified_at),
+        tuple(
+            (item.name, item.role, item.sort_as) for item in publication.contributors
+        ),
+        tuple((item.name, item.scheme, item.code) for item in publication.subjects),
+        tuple(
+            sorted(
+                (
+                    item.artifact_id,
+                    item.name,
+                    str(item.location),
+                    item.media_type,
+                    item.size_bytes,
+                    item.sha256,
+                    _projection_datetime(item.modified_at),
+                )
+                for item in publication.artifacts
+            )
+        ),
+        publication.redownload_required,
+    )
+
+
+def _publication_item_sha256(publication: CatalogPublication) -> str:
+    encoded = json.dumps(
+        _publication_identity_payload(publication),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return sha256(encoded).hexdigest()
+
+
+def _projection_accumulator_add(
+    xor_hex: str,
+    sum_hex: str,
+    publication: CatalogPublication,
+) -> tuple[str, str]:
+    item_sha256 = _publication_item_sha256(publication)
+    contribution = int.from_bytes(
+        sha256(
+            bytes.fromhex(_stable_key(publication.source_gallery_name))
+            + bytes.fromhex(item_sha256)
+        ).digest(),
+        "big",
+    )
+    xor_value = int(xor_hex, 16) ^ contribution
+    sum_value = (int(sum_hex, 16) + contribution) % (1 << 256)
+    return f"{xor_value:064x}", f"{sum_value:064x}"
+
+
+def _projection_sha256_from_accumulator(
+    publication_count: int,
+    xor_hex: str,
+    sum_hex: str,
+) -> str:
+    digest = sha256()
+    digest.update(b"h2hdb-catalog-projection-v2\0")
+    digest.update(publication_count.to_bytes(8, "big"))
+    digest.update(bytes.fromhex(xor_hex))
+    digest.update(bytes.fromhex(sum_hex))
+    return digest.hexdigest()
+
+
+def _projection_sha256(publications: Sequence[CatalogPublication]) -> str:
+    """Canonical order/batch-independent digest of immutable projection rows."""
+
+    xor_hex = sum_hex = "0" * 64
+    count = 0
+    for publication in publications:
+        xor_hex, sum_hex = _projection_accumulator_add(
+            xor_hex,
+            sum_hex,
+            publication,
+        )
+        count += 1
+    return _projection_sha256_from_accumulator(count, xor_hex, sum_hex)
+
+
 class CatalogProjectionRepository(BaseRepository):
     def __init__(self, context: RepositoryContext) -> None:
         super().__init__(context)
@@ -70,28 +165,132 @@ class CatalogProjectionRepository(BaseRepository):
         if not row:
             raise RuntimeError("catalog_revision singleton is missing")
         current_revision = self._get_revision(connector, int(row[0]))
-        if self._revision_matches_snapshot(
+        snapshot_sha256 = _projection_sha256(snapshot)
+        current_sha256 = self._revision_projection_sha256_with_connector(
             connector,
             current_revision.revision,
-            snapshot,
-        ):
+        )
+        if current_sha256 == snapshot_sha256:
             return _PreparedRevision(current_revision, created=False)
-        revision = current_revision.revision + 1
+        revision = self._allocate_revision_with_connector(connector)
         self._insert_publications(connector, revision, snapshot)
         connector.execute(
             """
             INSERT INTO catalog_revision_history (
                 revision,
                 published_at,
-                publication_count
-            ) VALUES (%s, %s, %s)
+                publication_count,
+                projection_sha256
+            ) VALUES (%s, %s, %s, %s)
             """,
-            (revision, published_at.isoformat(), len(snapshot)),
+            (
+                revision,
+                published_at.isoformat(),
+                len(snapshot),
+                snapshot_sha256,
+            ),
         )
         return _PreparedRevision(
             CatalogRevision(revision, published_at, len(snapshot)),
             created=True,
         )
+
+    def _allocate_revision_with_connector(self, connector: SQLConnector) -> int:
+        lock = " FOR UPDATE" if self._context.sql_type == "mariadb" else ""
+        row = connector.fetch_one("""
+            SELECT next_revision
+            FROM catalog_revision_allocator
+            WHERE singleton_id = 1
+            """ + lock)
+        if not row:
+            raise RuntimeError("catalog_revision_allocator singleton is missing")
+        revision = int(row[0])
+        while connector.fetch_one(
+            """
+            SELECT 1 FROM catalog_revision_history WHERE revision = %s
+            UNION ALL
+            SELECT 1 FROM catalog_build_projections WHERE reserved_revision = %s
+            LIMIT 1
+            """,
+            (revision, revision),
+        ):
+            revision += 1
+        connector.execute(
+            """
+            UPDATE catalog_revision_allocator
+            SET next_revision = %s
+            WHERE singleton_id = 1
+            """,
+            (revision + 1,),
+        )
+        return revision
+
+    def _revision_projection_sha256_with_connector(
+        self,
+        connector: SQLConnector,
+        revision: int,
+    ) -> str:
+        row = connector.fetch_one(
+            """
+            SELECT projection_sha256
+            FROM catalog_revision_history
+            WHERE revision = %s
+            """,
+            (revision,),
+        )
+        if not row:
+            raise CatalogRevisionNotFoundError(revision)
+        if row[0] is not None:
+            return str(row[0])
+        xor_hex = sum_hex = "0" * 64
+        count = 0
+        after: str | None = None
+        while True:
+            after_clause = ""
+            parameters: tuple[object, ...] = (revision,)
+            if after is not None:
+                after_clause = "AND publication_key > %s"
+                parameters += (after,)
+            key_rows = connector.fetch_all(
+                f"""
+                SELECT publication_key
+                FROM catalog_publications
+                WHERE revision = %s {after_clause}
+                ORDER BY publication_key
+                LIMIT {LOOKUP_CHUNK_SIZE}
+                """,
+                parameters,
+            )
+            if not key_rows:
+                break
+            chunk = tuple(str(item[0]) for item in key_rows)
+            publication_rows = self._publication_rows_by_keys(
+                connector,
+                revision,
+                chunk,
+            )
+            for publication in self._hydrate_publications(
+                connector,
+                revision,
+                publication_rows,
+            ):
+                xor_hex, sum_hex = _projection_accumulator_add(
+                    xor_hex,
+                    sum_hex,
+                    publication,
+                )
+                count += 1
+            after = chunk[-1]
+        value = _projection_sha256_from_accumulator(count, xor_hex, sum_hex)
+        connector.execute(
+            """
+            UPDATE catalog_revision_history
+            SET projection_sha256 = %s
+            WHERE revision = %s AND projection_sha256 IS NULL
+            """,
+            (value, revision),
+        )
+        return value
 
     @staticmethod
     def _advance_revision_pointer_with_connector(
@@ -693,46 +892,12 @@ class CatalogProjectionRepository(BaseRepository):
     def _snapshot_identity(
         publications: Sequence[CatalogPublication],
     ) -> tuple[object, ...]:
-        def publication_identity(publication: CatalogPublication) -> tuple[object, ...]:
-            return (
-                publication.publication_id,
-                publication.gid,
-                publication.title,
-                publication.source_title,
-                publication.source_gallery_name,
-                publication.content_sha256,
-                publication.sort_title,
-                publication.summary,
-                publication.language,
-                _projection_datetime(publication.published_at),
-                _projection_datetime(publication.modified_at),
-                tuple(
-                    (item.name, item.role, item.sort_as)
-                    for item in publication.contributors
-                ),
-                tuple(
-                    (item.name, item.scheme, item.code) for item in publication.subjects
-                ),
-                tuple(
-                    sorted(
-                        (
-                            item.artifact_id,
-                            item.name,
-                            str(item.location),
-                            item.media_type,
-                            item.size_bytes,
-                            item.sha256,
-                            _projection_datetime(item.modified_at),
-                        )
-                        for item in publication.artifacts
-                    )
-                ),
-                publication.redownload_required,
-            )
-
         return tuple(
             sorted(
-                (publication_identity(publication) for publication in publications),
+                (
+                    _publication_identity_payload(publication)
+                    for publication in publications
+                ),
                 key=lambda item: str(item[0]),
             )
         )
