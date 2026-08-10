@@ -12,6 +12,7 @@ MARIADB_IMAGE = "mariadb:11"
 MARIADB_ROOT_PASSWORD = "h2hdb-test-root"
 MARIADB_USER = "h2hdb"
 MARIADB_PASSWORD = "h2hdb-test-password"
+MARIADB_MAX_ALLOWED_PACKET = 1024 * 1024
 
 
 @pytest.fixture(scope="session")
@@ -32,6 +33,7 @@ def mariadb_container() -> Iterator[Any]:
             password=MARIADB_PASSWORD,
             root_password=MARIADB_ROOT_PASSWORD,
             dbname="h2hdb_template",
+            command=f"--max-allowed-packet={MARIADB_MAX_ALLOWED_PACKET}",
         )
         started = container.start()
     except Exception as error:

@@ -1,3 +1,7 @@
+from datetime import date, datetime, time, timedelta
+from decimal import Decimal
+from enum import Enum
+from time import struct_time
 from types import TracebackType
 from typing import Any, cast
 
@@ -8,6 +12,7 @@ from mysql.connector.pooling import PooledMySQLConnection
 from pydantic import Field
 
 from .sql_connector import (
+    DatabaseConfigurationError,
     DatabaseDuplicateKeyError,
     DatabaseReadOnlyError,
     SQLConnector,
@@ -15,6 +20,10 @@ from .sql_connector import (
 )
 
 AUTO_COMMIT_KEYS = ["INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER"]
+MAX_ALLOWED_PACKET_QUERY = "SELECT @@SESSION.max_allowed_packet"
+INSERT_PACKET_BUDGET_PERCENT = 80
+PACKET_PROTOCOL_RESERVE_BYTES = 1024
+PARAMETER_LITERAL_RESERVE_BYTES = 32
 
 
 class MariaDBDuplicateKeyError(DatabaseDuplicateKeyError):
@@ -84,8 +93,12 @@ class MariaDBConnector(SQLConnector):
             database=database,
             read_only=read_only,
         )
+        self._max_allowed_packet: int | None = None
 
     def connect(self) -> None:
+        # max_allowed_packet is a session value inherited by each physical
+        # connection, so a reconnect must never reuse the previous value.
+        self._max_allowed_packet = None
         connection_params = self.params.model_dump(exclude={"read_only"})
         self.connection = SQLConnect(**connection_params)
         self._in_transaction = False
@@ -94,7 +107,10 @@ class MariaDBConnector(SQLConnector):
                 cursor.execute("SET SESSION TRANSACTION READ ONLY")
 
     def close(self) -> None:
-        self.connection.close()
+        try:
+            self.connection.close()
+        finally:
+            self._max_allowed_packet = None
 
     def check_table_exists(self, table_name: str) -> bool:
         query = f"SHOW TABLES LIKE '{table_name}'"
@@ -146,14 +162,28 @@ class MariaDBConnector(SQLConnector):
 
     def execute_many(self, query: str, data: list[tuple[Any, ...]]) -> None:
         self._ensure_writable(query)
-        with MariaDBCursor(self.connection) as cursor:
-            try:
-                cursor.executemany(query, data)
-            except IntegrityError as e:
-                raise MariaDBDuplicateKeyError(str(e))
-        if not self._in_transaction and any(
+        is_insert = self._statement_keyword(query) == "INSERT"
+        batches = (
+            self._packet_safe_insert_batches(query, data)
+            if is_insert and data
+            else [data]
+        )
+        owns_implicit_write = not self._in_transaction and any(
             key in query.upper() for key in AUTO_COMMIT_KEYS
-        ):
+        )
+        try:
+            with MariaDBCursor(self.connection) as cursor:
+                for batch in batches:
+                    cursor.executemany(query, batch)
+        except IntegrityError as error:
+            if owns_implicit_write:
+                self._rollback_after_failed_implicit_write()
+            raise MariaDBDuplicateKeyError(str(error)) from error
+        except Exception:
+            if owns_implicit_write:
+                self._rollback_after_failed_implicit_write()
+            raise
+        if owns_implicit_write:
             self.commit()
 
     def fetch_one(self, query: str, data: tuple[Any, ...] = ()) -> tuple[Any, ...]:
@@ -176,8 +206,124 @@ class MariaDBConnector(SQLConnector):
     def _ensure_writable(self, query: str) -> None:
         if not self.params.read_only:
             return
-        keyword = query.lstrip().split(maxsplit=1)[0].upper()
+        keyword = self._statement_keyword(query)
         if keyword not in {"SELECT", "SHOW", "EXPLAIN", "WITH"}:
             raise DatabaseReadOnlyError(
                 f"Statement {keyword or '<empty>'} is not allowed in read-only mode"
             )
+
+    @staticmethod
+    def _statement_keyword(query: str) -> str:
+        remaining = query.lstrip()
+        while remaining.startswith("/*"):
+            comment_end = remaining.find("*/", 2)
+            if comment_end < 0:
+                return ""
+            remaining = remaining[comment_end + 2 :].lstrip()
+        words = remaining.split(maxsplit=1)
+        return words[0].upper() if words else ""
+
+    def _packet_safe_insert_batches(
+        self, query: str, data: list[tuple[Any, ...]]
+    ) -> list[list[tuple[Any, ...]]]:
+        packet_limit = self._get_session_max_allowed_packet()
+        packet_budget = packet_limit * INSERT_PACKET_BUDGET_PERCENT // 100
+        encoding = self.connection.python_charset
+        query_size = len(query.encode(encoding))
+        batches: list[list[tuple[Any, ...]]] = []
+        batch: list[tuple[Any, ...]] = []
+        batch_size = PACKET_PROTOCOL_RESERVE_BYTES
+
+        for row_number, row in enumerate(data, start=1):
+            row_size = (
+                query_size
+                + 1
+                + sum(
+                    self._parameter_literal_upper_bound(value, encoding)
+                    for value in row
+                )
+            )
+            singleton_size = PACKET_PROTOCOL_RESERVE_BYTES + row_size
+            if singleton_size > packet_limit:
+                raise DatabaseConfigurationError(
+                    "MariaDB INSERT row "
+                    f"{row_number} has a conservative packet-size estimate of "
+                    f"{singleton_size} bytes, exceeding this connection's "
+                    f"max_allowed_packet value of {packet_limit} bytes"
+                )
+
+            if batch and batch_size + row_size > packet_budget:
+                batches.append(batch)
+                batch = []
+                batch_size = PACKET_PROTOCOL_RESERVE_BYTES
+
+            # A single row may safely exceed the soft 80% target while still
+            # fitting below the server's hard limit. Keep it as its own batch.
+            if not batch and singleton_size > packet_budget:
+                batches.append([row])
+                continue
+
+            batch.append(row)
+            batch_size += row_size
+
+        if batch:
+            batches.append(batch)
+        return batches
+
+    def _get_session_max_allowed_packet(self) -> int:
+        if self._max_allowed_packet is not None:
+            return self._max_allowed_packet
+
+        result = self.fetch_one(MAX_ALLOWED_PACKET_QUERY)
+        if len(result) != 1:
+            raise DatabaseConfigurationError(
+                "MariaDB did not return a valid @@SESSION.max_allowed_packet value"
+            )
+        raw_value = result[0]
+        try:
+            packet_limit = int(raw_value)
+        except (TypeError, ValueError) as error:
+            raise DatabaseConfigurationError(
+                "MariaDB did not return a valid @@SESSION.max_allowed_packet value"
+            ) from error
+        if isinstance(raw_value, bool) or packet_limit <= 0:
+            raise DatabaseConfigurationError(
+                "MariaDB did not return a positive @@SESSION.max_allowed_packet value"
+            )
+        self._max_allowed_packet = packet_limit
+        return packet_limit
+
+    @classmethod
+    def _parameter_literal_upper_bound(cls, value: Any, encoding: str) -> int:
+        if isinstance(value, Enum):
+            return cls._parameter_literal_upper_bound(value.value, encoding)
+        if value is None:
+            payload_size = len(b"NULL")
+        elif isinstance(value, bool):
+            payload_size = 1
+        elif isinstance(value, str):
+            payload_size = len(value.encode(encoding))
+        elif isinstance(value, (bytes, bytearray)):
+            payload_size = len(value)
+        elif isinstance(
+            value,
+            (int, float, Decimal, datetime, date, time, timedelta, struct_time),
+        ):
+            payload_size = len(str(value).encode(encoding))
+        else:
+            raise DatabaseConfigurationError(
+                "Cannot safely estimate a MariaDB batch parameter of type "
+                f"{type(value).__name__}"
+            )
+
+        # Connector/Python can at most double the encoded payload while SQL
+        # escaping it. The fixed reserve covers quotes and type prefixes.
+        return PARAMETER_LITERAL_RESERVE_BYTES + 2 * payload_size
+
+    def _rollback_after_failed_implicit_write(self) -> None:
+        try:
+            self.rollback()
+        except Exception:
+            # Preserve the write failure if a broken connection cannot roll
+            # back; callers must still see the actionable original error.
+            pass
