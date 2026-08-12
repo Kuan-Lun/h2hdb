@@ -34,6 +34,34 @@ Use `./scripts/rebuild-env.sh` after toolchain changes. Use
 `./scripts/rebuild-multirepo-integration.sh` for the isolated cross-repo
 editable-install smoke test.
 
+## Formal verification
+
+The executable vNext specifications live in `verification/`; they do not
+describe the currently deployed schema. Run the required checks with the
+repository-pinned Lean toolchain and checksum-pinned TLC release:
+
+```bash
+uv run --no-sync python scripts/verify-formal.py schema
+uv run --no-sync python scripts/verify-formal.py lean
+uv run --no-sync python scripts/fetch-formal-tools.py
+uv run --no-sync python scripts/verify-formal.py tla \
+  --tla-jar .formal-tools/tla2tools-1.7.4.jar
+```
+
+Use `--deep` only for the larger manual/nightly TLA+ profile; the default
+`Small` profile is the finite required check. TLC success exhausts reachable
+states only for the selected constants. Lean theorems are unbounded over their
+stated mathematical inputs, but depend on their explicit assumptions and do
+not establish that Python, SQL, transactions, or filesystem behavior refines
+the model.
+
+The BCNF proof is closed-world over exactly the functional dependencies in
+`verification/schema/catalog.toml`. Any design change must first add every
+semantic FD to that manifest, regenerate/check the Lean proof, and then update
+the SQL design. An omitted semantic FD invalidates the real-world BCNF claim
+even when the executable check passes. Keep all intended materializations and
+their refresh rationale explicit in the manifest.
+
 ## Architecture rules
 
 - `H2HDB` in `service.py` is the concrete public facade. Protocols live in

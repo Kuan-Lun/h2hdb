@@ -1,0 +1,57 @@
+name: Formal verification
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lean-and-schema:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - uses: leanprover/lean-action@v1
+        with:
+          auto-config: false
+
+      - name: Install exact schema-test runner
+        run: python -m pip install pytest==9.1.1
+
+      - name: Exercise schema-contract negative controls
+        run: python -m pytest -q tests/test_verification_schema.py
+
+      - name: Check generated schema proof and executable contract
+        run: python scripts/verify-formal.py schema
+
+      - name: Check Lean proofs without warnings
+        run: python scripts/verify-formal.py lean
+
+  catalog-lifecycle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Fetch checksum-pinned TLC
+        run: python scripts/fetch-formal-tools.py
+
+      - name: Model-check finite catalog lifecycle
+        run: >-
+          python scripts/verify-formal.py tla
+          --tla-jar .formal-tools/tla2tools-1.7.4.jar

@@ -19,6 +19,7 @@ dist/
 
 uv.lock
 h2hdb.log
+/.formal-tools/
 
 # macOS
 .DS_Store

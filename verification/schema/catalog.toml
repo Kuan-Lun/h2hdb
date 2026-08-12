@@ -1,0 +1,1064 @@
+contract_version = 1
+name = "h2hdb-vnext-catalog"
+description = "Logical vNext catalog contract; physical indexes and SQL types are specified separately."
+
+# FD-sensitive names are classified explicitly.  In particular, an audit or
+# observational digest is not assumed injective and therefore implies no FD.
+# Only canonical_identity_digest and payload_digest carry identity semantics.
+[[attribute_semantic]]
+name = "analysis_id"
+classification = "surrogate_identifier"
+rationale = "Opaque identifier for one analysis run; uniqueness is declared only by relation keys."
+
+[[attribute_semantic]]
+name = "artist_count"
+classification = "aggregate_count"
+rationale = "Derived cardinality scoped by the owning relation key; it is not an identifier."
+
+[[attribute_semantic]]
+name = "artist_tag_id"
+classification = "domain_identifier"
+rationale = "Role-qualified reference to tag_id; its FDs arise only from declared foreign and candidate keys."
+
+[[attribute_semantic]]
+name = "artifact_sha256"
+classification = "payload_digest"
+rationale = "Domain-separated digest of immutable artifact bytes; artifact_blob is the sole digest-to-size authority."
+
+[[attribute_semantic]]
+name = "batch_key"
+classification = "idempotency_key"
+rationale = "Stage-scoped retry key and not a globally unique identifier."
+
+[[attribute_semantic]]
+name = "build_id"
+classification = "surrogate_identifier"
+rationale = "Opaque source-build identifier; global uniqueness is declared where it is a candidate key."
+
+[[attribute_semantic]]
+name = "byte_count"
+classification = "aggregate_count"
+rationale = "Build-scoped derived byte total; it determines no row outside its declared key."
+
+[[attribute_semantic]]
+name = "candidate_id"
+classification = "surrogate_identifier"
+rationale = "Opaque publication-candidate identifier."
+
+[[attribute_semantic]]
+name = "candidate_sha256"
+classification = "audit_digest"
+rationale = "Comparator-input checksum for audit/replay; no injectivity or reverse FD is assumed."
+
+[[attribute_semantic]]
+name = "content_byte_count"
+classification = "aggregate_count"
+rationale = "Gallery-scoped derived byte total and not a content identity."
+
+[[attribute_semantic]]
+name = "content_file_count"
+classification = "aggregate_count"
+rationale = "Gallery-scoped derived file total and not a content identity."
+
+[[attribute_semantic]]
+name = "content_sha256"
+classification = "comparator_key"
+rationale = "Policy-scoped effective-gallery grouping digest; grouping does not assume global injectivity or determine artifact bytes."
+
+[[attribute_semantic]]
+name = "decision_sha256"
+classification = "audit_digest"
+rationale = "Winner-decision checksum; it is not assumed injective and does not identify the winner independently."
+
+[[attribute_semantic]]
+name = "evidence_sha256"
+classification = "audit_digest"
+rationale = "Checksum of exclusion evidence; it is not assumed injective and implies no reverse FD."
+
+[[attribute_semantic]]
+name = "file_count"
+classification = "aggregate_count"
+rationale = "Build-scoped derived file total."
+
+[[attribute_semantic]]
+name = "file_key"
+classification = "canonical_identity_digest"
+rationale = "Canonical digest of filename bytes; file_name_identity declares both digest and bytes as alternate keys."
+
+[[attribute_semantic]]
+name = "file_observation_id"
+classification = "surrogate_identifier"
+rationale = "Opaque identifier for a single source-file observation."
+
+[[attribute_semantic]]
+name = "file_sha256"
+classification = "payload_digest"
+rationale = "Domain-separated digest of immutable file bytes; content_blob is the sole digest-to-size authority."
+
+[[attribute_semantic]]
+name = "gallery_count"
+classification = "aggregate_count"
+rationale = "Build-scoped derived gallery total."
+
+[[attribute_semantic]]
+name = "gallery_id"
+classification = "surrogate_identifier"
+rationale = "Opaque identifier for a gallery occurrence in a source build."
+
+[[attribute_semantic]]
+name = "gallery_key"
+classification = "canonical_identity_digest"
+rationale = "Canonical digest of gallery-name bytes; gallery_identity declares digest and name as alternate keys."
+
+[[attribute_semantic]]
+name = "input_manifest_sha256"
+classification = "audit_digest"
+rationale = "Pinned analysis-input checksum; it is intentionally not treated as a globally injective manifest identity."
+
+[[attribute_semantic]]
+name = "input_sha256"
+classification = "audit_digest"
+rationale = "Batch/checkpoint input checksum for replay detection; it implies no reverse FD."
+
+[[attribute_semantic]]
+name = "item_count"
+classification = "aggregate_count"
+rationale = "Revision-scoped publication item total."
+
+[[attribute_semantic]]
+name = "item_sha256"
+classification = "audit_digest"
+rationale = "Publication-item checksum; no global uniqueness or injectivity is assumed."
+
+[[attribute_semantic]]
+name = "locator"
+classification = "locator"
+rationale = "Provider-specific artifact address; identity and uniqueness are scoped by declared relation keys only."
+
+[[attribute_semantic]]
+name = "manifest_policy_id"
+classification = "surrogate_identifier"
+rationale = "Opaque manifest-policy identifier with a separately declared natural policy tuple key."
+
+[[attribute_semantic]]
+name = "manifest_sha256"
+classification = "audit_digest"
+rationale = "Canonicalization checksum retained for comparison; without a typed payload relation it is not assumed injective."
+
+[[attribute_semantic]]
+name = "metadata_observation_sha256"
+classification = "observational_digest"
+rationale = "Scanner observation checksum only; it is not assumed injective and does not determine gid or canonical metadata."
+
+[[attribute_semantic]]
+name = "metadata_sha256"
+classification = "audit_digest"
+rationale = "Gallery metadata checksum; no reverse FD is assumed without a canonical metadata payload relation."
+
+[[attribute_semantic]]
+name = "occurrence_count"
+classification = "aggregate_count"
+rationale = "Key-scoped multiplicity derived from exact occurrence rows."
+
+[[attribute_semantic]]
+name = "output_sha256"
+classification = "audit_digest"
+rationale = "Batch/checkpoint output checksum for replay validation; it is not a payload identity."
+
+[[attribute_semantic]]
+name = "owner_gallery_id"
+classification = "domain_identifier"
+rationale = "Reference to the selected owner gallery, unique only under the decision relation key."
+
+[[attribute_semantic]]
+name = "policy_id"
+classification = "surrogate_identifier"
+rationale = "Opaque analysis-policy identifier with a separately declared natural policy tuple key."
+
+[[attribute_semantic]]
+name = "priority_key"
+classification = "ordering_key"
+rationale = "Deterministic comparator value scoped by a candidate; equal values do not imply candidate identity."
+
+[[attribute_semantic]]
+name = "publication_id"
+classification = "domain_identifier"
+rationale = "Catalog-facing identifier whose uniqueness is revision-scoped by declared keys."
+
+[[attribute_semantic]]
+name = "publication_key"
+classification = "natural_key"
+rationale = "Stable publication key whose uniqueness is explicitly candidate- or revision-scoped."
+
+[[attribute_semantic]]
+name = "publication_sha256"
+classification = "audit_digest"
+rationale = "Revision/publication checksum; no reverse FD is assumed."
+
+[[attribute_semantic]]
+name = "receipt_id"
+classification = "surrogate_identifier"
+rationale = "Opaque durable receipt identifier."
+
+[[attribute_semantic]]
+name = "row_count"
+classification = "aggregate_count"
+rationale = "Batch-scoped affected-row total."
+
+[[attribute_semantic]]
+name = "scope_key"
+classification = "natural_key"
+rationale = "Opaque source-scope value; it is not globally unique without an explicitly declared composite key."
+
+[[attribute_semantic]]
+name = "source_locator"
+classification = "locator"
+rationale = "Build-scoped source address; (build_id, source_locator) is an alternate source_gallery key."
+
+[[attribute_semantic]]
+name = "source_manifest_sha256"
+classification = "audit_digest"
+rationale = "Receipt checksum of the source manifest; no injectivity or reverse FD is assumed."
+
+[[attribute_semantic]]
+name = "tag_id"
+classification = "surrogate_identifier"
+rationale = "Opaque normalized-tag identifier with a separately declared namespace/value natural key."
+
+[[attribute_semantic]]
+name = "winner_gallery_id"
+classification = "domain_identifier"
+rationale = "Reference to the selected GID winner, unique only under the decision relation key."
+
+[[relation]]
+name = "manifest_policy"
+kind = "source_of_truth"
+attributes = ["manifest_policy_id", "manifest_algorithm_version", "file_order_version"]
+declared_keys = [
+  ["manifest_policy_id"],
+  ["manifest_algorithm_version", "file_order_version"],
+]
+fds = [
+  { determinant = ["manifest_policy_id"], dependent = ["manifest_algorithm_version", "file_order_version"] },
+  { determinant = ["manifest_algorithm_version", "file_order_version"], dependent = ["manifest_policy_id"] },
+]
+
+[[relation]]
+name = "source_build"
+kind = "source_of_truth"
+attributes = [
+  "build_id",
+  "scope_key",
+  "manifest_policy_id",
+  "base_source_revision",
+  "state",
+  "created_at",
+  "sealed_at",
+]
+declared_keys = [["build_id"]]
+fds = [
+  { determinant = ["build_id"], dependent = ["scope_key", "manifest_policy_id", "base_source_revision", "state", "created_at", "sealed_at"] },
+]
+foreign_keys = [
+  { attributes = ["manifest_policy_id"], relation = "manifest_policy", referenced_attributes = ["manifest_policy_id"] },
+]
+
+[[relation]]
+name = "gallery_identity"
+kind = "source_of_truth"
+attributes = ["gallery_key", "gallery_name"]
+declared_keys = [
+  ["gallery_key"],
+  ["gallery_name"],
+]
+fds = [
+  { determinant = ["gallery_key"], dependent = ["gallery_name"] },
+  { determinant = ["gallery_name"], dependent = ["gallery_key"] },
+]
+
+[[relation]]
+name = "source_gallery"
+kind = "source_of_truth"
+attributes = [
+  "gallery_id",
+  "build_id",
+  "gallery_key",
+  "source_locator",
+  "gid",
+  "metadata_observation_sha256",
+  "source_complete",
+]
+declared_keys = [
+  ["gallery_id"],
+  ["build_id", "gallery_key"],
+  ["build_id", "source_locator"],
+]
+fds = [
+  { determinant = ["gallery_id"], dependent = ["build_id", "gallery_key", "source_locator", "gid", "metadata_observation_sha256", "source_complete"] },
+  { determinant = ["build_id", "gallery_key"], dependent = ["gallery_id", "source_locator", "gid", "metadata_observation_sha256", "source_complete"] },
+  { determinant = ["build_id", "source_locator"], dependent = ["gallery_id", "gallery_key", "gid", "metadata_observation_sha256", "source_complete"] },
+]
+foreign_keys = [
+  { attributes = ["build_id"], relation = "source_build", referenced_attributes = ["build_id"] },
+  { attributes = ["gallery_key"], relation = "gallery_identity", referenced_attributes = ["gallery_key"] },
+]
+
+[[relation]]
+name = "file_name_identity"
+kind = "source_of_truth"
+attributes = ["file_key", "name_bytes", "role"]
+declared_keys = [
+  ["file_key"],
+  ["name_bytes"],
+]
+fds = [
+  { determinant = ["file_key"], dependent = ["name_bytes", "role"] },
+  { determinant = ["name_bytes"], dependent = ["file_key", "role"] },
+]
+
+[[relation]]
+name = "content_blob"
+kind = "source_of_truth"
+attributes = ["file_sha256", "size_bytes"]
+declared_keys = [["file_sha256"]]
+fds = [
+  { determinant = ["file_sha256"], dependent = ["size_bytes"] },
+]
+
+[[relation]]
+name = "source_file"
+kind = "source_of_truth"
+attributes = [
+  "file_observation_id",
+  "gallery_id",
+  "file_no",
+  "file_key",
+  "mtime_ns",
+  "file_sha256",
+]
+declared_keys = [
+  ["file_observation_id"],
+  ["gallery_id", "file_no"],
+  ["gallery_id", "file_key"],
+]
+fds = [
+  { determinant = ["file_observation_id"], dependent = ["gallery_id", "file_no", "file_key", "mtime_ns", "file_sha256"] },
+  { determinant = ["gallery_id", "file_no"], dependent = ["file_observation_id", "file_key", "mtime_ns", "file_sha256"] },
+  { determinant = ["gallery_id", "file_key"], dependent = ["file_observation_id", "file_no", "mtime_ns", "file_sha256"] },
+]
+foreign_keys = [
+  { attributes = ["gallery_id"], relation = "source_gallery", referenced_attributes = ["gallery_id"] },
+  { attributes = ["file_key"], relation = "file_name_identity", referenced_attributes = ["file_key"] },
+  { attributes = ["file_sha256"], relation = "content_blob", referenced_attributes = ["file_sha256"] },
+]
+
+[[relation]]
+name = "tag_term"
+kind = "source_of_truth"
+attributes = ["tag_id", "namespace", "normalized_value", "display_value"]
+declared_keys = [
+  ["tag_id"],
+  ["namespace", "normalized_value"],
+]
+fds = [
+  { determinant = ["tag_id"], dependent = ["namespace", "normalized_value", "display_value"] },
+  { determinant = ["namespace", "normalized_value"], dependent = ["tag_id", "display_value"] },
+]
+
+[[relation]]
+name = "source_gallery_tag"
+kind = "source_of_truth"
+attributes = ["gallery_id", "position", "tag_id"]
+declared_keys = [["gallery_id", "position"]]
+fds = [
+  { determinant = ["gallery_id", "position"], dependent = ["tag_id"] },
+]
+foreign_keys = [
+  { attributes = ["gallery_id"], relation = "source_gallery", referenced_attributes = ["gallery_id"] },
+  { attributes = ["tag_id"], relation = "tag_term", referenced_attributes = ["tag_id"] },
+]
+
+[[relation]]
+name = "build_manifest"
+kind = "controlled_materialization"
+attributes = [
+  "build_id",
+  "manifest_sha256",
+  "gallery_count",
+  "file_count",
+  "byte_count",
+  "computed_at",
+]
+declared_keys = [["build_id"]]
+fds = [
+  { determinant = ["build_id"], dependent = ["manifest_sha256", "gallery_count", "file_count", "byte_count", "computed_at"] },
+]
+foreign_keys = [
+  { attributes = ["build_id"], relation = "source_build", referenced_attributes = ["build_id"] },
+]
+materialization = { authoritative = false, rationale = "Persist the sealed canonical build digest and bounded counters so restart and publication never rescan source rows.", derived_from = ["source_build", "source_gallery", "file_name_identity", "source_file", "source_gallery_tag"], refresh_strategy = "replace once when the build seals" }
+
+[[relation]]
+name = "gallery_manifest"
+kind = "controlled_materialization"
+attributes = [
+  "gallery_id",
+  "manifest_sha256",
+  "content_sha256",
+  "metadata_sha256",
+  "content_file_count",
+  "content_byte_count",
+  "computed_at",
+]
+declared_keys = [["gallery_id"]]
+fds = [
+  { determinant = ["gallery_id"], dependent = ["manifest_sha256", "content_sha256", "metadata_sha256", "content_file_count", "content_byte_count", "computed_at"] },
+]
+foreign_keys = [
+  { attributes = ["gallery_id"], relation = "source_gallery", referenced_attributes = ["gallery_id"] },
+]
+materialization = { authoritative = false, rationale = "Store canonical per-gallery manifest and raw/effective gallery content digests once, avoiding repeated ordered file scans in downstream analysis.", derived_from = ["source_gallery", "file_name_identity", "source_file", "source_gallery_tag"], refresh_strategy = "replace while its source build is mutable, then freeze at seal" }
+
+[[relation]]
+name = "analysis_policy"
+kind = "source_of_truth"
+attributes = [
+  "policy_id",
+  "algorithm_version",
+  "spam_artist_threshold",
+  "spam_occurrence_threshold",
+  "content_owner_rule_version",
+  "gid_winner_rule_version",
+]
+declared_keys = [
+  ["policy_id"],
+  ["algorithm_version", "spam_artist_threshold", "spam_occurrence_threshold", "content_owner_rule_version", "gid_winner_rule_version"],
+]
+fds = [
+  { determinant = ["policy_id"], dependent = ["algorithm_version", "spam_artist_threshold", "spam_occurrence_threshold", "content_owner_rule_version", "gid_winner_rule_version"] },
+  { determinant = ["algorithm_version", "spam_artist_threshold", "spam_occurrence_threshold", "content_owner_rule_version", "gid_winner_rule_version"], dependent = ["policy_id"] },
+]
+
+[[relation]]
+name = "analysis_run"
+kind = "source_of_truth"
+attributes = [
+  "analysis_id",
+  "build_id",
+  "policy_id",
+  "input_manifest_sha256",
+  "state",
+  "started_at",
+  "completed_at",
+]
+declared_keys = [
+  ["analysis_id"],
+  ["build_id", "policy_id", "input_manifest_sha256"],
+]
+fds = [
+  { determinant = ["analysis_id"], dependent = ["build_id", "policy_id", "input_manifest_sha256", "state", "started_at", "completed_at"] },
+  { determinant = ["build_id", "policy_id", "input_manifest_sha256"], dependent = ["analysis_id", "state", "started_at", "completed_at"] },
+]
+foreign_keys = [
+  { attributes = ["build_id"], relation = "source_build", referenced_attributes = ["build_id"] },
+  { attributes = ["policy_id"], relation = "analysis_policy", referenced_attributes = ["policy_id"] },
+]
+
+[[relation]]
+name = "analysis_gallery_artist"
+kind = "controlled_materialization"
+attributes = ["analysis_id", "gallery_id", "artist_tag_id"]
+declared_keys = [["analysis_id", "gallery_id", "artist_tag_id"]]
+fds = []
+foreign_keys = [
+  { attributes = ["analysis_id"], relation = "analysis_run", referenced_attributes = ["analysis_id"] },
+  { attributes = ["gallery_id"], relation = "source_gallery", referenced_attributes = ["gallery_id"] },
+  { attributes = ["artist_tag_id"], relation = "tag_term", referenced_attributes = ["tag_id"] },
+]
+materialization = { authoritative = false, rationale = "Normalize artist membership once per analysis so spam fan-out is incremental and independent of tag display spelling.", derived_from = ["analysis_run", "source_gallery_tag", "tag_term"], refresh_strategy = "replace by analysis_id and affected gallery_id" }
+
+[[relation]]
+name = "analysis_gallery_file_hash_occurrence"
+kind = "controlled_materialization"
+attributes = ["analysis_id", "gallery_id", "file_sha256", "occurrence_count"]
+declared_keys = [["analysis_id", "gallery_id", "file_sha256"]]
+fds = [
+  { determinant = ["analysis_id", "gallery_id", "file_sha256"], dependent = ["occurrence_count"] },
+]
+foreign_keys = [
+  { attributes = ["analysis_id"], relation = "analysis_run", referenced_attributes = ["analysis_id"] },
+  { attributes = ["gallery_id"], relation = "source_gallery", referenced_attributes = ["gallery_id"] },
+]
+materialization = { authoritative = false, rationale = "Retain exact per-gallery file-hash multiplicity so a gallery crossing a policy threshold can add or withdraw every contribution without a corpus rescan.", derived_from = ["analysis_run", "source_file"], refresh_strategy = "replace by analysis_id and affected gallery_id" }
+
+[[relation]]
+name = "analysis_file_hash_artist_contribution"
+kind = "controlled_materialization"
+attributes = [
+  "analysis_id",
+  "file_sha256",
+  "artist_tag_id",
+  "gallery_id",
+  "occurrence_count",
+]
+declared_keys = [["analysis_id", "file_sha256", "artist_tag_id", "gallery_id"]]
+fds = [
+  { determinant = ["analysis_id", "file_sha256", "artist_tag_id", "gallery_id"], dependent = ["occurrence_count"] },
+]
+foreign_keys = [
+  { attributes = ["analysis_id", "gallery_id", "artist_tag_id"], relation = "analysis_gallery_artist", referenced_attributes = ["analysis_id", "gallery_id", "artist_tag_id"] },
+  { attributes = ["analysis_id", "gallery_id", "file_sha256"], relation = "analysis_gallery_file_hash_occurrence", referenced_attributes = ["analysis_id", "gallery_id", "file_sha256"] },
+]
+materialization = { authoritative = false, rationale = "Record the exact additive unit behind incremental spam counts, including gallery identity, so removal and replay are exact.", derived_from = ["analysis_gallery_artist", "analysis_gallery_file_hash_occurrence"], refresh_strategy = "replace by analysis_id and affected gallery_id" }
+
+[[relation]]
+name = "analysis_file_hash_artist_stat"
+kind = "controlled_materialization"
+attributes = [
+  "analysis_id",
+  "file_sha256",
+  "artist_tag_id",
+  "occurrence_count",
+  "gallery_count",
+]
+declared_keys = [["analysis_id", "file_sha256", "artist_tag_id"]]
+fds = [
+  { determinant = ["analysis_id", "file_sha256", "artist_tag_id"], dependent = ["occurrence_count", "gallery_count"] },
+]
+foreign_keys = [
+  { attributes = ["analysis_id"], relation = "analysis_run", referenced_attributes = ["analysis_id"] },
+  { attributes = ["artist_tag_id"], relation = "tag_term", referenced_attributes = ["tag_id"] },
+]
+materialization = { authoritative = false, rationale = "Maintain the file-hash-by-artist subtotal used by spam policy; exact contribution rows remain the replay authority.", derived_from = ["analysis_file_hash_artist_contribution"], refresh_strategy = "apply contribution deltas transactionally, then reconcile by analysis_id" }
+
+[[relation]]
+name = "excluded_file_hash_evidence"
+kind = "controlled_materialization"
+attributes = [
+  "analysis_id",
+  "file_sha256",
+  "artist_count",
+  "occurrence_count",
+  "evidence_sha256",
+]
+declared_keys = [["analysis_id", "file_sha256"]]
+fds = [
+  { determinant = ["analysis_id", "file_sha256"], dependent = ["artist_count", "occurrence_count", "evidence_sha256"] },
+]
+foreign_keys = [
+  { attributes = ["analysis_id"], relation = "analysis_run", referenced_attributes = ["analysis_id"] },
+]
+materialization = { authoritative = false, rationale = "Retain the aggregate evidence for each excluded file hash separately from membership, without storing a derived boolean beside its determinants.", derived_from = ["analysis_policy", "analysis_file_hash_artist_stat"], refresh_strategy = "replace by analysis_id and affected file_sha256" }
+
+[[relation]]
+name = "excluded_file_hash"
+kind = "controlled_materialization"
+attributes = ["analysis_id", "file_sha256"]
+declared_keys = [["analysis_id", "file_sha256"]]
+fds = []
+foreign_keys = [
+  { attributes = ["analysis_id", "file_sha256"], relation = "excluded_file_hash_evidence", referenced_attributes = ["analysis_id", "file_sha256"] },
+]
+materialization = { authoritative = false, rationale = "Represent exclusion as pure set membership, keeping threshold evidence and policy inputs out of the membership relation.", derived_from = ["excluded_file_hash_evidence"], refresh_strategy = "insert or delete by analysis_id and affected file_sha256 in the same evidence transaction" }
+
+[[relation]]
+name = "analysis_content_owner_candidate"
+kind = "controlled_materialization"
+attributes = [
+  "analysis_id",
+  "content_sha256",
+  "gallery_id",
+  "priority_key",
+  "candidate_sha256",
+]
+declared_keys = [["analysis_id", "gallery_id"]]
+fds = [
+  { determinant = ["analysis_id", "gallery_id"], dependent = ["content_sha256", "priority_key", "candidate_sha256"] },
+]
+foreign_keys = [
+  { attributes = ["analysis_id"], relation = "analysis_run", referenced_attributes = ["analysis_id"] },
+  { attributes = ["gallery_id"], relation = "gallery_manifest", referenced_attributes = ["gallery_id"] },
+]
+materialization = { authoritative = false, rationale = "Persist canonical gallery-content owner comparator inputs after excluded file hashes are removed, so winner selection is independent of page order.", derived_from = ["excluded_file_hash", "source_gallery", "source_file", "gallery_manifest"], refresh_strategy = "replace by analysis_id and affected gallery_id, then index content_sha256 for winner grouping" }
+
+[[relation]]
+name = "analysis_content_owner"
+kind = "controlled_materialization"
+attributes = ["analysis_id", "content_sha256", "owner_gallery_id", "decision_sha256"]
+declared_keys = [["analysis_id", "content_sha256"]]
+fds = [
+  { determinant = ["analysis_id", "content_sha256"], dependent = ["owner_gallery_id", "decision_sha256"] },
+]
+foreign_keys = [
+  { attributes = ["analysis_id", "owner_gallery_id"], relation = "analysis_content_owner_candidate", referenced_attributes = ["analysis_id", "gallery_id"] },
+]
+materialization = { authoritative = false, rationale = "Store one stable content owner after total-order comparison; candidates remain the derivation evidence.", derived_from = ["analysis_content_owner_candidate"], refresh_strategy = "replace by analysis_id and affected content_sha256" }
+
+[[relation]]
+name = "analysis_gid_candidate"
+kind = "controlled_materialization"
+attributes = ["analysis_id", "gid", "gallery_id", "priority_key", "candidate_sha256"]
+declared_keys = [["analysis_id", "gallery_id"]]
+fds = [
+  { determinant = ["analysis_id", "gallery_id"], dependent = ["gid", "priority_key", "candidate_sha256"] },
+]
+foreign_keys = [
+  { attributes = ["analysis_id"], relation = "analysis_run", referenced_attributes = ["analysis_id"] },
+  { attributes = ["gallery_id"], relation = "source_gallery", referenced_attributes = ["gallery_id"] },
+]
+materialization = { authoritative = false, rationale = "Persist canonical GID comparator inputs so an incumbent tie and rebuild order produce the same winner.", derived_from = ["analysis_run", "source_gallery", "analysis_content_owner"], refresh_strategy = "replace by analysis_id and affected gid" }
+
+[[relation]]
+name = "analysis_gid_winner"
+kind = "controlled_materialization"
+attributes = ["analysis_id", "gid", "winner_gallery_id", "decision_sha256"]
+declared_keys = [["analysis_id", "gid"]]
+fds = [
+  { determinant = ["analysis_id", "gid"], dependent = ["winner_gallery_id", "decision_sha256"] },
+]
+foreign_keys = [
+  { attributes = ["analysis_id", "winner_gallery_id"], relation = "analysis_gid_candidate", referenced_attributes = ["analysis_id", "gallery_id"] },
+]
+materialization = { authoritative = false, rationale = "Store exactly one GID winner after total-order comparison while retaining candidate evidence for audit and replay.", derived_from = ["analysis_gid_candidate"], refresh_strategy = "replace by analysis_id and affected gid" }
+
+[[relation]]
+name = "analysis_checkpoint"
+kind = "source_of_truth"
+attributes = [
+  "analysis_id",
+  "stage",
+  "generation",
+  "cursor",
+  "output_sha256",
+  "state",
+  "updated_at",
+]
+declared_keys = [["analysis_id", "stage"]]
+fds = [
+  { determinant = ["analysis_id", "stage"], dependent = ["generation", "cursor", "output_sha256", "state", "updated_at"] },
+]
+foreign_keys = [
+  { attributes = ["analysis_id"], relation = "analysis_run", referenced_attributes = ["analysis_id"] },
+]
+
+[[relation]]
+name = "analysis_batch_receipt"
+kind = "source_of_truth"
+attributes = [
+  "analysis_id",
+  "stage",
+  "batch_key",
+  "input_sha256",
+  "output_sha256",
+  "row_count",
+  "committed_at",
+]
+declared_keys = [["analysis_id", "stage", "batch_key"]]
+fds = [
+  { determinant = ["analysis_id", "stage", "batch_key"], dependent = ["input_sha256", "output_sha256", "row_count", "committed_at"] },
+]
+foreign_keys = [
+  { attributes = ["analysis_id", "stage"], relation = "analysis_checkpoint", referenced_attributes = ["analysis_id", "stage"] },
+]
+
+[[relation]]
+name = "publication_candidate"
+kind = "source_of_truth"
+attributes = [
+  "candidate_id",
+  "analysis_id",
+  "reserved_revision",
+  "state",
+  "created_at",
+  "sealed_at",
+]
+declared_keys = [
+  ["candidate_id"],
+  ["reserved_revision"],
+]
+fds = [
+  { determinant = ["candidate_id"], dependent = ["analysis_id", "reserved_revision", "state", "created_at", "sealed_at"] },
+  { determinant = ["reserved_revision"], dependent = ["candidate_id", "analysis_id", "state", "created_at", "sealed_at"] },
+]
+foreign_keys = [
+  { attributes = ["analysis_id"], relation = "analysis_run", referenced_attributes = ["analysis_id"] },
+]
+
+[[relation]]
+name = "publication_selection"
+kind = "controlled_materialization"
+attributes = ["candidate_id", "gallery_id", "publication_key", "item_sha256"]
+declared_keys = [
+  ["candidate_id", "gallery_id"],
+  ["candidate_id", "publication_key"],
+]
+fds = [
+  { determinant = ["candidate_id", "gallery_id"], dependent = ["publication_key", "item_sha256"] },
+  { determinant = ["candidate_id", "publication_key"], dependent = ["gallery_id", "item_sha256"] },
+]
+foreign_keys = [
+  { attributes = ["candidate_id"], relation = "publication_candidate", referenced_attributes = ["candidate_id"] },
+  { attributes = ["gallery_id"], relation = "source_gallery", referenced_attributes = ["gallery_id"] },
+]
+materialization = { authoritative = false, rationale = "Freeze the selected winner set and stable publication keys before artifact preparation and atomic publication.", derived_from = ["publication_candidate", "analysis_content_owner", "analysis_gid_winner", "source_gallery"], refresh_strategy = "replace by candidate_id until the candidate seals" }
+
+[[relation]]
+name = "publication_checkpoint"
+kind = "source_of_truth"
+attributes = [
+  "candidate_id",
+  "stage",
+  "generation",
+  "cursor",
+  "input_sha256",
+  "output_sha256",
+  "state",
+  "updated_at",
+]
+declared_keys = [["candidate_id", "stage"]]
+fds = [
+  { determinant = ["candidate_id", "stage"], dependent = ["generation", "cursor", "input_sha256", "output_sha256", "state", "updated_at"] },
+]
+foreign_keys = [
+  { attributes = ["candidate_id"], relation = "publication_candidate", referenced_attributes = ["candidate_id"] },
+]
+
+[[relation]]
+name = "publication_batch_receipt"
+kind = "source_of_truth"
+attributes = [
+  "candidate_id",
+  "stage",
+  "batch_key",
+  "input_sha256",
+  "output_sha256",
+  "row_count",
+  "committed_at",
+]
+declared_keys = [["candidate_id", "stage", "batch_key"]]
+fds = [
+  { determinant = ["candidate_id", "stage", "batch_key"], dependent = ["input_sha256", "output_sha256", "row_count", "committed_at"] },
+]
+foreign_keys = [
+  { attributes = ["candidate_id", "stage"], relation = "publication_checkpoint", referenced_attributes = ["candidate_id", "stage"] },
+]
+
+[[relation]]
+name = "artifact_blob"
+kind = "source_of_truth"
+attributes = ["artifact_sha256", "size_bytes"]
+declared_keys = [["artifact_sha256"]]
+fds = [
+  { determinant = ["artifact_sha256"], dependent = ["size_bytes"] },
+]
+
+[[relation]]
+name = "prepared_artifact"
+kind = "controlled_materialization"
+attributes = [
+  "candidate_id",
+  "publication_key",
+  "artifact_name",
+  "artifact_sha256",
+  "protection_token",
+  "state",
+]
+declared_keys = [["candidate_id", "publication_key", "artifact_name"]]
+fds = [
+  { determinant = ["candidate_id", "publication_key", "artifact_name"], dependent = ["artifact_sha256", "protection_token", "state"] },
+]
+foreign_keys = [
+  { attributes = ["candidate_id", "publication_key"], relation = "publication_selection", referenced_attributes = ["candidate_id", "publication_key"] },
+  { attributes = ["artifact_sha256"], relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
+]
+materialization = { authoritative = false, rationale = "Receipt the exact protected artifact bytes before the database head can expose them, enabling crash-safe retry.", derived_from = ["publication_selection", "source_file", "gallery_manifest"], refresh_strategy = "compare-and-swap by candidate_id, publication_key, and artifact_name" }
+
+[[relation]]
+name = "catalog_revision"
+kind = "source_of_truth"
+attributes = [
+  "revision",
+  "candidate_id",
+  "publication_sha256",
+  "item_count",
+  "published_at",
+]
+declared_keys = [
+  ["revision"],
+  ["candidate_id"],
+]
+fds = [
+  { determinant = ["revision"], dependent = ["candidate_id", "publication_sha256", "item_count", "published_at"] },
+  { determinant = ["candidate_id"], dependent = ["revision", "publication_sha256", "item_count", "published_at"] },
+]
+foreign_keys = [
+  { attributes = ["candidate_id"], relation = "publication_candidate", referenced_attributes = ["candidate_id"] },
+]
+
+[[relation]]
+name = "catalog_publication"
+kind = "source_of_truth"
+attributes = [
+  "revision",
+  "publication_key",
+  "gallery_id",
+  "publication_id",
+  "gid",
+  "title",
+  "language",
+  "item_sha256",
+]
+declared_keys = [
+  ["revision", "publication_key"],
+  ["revision", "gallery_id"],
+  ["revision", "publication_id"],
+  ["revision", "gid"],
+]
+fds = [
+  { determinant = ["revision", "publication_key"], dependent = ["gallery_id", "publication_id", "gid", "title", "language", "item_sha256"] },
+  { determinant = ["revision", "gallery_id"], dependent = ["publication_key", "publication_id", "gid", "title", "language", "item_sha256"] },
+  { determinant = ["revision", "publication_id"], dependent = ["publication_key", "gallery_id", "gid", "title", "language", "item_sha256"] },
+  { determinant = ["revision", "gid"], dependent = ["publication_key", "gallery_id", "publication_id", "title", "language", "item_sha256"] },
+]
+foreign_keys = [
+  { attributes = ["revision"], relation = "catalog_revision", referenced_attributes = ["revision"] },
+  { attributes = ["gallery_id"], relation = "source_gallery", referenced_attributes = ["gallery_id"] },
+]
+
+[[relation]]
+name = "catalog_contributor"
+kind = "source_of_truth"
+attributes = ["revision", "publication_key", "position", "tag_id", "role", "sort_as"]
+declared_keys = [["revision", "publication_key", "position"]]
+fds = [
+  { determinant = ["revision", "publication_key", "position"], dependent = ["tag_id", "role", "sort_as"] },
+]
+foreign_keys = [
+  { attributes = ["revision", "publication_key"], relation = "catalog_publication", referenced_attributes = ["revision", "publication_key"] },
+  { attributes = ["tag_id"], relation = "tag_term", referenced_attributes = ["tag_id"] },
+]
+
+[[relation]]
+name = "catalog_subject"
+kind = "source_of_truth"
+attributes = ["revision", "publication_key", "position", "tag_id"]
+declared_keys = [["revision", "publication_key", "position"]]
+fds = [
+  { determinant = ["revision", "publication_key", "position"], dependent = ["tag_id"] },
+]
+foreign_keys = [
+  { attributes = ["revision", "publication_key"], relation = "catalog_publication", referenced_attributes = ["revision", "publication_key"] },
+  { attributes = ["tag_id"], relation = "tag_term", referenced_attributes = ["tag_id"] },
+]
+
+[[relation]]
+name = "catalog_artifact"
+kind = "source_of_truth"
+attributes = [
+  "revision",
+  "publication_key",
+  "artifact_name",
+  "artifact_sha256",
+  "locator",
+]
+declared_keys = [["revision", "publication_key", "artifact_name"]]
+fds = [
+  { determinant = ["revision", "publication_key", "artifact_name"], dependent = ["artifact_sha256", "locator"] },
+]
+foreign_keys = [
+  { attributes = ["revision", "publication_key"], relation = "catalog_publication", referenced_attributes = ["revision", "publication_key"] },
+  { attributes = ["artifact_sha256"], relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
+]
+
+[[relation]]
+name = "publication_receipt"
+kind = "source_of_truth"
+attributes = [
+  "receipt_id",
+  "revision",
+  "candidate_id",
+  "source_manifest_sha256",
+  "publication_sha256",
+  "state",
+  "committed_at",
+  "finalized_at",
+]
+declared_keys = [
+  ["receipt_id"],
+  ["revision"],
+  ["candidate_id"],
+]
+fds = [
+  { determinant = ["receipt_id"], dependent = ["revision", "candidate_id", "source_manifest_sha256", "publication_sha256", "state", "committed_at", "finalized_at"] },
+  { determinant = ["revision"], dependent = ["receipt_id", "candidate_id", "source_manifest_sha256", "publication_sha256", "state", "committed_at", "finalized_at"] },
+  { determinant = ["candidate_id"], dependent = ["receipt_id", "revision", "source_manifest_sha256", "publication_sha256", "state", "committed_at", "finalized_at"] },
+]
+foreign_keys = [
+  { attributes = ["revision"], relation = "catalog_revision", referenced_attributes = ["revision"] },
+  { attributes = ["candidate_id"], relation = "publication_candidate", referenced_attributes = ["candidate_id"] },
+]
+
+[[relation]]
+name = "publication_head"
+kind = "source_of_truth"
+attributes = ["channel", "revision", "generation", "advanced_at"]
+declared_keys = [["channel"]]
+fds = [
+  { determinant = ["channel"], dependent = ["revision", "generation", "advanced_at"] },
+]
+foreign_keys = [
+  { attributes = ["revision"], relation = "catalog_revision", referenced_attributes = ["revision"] },
+]
+
+[[decomposition]]
+name = "gallery_identity_and_source_occurrence"
+universal_attributes = [
+  "gallery_key",
+  "gallery_name",
+  "gallery_id",
+  "build_id",
+  "source_locator",
+  "gid",
+  "metadata_observation_sha256",
+  "source_complete",
+]
+fds = [
+  { determinant = ["gallery_key"], dependent = ["gallery_name"] },
+  { determinant = ["gallery_name"], dependent = ["gallery_key"] },
+  { determinant = ["gallery_id"], dependent = ["build_id", "gallery_key", "source_locator", "gid", "metadata_observation_sha256", "source_complete"] },
+  { determinant = ["build_id", "gallery_key"], dependent = ["gallery_id", "source_locator", "gid", "metadata_observation_sha256", "source_complete"] },
+  { determinant = ["build_id", "source_locator"], dependent = ["gallery_id", "gallery_key", "gid", "metadata_observation_sha256", "source_complete"] },
+]
+projections = [
+  { relation = "gallery_identity", attributes = ["gallery_key", "gallery_name"] },
+  { relation = "source_gallery", attributes = ["gallery_id", "build_id", "gallery_key", "source_locator", "gid", "metadata_observation_sha256", "source_complete"] },
+]
+rationale = "Separate canonical gallery-name identity from build observations; gallery_key determines the identity projection, so the decomposition is lossless and source locators remain build-scoped alternate keys."
+
+[[decomposition]]
+name = "file_identity_and_source_occurrence"
+universal_attributes = [
+  "file_key",
+  "name_bytes",
+  "role",
+  "file_observation_id",
+  "gallery_id",
+  "file_no",
+  "mtime_ns",
+  "file_sha256",
+]
+fds = [
+  { determinant = ["file_key"], dependent = ["name_bytes", "role"] },
+  { determinant = ["name_bytes"], dependent = ["file_key", "role"] },
+  { determinant = ["file_observation_id"], dependent = ["gallery_id", "file_no", "file_key", "mtime_ns", "file_sha256"] },
+  { determinant = ["gallery_id", "file_no"], dependent = ["file_observation_id", "file_key", "mtime_ns", "file_sha256"] },
+  { determinant = ["gallery_id", "file_key"], dependent = ["file_observation_id", "file_no", "mtime_ns", "file_sha256"] },
+]
+projections = [
+  { relation = "file_name_identity", attributes = ["file_key", "name_bytes", "role"] },
+  { relation = "source_file", attributes = ["file_observation_id", "gallery_id", "file_no", "file_key", "mtime_ns", "file_sha256"] },
+]
+rationale = "Separate deterministic filename identity and role from build observations; their file_key intersection determines the identity projection, so the FD decomposition is lossless."
+
+[[decomposition]]
+name = "file_content_payload_and_source_occurrence"
+universal_attributes = [
+  "file_observation_id",
+  "gallery_id",
+  "file_no",
+  "file_key",
+  "mtime_ns",
+  "file_sha256",
+  "size_bytes",
+]
+fds = [
+  { determinant = ["file_sha256"], dependent = ["size_bytes"] },
+  { determinant = ["file_observation_id"], dependent = ["gallery_id", "file_no", "file_key", "mtime_ns", "file_sha256"] },
+  { determinant = ["gallery_id", "file_no"], dependent = ["file_observation_id", "file_key", "mtime_ns", "file_sha256"] },
+  { determinant = ["gallery_id", "file_key"], dependent = ["file_observation_id", "file_no", "mtime_ns", "file_sha256"] },
+]
+projections = [
+  { relation = "content_blob", attributes = ["file_sha256", "size_bytes"] },
+  { relation = "source_file", attributes = ["file_observation_id", "gallery_id", "file_no", "file_key", "mtime_ns", "file_sha256"] },
+]
+rationale = "Separate immutable file payload facts from occurrences; file_sha256 determines the content_blob projection, so repeated bytes cannot duplicate the sha256-to-size dependency."
+
+[[decomposition]]
+name = "tag_identity_and_gallery_association"
+universal_attributes = [
+  "tag_id",
+  "namespace",
+  "normalized_value",
+  "display_value",
+  "gallery_id",
+  "position",
+]
+fds = [
+  { determinant = ["tag_id"], dependent = ["namespace", "normalized_value", "display_value"] },
+  { determinant = ["namespace", "normalized_value"], dependent = ["tag_id", "display_value"] },
+  { determinant = ["gallery_id", "position"], dependent = ["tag_id"] },
+]
+projections = [
+  { relation = "tag_term", attributes = ["tag_id", "namespace", "normalized_value", "display_value"] },
+  { relation = "source_gallery_tag", attributes = ["gallery_id", "position", "tag_id"] },
+]
+rationale = "Separate normalized tag identity from ordered gallery membership; tag_id determines the identity projection, making the binary decomposition lossless."
+
+[[decomposition]]
+name = "artifact_payload_and_preparation_occurrence"
+universal_attributes = [
+  "candidate_id",
+  "publication_key",
+  "artifact_name",
+  "artifact_sha256",
+  "size_bytes",
+  "protection_token",
+  "state",
+]
+fds = [
+  { determinant = ["artifact_sha256"], dependent = ["size_bytes"] },
+  { determinant = ["candidate_id", "publication_key", "artifact_name"], dependent = ["artifact_sha256", "protection_token", "state"] },
+]
+projections = [
+  { relation = "artifact_blob", attributes = ["artifact_sha256", "size_bytes"] },
+  { relation = "prepared_artifact", attributes = ["candidate_id", "publication_key", "artifact_name", "artifact_sha256", "protection_token", "state"] },
+]
+rationale = "Separate immutable artifact byte facts from provider preparation state; artifact_sha256 determines the blob projection, making the decomposition lossless."
+
+[[decomposition]]
+name = "artifact_payload_and_catalog_occurrence"
+universal_attributes = [
+  "revision",
+  "publication_key",
+  "artifact_name",
+  "artifact_sha256",
+  "size_bytes",
+  "locator",
+]
+fds = [
+  { determinant = ["artifact_sha256"], dependent = ["size_bytes"] },
+  { determinant = ["revision", "publication_key", "artifact_name"], dependent = ["artifact_sha256", "locator"] },
+]
+projections = [
+  { relation = "artifact_blob", attributes = ["artifact_sha256", "size_bytes"] },
+  { relation = "catalog_artifact", attributes = ["revision", "publication_key", "artifact_name", "artifact_sha256", "locator"] },
+]
+rationale = "Separate immutable artifact byte facts from revision-scoped locations; artifact_sha256 determines the blob projection, making the decomposition lossless."
+
+[[decomposition]]
+name = "excluded_file_hash_evidence_and_membership"
+universal_attributes = [
+  "analysis_id",
+  "file_sha256",
+  "artist_count",
+  "occurrence_count",
+  "evidence_sha256",
+]
+fds = [
+  { determinant = ["analysis_id", "file_sha256"], dependent = ["artist_count", "occurrence_count", "evidence_sha256"] },
+]
+projections = [
+  { relation = "excluded_file_hash_evidence", attributes = ["analysis_id", "file_sha256", "artist_count", "occurrence_count", "evidence_sha256"] },
+  { relation = "excluded_file_hash", attributes = ["analysis_id", "file_sha256"] },
+]
+rationale = "Keep threshold evidence separate from pure exclusion membership; the membership key determines its matching evidence row, so the positive excluded-evidence universal reconstructs losslessly."
