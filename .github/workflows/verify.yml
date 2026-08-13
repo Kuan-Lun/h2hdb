@@ -26,9 +26,34 @@ jobs:
         with:
           python-version: "3.14.6"
 
-      - uses: leanprover/lean-action@v1
-        with:
-          auto-config: false
+      - name: Install checksum-pinned Elan and repository-pinned Lean
+        shell: bash
+        env:
+          ELAN_VERSION: "4.2.3"
+          ELAN_SHA256: "df0b2b3a439961ffcbb3985214365ffe40f49bc871df04dff268c7d8e21ca8b2"
+        run: |
+          set -euo pipefail
+          elan_archive="${RUNNER_TEMP}/elan-${ELAN_VERSION}.tar.gz"
+          elan_home="${RUNNER_TEMP}/elan-home"
+          curl --proto '=https' --tlsv1.2 \
+            --fail --location --silent --show-error \
+            --output "${elan_archive}" \
+            "https://github.com/leanprover/elan/releases/download/v${ELAN_VERSION}/elan-x86_64-unknown-linux-gnu.tar.gz"
+          printf '%s  %s\n' "${ELAN_SHA256}" "${elan_archive}" \
+            | sha256sum --check --strict
+          tar --extract --gzip \
+            --file "${elan_archive}" \
+            --directory "${RUNNER_TEMP}"
+          ELAN_HOME="${elan_home}" "${RUNNER_TEMP}/elan-init" \
+            -y \
+            --default-toolchain none \
+            --no-modify-path
+          echo "ELAN_HOME=${elan_home}" >> "${GITHUB_ENV}"
+          echo "${elan_home}/bin" >> "${GITHUB_PATH}"
+          lean_toolchain="$(tr -d '\r\n' < lean-toolchain)"
+          ELAN_HOME="${elan_home}" "${elan_home}/bin/elan" \
+            toolchain install "${lean_toolchain}"
+          ELAN_HOME="${elan_home}" "${elan_home}/bin/lean" --version
 
       - name: Install exact formal-test runtime
         run: |
