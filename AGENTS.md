@@ -41,12 +41,25 @@ describe the currently deployed schema. Run the required checks with the
 repository-pinned Lean toolchain and checksum-pinned TLC release:
 
 ```bash
+uv run --no-sync python scripts/verify-formal.py coverage --validate-only
 uv run --no-sync python scripts/verify-formal.py schema
 uv run --no-sync python scripts/verify-formal.py lean
 uv run --no-sync python scripts/fetch-formal-tools.py
 uv run --no-sync python scripts/verify-formal.py tla \
   --tla-jar .formal-tools/tla2tools-1.7.4.jar
 ```
+
+`verification/invariants.toml` is a closed-world evidence index for every
+machine `semantic_obligation` ID declared by the data and operational
+contracts. New IDs must add real FD/Lean/TLA/runtime-refinement/fault/integration
+coverage; the gate rejects missing IDs, stale evidence symbols, and any claim
+that finite TLC exploration is an unbounded proof.
+
+The required CI check uses `coverage --validate-only`: it still rejects every
+invalid contract, ID, evidence symbol, and status while reporting production
+blockers. Plain `coverage` is the strict production-readiness gate and remains
+nonzero until all reported blockers are discharged. `all` retains that strict
+behavior and does not accept `--validate-only`.
 
 Use `--deep` only for the larger manual/nightly TLA+ profile; the default
 `Small` profile is the finite required check. TLC success exhausts reachable

@@ -8,7 +8,6 @@ import pytest
 from h2hdb import (
     H2HDB,
     CatalogAnalysisPhase,
-    CatalogAnalysisScanCompletion,
     CatalogBuild,
     CatalogBuildAnalyzer,
     CatalogBuildBatchConflictError,
@@ -50,21 +49,34 @@ def _claim(database: H2HDB, *, periodic: bool = False) -> GalleryIngestTurn:
     return turn
 
 
-def _file_spam_completion(
+def _complete_file_spam_scan(
     database: H2HDB,
     build: CatalogBuild,
-) -> CatalogAnalysisScanCompletion:
-    after = None
+    turn: GalleryIngestTurn,
+    *,
+    excluded_hashes: tuple[str, ...] = (),
+) -> None:
     while True:
-        page = database.list_catalog_file_hash_aggregates(
-            build.build_id,
-            after=after,
+        page = database.get_catalog_file_spam_page(
+            build,
+            minimum_occurrences=3,
             limit=2,
+            ingest_turn=turn,
         )
-        if not page.items:
-            assert page.completion is not None
-            return page.completion
-        after = page.items[-1].cursor
+        page_hashes = {item.file_sha256 for item in page.items}
+        database.apply_catalog_file_spam_page(
+            build,
+            page,
+            tuple(digest for digest in excluded_hashes if digest in page_hashes),
+            ingest_turn=turn,
+        )
+        if page.terminal:
+            break
+    database.complete_catalog_analysis_phase(
+        build,
+        CatalogAnalysisPhase.file_spam,
+        ingest_turn=turn,
+    )
 
 
 def _header(
@@ -159,6 +171,27 @@ def _stage_source_build(database: H2HDB, turn: GalleryIngestTurn) -> CatalogBuil
     return database.complete_catalog_source_staging(build, ingest_turn=turn)
 
 
+def _advance_to_file_spam(
+    database: H2HDB,
+    build: CatalogBuild,
+    turn: GalleryIngestTurn,
+) -> None:
+    database.stage_catalog_source_manifests(
+        build,
+        tuple(
+            CatalogSourceManifest(name, _digest(f"manifest:{name}"))
+            for name in ("gallery-a", "gallery-b", "gallery-c", "gallery-d")
+        ),
+        batch_id="manifests-for-file-spam",
+        ingest_turn=turn,
+    )
+    database.complete_catalog_analysis_phase(
+        build,
+        CatalogAnalysisPhase.source_manifests,
+        ingest_turn=turn,
+    )
+
+
 def _stage_single_to_content(
     database: H2HDB,
     turn: GalleryIngestTurn,
@@ -218,12 +251,7 @@ def _stage_single_to_content(
         CatalogAnalysisPhase.source_manifests,
         ingest_turn=turn,
     )
-    database.complete_catalog_analysis_phase(
-        build,
-        CatalogAnalysisPhase.file_spam,
-        ingest_turn=turn,
-        scan_completion=_file_spam_completion(database, build),
-    )
+    _complete_file_spam_scan(database, build, turn)
     database.stage_catalog_content_digests(
         build,
         (CatalogContentDigest(name, content_sha256),),
@@ -238,13 +266,13 @@ def _stage_single_to_content(
     return build
 
 
-def test_file_spam_requires_terminal_proof_and_preserves_legacy_metadata_membership(
+def test_file_spam_excludes_metadata_digest_collisions_from_artist_evidence(
     sqlite_config: CoreConfig,
 ) -> None:
     database = H2HDB(sqlite_config)
     database.migrate()
     turn = _claim(database)
-    names = ("gallery", "gallery ")
+    names = ("gallery", "gallery ", "metadata-only")
     build = database.begin_catalog_build(scope_key="metadata-parity", ingest_turn=turn)
     database.discover_catalog_galleries(
         build,
@@ -256,22 +284,25 @@ def test_file_spam_requires_terminal_proof_and_preserves_legacy_metadata_members
     database.stage_catalog_gallery_headers(
         build,
         (
-            _header(names[0], 501, artist="artist"),
-            _header(names[1], 502, artist="artist "),
+            _header(names[0], 501, artist="artist-a"),
+            _header(names[1], 502, artist="artist-b"),
+            _header(names[2], 503, artist="artist-c"),
         ),
         batch_id="headers",
         ingest_turn=turn,
     )
-    shared = _digest("content-and-other-gallery-metadata")
+    shared = "ff" * 32
     files = {
         names[0]: (
             GallerySourceFile("galleryinfo.txt", 1, _digest("metadata:first")),
             GallerySourceFile("001.jpg", 1, shared),
+            GallerySourceFile("002.jpg", 1, shared),
         ),
         names[1]: (
-            GallerySourceFile("galleryinfo.txt", 1, shared),
-            GallerySourceFile("001.jpg", 1, _digest("other-content")),
+            GallerySourceFile("galleryinfo.txt", 1, _digest("metadata:second")),
+            GallerySourceFile("001.jpg", 1, shared),
         ),
+        names[2]: (GallerySourceFile("galleryinfo.txt", 1, shared),),
     }
     for name in names:
         database.stage_catalog_file_chunk(
@@ -286,7 +317,7 @@ def test_file_spam_requires_terminal_proof_and_preserves_legacy_metadata_members
         tuple(
             CatalogSourceGalleryCompletion(
                 gallery_name=name,
-                expected_file_count=2,
+                expected_file_count=len(files[name]),
                 scan_observation_sha256=_digest(f"scan:{name}"),
                 scan_observation_version=2,
                 metadata_sha256=_digest(f"metadata:{name}"),
@@ -310,7 +341,7 @@ def test_file_spam_requires_terminal_proof_and_preserves_legacy_metadata_members
         manifest_rows.extend(page.items)
         manifest_after = page.items[-1].cursor
     assert {row.gallery_name for row in manifest_rows} == set(names)
-    assert len({row.gallery_key for row in manifest_rows}) == 2
+    assert len({row.gallery_key for row in manifest_rows}) == 3
     database.stage_catalog_source_manifests(
         build,
         tuple(
@@ -324,27 +355,204 @@ def test_file_spam_requires_terminal_proof_and_preserves_legacy_metadata_members
         CatalogAnalysisPhase.source_manifests,
         ingest_turn=turn,
     )
-    aggregates = database.list_catalog_file_hash_aggregates(
-        build.build_id,
+    aggregate_page = database.get_catalog_file_spam_page(
+        build,
+        minimum_occurrences=3,
         limit=10,
-    ).items
-    shared_aggregate = next(item for item in aggregates if item.file_sha256 == shared)
-    # galleryinfo is excluded from occurrence thresholds, but a matching metadata
-    # file still contributes its gallery's exact artist membership.
-    assert shared_aggregate.occurrence_count == 1
-    assert shared_aggregate.distinct_artist_count == 2
-    assert shared_aggregate.maximum_gallery_artist_count == 1
-    with pytest.raises(CatalogBuildStateError, match="explicit terminal"):
+        ingest_turn=turn,
+    )
+    # Three regular-file occurrences qualify the hash. The third gallery has
+    # the same payload only as galleryinfo.txt; its artist must not enter the
+    # hash evidence and flip the strict >2 cross-artist rule.
+    assert len(aggregate_page.items) == 1
+    aggregate = aggregate_page.items[0]
+    assert aggregate.file_sha256 == shared
+    assert aggregate.occurrence_count == 3
+    assert aggregate.distinct_artist_count == 2
+    assert aggregate.maximum_gallery_artist_count == 1
+    with pytest.raises(CatalogBuildStateError, match="durable contiguous scan"):
         database.complete_catalog_analysis_phase(
             build,
             CatalogAnalysisPhase.file_spam,
             ingest_turn=turn,
         )
+    database.apply_catalog_file_spam_page(
+        build,
+        aggregate_page,
+        (),
+        ingest_turn=turn,
+    )
+    terminal_page = database.get_catalog_file_spam_page(
+        build,
+        minimum_occurrences=3,
+        limit=10,
+        ingest_turn=turn,
+    )
+    assert terminal_page.items == ()
+    assert terminal_page.minimum_occurrences == 3
+    database.apply_catalog_file_spam_page(
+        build,
+        terminal_page,
+        (),
+        ingest_turn=turn,
+    )
     database.complete_catalog_analysis_phase(
         build,
         CatalogAnalysisPhase.file_spam,
         ingest_turn=turn,
-        scan_completion=_file_spam_completion(database, build),
+    )
+
+
+def test_file_spam_checkpoint_rejects_forgery_policy_drift_and_stale_handles(
+    sqlite_config: CoreConfig,
+) -> None:
+    database = H2HDB(sqlite_config)
+    database.migrate()
+    turn = _claim(database)
+    build = _stage_source_build(database, turn)
+    _advance_to_file_spam(database, build, turn)
+
+    first = database.get_catalog_file_spam_page(
+        build,
+        minimum_occurrences=2,
+        limit=1,
+        ingest_turn=turn,
+    )
+    assert len(first.items) == 1
+    with pytest.raises(CatalogBuildBatchConflictError, match="different minimum"):
+        database.get_catalog_file_spam_page(
+            build,
+            minimum_occurrences=3,
+            limit=1,
+            ingest_turn=turn,
+        )
+    with pytest.raises(CatalogBuildStateError, match="stale or.*out of order"):
+        database.apply_catalog_file_spam_page(
+            build,
+            replace(first, checkpoint_generation=first.checkpoint_generation + 1),
+            (),
+            ingest_turn=turn,
+        )
+    with pytest.raises(CatalogBuildStateError, match="stale or.*out of order"):
+        database.apply_catalog_file_spam_page(
+            build,
+            replace(
+                first,
+                items=(),
+                start_cursor_sha256="f" * 64,
+                next_cursor_sha256="f" * 64,
+                # The attacker even supplies the correct digest for an empty
+                # aggregate page.  Authority still comes from the persisted
+                # cursor, not from this caller-constructed handle.
+                input_sha256=_digest("[]"),
+            ),
+            (),
+            ingest_turn=turn,
+        )
+    with sqlite3.connect(sqlite_config.database.database) as connection:
+        assert connection.execute(
+            "SELECT cursor_sha256, state "
+            "FROM catalog_build_analysis_scan_checkpoints "
+            "WHERE build_id = ? AND phase = 'FILE_SPAM'",
+            (build.build_id,),
+        ).fetchone() == ("", "OPEN")
+
+    database.apply_catalog_file_spam_page(build, first, (), ingest_turn=turn)
+    with pytest.raises(CatalogBuildBatchConflictError, match="different decisions"):
+        database.apply_catalog_file_spam_page(
+            build,
+            first,
+            (first.items[0].file_sha256,),
+            ingest_turn=turn,
+        )
+    restarted = H2HDB(sqlite_config)
+    second = restarted.get_catalog_file_spam_page(
+        build,
+        minimum_occurrences=2,
+        limit=1,
+        ingest_turn=turn,
+    )
+    assert second.start_cursor_sha256 == first.next_cursor_sha256
+    assert second.checkpoint_generation == first.checkpoint_generation + 1
+
+    with sqlite3.connect(sqlite_config.database.database) as connection:
+        connection.execute(
+            "UPDATE gallery_ingest_state SET lease_expires_at = 0 WHERE state_id = 1"
+        )
+    takeover = _claim(restarted)
+    resumed = restarted.resume_catalog_build(
+        scope_key=build.scope_key,
+        ingest_turn=takeover,
+    )
+    assert resumed is not None
+    with pytest.raises(IngestTurnLostError):
+        restarted.apply_catalog_file_spam_page(
+            resumed,
+            second,
+            (),
+            ingest_turn=turn,
+        )
+    adopted = restarted.get_catalog_file_spam_page(
+        resumed,
+        minimum_occurrences=2,
+        limit=1,
+        ingest_turn=takeover,
+    )
+    assert adopted == second
+    restarted.apply_catalog_file_spam_page(
+        resumed,
+        adopted,
+        (),
+        ingest_turn=takeover,
+    )
+
+
+def test_file_spam_terminal_receipt_replays_after_response_loss_and_restart(
+    sqlite_config: CoreConfig,
+) -> None:
+    database = H2HDB(sqlite_config)
+    database.migrate()
+    turn = _claim(database)
+    build = _stage_source_build(database, turn)
+    _advance_to_file_spam(database, build, turn)
+
+    while True:
+        page = database.get_catalog_file_spam_page(
+            build,
+            minimum_occurrences=4,
+            limit=1,
+            ingest_turn=turn,
+        )
+        first_result = database.apply_catalog_file_spam_page(
+            build,
+            page,
+            (),
+            ingest_turn=turn,
+        )
+        if page.terminal:
+            break
+    assert first_result.complete and first_result.applied
+
+    restarted = H2HDB(sqlite_config)
+    replay_page = restarted.get_catalog_file_spam_page(
+        build,
+        minimum_occurrences=4,
+        # Recovery must use the receipted page contract, not this new limit.
+        limit=7,
+        ingest_turn=turn,
+    )
+    assert replay_page.terminal
+    replay = restarted.apply_catalog_file_spam_page(
+        build,
+        replay_page,
+        (),
+        ingest_turn=turn,
+    )
+    assert replay.complete and not replay.applied
+    restarted.complete_catalog_analysis_phase(
+        build,
+        CatalogAnalysisPhase.file_spam,
+        ingest_turn=turn,
     )
 
 
@@ -427,40 +635,71 @@ def test_durable_analysis_is_bounded_exact_and_retryable(
         ingest_turn=turn,
     ).applied
 
-    aggregates = database.list_catalog_file_hash_aggregates(
-        build.build_id,
+    aggregate_page = database.get_catalog_file_spam_page(
+        build,
+        minimum_occurrences=3,
         limit=100,
-    ).items
+        ingest_turn=turn,
+    )
+    aggregates = aggregate_page.items
     with pytest.raises(ValueError, match="between 1 and 1000"):
-        database.list_catalog_file_hash_aggregates(build.build_id, limit=1001)
+        database.get_catalog_file_spam_page(
+            build,
+            minimum_occurrences=3,
+            limit=1001,
+            ingest_turn=turn,
+        )
     by_hash = {item.file_sha256: item for item in aggregates}
     common = _digest("cross-artist-spam")
+    # The SQL threshold is exact: the three-occurrence hash is returned, while
+    # the two-occurrence and unique hashes never reach Python.
+    assert set(by_hash) == {common}
     assert by_hash[common].occurrence_count == 3
     assert by_hash[common].distinct_artist_count == 3
     assert by_hash[common].maximum_gallery_artist_count == 1
-    assert _digest("metadata-a") not in by_hash
-    with pytest.raises(ValueError, match="at most 1000"):
-        database.stage_catalog_excluded_file_hashes(
+    with pytest.raises(CatalogBuildBatchConflictError, match="exact durable input"):
+        database.apply_catalog_file_spam_page(
             build,
-            tuple(_digest(f"too-large:{index}") for index in range(1001)),
-            batch_id="too-large",
+            replace(
+                aggregate_page,
+                items=(),
+                start_cursor_sha256="f" * 64,
+                next_cursor_sha256="f" * 64,
+                input_sha256=_digest("forged-terminal"),
+            ),
+            (),
             ingest_turn=turn,
         )
-    database.stage_catalog_excluded_file_hashes(
+    applied = database.apply_catalog_file_spam_page(
         build,
+        aggregate_page,
         (common,),
-        batch_id="excluded",
+        ingest_turn=turn,
+    )
+    assert applied.applied
+    assert not database.apply_catalog_file_spam_page(
+        build,
+        aggregate_page,
+        (common,),
+        ingest_turn=turn,
+    ).applied
+    terminal_page = database.get_catalog_file_spam_page(
+        build,
+        minimum_occurrences=3,
+        limit=100,
+        ingest_turn=turn,
+    )
+    assert terminal_page.terminal
+    database.apply_catalog_file_spam_page(
+        build,
+        terminal_page,
+        (),
         ingest_turn=turn,
     )
     database.complete_catalog_analysis_phase(
         build,
         CatalogAnalysisPhase.file_spam,
         ingest_turn=turn,
-        scan_completion=database.list_catalog_file_hash_aggregates(
-            build.build_id,
-            after=aggregates[-1].cursor,
-            limit=100,
-        ).completion,
     )
 
     hash_rows: list[CatalogGalleryFileHashRow] = []
@@ -478,8 +717,10 @@ def test_durable_analysis_is_bounded_exact_and_retryable(
     assert len(hash_rows) == 9
     assert sum(row.excluded_as_spam for row in hash_rows) == 3
     assert any(
-        row.gallery_name == "gallery-c" and row.file_name is None for row in hash_rows
+        row.gallery_name == "gallery-c" and row.empty_gallery_sentinel
+        for row in hash_rows
     )
+    assert sum(row.metadata_file for row in hash_rows) == 3
 
     content = _digest("effective-content")
     database.stage_catalog_content_digests(

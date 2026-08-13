@@ -4,49 +4,79 @@ on:
   pull_request:
   push:
   workflow_dispatch:
+    inputs:
+      deep:
+        description: Run the larger finite TLC profiles
+        required: false
+        type: boolean
+        default: false
+  schedule:
+    - cron: "17 3 * * 1"
 
 permissions:
   contents: read
 
 jobs:
-  lean-and-schema:
+  required-formal-contracts:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: "3.14.6"
 
       - uses: leanprover/lean-action@v1
         with:
           auto-config: false
 
-      - name: Install exact schema-test runner
-        run: python -m pip install pytest==9.1.1
+      - name: Install exact formal-test runtime
+        run: |
+          python -m pip install \
+            pytest==9.1.1 \
+            hypothesis==6.165.3 \
+            pydantic==2.13.4 \
+            mysql-connector-python==9.7.0
+          python -m pip install --no-deps -e .
 
-      - name: Exercise schema-contract negative controls
-        run: python -m pytest -q tests/test_verification_schema.py
+      - name: Validate coverage contract (not production readiness)
+        run: |
+          python scripts/verify-formal.py coverage --validate-only
+          python -m pytest -q tests/test_verification_coverage.py
 
-      - name: Check generated schema proof and executable contract
+      - name: Exercise schema and refinement negative controls
+        run: >-
+          python -m pytest -q
+          tests/test_verification_schema.py
+          tests/test_verification_schema_properties.py
+          tests/test_verification_schema_refinement.py
+          tests/test_verification_operational_schema.py
+
+      - name: Check schema contracts and every generated artifact for drift
         run: python scripts/verify-formal.py schema
+
+      - name: Check generated runtime provider artifact for drift
+        run: python scripts/generate-vnext-schema-provider.py --check
 
       - name: Check Lean proofs without warnings
         run: python scripts/verify-formal.py lean
 
-  catalog-lifecycle:
+      - name: Exercise schema epoch faults and generated provider
+        run: >-
+          python -m pytest -q
+          tests/test_schema_epoch.py
+          tests/test_schema_epoch_mariadb.py
+          tests/test_schema_admin.py
+          tests/test_vnext_schema_provider_generation.py
+
+  required-tlc-small:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
+          python-version: "3.14.6"
 
       - name: Fetch checksum-pinned TLC
         run: python scripts/fetch-formal-tools.py
@@ -54,4 +84,25 @@ jobs:
       - name: Model-check finite catalog lifecycle
         run: >-
           python scripts/verify-formal.py tla
+          --tla-runtime docker
+          --tla-jar .formal-tools/tla2tools-1.7.4.jar
+
+  deep-tlc-nightly-or-manual:
+    if: github.event_name == 'schedule' || inputs.deep == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.6"
+
+      - name: Fetch checksum-pinned TLC
+        run: python scripts/fetch-formal-tools.py
+
+      - name: Model-check larger finite catalog lifecycle profiles
+        run: >-
+          python scripts/verify-formal.py tla
+          --deep
+          --tla-runtime docker
           --tla-jar .formal-tools/tla2tools-1.7.4.jar

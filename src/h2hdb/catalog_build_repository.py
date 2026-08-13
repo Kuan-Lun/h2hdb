@@ -16,6 +16,8 @@ from typing import Any
 from uuid import uuid4
 
 from .domain import (
+    CANONICAL_SOURCE_MANIFEST_VERSION,
+    CatalogAnalysisPhase,
     CatalogBuild,
     CatalogBuildBatchResult,
     CatalogBuildPhase,
@@ -28,7 +30,6 @@ from .domain import (
     CatalogSourceFileChunk,
     CatalogSourceFileCursor,
     CatalogSourceFilePage,
-    CatalogSourceGalleryAnalysis,
     CatalogSourceGalleryCompletion,
     CatalogSourceGalleryDiscovery,
     CatalogSourceGalleryHeader,
@@ -137,6 +138,8 @@ def _completion_payload(completion: CatalogSourceGalleryCompletion) -> object:
         completion.page_count,
         completion.directory_entry_count,
         completion.directory_observation_sha256,
+        completion.canonical_source_manifest_sha256,
+        completion.canonical_source_manifest_version,
     )
 
 
@@ -1004,7 +1007,9 @@ class CatalogBuildRepository(BaseRepository):
                 metadata_sha256,
                 page_count,
                 directory_entry_count,
-                directory_observation_sha256
+                directory_observation_sha256,
+                source_manifest_sha256,
+                source_manifest_version
             FROM catalog_source_galleries
             WHERE build_id = %s AND gallery_key = %s
             """,
@@ -1024,6 +1029,8 @@ class CatalogBuildRepository(BaseRepository):
                 None if row[8] is None else int(row[8]),
                 None if row[9] is None else int(row[9]),
                 None if row[10] is None else str(row[10]),
+                None if row[11] is None else str(row[11]),
+                None if row[12] is None else int(row[12]),
             )
             requested = (
                 completion.expected_file_count,
@@ -1034,6 +1041,8 @@ class CatalogBuildRepository(BaseRepository):
                 completion.page_count,
                 completion.directory_entry_count,
                 completion.directory_observation_sha256,
+                completion.canonical_source_manifest_sha256,
+                completion.canonical_source_manifest_version,
             )
             if persisted != requested:
                 raise CatalogBuildBatchConflictError(
@@ -1064,6 +1073,8 @@ class CatalogBuildRepository(BaseRepository):
                 page_count = %s,
                 directory_entry_count = %s,
                 directory_observation_sha256 = %s,
+                source_manifest_sha256 = %s,
+                source_manifest_version = %s,
                 expected_file_count = %s,
                 source_complete = 1
             WHERE build_id = %s AND gallery_key = %s
@@ -1076,6 +1087,8 @@ class CatalogBuildRepository(BaseRepository):
                 completion.page_count,
                 completion.directory_entry_count,
                 completion.directory_observation_sha256,
+                completion.canonical_source_manifest_sha256,
+                completion.canonical_source_manifest_version,
                 completion.expected_file_count,
                 build_id,
                 gallery_key,
@@ -1178,6 +1191,7 @@ class CatalogBuildRepository(BaseRepository):
     ) -> CatalogBuild:
         build = self._require_owned_build(connector, build_id, turn)
         if build.phase is CatalogBuildPhase.analyzing:
+            self._complete_embedded_source_manifest_phase(connector, build)
             return build
         self._require_phase(build, CatalogBuildPhase.staging)
         self._validate_raw_source_complete(connector, build)
@@ -1194,136 +1208,75 @@ class CatalogBuildRepository(BaseRepository):
                 build_id,
             ),
         )
+        self._complete_embedded_source_manifest_phase(connector, build)
         return self._require_build(connector, build_id, for_update=False)
 
-    def _stage_analysis_with_connector(
+    def _complete_embedded_source_manifest_phase(
         self,
         connector: SQLConnector,
-        build_id: str,
-        analyses: Sequence[CatalogSourceGalleryAnalysis],
-        *,
-        batch_id: str,
-        turn: GalleryIngestTurn,
-    ) -> CatalogBuildBatchResult:
-        self._validate_batch_id(batch_id)
-        values = tuple(analyses)
-        names = tuple(value.gallery_name for value in values)
-        if len(names) != len(set(names)):
-            raise ValueError("An analysis batch contains duplicate gallery names")
-        build = self._require_owned_build(connector, build_id, turn)
-        self._require_phase(build, CatalogBuildPhase.analyzing)
-        payload_sha256 = _payload_sha256(
-            tuple(
-                (
-                    value.gallery_name,
-                    value.content_sha256,
-                    value.selected,
-                    value.duplicate_of_gallery_name,
-                    value.source_manifest_sha256,
-                    value.source_manifest_version,
-                )
-                for value in values
-            )
+        build: CatalogBuild,
+    ) -> None:
+        """Checkpoint manifests supplied atomically with every gallery completion."""
+
+        if build.staged_gallery_count == 0:
+            return
+        unsupported = connector.fetch_one(
+            """
+            SELECT gallery_name, source_manifest_version
+            FROM catalog_source_galleries
+            WHERE build_id = %s
+                AND source_complete = 1
+                AND source_manifest_version IS NOT NULL
+                AND source_manifest_version <> %s
+            LIMIT 1
+            """,
+            (build.build_id, CANONICAL_SOURCE_MANIFEST_VERSION),
         )
-        previous = self._existing_batch(connector, build_id, "ANALYSIS", batch_id)
-        if previous is not None:
-            return self._replayed_batch_result(
-                build_id, batch_id, payload_sha256, previous
+        if unsupported:
+            raise CatalogBuildStateError(
+                "Gallery "
+                f"{unsupported[0]!s} has unsupported canonical source manifest "
+                f"version {unsupported[1]!s}; expected "
+                f"{CANONICAL_SOURCE_MANIFEST_VERSION}"
             )
-        applied_values: list[CatalogSourceGalleryAnalysis] = []
-        for value in values:
-            gallery_key = _stable_key(value.gallery_name)
-            row = connector.fetch_one(
-                """
-                SELECT
-                    gallery_name,
-                    analysis_complete,
-                    content_sha256,
-                    selected,
-                    duplicate_of_gallery_name,
-                    source_manifest_sha256,
-                    source_manifest_version
-                FROM catalog_source_galleries
-                WHERE build_id = %s AND gallery_key = %s
-                """,
-                (build_id, gallery_key),
-            )
-            if not row or str(row[0]) != value.gallery_name:
-                raise CatalogBuildStateError(
-                    "Analysis references a gallery that is not staged"
+        missing = connector.fetch_one(
+            """
+            SELECT 1
+            FROM catalog_source_galleries
+            WHERE build_id = %s
+                AND source_complete = 1
+                AND (
+                    source_manifest_sha256 IS NULL
+                    OR source_manifest_version IS NULL
                 )
-            if bool(row[1]):
-                persisted = (
-                    None if row[2] is None else str(row[2]),
-                    bool(row[3]),
-                    None if row[4] is None else str(row[4]),
-                    None if row[5] is None else str(row[5]),
-                    None if row[6] is None else int(row[6]),
-                )
-                requested = (
-                    value.content_sha256,
-                    value.selected,
-                    value.duplicate_of_gallery_name,
-                    value.source_manifest_sha256,
-                    value.source_manifest_version,
-                )
-                if persisted != requested:
-                    raise CatalogBuildBatchConflictError(
-                        "Gallery was analyzed with different canonical data"
-                    )
-                continue
-            connector.execute(
-                """
-                UPDATE catalog_source_galleries
-                SET content_sha256 = %s,
-                    selected = %s,
-                    duplicate_of_gallery_name = %s,
-                    duplicate_of_gallery_key = %s,
-                    source_manifest_sha256 = %s,
-                    source_manifest_version = %s,
-                    analysis_complete = 1
-                WHERE build_id = %s AND gallery_key = %s
-                """,
-                (
-                    value.content_sha256,
-                    value.selected,
-                    value.duplicate_of_gallery_name,
-                    (
-                        None
-                        if value.duplicate_of_gallery_name is None
-                        else _stable_key(value.duplicate_of_gallery_name)
-                    ),
-                    value.source_manifest_sha256,
-                    value.source_manifest_version,
-                    build_id,
-                    gallery_key,
-                ),
-            )
-            applied_values.append(value)
-        self._record_batch(
-            connector,
-            build_id,
-            "ANALYSIS",
-            batch_id,
-            payload_sha256,
-            len(applied_values),
-            0,
+            LIMIT 1
+            """,
+            (build.build_id,),
         )
-        now = self._database_datetime(connector)
+        if missing:
+            return
+        existing = connector.fetch_one(
+            """
+            SELECT 1
+            FROM catalog_build_analysis_phases
+            WHERE build_id = %s AND phase = %s
+            """,
+            (build.build_id, CatalogAnalysisPhase.source_manifests.value),
+        )
+        if existing:
+            return
+        completed_at = self._database_datetime(connector)
         connector.execute(
             """
-            UPDATE catalog_builds
-            SET analyzed_gallery_count = analyzed_gallery_count + %s,
-                updated_at = %s
-            WHERE build_id = %s
+            INSERT INTO catalog_build_analysis_phases (
+                build_id, phase, completed_at
+            ) VALUES (%s, %s, %s)
             """,
-            (len(applied_values), now.isoformat(), build_id),
-        )
-        return CatalogBuildBatchResult(
-            build_id,
-            batch_id,
-            True,
-            len(applied_values),
+            (
+                build.build_id,
+                CatalogAnalysisPhase.source_manifests.value,
+                completed_at.isoformat(),
+            ),
         )
 
     def _complete_analysis_with_connector(
@@ -1336,16 +1289,7 @@ class CatalogBuildRepository(BaseRepository):
         if build.phase is CatalogBuildPhase.artifacts:
             return build
         self._require_phase(build, CatalogBuildPhase.analyzing)
-        staged_phase = connector.fetch_one(
-            """
-            SELECT phase
-            FROM catalog_build_analysis_phases
-            WHERE build_id = %s
-            LIMIT 1
-            """,
-            (build_id,),
-        )
-        if staged_phase and not connector.fetch_one(
+        if not connector.fetch_one(
             """
             SELECT 1
             FROM catalog_build_analysis_phases
@@ -1590,6 +1534,14 @@ class CatalogBuildRepository(BaseRepository):
                     )
 
                 deletion_specs = (
+                    (
+                        "catalog_build_analysis_scan_receipts",
+                        ("phase", "batch_key"),
+                    ),
+                    (
+                        "catalog_build_analysis_scan_checkpoints",
+                        ("phase",),
+                    ),
                     (
                         "catalog_build_excluded_file_hashes",
                         ("sha256",),

@@ -26,7 +26,6 @@ from .config_loader import CoreConfig
 from .domain import (
     CatalogAnalysisPhase,
     CatalogAnalysisPhaseCheckpoint,
-    CatalogAnalysisScanCompletion,
     CatalogArtifact,
     CatalogBuild,
     CatalogBuildBatchResult,
@@ -43,8 +42,8 @@ from .domain import (
     CatalogContentDigest,
     CatalogContentOwner,
     CatalogContributor,
-    CatalogFileHashAggregateCursor,
     CatalogFileHashAggregatePage,
+    CatalogFileSpamPageApplyResult,
     CatalogFinalAnalysisCursor,
     CatalogFinalAnalysisPage,
     CatalogGalleryFileHashCursor,
@@ -92,6 +91,8 @@ from .domain import (
 )
 from .migrations import MigrationRunner
 from .repository import RepositoryContext
+from .schema_admin import SchemaEpochReadiness, VNextSchemaAdmin
+from .schema_epoch import SchemaEpochProvider, SchemaEpochReport
 from .sql_connector import SQLConnector
 from .table_database_maintenance import (
     DatabaseMaintenanceResult,
@@ -257,6 +258,7 @@ class H2HDB:
             self._catalog_builds,
         )
         self._migrations = MigrationRunner(self._context)
+        self._schema_epoch_v2 = VNextSchemaAdmin(self._context)
         self._database_gate_depth: ContextVar[int] = ContextVar(
             f"h2hdb_database_gate_depth_{id(self)}",
             default=0,
@@ -278,6 +280,27 @@ class H2HDB:
             self._database_settings.check_database_character_set()
             self._database_settings.check_database_collation()
             return self._migrations.migrate()
+
+    def initialize_schema_epoch_v2(
+        self, provider: SchemaEpochProvider | None = None
+    ) -> SchemaEpochReport:
+        """Initialize greenfield epoch v2 without touching legacy gates."""
+
+        return self._schema_epoch_v2.initialize(provider)
+
+    def check_schema_epoch_v2(
+        self, provider: SchemaEpochProvider | None = None
+    ) -> SchemaEpochReport:
+        """Fully validate an existing READY epoch v2 without mutating it."""
+
+        return self._schema_epoch_v2.check(provider)
+
+    def check_schema_epoch_v2_readiness(
+        self, provider: SchemaEpochProvider | None = None
+    ) -> SchemaEpochReadiness:
+        """Perform an O(1) exact READY-marker check for epoch v2."""
+
+        return self._schema_epoch_v2.check_readiness(provider)
 
     @_database_operation
     def check_compatibility(self) -> SchemaCompatibility:
@@ -627,24 +650,6 @@ class H2HDB:
             )
 
     @_database_operation
-    def stage_catalog_analysis(
-        self,
-        build: CatalogBuild,
-        analyses: Sequence[CatalogSourceGalleryAnalysis],
-        *,
-        batch_id: str,
-        ingest_turn: GalleryIngestTurn,
-    ) -> CatalogBuildBatchResult:
-        with self._catalog_build_transaction(ingest_turn) as connector:
-            return self._catalog_builds._stage_analysis_with_connector(
-                connector,
-                build.build_id,
-                analyses,
-                batch_id=batch_id,
-                turn=ingest_turn,
-            )
-
-    @_database_operation
     def complete_catalog_analysis(
         self,
         build: CatalogBuild,
@@ -932,34 +937,38 @@ class H2HDB:
             )
 
     @_database_operation
-    def list_catalog_file_hash_aggregates(
-        self,
-        build_id: str,
-        *,
-        after: CatalogFileHashAggregateCursor | None = None,
-        limit: int = 1000,
-    ) -> CatalogFileHashAggregatePage:
-        return self._catalog_analysis.list_file_hash_aggregates(
-            build_id,
-            after=after,
-            limit=limit,
-        )
-
-    @_database_operation
-    def stage_catalog_excluded_file_hashes(
+    def get_catalog_file_spam_page(
         self,
         build: CatalogBuild,
-        hashes: Sequence[str],
         *,
-        batch_id: str,
+        minimum_occurrences: int,
+        limit: int = 1000,
         ingest_turn: GalleryIngestTurn,
-    ) -> CatalogBuildBatchResult:
+    ) -> CatalogFileHashAggregatePage:
         with self._catalog_build_transaction(ingest_turn) as connector:
-            return self._catalog_analysis.stage_excluded_file_hashes(
+            return self._catalog_analysis.get_file_spam_page(
                 connector,
                 build.build_id,
-                hashes,
-                batch_id=batch_id,
+                minimum_occurrences=minimum_occurrences,
+                limit=limit,
+                turn=ingest_turn,
+            )
+
+    @_database_operation
+    def apply_catalog_file_spam_page(
+        self,
+        build: CatalogBuild,
+        page: CatalogFileHashAggregatePage,
+        excluded_hashes: Sequence[str],
+        *,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogFileSpamPageApplyResult:
+        with self._catalog_build_transaction(ingest_turn) as connector:
+            return self._catalog_analysis.apply_file_spam_page(
+                connector,
+                build.build_id,
+                page,
+                excluded_hashes,
                 turn=ingest_turn,
             )
 
@@ -1098,7 +1107,6 @@ class H2HDB:
         phase: CatalogAnalysisPhase,
         *,
         ingest_turn: GalleryIngestTurn,
-        scan_completion: CatalogAnalysisScanCompletion | None = None,
     ) -> CatalogAnalysisPhaseCheckpoint:
         with self._catalog_build_transaction(ingest_turn) as connector:
             return self._catalog_analysis.complete_phase(
@@ -1106,7 +1114,6 @@ class H2HDB:
                 build.build_id,
                 phase,
                 turn=ingest_turn,
-                scan_completion=scan_completion,
             )
 
     @_database_operation

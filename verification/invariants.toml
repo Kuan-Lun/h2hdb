@@ -1,0 +1,867 @@
+coverage_version = 1
+invariant_sources = [
+  "verification/schema/catalog.toml",
+  "verification/schema/operational.toml",
+]
+
+# Proof engines are pinned by repository-owned lock files.  pytest is pinned
+# explicitly in the required CI workflow which executes the runtime evidence.
+[tools]
+python = "3.14.6"
+lean_toolchain = "lean-toolchain"
+tlc_lock = "verification/tools.lock.toml"
+pytest = "9.1.1"
+ci_workflow = ".github/workflows/verify.yml"
+
+[[evidence]]
+id = "fd.operational.closed-world"
+layer = "fd"
+strength = "closed_world_fd_contract"
+directness = "supporting"
+claim = "The operational relations, declared keys, and complete declared functional dependencies are checked as one closed-world contract."
+assumptions = ["The manifest contains every real semantic functional dependency."]
+[[evidence.location]]
+path = "verification/schema/operational.toml"
+symbol = "fds ="
+
+[[evidence]]
+id = "lean.operational.all-bcnf"
+layer = "lean"
+strength = "unbounded_theorem"
+directness = "supporting"
+claim = "Lean proves BCNF for every operational relation over the functional dependencies represented in the generated relation contracts."
+assumptions = [
+  "The generated Lean contracts exactly reflect operational.toml.",
+  "The closed-world functional dependency declarations are complete.",
+]
+[[evidence.location]]
+path = "verification/lean/OperationalSchema.lean"
+symbol = "all_manifest_relations_bcnf"
+
+[[evidence]]
+id = "tla.fencing.small"
+layer = "tla"
+strength = "bounded_model_check"
+directness = "direct"
+claim = "TLC exhaustively checks stale-generation mutation safety only for the finite constants in CatalogCoreSmall.cfg."
+assumptions = [
+  "Owners, builds, artifacts, revisions, time, and generations are the finite Small-profile constants.",
+  "The TLA transition relation is an abstraction and does not establish Python or SQL refinement.",
+]
+[[evidence.location]]
+path = "verification/tla/CatalogCore.tla"
+symbol = "StaleGenerationCannotMutate"
+[[evidence.location]]
+path = "verification/tla/CatalogCoreSmall.cfg"
+symbol = "StaleGenerationCannotMutate"
+
+[[evidence]]
+id = "fault.operational.binding-corruption"
+layer = "fault"
+strength = "negative_control"
+directness = "supporting"
+claim = "A parameterized negative control corrupts each required operational machine binding and requires closed-world validation to reject it."
+assumptions = []
+[[evidence.location]]
+path = "tests/test_verification_coverage.py"
+symbol = "test_each_operational_obligation_rejects_a_corrupted_binding"
+
+[[evidence]]
+id = "integration.operational.sqlite-refinement"
+layer = "integration"
+strength = "sqlite_integration"
+directness = "supporting"
+claim = "A complete generated SQLite operational schema is introspected and required to refine all 60 logical operational relations."
+assumptions = []
+[[evidence.location]]
+path = "tests/test_verification_operational_schema.py"
+symbol = "test_complete_operational_sqlite_fixture_physically_refines"
+
+[[evidence]]
+id = "lean.operational.cleanup-reachability"
+layer = "lean"
+strength = "unbounded_theorem"
+directness = "direct"
+claim = "Lean proves for arbitrary targets that reachability from a retention root excludes cleanup eligibility and that a parent phase cannot precede its ordered child."
+assumptions = ["Runtime blocker predicates and phase ordinals refine the generated closed-world cleanup registry."]
+[[evidence.location]]
+path = "verification/lean/OperationalSchema.lean"
+symbol = "reachable_retention_root_is_never_cleanup_eligible"
+
+[[evidence]]
+id = "runtime.cleanup-reachability"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable checker validates target codecs, candidate root keys, every catalog FK descendant, explicit blockers, registry seeds, preparation persistence, and child-first phase order."
+assumptions = []
+[[evidence.location]]
+path = "verification/schema/operational_refinement.py"
+symbol = "check_cleanup_reachability_v1"
+
+[[evidence]]
+id = "fault.cleanup-reachability"
+layer = "fault"
+strength = "negative_control"
+directness = "supporting"
+claim = "Negative controls remove an observation child and corrupt its composite root key; both mutations must fail closed."
+assumptions = []
+[[evidence.location]]
+path = "tests/test_verification_operational_schema.py"
+symbol = "test_cleanup_fk_descendant_and_root_codec_mutations_fail_closed"
+
+[[evidence]]
+id = "integration.cleanup-registry-fks"
+layer = "integration"
+strength = "sqlite_integration"
+directness = "supporting"
+claim = "SQLite rejects an unregistered cleanup target kind and generated MariaDB DDL contains target-kind and phase registry foreign keys."
+assumptions = []
+[[evidence.location]]
+path = "tests/test_verification_operational_schema.py"
+symbol = "test_cleanup_registry_foreign_keys_are_enforced_by_sqlite_and_mariadb"
+
+[[evidence]]
+id = "runtime.physical-domains"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable refinement checker validates fixed-width identities, payload domains, cursor bounds, counters, and timestamps."
+assumptions = []
+[[evidence.location]]
+path = "verification/schema/operational_refinement.py"
+symbol = "check_physical_domains_v1"
+
+[[evidence]]
+id = "runtime.epoch-manifest"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable refinement checker validates epoch ownership and exact manifest digest storage."
+assumptions = []
+[[evidence.location]]
+path = "verification/schema/operational_refinement.py"
+symbol = "check_epoch_manifest_v1"
+
+[[evidence]]
+id = "runtime.fencing"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable refinement checker binds the exact fencing relations and authorization rules."
+assumptions = []
+[[evidence.location]]
+path = "verification/schema/operational_refinement.py"
+symbol = "check_fencing_contract_v1"
+
+[[evidence]]
+id = "runtime.maintenance-gate"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable refinement checker binds the exact 64-slot maintenance-gate contract and slot key."
+assumptions = []
+[[evidence.location]]
+path = "verification/schema/operational_refinement.py"
+symbol = "check_maintenance_gate_contract_v1"
+
+[[evidence]]
+id = "runtime.bounded-work"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable refinement checker binds server checkpoints, atomic receipts, and terminal empty-page rules."
+assumptions = []
+[[evidence.location]]
+path = "verification/schema/operational_refinement.py"
+symbol = "check_bounded_work_contract_v1"
+
+[[evidence]]
+id = "runtime.queue-history"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable refinement checker binds immutable attempts, mutable heads, payload satellites, and consumption history."
+assumptions = []
+[[evidence.location]]
+path = "verification/schema/operational_refinement.py"
+symbol = "check_queue_history_contract_v1"
+
+[[evidence]]
+id = "runtime.canonical-hash-cache"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable refinement checker binds canonical digest domains and exact hash-cache preimage authority."
+assumptions = []
+[[evidence.location]]
+path = "verification/schema/operational_refinement.py"
+symbol = "check_canonical_hash_cache_contract_v1"
+
+[[evidence]]
+id = "runtime.event-integrity"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable refinement checker binds event subtype agreement and acknowledgement-head coverage rules."
+assumptions = []
+[[evidence.location]]
+path = "verification/schema/operational_refinement.py"
+symbol = "check_event_integrity_contract_v1"
+
+[[evidence]]
+id = "runtime.build-generation"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable refinement checker binds the one-reservation-per-generation source-build contract."
+assumptions = []
+[[evidence.location]]
+path = "verification/schema/operational_refinement.py"
+symbol = "check_build_generation_contract_v1"
+
+[[evidence]]
+id = "runtime.attempt-identity"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable refinement checker binds monotone cleanup attempts and policy-qualified preparation identity."
+assumptions = []
+[[evidence.location]]
+path = "verification/schema/operational_refinement.py"
+symbol = "check_attempt_identity_contract_v1"
+
+[[evidence]]
+id = "runtime.revision-allocation"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable refinement checker binds allocator streams, monotone allocation, and publication bounds."
+assumptions = []
+[[evidence.location]]
+path = "verification/schema/operational_refinement.py"
+symbol = "check_revision_allocator_contract_v1"
+
+[[evidence]]
+id = "runtime.bootstrap-genesis"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable refinement checker validates exact typed allocator genesis and absent operational facts."
+assumptions = []
+[[evidence.location]]
+path = "verification/schema/operational_refinement.py"
+symbol = "check_bootstrap_contract_v1"
+
+[[evidence]]
+id = "runtime.gallery-staging-model"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "Pure transition classifiers reject stale owners and distinguish page commit, response-loss replay, bounded branch carry, metadata parsing, directory lookup, and child-first reuse cleanup; caller-supplied facts are abstractions and do not prove production SQL or byte recomputation."
+assumptions = [
+  "A production writer must derive every fact from locked database rows and exact page bytes rather than trusting caller booleans.",
+  "The transition model does not establish transaction isolation, durable ordering, or crash recovery in SQLite or MariaDB.",
+]
+[[evidence.location]]
+path = "verification/schema/operational_refinement.py"
+symbol = "gallery_staging_batch_state"
+[[evidence.location]]
+path = "verification/schema/operational_refinement.py"
+symbol = "gallery_staging_carry_state"
+[[evidence.location]]
+path = "verification/schema/operational_refinement.py"
+symbol = "gallery_metadata_parser_state"
+[[evidence.location]]
+path = "verification/schema/operational_refinement.py"
+symbol = "gallery_staging_match_state"
+[[evidence.location]]
+path = "verification/schema/operational_refinement.py"
+symbol = "gallery_observation_cleanup_batch_state"
+[[evidence.location]]
+path = "verification/schema/operational_refinement.py"
+symbol = "encode_gallery_staging_page_request"
+[[evidence.location]]
+path = "verification/schema/operational_refinement.py"
+symbol = "validate_gallery_branch_children"
+[[evidence.location]]
+path = "verification/schema/operational_refinement.py"
+symbol = "advance_gallery_metadata_parser"
+
+[[evidence]]
+id = "tla.gallery-staging.small"
+layer = "tla"
+strength = "bounded_model_check"
+directness = "direct"
+claim = "TLC exhaustively checks exact-request replay, stale-owner rejection, bounded carry, canonical upload handoff, maintenance fencing, and phased cleanup only for the finite GalleryStaging Small profile."
+assumptions = [
+  "Owners, staging identities, observations, request bytes, canonical values, generations, time, and page positions are exactly the finite Small-profile constants.",
+  "GalleryStaging is a protocol abstraction and does not establish Python, SQL, byte-codec, filesystem, or transaction-isolation refinement.",
+]
+[[evidence.location]]
+path = "verification/tla/GalleryStaging.tla"
+symbol = "CleanupNeverDeletesLiveStagingOrUpload"
+[[evidence.location]]
+path = "verification/tla/GalleryStaging.tla"
+symbol = "CanonicalUploadHandoffIsAtomic"
+[[evidence.location]]
+path = "verification/tla/GalleryStaging.tla"
+symbol = "SourceBuildMappingCleanupIsFenced"
+[[evidence.location]]
+path = "verification/tla/GalleryStagingSmall.cfg"
+symbol = "CleanupNeverDeletesLiveStagingOrUpload"
+
+[[evidence]]
+id = "fd.data.closed-world"
+layer = "fd"
+strength = "closed_world_fd_contract"
+directness = "supporting"
+claim = "The catalog manifest checker treats declared keys and the complete declared FD set of all data-plane relations as a closed-world BCNF input."
+assumptions = ["The manifest contains every real semantic functional dependency; this evidence does not prove that completeness assumption."]
+[[evidence.location]]
+path = "verification/schema/catalog.toml"
+symbol = "fds ="
+
+[[evidence]]
+id = "lean.data.all-bcnf"
+layer = "lean"
+strength = "unbounded_theorem"
+directness = "supporting"
+claim = "Lean proves BCNF for every generated data-plane relation over exactly the functional dependencies represented in its relation contract."
+assumptions = [
+  "The generated Lean contracts exactly reflect catalog.toml.",
+  "The closed-world functional dependency declarations are complete.",
+]
+[[evidence.location]]
+path = "verification/lean/VNextSchema.lean"
+symbol = "all_manifest_relations_bcnf"
+
+[[evidence]]
+id = "lean.data.overlay-exactness"
+layer = "lean"
+strength = "unbounded_theorem"
+directness = "direct"
+claim = "Lean proves exact delta-over-parent recomputation, resolved overlay equality, and preservation across old-ancestry cleanup for arbitrary finite maps satisfying the stated hypotheses."
+assumptions = ["Runtime shadow, tombstone, ancestry, seal, and cleanup operations refine the mathematical maps and hypotheses in VNextSchema.lean."]
+[[evidence.location]]
+path = "verification/lean/VNextSchema.lean"
+symbol = "exact_delta_over_parent_equals_full_recompute"
+[[evidence.location]]
+path = "verification/lean/VNextSchema.lean"
+symbol = "resolved_analysis_answers_equal_full_recompute"
+[[evidence.location]]
+path = "verification/lean/VNextSchema.lean"
+symbol = "compacted_state_survives_old_ancestry_cleanup"
+
+[[evidence]]
+id = "lean.data.artifact-delta"
+layer = "lean"
+strength = "unbounded_theorem"
+directness = "direct"
+claim = "Lean proves total single-valued artifact delta classification on the exact old/new union and that a member-plan difference forces REBUILD."
+assumptions = ["Runtime semantic inputs and equality refine the abstract ArtifactDelta inputs and DecidableEq instance."]
+[[evidence.location]]
+path = "verification/lean/ArtifactDelta.lean"
+symbol = "classify_is_total_on_union"
+[[evidence.location]]
+path = "verification/lean/ArtifactDelta.lean"
+symbol = "member_plan_difference_forces_rebuild"
+
+[[evidence]]
+id = "lean.data.retention"
+layer = "lean"
+strength = "unbounded_theorem"
+directness = "direct"
+claim = "Lean proves that a reachable overlay ancestor cannot be pruned and that compacted state remains valid after old ancestry is removed."
+assumptions = ["The runtime reachability and compaction predicates refine the corresponding generated mathematical predicates."]
+[[evidence.location]]
+path = "verification/lean/VNextSchema.lean"
+symbol = "reachable_ancestor_cannot_be_pruned"
+[[evidence.location]]
+path = "verification/lean/VNextSchema.lean"
+symbol = "compacted_state_survives_old_ancestry_cleanup"
+
+[[evidence]]
+id = "tla.data.lifecycle.small"
+layer = "tla"
+strength = "bounded_model_check"
+directness = "supporting"
+claim = "TLC exhaustively checks sealed-build publication, prepared/protected artifacts, atomic head/revision agreement, and active/protected GC safety only for the finite Small-profile constants."
+assumptions = [
+  "Owners, builds, artifacts, revisions, time, and generations are the finite Small-profile constants.",
+  "CatalogCore is a lifecycle abstraction and does not establish Python, SQL, byte-codec, or writer-hook refinement.",
+]
+[[evidence.location]]
+path = "verification/tla/CatalogCore.tla"
+symbol = "HeadPointsOnlyToSealedAndAnalyzedBuild"
+[[evidence.location]]
+path = "verification/tla/CatalogCore.tla"
+symbol = "DatabaseHeadMatchesPublishedRevision"
+[[evidence.location]]
+path = "verification/tla/CatalogCore.tla"
+symbol = "PublishedArtifactsWerePreparedAndProtected"
+[[evidence.location]]
+path = "verification/tla/CatalogCore.tla"
+symbol = "ActiveAndProtectedArtifactsCannotBeGc"
+[[evidence.location]]
+path = "verification/tla/CatalogCoreSmall.cfg"
+symbol = "HeadPointsOnlyToSealedAndAnalyzedBuild"
+
+[[evidence]]
+id = "runtime.data.identity-codecs"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable manifest checker validates the exact registered identity codecs, golden encodings, digest/natural candidate keys, and collision obligations declared by the data contract."
+assumptions = ["This checks the declarative vNext contract; production writer call-site refinement is a separate integration obligation."]
+[[evidence.location]]
+path = "verification/schema/check_contract.py"
+symbol = "_validate_identity_codecs"
+[[evidence.location]]
+path = "verification/schema/check_contract.py"
+symbol = "_validate_data_plane_integrity_contracts"
+
+[[evidence]]
+id = "runtime.data.canonical-reference-domains"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable manifest checker validates the closed canonical digest-role registry, exact bootstrap domain keys, canonical digest framing, and canonical-reference relation shapes."
+assumptions = ["This checks the declarative vNext contract; production collision handling and FK execution require runtime integration."]
+[[evidence.location]]
+path = "verification/schema/check_contract.py"
+symbol = "_validate_canonical_reference_roles_and_bootstrap"
+[[evidence.location]]
+path = "verification/schema/check_contract.py"
+symbol = "_validate_canonical_digest_contract"
+
+[[evidence]]
+id = "runtime.data.source-baseline-channel"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable manifest checker validates source scope identity, canonical snapshot-manifest framing and retention, channel/source provenance relations, and publication CAS declarations."
+assumptions = ["This checks the declarative vNext contract; actual transaction isolation and CAS execution remain backend integration concerns."]
+[[evidence.location]]
+path = "verification/schema/check_contract.py"
+symbol = "_validate_source_scope_identity_contract"
+[[evidence.location]]
+path = "verification/schema/check_contract.py"
+symbol = "_validate_source_snapshot_manifest_contract"
+[[evidence.location]]
+path = "verification/schema/check_contract.py"
+symbol = "_validate_publication_atomic_contract"
+
+[[evidence]]
+id = "runtime.data.incremental-impact"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable manifest checker validates exact candidate priority semantics and the bounded analysis overlay relations declared for impacted worksets."
+assumptions = ["This checks manifest structure and rules, not equality between a production writer's computed workset and a whole-corpus recomputation."]
+[[evidence.location]]
+path = "verification/schema/check_contract.py"
+symbol = "_validate_analysis_candidate_contract"
+[[evidence.location]]
+path = "verification/schema/check_contract.py"
+symbol = "_validate_analysis_resolution_contract"
+
+[[evidence]]
+id = "runtime.data.overlay-resolution-seal"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable manifest checker validates declarations for bounded acyclic ancestry, mutually exclusive shadow/tombstone components, evaluator equality, seals, and cleanup guards."
+assumptions = ["The runtime SQL views and writer transactions must refine the checked manifest roles and transition predicates."]
+[[evidence.location]]
+path = "verification/schema/check_contract.py"
+symbol = "_validate_analysis_resolution_contract"
+
+[[evidence]]
+id = "runtime.data.artifact-semantics"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable manifest checker validates artifact delta truth tables, six exact semantic codecs and goldens, producer parameters, member-plan framing, and ZIP comment declarations."
+assumptions = ["The runtime artifact producer must use the pinned codecs and implementation fingerprint checked by the manifest."]
+[[evidence.location]]
+path = "verification/schema/check_contract.py"
+symbol = "_validate_artifact_delta_contract"
+[[evidence.location]]
+path = "verification/schema/check_contract.py"
+symbol = "_validate_artifact_codecs"
+[[evidence.location]]
+path = "verification/schema/check_contract.py"
+symbol = "_validate_artifact_byte_producer_contract"
+[[evidence.location]]
+path = "verification/schema/check_contract.py"
+symbol = "_validate_artifact_member_plan_contract"
+
+[[evidence]]
+id = "runtime.data.publication-atomicity"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable manifest checker validates exact publication relation roles, declared READY/CAS terms, transition gates, and the prohibition on audit digests as authority."
+assumptions = ["The runtime backend must execute the checked head, receipt, and revision changes in one correctly isolated transaction."]
+[[evidence.location]]
+path = "verification/schema/check_contract.py"
+symbol = "_validate_publication_atomic_contract"
+[[evidence.location]]
+path = "verification/schema/check_contract.py"
+symbol = "_validate_transition_authority_contract"
+
+[[evidence]]
+id = "runtime.data.state-machines"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable manifest and physical refinement checkers validate declared transition gates plus state, timestamp, checkpoint, and receipt constraints rendered into both backends."
+assumptions = ["Database introspection and transaction tests are required to establish that rendered constraints execute as specified."]
+[[evidence.location]]
+path = "verification/schema/check_contract.py"
+symbol = "_validate_transition_authority_contract"
+[[evidence.location]]
+path = "verification/schema/refinement.py"
+symbol = "_validate_physical_schema"
+
+[[evidence]]
+id = "runtime.data.role-derivation"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable manifest checker validates the exact versioned file-name identity, galleryinfo.txt role classifier declaration, collision rules, and canonical relation keys."
+assumptions = ["Production file ingestion must call the same classifier before persisting dependent facts."]
+[[evidence.location]]
+path = "verification/schema/check_contract.py"
+symbol = "_validate_file_identity_contract"
+
+[[evidence]]
+id = "runtime.data.physical-domains"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable physical refinement checker validates exact storage types, widths, nullability, checks, indexes, keys, foreign keys, and view shapes for every data relation."
+assumptions = ["Backend introspection must accurately report the live SQLite or MariaDB schema."]
+[[evidence.location]]
+path = "verification/schema/refinement.py"
+symbol = "_validate_physical_schema"
+
+[[evidence]]
+id = "runtime.data.bootstrap"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable physical refinement checker validates the declarative BUILDING-only bootstrap partition and the exact three catalog registries designated for seeding."
+assumptions = ["This manifest validation does not prove that SchemaEpoch inserts and exact-validates those rows on either backend."]
+[[evidence.location]]
+path = "verification/schema/refinement.py"
+symbol = "_validate_bootstrap_contract"
+
+[[evidence]]
+id = "runtime.data.retention"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "supporting"
+claim = "The executable manifest checker traverses every declared retention root, blocker, FK descendant, derived view, provenance boundary, and child-first cleanup phase."
+assumptions = ["Production cleanup discovery and mutation SQL must implement the same checked registry and blocker predicates."]
+[[evidence.location]]
+path = "verification/schema/check_contract.py"
+symbol = "_validate_retention_contract"
+
+[[evidence]]
+id = "fault.data.binding-corruption"
+layer = "fault"
+strength = "negative_control"
+directness = "supporting"
+claim = "A closed-world negative control corrupts every data obligation lifecycle binding and requires declarative contract validation to fail closed."
+assumptions = ["This controls manifest binding only; it does not inject faults into any production transaction implementation."]
+[[evidence.location]]
+path = "tests/test_verification_coverage.py"
+symbol = "test_each_data_obligation_rejects_a_corrupted_machine_binding"
+
+[[evidence]]
+id = "integration.data.sqlite-refinement"
+layer = "integration"
+strength = "sqlite_integration"
+directness = "supporting"
+claim = "A complete generated SQLite data schema is created, re-applied idempotently, introspected, and required to refine all 104 logical data relations."
+assumptions = ["Schema-shape refinement does not by itself establish writer transaction semantics."]
+[[evidence.location]]
+path = "tests/test_verification_schema_refinement.py"
+symbol = "test_fresh_complete_sqlite_ddl_refines_physical_spec"
+
+[[evidence]]
+id = "integration.data.overlay-sqlite"
+layer = "integration"
+strength = "sqlite_integration"
+directness = "direct"
+claim = "SQLite integration executes the generated resolved overlay view and checks nearest-shadow selection and tombstone suppression across a three-level ancestry."
+assumptions = ["The fixture covers representative finite ancestry rows, not every possible runtime database state."]
+[[evidence.location]]
+path = "tests/test_verification_schema_refinement.py"
+symbol = "test_sqlite_overlay_view_uses_nearest_shadow_and_tombstone"
+
+[[evidence]]
+id = "integration.data.physical-sqlite"
+layer = "integration"
+strength = "sqlite_integration"
+directness = "direct"
+claim = "SQLite negative integration exercises generated storage-class, positive-revision/generation, and state/timestamp checks and requires malformed rows to be rejected."
+assumptions = []
+[[evidence.location]]
+path = "tests/test_verification_schema_refinement.py"
+symbol = "test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states"
+
+[[evidence]]
+id = "integration.data.bootstrap-sqlite"
+layer = "integration"
+strength = "sqlite_integration"
+directness = "direct"
+claim = "SQLite integration applies every generated bootstrap row twice, validates the exact generated genesis set, then mutates allocator state and requires exact-genesis validation to reject it."
+assumptions = ["This test covers generated SQLite bootstrap behavior; MariaDB execution is a separate opt-in integration gate."]
+[[evidence.location]]
+path = "tests/test_vnext_schema_provider_generation.py"
+symbol = "test_sqlite_bootstrap_validation_is_exact"
+
+# Each required invariant has all six evidence layers.  `supporting` is
+# deliberately weaker than `covered`; it does not turn BCNF, a generic binding
+# negative control, or whole-schema SQLite refinement into a protocol proof.
+
+# Data-plane runtime, fault, and integration layers remain blocked until a
+# production vNext writer exists.  The executable manifest and schema checks
+# below are retained as partial evidence, never promoted into transaction proof.
+
+[[invariant]]
+id = "catalog.identity-codecs.v1"
+fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore treats identities as atoms and has no byte framing, hash domain, collision-preimage, or codec-version state." }
+runtime_refinement = { status = "blocked", evidence = ["runtime.data.identity-codecs"], blocker = "No production vNext writer recomputes and validates identity codecs from database rows inside the committing transaction." }
+fault = { status = "blocked", evidence = ["fault.data.binding-corruption"], blocker = "No production transaction fault-injection test corrupts an identity codec at its real write boundary and proves fail-closed rollback." }
+integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement"], blocker = "No end-to-end SQLite and MariaDB test exercises production vNext identity writes and READY validation against exact stored preimages." }
+
+[[invariant]]
+id = "catalog.canonical-reference-domains.v1"
+fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore has no canonical digest-domain registry, framed value bytes, collision comparison, or SQL foreign-reference state." }
+runtime_refinement = { status = "blocked", evidence = ["runtime.data.canonical-reference-domains"], blocker = "No production vNext writer resolves canonical references and compares exact collision preimages inside the committing transaction." }
+fault = { status = "blocked", evidence = ["fault.data.binding-corruption"], blocker = "No production transaction fault-injection test supplies a wrong digest domain or collision preimage and proves fail-closed rollback." }
+integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement"], blocker = "No end-to-end SQLite and MariaDB test exercises production canonical-reference writes and READY validation over stored values." }
+
+[[invariant]]
+id = "catalog.source-baseline-channel.v1"
+fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
+tla = { status = "supporting", evidence = ["tla.data.lifecycle.small"] }
+runtime_refinement = { status = "blocked", evidence = ["runtime.data.source-baseline-channel"], blocker = "No production vNext writer validates the canonical source baseline and performs the exact channel head CAS inside one transaction." }
+fault = { status = "blocked", evidence = ["fault.data.binding-corruption"], blocker = "No production fault-injection test races the source baseline or channel generation and proves stale publication rolls back." }
+integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement"], blocker = "No end-to-end SQLite and MariaDB test publishes a production vNext source baseline through the exact channel CAS path." }
+
+[[invariant]]
+id = "catalog.incremental-impact.v1"
+fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore has no old-resolved/new-candidate union, content-owner or GID-winner ordering, or bounded impacted-workset receipts." }
+runtime_refinement = { status = "blocked", evidence = ["runtime.data.incremental-impact"], blocker = "No production vNext writer recomputes the exact impacted union and validates its full bounded projection before commit." }
+fault = { status = "blocked", evidence = ["fault.data.binding-corruption"], blocker = "No production fault-injection test omits or adds an impacted gallery, content, or GID row and proves rejection at commit." }
+integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement"], blocker = "No end-to-end SQLite and MariaDB test compares production incremental results with an independent full recomputation oracle." }
+
+[[invariant]]
+id = "catalog.overlay-resolution-seal.v1"
+fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
+lean = { status = "covered", evidence = ["lean.data.overlay-exactness"] }
+tla = { status = "not_applicable", rationale = "CatalogCore has no shadow/tombstone component maps, bounded ancestry coordinates, full-evaluator equality, or component-seal receipts." }
+runtime_refinement = { status = "blocked", evidence = ["runtime.data.overlay-resolution-seal"], blocker = "No production vNext writer validates every bounded overlay component against a full recomputation inside the seal transaction." }
+fault = { status = "blocked", evidence = ["fault.data.binding-corruption"], blocker = "No production fault-injection test corrupts a shadow, tombstone, ancestry, checkpoint, or seal row and proves rollback." }
+integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement", "integration.data.overlay-sqlite"], blocker = "The SQLite view fixture is partial; no end-to-end SQLite and MariaDB test executes the production overlay writer and seal workflow." }
+
+[[invariant]]
+id = "catalog.artifact-semantics.v1"
+fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
+lean = { status = "covered", evidence = ["lean.data.artifact-delta"] }
+tla = { status = "supporting", evidence = ["tla.data.lifecycle.small"] }
+runtime_refinement = { status = "blocked", evidence = ["runtime.data.artifact-semantics"], blocker = "No production vNext artifact writer binds exact component codecs, member plan, producer fingerprint, bytes, and receipt in one transaction." }
+fault = { status = "blocked", evidence = ["fault.data.binding-corruption"], blocker = "No production fault-injection test corrupts each semantic component, member plan, payload, or ZIP envelope at the write boundary." }
+integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement"], blocker = "No end-to-end SQLite and MariaDB test runs the production vNext artifact writer against an independent byte and delta oracle." }
+
+[[invariant]]
+id = "catalog.publication-atomicity.v1"
+fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
+tla = { status = "supporting", evidence = ["tla.data.lifecycle.small"] }
+runtime_refinement = { status = "blocked", evidence = ["runtime.data.publication-atomicity"], blocker = "No production vNext publisher validates the exact projection, swaps the head, and persists the receipt in one committing transaction." }
+fault = { status = "blocked", evidence = ["fault.data.binding-corruption"], blocker = "No production fault-injection test fails each vNext publication write or CAS point and proves atomic rollback and retry convergence." }
+integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement"], blocker = "No end-to-end SQLite and MariaDB test executes the production vNext publication transaction and recovery receipt workflow." }
+
+[[invariant]]
+id = "catalog.state-machines.v1"
+fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
+tla = { status = "supporting", evidence = ["tla.data.lifecycle.small"] }
+runtime_refinement = { status = "blocked", evidence = ["runtime.data.state-machines"], blocker = "No production vNext writer enforces every declared transition edge, timestamp rule, fence, checkpoint, and receipt at its mutation boundary." }
+fault = { status = "blocked", evidence = ["fault.data.binding-corruption"], blocker = "No production fault-injection matrix attempts every illegal transition and stale checkpoint mutation through real repository call sites." }
+integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement", "integration.data.physical-sqlite"], blocker = "Generated SQLite constraints are partial evidence; no end-to-end SQLite and MariaDB production state-machine workflow exists." }
+
+[[invariant]]
+id = "catalog.role-derivation.v1"
+fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore has no exact file-name bytes, galleryinfo.txt classifier, file role, hash occurrence, or artist-contribution derivation." }
+runtime_refinement = { status = "blocked", evidence = ["runtime.data.role-derivation"], blocker = "No production vNext ingestion writer derives and validates file role before persisting downstream hash and artist facts." }
+fault = { status = "blocked", evidence = ["fault.data.binding-corruption"], blocker = "No production fault-injection test supplies a forged file role or dependent fact and proves rejection at the real write boundary." }
+integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement"], blocker = "No end-to-end SQLite and MariaDB test exercises production exact-byte role derivation through dependent fact publication." }
+
+[[invariant]]
+id = "catalog.physical-domains.v1"
+fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore has no SQLite storage class, MariaDB binary type, byte width, collation, unsigned-counter, or timestamp-domain state." }
+runtime_refinement = { status = "blocked", evidence = ["runtime.data.physical-domains"], blocker = "No production vNext writer validates application values against every physical domain before binding them to SQL parameters." }
+fault = { status = "blocked", evidence = ["fault.data.binding-corruption"], blocker = "No production cross-backend fault matrix injects every invalid width, storage class, counter, timestamp, enum, and collation-sensitive value." }
+integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement", "integration.data.physical-sqlite"], blocker = "SQLite generated-schema checks exist, but the required live MariaDB refinement and production writer integration are not both established." }
+
+[[invariant]]
+id = "catalog.bootstrap.v1"
+fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore starts from abstract lifecycle state and has no schema epoch, generated seed rows, exact registries, or BUILDING-only validation." }
+runtime_refinement = { status = "blocked", evidence = ["runtime.data.bootstrap"], blocker = "No trusted wheel validator exact-validates all three data bootstrap registries and their absence partition during BUILDING." }
+fault = { status = "blocked", evidence = ["fault.data.binding-corruption"], blocker = "No data-specific fault test corrupts, omits, duplicates, or partially commits each generated bootstrap registry row and proves convergence." }
+integration = { status = "blocked", evidence = ["integration.data.bootstrap-sqlite"], blocker = "The generated SQLite seed fixture is partial; no live SQLite and MariaDB SchemaEpoch integration proves exact data bootstrap behavior." }
+
+[[invariant]]
+id = "catalog.retention.v1"
+fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
+lean = { status = "covered", evidence = ["lean.data.retention"] }
+tla = { status = "supporting", evidence = ["tla.data.lifecycle.small"] }
+runtime_refinement = { status = "blocked", evidence = ["runtime.data.retention"], blocker = "No production vNext cleanup writer evaluates the exact blocker graph and performs every child-first phase in bounded transactions." }
+fault = { status = "blocked", evidence = ["fault.data.binding-corruption"], blocker = "No production cleanup fault matrix races every retention root and interrupts every phase while proving live data remains reachable." }
+integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement"], blocker = "No end-to-end SQLite and MariaDB test runs production vNext cleanup across all targets, blockers, phase resumes, and publication races." }
+
+[[invariant]]
+id = "h2hdb.operational.physical-domains.v1"
+fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore has no SQL storage-class, backend type, collation, or byte-width state to model this physical-domain invariant." }
+runtime_refinement = { status = "blocked", evidence = ["runtime.physical-domains"], blocker = "No production operational writer validates every storage class, width, portable counter, timestamp, enum, and collation-sensitive value before SQL binding." }
+fault = { status = "blocked", evidence = ["fault.operational.binding-corruption"], blocker = "No production operational fault matrix injects every invalid physical value at a real writer boundary and proves transaction rollback." }
+integration = { status = "blocked", evidence = ["integration.operational.sqlite-refinement"], blocker = "No SQLite and MariaDB end-to-end production workflow exercises all operational physical domains through repository callsites." }
+
+[[invariant]]
+id = "h2hdb.operational.epoch-manifest.v1"
+fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore does not model schema construction, generated DDL identity, bootstrap seed manifests, or the epoch control row." }
+runtime_refinement = { status = "blocked", evidence = ["runtime.epoch-manifest"], blocker = "The generated provider remains unavailable, so no production BUILDING-to-READY transaction validates the exact operational epoch manifest." }
+fault = { status = "blocked", evidence = ["fault.operational.binding-corruption"], blocker = "No production epoch fault test corrupts each operational manifest input or interrupts activation and proves fail-closed recovery." }
+integration = { status = "blocked", evidence = ["integration.operational.sqlite-refinement"], blocker = "No SQLite and MariaDB SchemaEpoch integration activates the generated operational manifest through the production provider." }
+
+[[invariant]]
+id = "h2hdb.operational.fencing.v1"
+fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
+tla = { status = "covered", evidence = ["tla.fencing.small"] }
+runtime_refinement = { status = "blocked", evidence = ["runtime.fencing"], blocker = "No production writer locks and revalidates the exact coordination head, owner, lease, generation, and operation fence inside each committing transaction." }
+fault = { status = "blocked", evidence = ["fault.operational.binding-corruption"], blocker = "No production fencing fault matrix races expiry, takeover, stale owner replay, and generation advancement at real repository callsites." }
+integration = { status = "blocked", evidence = ["integration.operational.sqlite-refinement"], blocker = "No SQLite and MariaDB end-to-end production workflow exercises fencing, takeover, stale rejection, and response-loss retry." }
+
+[[invariant]]
+id = "h2hdb.operational.maintenance-gate.v1"
+fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore models an ingest lease, not the distinct 64-slot shared and exclusive maintenance-gate ownership protocol." }
+runtime_refinement = { status = "blocked", evidence = ["runtime.maintenance-gate"], blocker = "No production callsite implements the exact 64-slot shared and exclusive maintenance gate for complete destructive cycles." }
+fault = { status = "blocked", evidence = ["fault.operational.binding-corruption"], blocker = "No production maintenance fault matrix interrupts slot acquisition, stale reclaim, lease loss, or exclusive-cycle cleanup." }
+integration = { status = "blocked", evidence = ["integration.operational.sqlite-refinement"], blocker = "No SQLite and MariaDB end-to-end production workflow proves shared writers exclude and resume around an exclusive maintenance cycle." }
+
+[[invariant]]
+id = "h2hdb.operational.bounded-work.v1"
+fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore does not model durable cursor bytes, batch receipts, checkpoint compare-and-swap, or terminal empty-page receipts." }
+runtime_refinement = { status = "blocked", evidence = ["runtime.bounded-work"], blocker = "No production writer owns cursor encoding, bounded selection, checkpoint and receipt CAS, and terminal empty-receipt mutation in one transaction." }
+fault = { status = "blocked", evidence = ["fault.operational.binding-corruption"], blocker = "No production bounded-work fault matrix interrupts every page and CAS boundary and proves exact replay or rollback." }
+integration = { status = "blocked", evidence = ["integration.operational.sqlite-refinement"], blocker = "No SQLite and MariaDB end-to-end production workflow executes bounded checkpoints through completion and response-loss replay." }
+
+[[invariant]]
+id = "h2hdb.operational.queue-history.v1"
+fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore has no deletion-attempt, mutable-head, optional URL-satellite, or immutable consumption-event state." }
+runtime_refinement = { status = "blocked", evidence = ["runtime.queue-history"], blocker = "No production queue writer atomically maintains immutable attempts, mutable heads, URL satellites, and consumption history." }
+fault = { status = "blocked", evidence = ["fault.operational.binding-corruption"], blocker = "No production queue fault matrix races head rotation, duplicate tokens, consumption replay, and interrupted payload writes." }
+integration = { status = "blocked", evidence = ["integration.operational.sqlite-refinement"], blocker = "No SQLite and MariaDB end-to-end production queue workflow proves history retention and exact-token consumption." }
+
+[[invariant]]
+id = "h2hdb.operational.canonical-hash-cache.v1"
+fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore abstracts artifacts as atoms and does not model digest domains, framed bytes, SHA-256, collisions, or cache preimages." }
+runtime_refinement = { status = "blocked", evidence = ["runtime.canonical-hash-cache"], blocker = "No production hash-cache writer streams and validates domain-framed preimages, exact byte counts, collision bytes, and cache rows in one transaction." }
+fault = { status = "blocked", evidence = ["fault.operational.binding-corruption"], blocker = "No production hash-cache fault matrix injects wrong domains, lengths, collision preimages, or concurrent eviction at the write boundary." }
+integration = { status = "blocked", evidence = ["integration.operational.sqlite-refinement"], blocker = "No SQLite and MariaDB end-to-end production workflow exercises hash-cache insert, collision rejection, reuse, and bounded eviction." }
+
+[[invariant]]
+id = "h2hdb.operational.event-integrity.v1"
+fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore does not model typed operational event subrelations, per-consumer acknowledgements, or revision-scoped ack heads." }
+runtime_refinement = { status = "blocked", evidence = ["runtime.event-integrity"], blocker = "No production event writer enforces exact-one subtype creation and durable acknowledgement coverage before head CAS." }
+fault = { status = "blocked", evidence = ["fault.operational.binding-corruption"], blocker = "No production event fault matrix corrupts subtype agreement, sequence coverage, acknowledgement evidence, or head advancement." }
+integration = { status = "blocked", evidence = ["integration.operational.sqlite-refinement"], blocker = "No SQLite and MariaDB end-to-end production workflow creates typed events and advances every acknowledgement path." }
+
+[[invariant]]
+id = "h2hdb.operational.build-generation.v1"
+fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore authorizes abstract build actions but does not model the durable one-row reservation relation or the no-build row-absence rule." }
+runtime_refinement = { status = "blocked", evidence = ["runtime.build-generation"], blocker = "No production repository enforces one source-build reservation per generation, exact takeover resume, and the no-build absence path." }
+fault = { status = "blocked", evidence = ["fault.operational.binding-corruption"], blocker = "No production build-generation fault matrix races concurrent reservation, takeover, handoff, lease loss, and cleanup eligibility." }
+integration = { status = "blocked", evidence = ["integration.operational.sqlite-refinement"], blocker = "No SQLite and MariaDB end-to-end production workflow creates, resumes, completes, and safely cleans source-build generation mappings." }
+
+[[invariant]]
+id = "h2hdb.operational.attempt-identity.v1"
+fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore has no cleanup attempt number or policy-qualified operational preparation natural-identity variables." }
+runtime_refinement = { status = "blocked", evidence = ["runtime.attempt-identity"], blocker = "No production writer derives deterministic cleanup identities, advances reusable cycle generations by CAS, and pins preparation policy identity." }
+fault = { status = "blocked", evidence = ["fault.operational.binding-corruption"], blocker = "No production attempt-identity fault matrix injects stale generations, ABA retries, exhaustion, or policy changes at real mutation boundaries." }
+integration = { status = "blocked", evidence = ["integration.operational.sqlite-refinement"], blocker = "No SQLite and MariaDB end-to-end production workflow proves cleanup replay and policy-qualified preparation identity across retries." }
+
+[[invariant]]
+id = "h2hdb.operational.cleanup-reachability.v1"
+fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
+lean = { status = "covered", evidence = ["lean.operational.cleanup-reachability"] }
+tla = { status = "not_applicable", rationale = "CatalogCore models retained publications abstractly but does not model the concrete closed-world cleanup target codecs, catalog FK descendant graph, or child-first SQL phase registry." }
+runtime_refinement = { status = "blocked", evidence = ["runtime.cleanup-reachability"], blocker = "No production cleanup writer locks and evaluates the exact blocker graph before each bounded child-first destructive phase." }
+fault = { status = "blocked", evidence = ["fault.cleanup-reachability"], blocker = "No production cleanup fault matrix races every retention root and interrupts every phase while proving live rows remain reachable." }
+integration = { status = "blocked", evidence = ["integration.cleanup-registry-fks"], blocker = "No SQLite and MariaDB end-to-end production workflow runs all cleanup targets, blockers, phase resumes, and publication races." }
+
+[[invariant]]
+id = "h2hdb.operational.revision-allocation.v1"
+fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore selects revisions from a finite set but does not model SOURCE and CATALOG allocator rows, row locks, or exact generation CAS." }
+runtime_refinement = { status = "blocked", evidence = ["runtime.revision-allocation"], blocker = "No production allocator uses a row lock or exact next-value CAS with overflow rejection and publication-bound validation." }
+fault = { status = "blocked", evidence = ["fault.operational.binding-corruption"], blocker = "No production revision-allocation fault matrix races both streams, stale CAS, response loss, exhaustion, and publication rollback." }
+integration = { status = "blocked", evidence = ["integration.operational.sqlite-refinement"], blocker = "No SQLite and MariaDB end-to-end production workflow allocates SOURCE and CATALOG revisions through publication." }
+
+[[invariant]]
+id = "h2hdb.operational.bootstrap-genesis.v1"
+fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore begins from an abstract lifecycle Init and does not model typed database bootstrap seeds or required row absence." }
+runtime_refinement = { status = "blocked", evidence = ["runtime.bootstrap-genesis"], blocker = "The production provider remains unavailable, so no trusted BUILDING path executes and validates every operational seed and declared absence." }
+fault = { status = "blocked", evidence = ["fault.operational.binding-corruption"], blocker = "No production bootstrap fault matrix omits, duplicates, corrupts, or partially commits each operational registry and shard seed." }
+integration = { status = "blocked", evidence = ["integration.operational.sqlite-refinement"], blocker = "No SQLite and MariaDB SchemaEpoch integration proves exact operational genesis, retry convergence, and activation." }
+
+[[invariant]]
+id = "h2hdb.operational.gallery-staging.v1"
+fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
+tla = { status = "covered", evidence = ["tla.gallery-staging.small"] }
+runtime_refinement = { status = "blocked", evidence = ["runtime.gallery-staging-model"], blocker = "No production vNext staging repository derives the modeled facts from exact page bytes and locked generation-fenced rows inside the committing transaction." }
+fault = { status = "blocked", evidence = ["fault.operational.binding-corruption"], blocker = "No production fault matrix interrupts each page, carry, metadata-parser, match, seal, reuse, and cleanup transaction and proves exact replay or rollback." }
+integration = { status = "blocked", evidence = ["integration.operational.sqlite-refinement"], blocker = "No end-to-end SQLite and MariaDB integration stages, crashes, resumes, seals, reuses, and reclaims a giant gallery through the production repository." }

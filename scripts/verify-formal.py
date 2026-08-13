@@ -16,6 +16,7 @@ from typing import Literal
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 VERIFICATION_ROOT = REPOSITORY_ROOT / "verification"
 TOOLS_LOCK = VERIFICATION_ROOT / "tools.lock.toml"
+COVERAGE_MANIFEST = VERIFICATION_ROOT / "invariants.toml"
 TlaRuntime = Literal["auto", "host", "docker"]
 
 
@@ -32,16 +33,60 @@ def verify_lean() -> None:
         _run(["lean", "--error=warning", str(path.relative_to(REPOSITORY_ROOT))])
 
 
+def verify_coverage(*, validate_only: bool = False) -> None:
+    checker = VERIFICATION_ROOT / "check_coverage.py"
+    if not checker.is_file() or not COVERAGE_MANIFEST.is_file():
+        raise RuntimeError("The formal invariant coverage gate is incomplete")
+    command = [sys.executable, str(checker), str(COVERAGE_MANIFEST)]
+    if validate_only:
+        command.append("--validate-only")
+    _run(command)
+
+
 def verify_schema() -> None:
     checker = VERIFICATION_ROOT / "schema" / "check_contract.py"
     contract = VERIFICATION_ROOT / "schema" / "catalog.toml"
+    operational_contract = VERIFICATION_ROOT / "schema" / "operational.toml"
     generator = VERIFICATION_ROOT / "lean" / "generate_schema_proof.py"
-    if not checker.is_file() or not contract.is_file():
+    physical_generator = VERIFICATION_ROOT / "schema" / "generate_physical.py"
+    operational_generator = (
+        VERIFICATION_ROOT / "schema" / "generate_operational_physical.py"
+    )
+    operational_physical = VERIFICATION_ROOT / "schema" / "operational_physical.toml"
+    operational_refinement = VERIFICATION_ROOT / "schema" / "operational_refinement.py"
+    operational_lean_generator = (
+        VERIFICATION_ROOT / "lean" / "generate_operational_schema_proof.py"
+    )
+    provider_generator = (
+        REPOSITORY_ROOT / "scripts" / "generate-vnext-schema-provider.py"
+    )
+    if (
+        not checker.is_file()
+        or not contract.is_file()
+        or not operational_contract.is_file()
+    ):
         raise RuntimeError("The executable schema contract is incomplete")
-    if not generator.is_file():
-        raise RuntimeError("The Lean schema generator is missing")
+    if (
+        not generator.is_file()
+        or not physical_generator.is_file()
+        or not provider_generator.is_file()
+    ):
+        raise RuntimeError("A schema/physical generator is missing")
     _run([sys.executable, str(generator), "--check"])
+    _run([sys.executable, str(physical_generator), "--check"])
+    _run([sys.executable, str(operational_lean_generator), "--check"])
+    _run([sys.executable, str(operational_generator), "--check"])
+    _run(
+        [
+            sys.executable,
+            str(operational_refinement),
+            str(operational_contract),
+            str(operational_physical),
+        ]
+    )
     _run([sys.executable, str(checker), str(contract)])
+    _run([sys.executable, str(checker), str(operational_contract)])
+    _run([sys.executable, str(provider_generator), "--check"])
 
 
 def _host_java_available() -> bool:
@@ -196,7 +241,7 @@ def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "target",
-        choices=("lean", "schema", "tla", "all"),
+        choices=("coverage", "lean", "schema", "tla", "all"),
         help="verification layer to execute",
     )
     parser.add_argument(
@@ -215,11 +260,20 @@ def _arguments() -> argparse.Namespace:
         default="auto",
         help="run TLC with host Java or the digest-pinned Docker fallback",
     )
+    parser.add_argument(
+        "--validate-only",
+        action="store_true",
+        help="validate coverage metadata without treating production blockers as success",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     arguments = _arguments()
+    if arguments.validate_only and arguments.target != "coverage":
+        raise SystemExit("--validate-only is only valid with the coverage target")
+    if arguments.target in {"coverage", "all"}:
+        verify_coverage(validate_only=arguments.validate_only)
     if arguments.target in {"lean", "all"}:
         verify_lean()
     if arguments.target in {"schema", "all"}:

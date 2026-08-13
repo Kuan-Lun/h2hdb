@@ -1,7 +1,7 @@
 __all__ = [
+    "CANONICAL_SOURCE_MANIFEST_VERSION",
     "CatalogAnalysisPhase",
     "CatalogAnalysisPhaseCheckpoint",
-    "CatalogAnalysisScanCompletion",
     "CatalogArtifact",
     "CatalogBuild",
     "CatalogBuildAlreadyActiveError",
@@ -31,8 +31,8 @@ __all__ = [
     "CatalogContentOwner",
     "CatalogDeduplicationCandidate",
     "CatalogFileHashAggregate",
-    "CatalogFileHashAggregateCursor",
     "CatalogFileHashAggregatePage",
+    "CatalogFileSpamPageApplyResult",
     "CatalogFinalAnalysisCursor",
     "CatalogFinalAnalysisPage",
     "CatalogGalleryFileHashCursor",
@@ -115,6 +115,8 @@ __all__ = [
     "LoggerConfig",
     "SchemaCompatibility",
     "SchemaCompatibilityError",
+    "SchemaEpochReadiness",
+    "SchemaEpochReport",
     "load_config",
     "open_database",
     "resolve_environment_placeholders",
@@ -144,9 +146,9 @@ from .config_loader import (
     load_config,
 )
 from .domain import (
+    CANONICAL_SOURCE_MANIFEST_VERSION,
     CatalogAnalysisPhase,
     CatalogAnalysisPhaseCheckpoint,
-    CatalogAnalysisScanCompletion,
     CatalogArtifact,
     CatalogBuild,
     CatalogBuildBatchResult,
@@ -169,8 +171,8 @@ from .domain import (
     CatalogContributor,
     CatalogDeduplicationCandidate,
     CatalogFileHashAggregate,
-    CatalogFileHashAggregateCursor,
     CatalogFileHashAggregatePage,
+    CatalogFileSpamPageApplyResult,
     CatalogFinalAnalysisCursor,
     CatalogFinalAnalysisPage,
     CatalogGalleryFileHashCursor,
@@ -242,6 +244,8 @@ from .ports import (
     DatabaseAdmin,
     DownloadCoordinator,
 )
+from .schema_admin import SchemaEpochReadiness
+from .schema_epoch import SchemaEpochReport
 from .service import (
     H2HDB,
     CoordinatorUnavailableError,

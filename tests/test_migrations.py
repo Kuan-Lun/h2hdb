@@ -62,6 +62,8 @@ EXPECTED_PROJECTION_TABLES = {
 }
 
 EXPECTED_BUILD_TABLES = {
+    "catalog_build_analysis_scan_checkpoints",
+    "catalog_build_analysis_scan_receipts",
     "catalog_build_analysis_phases",
     "catalog_build_batches",
     "catalog_build_content_digests",
@@ -92,6 +94,8 @@ CATALOG_BUILD_DROP_ORDER = (
     "catalog_build_projections",
     "catalog_projection_publication_receipts",
     "catalog_revision_allocator",
+    "catalog_build_analysis_scan_receipts",
+    "catalog_build_analysis_scan_checkpoints",
     "catalog_source_revision",
     "catalog_source_revision_history",
     "catalog_build_analysis_phases",
@@ -124,6 +128,11 @@ V3_DROP_ORDER = (
     "catalog_build_content_digests",
     "catalog_build_excluded_file_hashes",
     "catalog_build_analysis_phases",
+)
+
+V7_DROP_ORDER = (
+    "catalog_build_analysis_scan_receipts",
+    "catalog_build_analysis_scan_checkpoints",
 )
 
 EXPECTED_SCHEMA_VIEWS = {
@@ -191,9 +200,9 @@ def test_sqlite_current_schema_is_complete_and_idempotent(
     database_path = Path(sqlite_config.database.database)
     database = H2HDB(sqlite_config)
 
-    assert database.migrate() == 6
+    assert database.migrate() == 7
     first = database.check_compatibility()
-    assert first.database_version == 6
+    assert first.database_version == 7
     assert first.minimum_supported <= first.database_version
     assert first.database_version <= first.maximum_supported
     assert database.check_readiness() == first
@@ -208,6 +217,19 @@ def test_sqlite_current_schema_is_complete_and_idempotent(
     assert database.migrate() == first.database_version
     assert database.check_compatibility() == first
     with sqlite3.connect(database_path) as connection:
+        empty_gallery_index = connection.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'index' "
+            "AND name = 'catalog_source_galleries_empty_order'"
+        ).fetchone()
+        assert empty_gallery_index is not None
+        normalized_empty_gallery_index = "".join(
+            str(empty_gallery_index[0]).casefold().split()
+        )
+        assert (
+            "(build_id,source_complete,staged_file_count,gallery_key)"
+            in normalized_empty_gallery_index
+        )
         assert connection.execute(
             "SELECT version, name FROM h2hdb_schema_migrations ORDER BY version"
         ).fetchall() == [
@@ -217,6 +239,7 @@ def test_sqlite_current_schema_is_complete_and_idempotent(
             (4, "durable-catalog-build-projections"),
             (5, "catalog-operational-authority"),
             (6, "active-source-deletion-command-view"),
+            (7, "durable-file-spam-scan"),
         ]
         assert connection.execute(
             "SELECT current_revision, publication_count FROM catalog_revision"
@@ -293,7 +316,7 @@ def test_compatibility_rejects_obsolete_migration_identity(
         database.check_compatibility()
 
 
-@pytest.mark.parametrize("database_version", [7, 999])
+@pytest.mark.parametrize("database_version", [8, 999])
 def test_read_only_compatibility_rejects_unsupported_schema_versions(
     sqlite_config: CoreConfig,
     database_version: int,
@@ -326,7 +349,7 @@ def test_migrated_sqlite_opens_with_read_only_credentials(
 
     reader = open_database(_read_only_config(sqlite_config))
 
-    assert reader.check_compatibility().database_version == 6
+    assert reader.check_compatibility().database_version == 7
     assert reader.get_catalog_revision().revision == 0
 
 
@@ -338,7 +361,7 @@ def test_compatibility_rejects_missing_critical_catalog_index(
     with sqlite3.connect(Path(sqlite_config.database.database)) as connection:
         connection.execute("DROP INDEX catalog_artifacts_name")
 
-    assert database.check_readiness().database_version == 6
+    assert database.check_readiness().database_version == 7
     with pytest.raises(SchemaCompatibilityError, match="indexes="):
         database.check_compatibility()
 
@@ -351,7 +374,7 @@ def test_compatibility_rejects_missing_catalog_build_index(
     with sqlite3.connect(Path(sqlite_config.database.database)) as connection:
         connection.execute("DROP INDEX catalog_source_galleries_gid")
 
-    assert database.check_readiness().database_version == 6
+    assert database.check_readiness().database_version == 7
     with pytest.raises(SchemaCompatibilityError, match="indexes="):
         database.check_compatibility()
 
@@ -364,7 +387,7 @@ def test_compatibility_rejects_missing_catalog_analysis_index(
     with sqlite3.connect(Path(sqlite_config.database.database)) as connection:
         connection.execute("DROP INDEX catalog_build_content_digest_order")
 
-    assert database.check_readiness().database_version == 6
+    assert database.check_readiness().database_version == 7
     with pytest.raises(SchemaCompatibilityError, match="indexes="):
         database.check_compatibility()
 
@@ -424,9 +447,9 @@ def test_catalog_build_migration_recovers_from_partial_ddl(
         for table_name in CATALOG_BUILD_DROP_ORDER[:-1]:
             connection.execute(f"DROP TABLE {table_name}")
 
-    assert database.migrate() == 6
+    assert database.migrate() == 7
     assert EXPECTED_BUILD_TABLES <= _sqlite_tables(database_path)
-    assert database.check_compatibility().database_version == 6
+    assert database.check_compatibility().database_version == 7
 
 
 def test_catalog_build_forward_migrates_a_v1_ledger(
@@ -444,9 +467,9 @@ def test_catalog_build_forward_migrates_a_v1_ledger(
             "SELECT version, name FROM h2hdb_schema_migrations"
         ).fetchall() == [(1, "current-schema-baseline")]
 
-    assert database.migrate() == 6
+    assert database.migrate() == 7
     assert EXPECTED_BUILD_TABLES <= _sqlite_tables(database_path)
-    assert database.check_compatibility().database_version == 6
+    assert database.check_compatibility().database_version == 7
 
 
 @pytest.mark.parametrize("ledger_version", [2, 3])
@@ -469,9 +492,9 @@ def test_catalog_projection_forward_migrates_v2_and_v3_ledgers(
             for table_name in V3_DROP_ORDER:
                 connection.execute(f"DROP TABLE {table_name}")
 
-    assert database.migrate() == 6
+    assert database.migrate() == 7
     assert EXPECTED_BUILD_TABLES <= _sqlite_tables(database_path)
-    assert database.check_compatibility().database_version == 6
+    assert database.check_compatibility().database_version == 7
 
 
 def test_v4_migration_backfills_the_current_legacy_projection_digest(
@@ -512,7 +535,7 @@ def test_v4_migration_backfills_the_current_legacy_projection_digest(
             "ALTER TABLE catalog_revision_history DROP COLUMN projection_sha256"
         )
 
-    assert database.migrate() == 6
+    assert database.migrate() == 7
     with sqlite3.connect(database_path) as connection:
         digest = connection.execute(
             "SELECT projection_sha256 FROM catalog_revision_history WHERE revision = ?",
@@ -568,8 +591,8 @@ def test_v5_forward_migration_adopts_legacy_deletion_markers(
         )
         connection.execute("ALTER TABLE todelete_gids DROP COLUMN request_token")
 
-    assert database.migrate() == 6
-    assert database.check_compatibility().database_version == 6
+    assert database.migrate() == 7
+    assert database.check_compatibility().database_version == 7
     with sqlite3.connect(database_path) as connection:
         token = connection.execute(
             "SELECT request_token FROM todelete_gids WHERE gid = 909"
@@ -584,7 +607,7 @@ def test_v6_forward_migration_replaces_the_legacy_deletion_command_view(
     database.migrate()
     database_path = Path(sqlite_config.database.database)
     with sqlite3.connect(database_path) as connection:
-        connection.execute("DELETE FROM h2hdb_schema_migrations WHERE version = 6")
+        connection.execute("DELETE FROM h2hdb_schema_migrations WHERE version >= 6")
         connection.execute("DROP VIEW todelete_rm_commands")
         connection.execute("""
             CREATE VIEW todelete_rm_commands AS
@@ -599,8 +622,8 @@ def test_v6_forward_migration_replaces_the_legacy_deletion_command_view(
     assert legacy_definition is not None
     assert "catalog_operational_activations" not in str(legacy_definition[0])
 
-    assert database.migrate() == 6
-    assert database.check_compatibility().database_version == 6
+    assert database.migrate() == 7
+    assert database.check_compatibility().database_version == 7
     with sqlite3.connect(database_path) as connection:
         active_definition = connection.execute(
             "SELECT sql FROM sqlite_master "
@@ -609,6 +632,68 @@ def test_v6_forward_migration_replaces_the_legacy_deletion_command_view(
     assert active_definition is not None
     assert "catalog_operational_activations" in str(active_definition[0])
     assert "catalog_build_discoveries" in str(active_definition[0])
+
+
+@pytest.mark.parametrize("legacy_phase", ["ANALYZING", "ARTIFACTS", "SEALED"])
+def test_v7_rejects_unproven_legacy_build_then_migrates_after_abandonment(
+    sqlite_config: CoreConfig,
+    legacy_phase: str,
+) -> None:
+    database = H2HDB(sqlite_config)
+    database.migrate()
+    turn = database.claim_gallery_ingest(lease_seconds=120, periodic_scan=False)
+    assert turn is not None
+    build = database.begin_catalog_build(
+        scope_key="legacy-file-spam-proof",
+        ingest_turn=turn,
+    )
+    build = database.complete_catalog_discovery(build, ingest_turn=turn)
+    build = database.complete_catalog_source_staging(build, ingest_turn=turn)
+    database_path = Path(sqlite_config.database.database)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("DELETE FROM h2hdb_schema_migrations WHERE version = 7")
+        for table_name in V7_DROP_ORDER:
+            connection.execute(f"DROP TABLE {table_name}")
+        connection.execute(
+            "UPDATE catalog_builds SET phase = ? WHERE build_id = ?",
+            (legacy_phase, build.build_id),
+        )
+
+    with pytest.raises(
+        SchemaCompatibilityError,
+        match="Cannot install durable FILE_SPAM.*abandon and rebuild",
+    ):
+        database.migrate()
+    with sqlite3.connect(database_path) as connection:
+        assert (
+            connection.execute(
+                "SELECT 1 FROM h2hdb_schema_migrations WHERE version = 7"
+            ).fetchone()
+            is None
+        )
+        assert all(
+            connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table_name,),
+            ).fetchone()
+            is None
+            for table_name in V7_DROP_ORDER
+        )
+        # A pre-v7 operator may explicitly abandon the unverifiable build.
+        connection.execute(
+            "UPDATE catalog_builds SET phase = 'ABANDONED' WHERE build_id = ?",
+            (build.build_id,),
+        )
+        connection.execute(
+            "UPDATE catalog_build_control SET working_build_id = NULL "
+            "WHERE working_build_id = ?",
+            (build.build_id,),
+        )
+
+    assert database.migrate() == 7
+    assert database.check_compatibility().database_version == 7
+    assert EXPECTED_BUILD_TABLES <= _sqlite_tables(database_path)
 
 
 def test_compatibility_rejects_legacy_only_deletion_command_view_at_v6(
@@ -625,7 +710,7 @@ def test_compatibility_rejects_legacy_only_deletion_command_view_at_v6(
                 JOIN galleries_names USING (db_gallery_id)
             """)
 
-    assert database.check_readiness().database_version == 6
+    assert database.check_readiness().database_version == 7
     with pytest.raises(
         SchemaCompatibilityError,
         match="active-source deletion command view",
@@ -809,7 +894,7 @@ def test_public_backend_contract_smoke(
     revision = publish_result.revision
     assert database.complete_gallery_ingest(ingest_turn)
 
-    assert version == 6
+    assert version == 7
     assert database.check_compatibility().database_version == version
     assert revision.revision == 1
     assert database.list_publications(limit=10).publications == (publication,)

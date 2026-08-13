@@ -15,7 +15,6 @@ from typing import Protocol, runtime_checkable
 from .domain import (
     CatalogAnalysisPhase,
     CatalogAnalysisPhaseCheckpoint,
-    CatalogAnalysisScanCompletion,
     CatalogArtifact,
     CatalogBuild,
     CatalogBuildBatchResult,
@@ -31,8 +30,8 @@ from .domain import (
     CatalogContentCandidatePage,
     CatalogContentDigest,
     CatalogContentOwner,
-    CatalogFileHashAggregateCursor,
     CatalogFileHashAggregatePage,
+    CatalogFileSpamPageApplyResult,
     CatalogFinalAnalysisCursor,
     CatalogFinalAnalysisPage,
     CatalogGalleryFileHashCursor,
@@ -77,6 +76,8 @@ from .domain import (
     GallerySourceFile,
     SchemaCompatibility,
 )
+from .schema_admin import SchemaEpochReadiness
+from .schema_epoch import SchemaEpochProvider, SchemaEpochReport
 from .table_database_maintenance import DatabaseMaintenanceResult
 from .table_gallery_ingest_coordination import (
     DownloadTurn,
@@ -89,6 +90,18 @@ from .todownload_queue import DownloadRequest, EnsureDownloadRequestResult
 @runtime_checkable
 class DatabaseAdmin(Protocol):
     def migrate(self) -> int: ...
+
+    def initialize_schema_epoch_v2(
+        self, provider: SchemaEpochProvider | None = None
+    ) -> SchemaEpochReport: ...
+
+    def check_schema_epoch_v2(
+        self, provider: SchemaEpochProvider | None = None
+    ) -> SchemaEpochReport: ...
+
+    def check_schema_epoch_v2_readiness(
+        self, provider: SchemaEpochProvider | None = None
+    ) -> SchemaEpochReadiness: ...
 
     def check_compatibility(self) -> SchemaCompatibility: ...
 
@@ -263,15 +276,6 @@ class CatalogBuildCoordinator(Protocol):
         ingest_turn: GalleryIngestTurn,
     ) -> CatalogBuild: ...
 
-    def stage_catalog_analysis(
-        self,
-        build: CatalogBuild,
-        analyses: Sequence[CatalogSourceGalleryAnalysis],
-        *,
-        batch_id: str,
-        ingest_turn: GalleryIngestTurn,
-    ) -> CatalogBuildBatchResult: ...
-
     def complete_catalog_analysis(
         self,
         build: CatalogBuild,
@@ -407,22 +411,23 @@ class CatalogBuildAnalyzer(Protocol):
         ingest_turn: GalleryIngestTurn,
     ) -> CatalogBuildBatchResult: ...
 
-    def list_catalog_file_hash_aggregates(
-        self,
-        build_id: str,
-        *,
-        after: CatalogFileHashAggregateCursor | None = None,
-        limit: int = 1000,
-    ) -> CatalogFileHashAggregatePage: ...
-
-    def stage_catalog_excluded_file_hashes(
+    def get_catalog_file_spam_page(
         self,
         build: CatalogBuild,
-        hashes: Sequence[str],
         *,
-        batch_id: str,
+        minimum_occurrences: int,
+        limit: int = 1000,
         ingest_turn: GalleryIngestTurn,
-    ) -> CatalogBuildBatchResult: ...
+    ) -> CatalogFileHashAggregatePage: ...
+
+    def apply_catalog_file_spam_page(
+        self,
+        build: CatalogBuild,
+        page: CatalogFileHashAggregatePage,
+        excluded_hashes: Sequence[str],
+        *,
+        ingest_turn: GalleryIngestTurn,
+    ) -> CatalogFileSpamPageApplyResult: ...
 
     def list_catalog_gallery_file_hashes(
         self,
@@ -498,7 +503,6 @@ class CatalogBuildAnalyzer(Protocol):
         phase: CatalogAnalysisPhase,
         *,
         ingest_turn: GalleryIngestTurn,
-        scan_completion: CatalogAnalysisScanCompletion | None = None,
     ) -> CatalogAnalysisPhaseCheckpoint: ...
 
 

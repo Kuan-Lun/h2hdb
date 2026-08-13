@@ -50,6 +50,7 @@ _MIGRATION_REGISTRY = (
     _SchemaMigration(4, "durable-catalog-build-projections"),
     _SchemaMigration(5, "catalog-operational-authority"),
     _SchemaMigration(6, "active-source-deletion-command-view"),
+    _SchemaMigration(7, "durable-file-spam-scan"),
 )
 LATEST_SCHEMA_VERSION = _MIGRATION_REGISTRY[-1].version
 MINIMUM_SCHEMA_VERSION = LATEST_SCHEMA_VERSION
@@ -1112,6 +1113,74 @@ _V6_TODELETE_VIEW_DEFINITION_FRAGMENTS = (
     "rm -rf",
 )
 
+_V7_REQUIRED_TABLES = frozenset(
+    {
+        "catalog_build_analysis_scan_checkpoints",
+        "catalog_build_analysis_scan_receipts",
+    }
+)
+
+_V7_REQUIRED_COLUMNS = {
+    "catalog_build_analysis_scan_checkpoints": frozenset(
+        {
+            "build_id",
+            "phase",
+            "generation",
+            "minimum_occurrences",
+            "cursor_sha256",
+            "output_sha256",
+            "state",
+            "updated_at",
+        }
+    ),
+    "catalog_build_analysis_scan_receipts": frozenset(
+        {
+            "build_id",
+            "phase",
+            "batch_key",
+            "start_cursor_sha256",
+            "next_cursor_sha256",
+            "minimum_occurrences",
+            "page_limit",
+            "input_sha256",
+            "output_sha256",
+            "row_count",
+            "committed_generation",
+            "committed_at",
+        }
+    ),
+}
+
+_V7_REQUIRED_PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
+    "catalog_build_analysis_scan_checkpoints": ("build_id", "phase"),
+    "catalog_build_analysis_scan_receipts": ("build_id", "phase", "batch_key"),
+}
+
+_V7_REQUIRED_INDEXES: dict[str, tuple[tuple[tuple[str, ...], bool], ...]] = {
+    "catalog_source_galleries": (
+        (("build_id", "source_complete", "staged_file_count", "gallery_key"), False),
+    ),
+    "catalog_build_analysis_scan_receipts": (
+        (("build_id", "phase", "start_cursor_sha256"), True),
+        (("build_id", "phase", "committed_at", "batch_key"), False),
+    ),
+}
+
+_V7_REQUIRED_FOREIGN_KEYS = {
+    "catalog_build_analysis_scan_checkpoints": (
+        (("build_id",), "catalog_builds", ("build_id",), "NO ACTION", "NO ACTION"),
+    ),
+    "catalog_build_analysis_scan_receipts": (
+        (
+            ("build_id", "phase"),
+            "catalog_build_analysis_scan_checkpoints",
+            ("build_id", "phase"),
+            "NO ACTION",
+            "NO ACTION",
+        ),
+    ),
+}
+
 
 class SchemaCompatibilityError(RuntimeError):
     pass
@@ -1866,6 +1935,91 @@ class MigrationRunner:
                 f"null_deletion_token={bool(null_token)}."
             )
 
+    def _validate_catalog_analysis_scan_schema_contracts(self) -> None:
+        invalid_primary_keys = {
+            table_name: (expected, self._primary_key(table_name))
+            for table_name, expected in _V7_REQUIRED_PRIMARY_KEYS.items()
+            if self._primary_key(table_name) != expected
+        }
+        missing_indexes: dict[str, list[tuple[str, ...]]] = {}
+        for table_name, expected_indexes in _V7_REQUIRED_INDEXES.items():
+            actual_indexes = self._indexes(table_name)
+            for expected_columns, unique in expected_indexes:
+                if (expected_columns, unique) not in actual_indexes:
+                    missing_indexes.setdefault(table_name, []).append(expected_columns)
+        missing_foreign_keys: dict[
+            str,
+            list[tuple[tuple[str, ...], str, tuple[str, ...], str, str]],
+        ] = {}
+        for table_name, expected_keys in _V7_REQUIRED_FOREIGN_KEYS.items():
+            actual_keys = self._foreign_keys(table_name)
+            for expected in expected_keys:
+                if expected not in actual_keys:
+                    missing_foreign_keys.setdefault(table_name, []).append(expected)
+        invalid_nullability = {
+            table_name: tuple(
+                column
+                for column in required_columns
+                if column in self._nullable_columns(table_name)
+            )
+            for table_name, required_columns in _V7_REQUIRED_COLUMNS.items()
+        }
+        invalid_nullability = {
+            table_name: columns
+            for table_name, columns in invalid_nullability.items()
+            if columns
+        }
+        check_fragments = {
+            "catalog_build_analysis_scan_checkpoints": (
+                "phase=file_spam",
+                "generation>0",
+                "minimum_occurrences>0",
+                "lengthcursor_sha256in0,64",
+                "lengthoutput_sha256=64",
+                "stateinopen,complete",
+            ),
+            "catalog_build_analysis_scan_receipts": (
+                "phase=file_spam",
+                "minimum_occurrences>0",
+                "page_limit>0",
+                "row_count>=0",
+                "row_count<=page_limit",
+                "committed_generation>0",
+                "lengthinput_sha256=64",
+                "lengthoutput_sha256=64",
+            ),
+        }
+        invalid_checks = {
+            table_name: tuple(
+                fragment
+                for fragment in fragments
+                if fragment
+                not in self._normalized_definition(table_name, object_type="table")
+            )
+            for table_name, fragments in check_fragments.items()
+        }
+        invalid_checks = {
+            table_name: fragments
+            for table_name, fragments in invalid_checks.items()
+            if fragments
+        }
+        if (
+            invalid_primary_keys
+            or missing_indexes
+            or missing_foreign_keys
+            or invalid_nullability
+            or invalid_checks
+        ):
+            raise SchemaCompatibilityError(
+                "The durable analysis scan schema does not satisfy its structural "
+                "contracts: "
+                f"primary_keys={invalid_primary_keys} "
+                f"indexes={missing_indexes} "
+                f"foreign_keys={missing_foreign_keys} "
+                f"nullability={invalid_nullability} "
+                f"checks={invalid_checks}."
+            )
+
     def _nullable_columns(self, table_name: str) -> set[str]:
         with self._context.SQLConnector() as connector:
             if self._context.sql_type == "mariadb":
@@ -2105,6 +2259,8 @@ class MigrationRunner:
                 self._apply_catalog_operational_schema()
             case 6:
                 self._apply_active_source_deletion_command_view()
+            case 7:
+                self._apply_catalog_analysis_scan_schema()
             case _:
                 raise AssertionError(
                     f"No migration implementation for version {migration.version}."
@@ -2228,6 +2384,22 @@ class MigrationRunner:
                         f"missing_views={missing_views} "
                         f"missing_fragments={missing_fragments}."
                     )
+            case 7:
+                tables, _views = self._table_and_view_names()
+                missing_tables = sorted(_V7_REQUIRED_TABLES - tables)
+                missing_scan_columns: dict[str, list[str]] = {}
+                for table_name, required_columns in _V7_REQUIRED_COLUMNS.items():
+                    if table_name not in tables:
+                        continue
+                    missing = sorted(required_columns - self._table_columns(table_name))
+                    if missing:
+                        missing_scan_columns[table_name] = missing
+                if missing_tables or missing_scan_columns:
+                    raise SchemaCompatibilityError(
+                        "The durable analysis scan schema is incomplete: "
+                        f"tables={missing_tables} columns={missing_scan_columns}."
+                    )
+                self._validate_catalog_analysis_scan_schema_contracts()
             case _:
                 raise AssertionError(
                     f"No migration validation for version {migration.version}."
@@ -2236,6 +2408,29 @@ class MigrationRunner:
     def _apply_catalog_analysis_schema(self) -> None:
         with self._context.SQLConnector() as connector:
             for statement in self._catalog_analysis_statements():
+                connector.execute(statement)
+
+    def _apply_catalog_analysis_scan_schema(self) -> None:
+        """Install a server-owned contiguous FILE_SPAM scan authority.
+
+        A legacy ANALYZING build may already have accepted the former
+        caller-constructed terminal token.  No forward migration can recover
+        which ranges were actually observed, so require that build to be
+        abandoned and rebuilt rather than inventing receipts.
+        """
+
+        with self._context.SQLConnector() as connector:
+            unfinished = connector.fetch_one(
+                "SELECT build_id, phase FROM catalog_builds "
+                "WHERE phase IN ('ANALYZING', 'ARTIFACTS', 'SEALED') LIMIT 1"
+            )
+            if unfinished:
+                raise SchemaCompatibilityError(
+                    "Cannot install durable FILE_SPAM scan authority while legacy "
+                    f"build {unfinished[0]!s} is {unfinished[1]!s}; abandon and "
+                    "rebuild it so contiguous scan receipts can be established"
+                )
+            for statement in self._catalog_analysis_scan_statements():
                 connector.execute(statement)
 
     def _apply_catalog_projection_build_schema(self) -> None:
@@ -2920,6 +3115,171 @@ class MigrationRunner:
             """
             CREATE INDEX IF NOT EXISTS catalog_source_galleries_gid_key_order
             ON catalog_source_galleries (build_id, gid, gallery_key)
+            """,
+        )
+
+    def _catalog_analysis_scan_statements(self) -> tuple[str, ...]:
+        if self._context.sql_type == "mariadb":
+            return (
+                """
+                CREATE TABLE IF NOT EXISTS catalog_build_analysis_scan_checkpoints (
+                    build_id CHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    phase VARCHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    generation BIGINT UNSIGNED NOT NULL,
+                    minimum_occurrences BIGINT UNSIGNED NOT NULL,
+                    cursor_sha256 VARCHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    output_sha256 CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    state VARCHAR(16)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    updated_at VARCHAR(40) NOT NULL,
+                    PRIMARY KEY (build_id, phase),
+                    CONSTRAINT catalog_analysis_scan_checkpoint_phase
+                        CHECK (phase = 'FILE_SPAM'),
+                    CONSTRAINT catalog_analysis_scan_checkpoint_generation
+                        CHECK (generation > 0),
+                    CONSTRAINT catalog_analysis_scan_checkpoint_minimum
+                        CHECK (minimum_occurrences > 0),
+                    CONSTRAINT catalog_analysis_scan_checkpoint_cursor
+                        CHECK (CHAR_LENGTH(cursor_sha256) IN (0, 64)),
+                    CONSTRAINT catalog_analysis_scan_checkpoint_output
+                        CHECK (CHAR_LENGTH(output_sha256) = 64),
+                    CONSTRAINT catalog_analysis_scan_checkpoint_state
+                        CHECK (state IN ('OPEN', 'COMPLETE')),
+                    CONSTRAINT catalog_analysis_scan_checkpoint_build_fk
+                        FOREIGN KEY (build_id)
+                        REFERENCES catalog_builds (build_id)
+                        ON DELETE RESTRICT
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS catalog_build_analysis_scan_receipts (
+                    build_id CHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    phase VARCHAR(32)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    batch_key CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    start_cursor_sha256 VARCHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    next_cursor_sha256 VARCHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    minimum_occurrences BIGINT UNSIGNED NOT NULL,
+                    page_limit INT UNSIGNED NOT NULL,
+                    input_sha256 CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    output_sha256 CHAR(64)
+                        CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                    row_count BIGINT UNSIGNED NOT NULL,
+                    committed_generation BIGINT UNSIGNED NOT NULL,
+                    committed_at VARCHAR(40) NOT NULL,
+                    PRIMARY KEY (build_id, phase, batch_key),
+                    UNIQUE INDEX catalog_analysis_scan_receipt_start (
+                        build_id, phase, start_cursor_sha256
+                    ),
+                    INDEX catalog_analysis_scan_receipt_chronology (
+                        build_id, phase, committed_at, batch_key
+                    ),
+                    CONSTRAINT catalog_analysis_scan_receipt_phase
+                        CHECK (phase = 'FILE_SPAM'),
+                    CONSTRAINT catalog_analysis_scan_receipt_minimum
+                        CHECK (minimum_occurrences > 0),
+                    CONSTRAINT catalog_analysis_scan_receipt_page_limit
+                        CHECK (page_limit > 0),
+                    CONSTRAINT catalog_analysis_scan_receipt_rows
+                        CHECK (row_count >= 0 AND row_count <= page_limit),
+                    CONSTRAINT catalog_analysis_scan_receipt_generation
+                        CHECK (committed_generation > 0),
+                    CONSTRAINT catalog_analysis_scan_receipt_cursors
+                        CHECK (
+                            CHAR_LENGTH(start_cursor_sha256) IN (0, 64)
+                            AND CHAR_LENGTH(next_cursor_sha256) IN (0, 64)
+                        ),
+                    CONSTRAINT catalog_analysis_scan_receipt_input
+                        CHECK (CHAR_LENGTH(input_sha256) = 64),
+                    CONSTRAINT catalog_analysis_scan_receipt_output
+                        CHECK (CHAR_LENGTH(output_sha256) = 64),
+                    CONSTRAINT catalog_analysis_scan_receipt_checkpoint_fk
+                        FOREIGN KEY (build_id, phase)
+                        REFERENCES catalog_build_analysis_scan_checkpoints (
+                            build_id, phase
+                        )
+                        ON DELETE RESTRICT
+                )
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS catalog_source_galleries_empty_order
+                ON catalog_source_galleries (
+                    build_id, source_complete, staged_file_count, gallery_key
+                )
+                """,
+            )
+        return (
+            """
+            CREATE TABLE IF NOT EXISTS catalog_build_analysis_scan_checkpoints (
+                build_id TEXT COLLATE BINARY NOT NULL,
+                phase TEXT COLLATE BINARY NOT NULL CHECK (phase = 'FILE_SPAM'),
+                generation INTEGER NOT NULL CHECK (generation > 0),
+                minimum_occurrences INTEGER NOT NULL
+                    CHECK (minimum_occurrences > 0),
+                cursor_sha256 TEXT COLLATE BINARY NOT NULL
+                    CHECK (length(cursor_sha256) IN (0, 64)),
+                output_sha256 TEXT COLLATE BINARY NOT NULL
+                    CHECK (length(output_sha256) = 64),
+                state TEXT COLLATE BINARY NOT NULL
+                    CHECK (state IN ('OPEN', 'COMPLETE')),
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (build_id, phase),
+                FOREIGN KEY (build_id)
+                    REFERENCES catalog_builds (build_id)
+                    ON DELETE RESTRICT
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS catalog_build_analysis_scan_receipts (
+                build_id TEXT COLLATE BINARY NOT NULL,
+                phase TEXT COLLATE BINARY NOT NULL CHECK (phase = 'FILE_SPAM'),
+                batch_key TEXT COLLATE BINARY NOT NULL
+                    CHECK (length(batch_key) = 64),
+                start_cursor_sha256 TEXT COLLATE BINARY NOT NULL
+                    CHECK (length(start_cursor_sha256) IN (0, 64)),
+                next_cursor_sha256 TEXT COLLATE BINARY NOT NULL
+                    CHECK (length(next_cursor_sha256) IN (0, 64)),
+                minimum_occurrences INTEGER NOT NULL
+                    CHECK (minimum_occurrences > 0),
+                page_limit INTEGER NOT NULL CHECK (page_limit > 0),
+                input_sha256 TEXT COLLATE BINARY NOT NULL
+                    CHECK (length(input_sha256) = 64),
+                output_sha256 TEXT COLLATE BINARY NOT NULL
+                    CHECK (length(output_sha256) = 64),
+                row_count INTEGER NOT NULL
+                    CHECK (row_count >= 0 AND row_count <= page_limit),
+                committed_generation INTEGER NOT NULL
+                    CHECK (committed_generation > 0),
+                committed_at TEXT NOT NULL,
+                PRIMARY KEY (build_id, phase, batch_key),
+                UNIQUE (build_id, phase, start_cursor_sha256),
+                FOREIGN KEY (build_id, phase)
+                    REFERENCES catalog_build_analysis_scan_checkpoints (
+                        build_id, phase
+                    )
+                    ON DELETE RESTRICT
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS catalog_analysis_scan_receipt_chronology
+            ON catalog_build_analysis_scan_receipts (
+                build_id, phase, committed_at, batch_key
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS catalog_source_galleries_empty_order
+            ON catalog_source_galleries (
+                build_id, source_complete, staged_file_count, gallery_key
+            )
             """,
         )
 

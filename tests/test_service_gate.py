@@ -46,6 +46,9 @@ def test_public_operations_acquire_one_reentrant_maintenance_gate(
 def test_database_touching_facade_methods_are_guarded() -> None:
     intentionally_self_gated = {
         "analyze_database",
+        "check_schema_epoch_v2",
+        "check_schema_epoch_v2_readiness",
+        "initialize_schema_epoch_v2",
         "migrate",
         "optimize_database",
         "run_scheduled_database_maintenance",
@@ -92,7 +95,7 @@ def test_schema_readiness_check_bypasses_maintenance_gate(
         observed_gate,
     )
 
-    assert database.check_readiness().database_version == 6
+    assert database.check_readiness().database_version == 7
     assert acquisitions == 0
 
 

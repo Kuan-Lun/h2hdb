@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 __all__ = [
+    "CANONICAL_SOURCE_MANIFEST_VERSION",
     "CatalogAnalysisPhase",
     "CatalogAnalysisPhaseCheckpoint",
-    "CatalogAnalysisScanCompletion",
     "CatalogBuild",
     "CatalogBuildBatchResult",
     "CatalogBuildPhase",
@@ -61,8 +61,8 @@ __all__ = [
     "CatalogContentOwner",
     "CatalogDeduplicationCandidate",
     "CatalogFileHashAggregate",
-    "CatalogFileHashAggregateCursor",
     "CatalogFileHashAggregatePage",
+    "CatalogFileSpamPageApplyResult",
     "CatalogFinalAnalysisCursor",
     "CatalogFinalAnalysisPage",
     "CatalogGalleryFileHashCursor",
@@ -90,6 +90,8 @@ from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from uuid import UUID
+
+CANONICAL_SOURCE_MANIFEST_VERSION = 1
 
 
 def _validate_sha256(value: str, *, label: str) -> None:
@@ -171,20 +173,6 @@ class CatalogAnalysisPhaseCheckpoint:
 
     def __post_init__(self) -> None:
         _validate_build_id(self.build_id)
-
-
-@dataclass(frozen=True, slots=True)
-class CatalogAnalysisScanCompletion:
-    """Opaque proof that a bounded analysis input stream reached its terminal page."""
-
-    build_id: str
-    phase: CatalogAnalysisPhase
-    after_value: str
-    token_sha256: str
-
-    def __post_init__(self) -> None:
-        _validate_build_id(self.build_id)
-        _validate_sha256(self.token_sha256, label="Analysis scan completion token")
 
 
 @dataclass(frozen=True, slots=True)
@@ -930,6 +918,8 @@ class CatalogSourceGalleryCompletion:
     page_count: int | None = None
     directory_entry_count: int | None = None
     directory_observation_sha256: str | None = None
+    canonical_source_manifest_sha256: str | None = None
+    canonical_source_manifest_version: int | None = None
 
     def __post_init__(self) -> None:
         _validate_leaf_name(self.gallery_name, label="Gallery name")
@@ -945,6 +935,26 @@ class CatalogSourceGalleryCompletion:
             _validate_sha256(
                 self.raw_content_sha256,
                 label="Raw gallery content SHA-256",
+            )
+        if (self.canonical_source_manifest_sha256 is None) != (
+            self.canonical_source_manifest_version is None
+        ):
+            raise ValueError(
+                "Canonical source manifest digest and version must be supplied together"
+            )
+        if self.canonical_source_manifest_sha256 is not None:
+            _validate_sha256(
+                self.canonical_source_manifest_sha256,
+                label="Canonical source manifest SHA-256",
+            )
+        if (
+            self.canonical_source_manifest_version is not None
+            and self.canonical_source_manifest_version
+            != CANONICAL_SOURCE_MANIFEST_VERSION
+        ):
+            raise ValueError(
+                "Canonical source manifest version must be "
+                f"{CANONICAL_SOURCE_MANIFEST_VERSION}"
             )
         for label, digest in (
             ("Gallery metadata SHA-256", self.metadata_sha256),
@@ -1101,47 +1111,89 @@ class CatalogSourceManifest:
             raise ValueError("Canonical staged manifests must use version 1")
 
 
-@dataclass(frozen=True, order=True, slots=True)
-class CatalogFileHashAggregateCursor:
-    file_sha256: str
-
-    def __post_init__(self) -> None:
-        _validate_sha256(self.file_sha256, label="Source file SHA-256")
-
-
 @dataclass(frozen=True, slots=True)
 class CatalogFileHashAggregate:
     file_sha256: str
     occurrence_count: int
     distinct_artist_count: int
     maximum_gallery_artist_count: int
+    minimum_occurrences: int
 
     def __post_init__(self) -> None:
         _validate_sha256(self.file_sha256, label="Source file SHA-256")
         if self.occurrence_count <= 0:
             raise ValueError("File occurrence count must be positive")
+        if self.minimum_occurrences <= 0:
+            raise ValueError("File-hash minimum occurrences must be positive")
+        if self.occurrence_count < self.minimum_occurrences:
+            raise ValueError("File hash does not satisfy its stream occurrence bound")
         if min(self.distinct_artist_count, self.maximum_gallery_artist_count) < 0:
             raise ValueError("File artist counts must be non-negative")
         if self.maximum_gallery_artist_count > self.distinct_artist_count:
             raise ValueError("Maximum gallery artists cannot exceed distinct artists")
-
-    @property
-    def cursor(self) -> CatalogFileHashAggregateCursor:
-        return CatalogFileHashAggregateCursor(self.file_sha256)
 
 
 @dataclass(frozen=True, slots=True)
 class CatalogFileHashAggregatePage:
     items: tuple[CatalogFileHashAggregate, ...]
     limit: int
-    completion: CatalogAnalysisScanCompletion | None = None
+    minimum_occurrences: int
+    checkpoint_generation: int
+    start_cursor_sha256: str
+    next_cursor_sha256: str
+    input_sha256: str
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "items", tuple(self.items))
         if self.limit <= 0 or len(self.items) > self.limit:
             raise ValueError("File-hash aggregate page must honor its positive limit")
-        if self.items and self.completion is not None:
-            raise ValueError("Only an empty terminal page can carry scan completion")
+        if self.minimum_occurrences <= 0:
+            raise ValueError("File-spam minimum occurrences must be positive")
+        if any(
+            item.minimum_occurrences != self.minimum_occurrences for item in self.items
+        ):
+            raise ValueError("File-spam page rows belong to a different policy")
+        if self.checkpoint_generation <= 0:
+            raise ValueError("File-spam checkpoint generation must be positive")
+        for label, value in (
+            ("File-spam start cursor", self.start_cursor_sha256),
+            ("File-spam next cursor", self.next_cursor_sha256),
+        ):
+            if value:
+                _validate_sha256(value, label=label)
+        _validate_sha256(self.input_sha256, label="File-spam page input")
+        expected_next = (
+            self.items[-1].file_sha256 if self.items else self.start_cursor_sha256
+        )
+        if self.next_cursor_sha256 != expected_next:
+            raise ValueError("File-spam page next cursor does not match its rows")
+
+    @property
+    def terminal(self) -> bool:
+        return not self.items
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogFileSpamPageApplyResult:
+    build_id: str
+    batch_key: str
+    checkpoint_generation: int
+    row_count: int
+    excluded_count: int
+    complete: bool
+    applied: bool
+
+    def __post_init__(self) -> None:
+        _validate_build_id(self.build_id)
+        _validate_sha256(self.batch_key, label="File-spam scan batch key")
+        if self.checkpoint_generation <= 0:
+            raise ValueError("File-spam checkpoint generation must be positive")
+        if min(self.row_count, self.excluded_count) < 0:
+            raise ValueError("File-spam page counts must be non-negative")
+        if self.excluded_count > self.row_count:
+            raise ValueError("Excluded hashes must belong to the applied page")
+        if self.complete != (self.row_count == 0):
+            raise ValueError("Only an empty file-spam page completes the scan")
 
 
 @dataclass(frozen=True, order=True, slots=True)
@@ -1159,20 +1211,23 @@ class CatalogGalleryFileHashRow:
     gallery_name: str
     gallery_key: str
     file_key: str
-    file_name: str | None
     file_sha256: str
+    metadata_file: bool
     excluded_as_spam: bool
 
     def __post_init__(self) -> None:
         _validate_leaf_name(self.gallery_name, label="Gallery name")
         _validate_sha256(self.gallery_key, label="File-hash gallery key")
-        if self.file_name is None:
-            if self.file_key or self.file_sha256 or self.excluded_as_spam:
+        if self.empty_gallery_sentinel:
+            if self.metadata_file or self.excluded_as_spam:
                 raise ValueError("An empty-gallery content sentinel must be empty")
             return
-        _validate_leaf_name(self.file_name, label="Source file name")
         _validate_sha256(self.file_key, label="Source file key")
         _validate_sha256(self.file_sha256, label="Source file SHA-256")
+
+    @property
+    def empty_gallery_sentinel(self) -> bool:
+        return not self.file_key and not self.file_sha256
 
     @property
     def cursor(self) -> CatalogGalleryFileHashCursor:

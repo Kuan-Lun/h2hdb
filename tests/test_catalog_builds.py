@@ -1,3 +1,4 @@
+import sqlite3
 from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -5,18 +6,25 @@ from hashlib import sha256
 import pytest
 
 from h2hdb import (
+    CANONICAL_SOURCE_MANIFEST_VERSION,
     H2HDB,
+    CatalogAnalysisPhase,
+    CatalogBuild,
     CatalogBuildBatchConflictError,
     CatalogBuildCoordinator,
     CatalogBuildPhase,
     CatalogBuildPublishResult,
     CatalogBuildStateError,
+    CatalogContentDigest,
+    CatalogContentOwner,
+    CatalogGidWinner,
     CatalogSourceDiscoveryCompletion,
     CatalogSourceFileChunk,
     CatalogSourceGalleryAnalysis,
     CatalogSourceGalleryCompletion,
     CatalogSourceGalleryDiscovery,
     CatalogSourceGalleryHeader,
+    CatalogSourceManifest,
     CoreConfig,
     FileHashCacheEntry,
     FileHashCacheKey,
@@ -70,6 +78,319 @@ def _completion(
         directory_entry_count=expected_file_count + 1,
         directory_observation_sha256=_digest(f"directory:{gallery_name}"),
     )
+
+
+def _complete_durable_analysis(
+    database: H2HDB,
+    build: CatalogBuild,
+    turn: GalleryIngestTurn,
+    analyses: tuple[CatalogSourceGalleryAnalysis, ...],
+    gids: dict[str, int],
+) -> CatalogBuild:
+    database.stage_catalog_source_manifests(
+        build,
+        tuple(
+            CatalogSourceManifest(
+                item.gallery_name,
+                item.source_manifest_sha256 or _digest(f"manifest:{item.gallery_name}"),
+            )
+            for item in analyses
+        ),
+        batch_id="durable-manifests",
+        ingest_turn=turn,
+    )
+    database.complete_catalog_analysis_phase(
+        build,
+        CatalogAnalysisPhase.source_manifests,
+        ingest_turn=turn,
+    )
+    while True:
+        page = database.get_catalog_file_spam_page(
+            build,
+            minimum_occurrences=3,
+            limit=100,
+            ingest_turn=turn,
+        )
+        database.apply_catalog_file_spam_page(build, page, (), ingest_turn=turn)
+        if page.terminal:
+            break
+    database.complete_catalog_analysis_phase(
+        build,
+        CatalogAnalysisPhase.file_spam,
+        ingest_turn=turn,
+    )
+    database.stage_catalog_content_digests(
+        build,
+        tuple(
+            CatalogContentDigest(item.gallery_name, item.content_sha256)
+            for item in analyses
+        ),
+        batch_id="durable-content",
+        ingest_turn=turn,
+    )
+    database.complete_catalog_analysis_phase(
+        build,
+        CatalogAnalysisPhase.content_digests,
+        ingest_turn=turn,
+    )
+    owners = tuple(
+        CatalogContentOwner(item.content_sha256, item.gallery_name)
+        for item in analyses
+        if item.content_sha256 is not None and item.duplicate_of_gallery_name is None
+    )
+    database.stage_catalog_content_owners(
+        build,
+        owners,
+        batch_id="durable-owners",
+        ingest_turn=turn,
+    )
+    database.complete_catalog_analysis_phase(
+        build,
+        CatalogAnalysisPhase.content_owners,
+        ingest_turn=turn,
+    )
+    database.stage_catalog_gid_winners(
+        build,
+        tuple(
+            CatalogGidWinner(gids[item.gallery_name], item.gallery_name)
+            for item in analyses
+            if item.selected
+        ),
+        batch_id="durable-gid-winners",
+        ingest_turn=turn,
+    )
+    database.complete_catalog_analysis_phase(
+        build,
+        CatalogAnalysisPhase.gid_winners,
+        ingest_turn=turn,
+    )
+    database.stage_catalog_final_analyses(
+        build,
+        analyses,
+        batch_id="durable-final",
+        ingest_turn=turn,
+    )
+    database.complete_catalog_analysis_phase(
+        build,
+        CatalogAnalysisPhase.final_analyses,
+        ingest_turn=turn,
+    )
+    return database.complete_catalog_analysis(build, ingest_turn=turn)
+
+
+def _stage_single_gallery(
+    database: H2HDB,
+    turn: GalleryIngestTurn,
+    *,
+    scope_key: str,
+) -> CatalogBuild:
+    build = database.begin_catalog_build(scope_key=scope_key, ingest_turn=turn)
+    database.discover_catalog_galleries(
+        build,
+        ("gallery-a",),
+        batch_id="discover",
+        ingest_turn=turn,
+    )
+    build = database.complete_catalog_discovery(build, ingest_turn=turn)
+    database.begin_catalog_gallery(
+        build,
+        _header("gallery-a", 1),
+        batch_id="header",
+        ingest_turn=turn,
+    )
+    database.stage_catalog_file_chunk(
+        build,
+        "gallery-a",
+        (GallerySourceFile("001.jpg", 1, _digest("file")),),
+        batch_id="files",
+        ingest_turn=turn,
+    )
+    return build
+
+
+def test_completion_can_atomically_seal_the_canonical_source_manifest(
+    sqlite_config: CoreConfig,
+) -> None:
+    database = H2HDB(sqlite_config)
+    database.migrate()
+    turn = _claim(database)
+    build = _stage_single_gallery(database, turn, scope_key="embedded-manifest")
+    manifest_sha256 = _digest("canonical-manifest")
+    completion = replace(
+        _completion("gallery-a"),
+        canonical_source_manifest_sha256=manifest_sha256,
+        canonical_source_manifest_version=CANONICAL_SOURCE_MANIFEST_VERSION,
+    )
+
+    assert database.complete_catalog_gallery(
+        build,
+        completion,
+        batch_id="complete",
+        ingest_turn=turn,
+    ).applied
+    assert not database.complete_catalog_gallery(
+        build,
+        completion,
+        batch_id="complete",
+        ingest_turn=turn,
+    ).applied
+    with pytest.raises(CatalogBuildBatchConflictError, match="different data"):
+        database.complete_catalog_gallery(
+            build,
+            replace(
+                completion,
+                canonical_source_manifest_sha256=_digest("different-manifest"),
+            ),
+            batch_id="complete",
+            ingest_turn=turn,
+        )
+
+    replay = database.complete_catalog_gallery(
+        build,
+        completion,
+        batch_id="complete-retry",
+        ingest_turn=turn,
+    )
+    assert replay.applied
+    assert replay.item_count == 0
+    with pytest.raises(CatalogBuildBatchConflictError, match="different source data"):
+        database.complete_catalog_gallery(
+            build,
+            replace(
+                completion,
+                canonical_source_manifest_sha256=_digest("different-manifest"),
+            ),
+            batch_id="complete-conflict",
+            ingest_turn=turn,
+        )
+
+    source = database.list_catalog_build_sources(build.build_id).galleries[0]
+    assert source.source_manifest_sha256 == manifest_sha256
+    assert source.source_manifest_version == CANONICAL_SOURCE_MANIFEST_VERSION
+
+    build = database.complete_catalog_source_staging(build, ingest_turn=turn)
+    assert build.phase is CatalogBuildPhase.analyzing
+    assert database.is_catalog_analysis_phase_complete(
+        build.build_id,
+        CatalogAnalysisPhase.source_manifests,
+    )
+    assert not database.complete_catalog_analysis_phase(
+        build,
+        CatalogAnalysisPhase.source_manifests,
+        ingest_turn=turn,
+    ).applied
+    with pytest.raises(CatalogBuildStateError, match="already complete"):
+        database.stage_catalog_source_manifests(
+            build,
+            (CatalogSourceManifest("gallery-a", manifest_sha256),),
+            batch_id="manifest-not-needed",
+            ingest_turn=turn,
+        )
+
+
+def test_completion_without_embedded_manifest_retains_the_analysis_path(
+    sqlite_config: CoreConfig,
+) -> None:
+    with pytest.raises(ValueError, match="supplied together"):
+        replace(
+            _completion("gallery-a"),
+            canonical_source_manifest_sha256=_digest("manifest"),
+        )
+    with pytest.raises(ValueError, match="64 hexadecimal characters"):
+        replace(
+            _completion("gallery-a"),
+            canonical_source_manifest_sha256="invalid",
+            canonical_source_manifest_version=1,
+        )
+    with pytest.raises(ValueError, match="must be 1"):
+        replace(
+            _completion("gallery-a"),
+            canonical_source_manifest_sha256=_digest("manifest"),
+            canonical_source_manifest_version=0,
+        )
+    with pytest.raises(ValueError, match="must be 1"):
+        replace(
+            _completion("gallery-a"),
+            canonical_source_manifest_sha256=_digest("manifest"),
+            canonical_source_manifest_version=2,
+        )
+
+    database = H2HDB(sqlite_config)
+    database.migrate()
+    turn = _claim(database)
+    build = _stage_single_gallery(database, turn, scope_key="legacy-manifest")
+    database.complete_catalog_gallery(
+        build,
+        _completion("gallery-a"),
+        batch_id="complete",
+        ingest_turn=turn,
+    )
+
+    build = database.complete_catalog_source_staging(build, ingest_turn=turn)
+    assert not database.is_catalog_analysis_phase_complete(
+        build.build_id,
+        CatalogAnalysisPhase.source_manifests,
+    )
+    manifest_sha256 = _digest("legacy-manifest")
+    assert database.stage_catalog_source_manifests(
+        build,
+        (CatalogSourceManifest("gallery-a", manifest_sha256),),
+        batch_id="manifest",
+        ingest_turn=turn,
+    ).applied
+    assert database.complete_catalog_analysis_phase(
+        build,
+        CatalogAnalysisPhase.source_manifests,
+        ingest_turn=turn,
+    ).applied
+    source = database.list_catalog_build_sources(build.build_id).galleries[0]
+    assert source.source_manifest_sha256 == manifest_sha256
+    assert source.source_manifest_version == 1
+
+
+def test_source_staging_rejects_persisted_unsupported_embedded_manifest_version(
+    sqlite_config: CoreConfig,
+) -> None:
+    database = H2HDB(sqlite_config)
+    database.migrate()
+    turn = _claim(database)
+    build = _stage_single_gallery(database, turn, scope_key="unsupported-manifest")
+    database.complete_catalog_gallery(
+        build,
+        _completion("gallery-a"),
+        batch_id="complete",
+        ingest_turn=turn,
+    )
+
+    # Protect restart/upgrade paths as well as newly constructed domain values:
+    # a previously persisted unsupported version cannot auto-checkpoint the
+    # SOURCE_MANIFESTS phase.
+    with sqlite3.connect(sqlite_config.database.database) as connection:
+        connection.execute(
+            """
+            UPDATE catalog_source_galleries
+            SET source_manifest_sha256 = ?, source_manifest_version = 2
+            WHERE build_id = ?
+            """,
+            (_digest("unsupported-manifest"), build.build_id),
+        )
+
+    with pytest.raises(CatalogBuildStateError, match="unsupported.*version 2"):
+        database.complete_catalog_source_staging(build, ingest_turn=turn)
+    resumed = database.resume_catalog_build(
+        scope_key="unsupported-manifest",
+        ingest_turn=turn,
+    )
+    assert resumed is not None
+    assert resumed.phase is CatalogBuildPhase.staging
+    with sqlite3.connect(sqlite_config.database.database) as connection:
+        assert (
+            connection.execute(
+                "SELECT 1 FROM catalog_build_analysis_phases WHERE build_id = ?",
+                (build.build_id,),
+            ).fetchone()
+            is None
+        )
 
 
 def test_catalog_build_is_turn_fenced_scope_bound_and_resumable(
@@ -334,29 +655,8 @@ def test_multi_gallery_stage_batches_are_atomic_and_idempotent(
     )
 
     build = database.complete_catalog_source_staging(build, ingest_turn=turn)
-    database.stage_catalog_analysis(
-        build,
-        [
-            CatalogSourceGalleryAnalysis(
-                gallery_name="gallery-a",
-                content_sha256=None,
-                selected=True,
-                source_manifest_sha256=_digest("manifest-a"),
-                source_manifest_version=1,
-            ),
-            CatalogSourceGalleryAnalysis(
-                gallery_name="gallery-b",
-                content_sha256=_digest("content-b"),
-                selected=False,
-                duplicate_of_gallery_name="gallery-a",
-                source_manifest_sha256=_digest("manifest-b"),
-                source_manifest_version=1,
-            ),
-        ],
-        batch_id="invalid-null-owner",
-        ingest_turn=turn,
-    )
-    with pytest.raises(CatalogBuildStateError, match="invalid duplicate owner"):
+    assert not hasattr(database, "stage_catalog_analysis")
+    with pytest.raises(CatalogBuildStateError, match="FINAL_ANALYSES"):
         database.complete_catalog_analysis(build, ingest_turn=turn)
 
 
@@ -536,29 +836,21 @@ def test_chunked_build_cache_partial_visibility_and_idempotent_publish(
     assert database.get_active_catalog_build() is None
 
     build = database.complete_catalog_source_staging(build, ingest_turn=turn)
-    analysis = CatalogSourceGalleryAnalysis(
-        gallery_name="gallery-a",
-        content_sha256=_digest("effective-content"),
-        selected=True,
-        source_manifest_sha256=_digest("canonical-manifest"),
-        source_manifest_version=1,
-    )
-    database.stage_catalog_analysis(
+    build = _complete_durable_analysis(
+        database,
         build,
-        [analysis],
-        batch_id="analysis-0",
-        ingest_turn=turn,
+        turn,
+        (
+            CatalogSourceGalleryAnalysis(
+                gallery_name="gallery-a",
+                content_sha256=_digest("effective-content"),
+                selected=True,
+                source_manifest_sha256=_digest("canonical-manifest"),
+                source_manifest_version=1,
+            ),
+        ),
+        {"gallery-a": 900_001},
     )
-    assert (
-        database.stage_catalog_analysis(
-            build,
-            [analysis],
-            batch_id="analysis-after-restart",
-            ingest_turn=turn,
-        ).item_count
-        == 0
-    )
-    build = database.complete_catalog_analysis(build, ingest_turn=turn)
     assert build.phase is CatalogBuildPhase.artifacts
     build = database.seal_catalog_build(build, ingest_turn=turn)
     assert build.phase is CatalogBuildPhase.sealed
@@ -611,7 +903,7 @@ def test_inactive_source_build_pruning_is_bounded_and_protects_active(
         )
         build = database.complete_catalog_discovery(build, ingest_turn=turn)
         build = database.complete_catalog_source_staging(build, ingest_turn=turn)
-        build = database.complete_catalog_analysis(build, ingest_turn=turn)
+        build = _complete_durable_analysis(database, build, turn, (), {})
         build = database.seal_catalog_build(build, ingest_turn=turn)
         result = database.publish_catalog_build(build, ingest_turn=turn)
         assert database.complete_gallery_ingest(turn)
@@ -626,7 +918,27 @@ def test_inactive_source_build_pruning_is_bounded_and_protects_active(
     partial = database.prune_catalog_build(first.build.build_id, max_rows=1)
     assert partial.deleted_rows <= 1
     assert partial.complete is False
-    for _ in range(10):
+    with database._context.SQLConnector() as connector:
+        assert not connector.fetch_one(
+            "SELECT 1 FROM catalog_build_analysis_scan_receipts WHERE build_id = %s",
+            (first.build.build_id,),
+        )
+        assert connector.fetch_one(
+            "SELECT 1 FROM catalog_build_analysis_scan_checkpoints WHERE build_id = %s",
+            (first.build.build_id,),
+        )
+    checkpoint_prune = database.prune_catalog_build(
+        first.build.build_id,
+        max_rows=1,
+    )
+    assert checkpoint_prune.deleted_rows == 1
+    assert not checkpoint_prune.complete
+    with database._context.SQLConnector() as connector:
+        assert not connector.fetch_one(
+            "SELECT 1 FROM catalog_build_analysis_scan_checkpoints WHERE build_id = %s",
+            (first.build.build_id,),
+        )
+    for _ in range(30):
         completed = database.prune_catalog_build(first.build.build_id, max_rows=1)
         assert completed.deleted_rows <= 1
         if completed.complete:

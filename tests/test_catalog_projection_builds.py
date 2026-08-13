@@ -9,11 +9,15 @@ import pytest
 
 from h2hdb import (
     H2HDB,
+    CatalogAnalysisPhase,
     CatalogArtifact,
     CatalogBuild,
     CatalogBuildProjectionCoordinator,
     CatalogBuildProjectionPhase,
     CatalogBuildStateError,
+    CatalogContentDigest,
+    CatalogContentOwner,
+    CatalogGidWinner,
     CatalogOperationalGenerationStaleError,
     CatalogPreparedArtifact,
     CatalogProjectionBatchConflictError,
@@ -27,6 +31,7 @@ from h2hdb import (
     CatalogSourceGalleryCompletion,
     CatalogSourceGalleryDiscovery,
     CatalogSourceGalleryHeader,
+    CatalogSourceManifest,
     CoreConfig,
     GalleryIngestTurn,
     GallerySourceFile,
@@ -121,18 +126,132 @@ def _ready_build(
         ingest_turn=turn,
     )
     build = database.complete_catalog_source_staging(build, ingest_turn=turn)
-    database.stage_catalog_analysis(
+    return _complete_durable_analysis(
+        database,
         build,
-        [
+        turn,
+        analyses=(
             CatalogSourceGalleryAnalysis(
                 gallery_name=name,
                 content_sha256=_digest("content"),
                 selected=True,
                 source_manifest_sha256=_digest("manifest"),
                 source_manifest_version=1,
-            )
-        ],
-        batch_id=f"analysis-{scope}",
+            ),
+        ),
+        gids={name: gid},
+        batch_scope=scope,
+    )
+
+
+def _complete_durable_analysis(
+    database: H2HDB,
+    build: CatalogBuild,
+    turn: GalleryIngestTurn,
+    *,
+    analyses: tuple[CatalogSourceGalleryAnalysis, ...],
+    gids: dict[str, int],
+    batch_scope: str,
+) -> CatalogBuild:
+    manifests = tuple(
+        CatalogSourceManifest(
+            item.gallery_name,
+            item.source_manifest_sha256 or _digest(f"manifest:{item.gallery_name}"),
+        )
+        for item in analyses
+    )
+    for offset in range(0, len(manifests) or 1, 1_000):
+        database.stage_catalog_source_manifests(
+            build,
+            manifests[offset : offset + 1_000],
+            batch_id=f"analysis-manifests-{batch_scope}-{offset}",
+            ingest_turn=turn,
+        )
+    database.complete_catalog_analysis_phase(
+        build,
+        CatalogAnalysisPhase.source_manifests,
+        ingest_turn=turn,
+    )
+    while True:
+        page = database.get_catalog_file_spam_page(
+            build,
+            minimum_occurrences=3,
+            limit=100,
+            ingest_turn=turn,
+        )
+        database.apply_catalog_file_spam_page(
+            build,
+            page,
+            (),
+            ingest_turn=turn,
+        )
+        if page.terminal:
+            break
+    database.complete_catalog_analysis_phase(
+        build,
+        CatalogAnalysisPhase.file_spam,
+        ingest_turn=turn,
+    )
+    digests = tuple(
+        CatalogContentDigest(item.gallery_name, item.content_sha256)
+        for item in analyses
+    )
+    for offset in range(0, len(digests) or 1, 1_000):
+        database.stage_catalog_content_digests(
+            build,
+            digests[offset : offset + 1_000],
+            batch_id=f"analysis-content-{batch_scope}-{offset}",
+            ingest_turn=turn,
+        )
+    database.complete_catalog_analysis_phase(
+        build,
+        CatalogAnalysisPhase.content_digests,
+        ingest_turn=turn,
+    )
+    owners = tuple(
+        CatalogContentOwner(item.content_sha256, item.gallery_name)
+        for item in analyses
+        if item.content_sha256 is not None and item.duplicate_of_gallery_name is None
+    )
+    for offset in range(0, len(owners) or 1, 1_000):
+        database.stage_catalog_content_owners(
+            build,
+            owners[offset : offset + 1_000],
+            batch_id=f"analysis-owners-{batch_scope}-{offset}",
+            ingest_turn=turn,
+        )
+    database.complete_catalog_analysis_phase(
+        build,
+        CatalogAnalysisPhase.content_owners,
+        ingest_turn=turn,
+    )
+    winners = tuple(
+        CatalogGidWinner(gids[item.gallery_name], item.gallery_name)
+        for item in analyses
+        if item.selected
+    )
+    for offset in range(0, len(winners) or 1, 1_000):
+        database.stage_catalog_gid_winners(
+            build,
+            winners[offset : offset + 1_000],
+            batch_id=f"analysis-gid-winners-{batch_scope}-{offset}",
+            ingest_turn=turn,
+        )
+    database.complete_catalog_analysis_phase(
+        build,
+        CatalogAnalysisPhase.gid_winners,
+        ingest_turn=turn,
+    )
+    for offset in range(0, len(analyses) or 1, 1_000):
+        database.stage_catalog_final_analyses(
+            build,
+            analyses[offset : offset + 1_000],
+            batch_id=f"analysis-final-{batch_scope}-{offset}",
+            ingest_turn=turn,
+        )
+    database.complete_catalog_analysis_phase(
+        build,
+        CatalogAnalysisPhase.final_analyses,
         ingest_turn=turn,
     )
     return database.complete_catalog_analysis(build, ingest_turn=turn)
@@ -199,22 +318,24 @@ def _ready_build_many(
         ingest_turn=turn,
     )
     build = database.complete_catalog_source_staging(build, ingest_turn=turn)
-    database.stage_catalog_analysis(
-        build,
-        tuple(
-            CatalogSourceGalleryAnalysis(
-                gallery_name=name,
-                content_sha256=_digest(f"content:{name}"),
-                selected=selected_names is None or name in selected_names,
-                source_manifest_sha256=manifest,
-                source_manifest_version=1,
-            )
-            for name, _gid, manifest in galleries
-        ),
-        batch_id=f"analysis-{scope}",
-        ingest_turn=turn,
+    analyses = tuple(
+        CatalogSourceGalleryAnalysis(
+            gallery_name=name,
+            content_sha256=_digest(f"content:{name}"),
+            selected=selected_names is None or name in selected_names,
+            source_manifest_sha256=manifest,
+            source_manifest_version=1,
+        )
+        for name, _gid, manifest in galleries
     )
-    return database.complete_catalog_analysis(build, ingest_turn=turn)
+    return _complete_durable_analysis(
+        database,
+        build,
+        turn,
+        analyses=analyses,
+        gids={name: gid for name, gid, _manifest in galleries},
+        batch_scope=scope,
+    )
 
 
 def _stage_projection(
@@ -1195,15 +1316,12 @@ def test_deletion_command_view_uses_exact_active_source_authority_and_quoting(
             )
             connector.execute(
                 """
-                INSERT INTO catalog_build_content_digests (
-                    build_id,
-                    gallery_key,
-                    gallery_name,
-                    content_sha256,
-                    duplicate_hash_deletion_candidate
-                ) VALUES (%s, %s, %s, NULL, 1)
+                UPDATE catalog_build_content_digests
+                SET content_sha256 = NULL,
+                    duplicate_hash_deletion_candidate = 1
+                WHERE build_id = %s AND gallery_key = %s
                 """,
-                (build.build_id, _digest(duplicate_name), duplicate_name),
+                (build.build_id, _digest(duplicate_name)),
             )
     database.request_gallery_deletion(8_001)
     _stage_projection_without_artifacts(database, build, turn)
@@ -1348,17 +1466,14 @@ def test_active_pending_redownload_honors_duplicate_hash_deletion_flag(
     with database._context.SQLConnector() as connector:
         connector.execute_many(
             """
-            INSERT INTO catalog_build_content_digests (
-                build_id,
-                gallery_key,
-                gallery_name,
-                content_sha256,
-                duplicate_hash_deletion_candidate
-            ) VALUES (%s, %s, %s, NULL, %s)
+            UPDATE catalog_build_content_digests
+            SET content_sha256 = NULL,
+                duplicate_hash_deletion_candidate = %s
+            WHERE build_id = %s AND gallery_key = %s
             """,
             [
-                (build.build_id, _digest("flagged"), "flagged", True),
-                (build.build_id, _digest("eligible"), "eligible", False),
+                (True, build.build_id, _digest("flagged")),
+                (False, build.build_id, _digest("eligible")),
             ],
         )
     _stage_projection_without_artifacts(database, build, turn)

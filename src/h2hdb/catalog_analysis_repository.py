@@ -15,7 +15,6 @@ from .catalog_build_repository import (
 from .domain import (
     CatalogAnalysisPhase,
     CatalogAnalysisPhaseCheckpoint,
-    CatalogAnalysisScanCompletion,
     CatalogBuild,
     CatalogBuildBatchResult,
     CatalogBuildPhase,
@@ -26,8 +25,8 @@ from .domain import (
     CatalogContentOwner,
     CatalogDeduplicationCandidate,
     CatalogFileHashAggregate,
-    CatalogFileHashAggregateCursor,
     CatalogFileHashAggregatePage,
+    CatalogFileSpamPageApplyResult,
     CatalogFinalAnalysisCursor,
     CatalogFinalAnalysisPage,
     CatalogGalleryFileHashCursor,
@@ -52,6 +51,7 @@ MAX_ANALYSIS_PAGE_SIZE = 1_000
 MAX_ANALYSIS_WRITE_BATCH_SIZE = 1_000
 LOOKUP_CHUNK_SIZE = 400
 _PHASES = tuple(CatalogAnalysisPhase)
+_GALLERYINFO_FILE_KEY = sha256(b"galleryinfo.txt").hexdigest()
 
 
 def _stable_key(value: str) -> str:
@@ -66,14 +66,6 @@ def _payload_sha256(value: object) -> str:
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
-
-
-def _scan_completion_token(
-    build_id: str,
-    phase: CatalogAnalysisPhase,
-    after_value: str,
-) -> str:
-    return _payload_sha256(("analysis-scan-v1", build_id, phase.value, after_value))
 
 
 def _parse_datetime(value: object) -> datetime:
@@ -218,9 +210,9 @@ class CatalogAnalysisRepository(BaseRepository):
         if after is not None:
             regular_keyset = """
                 AND (
-                    gallery.gallery_key > %s
+                    source_file.gallery_key > %s
                     OR (
-                        gallery.gallery_key = %s
+                        source_file.gallery_key = %s
                         AND (
                             source_file.file_sort_key > %s
                             OR (
@@ -266,26 +258,45 @@ class CatalogAnalysisRepository(BaseRepository):
                     f"""
                     SELECT
                         gallery.gallery_name,
-                        gallery.gallery_key,
+                        source_file.gallery_key,
                         source_file.file_sort_key,
                         source_file.file_name,
                         source_file.file_key,
                         source_file.size_bytes,
                         source_file.sha256,
                         NULL
-                    FROM catalog_source_galleries AS gallery
-                    JOIN catalog_source_files AS source_file
-                        ON source_file.build_id = gallery.build_id
-                        AND source_file.gallery_key = gallery.gallery_key
-                    WHERE gallery.build_id = %s
-                        AND gallery.source_complete = 1
-                        {regular_keyset}
+                    FROM (
+                        SELECT
+                            build_id,
+                            gallery_key,
+                            file_sort_key,
+                            file_name,
+                            file_key,
+                            size_bytes,
+                            sha256
+                        FROM catalog_source_files AS source_file
+                        WHERE source_file.build_id = %s
+                            {regular_keyset}
+                        ORDER BY
+                            source_file.gallery_key,
+                            source_file.file_sort_key,
+                            source_file.file_name,
+                            source_file.file_key
+                        LIMIT %s
+                    ) AS source_file
+                    JOIN catalog_source_galleries AS gallery
+                        ON gallery.build_id = source_file.build_id
+                        AND gallery.gallery_key = source_file.gallery_key
+                    -- ANALYZING is reachable only after raw-source validation,
+                    -- so this predicate cannot discard an inner page row.  The
+                    -- inner LIMIT can therefore seek the file-order index
+                    -- before the gallery join without changing pagination.
+                    WHERE gallery.source_complete = 1
                     ORDER BY
-                        gallery.gallery_key,
+                        source_file.gallery_key,
                         source_file.file_sort_key,
                         source_file.file_name,
                         source_file.file_key
-                    LIMIT %s
                     """,
                     tuple(regular_parameters),
                 )
@@ -297,12 +308,7 @@ class CatalogAnalysisRepository(BaseRepository):
                     FROM catalog_source_galleries AS gallery
                     WHERE gallery.build_id = %s
                         AND gallery.source_complete = 1
-                        AND NOT EXISTS (
-                            SELECT 1
-                            FROM catalog_source_files AS source_file
-                            WHERE source_file.build_id = gallery.build_id
-                                AND source_file.gallery_key = gallery.gallery_key
-                        )
+                        AND gallery.staged_file_count = 0
                         {sentinel_keyset}
                     ORDER BY gallery.gallery_key
                     LIMIT %s
@@ -332,37 +338,45 @@ class CatalogAnalysisRepository(BaseRepository):
             limit,
         )
 
-    def list_file_hash_aggregates(
+    def _file_hash_aggregate_items(
         self,
+        connector: SQLConnector,
         build_id: str,
         *,
-        after: CatalogFileHashAggregateCursor | None,
+        minimum_occurrences: int,
+        after_sha256: str,
         limit: int,
-    ) -> CatalogFileHashAggregatePage:
-        self._validate_page_limit(limit)
-        after_sha = "" if after is None else after.file_sha256
-        with self.SQLConnector() as connector:
-            with connector.read_transaction():
-                self._require_readable_build(connector, build_id)
-                self._require_preceding_phases(
-                    connector,
-                    build_id,
-                    CatalogAnalysisPhase.file_spam,
-                )
-                exact_artist = (
-                    "HEX(CONVERT(tag.tag_value USING utf8mb4))"
-                    if self._context.sql_type == "mariadb"
-                    else "hex(CAST(tag.tag_value AS BLOB))"
-                )
-                rows = connector.fetch_all(
-                    f"""
+    ) -> tuple[CatalogFileHashAggregate, ...]:
+        exact_artist = (
+            "HEX(CONVERT(tag.tag_value USING utf8mb4))"
+            if self._context.sql_type == "mariadb"
+            # SQLite hex(NULL) is the empty string, which COUNT(DISTINCT ...)
+            # would incorrectly count as one artist for galleries with no
+            # exact artist tag.  Preserve SQL NULL explicitly.
+            else (
+                "CASE WHEN tag.tag_value IS NULL THEN NULL "
+                "ELSE hex(CAST(tag.tag_value AS BLOB)) END"
+            )
+        )
+        exact_artist_namespace = (
+            "BINARY tag.tag_name = BINARY 'artist'"
+            if self._context.sql_type == "mariadb"
+            else "tag.tag_name = 'artist' COLLATE BINARY"
+        )
+        rows = connector.fetch_all(
+            f"""
                     WITH hash_page AS (
                         SELECT sha256, COUNT(*) AS occurrence_count
                         FROM catalog_source_files
                         WHERE build_id = %s
-                            AND file_name <> 'galleryinfo.txt'
+                            -- file_key is the stable SHA-256 of file_name and
+                            -- is already carried by the hash-order index.  The
+                            -- equivalent key predicate avoids one clustered
+                            -- row lookup per source file on MariaDB.
+                            AND file_key <> %s
                             AND sha256 > %s
                         GROUP BY sha256
+                        HAVING COUNT(*) >= %s
                         ORDER BY sha256
                         LIMIT %s
                     ),
@@ -372,6 +386,7 @@ class CatalogAnalysisRepository(BaseRepository):
                         JOIN hash_page
                             ON hash_page.sha256 = source_file.sha256
                         WHERE source_file.build_id = %s
+                            AND source_file.file_key <> %s
                     ),
                     artist_counts AS (
                         SELECT
@@ -382,7 +397,7 @@ class CatalogAnalysisRepository(BaseRepository):
                         LEFT JOIN catalog_source_tags AS tag
                             ON tag.build_id = %s
                             AND tag.gallery_key = hash_gallery.gallery_key
-                            AND tag.tag_name = 'artist'
+                            AND {exact_artist_namespace}
                         GROUP BY hash_gallery.sha256, hash_gallery.gallery_key
                     ),
                     artist_maximums AS (
@@ -398,7 +413,7 @@ class CatalogAnalysisRepository(BaseRepository):
                         LEFT JOIN catalog_source_tags AS tag
                             ON tag.build_id = %s
                             AND tag.gallery_key = hash_gallery.gallery_key
-                            AND tag.tag_name = 'artist'
+                            AND {exact_artist_namespace}
                         GROUP BY hash_gallery.sha256
                     )
                     SELECT
@@ -412,40 +427,347 @@ class CatalogAnalysisRepository(BaseRepository):
                     JOIN artist_maximums
                         ON artist_maximums.sha256 = hash_page.sha256
                     ORDER BY hash_page.sha256
-                    """,
-                    (
-                        build_id,
-                        after_sha,
-                        limit,
-                        build_id,
-                        build_id,
-                        build_id,
-                    ),
-                )
-        items = tuple(
+            """,
+            (
+                build_id,
+                _GALLERYINFO_FILE_KEY,
+                after_sha256,
+                minimum_occurrences,
+                limit,
+                build_id,
+                _GALLERYINFO_FILE_KEY,
+                build_id,
+                build_id,
+            ),
+        )
+        return tuple(
             CatalogFileHashAggregate(
                 file_sha256=str(row[0]),
                 occurrence_count=int(row[1]),
                 distinct_artist_count=int(row[2]),
                 maximum_gallery_artist_count=int(row[3]),
+                minimum_occurrences=minimum_occurrences,
             )
             for row in rows
         )
-        completion = (
-            CatalogAnalysisScanCompletion(
-                build_id=build_id,
-                phase=CatalogAnalysisPhase.file_spam,
-                after_value=after_sha,
-                token_sha256=_scan_completion_token(
+
+    @staticmethod
+    def _file_spam_page_input_sha256(
+        items: Sequence[CatalogFileHashAggregate],
+    ) -> str:
+        return _payload_sha256(
+            tuple(
+                (
+                    item.file_sha256,
+                    item.occurrence_count,
+                    item.distinct_artist_count,
+                    item.maximum_gallery_artist_count,
+                    item.minimum_occurrences,
+                )
+                for item in items
+            )
+        )
+
+    def get_file_spam_page(
+        self,
+        connector: SQLConnector,
+        build_id: str,
+        *,
+        minimum_occurrences: int,
+        limit: int,
+        turn: GalleryIngestTurn,
+    ) -> CatalogFileHashAggregatePage:
+        """Return only the exact page selected by the durable server cursor.
+
+        The first call declares and persists ``minimum_occurrences``; later
+        calls must match it.  Core proves a complete contiguous scan for that
+        declared policy, but deliberately does not choose the ingest business
+        policy itself.  The ingest scope/version is the current policy
+        authority; vNext will bind this checkpoint to ``analysis_policy``.
+        """
+
+        self._validate_page_limit(limit)
+        if minimum_occurrences <= 0:
+            raise ValueError("minimum_occurrences must be positive")
+        self._require_mutable_build(connector, build_id, turn)
+        self._require_open_phase(connector, build_id, CatalogAnalysisPhase.file_spam)
+        lock = self._builds._lock_clause(self._context.sql_type)
+        checkpoint = connector.fetch_one(
+            """
+            SELECT generation, minimum_occurrences, cursor_sha256, state
+            FROM catalog_build_analysis_scan_checkpoints
+            WHERE build_id = %s AND phase = %s
+            """ + lock,
+            (build_id, CatalogAnalysisPhase.file_spam.value),
+        )
+        if not checkpoint:
+            now = self._builds._database_datetime(connector)
+            output_sha256 = _payload_sha256(
+                ("file-spam-scan-output-v1", build_id, minimum_occurrences)
+            )
+            connector.execute(
+                """
+                INSERT INTO catalog_build_analysis_scan_checkpoints (
+                    build_id, phase, generation, minimum_occurrences,
+                    cursor_sha256, output_sha256, state, updated_at
+                ) VALUES (%s, %s, 1, %s, '', %s, 'OPEN', %s)
+                """,
+                (
                     build_id,
-                    CatalogAnalysisPhase.file_spam,
-                    after_sha,
+                    CatalogAnalysisPhase.file_spam.value,
+                    minimum_occurrences,
+                    output_sha256,
+                    now.isoformat(),
                 ),
             )
-            if not items
-            else None
+            generation = 1
+            start_cursor = ""
+        else:
+            generation = int(checkpoint[0])
+            persisted_minimum = int(checkpoint[1])
+            if persisted_minimum != minimum_occurrences:
+                raise CatalogBuildBatchConflictError(
+                    "FILE_SPAM was resumed with a different minimum occurrence policy"
+                )
+            start_cursor = str(checkpoint[2])
+            if str(checkpoint[3]) == "COMPLETE":
+                receipt = connector.fetch_one(
+                    """
+                    SELECT batch_key, input_sha256, page_limit
+                    FROM catalog_build_analysis_scan_receipts
+                    WHERE build_id = %s AND phase = %s
+                        AND start_cursor_sha256 = %s AND row_count = 0
+                    """,
+                    (
+                        build_id,
+                        CatalogAnalysisPhase.file_spam.value,
+                        start_cursor,
+                    ),
+                )
+                if not receipt:
+                    raise CatalogBuildStateError(
+                        "Completed FILE_SPAM checkpoint has no terminal receipt"
+                    )
+                return CatalogFileHashAggregatePage(
+                    items=(),
+                    limit=int(receipt[2]),
+                    minimum_occurrences=minimum_occurrences,
+                    checkpoint_generation=generation - 1,
+                    start_cursor_sha256=start_cursor,
+                    next_cursor_sha256=start_cursor,
+                    input_sha256=str(receipt[1]),
+                )
+        items = self._file_hash_aggregate_items(
+            connector,
+            build_id,
+            minimum_occurrences=minimum_occurrences,
+            after_sha256=start_cursor,
+            limit=limit,
         )
-        return CatalogFileHashAggregatePage(items, limit, completion)
+        return CatalogFileHashAggregatePage(
+            items=items,
+            limit=limit,
+            minimum_occurrences=minimum_occurrences,
+            checkpoint_generation=generation,
+            start_cursor_sha256=start_cursor,
+            next_cursor_sha256=(items[-1].file_sha256 if items else start_cursor),
+            input_sha256=self._file_spam_page_input_sha256(items),
+        )
+
+    def apply_file_spam_page(
+        self,
+        connector: SQLConnector,
+        build_id: str,
+        page: CatalogFileHashAggregatePage,
+        excluded_hashes: Sequence[str],
+        *,
+        turn: GalleryIngestTurn,
+    ) -> CatalogFileSpamPageApplyResult:
+        """Verify and atomically receipt one exact contiguous aggregate page."""
+
+        self._validate_page_limit(page.limit)
+        excluded = tuple(excluded_hashes)
+        self._validate_unique(excluded, "excluded file SHA-256")
+        for digest in excluded:
+            self._validate_sha256(digest, "Excluded file SHA-256")
+        self._require_mutable_build(connector, build_id, turn)
+        self._require_preceding_phases(
+            connector, build_id, CatalogAnalysisPhase.file_spam
+        )
+        lock = self._builds._lock_clause(self._context.sql_type)
+        checkpoint = connector.fetch_one(
+            """
+            SELECT generation, minimum_occurrences, cursor_sha256,
+                   output_sha256, state
+            FROM catalog_build_analysis_scan_checkpoints
+            WHERE build_id = %s AND phase = %s
+            """ + lock,
+            (build_id, CatalogAnalysisPhase.file_spam.value),
+        )
+        if not checkpoint:
+            raise CatalogBuildStateError("FILE_SPAM scan checkpoint is missing")
+        minimum_occurrences = int(checkpoint[1])
+        actual_items = self._file_hash_aggregate_items(
+            connector,
+            build_id,
+            minimum_occurrences=minimum_occurrences,
+            after_sha256=page.start_cursor_sha256,
+            limit=page.limit,
+        )
+        actual_input_sha256 = self._file_spam_page_input_sha256(actual_items)
+        actual_next_cursor = (
+            actual_items[-1].file_sha256 if actual_items else page.start_cursor_sha256
+        )
+        if (
+            page.items != actual_items
+            or page.input_sha256 != actual_input_sha256
+            or page.next_cursor_sha256 != actual_next_cursor
+            or page.minimum_occurrences != minimum_occurrences
+        ):
+            raise CatalogBuildBatchConflictError(
+                "FILE_SPAM page does not match the exact durable input range"
+            )
+        item_hashes = {item.file_sha256 for item in actual_items}
+        if not set(excluded) <= item_hashes:
+            raise CatalogBuildBatchConflictError(
+                "Excluded FILE_SPAM hashes must belong to the exact applied page"
+            )
+        output_sha256 = _payload_sha256(
+            tuple(
+                (item.file_sha256, item.file_sha256 in set(excluded))
+                for item in actual_items
+            )
+        )
+        batch_key = _payload_sha256(
+            (
+                "file-spam-scan-page-v1",
+                build_id,
+                page.start_cursor_sha256,
+                page.next_cursor_sha256,
+                minimum_occurrences,
+                page.limit,
+                actual_input_sha256,
+            )
+        )
+        previous = connector.fetch_one(
+            """
+            SELECT output_sha256, row_count, committed_generation
+            FROM catalog_build_analysis_scan_receipts
+            WHERE build_id = %s AND phase = %s AND batch_key = %s
+            """,
+            (build_id, CatalogAnalysisPhase.file_spam.value, batch_key),
+        )
+        if previous:
+            if str(previous[0]) != output_sha256:
+                raise CatalogBuildBatchConflictError(
+                    "FILE_SPAM page was retried with different decisions"
+                )
+            return CatalogFileSpamPageApplyResult(
+                build_id=build_id,
+                batch_key=batch_key,
+                checkpoint_generation=int(previous[2]) + 1,
+                row_count=int(previous[1]),
+                excluded_count=len(excluded),
+                complete=not actual_items,
+                applied=False,
+            )
+        if (
+            str(checkpoint[4]) != "OPEN"
+            or int(checkpoint[0]) != page.checkpoint_generation
+            or str(checkpoint[2]) != page.start_cursor_sha256
+        ):
+            raise CatalogBuildStateError(
+                "FILE_SPAM page is stale or was applied out of order"
+            )
+        for digest in excluded:
+            connector.execute(
+                """
+                INSERT INTO catalog_build_excluded_file_hashes (build_id, sha256)
+                VALUES (%s, %s)
+                """,
+                (build_id, digest),
+            )
+        now = self._builds._database_datetime(connector)
+        connector.execute(
+            """
+            INSERT INTO catalog_build_analysis_scan_receipts (
+                build_id, phase, batch_key, start_cursor_sha256,
+                next_cursor_sha256, minimum_occurrences, page_limit,
+                input_sha256, output_sha256, row_count,
+                committed_generation, committed_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                build_id,
+                CatalogAnalysisPhase.file_spam.value,
+                batch_key,
+                page.start_cursor_sha256,
+                page.next_cursor_sha256,
+                minimum_occurrences,
+                page.limit,
+                actual_input_sha256,
+                output_sha256,
+                len(actual_items),
+                page.checkpoint_generation,
+                now.isoformat(),
+            ),
+        )
+        next_generation = page.checkpoint_generation + 1
+        next_output_sha256 = _payload_sha256(
+            (str(checkpoint[3]), batch_key, output_sha256)
+        )
+        connector.execute(
+            """
+            UPDATE catalog_build_analysis_scan_checkpoints
+            SET generation = %s, cursor_sha256 = %s, output_sha256 = %s,
+                state = %s, updated_at = %s
+            WHERE build_id = %s AND phase = %s
+                AND generation = %s AND cursor_sha256 = %s AND state = 'OPEN'
+            """,
+            (
+                next_generation,
+                page.next_cursor_sha256,
+                next_output_sha256,
+                "COMPLETE" if not actual_items else "OPEN",
+                now.isoformat(),
+                build_id,
+                CatalogAnalysisPhase.file_spam.value,
+                page.checkpoint_generation,
+                page.start_cursor_sha256,
+            ),
+        )
+        advanced = connector.fetch_one(
+            """
+            SELECT generation, cursor_sha256, output_sha256, state
+            FROM catalog_build_analysis_scan_checkpoints
+            WHERE build_id = %s AND phase = %s
+            """,
+            (build_id, CatalogAnalysisPhase.file_spam.value),
+        )
+        expected_state = "COMPLETE" if not actual_items else "OPEN"
+        if not advanced or (
+            int(advanced[0]),
+            str(advanced[1]),
+            str(advanced[2]),
+            str(advanced[3]),
+        ) != (
+            next_generation,
+            page.next_cursor_sha256,
+            next_output_sha256,
+            expected_state,
+        ):
+            raise CatalogBuildStateError(
+                "FILE_SPAM checkpoint compare-and-swap did not advance exactly once"
+            )
+        return CatalogFileSpamPageApplyResult(
+            build_id=build_id,
+            batch_key=batch_key,
+            checkpoint_generation=next_generation,
+            row_count=len(actual_items),
+            excluded_count=len(excluded),
+            complete=not actual_items,
+            applied=True,
+        )
 
     def list_gallery_file_hashes(
         self,
@@ -462,9 +784,9 @@ class CatalogAnalysisRepository(BaseRepository):
         if after is not None:
             regular_keyset = """
                 AND (
-                    gallery.gallery_key > %s
+                    source_file.gallery_key > %s
                     OR (
-                        gallery.gallery_key = %s
+                        source_file.gallery_key = %s
                         AND (
                             source_file.sha256 > %s
                             OR (
@@ -500,42 +822,49 @@ class CatalogAnalysisRepository(BaseRepository):
                     f"""
                     SELECT
                         gallery.gallery_name,
-                        gallery.gallery_key,
+                        source_file.gallery_key,
                         source_file.file_key,
-                        source_file.file_name,
                         source_file.sha256,
+                        CASE
+                            WHEN source_file.file_key = %s THEN 1
+                            ELSE 0
+                        END,
                         CASE WHEN excluded.sha256 IS NULL THEN 0 ELSE 1 END
-                    FROM catalog_source_galleries AS gallery
-                    JOIN catalog_source_files AS source_file
-                        ON source_file.build_id = gallery.build_id
-                        AND source_file.gallery_key = gallery.gallery_key
+                    FROM (
+                        SELECT build_id, gallery_key, file_key, sha256
+                        FROM catalog_source_files AS source_file
+                        WHERE source_file.build_id = %s
+                            {regular_keyset}
+                        ORDER BY
+                            source_file.gallery_key,
+                            source_file.sha256,
+                            source_file.file_key
+                        LIMIT %s
+                    ) AS source_file
+                    JOIN catalog_source_galleries AS gallery
+                        ON gallery.build_id = source_file.build_id
+                        AND gallery.gallery_key = source_file.gallery_key
                     LEFT JOIN catalog_build_excluded_file_hashes AS excluded
                         ON excluded.build_id = source_file.build_id
                         AND excluded.sha256 = source_file.sha256
-                    WHERE gallery.build_id = %s
-                        AND gallery.source_complete = 1
-                        {regular_keyset}
+                    -- Source staging is sealed before CONTENT_DIGESTS, so the
+                    -- outer predicate cannot shrink the bounded inner page.
+                    WHERE gallery.source_complete = 1
                     ORDER BY
-                        gallery.gallery_key,
+                        source_file.gallery_key,
                         source_file.sha256,
                         source_file.file_key
-                    LIMIT %s
                     """,
-                    tuple(regular_parameters),
+                    (_GALLERYINFO_FILE_KEY, *regular_parameters),
                 )
                 sentinel_rows = connector.fetch_all(
                     f"""
                     SELECT gallery.gallery_name, gallery.gallery_key,
-                        '', NULL, '', 0
+                        '', '', 0, 0
                     FROM catalog_source_galleries AS gallery
                     WHERE gallery.build_id = %s
                         AND gallery.source_complete = 1
-                        AND NOT EXISTS (
-                            SELECT 1
-                            FROM catalog_source_files AS source_file
-                            WHERE source_file.build_id = gallery.build_id
-                                AND source_file.gallery_key = gallery.gallery_key
-                        )
+                        AND gallery.staged_file_count = 0
                         {sentinel_keyset}
                     ORDER BY gallery.gallery_key
                     LIMIT %s
@@ -544,7 +873,7 @@ class CatalogAnalysisRepository(BaseRepository):
                 )
         rows = sorted(
             (*regular_rows, *sentinel_rows),
-            key=lambda row: (str(row[1]), str(row[4]), str(row[2])),
+            key=lambda row: (str(row[1]), str(row[3]), str(row[2])),
         )[:limit]
         return CatalogGalleryFileHashPage(
             tuple(
@@ -552,8 +881,8 @@ class CatalogAnalysisRepository(BaseRepository):
                     gallery_name=str(row[0]),
                     gallery_key=str(row[1]),
                     file_key=str(row[2]),
-                    file_name=None if row[3] is None else str(row[3]),
-                    file_sha256=str(row[4]),
+                    file_sha256=str(row[3]),
+                    metadata_file=bool(row[4]),
                     excluded_as_spam=bool(row[5]),
                 )
                 for row in rows
@@ -1031,60 +1360,6 @@ class CatalogAnalysisRepository(BaseRepository):
             applied,
         )
 
-    def stage_excluded_file_hashes(
-        self,
-        connector: SQLConnector,
-        build_id: str,
-        values: Sequence[str],
-        *,
-        batch_id: str,
-        turn: GalleryIngestTurn,
-    ) -> CatalogBuildBatchResult:
-        items = tuple(values)
-        self._validate_write_batch(items)
-        self._validate_unique(items, "excluded file SHA-256")
-        for digest in items:
-            self._validate_sha256(digest, "Excluded file SHA-256")
-        payload = _payload_sha256(items)
-        replay = self._begin_batch(
-            connector,
-            build_id,
-            turn,
-            CatalogAnalysisPhase.file_spam,
-            "AN_FILE_SPAM",
-            batch_id,
-            payload,
-        )
-        if replay is not None:
-            return replay
-        applied = 0
-        for digest in items:
-            if connector.fetch_one(
-                """
-                SELECT 1
-                FROM catalog_build_excluded_file_hashes
-                WHERE build_id = %s AND sha256 = %s
-                """,
-                (build_id, digest),
-            ):
-                continue
-            connector.execute(
-                """
-                INSERT INTO catalog_build_excluded_file_hashes (build_id, sha256)
-                VALUES (%s, %s)
-                """,
-                (build_id, digest),
-            )
-            applied += 1
-        return self._finish_batch(
-            connector,
-            build_id,
-            "AN_FILE_SPAM",
-            batch_id,
-            payload,
-            applied,
-        )
-
     def stage_content_digests(
         self,
         connector: SQLConnector,
@@ -1521,7 +1796,6 @@ class CatalogAnalysisRepository(BaseRepository):
         phase: CatalogAnalysisPhase,
         *,
         turn: GalleryIngestTurn,
-        scan_completion: CatalogAnalysisScanCompletion | None = None,
     ) -> CatalogAnalysisPhaseCheckpoint:
         self._require_mutable_build(connector, build_id, turn)
         completed = self._require_preceding_phases(connector, build_id, phase)
@@ -1546,7 +1820,6 @@ class CatalogAnalysisRepository(BaseRepository):
             connector,
             build_id,
             phase,
-            scan_completion=scan_completion,
         )
         completed_at = self._builds._database_datetime(connector)
         connector.execute(
@@ -1569,8 +1842,6 @@ class CatalogAnalysisRepository(BaseRepository):
         connector: SQLConnector,
         build_id: str,
         phase: CatalogAnalysisPhase,
-        *,
-        scan_completion: CatalogAnalysisScanCompletion | None,
     ) -> None:
         query: str | None
         message: str
@@ -1589,34 +1860,17 @@ class CatalogAnalysisRepository(BaseRepository):
                 """
                 message = "A source gallery has no canonical manifest"
             case CatalogAnalysisPhase.file_spam:
-                if (
-                    scan_completion is None
-                    or scan_completion.build_id != build_id
-                    or scan_completion.phase is not phase
-                    or scan_completion.token_sha256
-                    != _scan_completion_token(
-                        build_id,
-                        phase,
-                        scan_completion.after_value,
-                    )
-                ):
-                    raise CatalogBuildStateError(
-                        "FILE_SPAM requires an explicit terminal aggregate scan token"
-                    )
-                terminal = connector.fetch_one(
+                checkpoint = connector.fetch_one(
                     """
-                    SELECT 1
-                    FROM catalog_source_files
-                    WHERE build_id = %s
-                        AND file_name <> 'galleryinfo.txt'
-                        AND sha256 > %s
-                    LIMIT 1
+                    SELECT state
+                    FROM catalog_build_analysis_scan_checkpoints
+                    WHERE build_id = %s AND phase = %s
                     """,
-                    (build_id, scan_completion.after_value),
+                    (build_id, phase.value),
                 )
-                if terminal:
+                if not checkpoint or str(checkpoint[0]) != "COMPLETE":
                     raise CatalogBuildStateError(
-                        "FILE_SPAM aggregate scan token is not terminal"
+                        "FILE_SPAM requires a complete durable contiguous scan"
                     )
                 query = None
                 message = ""
