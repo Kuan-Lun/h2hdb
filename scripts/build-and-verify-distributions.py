@@ -126,7 +126,16 @@ print(json.dumps({
         cwd=scratch,
         env=environment,
     )
-    if "{migrate,check,ready}" not in help_text:
+    supported_commands = (
+        "migrate",
+        "check",
+        "ready",
+        "epoch-v2-initialize",
+        "epoch-v2-check",
+        "epoch-v2-ready",
+    )
+    expected_commands = f"{{{','.join(supported_commands)}}}"
+    if expected_commands not in help_text:
         raise RuntimeError(f"Unexpected h2hdb CLI commands:\n{help_text}")
 
 
@@ -175,10 +184,7 @@ def main() -> None:
             output_directory=args.output_directory.resolve(),
         )
 
-    print(
-        "Verified fresh h2hdb distributions; "
-        "wheel CLI limited to migrate/check/ready."
-    )
+    print("Verified fresh h2hdb distributions and supported wheel CLI commands.")
 
 
 if __name__ == "__main__":
