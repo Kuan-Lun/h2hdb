@@ -1097,6 +1097,23 @@ def test_operational_physical_manifest_is_generated_without_drift() -> None:
     provider_relations = operational_refinement.provider_relation_names(PHYSICAL_PATH)
     assert "schema_epoch_control" not in provider_relations
     assert len(provider_relations) == 75
+    _logical, _local_names, physical, _stubs = _schemas()
+    assert provider_relations == tuple(
+        name for name in physical.source_slice if name != "schema_epoch_control"
+    )
+    position_by_relation = {
+        name: position for position, name in enumerate(physical.source_slice)
+    }
+    for relation in physical.relations:
+        for foreign_key in relation.foreign_keys:
+            if (
+                foreign_key.referenced_relation in position_by_relation
+                and foreign_key.referenced_relation != relation.relation
+            ):
+                assert (
+                    position_by_relation[foreign_key.referenced_relation]
+                    < position_by_relation[relation.relation]
+                )
 
 
 def test_operational_machine_obligations_and_genesis_are_closed_world() -> None:
@@ -3300,6 +3317,71 @@ def test_source_root_upload_can_bootstrap_before_build_mapping_in_sqlite() -> No
         connection.close()
 
 
+def test_operational_ddl_renderers_order_local_foreign_key_parents_first() -> None:
+    _logical, _local_names, physical, stubs = _schemas()
+    forward_reference_order = (
+        "download_ingest_consumption",
+        "coordinated_ingest_completion",
+        "ingest_generation",
+    )
+    reordered = replace(
+        physical,
+        source_slice=(
+            *forward_reference_order,
+            *(
+                name
+                for name in physical.source_slice
+                if name not in forward_reference_order
+            ),
+        ),
+    )
+
+    sqlite_ddl = operational_refinement.render_sqlite_ddl(reordered, stubs)
+    mariadb_ddl = "\n".join(operational_refinement.render_mariadb_ddl(reordered, stubs))
+    for ddl, quote in ((sqlite_ddl, '"'), (mariadb_ddl, "`")):
+        parent = ddl.index(f"CREATE TABLE {quote}operational_ingest_generations{quote}")
+        assert parent < ddl.index(
+            f"CREATE TABLE {quote}operational_download_ingest_consumptions{quote}"
+        )
+        assert parent < ddl.index(
+            f"CREATE TABLE {quote}operational_coordinated_ingest_completions{quote}"
+        )
+
+
+def test_operational_ddl_renderers_reject_local_foreign_key_cycles() -> None:
+    _logical, _local_names, physical, stubs = _schemas()
+    ingest_generation = physical.relation("ingest_generation")
+    assert ingest_generation is not None
+    cyclic_ingest_generation = replace(
+        ingest_generation,
+        foreign_keys=(
+            *ingest_generation.foreign_keys,
+            refinement.PhysicalForeignKeySpec(
+                "fk_test_ingest_generation_cycle",
+                ("generation",),
+                "download_ingest_consumption",
+                ("ingest_generation",),
+            ),
+        ),
+    )
+    cyclic = replace(
+        physical,
+        relations=tuple(
+            (
+                cyclic_ingest_generation
+                if relation.relation == "ingest_generation"
+                else relation
+            )
+            for relation in physical.relations
+        ),
+    )
+
+    with pytest.raises(ValueError, match="operational physical dependency cycle"):
+        operational_refinement.render_sqlite_ddl(cyclic, stubs)
+    with pytest.raises(ValueError, match="operational physical dependency cycle"):
+        operational_refinement.render_mariadb_ddl(cyclic, stubs)
+
+
 def test_operational_mariadb_renderer_uses_exact_binary_domains() -> None:
     _logical, _local_names, physical, stubs = _schemas()
     statements = operational_refinement.render_mariadb_ddl(physical, stubs)
@@ -3372,6 +3454,13 @@ def test_operational_mariadb_renderer_uses_exact_binary_domains() -> None:
             "CREATE TABLE `operational_gallery_observation_staging_checkpoints`"
         )
     )
+    staging_receipt_ddl = next(
+        statement
+        for statement in statements
+        if statement.startswith(
+            "CREATE TABLE `operational_gallery_observation_staging_receipts`"
+        )
+    )
 
     assert "`manifest_sha256` BINARY(32) NOT NULL" in ddl
     assert "`owner_token` BINARY(16) NOT NULL" in ddl
@@ -3438,6 +3527,8 @@ def test_operational_mariadb_renderer_uses_exact_binary_domains() -> None:
         staging_checkpoint_ddl
     )
     assert "CHECK (regular_count <= `cursor` AND" in staging_checkpoint_ddl
+    assert "component <> X'46494C45' OR level <> 0" in staging_receipt_ddl
+    assert "!=" not in staging_receipt_ddl
     assert (
         "CONSTRAINT `ck_operational_event_type` CHECK "
         "(event_type IN ('REMOVED_GID', 'DELETION_CONSUMPTION'))"

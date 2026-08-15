@@ -4441,10 +4441,13 @@ def load_operational_physical_schema(
         raise ValueError(
             "operational complete_relations must equal every local relation"
         )
-    if set(provider_relation_names(path)) != set(local_relation_names) - {
-        "schema_epoch_control"
-    }:
-        raise ValueError("operational provider slice differs from owned relations")
+    expected_provider_relations = tuple(
+        name for name in physical.source_slice if name != "schema_epoch_control"
+    )
+    if provider_relation_names(path) != expected_provider_relations:
+        raise ValueError(
+            "operational provider slice order differs from owned relations"
+        )
     if {relation.relation for relation in relations} != set(local_relation_names):
         raise ValueError("operational physical coverage must be complete")
     if any(relation.status != "implemented" for relation in relations):
@@ -4576,6 +4579,59 @@ def _ddl_identifier(value: str) -> str:
     return value[:50] + "_" + digest
 
 
+def _ddl_relation_order(
+    physical: refinement.PhysicalSchema,
+) -> tuple[str, ...]:
+    """Return a stable parent-before-child order for inline foreign keys."""
+
+    relation_by_name = {
+        relation.relation: relation for relation in physical.relations
+    }
+    preferred_order = physical.source_slice
+    if (
+        len(relation_by_name) != len(physical.relations)
+        or len(preferred_order) != len(relation_by_name)
+        or set(preferred_order) != set(relation_by_name)
+    ):
+        raise ValueError(
+            "operational physical source_slice does not exactly cover relations"
+        )
+
+    local_names = set(relation_by_name)
+    dependencies = {
+        name: {
+            foreign_key.referenced_relation
+            for foreign_key in relation_by_name[name].foreign_keys
+            if foreign_key.referenced_relation in local_names
+            and foreign_key.referenced_relation != name
+        }
+        for name in preferred_order
+    }
+    remaining = set(preferred_order)
+    result: list[str] = []
+    while remaining:
+        ready = next(
+            (
+                name
+                for name in preferred_order
+                if name in remaining and not dependencies[name] & remaining
+            ),
+            None,
+        )
+        if ready is None:
+            unresolved = {
+                name: sorted(dependencies[name] & remaining)
+                for name in preferred_order
+                if name in remaining
+            }
+            raise ValueError(
+                f"operational physical dependency cycle: {unresolved!r}"
+            )
+        remaining.remove(ready)
+        result.append(ready)
+    return tuple(result)
+
+
 def render_sqlite_external_stubs(stubs: tuple[ExternalStub, ...]) -> str:
     statements: list[str] = []
     for stub in stubs:
@@ -4616,7 +4672,7 @@ def render_sqlite_ddl(
     }
     relation_by_name = {relation.relation: relation for relation in physical.relations}
     statements = ["PRAGMA foreign_keys = ON;", render_sqlite_external_stubs(stubs)]
-    for relation_name in physical.source_slice:
+    for relation_name in _ddl_relation_order(physical):
         relation = relation_by_name[relation_name]
         assert relation.table is not None
         definitions: list[str] = []
@@ -4820,7 +4876,7 @@ def render_mariadb_ddl(
     }
     relation_by_name = {relation.relation: relation for relation in physical.relations}
     statements = list(render_mariadb_external_stubs(stubs))
-    for relation_name in physical.source_slice:
+    for relation_name in _ddl_relation_order(physical):
         relation = relation_by_name[relation_name]
         assert relation.table is not None
         definitions: list[str] = []

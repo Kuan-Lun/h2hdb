@@ -888,12 +888,57 @@ def _render_bootstrap_seed_range(value: dict[str, Any]) -> list[str]:
     ]
 
 
+def _topological_relation_order(relations: list[dict[str, Any]]) -> list[str]:
+    """Preserve logical order where possible while placing FK parents first."""
+
+    preferred_order = [str(relation["name"]) for relation in relations]
+    relation_by_name = {
+        str(relation["name"]): relation for relation in relations
+    }
+    if len(relation_by_name) != len(relations):
+        raise RuntimeError("Operational logical relations contain duplicate names")
+
+    local_names = set(relation_by_name)
+    dependencies = {
+        name: {
+            str(foreign_key["relation"])
+            for foreign_key in relation_by_name[name].get("foreign_keys", [])
+            if str(foreign_key["relation"]) in local_names
+            and str(foreign_key["relation"]) != name
+        }
+        for name in preferred_order
+    }
+    remaining = set(preferred_order)
+    result: list[str] = []
+    while remaining:
+        ready = next(
+            (
+                name
+                for name in preferred_order
+                if name in remaining and not dependencies[name] & remaining
+            ),
+            None,
+        )
+        if ready is None:
+            unresolved = {
+                name: sorted(dependencies[name] & remaining)
+                for name in preferred_order
+                if name in remaining
+            }
+            raise RuntimeError(
+                f"Operational physical FK dependency cycle: {unresolved!r}"
+            )
+        remaining.remove(ready)
+        result.append(ready)
+    return result
+
+
 def render() -> str:
     with LOGICAL.open("rb") as stream:
         logical: dict[str, Any] = tomllib.load(stream)
     _validate_external_candidate_key_shapes(logical)
     relations: list[dict[str, Any]] = logical["relation"]
-    complete_relations = [relation["name"] for relation in relations]
+    complete_relations = _topological_relation_order(relations)
     relation_names = {str(value) for value in complete_relations}
     semantic_obligations = _semantic_obligations(logical, relation_names)
     bootstrap_seeds = _bootstrap_seeds(logical, relations)
@@ -1283,7 +1328,7 @@ def _checks(name: str, relation: dict[str, Any]) -> list[tuple[str, str, str]]:
                 "next_processed_byte_count = 0)",
                 "(component = X'46494C45' AND level = 0 AND "
                 "next_processed_byte_count >= start_processed_byte_count OR "
-                "(component != X'46494C45' OR level != 0) AND "
+                "(component <> X'46494C45' OR level <> 0) AND "
                 "start_processed_byte_count = 0 AND "
                 "next_processed_byte_count = 0)",
             )
