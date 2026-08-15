@@ -15,7 +15,7 @@ from h2hdb_ingest import (
     CBZReconciler,
     DeduplicationPolicy,
     FilesystemScanner,
-    IngestService,
+    LegacyIngestService,
 )
 from h2hdb_komga.metadata import publication_to_komga_metadata
 from h2hdb_opds import OPDSConfig, create_app
@@ -86,9 +86,9 @@ def main() -> None:
             )
         )
         database = H2HDB(config)
-        assert database.migrate() == 1
+        database.migrate()
 
-        service = IngestService(
+        service = LegacyIngestService(
             scanner=FilesystemScanner(gallery_root, hash_workers=1),
             deduplication=DeduplicationPolicy(),
             cbz=CBZReconciler(
