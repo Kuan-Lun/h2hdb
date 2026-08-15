@@ -53,6 +53,7 @@ class _PacketRecordingCursor:
         self.connection = connection
         self.result: tuple[Any, ...] | None = None
         self.closed = False
+        self.rowcount = connection.affected_rows
 
     def execute(self, query: str, data: tuple[Any, ...] = ()) -> None:
         self.connection.execute_calls.append((query, data))
@@ -86,9 +87,11 @@ class _PacketRecordingConnection:
         *,
         max_allowed_packet: int = _PACKET_LIMIT,
         fail_execute_many_call: int | None = None,
+        affected_rows: int = 1,
     ) -> None:
         self.max_allowed_packet = max_allowed_packet
         self.fail_execute_many_call = fail_execute_many_call
+        self.affected_rows = affected_rows
         self.in_transaction = False
         self.execute_calls: list[tuple[str, tuple[Any, ...]]] = []
         self.execute_many_calls: list[tuple[str, list[tuple[Any, ...]]]] = []
@@ -213,6 +216,24 @@ def test_execute_many_caches_session_packet_limit_for_physical_connection() -> N
     assert _packet_queries(connection) == [_MAX_ALLOWED_PACKET_QUERY]
     assert len(connection.execute_many_calls) > 2
     assert all(cursor.closed for cursor in connection.cursors)
+
+
+@pytest.mark.parametrize("affected_rows", (0, 1))
+def test_execute_affected_returns_statement_rowcount_and_commits(
+    affected_rows: int,
+) -> None:
+    connection = _PacketRecordingConnection(affected_rows=affected_rows)
+    connector = _packet_connector_with(connection)
+
+    assert (
+        connector.execute_affected(
+            "UPDATE allocator SET next_id = %s WHERE stream = %s AND next_id = %s",
+            (2, "GALLERY", 1),
+        )
+        == affected_rows
+    )
+    assert connection.commit_calls == 1
+    assert connection.rollback_calls == 0
 
 
 def test_execute_many_does_not_query_packet_limit_for_non_insert() -> None:

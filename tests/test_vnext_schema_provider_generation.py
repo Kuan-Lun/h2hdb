@@ -5,6 +5,7 @@ import hashlib
 import subprocess
 import sys
 import tomllib
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -162,12 +163,20 @@ def test_generated_dependency_order_and_fk_targets_are_closed(backend: str) -> N
 
 
 def test_formal_seed_and_obligation_contracts_are_machine_bound() -> None:
+    from h2hdb import catalog_writer
+
     data = _load(DATA_PHYSICAL)
     operational = _load(OPERATIONAL_PHYSICAL)
     expected_obligation_ids = tuple(
         value["id"]
         for document in (data, operational)
         for value in document.get("semantic_obligation", ())
+    )
+    expected_recurring_obligation_ids = tuple(
+        value["id"]
+        for document in (data, operational)
+        for value in document.get("semantic_obligation", ())
+        if value["lifecycle"] != "building_only"
     )
     expected_seed_ids = tuple(
         seed_id
@@ -211,10 +220,20 @@ def test_formal_seed_and_obligation_contracts_are_machine_bound() -> None:
             expected_seed_ids
         )
         assert len(payload["seed_manifest_sha256"]) == 64
-        assert provider.blockers
-        assert any("validators are missing" in value for value in provider.blockers)
-        with pytest.raises(VNextSchemaProviderUnavailableError, match="fail-closed"):
-            _ = provider.definition
+        assert tuple(provider.semantic_validators) == (
+            expected_recurring_obligation_ids
+        )
+        assert tuple(provider.writer_hook_bindings) == tuple(
+            catalog_writer.BUILTIN_WRITER_HOOK_BINDINGS
+        )
+        assert tuple(provider.writer_hook_bindings) == (
+            expected_recurring_obligation_ids
+        )
+        assert len(provider.writer_hook_bindings) == 25
+        assert not provider.blockers
+        assert not any("validators are missing" in value for value in provider.blockers)
+        assert not any("undeclared IDs" in value for value in provider.blockers)
+        assert provider.definition.epoch == ARTIFACT_DATA["epoch"]
 
 
 def test_generated_provider_rejects_caller_supplied_semantic_validators() -> None:
@@ -225,9 +244,178 @@ def test_generated_provider_rejects_caller_supplied_semantic_validators() -> Non
         )
 
     provider = GeneratedVNextSchemaProvider("sqlite")
-    assert provider.semantic_validators == {}
-    with pytest.raises(VNextSchemaProviderUnavailableError, match="fail-closed"):
+    expected_ids = tuple(
+        value["id"]
+        for value in ARTIFACT_DATA["semantic_obligations"]
+        if value["contract"]["lifecycle"] != "building_only"
+    )
+    assert tuple(provider.semantic_validators) == expected_ids
+    with pytest.raises(TypeError):
+        cast(dict[str, Any], provider.semantic_validators)[
+            "catalog.identity-codecs.v1"
+        ] = lambda _connector: None
+    with pytest.raises(TypeError):
+        cast(dict[str, Any], provider.writer_hook_bindings)[
+            "catalog.identity-codecs.v1"
+        ] = object()
+    assert provider.definition.schema_version == ARTIFACT_DATA["schema_version"]
+
+
+def test_generated_provider_reports_every_recurring_writer_hook_exactly() -> None:
+    from h2hdb import catalog_writer
+
+    provider = GeneratedVNextSchemaProvider("sqlite")
+    recurring = tuple(
+        value
+        for value in ARTIFACT_DATA["semantic_obligations"]
+        if value["contract"]["lifecycle"] != "building_only"
+    )
+    building_only_ids = tuple(
+        value["id"]
+        for value in ARTIFACT_DATA["semantic_obligations"]
+        if value["contract"]["lifecycle"] == "building_only"
+    )
+    writer_blockers = tuple(
+        blocker
+        for blocker in provider.blockers
+        if blocker.startswith("semantic obligation ") and " writer hook " in blocker
+    )
+
+    installed_ids = frozenset(catalog_writer.BUILTIN_WRITER_HOOK_BINDINGS)
+    unresolved = tuple(
+        obligation for obligation in recurring if obligation["id"] not in installed_ids
+    )
+
+    assert len(recurring) == 25
+    assert len(installed_ids) == 25
+    assert len(writer_blockers) == len(unresolved) == 0
+    assert installed_ids == frozenset(value["id"] for value in recurring)
+    assert installed_ids.isdisjoint(building_only_ids)
+
+
+def test_generated_provider_derives_writer_blockers_from_wheel_resolver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2hdb import catalog_writer
+
+    recurring = tuple(
+        value
+        for value in ARTIFACT_DATA["semantic_obligations"]
+        if value["contract"]["lifecycle"] != "building_only"
+    )
+    expected_calls = tuple(
+        (
+            value["id"],
+            value["contract"]["writer_hook"],
+            value["contract"]["writer_hook_version"],
+        )
+        for value in recurring
+    )
+    target_id = next(iter(catalog_writer.BUILTIN_WRITER_HOOK_BINDINGS))
+    unavailable_id, unavailable_name, unavailable_version = next(
+        value for value in expected_calls if value[0] == target_id
+    )
+    calls: list[tuple[str, str, int]] = []
+    original_resolver = catalog_writer.resolve_writer_hook
+
+    def resolve(obligation_id: str, name: str, version: int) -> object:
+        calls.append((obligation_id, name, version))
+        if (obligation_id, name, version) == (
+            unavailable_id,
+            unavailable_name,
+            unavailable_version,
+        ):
+            raise catalog_writer.WriterHookUnavailableError("probe unavailable")
+        return original_resolver(obligation_id, name, version)
+
+    monkeypatch.setattr(catalog_writer, "resolve_writer_hook", resolve)
+    provider = GeneratedVNextSchemaProvider("sqlite")
+    writer_blockers = tuple(
+        blocker
+        for blocker in provider.blockers
+        if blocker.startswith("semantic obligation ") and " writer hook " in blocker
+    )
+
+    assert tuple(calls) == expected_calls
+    assert len(writer_blockers) == 1
+    probe_blocker = next(
+        blocker for blocker in writer_blockers if "probe unavailable" in blocker
+    )
+    assert unavailable_id in probe_blocker
+    assert unavailable_name in probe_blocker
+    assert f"v{unavailable_version}" in probe_blocker
+    with pytest.raises(VNextSchemaProviderUnavailableError, match="probe unavailable"):
         _ = provider.definition
+
+
+def test_generated_provider_rejects_a_noncanonical_writer_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2hdb import catalog_writer
+
+    target_id, canonical = next(
+        iter(catalog_writer.BUILTIN_WRITER_HOOK_BINDINGS.items())
+    )
+    original_resolver = catalog_writer.resolve_writer_hook
+
+    def resolve(obligation_id: str, name: str, version: int) -> object:
+        binding = original_resolver(obligation_id, name, version)
+        return replace(binding) if obligation_id == target_id else binding
+
+    monkeypatch.setattr(catalog_writer, "resolve_writer_hook", resolve)
+    provider = GeneratedVNextSchemaProvider("sqlite")
+
+    assert target_id not in provider.writer_hook_bindings
+    assert len(provider.writer_hook_bindings) == 24
+    assert any(
+        repr(target_id) in blocker and "non-canonical binding" in blocker
+        for blocker in provider.blockers
+    )
+    assert canonical is catalog_writer.BUILTIN_WRITER_HOOK_BINDINGS[target_id]
+    with pytest.raises(
+        VNextSchemaProviderUnavailableError,
+        match="non-canonical binding",
+    ):
+        _ = provider.definition
+
+
+def test_generated_provider_rejects_registry_omission_and_noop_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h2hdb import catalog_refinement
+
+    installed = dict(catalog_refinement.builtin_semantic_validators())
+    missing_id = next(iter(installed))
+    monkeypatch.setattr(
+        catalog_refinement,
+        "builtin_semantic_validators",
+        lambda: {
+            obligation_id: validator
+            for obligation_id, validator in installed.items()
+            if obligation_id != missing_id
+        },
+    )
+    missing_provider = GeneratedVNextSchemaProvider("sqlite")
+    assert any(
+        "validators are missing" in blocker and repr(missing_id) in blocker
+        for blocker in missing_provider.blockers
+    )
+    with pytest.raises(VNextSchemaProviderUnavailableError):
+        _ = missing_provider.definition
+
+    unexpected_id = "caller.noop.v1"
+    monkeypatch.setattr(
+        catalog_refinement,
+        "builtin_semantic_validators",
+        lambda: {**installed, unexpected_id: lambda _connector: None},
+    )
+    extra_provider = GeneratedVNextSchemaProvider("sqlite")
+    assert any(
+        "undeclared IDs" in blocker and repr(unexpected_id) in blocker
+        for blocker in extra_provider.blockers
+    )
+    with pytest.raises(VNextSchemaProviderUnavailableError):
+        _ = extra_provider.definition
 
 
 def test_generated_ready_validation_never_scans_all_foreign_key_rows() -> None:
@@ -325,13 +513,14 @@ def test_mariadb_view_body_normalization_preserves_semantics() -> None:
     stored = """
         select `path`.`analysis_id` AS `analysis_id`,
                `shadow`.`value` AS `value`
-        from `catalog_test`.`analysis_path` `path`
+        from (`catalog_test`.`analysis_path` `path`
         join `catalog_test`.`analysis_shadow` `shadow`
-          on `shadow`.`analysis_id` = `path`.`ancestor_analysis_id`
-        where not exists (
+          on (`shadow`.`analysis_id` = `path`.`ancestor_analysis_id`))
+        where !exists (
           select 1 from `catalog_test`.`analysis_tombstone` `tomb`
           where `tomb`.`analysis_id` = `path`.`ancestor_analysis_id`
             and `tomb`.`value` = `shadow`.`value`
+          limit 1
         )
     """
 
@@ -353,3 +542,35 @@ def test_mariadb_view_body_normalization_preserves_semantics() -> None:
         )
         != expected_tokens
     )
+
+    # LIMIT 1 is semantics-neutral only at the tail of EXISTS.  It must remain
+    # authoritative in a scalar subquery or at the outer SELECT level.
+    scalar_limited = "SELECT (SELECT 1 LIMIT 1) AS `value`"
+    scalar_unlimited = "SELECT (SELECT 1) AS `value`"
+    assert provider_module._mariadb_view_body_tokens(
+        scalar_limited,
+        database_name="catalog_test",
+    ) != provider_module._mariadb_view_body_tokens(
+        scalar_unlimited,
+        database_name="catalog_test",
+    )
+
+    with pytest.raises(
+        SchemaEpochValidationError,
+        match="unbalanced parentheses",
+    ):
+        provider_module._mariadb_view_body_tokens(
+            stored + "(",
+            database_name="catalog_test",
+        )
+
+
+def test_mariadb_check_normalization_preserves_not_equal_literals() -> None:
+    assert provider_module._normalize_check(
+        "component != X'46494C45' AND label = 'literal != value'"
+    ) == provider_module._normalize_check(
+        "`component` <> x'46494c45' and `label` = 'literal != value'"
+    )
+    assert provider_module._normalize_check(
+        "label = 'literal != value'"
+    ) != provider_module._normalize_check("label = 'literal <> value'")

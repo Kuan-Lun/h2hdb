@@ -2,8 +2,8 @@ physical_contract_version = 1
 name = "h2hdb-vnext-operational-physical"
 logical_contract = "h2hdb-vnext-operational"
 description = "Complete verification-only SQLite/MariaDB realization of the operational control plane; production migrations are intentionally unchanged."
-complete_relations = ["schema_epoch_control", "ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "ingest_generation_lease", "ingest_generation_handoff", "source_build_generation", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "maintenance_work_state", "source_working_build", "catalog_working_candidate", "revision_allocator", "identity_allocator", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_owner", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_activation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "operational_consumer", "operational_event_ack", "operational_event_ack_head", "removed_gid_ack", "hash_cache_observation", "file_hash_cache", "cleanup_target_kind", "cleanup_sweep_target", "cleanup_phase", "cleanup_job", "cleanup_checkpoint", "cleanup_batch_receipt", "cleanup_completion"]
-source_slice = ["ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "ingest_generation_lease", "ingest_generation_handoff", "source_build_generation", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "maintenance_work_state", "source_working_build", "catalog_working_candidate", "revision_allocator", "identity_allocator", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_owner", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_activation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "operational_consumer", "operational_event_ack", "operational_event_ack_head", "removed_gid_ack", "hash_cache_observation", "file_hash_cache", "cleanup_target_kind", "cleanup_sweep_target", "cleanup_phase", "cleanup_job", "cleanup_checkpoint", "cleanup_batch_receipt", "cleanup_completion"]
+complete_relations = ["schema_epoch_control", "download_generation", "download_coordination_head", "download_generation_owner", "download_generation_lease", "download_ingest_handoff", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "ingest_generation_lease", "ingest_generation_handoff", "source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "maintenance_work_state", "source_working_build", "catalog_working_candidate", "revision_allocator", "identity_allocator", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_owner", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_generation", "deletion_request_generation_head", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_activation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "operational_consumer", "operational_event_ack", "operational_event_ack_head", "removed_gid_ack", "hash_cache_observation", "file_hash_cache", "cleanup_target_kind", "cleanup_sweep_target", "cleanup_phase", "cleanup_job", "cleanup_checkpoint", "cleanup_batch_receipt", "cleanup_completion"]
+source_slice = ["download_generation", "download_coordination_head", "download_generation_owner", "download_generation_lease", "download_ingest_handoff", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "ingest_generation_lease", "ingest_generation_handoff", "source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "maintenance_work_state", "source_working_build", "catalog_working_candidate", "revision_allocator", "identity_allocator", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_owner", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_generation", "deletion_request_generation_head", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_activation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "operational_consumer", "operational_event_ack", "operational_event_ack_head", "removed_gid_ack", "hash_cache_observation", "file_hash_cache", "cleanup_target_kind", "cleanup_sweep_target", "cleanup_phase", "cleanup_job", "cleanup_checkpoint", "cleanup_batch_receipt", "cleanup_completion"]
 epoch_owned_relations = ["schema_epoch_control"]
 
 [epoch_control]
@@ -24,8 +24,8 @@ class = "physical_domain"
 lifecycle = "ready_validation"
 check = "operational_refinement.check_physical_domains_v1"
 hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
-relations = ["schema_epoch_control", "download_request", "deletion_request_url", "operational_preparation_checkpoint", "cleanup_checkpoint"]
-description = "Validate exact fixed-width binary domains, arbitrary non-key payload domains, bounded cursor bytes, unsigned counters, and nonnegative UTC microsecond timestamps on both backends."
+relations = ["schema_epoch_control", "download_request", "deletion_request_url", "operational_preparation_checkpoint", "operational_preparation_effect_seal", "operational_event", "cleanup_checkpoint"]
+description = "Validate exact fixed-width binary domains, arbitrary non-key payload domains, bounded cursor bytes, event and seal counters, and nonnegative UTC microsecond timestamps on both backends."
 
 [[semantic_obligation]]
 id = "h2hdb.operational.epoch-manifest.v1"
@@ -56,6 +56,20 @@ relations = ["ingest_generation", "ingest_coordination_head", "ingest_generation
 description = "Authorize mutation only for the current exact owner and unexpired lease; takeover uses a strictly greater generation and stale owners mutate nothing."
 
 [[semantic_obligation]]
+id = "h2hdb.operational.download-ingest-handoff.v1"
+version = 1
+ready_check = "operational_refinement.check_download_ingest_handoff_contract_v1"
+writer_hook = "operational_writer.validate_download_ingest_handoff"
+writer_hook_version = 1
+scope = "operational.download-ingest-handoff"
+class = "transaction_protocol"
+lifecycle = "ready_and_runtime"
+check = "operational_refinement.check_download_ingest_handoff_contract_v1"
+hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
+relations = ["download_generation", "download_coordination_head", "download_generation_owner", "download_generation_lease", "download_ingest_handoff", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "ingest_generation_lease"]
+description = "Validate repository-issued download capabilities, exact live handoff or expired takeover, one-to-one ingest consumption, quiescent periodic ingest, coordinated completion, and zero-write exact response-loss replay across normalized download and ingest authority."
+
+[[semantic_obligation]]
 id = "h2hdb.operational.maintenance-gate.v1"
 version = 1
 ready_check = "operational_refinement.check_maintenance_gate_contract_v1"
@@ -80,8 +94,8 @@ class = "transaction_protocol"
 lifecycle = "ready_and_runtime"
 check = "operational_refinement.check_bounded_work_contract_v1"
 hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
-relations = ["operational_preparation_checkpoint", "operational_preparation_batch_receipt", "cleanup_checkpoint", "cleanup_batch_receipt"]
-description = "Validate server-owned cursors, same-transaction decision/receipt/checkpoint CAS, and an empty terminal receipt before COMPLETE."
+relations = ["operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "cleanup_checkpoint", "cleanup_batch_receipt"]
+description = "Validate server-owned cursors, bounded same-transaction typed effects with receipt/checkpoint CAS, an empty terminal receipt, and an exact immutable effect-completeness seal written before COMPLETE without a publication-time event scan."
 
 [[semantic_obligation]]
 id = "h2hdb.operational.queue-history.v1"
@@ -89,13 +103,13 @@ version = 1
 ready_check = "operational_refinement.check_queue_history_contract_v1"
 writer_hook = "operational_writer.validate_queue_history"
 writer_hook_version = 1
-scope = "operational.deletion-history"
+scope = "operational.deletion-generation-history"
 class = "referential_protocol"
 lifecycle = "ready_and_runtime"
 check = "operational_refinement.check_queue_history_contract_v1"
 hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
-relations = ["deletion_request_attempt", "deletion_request_head", "deletion_request_url", "operational_deletion_consumption_event"]
-description = "Validate immutable deletion attempts, independently mutable heads, optional exact URL satellites, and consumption references to immutable attempts."
+relations = ["deletion_request_generation", "deletion_request_generation_head", "deletion_request_attempt", "deletion_request_head", "deletion_request_url", "operational_preparation", "operational_deletion_consumption_event"]
+description = "Validate the real immutable generation-zero empty-queue genesis, exact history-backed singleton generation CAS, immutable deletion attempts, independently mutable per-gid heads, optional exact URL satellites, preparation generation authority, O(1) publication recheck, and consumption references to immutable attempts."
 
 [[semantic_obligation]]
 id = "h2hdb.operational.canonical-hash-cache.v1"
@@ -122,8 +136,8 @@ class = "transaction_protocol"
 lifecycle = "ready_and_runtime"
 check = "operational_refinement.check_event_integrity_contract_v1"
 hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
-relations = ["operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "operational_event_ack", "operational_event_ack_head"]
-description = "Validate exactly one type-matching event subtype and monotone same-revision acknowledgement only after durable coverage through the target sequence."
+relations = ["operational_event_stream", "operational_preparation", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_activation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "operational_event_ack", "operational_event_ack_head"]
+description = "Validate invisible preparation-scoped event streams, contiguous exact digest chains and immutable effect seals, one-to-one candidate binding to an exact sealed preparation, O(1) activation, exactly one type-matching subtype, and monotone same-preparation acknowledgement only after activation and durable bounded-prefix coverage."
 
 [[semantic_obligation]]
 id = "h2hdb.operational.build-generation.v1"
@@ -136,8 +150,8 @@ class = "transaction_protocol"
 lifecycle = "ready_and_runtime"
 check = "operational_refinement.check_build_generation_contract_v1"
 hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
-relations = ["source_build_generation"]
-description = "Validate one build reservation per generation, newer-generation takeover of the same build, and absence of a row when a generation performs no build."
+relations = ["source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "source_build_expected_gallery", "gallery_observation_stat", "source_build_gallery"]
+description = "Validate one build reservation per generation, newer-generation takeover of the same build, provider-private typed discovery upload into exact expected membership, complete response-loss receipts, gallery FILE count/byte authority, independent expected-versus-linked assembly, and terminal-only O(1) build sealing without digest or caller-count authority."
 
 [[semantic_obligation]]
 id = "h2hdb.operational.attempt-identity.v1"
@@ -150,8 +164,8 @@ class = "identity_protocol"
 lifecycle = "ready_and_runtime"
 check = "operational_refinement.check_attempt_identity_contract_v1"
 hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
-relations = ["cleanup_job", "operational_preparation", "operational_policy"]
-description = "Validate monotone cleanup attempt numbers and policy-qualified immutable preparation identity."
+relations = ["cleanup_job", "operational_preparation", "operational_policy", "deletion_request_generation", "deletion_request_generation_head"]
+description = "Validate monotone cleanup attempt numbers and policy-qualified immutable preparation identity backed by an exact retained deletion generation; publication accepts only the preparation matching the singleton current generation."
 
 [[semantic_obligation]]
 id = "h2hdb.operational.cleanup-reachability.v1"
@@ -164,8 +178,8 @@ class = "retention_protocol"
 lifecycle = "ready_and_runtime"
 check = "operational_refinement.check_cleanup_reachability_v1"
 hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
-relations = ["cleanup_target_kind", "cleanup_phase", "cleanup_job", "cleanup_checkpoint", "source_build", "publication_candidate", "source_revision", "catalog_revision", "canonical_value_identity", "content_blob", "operational_activation", "operational_event", "operational_event_ack", "operational_event_ack_head"]
-description = "Validate the exact seeded cleanup kind/phase registry, 32-byte target-key codecs, static writer hooks, retention-root closure, blocker identities, and child-first completion order; no reachable retained root may be deleted."
+relations = ["cleanup_target_kind", "cleanup_phase", "cleanup_job", "cleanup_checkpoint", "source_build", "publication_candidate", "analysis_snapshot_manifest", "source_revision", "catalog_revision", "canonical_value_identity", "content_blob", "operational_event_stream", "operational_preparation", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_activation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "operational_event_ack", "operational_event_ack_head"]
+description = "Validate the exact seeded cleanup kind/phase registry, 32-byte target-key codecs, static writer hooks, retention-root closure, blocker identities, candidate-to-preparation binding, and conditional child-first preparation cleanup: activated effects outlive control rows, bound or unactivated COMPLETE work is retained, and ABANDONED invisible streams leave no orphan."
 
 [[semantic_obligation]]
 id = "h2hdb.operational.revision-allocation.v1"
@@ -206,17 +220,17 @@ class = "bootstrap_integrity"
 lifecycle = "building_only"
 check = "operational_refinement.check_bootstrap_contract_v1"
 hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
-relations = ["revision_allocator", "identity_allocator"]
-description = "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG identity allocator genesis rows and the declared absence of all event, lease, head, staging, work, cache, and queue facts."
+relations = ["revision_allocator", "identity_allocator", "deletion_request_generation", "deletion_request_generation_head"]
+description = "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG identity allocator genesis rows, the real immutable deletion generation-zero empty-queue fact and its singleton head, and the declared absence of all request, event, lease, staging, work, cache, policy, and cleanup facts."
 
 [bootstrap_contract]
 version = 1
 seed_validation_lifecycle = "building_only"
 absence_validation_lifecycle = "building_only"
 epoch_owned_relation = "schema_epoch_control"
-seeded_relations = ["revision_allocator", "identity_allocator", "cleanup_target_kind", "cleanup_phase", "cleanup_sweep_target"]
-absent_relations = ["ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "ingest_generation_lease", "ingest_generation_handoff", "source_build_generation", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "maintenance_work_state", "source_working_build", "catalog_working_candidate", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_owner", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_activation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "operational_consumer", "operational_event_ack", "operational_event_ack_head", "removed_gid_ack", "hash_cache_observation", "file_hash_cache", "cleanup_job", "cleanup_checkpoint", "cleanup_batch_receipt", "cleanup_completion"]
-absence_rule = "A fresh database contains no invented ingest generation, coordination head, lease, maintenance generation/head/owner/holder, queue, event, work, cache, policy, or cleanup fact. First use creates the required generation and head in the same transaction before acquiring an owner or holder."
+seeded_relations = ["revision_allocator", "identity_allocator", "deletion_request_generation", "deletion_request_generation_head", "cleanup_target_kind", "cleanup_phase", "cleanup_sweep_target"]
+absent_relations = ["download_generation", "download_coordination_head", "download_generation_owner", "download_generation_lease", "download_ingest_handoff", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "ingest_generation_lease", "ingest_generation_handoff", "source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "maintenance_work_state", "source_working_build", "catalog_working_candidate", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_owner", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_activation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "operational_consumer", "operational_event_ack", "operational_event_ack_head", "removed_gid_ack", "hash_cache_observation", "file_hash_cache", "cleanup_job", "cleanup_checkpoint", "cleanup_batch_receipt", "cleanup_completion"]
+absence_rule = "A fresh database contains the real immutable deletion-request generation-zero empty-queue fact and its singleton head, but no deletion attempt, URL, per-gid head, preparation stream, effect seal, publication-candidate binding, activation, event, download or ingest generation/head/owner/lease/handoff/consumption/completion, maintenance generation/head/owner/holder, work, cache, policy, or cleanup fact. First deletion-request authority mutation inserts generation one and exact-CAS advances the seeded head in the same transaction; other protocols create their required generation and head before acquiring an owner or holder."
 epoch_rule = "schema_epoch_control is created and managed exclusively by SchemaEpochCatalog and is not a provider bootstrap seed."
 
 [[bootstrap_seed]]
@@ -258,6 +272,26 @@ lifecycle = "building_only"
 relation = "identity_allocator"
 value = [{ attribute = "stream", type = "ascii_enum", text = "TAG" }, { attribute = "next_id", type = "uint64", integer = 1 }, { attribute = "updated_at", type = "unix_microseconds", integer = 0 }]
 invariant = "Tag identity zero is outside the namespace; allocate the current positive int63 next_id and advance by exact CAS without auto-increment or deletion reuse."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.deletion-request-generation.genesis.v1"
+columns = ["generation", "allocated_at"]
+values = ["0", "0"]
+version = 1
+lifecycle = "building_only"
+relation = "deletion_request_generation"
+value = [{ attribute = "generation", type = "uint64", integer = 0 }, { attribute = "allocated_at", type = "unix_microseconds", integer = 0 }]
+invariant = "Generation zero is a real immutable empty-queue history fact, not a sentinel or an allocated deletion request; the first actual request-authority mutation inserts generation one."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.deletion-request-generation-head.genesis.v1"
+columns = ["singleton_id", "current_generation", "updated_at"]
+values = ["1", "0", "0"]
+version = 1
+lifecycle = "building_only"
+relation = "deletion_request_generation_head"
+value = [{ attribute = "singleton_id", type = "uint64", integer = 1 }, { attribute = "current_generation", type = "uint64", integer = 0 }, { attribute = "updated_at", type = "unix_microseconds", integer = 0 }]
+invariant = "The one singleton head exactly references the real generation-zero history row; every actual deletion-request authority mutation inserts the next history row and exact-CAS advances this head in the same transaction."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-target.source-build.v1"
@@ -630,14 +664,44 @@ value = [{ attribute = "phase", type = "ascii_enum", text = "OP_CHECKPOINT" }, {
 invariant = "OP_CHECKPOINT is the immutable child-first phase 2 for OPERATIONAL_PREPARATION cleanup."
 
 [[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-phase.op-root.v1"
+id = "h2hdb.operational.cleanup-phase.op-subtype.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["OP_ROOT", "OPERATIONAL_PREPARATION", "3"]
+values = ["OP_SUBTYPE", "OPERATIONAL_PREPARATION", "3"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "OP_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "OPERATIONAL_PREPARATION" }, { attribute = "phase_order", type = "uint64", integer = 3 }]
-invariant = "OP_ROOT is the immutable child-first phase 3 for OPERATIONAL_PREPARATION cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "OP_SUBTYPE" }, { attribute = "target_kind", type = "ascii_enum", text = "OPERATIONAL_PREPARATION" }, { attribute = "phase_order", type = "uint64", integer = 3 }]
+invariant = "OP_SUBTYPE removes both typed effect rows before their operational-event parent only for an unactivated ABANDONED stream; activated effects are retained."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.op-event.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["OP_EVENT", "OPERATIONAL_PREPARATION", "4"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "OP_EVENT" }, { attribute = "target_kind", type = "ascii_enum", text = "OPERATIONAL_PREPARATION" }, { attribute = "phase_order", type = "uint64", integer = 4 }]
+invariant = "OP_EVENT removes base effects only after subtypes and only for an unactivated ABANDONED stream; acknowledgement FKs and activation rechecks fail closed."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.op-seal.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["OP_SEAL", "OPERATIONAL_PREPARATION", "5"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "OP_SEAL" }, { attribute = "target_kind", type = "ascii_enum", text = "OPERATIONAL_PREPARATION" }, { attribute = "phase_order", type = "uint64", integer = 5 }]
+invariant = "OP_SEAL removes effect-completeness authority only after every invisible base effect is gone and never when activation references it."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.op-root.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["OP_ROOT", "OPERATIONAL_PREPARATION", "6"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "OP_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "OPERATIONAL_PREPARATION" }, { attribute = "phase_order", type = "uint64", integer = 6 }]
+invariant = "OP_ROOT removes the preparation before its durable stream for ABANDONED cleanup, but removes only the preparation and retains the activated stream for COMPLETE control compaction."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.go-staging-receipt-frontier.v1"
@@ -1234,6 +1298,33 @@ nullable = false
 name = "reserved_revision"
 sqlite_type = "INTEGER"
 mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+
+[[external_stub]]
+relation = "publication_candidate_projection_seal"
+table = "catalog_publication_candidate_projection_seal"
+primary_key = ["candidate_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "candidate_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
+nullable = false
+
+[[external_stub]]
+relation = "analysis_snapshot_manifest"
+table = "catalog_analysis_snapshot_manifest"
+primary_key = ["analysis_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "analysis_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
+nullable = false
+[[external_stub.column]]
+name = "snapshot_manifest_sha256"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(32)"
 nullable = false
 
 [[external_stub]]
@@ -1858,6 +1949,53 @@ sqlite_type = "INTEGER"
 mariadb_type = "BIGINT UNSIGNED"
 nullable = false
 
+[[external_stub]]
+relation = "source_build_expected_gallery"
+table = "catalog_source_build_expected_gallery"
+primary_key = ["build_id", "position"]
+unique_keys = [["build_id", "gallery_id"]]
+[[external_stub.column]]
+name = "build_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
+nullable = false
+[[external_stub.column]]
+name = "position"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "gallery_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+
+[[external_stub]]
+relation = "gallery_observation_stat"
+table = "catalog_gallery_observation_stat"
+primary_key = ["gallery_id", "observation_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "gallery_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "observation_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "file_count"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "byte_count"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+
 [[relation]]
 name = "schema_epoch_control"
 status = "implemented"
@@ -1936,6 +2074,320 @@ mariadb_expression = "state = 'BUILDING' AND ready_at IS NULL OR state = 'READY'
 name = "ck_schema_epoch_manifest_blob"
 sqlite_expression = "typeof(manifest_sha256) = 'blob'"
 mariadb_expression = "octet_length(manifest_sha256) = 32"
+
+[[relation]]
+name = "download_generation"
+status = "implemented"
+rationale = "BCNF operational authority or exact durable protocol state for download_generation."
+table = "operational_download_generations"
+primary_key = ["generation"]
+unique_keys = []
+[[relation.column]]
+attribute = "generation"
+name = "generation"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "started_at"
+name = "started_at"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "completed_at"
+name = "completed_at"
+sqlite = { type = "INTEGER", nullable = true, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = true, collation = "NONE" }
+[[relation.check]]
+name = "ck_download_generation_started_at_nonneg"
+sqlite_expression = "started_at >= 0 AND started_at <= 9223372036854775807"
+mariadb_expression = "started_at >= 0 AND started_at <= 9223372036854775807"
+[[relation.check]]
+name = "ck_download_generation_completed_at_nonneg"
+sqlite_expression = "completed_at IS NULL OR completed_at >= 0 AND completed_at <= 9223372036854775807"
+mariadb_expression = "completed_at IS NULL OR completed_at >= 0 AND completed_at <= 9223372036854775807"
+[[relation.check]]
+name = "ck_download_generation_generation_nonneg"
+sqlite_expression = "generation >= 0 AND generation <= 9223372036854775807"
+mariadb_expression = "generation >= 0 AND generation <= 9223372036854775807"
+[[relation.check]]
+name = "ck_download_generation_time_order"
+sqlite_expression = "completed_at IS NULL OR completed_at >= started_at"
+mariadb_expression = "completed_at IS NULL OR completed_at >= started_at"
+
+[[relation]]
+name = "download_coordination_head"
+status = "implemented"
+rationale = "BCNF operational authority or exact durable protocol state for download_coordination_head."
+table = "operational_download_coordination_heads"
+primary_key = ["singleton_id"]
+unique_keys = []
+[[relation.column]]
+attribute = "singleton_id"
+name = "singleton_id"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "SMALLINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "current_generation"
+name = "current_generation"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "completed_generation"
+name = "completed_generation"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "last_transition_at"
+name = "last_transition_at"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.foreign_key]]
+name = "fk_download_coordination_head_1"
+attributes = ["current_generation"]
+referenced_relation = "download_generation"
+referenced_attributes = ["generation"]
+[[relation.foreign_key]]
+name = "fk_download_coordination_head_2"
+attributes = ["completed_generation"]
+referenced_relation = "download_generation"
+referenced_attributes = ["generation"]
+[[relation.required_index]]
+name = "ix_download_coordination_head_fk_1"
+attributes = ["current_generation"]
+unique = false
+[[relation.required_index]]
+name = "ix_download_coordination_head_fk_2"
+attributes = ["completed_generation"]
+unique = false
+[[relation.check]]
+name = "ck_download_coordination_head_singleton"
+sqlite_expression = "singleton_id = 1"
+mariadb_expression = "singleton_id = 1"
+[[relation.check]]
+name = "ck_download_coordination_head_last_transition_at_nonneg"
+sqlite_expression = "last_transition_at >= 0 AND last_transition_at <= 9223372036854775807"
+mariadb_expression = "last_transition_at >= 0 AND last_transition_at <= 9223372036854775807"
+[[relation.check]]
+name = "ck_download_coordination_head_completed_generation_nonneg"
+sqlite_expression = "completed_generation >= 0 AND completed_generation <= 9223372036854775807"
+mariadb_expression = "completed_generation >= 0 AND completed_generation <= 9223372036854775807"
+[[relation.check]]
+name = "ck_download_coordination_head_current_generation_nonneg"
+sqlite_expression = "current_generation >= 0 AND current_generation <= 9223372036854775807"
+mariadb_expression = "current_generation >= 0 AND current_generation <= 9223372036854775807"
+[[relation.check]]
+name = "ck_download_coordination_head_singleton_id_portable"
+sqlite_expression = "singleton_id >= 0 AND singleton_id <= 9223372036854775807"
+mariadb_expression = "singleton_id >= 0 AND singleton_id <= 9223372036854775807"
+[[relation.check]]
+name = "ck_download_generation_order"
+sqlite_expression = "completed_generation <= current_generation"
+mariadb_expression = "completed_generation <= current_generation"
+
+[[relation]]
+name = "download_generation_owner"
+status = "implemented"
+rationale = "BCNF operational authority or exact durable protocol state for download_generation_owner."
+table = "operational_download_generation_owners"
+primary_key = ["generation"]
+unique_keys = [["owner_token"]]
+[[relation.column]]
+attribute = "generation"
+name = "generation"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "owner_token"
+name = "owner_token"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "claimed_at"
+name = "claimed_at"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.foreign_key]]
+name = "fk_download_generation_owner_1"
+attributes = ["generation"]
+referenced_relation = "download_generation"
+referenced_attributes = ["generation"]
+[[relation.check]]
+name = "ck_download_generation_owner_owner_token_len"
+sqlite_expression = "length(owner_token) = 16"
+mariadb_expression = "octet_length(owner_token) = 16"
+[[relation.check]]
+name = "ck_download_generation_owner_claimed_at_nonneg"
+sqlite_expression = "claimed_at >= 0 AND claimed_at <= 9223372036854775807"
+mariadb_expression = "claimed_at >= 0 AND claimed_at <= 9223372036854775807"
+[[relation.check]]
+name = "ck_download_generation_owner_generation_nonneg"
+sqlite_expression = "generation >= 0 AND generation <= 9223372036854775807"
+mariadb_expression = "generation >= 0 AND generation <= 9223372036854775807"
+
+[[relation]]
+name = "download_generation_lease"
+status = "implemented"
+rationale = "BCNF operational authority or exact durable protocol state for download_generation_lease."
+table = "operational_download_generation_leases"
+primary_key = ["generation"]
+unique_keys = []
+[[relation.column]]
+attribute = "generation"
+name = "generation"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "lease_expires_at"
+name = "lease_expires_at"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.foreign_key]]
+name = "fk_download_generation_lease_1"
+attributes = ["generation"]
+referenced_relation = "download_generation"
+referenced_attributes = ["generation"]
+[[relation.check]]
+name = "ck_download_generation_lease_lease_expires_at_nonneg"
+sqlite_expression = "lease_expires_at >= 0 AND lease_expires_at <= 9223372036854775807"
+mariadb_expression = "lease_expires_at >= 0 AND lease_expires_at <= 9223372036854775807"
+[[relation.check]]
+name = "ck_download_generation_lease_generation_nonneg"
+sqlite_expression = "generation >= 0 AND generation <= 9223372036854775807"
+mariadb_expression = "generation >= 0 AND generation <= 9223372036854775807"
+
+[[relation]]
+name = "download_ingest_handoff"
+status = "implemented"
+rationale = "BCNF operational authority or exact durable protocol state for download_ingest_handoff."
+table = "operational_download_ingest_handoffs"
+primary_key = ["download_generation"]
+unique_keys = [["owner_token"]]
+[[relation.column]]
+attribute = "download_generation"
+name = "download_generation"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "owner_token"
+name = "owner_token"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "handoff_kind"
+name = "handoff_kind"
+sqlite = { type = "TEXT", nullable = false, collation = "BINARY" }
+mariadb = { type = "VARCHAR(48)", nullable = false, collation = "ascii_bin" }
+[[relation.column]]
+attribute = "requested_at"
+name = "requested_at"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.foreign_key]]
+name = "fk_download_ingest_handoff_1"
+attributes = ["download_generation"]
+referenced_relation = "download_generation"
+referenced_attributes = ["generation"]
+[[relation.check]]
+name = "ck_download_ingest_handoff_owner_token_len"
+sqlite_expression = "length(owner_token) = 16"
+mariadb_expression = "octet_length(owner_token) = 16"
+[[relation.check]]
+name = "ck_download_ingest_handoff_requested_at_nonneg"
+sqlite_expression = "requested_at >= 0 AND requested_at <= 9223372036854775807"
+mariadb_expression = "requested_at >= 0 AND requested_at <= 9223372036854775807"
+[[relation.check]]
+name = "ck_download_ingest_handoff_download_generation_nonneg"
+sqlite_expression = "download_generation >= 0 AND download_generation <= 9223372036854775807"
+mariadb_expression = "download_generation >= 0 AND download_generation <= 9223372036854775807"
+[[relation.check]]
+name = "ck_download_ingest_handoff_kind"
+sqlite_expression = "handoff_kind IN ('DOWNLOADER', 'EXPIRED_TAKEOVER')"
+mariadb_expression = "handoff_kind IN ('DOWNLOADER', 'EXPIRED_TAKEOVER')"
+
+[[relation]]
+name = "download_ingest_consumption"
+status = "implemented"
+rationale = "BCNF operational authority or exact durable protocol state for download_ingest_consumption."
+table = "operational_download_ingest_consumptions"
+primary_key = ["download_generation"]
+unique_keys = [["ingest_generation"]]
+[[relation.column]]
+attribute = "download_generation"
+name = "download_generation"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "ingest_generation"
+name = "ingest_generation"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "consumed_at"
+name = "consumed_at"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.foreign_key]]
+name = "fk_download_ingest_consumption_1"
+attributes = ["download_generation"]
+referenced_relation = "download_ingest_handoff"
+referenced_attributes = ["download_generation"]
+[[relation.foreign_key]]
+name = "fk_download_ingest_consumption_2"
+attributes = ["ingest_generation"]
+referenced_relation = "ingest_generation"
+referenced_attributes = ["generation"]
+[[relation.check]]
+name = "ck_download_ingest_consumption_consumed_at_nonneg"
+sqlite_expression = "consumed_at >= 0 AND consumed_at <= 9223372036854775807"
+mariadb_expression = "consumed_at >= 0 AND consumed_at <= 9223372036854775807"
+[[relation.check]]
+name = "ck_download_ingest_consumption_download_generation_nonneg"
+sqlite_expression = "download_generation >= 0 AND download_generation <= 9223372036854775807"
+mariadb_expression = "download_generation >= 0 AND download_generation <= 9223372036854775807"
+[[relation.check]]
+name = "ck_download_ingest_consumption_ingest_generation_nonneg"
+sqlite_expression = "ingest_generation >= 0 AND ingest_generation <= 9223372036854775807"
+mariadb_expression = "ingest_generation >= 0 AND ingest_generation <= 9223372036854775807"
+
+[[relation]]
+name = "coordinated_ingest_completion"
+status = "implemented"
+rationale = "BCNF operational authority or exact durable protocol state for coordinated_ingest_completion."
+table = "operational_coordinated_ingest_completions"
+primary_key = ["ingest_generation"]
+unique_keys = [["owner_token"]]
+[[relation.column]]
+attribute = "ingest_generation"
+name = "ingest_generation"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "owner_token"
+name = "owner_token"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "completed_at"
+name = "completed_at"
+sqlite = { type = "INTEGER", nullable = true, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = true, collation = "NONE" }
+[[relation.foreign_key]]
+name = "fk_coordinated_ingest_completion_1"
+attributes = ["ingest_generation"]
+referenced_relation = "ingest_generation"
+referenced_attributes = ["generation"]
+[[relation.check]]
+name = "ck_coordinated_ingest_completion_owner_token_len"
+sqlite_expression = "length(owner_token) = 16"
+mariadb_expression = "octet_length(owner_token) = 16"
+[[relation.check]]
+name = "ck_coordinated_ingest_completion_completed_at_nonneg"
+sqlite_expression = "completed_at IS NULL OR completed_at >= 0 AND completed_at <= 9223372036854775807"
+mariadb_expression = "completed_at IS NULL OR completed_at >= 0 AND completed_at <= 9223372036854775807"
+[[relation.check]]
+name = "ck_coordinated_ingest_completion_ingest_generation_nonneg"
+sqlite_expression = "ingest_generation >= 0 AND ingest_generation <= 9223372036854775807"
+mariadb_expression = "ingest_generation >= 0 AND ingest_generation <= 9223372036854775807"
 
 [[relation]]
 name = "ingest_generation"
@@ -2178,7 +2630,7 @@ referenced_attributes = ["build_id"]
 [[relation.foreign_key]]
 name = "fk_source_build_generation_2"
 attributes = ["generation"]
-referenced_relation = "ingest_generation_owner"
+referenced_relation = "ingest_generation"
 referenced_attributes = ["generation"]
 [[relation.required_index]]
 name = "ix_source_build_generation_fk_1"
@@ -2192,6 +2644,439 @@ mariadb_expression = "octet_length(build_id) = 16"
 name = "ck_source_build_generation_generation_nonneg"
 sqlite_expression = "generation >= 0 AND generation <= 9223372036854775807"
 mariadb_expression = "generation >= 0 AND generation <= 9223372036854775807"
+
+[[relation]]
+name = "source_build_discovery_checkpoint"
+status = "implemented"
+rationale = "BCNF operational authority or exact durable protocol state for source_build_discovery_checkpoint."
+table = "operational_source_build_discovery_checkpoints"
+primary_key = ["build_id"]
+unique_keys = []
+[[relation.column]]
+attribute = "build_id"
+name = "build_id"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "generation"
+name = "generation"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "cursor_bytes"
+name = "cursor_bytes"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "VARBINARY(2048)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "processed_count"
+name = "processed_count"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "state"
+name = "state"
+sqlite = { type = "TEXT", nullable = false, collation = "BINARY" }
+mariadb = { type = "VARCHAR(48)", nullable = false, collation = "ascii_bin" }
+[[relation.column]]
+attribute = "updated_at"
+name = "updated_at"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.foreign_key]]
+name = "fk_source_build_discovery_checkpoint_1"
+attributes = ["build_id"]
+referenced_relation = "source_build"
+referenced_attributes = ["build_id"]
+[[relation.required_index]]
+name = "ix_source_build_discovery_checkpoint_state"
+attributes = ["state", "updated_at"]
+unique = false
+[[relation.check]]
+name = "ck_source_build_discovery_checkpoint_build_id_len"
+sqlite_expression = "length(build_id) = 16"
+mariadb_expression = "octet_length(build_id) = 16"
+[[relation.check]]
+name = "ck_source_build_discovery_checkpoint_updated_at_nonneg"
+sqlite_expression = "updated_at >= 0 AND updated_at <= 9223372036854775807"
+mariadb_expression = "updated_at >= 0 AND updated_at <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_build_discovery_checkpoint_generation_nonneg"
+sqlite_expression = "generation >= 0 AND generation <= 9223372036854775807"
+mariadb_expression = "generation >= 0 AND generation <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_build_discovery_checkpoint_processed_count_nonneg"
+sqlite_expression = "processed_count >= 0 AND processed_count <= 9223372036854775807"
+mariadb_expression = "processed_count >= 0 AND processed_count <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_build_discovery_checkpoint_state"
+sqlite_expression = "state IN ('OPEN', 'COMPLETE')"
+mariadb_expression = "state IN ('OPEN', 'COMPLETE')"
+
+[[relation]]
+name = "source_build_discovery_batch_receipt"
+status = "implemented"
+rationale = "BCNF operational authority or exact durable protocol state for source_build_discovery_batch_receipt."
+table = "operational_source_build_discovery_batch_receipts"
+primary_key = ["build_id", "batch_key"]
+unique_keys = [["build_id", "start_generation"]]
+[[relation.column]]
+attribute = "build_id"
+name = "build_id"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "batch_key"
+name = "batch_key"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "start_generation"
+name = "start_generation"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "start_cursor"
+name = "start_cursor"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "VARBINARY(2048)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "start_processed_count"
+name = "start_processed_count"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "next_cursor"
+name = "next_cursor"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "VARBINARY(2048)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "next_processed_count"
+name = "next_processed_count"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "next_state"
+name = "next_state"
+sqlite = { type = "TEXT", nullable = false, collation = "BINARY" }
+mariadb = { type = "VARCHAR(48)", nullable = false, collation = "ascii_bin" }
+[[relation.column]]
+attribute = "row_count"
+name = "row_count"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "terminal"
+name = "terminal"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "SMALLINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "committed_generation"
+name = "committed_generation"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "committed_at"
+name = "committed_at"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.foreign_key]]
+name = "fk_source_build_discovery_batch_receipt_1"
+attributes = ["build_id"]
+referenced_relation = "source_build_discovery_checkpoint"
+referenced_attributes = ["build_id"]
+[[relation.check]]
+name = "ck_source_build_discovery_batch_receipt_build_id_len"
+sqlite_expression = "length(build_id) = 16"
+mariadb_expression = "octet_length(build_id) = 16"
+[[relation.check]]
+name = "ck_source_build_discovery_batch_receipt_batch_key_len"
+sqlite_expression = "length(batch_key) = 32"
+mariadb_expression = "octet_length(batch_key) = 32"
+[[relation.check]]
+name = "ck_source_build_discovery_batch_receipt_committed_at_nonneg"
+sqlite_expression = "committed_at >= 0 AND committed_at <= 9223372036854775807"
+mariadb_expression = "committed_at >= 0 AND committed_at <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_build_discovery_batch_receipt_committed__58303e632c77"
+sqlite_expression = "committed_generation >= 0 AND committed_generation <= 9223372036854775807"
+mariadb_expression = "committed_generation >= 0 AND committed_generation <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_build_discovery_batch_receipt_next_proce_9c198d9f58fc"
+sqlite_expression = "next_processed_count >= 0 AND next_processed_count <= 9223372036854775807"
+mariadb_expression = "next_processed_count >= 0 AND next_processed_count <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_build_discovery_batch_receipt_row_count_nonneg"
+sqlite_expression = "row_count >= 0 AND row_count <= 9223372036854775807"
+mariadb_expression = "row_count >= 0 AND row_count <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_build_discovery_batch_receipt_start_generation_nonneg"
+sqlite_expression = "start_generation >= 0 AND start_generation <= 9223372036854775807"
+mariadb_expression = "start_generation >= 0 AND start_generation <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_build_discovery_batch_receipt_start_proc_8531549e7ef5"
+sqlite_expression = "start_processed_count >= 0 AND start_processed_count <= 9223372036854775807"
+mariadb_expression = "start_processed_count >= 0 AND start_processed_count <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_build_discovery_batch_receipt_transition"
+sqlite_expression = "committed_generation = start_generation + 1 AND next_processed_count = start_processed_count + row_count AND (terminal = 0 AND row_count > 0 AND next_state = 'OPEN' OR terminal = 1 AND row_count = 0 AND next_state = 'COMPLETE' AND next_cursor = start_cursor AND next_processed_count = start_processed_count)"
+mariadb_expression = "committed_generation = start_generation + 1 AND next_processed_count = start_processed_count + row_count AND (terminal = 0 AND row_count > 0 AND next_state = 'OPEN' OR terminal = 1 AND row_count = 0 AND next_state = 'COMPLETE' AND next_cursor = start_cursor AND next_processed_count = start_processed_count)"
+
+[[relation]]
+name = "source_build_assembly_checkpoint"
+status = "implemented"
+rationale = "BCNF operational authority or exact durable protocol state for source_build_assembly_checkpoint."
+table = "operational_source_build_assembly_checkpoints"
+primary_key = ["build_id"]
+unique_keys = []
+[[relation.column]]
+attribute = "build_id"
+name = "build_id"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "generation"
+name = "generation"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "cursor_bytes"
+name = "cursor_bytes"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "VARBINARY(2048)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "processed_gallery_count"
+name = "processed_gallery_count"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "processed_file_count"
+name = "processed_file_count"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "processed_byte_count"
+name = "processed_byte_count"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "manifest_chain_sha256"
+name = "manifest_chain_sha256"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "state"
+name = "state"
+sqlite = { type = "TEXT", nullable = false, collation = "BINARY" }
+mariadb = { type = "VARCHAR(48)", nullable = false, collation = "ascii_bin" }
+[[relation.column]]
+attribute = "updated_at"
+name = "updated_at"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.foreign_key]]
+name = "fk_source_build_assembly_checkpoint_1"
+attributes = ["build_id"]
+referenced_relation = "source_build"
+referenced_attributes = ["build_id"]
+[[relation.required_index]]
+name = "ix_source_build_assembly_checkpoint_state"
+attributes = ["state", "updated_at"]
+unique = false
+[[relation.check]]
+name = "ck_source_build_assembly_checkpoint_build_id_len"
+sqlite_expression = "length(build_id) = 16"
+mariadb_expression = "octet_length(build_id) = 16"
+[[relation.check]]
+name = "ck_source_build_assembly_checkpoint_manifest_chain_sha256_len"
+sqlite_expression = "length(manifest_chain_sha256) = 32"
+mariadb_expression = "octet_length(manifest_chain_sha256) = 32"
+[[relation.check]]
+name = "ck_source_build_assembly_checkpoint_updated_at_nonneg"
+sqlite_expression = "updated_at >= 0 AND updated_at <= 9223372036854775807"
+mariadb_expression = "updated_at >= 0 AND updated_at <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_build_assembly_checkpoint_generation_nonneg"
+sqlite_expression = "generation >= 0 AND generation <= 9223372036854775807"
+mariadb_expression = "generation >= 0 AND generation <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_build_assembly_checkpoint_processed_byte_count_nonneg"
+sqlite_expression = "processed_byte_count >= 0 AND processed_byte_count <= 9223372036854775807"
+mariadb_expression = "processed_byte_count >= 0 AND processed_byte_count <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_build_assembly_checkpoint_processed_file_count_nonneg"
+sqlite_expression = "processed_file_count >= 0 AND processed_file_count <= 9223372036854775807"
+mariadb_expression = "processed_file_count >= 0 AND processed_file_count <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_build_assembly_checkpoint_processed_gall_ffbfa56e42e7"
+sqlite_expression = "processed_gallery_count >= 0 AND processed_gallery_count <= 9223372036854775807"
+mariadb_expression = "processed_gallery_count >= 0 AND processed_gallery_count <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_build_assembly_checkpoint_state"
+sqlite_expression = "state IN ('OPEN', 'COMPLETE')"
+mariadb_expression = "state IN ('OPEN', 'COMPLETE')"
+
+[[relation]]
+name = "source_build_assembly_batch_receipt"
+status = "implemented"
+rationale = "BCNF operational authority or exact durable protocol state for source_build_assembly_batch_receipt."
+table = "operational_source_build_assembly_batch_receipts"
+primary_key = ["build_id", "batch_key"]
+unique_keys = [["build_id", "start_generation"]]
+[[relation.column]]
+attribute = "build_id"
+name = "build_id"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "batch_key"
+name = "batch_key"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "start_generation"
+name = "start_generation"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "start_cursor"
+name = "start_cursor"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "VARBINARY(2048)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "start_gallery_count"
+name = "start_gallery_count"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "start_file_count"
+name = "start_file_count"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "start_byte_count"
+name = "start_byte_count"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "start_manifest_chain_sha256"
+name = "start_manifest_chain_sha256"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "next_cursor"
+name = "next_cursor"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "VARBINARY(2048)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "next_gallery_count"
+name = "next_gallery_count"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "next_file_count"
+name = "next_file_count"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "next_byte_count"
+name = "next_byte_count"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "next_manifest_chain_sha256"
+name = "next_manifest_chain_sha256"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "next_state"
+name = "next_state"
+sqlite = { type = "TEXT", nullable = false, collation = "BINARY" }
+mariadb = { type = "VARCHAR(48)", nullable = false, collation = "ascii_bin" }
+[[relation.column]]
+attribute = "row_count"
+name = "row_count"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "terminal"
+name = "terminal"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "SMALLINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "committed_generation"
+name = "committed_generation"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "committed_at"
+name = "committed_at"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.foreign_key]]
+name = "fk_source_build_assembly_batch_receipt_1"
+attributes = ["build_id"]
+referenced_relation = "source_build_assembly_checkpoint"
+referenced_attributes = ["build_id"]
+[[relation.check]]
+name = "ck_source_build_assembly_batch_receipt_build_id_len"
+sqlite_expression = "length(build_id) = 16"
+mariadb_expression = "octet_length(build_id) = 16"
+[[relation.check]]
+name = "ck_source_build_assembly_batch_receipt_batch_key_len"
+sqlite_expression = "length(batch_key) = 32"
+mariadb_expression = "octet_length(batch_key) = 32"
+[[relation.check]]
+name = "ck_source_build_assembly_batch_receipt_next_manife_19e10a215e2c"
+sqlite_expression = "length(next_manifest_chain_sha256) = 32"
+mariadb_expression = "octet_length(next_manifest_chain_sha256) = 32"
+[[relation.check]]
+name = "ck_source_build_assembly_batch_receipt_start_manif_755fc24a4a2b"
+sqlite_expression = "length(start_manifest_chain_sha256) = 32"
+mariadb_expression = "octet_length(start_manifest_chain_sha256) = 32"
+[[relation.check]]
+name = "ck_source_build_assembly_batch_receipt_committed_at_nonneg"
+sqlite_expression = "committed_at >= 0 AND committed_at <= 9223372036854775807"
+mariadb_expression = "committed_at >= 0 AND committed_at <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_build_assembly_batch_receipt_committed_g_c40aa71c58b3"
+sqlite_expression = "committed_generation >= 0 AND committed_generation <= 9223372036854775807"
+mariadb_expression = "committed_generation >= 0 AND committed_generation <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_build_assembly_batch_receipt_next_byte_count_nonneg"
+sqlite_expression = "next_byte_count >= 0 AND next_byte_count <= 9223372036854775807"
+mariadb_expression = "next_byte_count >= 0 AND next_byte_count <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_build_assembly_batch_receipt_next_file_count_nonneg"
+sqlite_expression = "next_file_count >= 0 AND next_file_count <= 9223372036854775807"
+mariadb_expression = "next_file_count >= 0 AND next_file_count <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_build_assembly_batch_receipt_next_galler_c6c1a41184a8"
+sqlite_expression = "next_gallery_count >= 0 AND next_gallery_count <= 9223372036854775807"
+mariadb_expression = "next_gallery_count >= 0 AND next_gallery_count <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_build_assembly_batch_receipt_row_count_nonneg"
+sqlite_expression = "row_count >= 0 AND row_count <= 9223372036854775807"
+mariadb_expression = "row_count >= 0 AND row_count <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_build_assembly_batch_receipt_start_byte_count_nonneg"
+sqlite_expression = "start_byte_count >= 0 AND start_byte_count <= 9223372036854775807"
+mariadb_expression = "start_byte_count >= 0 AND start_byte_count <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_build_assembly_batch_receipt_start_file_count_nonneg"
+sqlite_expression = "start_file_count >= 0 AND start_file_count <= 9223372036854775807"
+mariadb_expression = "start_file_count >= 0 AND start_file_count <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_build_assembly_batch_receipt_start_galle_39733c9a17b0"
+sqlite_expression = "start_gallery_count >= 0 AND start_gallery_count <= 9223372036854775807"
+mariadb_expression = "start_gallery_count >= 0 AND start_gallery_count <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_build_assembly_batch_receipt_start_generation_nonneg"
+sqlite_expression = "start_generation >= 0 AND start_generation <= 9223372036854775807"
+mariadb_expression = "start_generation >= 0 AND start_generation <= 9223372036854775807"
+[[relation.check]]
+name = "ck_source_build_assembly_batch_receipt_transition"
+sqlite_expression = "committed_generation = start_generation + 1 AND next_gallery_count = start_gallery_count + row_count AND next_file_count >= start_file_count AND next_byte_count >= start_byte_count AND (terminal = 0 AND row_count > 0 AND next_state = 'OPEN' OR terminal = 1 AND row_count = 0 AND next_state = 'COMPLETE' AND next_cursor = start_cursor AND next_gallery_count = start_gallery_count AND next_file_count = start_file_count AND next_byte_count = start_byte_count AND next_manifest_chain_sha256 = start_manifest_chain_sha256)"
+mariadb_expression = "committed_generation = start_generation + 1 AND next_gallery_count = start_gallery_count + row_count AND next_file_count >= start_file_count AND next_byte_count >= start_byte_count AND (terminal = 0 AND row_count > 0 AND next_state = 'OPEN' OR terminal = 1 AND row_count = 0 AND next_state = 'COMPLETE' AND next_cursor = start_cursor AND next_gallery_count = start_gallery_count AND next_file_count = start_file_count AND next_byte_count = start_byte_count AND next_manifest_chain_sha256 = start_manifest_chain_sha256)"
 
 [[relation]]
 name = "maintenance_gate_generation"
@@ -2793,6 +3678,11 @@ name = "regular_count"
 sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
 mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
 [[relation.column]]
+attribute = "processed_byte_count"
+name = "processed_byte_count"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
 attribute = "state"
 name = "state"
 sqlite = { type = "TEXT", nullable = false, collation = "BINARY" }
@@ -2828,6 +3718,10 @@ name = "ck_gallery_observation_staging_checkpoint_level_nonneg"
 sqlite_expression = "level >= 0 AND level <= 9223372036854775807"
 mariadb_expression = "level >= 0 AND level <= 9223372036854775807"
 [[relation.check]]
+name = "ck_gallery_observation_staging_checkpoint_processe_fe9ec35c9dab"
+sqlite_expression = "processed_byte_count >= 0 AND processed_byte_count <= 9223372036854775807"
+mariadb_expression = "processed_byte_count >= 0 AND processed_byte_count <= 9223372036854775807"
+[[relation.check]]
 name = "ck_gallery_observation_staging_checkpoint_regular_count_nonneg"
 sqlite_expression = "regular_count >= 0 AND regular_count <= 9223372036854775807"
 mariadb_expression = "regular_count >= 0 AND regular_count <= 9223372036854775807"
@@ -2847,6 +3741,10 @@ mariadb_expression = "state IN ('OPEN', 'COMPLETE')"
 name = "ck_gallery_observation_staging_checkpoint_regular_count"
 sqlite_expression = "regular_count <= cursor AND (component = X'4449524543544F5259' AND level = 0 OR regular_count = 0)"
 mariadb_expression = "regular_count <= `cursor` AND (component = X'4449524543544F5259' AND level = 0 OR regular_count = 0)"
+[[relation.check]]
+name = "ck_gallery_observation_staging_checkpoint_byte_count"
+sqlite_expression = "(component = X'46494C45' AND level = 0 OR processed_byte_count = 0)"
+mariadb_expression = "(component = X'46494C45' AND level = 0 OR processed_byte_count = 0)"
 
 [[relation]]
 name = "gallery_observation_staging_request"
@@ -3125,6 +4023,16 @@ name = "request_sha256"
 sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
 mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" }
 [[relation.column]]
+attribute = "start_processed_byte_count"
+name = "start_processed_byte_count"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "next_processed_byte_count"
+name = "next_processed_byte_count"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
 attribute = "committed_at"
 name = "committed_at"
 sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
@@ -3155,6 +4063,18 @@ mariadb_expression = "committed_at >= 0 AND committed_at <= 9223372036854775807"
 name = "ck_gallery_observation_staging_receipt_level_nonneg"
 sqlite_expression = "level >= 0 AND level <= 9223372036854775807"
 mariadb_expression = "level >= 0 AND level <= 9223372036854775807"
+[[relation.check]]
+name = "ck_gallery_observation_staging_receipt_next_proces_fac25b94bdee"
+sqlite_expression = "next_processed_byte_count >= 0 AND next_processed_byte_count <= 9223372036854775807"
+mariadb_expression = "next_processed_byte_count >= 0 AND next_processed_byte_count <= 9223372036854775807"
+[[relation.check]]
+name = "ck_gallery_observation_staging_receipt_start_proce_11e606b92e35"
+sqlite_expression = "start_processed_byte_count >= 0 AND start_processed_byte_count <= 9223372036854775807"
+mariadb_expression = "start_processed_byte_count >= 0 AND start_processed_byte_count <= 9223372036854775807"
+[[relation.check]]
+name = "ck_gallery_observation_staging_receipt_byte_count"
+sqlite_expression = "(component = X'46494C45' AND level = 0 AND next_processed_byte_count >= start_processed_byte_count OR (component != X'46494C45' OR level != 0) AND start_processed_byte_count = 0 AND next_processed_byte_count = 0)"
+mariadb_expression = "(component = X'46494C45' AND level = 0 AND next_processed_byte_count >= start_processed_byte_count OR (component != X'46494C45' OR level != 0) AND start_processed_byte_count = 0 AND next_processed_byte_count = 0)"
 
 [[relation]]
 name = "gallery_observation_staging_frontier"
@@ -3542,7 +4462,7 @@ mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" }
 [[relation.foreign_key]]
 name = "fk_canonical_value_upload_1"
 attributes = ["generation"]
-referenced_relation = "ingest_generation_owner"
+referenced_relation = "ingest_generation"
 referenced_attributes = ["generation"]
 [[relation.foreign_key]]
 name = "fk_canonical_value_upload_2"
@@ -3601,6 +4521,80 @@ mariadb_expression = "requested_at >= 0 AND requested_at <= 9223372036854775807"
 name = "ck_download_request_gid_nonneg"
 sqlite_expression = "gid >= 0 AND gid <= 9223372036854775807"
 mariadb_expression = "gid >= 0 AND gid <= 9223372036854775807"
+
+[[relation]]
+name = "deletion_request_generation"
+status = "implemented"
+rationale = "BCNF operational authority or exact durable protocol state for deletion_request_generation."
+table = "operational_deletion_request_generations"
+primary_key = ["generation"]
+unique_keys = []
+[[relation.column]]
+attribute = "generation"
+name = "generation"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "allocated_at"
+name = "allocated_at"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.check]]
+name = "ck_deletion_request_generation_allocated_at_nonneg"
+sqlite_expression = "allocated_at >= 0 AND allocated_at <= 9223372036854775807"
+mariadb_expression = "allocated_at >= 0 AND allocated_at <= 9223372036854775807"
+[[relation.check]]
+name = "ck_deletion_request_generation_generation_nonneg"
+sqlite_expression = "generation >= 0 AND generation <= 9223372036854775807"
+mariadb_expression = "generation >= 0 AND generation <= 9223372036854775807"
+
+[[relation]]
+name = "deletion_request_generation_head"
+status = "implemented"
+rationale = "BCNF operational authority or exact durable protocol state for deletion_request_generation_head."
+table = "operational_deletion_request_generation_heads"
+primary_key = ["singleton_id"]
+unique_keys = []
+[[relation.column]]
+attribute = "singleton_id"
+name = "singleton_id"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "SMALLINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "current_generation"
+name = "current_generation"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "updated_at"
+name = "updated_at"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.foreign_key]]
+name = "fk_deletion_request_generation_head_1"
+attributes = ["current_generation"]
+referenced_relation = "deletion_request_generation"
+referenced_attributes = ["generation"]
+[[relation.required_index]]
+name = "ix_deletion_request_generation_head_fk_1"
+attributes = ["current_generation"]
+unique = false
+[[relation.check]]
+name = "ck_deletion_request_generation_head_singleton"
+sqlite_expression = "singleton_id = 1"
+mariadb_expression = "singleton_id = 1"
+[[relation.check]]
+name = "ck_deletion_request_generation_head_updated_at_nonneg"
+sqlite_expression = "updated_at >= 0 AND updated_at <= 9223372036854775807"
+mariadb_expression = "updated_at >= 0 AND updated_at <= 9223372036854775807"
+[[relation.check]]
+name = "ck_deletion_request_generation_head_current_generation_nonneg"
+sqlite_expression = "current_generation >= 0 AND current_generation <= 9223372036854775807"
+mariadb_expression = "current_generation >= 0 AND current_generation <= 9223372036854775807"
+[[relation.check]]
+name = "ck_deletion_request_generation_head_singleton_id_portable"
+sqlite_expression = "singleton_id >= 0 AND singleton_id <= 9223372036854775807"
+mariadb_expression = "singleton_id >= 0 AND singleton_id <= 9223372036854775807"
 
 [[relation]]
 name = "deletion_request_attempt"
@@ -3815,6 +4809,32 @@ sqlite_expression = "operational_schema_version >= 0 AND operational_schema_vers
 mariadb_expression = "operational_schema_version >= 0 AND operational_schema_version <= 9223372036854775807"
 
 [[relation]]
+name = "operational_event_stream"
+status = "implemented"
+rationale = "BCNF operational authority or exact durable protocol state for operational_event_stream."
+table = "operational_operational_event_streams"
+primary_key = ["preparation_id"]
+unique_keys = []
+[[relation.column]]
+attribute = "preparation_id"
+name = "preparation_id"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "created_at"
+name = "created_at"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.check]]
+name = "ck_operational_event_stream_preparation_id_len"
+sqlite_expression = "length(preparation_id) = 16"
+mariadb_expression = "octet_length(preparation_id) = 16"
+[[relation.check]]
+name = "ck_operational_event_stream_created_at_nonneg"
+sqlite_expression = "created_at >= 0 AND created_at <= 9223372036854775807"
+mariadb_expression = "created_at >= 0 AND created_at <= 9223372036854775807"
+
+[[relation]]
 name = "operational_preparation"
 status = "implemented"
 rationale = "BCNF operational authority or exact durable protocol state for operational_preparation."
@@ -3858,17 +4878,31 @@ sqlite = { type = "INTEGER", nullable = true, collation = "NONE" }
 mariadb = { type = "BIGINT UNSIGNED", nullable = true, collation = "NONE" }
 [[relation.foreign_key]]
 name = "fk_operational_preparation_1"
+attributes = ["preparation_id"]
+referenced_relation = "operational_event_stream"
+referenced_attributes = ["preparation_id"]
+[[relation.foreign_key]]
+name = "fk_operational_preparation_2"
 attributes = ["build_id"]
 referenced_relation = "source_build"
 referenced_attributes = ["build_id"]
 [[relation.foreign_key]]
-name = "fk_operational_preparation_2"
+name = "fk_operational_preparation_3"
 attributes = ["operational_policy_id"]
 referenced_relation = "operational_policy"
 referenced_attributes = ["operational_policy_id"]
+[[relation.foreign_key]]
+name = "fk_operational_preparation_4"
+attributes = ["deletion_request_generation"]
+referenced_relation = "deletion_request_generation"
+referenced_attributes = ["generation"]
 [[relation.required_index]]
-name = "ix_operational_preparation_fk_2"
+name = "ix_operational_preparation_fk_3"
 attributes = ["operational_policy_id"]
+unique = false
+[[relation.required_index]]
+name = "ix_operational_preparation_fk_4"
+attributes = ["deletion_request_generation"]
 unique = false
 [[relation.check]]
 name = "ck_operational_preparation_build_id_len"
@@ -3894,6 +4928,10 @@ mariadb_expression = "deletion_request_generation >= 0 AND deletion_request_gene
 name = "ck_operational_preparation_operational_policy_id_nonneg"
 sqlite_expression = "operational_policy_id >= 0 AND operational_policy_id <= 9223372036854775807"
 mariadb_expression = "operational_policy_id >= 0 AND operational_policy_id <= 9223372036854775807"
+[[relation.check]]
+name = "ck_operational_preparation_state_time"
+sqlite_expression = "state IN ('OPEN', 'COMPLETE', 'FAILED', 'ABANDONED') AND (state = 'OPEN' AND completed_at IS NULL OR state IN ('COMPLETE', 'FAILED', 'ABANDONED') AND completed_at IS NOT NULL AND completed_at >= prepared_at)"
+mariadb_expression = "state IN ('OPEN', 'COMPLETE', 'FAILED', 'ABANDONED') AND (state = 'OPEN' AND completed_at IS NULL OR state IN ('COMPLETE', 'FAILED', 'ABANDONED') AND completed_at IS NOT NULL AND completed_at >= prepared_at)"
 
 [[relation]]
 name = "operational_preparation_checkpoint"
@@ -4068,6 +5106,105 @@ sqlite_expression = "row_count >= 0 AND row_count <= 9223372036854775807"
 mariadb_expression = "row_count >= 0 AND row_count <= 9223372036854775807"
 
 [[relation]]
+name = "operational_preparation_effect_seal"
+status = "implemented"
+rationale = "BCNF operational authority or exact durable protocol state for operational_preparation_effect_seal."
+table = "operational_operational_preparation_effect_seals"
+primary_key = ["preparation_id"]
+unique_keys = []
+[[relation.column]]
+attribute = "preparation_id"
+name = "preparation_id"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "event_count"
+name = "event_count"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "final_chain_sha256"
+name = "final_chain_sha256"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "sealed_at"
+name = "sealed_at"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.foreign_key]]
+name = "fk_operational_preparation_effect_seal_1"
+attributes = ["preparation_id"]
+referenced_relation = "operational_event_stream"
+referenced_attributes = ["preparation_id"]
+[[relation.check]]
+name = "ck_operational_preparation_effect_seal_preparation_id_len"
+sqlite_expression = "length(preparation_id) = 16"
+mariadb_expression = "octet_length(preparation_id) = 16"
+[[relation.check]]
+name = "ck_operational_preparation_effect_seal_final_chain_sha256_len"
+sqlite_expression = "length(final_chain_sha256) = 32"
+mariadb_expression = "octet_length(final_chain_sha256) = 32"
+[[relation.check]]
+name = "ck_operational_preparation_effect_seal_sealed_at_nonneg"
+sqlite_expression = "sealed_at >= 0 AND sealed_at <= 9223372036854775807"
+mariadb_expression = "sealed_at >= 0 AND sealed_at <= 9223372036854775807"
+[[relation.check]]
+name = "ck_operational_preparation_effect_seal_event_count_nonneg"
+sqlite_expression = "event_count >= 0 AND event_count <= 9223372036854775807"
+mariadb_expression = "event_count >= 0 AND event_count <= 9223372036854775807"
+
+[[relation]]
+name = "publication_candidate_preparation"
+status = "implemented"
+rationale = "BCNF operational authority or exact durable protocol state for publication_candidate_preparation."
+table = "operational_publication_candidate_preparations"
+primary_key = ["candidate_id"]
+unique_keys = [["preparation_id"]]
+[[relation.column]]
+attribute = "candidate_id"
+name = "candidate_id"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "preparation_id"
+name = "preparation_id"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" }
+[[relation.column]]
+attribute = "bound_at"
+name = "bound_at"
+sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
+mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+[[relation.foreign_key]]
+name = "fk_publication_candidate_preparation_1"
+attributes = ["candidate_id"]
+referenced_relation = "publication_candidate"
+referenced_attributes = ["candidate_id"]
+[[relation.foreign_key]]
+name = "fk_publication_candidate_preparation_2"
+attributes = ["preparation_id"]
+referenced_relation = "operational_preparation"
+referenced_attributes = ["preparation_id"]
+[[relation.foreign_key]]
+name = "fk_publication_candidate_preparation_3"
+attributes = ["preparation_id"]
+referenced_relation = "operational_preparation_effect_seal"
+referenced_attributes = ["preparation_id"]
+[[relation.check]]
+name = "ck_publication_candidate_preparation_candidate_id_len"
+sqlite_expression = "length(candidate_id) = 16"
+mariadb_expression = "octet_length(candidate_id) = 16"
+[[relation.check]]
+name = "ck_publication_candidate_preparation_preparation_id_len"
+sqlite_expression = "length(preparation_id) = 16"
+mariadb_expression = "octet_length(preparation_id) = 16"
+[[relation.check]]
+name = "ck_publication_candidate_preparation_bound_at_nonneg"
+sqlite_expression = "bound_at >= 0 AND bound_at <= 9223372036854775807"
+mariadb_expression = "bound_at >= 0 AND bound_at <= 9223372036854775807"
+
+[[relation]]
 name = "operational_activation"
 status = "implemented"
 rationale = "BCNF operational authority or exact durable protocol state for operational_activation."
@@ -4101,11 +5238,16 @@ referenced_relation = "source_revision"
 referenced_attributes = ["source_revision"]
 [[relation.foreign_key]]
 name = "fk_operational_activation_2"
+attributes = ["preparation_id"]
+referenced_relation = "operational_preparation_effect_seal"
+referenced_attributes = ["preparation_id"]
+[[relation.foreign_key]]
+name = "fk_operational_activation_3"
 attributes = ["operational_policy_id"]
 referenced_relation = "operational_policy"
 referenced_attributes = ["operational_policy_id"]
 [[relation.required_index]]
-name = "ix_operational_activation_fk_2"
+name = "ix_operational_activation_fk_3"
 attributes = ["operational_policy_id"]
 unique = false
 [[relation.check]]
@@ -4131,17 +5273,17 @@ status = "implemented"
 rationale = "BCNF operational authority or exact durable protocol state for operational_event."
 table = "operational_operational_events"
 primary_key = ["event_id"]
-unique_keys = [["source_revision", "sequence_no"]]
+unique_keys = [["preparation_id", "sequence_no"]]
 [[relation.column]]
 attribute = "event_id"
 name = "event_id"
 sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
 mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" }
 [[relation.column]]
-attribute = "source_revision"
-name = "source_revision"
-sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
-mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+attribute = "preparation_id"
+name = "preparation_id"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" }
 [[relation.column]]
 attribute = "sequence_no"
 name = "sequence_no"
@@ -4164,17 +5306,17 @@ sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
 mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
 [[relation.foreign_key]]
 name = "fk_operational_event_1"
-attributes = ["source_revision"]
-referenced_relation = "operational_activation"
-referenced_attributes = ["source_revision"]
-[[relation.required_index]]
-name = "ix_operational_event_revision"
-attributes = ["source_revision", "sequence_no"]
-unique = false
+attributes = ["preparation_id"]
+referenced_relation = "operational_event_stream"
+referenced_attributes = ["preparation_id"]
 [[relation.check]]
 name = "ck_operational_event_event_id_len"
 sqlite_expression = "length(event_id) = 16"
 mariadb_expression = "octet_length(event_id) = 16"
+[[relation.check]]
+name = "ck_operational_event_preparation_id_len"
+sqlite_expression = "length(preparation_id) = 16"
+mariadb_expression = "octet_length(preparation_id) = 16"
 [[relation.check]]
 name = "ck_operational_event_event_sha256_len"
 sqlite_expression = "length(event_sha256) = 32"
@@ -4187,10 +5329,6 @@ mariadb_expression = "created_at >= 0 AND created_at <= 9223372036854775807"
 name = "ck_operational_event_sequence_no_nonneg"
 sqlite_expression = "sequence_no >= 0 AND sequence_no <= 9223372036854775807"
 mariadb_expression = "sequence_no >= 0 AND sequence_no <= 9223372036854775807"
-[[relation.check]]
-name = "ck_operational_event_source_revision_nonneg"
-sqlite_expression = "source_revision >= 0 AND source_revision <= 9223372036854775807"
-mariadb_expression = "source_revision >= 0 AND source_revision <= 9223372036854775807"
 [[relation.check]]
 name = "ck_operational_event_type"
 sqlite_expression = "event_type IN ('REMOVED_GID', 'DELETION_CONSUMPTION')"
@@ -4357,7 +5495,7 @@ name = "operational_event_ack_head"
 status = "implemented"
 rationale = "BCNF operational authority or exact durable protocol state for operational_event_ack_head."
 table = "operational_operational_event_ack_heads"
-primary_key = ["consumer_id", "source_revision"]
+primary_key = ["consumer_id", "preparation_id"]
 unique_keys = []
 [[relation.column]]
 attribute = "consumer_id"
@@ -4365,10 +5503,10 @@ name = "consumer_id"
 sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
 mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
 [[relation.column]]
-attribute = "source_revision"
-name = "source_revision"
-sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }
-mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
+attribute = "preparation_id"
+name = "preparation_id"
+sqlite = { type = "BLOB", nullable = false, collation = "NONE" }
+mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" }
 [[relation.column]]
 attribute = "through_sequence_no"
 name = "through_sequence_no"
@@ -4386,13 +5524,17 @@ referenced_relation = "operational_consumer"
 referenced_attributes = ["consumer_id"]
 [[relation.foreign_key]]
 name = "fk_operational_event_ack_head_2"
-attributes = ["source_revision", "through_sequence_no"]
+attributes = ["preparation_id", "through_sequence_no"]
 referenced_relation = "operational_event"
-referenced_attributes = ["source_revision", "sequence_no"]
+referenced_attributes = ["preparation_id", "sequence_no"]
 [[relation.required_index]]
 name = "ix_operational_event_ack_head_fk_2"
-attributes = ["source_revision", "through_sequence_no"]
+attributes = ["preparation_id", "through_sequence_no"]
 unique = false
+[[relation.check]]
+name = "ck_operational_event_ack_head_preparation_id_len"
+sqlite_expression = "length(preparation_id) = 16"
+mariadb_expression = "octet_length(preparation_id) = 16"
 [[relation.check]]
 name = "ck_operational_event_ack_head_updated_at_nonneg"
 sqlite_expression = "updated_at >= 0 AND updated_at <= 9223372036854775807"
@@ -4401,10 +5543,6 @@ mariadb_expression = "updated_at >= 0 AND updated_at <= 9223372036854775807"
 name = "ck_operational_event_ack_head_consumer_id_nonneg"
 sqlite_expression = "consumer_id >= 0 AND consumer_id <= 9223372036854775807"
 mariadb_expression = "consumer_id >= 0 AND consumer_id <= 9223372036854775807"
-[[relation.check]]
-name = "ck_operational_event_ack_head_source_revision_nonneg"
-sqlite_expression = "source_revision >= 0 AND source_revision <= 9223372036854775807"
-mariadb_expression = "source_revision >= 0 AND source_revision <= 9223372036854775807"
 [[relation.check]]
 name = "ck_operational_event_ack_head_through_sequence_no_nonneg"
 sqlite_expression = "through_sequence_no >= 0 AND through_sequence_no <= 9223372036854775807"
@@ -4665,8 +5803,8 @@ sqlite_expression = "phase_order >= 0 AND phase_order <= 9223372036854775807"
 mariadb_expression = "phase_order >= 0 AND phase_order <= 9223372036854775807"
 [[relation.check]]
 name = "ck_cleanup_phase_phase_registry"
-sqlite_expression = "phase IN ('SB_CANONICAL_UPLOAD', 'SB_GALLERY', 'SB_SATELLITES', 'SB_GENERATION', 'SB_ROOT', 'AR_BATCH', 'AR_SEALS', 'AR_OVERLAY', 'AR_EVIDENCE', 'AR_CHECKPOINT', 'AR_ANCESTRY', 'AR_LINKS', 'AR_ROOT', 'PC_DELTAS', 'PC_INPUT', 'PC_SELECTION', 'PC_BATCH', 'PC_CHECKPOINT', 'PC_BASES', 'PC_ROOT', 'OP_BATCH', 'OP_CHECKPOINT', 'OP_ROOT', 'GO_STAGING_RECEIPT_FRONTIER', 'GO_STAGING_PAGE_ASSOCIATION', 'GO_STAGING_REQUEST_DESCRIPTOR', 'GO_STAGING_REQUEST_IDENTITY', 'GO_STAGING_CHECKPOINT', 'GO_STAGING_CLAIM', 'GO_STAGING_ROOT', 'GO_FACTS', 'GO_FILES', 'GO_DESCRIPTOR', 'GO_ROOT', 'GOS_RECEIPT_FRONTIER', 'GOS_PAGE_ASSOCIATION', 'GOS_REQUEST_DESCRIPTOR', 'GOS_REQUEST_IDENTITY', 'GOS_CHECKPOINT', 'GOS_CLAIM', 'GOS_ROOT', 'AB_LOCATIONS', 'AB_IDENTITIES', 'AB_ROOT', 'CV_DICTIONARY', 'CV_SEMANTIC_LINK', 'CV_IDENTITY', 'CV_PARENT_DESCRIPTOR', 'CV_PAGE', 'CV_ROOT', 'CB_ROOT', 'GOP_OUTGOING_CHILD', 'GOP_BOUNDS', 'GOP_DESCRIPTOR', 'GOP_ROOT', 'FN_ROOT', 'PI_ROOT', 'GI_OBSERVATION_ALLOCATOR', 'GI_ROOT', 'CVU_ROOT', 'HC_FILE', 'HC_ROOT')"
-mariadb_expression = "phase IN ('SB_CANONICAL_UPLOAD', 'SB_GALLERY', 'SB_SATELLITES', 'SB_GENERATION', 'SB_ROOT', 'AR_BATCH', 'AR_SEALS', 'AR_OVERLAY', 'AR_EVIDENCE', 'AR_CHECKPOINT', 'AR_ANCESTRY', 'AR_LINKS', 'AR_ROOT', 'PC_DELTAS', 'PC_INPUT', 'PC_SELECTION', 'PC_BATCH', 'PC_CHECKPOINT', 'PC_BASES', 'PC_ROOT', 'OP_BATCH', 'OP_CHECKPOINT', 'OP_ROOT', 'GO_STAGING_RECEIPT_FRONTIER', 'GO_STAGING_PAGE_ASSOCIATION', 'GO_STAGING_REQUEST_DESCRIPTOR', 'GO_STAGING_REQUEST_IDENTITY', 'GO_STAGING_CHECKPOINT', 'GO_STAGING_CLAIM', 'GO_STAGING_ROOT', 'GO_FACTS', 'GO_FILES', 'GO_DESCRIPTOR', 'GO_ROOT', 'GOS_RECEIPT_FRONTIER', 'GOS_PAGE_ASSOCIATION', 'GOS_REQUEST_DESCRIPTOR', 'GOS_REQUEST_IDENTITY', 'GOS_CHECKPOINT', 'GOS_CLAIM', 'GOS_ROOT', 'AB_LOCATIONS', 'AB_IDENTITIES', 'AB_ROOT', 'CV_DICTIONARY', 'CV_SEMANTIC_LINK', 'CV_IDENTITY', 'CV_PARENT_DESCRIPTOR', 'CV_PAGE', 'CV_ROOT', 'CB_ROOT', 'GOP_OUTGOING_CHILD', 'GOP_BOUNDS', 'GOP_DESCRIPTOR', 'GOP_ROOT', 'FN_ROOT', 'PI_ROOT', 'GI_OBSERVATION_ALLOCATOR', 'GI_ROOT', 'CVU_ROOT', 'HC_FILE', 'HC_ROOT')"
+sqlite_expression = "phase IN ('SB_CANONICAL_UPLOAD', 'SB_GALLERY', 'SB_SATELLITES', 'SB_GENERATION', 'SB_ROOT', 'AR_BATCH', 'AR_SEALS', 'AR_OVERLAY', 'AR_EVIDENCE', 'AR_CHECKPOINT', 'AR_ANCESTRY', 'AR_LINKS', 'AR_ROOT', 'PC_DELTAS', 'PC_INPUT', 'PC_SELECTION', 'PC_BATCH', 'PC_CHECKPOINT', 'PC_BASES', 'PC_ROOT', 'OP_BATCH', 'OP_CHECKPOINT', 'OP_SUBTYPE', 'OP_EVENT', 'OP_SEAL', 'OP_ROOT', 'GO_STAGING_RECEIPT_FRONTIER', 'GO_STAGING_PAGE_ASSOCIATION', 'GO_STAGING_REQUEST_DESCRIPTOR', 'GO_STAGING_REQUEST_IDENTITY', 'GO_STAGING_CHECKPOINT', 'GO_STAGING_CLAIM', 'GO_STAGING_ROOT', 'GO_FACTS', 'GO_FILES', 'GO_DESCRIPTOR', 'GO_ROOT', 'GOS_RECEIPT_FRONTIER', 'GOS_PAGE_ASSOCIATION', 'GOS_REQUEST_DESCRIPTOR', 'GOS_REQUEST_IDENTITY', 'GOS_CHECKPOINT', 'GOS_CLAIM', 'GOS_ROOT', 'AB_LOCATIONS', 'AB_IDENTITIES', 'AB_ROOT', 'CV_DICTIONARY', 'CV_SEMANTIC_LINK', 'CV_IDENTITY', 'CV_PARENT_DESCRIPTOR', 'CV_PAGE', 'CV_ROOT', 'CB_ROOT', 'GOP_OUTGOING_CHILD', 'GOP_BOUNDS', 'GOP_DESCRIPTOR', 'GOP_ROOT', 'FN_ROOT', 'PI_ROOT', 'GI_OBSERVATION_ALLOCATOR', 'GI_ROOT', 'CVU_ROOT', 'HC_FILE', 'HC_ROOT')"
+mariadb_expression = "phase IN ('SB_CANONICAL_UPLOAD', 'SB_GALLERY', 'SB_SATELLITES', 'SB_GENERATION', 'SB_ROOT', 'AR_BATCH', 'AR_SEALS', 'AR_OVERLAY', 'AR_EVIDENCE', 'AR_CHECKPOINT', 'AR_ANCESTRY', 'AR_LINKS', 'AR_ROOT', 'PC_DELTAS', 'PC_INPUT', 'PC_SELECTION', 'PC_BATCH', 'PC_CHECKPOINT', 'PC_BASES', 'PC_ROOT', 'OP_BATCH', 'OP_CHECKPOINT', 'OP_SUBTYPE', 'OP_EVENT', 'OP_SEAL', 'OP_ROOT', 'GO_STAGING_RECEIPT_FRONTIER', 'GO_STAGING_PAGE_ASSOCIATION', 'GO_STAGING_REQUEST_DESCRIPTOR', 'GO_STAGING_REQUEST_IDENTITY', 'GO_STAGING_CHECKPOINT', 'GO_STAGING_CLAIM', 'GO_STAGING_ROOT', 'GO_FACTS', 'GO_FILES', 'GO_DESCRIPTOR', 'GO_ROOT', 'GOS_RECEIPT_FRONTIER', 'GOS_PAGE_ASSOCIATION', 'GOS_REQUEST_DESCRIPTOR', 'GOS_REQUEST_IDENTITY', 'GOS_CHECKPOINT', 'GOS_CLAIM', 'GOS_ROOT', 'AB_LOCATIONS', 'AB_IDENTITIES', 'AB_ROOT', 'CV_DICTIONARY', 'CV_SEMANTIC_LINK', 'CV_IDENTITY', 'CV_PARENT_DESCRIPTOR', 'CV_PAGE', 'CV_ROOT', 'CB_ROOT', 'GOP_OUTGOING_CHILD', 'GOP_BOUNDS', 'GOP_DESCRIPTOR', 'GOP_ROOT', 'FN_ROOT', 'PI_ROOT', 'GI_OBSERVATION_ALLOCATOR', 'GI_ROOT', 'CVU_ROOT', 'HC_FILE', 'HC_ROOT')"
 [[relation.check]]
 name = "ck_cleanup_phase_order_positive"
 sqlite_expression = "phase_order > 0"

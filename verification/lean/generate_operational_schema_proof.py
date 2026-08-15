@@ -212,9 +212,121 @@ keys and foreign keys executable.  They are unbounded over their type and list
 parameters; the concrete SQL implementations must refine the atomic predicates.
 -/
 
+inductive DownloadHandoffKind where
+  | downloader
+  | expiredTakeover
+deriving DecidableEq
+
+structure DownloadAuthority (Token : Type) where
+  generation : Nat
+  ownerToken : Token
+  leaseExpiresAt : Nat
+
+structure DownloadHandoff (Token : Type) where
+  generation : Nat
+  ownerToken : Token
+  kind : DownloadHandoffKind
+  requestedAt : Nat
+
+def DownloadHandoffAuthorized
+    (now : Nat) (authority : DownloadAuthority Token)
+    (handoff : DownloadHandoff Token) : Prop :=
+  handoff.generation = authority.generation ∧
+    handoff.ownerToken = authority.ownerToken ∧
+    ((handoff.kind = .downloader ∧ now < authority.leaseExpiresAt) ∨
+      (handoff.kind = .expiredTakeover ∧ authority.leaseExpiresAt ≤ now))
+
+def MutableDownloadAuthorityRemoved
+    (owner : Option Token) (lease : Option Nat) : Prop :=
+  owner = none ∧ lease = none
+
+def DownloadHandoffCommit
+    (now : Nat) (authority : DownloadAuthority Token)
+    (handoff : DownloadHandoff Token)
+    (remainingOwner : Option Token) (remainingLease : Option Nat) : Prop :=
+  DownloadHandoffAuthorized now authority handoff ∧
+    MutableDownloadAuthorityRemoved remainingOwner remainingLease
+
+theorem committed_download_handoff_removes_owner_and_lease
+    (commit : DownloadHandoffCommit now authority handoff owner lease) :
+    owner = none ∧ lease = none :=
+  commit.2
+
+theorem live_downloader_handoff_requires_exact_capability
+    (authorized : DownloadHandoffAuthorized now authority handoff) :
+    handoff.ownerToken = authority.ownerToken :=
+  authorized.2.1
+
+structure DownloadIngestConsumption where
+  downloadGeneration : Nat
+  ingestGeneration : Nat
+
+def DownloadConsumptionOneToOne
+    (consumptions : List DownloadIngestConsumption) : Prop :=
+  (∀ first second, first ∈ consumptions → second ∈ consumptions →
+    first.downloadGeneration = second.downloadGeneration → first = second) ∧
+  (∀ first second, first ∈ consumptions → second ∈ consumptions →
+    first.ingestGeneration = second.ingestGeneration → first = second)
+
+theorem one_download_handoff_cannot_feed_two_ingest_generations
+    (unique : DownloadConsumptionOneToOne consumptions)
+    (firstMember : first ∈ consumptions) (secondMember : second ∈ consumptions)
+    (sameDownload : first.downloadGeneration = second.downloadGeneration) :
+    first = second :=
+  unique.1 first second firstMember secondMember sameDownload
+
+structure CoordinatedIngestCompletion where
+  ingestGeneration : Nat
+  completedAt : Nat
+
+def LinkedDownloadCompletion
+    (consumption : DownloadIngestConsumption)
+    (completion : CoordinatedIngestCompletion)
+    (downloadCompletedGeneration : Nat) : Prop :=
+  completion.ingestGeneration = consumption.ingestGeneration ∧
+    downloadCompletedGeneration = consumption.downloadGeneration
+
+theorem linked_ingest_completion_advances_exact_download_generation
+    (linked : LinkedDownloadCompletion consumption completion completed) :
+    completed = consumption.downloadGeneration :=
+  linked.2
+
+def ExactCoordinatedReplay
+    (stored presented : CoordinatedIngestCompletion) : Prop :=
+  stored = presented
+
+theorem coordinated_response_loss_replay_rejects_mismatch
+    (mismatch : stored ≠ presented) :
+    ¬ ExactCoordinatedReplay stored presented :=
+  mismatch
+
 structure BuildGenerationReservation (Build : Type) where
   generation : Nat
   build : Build
+
+def BuildReservationWriterAuthorized
+    (currentGeneration ownerGeneration now leaseExpiresAt : Nat)
+    (reservation : BuildGenerationReservation Build) : Prop :=
+  reservation.generation = currentGeneration ∧
+    reservation.generation = ownerGeneration ∧
+    now < leaseExpiresAt
+
+def BuildReservationHistoryBacked
+    (history : List Nat) (reservation : BuildGenerationReservation Build) : Prop :=
+  reservation.generation ∈ history
+
+theorem build_reservation_requires_current_live_owner
+    (authorized : BuildReservationWriterAuthorized
+      currentGeneration ownerGeneration now leaseExpiresAt reservation) :
+    reservation.generation = currentGeneration ∧
+      reservation.generation = ownerGeneration ∧ now < leaseExpiresAt :=
+  authorized
+
+theorem completed_owner_removal_preserves_generation_history_authority
+    (backed : BuildReservationHistoryBacked history reservation)
+    (_remainingOwner : Option Nat) :
+    BuildReservationHistoryBacked history reservation :=
+  backed
 
 def CanReserveBuild
     (reservations : List (BuildGenerationReservation Build))
@@ -259,6 +371,70 @@ theorem no_build_generation_has_no_reservation
     GenerationHasNoBuild (Build := Build) [] generation := by
   intro existing member
   cases member
+
+structure DeletionRequestGenerationFact where
+  generation : Nat
+  allocatedAt : Nat
+
+structure DeletionRequestGenerationHead where
+  currentGeneration : Nat
+  updatedAt : Nat
+
+def DeletionGenerationHeadBacked
+    (history : List DeletionRequestGenerationFact)
+    (head : DeletionRequestGenerationHead) : Prop :=
+  ∃ fact, fact ∈ history ∧ fact.generation = head.currentGeneration
+
+def DeletionGenerationAdvance
+    (oldHead : DeletionRequestGenerationHead)
+    (presentedGeneration : Nat)
+    (newFact : DeletionRequestGenerationFact)
+    (newHead : DeletionRequestGenerationHead) : Prop :=
+  presentedGeneration = oldHead.currentGeneration ∧
+    oldHead.currentGeneration < 9223372036854775807 ∧
+    newFact.generation = oldHead.currentGeneration + 1 ∧
+    newHead.currentGeneration = newFact.generation ∧
+    oldHead.updatedAt ≤ newFact.allocatedAt ∧
+    newFact.allocatedAt ≤ newHead.updatedAt
+
+theorem deletion_generation_advance_allocates_exact_successor
+    (advance : DeletionGenerationAdvance
+      oldHead presentedGeneration newFact newHead) :
+    newFact.generation = oldHead.currentGeneration + 1 :=
+  advance.2.2.1
+
+theorem deletion_generation_advance_exact_cas_rejects_stale_writer
+    (stale : presentedGeneration ≠ oldHead.currentGeneration) :
+    ¬ DeletionGenerationAdvance
+      oldHead presentedGeneration newFact newHead := by
+  intro advance
+  exact stale advance.1
+
+theorem deletion_generation_exhaustion_fails_closed
+    (exhausted : oldHead.currentGeneration = 9223372036854775807) :
+    ¬ DeletionGenerationAdvance
+      oldHead presentedGeneration newFact newHead := by
+  intro advance
+  unfold DeletionGenerationAdvance at advance
+  rw [exhausted] at advance
+  omega
+
+theorem deletion_generation_advance_backs_new_head_with_inserted_history
+    (advance : DeletionGenerationAdvance
+      oldHead presentedGeneration newFact newHead) :
+    DeletionGenerationHeadBacked (newFact :: history) newHead := by
+  refine ⟨newFact, by simp, ?_⟩
+  exact advance.2.2.2.1.symm
+
+def DeletionPreparationGenerationCurrent
+    (preparedGeneration : Nat)
+    (head : DeletionRequestGenerationHead) : Prop :=
+  preparedGeneration = head.currentGeneration
+
+theorem changed_deletion_generation_rejects_prepared_publication
+    (changed : preparedGeneration ≠ head.currentGeneration) :
+    ¬ DeletionPreparationGenerationCurrent preparedGeneration head :=
+  changed
 
 structure DeletionRequestAttempt (Token : Type) where
   requestToken : Token
@@ -435,30 +611,88 @@ theorem deletion_consumption_subtype_is_exact_and_type_matched :
   exact ⟨rfl, rfl⟩
 
 structure OperationalEventCoordinate where
-  sourceRevision : Nat
+  preparationId : Nat
   sequenceNo : Nat
+
+def PreparationStreamBeginAtomic
+    (streamInserted preparationInserted checkpointsInserted : Prop) : Prop :=
+  streamInserted ↔ preparationInserted ∧ checkpointsInserted
+
+theorem failed_preparation_begin_leaves_no_standalone_stream
+    (atomic : PreparationStreamBeginAtomic
+      streamInserted preparationInserted checkpointsInserted)
+    (noPreparation : ¬ preparationInserted) :
+    ¬ streamInserted := by
+  intro stream
+  exact noPreparation (atomic.mp stream).1
+
+structure OperationalEffectSealModel (Digest : Type) where
+  eventCount : Nat
+  finalChain : Digest
+
+def ContiguousOperationalEffectCoordinates
+    (events : List OperationalEventCoordinate) (eventCount : Nat) : Prop :=
+  ∀ sequence, sequence < eventCount ↔
+    ∃ event, event ∈ events ∧ event.sequenceNo = sequence
+
+def OperationalEffectSealValid
+    (events : List OperationalEventCoordinate)
+    (computedFinalChain : Digest)
+    (effectSeal : OperationalEffectSealModel Digest) : Prop :=
+  ContiguousOperationalEffectCoordinates events effectSeal.eventCount ∧
+    effectSeal.finalChain = computedFinalChain
+
+theorem zero_event_effect_seal_is_valid
+    (emptyChain : Digest) :
+    OperationalEffectSealValid [] emptyChain
+      { eventCount := 0, finalChain := emptyChain } := by
+  constructor
+  · intro sequence
+    simp
+  · rfl
+
+def OperationalActivationAuthorized
+    (preparationComplete effectSealPresent deletionGenerationCurrent : Prop) : Prop :=
+  preparationComplete ∧ effectSealPresent ∧ deletionGenerationCurrent
+
+theorem operational_activation_requires_only_scalar_authority
+    (complete : preparationComplete)
+    (sealed : effectSealPresent)
+    (current : deletionGenerationCurrent) :
+    OperationalActivationAuthorized
+      preparationComplete effectSealPresent deletionGenerationCurrent :=
+  ⟨complete, sealed, current⟩
+
+def OperationalEventVisible
+    (eventPreparation activatedPreparation : Nat) : Prop :=
+  eventPreparation = activatedPreparation
+
+theorem event_without_matching_activation_is_invisible
+    (unactivated : eventPreparation ≠ activatedPreparation) :
+    ¬ OperationalEventVisible eventPreparation activatedPreparation :=
+  unactivated
 
 def AcknowledgesEveryExistingEventThrough
     (allEvents acknowledgedEvents : List OperationalEventCoordinate)
     (target : OperationalEventCoordinate) : Prop :=
   ∀ event, event ∈ allEvents →
-    event.sourceRevision = target.sourceRevision →
+    event.preparationId = target.preparationId →
     event.sequenceNo ≤ target.sequenceNo →
     event ∈ acknowledgedEvents
 
 def AckHighWaterAdvance
     (oldHead targetEvent : OperationalEventCoordinate)
     (allEvents acknowledgedEvents : List OperationalEventCoordinate) : Prop :=
-  targetEvent.sourceRevision = oldHead.sourceRevision ∧
+  targetEvent.preparationId = oldHead.preparationId ∧
     oldHead.sequenceNo ≤ targetEvent.sequenceNo ∧
     targetEvent ∈ allEvents ∧
     AcknowledgesEveryExistingEventThrough
       allEvents acknowledgedEvents targetEvent
 
-theorem ack_high_water_advance_stays_in_revision
+theorem ack_high_water_advance_stays_in_preparation
     (advance : AckHighWaterAdvance
       oldHead targetEvent allEvents acknowledgedEvents) :
-    targetEvent.sourceRevision = oldHead.sourceRevision :=
+    targetEvent.preparationId = oldHead.preparationId :=
   advance.1
 
 theorem ack_high_water_advance_is_monotone
@@ -477,10 +711,10 @@ theorem ack_high_water_covers_every_preceding_existing_event
     (advance : AckHighWaterAdvance
       oldHead targetEvent allEvents acknowledgedEvents)
     (eventMember : event ∈ allEvents)
-    (sameRevision : event.sourceRevision = targetEvent.sourceRevision)
+    (samePreparation : event.preparationId = targetEvent.preparationId)
     (atOrBefore : event.sequenceNo ≤ targetEvent.sequenceNo) :
     event ∈ acknowledgedEvents :=
-  advance.2.2.2 event eventMember sameRevision atOrBefore
+  advance.2.2.2 event eventMember samePreparation atOrBefore
 
 theorem ack_high_water_regression_is_rejected
     (regression : targetEvent.sequenceNo < oldHead.sequenceNo) :
@@ -591,7 +825,7 @@ def _machine_contract_model(manifest: dict[str, object]) -> str:
     ):
         raise ValueError("operational machine contracts are missing")
     obligation_ids = [str(value.get("id")) for value in raw_obligations]
-    if len(obligation_ids) != 14 or len(obligation_ids) != len(set(obligation_ids)):
+    if len(obligation_ids) != 15 or len(obligation_ids) != len(set(obligation_ids)):
         raise ValueError("operational semantic-obligation IDs are incomplete")
     obligation_lifecycles = {
         str(value.get("id")): str(value.get("lifecycle")) for value in raw_obligations
@@ -611,13 +845,99 @@ def _machine_contract_model(manifest: dict[str, object]) -> str:
         for value in (obligation_lifecycles[item] for item in ready_obligations)
     ):
         raise ValueError("operational semantic-obligation lifecycle partition drifts")
+    obligations_by_id = {str(value.get("id")): value for value in raw_obligations}
+    expected_generation_obligation_relations = {
+        "h2hdb.operational.bounded-work.v1": (
+            "operational_event_stream",
+            "operational_preparation",
+            "operational_preparation_checkpoint",
+            "operational_preparation_batch_receipt",
+            "operational_preparation_effect_seal",
+            "operational_event",
+            "operational_removed_gid_event",
+            "operational_deletion_consumption_event",
+            "cleanup_checkpoint",
+            "cleanup_batch_receipt",
+        ),
+        "h2hdb.operational.queue-history.v1": (
+            "deletion_request_generation",
+            "deletion_request_generation_head",
+            "deletion_request_attempt",
+            "deletion_request_head",
+            "deletion_request_url",
+            "operational_preparation",
+            "operational_deletion_consumption_event",
+        ),
+        "h2hdb.operational.attempt-identity.v1": (
+            "cleanup_job",
+            "operational_preparation",
+            "operational_policy",
+            "deletion_request_generation",
+            "deletion_request_generation_head",
+        ),
+        "h2hdb.operational.bootstrap-genesis.v1": (
+            "revision_allocator",
+            "identity_allocator",
+            "deletion_request_generation",
+            "deletion_request_generation_head",
+        ),
+        "h2hdb.operational.event-integrity.v1": (
+            "operational_event_stream",
+            "operational_preparation",
+            "operational_preparation_effect_seal",
+            "publication_candidate_preparation",
+            "operational_activation",
+            "operational_event",
+            "operational_removed_gid_event",
+            "operational_deletion_consumption_event",
+            "operational_event_ack",
+            "operational_event_ack_head",
+        ),
+        "h2hdb.operational.cleanup-reachability.v1": (
+            "cleanup_target_kind",
+            "cleanup_phase",
+            "cleanup_job",
+            "cleanup_checkpoint",
+            "source_build",
+            "publication_candidate",
+            "analysis_snapshot_manifest",
+            "source_revision",
+            "catalog_revision",
+            "canonical_value_identity",
+            "content_blob",
+            "operational_event_stream",
+            "operational_preparation",
+            "operational_preparation_effect_seal",
+            "publication_candidate_preparation",
+            "operational_activation",
+            "operational_event",
+            "operational_removed_gid_event",
+            "operational_deletion_consumption_event",
+            "operational_event_ack",
+            "operational_event_ack_head",
+        ),
+    }
+    for (
+        obligation_id,
+        expected_relations,
+    ) in expected_generation_obligation_relations.items():
+        if tuple(obligations_by_id[obligation_id].get("relations", [])) != (
+            expected_relations
+        ):
+            raise ValueError(
+                f"operational obligation {obligation_id!r} relation binding drifts"
+            )
     seed_by_id = {str(value.get("id")): value for value in raw_seeds}
     expected_seed_ids = {
         "h2hdb.operational.revision-allocator.source.v1": "SOURCE",
         "h2hdb.operational.revision-allocator.catalog.v1": "CATALOG",
     }
-    if not set(expected_seed_ids) <= set(seed_by_id):
-        raise ValueError("operational bootstrap allocator seeds are incomplete")
+    deletion_generation_seed_ids = {
+        "h2hdb.operational.deletion-request-generation.genesis.v1",
+        "h2hdb.operational.deletion-request-generation-head.genesis.v1",
+    }
+    if not (set(expected_seed_ids) | deletion_generation_seed_ids) <= set(seed_by_id):
+        raise ValueError("operational bootstrap authority seeds are incomplete")
 
     def seed_values(seed_id: str) -> tuple[str, int, int]:
         raw_seed = seed_by_id[seed_id]
@@ -648,6 +968,48 @@ def _machine_contract_model(manifest: dict[str, object]) -> str:
 
     source = seed_values("h2hdb.operational.revision-allocator.source.v1")
     catalog = seed_values("h2hdb.operational.revision-allocator.catalog.v1")
+
+    def integer_seed_values(
+        seed_id: str,
+        expected_relation: str,
+        expected_attributes: tuple[str, ...],
+        expected_types: tuple[str, ...],
+    ) -> tuple[int, ...]:
+        raw_seed = seed_by_id[seed_id]
+        if (
+            raw_seed.get("lifecycle") != "building_only"
+            or raw_seed.get("relation") != expected_relation
+        ):
+            raise ValueError(f"bootstrap seed {seed_id!r} authority binding drifts")
+        raw_cells = raw_seed.get("value")
+        if not isinstance(raw_cells, list) or not all(
+            isinstance(value, dict) for value in raw_cells
+        ):
+            raise ValueError(f"bootstrap seed {seed_id!r} lacks typed cells")
+        if tuple(value.get("attribute") for value in raw_cells) != expected_attributes:
+            raise ValueError(f"bootstrap seed {seed_id!r} attribute order drifts")
+        if tuple(value.get("type") for value in raw_cells) != expected_types or any(
+            not isinstance(value.get("integer"), int)
+            or isinstance(value.get("integer"), bool)
+            for value in raw_cells
+        ):
+            raise ValueError(f"bootstrap seed {seed_id!r} integer type drifts")
+        return tuple(int(value["integer"]) for value in raw_cells)
+
+    deletion_generation = integer_seed_values(
+        "h2hdb.operational.deletion-request-generation.genesis.v1",
+        "deletion_request_generation",
+        ("generation", "allocated_at"),
+        ("uint64", "unix_microseconds"),
+    )
+    deletion_generation_head = integer_seed_values(
+        "h2hdb.operational.deletion-request-generation-head.genesis.v1",
+        "deletion_request_generation_head",
+        ("singleton_id", "current_generation", "updated_at"),
+        ("uint64", "uint64", "unix_microseconds"),
+    )
+    if deletion_generation != (0, 0) or deletion_generation_head != (1, 0, 0):
+        raise ValueError("deletion generation genesis is not the exact real zero fact")
     raw_absent = bootstrap.get("absent_relations")
     if not isinstance(raw_absent, list) or not all(
         isinstance(value, str) and value for value in raw_absent
@@ -663,13 +1025,27 @@ def _machine_contract_model(manifest: dict[str, object]) -> str:
         "maintenance_gate_head",
         "maintenance_gate_owner",
         "maintenance_gate_holder",
+        "operational_event_stream",
+        "operational_preparation_effect_seal",
         "operational_event",
         "download_request",
+        "deletion_request_attempt",
+        "deletion_request_url",
+        "deletion_request_head",
+        "operational_preparation",
         "cleanup_job",
     ]
     if not set(critical_absent) <= set(absent):
         raise ValueError("bootstrap invents an active control-plane fact")
-    if "revision_allocator" in absent or "schema_epoch_control" in absent:
+    if any(
+        relation in absent
+        for relation in (
+            "revision_allocator",
+            "deletion_request_generation",
+            "deletion_request_generation_head",
+            "schema_epoch_control",
+        )
+    ):
         raise ValueError("bootstrap ownership partition is inconsistent")
     if (
         bootstrap.get("seed_validation_lifecycle") != "building_only"
@@ -681,15 +1057,28 @@ def _machine_contract_model(manifest: dict[str, object]) -> str:
 ## Machine obligations and bootstrap genesis
 
 These values are generated from the typed machine records in operational.toml.
-Allocator rows plus cleanup kind/phase registries are provider-owned genesis.
-Coordination, maintenance, owner, lease, event, queue, cache, and work facts are
-absent until their first transaction creates real state.  Schema epoch control
-is initialized independently by SchemaEpochCatalog.
+Allocator rows, the real deletion generation-zero empty-queue history/head,
+and cleanup kind/phase registries are provider-owned genesis.  Deletion attempts
+and per-gid heads, coordination, maintenance, owner, lease, preparation stream,
+effect seal, activation, event, cache, and work facts are absent until their
+first transaction creates real state.  Schema
+epoch control is initialized independently by SchemaEpochCatalog.
 -/
 
 structure RevisionAllocatorGenesis where
   stream : String
   nextRevision : Nat
+  updatedAt : Nat
+deriving DecidableEq, Repr
+
+structure DeletionGenerationGenesis where
+  generation : Nat
+  allocatedAt : Nat
+deriving DecidableEq, Repr
+
+structure DeletionGenerationHeadGenesis where
+  singletonId : Nat
+  currentGeneration : Nat
   updatedAt : Nat
 deriving DecidableEq, Repr
 
@@ -776,6 +1165,27 @@ theorem operational_bootstrap_allocator_timestamps_start_at_zero :
       catalogRevisionAllocatorGenesis.updatedAt = 0 := by
   native_decide
 
+def deletionGenerationGenesis : DeletionGenerationGenesis :=
+  {{ generation := {deletion_generation[0]},
+    allocatedAt := {deletion_generation[1]} }}
+
+def deletionGenerationHeadGenesis : DeletionGenerationHeadGenesis :=
+  {{ singletonId := {deletion_generation_head[0]},
+    currentGeneration := {deletion_generation_head[1]},
+    updatedAt := {deletion_generation_head[2]} }}
+
+theorem deletion_generation_zero_is_a_real_history_fact :
+    deletionGenerationGenesis.generation = 0 ∧
+      deletionGenerationGenesis.allocatedAt = 0 := by
+  native_decide
+
+theorem deletion_generation_genesis_head_is_the_exact_singleton_reference :
+    deletionGenerationHeadGenesis.singletonId = 1 ∧
+      deletionGenerationHeadGenesis.currentGeneration =
+        deletionGenerationGenesis.generation ∧
+      deletionGenerationHeadGenesis.updatedAt = 0 := by
+  native_decide
+
 theorem ready_validation_accepts_a_legitimately_advanced_allocator :
     RevisionAllocatorCurrentValid
       {{ stream := "SOURCE", nextRevision := 2,
@@ -820,6 +1230,12 @@ theorem operational_bootstrap_has_no_invented_active_control_facts :
 
 theorem revision_allocator_is_seeded_not_absent :
     "revision_allocator" ∉ operationalBootstrapAbsentRelations := by
+  native_decide
+
+theorem deletion_generation_authority_is_seeded_not_absent :
+    "deletion_request_generation" ∉ operationalBootstrapAbsentRelations ∧
+      "deletion_request_generation_head" ∉
+        operationalBootstrapAbsentRelations := by
   native_decide
 
 theorem schema_epoch_control_is_epoch_owned_not_absent :

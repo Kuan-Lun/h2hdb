@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 
+from .catalog_errors import CatalogRevisionNotFoundError
 from .domain import (
     CatalogArtifact,
     CatalogContributor,
@@ -20,12 +21,6 @@ from .sql_connector import SQLConnector
 
 MAX_PAGE_SIZE = 200
 LOOKUP_CHUNK_SIZE = 500
-
-
-class CatalogRevisionNotFoundError(LookupError):
-    def __init__(self, revision: int) -> None:
-        self.revision = revision
-        super().__init__(f"Catalog revision {revision} does not exist")
 
 
 @dataclass(frozen=True, slots=True)

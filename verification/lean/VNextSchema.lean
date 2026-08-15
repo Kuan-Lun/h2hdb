@@ -596,7 +596,7 @@ end H2HDB.Verification.VNextSchema
 namespace H2HDB.Verification.VNextSchema
 
 /- BEGIN GENERATED CATALOG CONTRACTS -/
-def catalogManifestSha256 : String := "7d78ae9f2f1dec2ad403ecd5b68e5e164a9c767c7852c70d378c03f7d30b63f5"
+def catalogManifestSha256 : String := "a6055d8f9edc46b67f171b52eecd71cf2f59c76a7b83fe5d78d088a0ede483c0"
 
 /-! This section is mechanically generated from catalog.toml. -/
 
@@ -1246,6 +1246,53 @@ theorem source_build_discovery_bcnf_check :
 
 theorem source_build_discovery_bcnf : BCNF source_build_discovery_contract :=
   bcnfCheck_sound source_build_discovery_contract source_build_discovery_bcnf_check
+
+def source_build_expected_gallery_contract : RelationContract where
+  name := "source_build_expected_gallery"
+  attributes := ["build_id", "position", "gallery_id"]
+  declaredKeys := [["build_id", "position"], ["build_id", "gallery_id"]]
+  declaredFDs := [
+    { determinant := ["build_id", "position"], dependent := ["gallery_id"] },
+    { determinant := ["build_id", "gallery_id"], dependent := ["position"] }
+  ]
+
+theorem source_build_expected_gallery_schema_well_formed :
+    schemaWellFormedCheck source_build_expected_gallery_contract = true := by
+  native_decide
+
+theorem source_build_expected_gallery_candidate_keys_check :
+    keysDetermineAllCheck source_build_expected_gallery_contract = true := by
+  native_decide
+
+theorem source_build_expected_gallery_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes source_build_expected_gallery_contract :=
+  keysDetermineAllCheck_sound source_build_expected_gallery_contract
+    source_build_expected_gallery_candidate_keys_check
+
+theorem source_build_expected_gallery_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck source_build_expected_gallery_contract = true := by
+  native_decide
+
+theorem source_build_expected_gallery_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal source_build_expected_gallery_contract :=
+  declaredKeysMinimalCheck_sound source_build_expected_gallery_contract
+    source_build_expected_gallery_candidate_keys_minimal_check
+
+theorem source_build_expected_gallery_closure_fixed_check :
+    closureFixedPointCheck source_build_expected_gallery_contract = true := by
+  native_decide
+
+theorem source_build_expected_gallery_closure_reached_fixed_point :
+    ClosureReachedFixedPoint source_build_expected_gallery_contract :=
+  closureFixedPointCheck_sound source_build_expected_gallery_contract
+    source_build_expected_gallery_closure_fixed_check
+
+theorem source_build_expected_gallery_bcnf_check :
+    bcnfCheck source_build_expected_gallery_contract = true := by
+  native_decide
+
+theorem source_build_expected_gallery_bcnf : BCNF source_build_expected_gallery_contract :=
+  bcnfCheck_sound source_build_expected_gallery_contract source_build_expected_gallery_bcnf_check
 
 def source_locator_identity_contract : RelationContract where
   name := "source_locator_identity"
@@ -2032,6 +2079,52 @@ theorem gallery_observation_directory_bcnf_check :
 theorem gallery_observation_directory_bcnf : BCNF gallery_observation_directory_contract :=
   bcnfCheck_sound gallery_observation_directory_contract gallery_observation_directory_bcnf_check
 
+def gallery_observation_stat_contract : RelationContract where
+  name := "gallery_observation_stat"
+  attributes := ["gallery_id", "observation_id", "file_count", "byte_count"]
+  declaredKeys := [["gallery_id", "observation_id"]]
+  declaredFDs := [
+    { determinant := ["gallery_id", "observation_id"], dependent := ["file_count", "byte_count"] }
+  ]
+
+theorem gallery_observation_stat_schema_well_formed :
+    schemaWellFormedCheck gallery_observation_stat_contract = true := by
+  native_decide
+
+theorem gallery_observation_stat_candidate_keys_check :
+    keysDetermineAllCheck gallery_observation_stat_contract = true := by
+  native_decide
+
+theorem gallery_observation_stat_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes gallery_observation_stat_contract :=
+  keysDetermineAllCheck_sound gallery_observation_stat_contract
+    gallery_observation_stat_candidate_keys_check
+
+theorem gallery_observation_stat_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck gallery_observation_stat_contract = true := by
+  native_decide
+
+theorem gallery_observation_stat_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal gallery_observation_stat_contract :=
+  declaredKeysMinimalCheck_sound gallery_observation_stat_contract
+    gallery_observation_stat_candidate_keys_minimal_check
+
+theorem gallery_observation_stat_closure_fixed_check :
+    closureFixedPointCheck gallery_observation_stat_contract = true := by
+  native_decide
+
+theorem gallery_observation_stat_closure_reached_fixed_point :
+    ClosureReachedFixedPoint gallery_observation_stat_contract :=
+  closureFixedPointCheck_sound gallery_observation_stat_contract
+    gallery_observation_stat_closure_fixed_check
+
+theorem gallery_observation_stat_bcnf_check :
+    bcnfCheck gallery_observation_stat_contract = true := by
+  native_decide
+
+theorem gallery_observation_stat_bcnf : BCNF gallery_observation_stat_contract :=
+  bcnfCheck_sound gallery_observation_stat_contract gallery_observation_stat_bcnf_check
+
 def source_build_gallery_contract : RelationContract where
   name := "source_build_gallery"
   attributes := ["build_id", "gallery_id", "observation_id"]
@@ -2728,6 +2821,52 @@ theorem source_snapshot_manifest_identity_bcnf_check :
 
 theorem source_snapshot_manifest_identity_bcnf : BCNF source_snapshot_manifest_identity_contract :=
   bcnfCheck_sound source_snapshot_manifest_identity_contract source_snapshot_manifest_identity_bcnf_check
+
+def analysis_snapshot_manifest_contract : RelationContract where
+  name := "analysis_snapshot_manifest"
+  attributes := ["analysis_id", "snapshot_manifest_sha256"]
+  declaredKeys := [["analysis_id"]]
+  declaredFDs := [
+    { determinant := ["analysis_id"], dependent := ["snapshot_manifest_sha256"] }
+  ]
+
+theorem analysis_snapshot_manifest_schema_well_formed :
+    schemaWellFormedCheck analysis_snapshot_manifest_contract = true := by
+  native_decide
+
+theorem analysis_snapshot_manifest_candidate_keys_check :
+    keysDetermineAllCheck analysis_snapshot_manifest_contract = true := by
+  native_decide
+
+theorem analysis_snapshot_manifest_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes analysis_snapshot_manifest_contract :=
+  keysDetermineAllCheck_sound analysis_snapshot_manifest_contract
+    analysis_snapshot_manifest_candidate_keys_check
+
+theorem analysis_snapshot_manifest_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck analysis_snapshot_manifest_contract = true := by
+  native_decide
+
+theorem analysis_snapshot_manifest_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal analysis_snapshot_manifest_contract :=
+  declaredKeysMinimalCheck_sound analysis_snapshot_manifest_contract
+    analysis_snapshot_manifest_candidate_keys_minimal_check
+
+theorem analysis_snapshot_manifest_closure_fixed_check :
+    closureFixedPointCheck analysis_snapshot_manifest_contract = true := by
+  native_decide
+
+theorem analysis_snapshot_manifest_closure_reached_fixed_point :
+    ClosureReachedFixedPoint analysis_snapshot_manifest_contract :=
+  closureFixedPointCheck_sound analysis_snapshot_manifest_contract
+    analysis_snapshot_manifest_closure_fixed_check
+
+theorem analysis_snapshot_manifest_bcnf_check :
+    bcnfCheck analysis_snapshot_manifest_contract = true := by
+  native_decide
+
+theorem analysis_snapshot_manifest_bcnf : BCNF analysis_snapshot_manifest_contract :=
+  bcnfCheck_sound analysis_snapshot_manifest_contract analysis_snapshot_manifest_bcnf_check
 
 def source_revision_contract : RelationContract where
   name := "source_revision"
@@ -4336,12 +4475,59 @@ theorem analysis_state_component_seal_bcnf_check :
 theorem analysis_state_component_seal_bcnf : BCNF analysis_state_component_seal_contract :=
   bcnfCheck_sound analysis_state_component_seal_contract analysis_state_component_seal_bcnf_check
 
+def analysis_stage_contract : RelationContract where
+  name := "analysis_stage"
+  attributes := ["stage", "stage_order", "cursor_codec"]
+  declaredKeys := [["stage"], ["stage_order"]]
+  declaredFDs := [
+    { determinant := ["stage"], dependent := ["stage_order", "cursor_codec"] },
+    { determinant := ["stage_order"], dependent := ["stage", "cursor_codec"] }
+  ]
+
+theorem analysis_stage_schema_well_formed :
+    schemaWellFormedCheck analysis_stage_contract = true := by
+  native_decide
+
+theorem analysis_stage_candidate_keys_check :
+    keysDetermineAllCheck analysis_stage_contract = true := by
+  native_decide
+
+theorem analysis_stage_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes analysis_stage_contract :=
+  keysDetermineAllCheck_sound analysis_stage_contract
+    analysis_stage_candidate_keys_check
+
+theorem analysis_stage_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck analysis_stage_contract = true := by
+  native_decide
+
+theorem analysis_stage_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal analysis_stage_contract :=
+  declaredKeysMinimalCheck_sound analysis_stage_contract
+    analysis_stage_candidate_keys_minimal_check
+
+theorem analysis_stage_closure_fixed_check :
+    closureFixedPointCheck analysis_stage_contract = true := by
+  native_decide
+
+theorem analysis_stage_closure_reached_fixed_point :
+    ClosureReachedFixedPoint analysis_stage_contract :=
+  closureFixedPointCheck_sound analysis_stage_contract
+    analysis_stage_closure_fixed_check
+
+theorem analysis_stage_bcnf_check :
+    bcnfCheck analysis_stage_contract = true := by
+  native_decide
+
+theorem analysis_stage_bcnf : BCNF analysis_stage_contract :=
+  bcnfCheck_sound analysis_stage_contract analysis_stage_bcnf_check
+
 def analysis_checkpoint_contract : RelationContract where
   name := "analysis_checkpoint"
-  attributes := ["analysis_id", "stage", "generation", "cursor", "state", "updated_at"]
+  attributes := ["analysis_id", "stage", "generation", "cursor", "processed_count", "state", "updated_at"]
   declaredKeys := [["analysis_id", "stage"]]
   declaredFDs := [
-    { determinant := ["analysis_id", "stage"], dependent := ["generation", "cursor", "state", "updated_at"] }
+    { determinant := ["analysis_id", "stage"], dependent := ["generation", "cursor", "processed_count", "state", "updated_at"] }
   ]
 
 theorem analysis_checkpoint_schema_well_formed :
@@ -4384,10 +4570,11 @@ theorem analysis_checkpoint_bcnf : BCNF analysis_checkpoint_contract :=
 
 def analysis_batch_receipt_contract : RelationContract where
   name := "analysis_batch_receipt"
-  attributes := ["analysis_id", "stage", "batch_key", "row_count", "committed_at"]
-  declaredKeys := [["analysis_id", "stage", "batch_key"]]
+  attributes := ["analysis_id", "stage", "batch_key", "start_generation", "start_cursor", "start_processed_count", "next_cursor", "next_processed_count", "next_state", "row_count", "terminal", "committed_generation", "committed_at"]
+  declaredKeys := [["analysis_id", "stage", "batch_key"], ["analysis_id", "stage", "start_generation"]]
   declaredFDs := [
-    { determinant := ["analysis_id", "stage", "batch_key"], dependent := ["row_count", "committed_at"] }
+    { determinant := ["analysis_id", "stage", "batch_key"], dependent := ["start_generation", "start_cursor", "start_processed_count", "next_cursor", "next_processed_count", "next_state", "row_count", "terminal", "committed_generation", "committed_at"] },
+    { determinant := ["analysis_id", "stage", "start_generation"], dependent := ["batch_key", "start_cursor", "start_processed_count", "next_cursor", "next_processed_count", "next_state", "row_count", "terminal", "committed_generation", "committed_at"] }
   ]
 
 theorem analysis_batch_receipt_schema_well_formed :
@@ -4474,6 +4661,52 @@ theorem publication_candidate_bcnf_check :
 
 theorem publication_candidate_bcnf : BCNF publication_candidate_contract :=
   bcnfCheck_sound publication_candidate_contract publication_candidate_bcnf_check
+
+def publication_candidate_projection_seal_contract : RelationContract where
+  name := "publication_candidate_projection_seal"
+  attributes := ["candidate_id", "publication_count", "artifact_input_count", "prepared_artifact_count", "create_count", "rebuild_count", "delete_count", "unchanged_count", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "projection_sealed_at"]
+  declaredKeys := [["candidate_id"]]
+  declaredFDs := [
+    { determinant := ["candidate_id"], dependent := ["publication_count", "artifact_input_count", "prepared_artifact_count", "create_count", "rebuild_count", "delete_count", "unchanged_count", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "projection_sealed_at"] }
+  ]
+
+theorem publication_candidate_projection_seal_schema_well_formed :
+    schemaWellFormedCheck publication_candidate_projection_seal_contract = true := by
+  native_decide
+
+theorem publication_candidate_projection_seal_candidate_keys_check :
+    keysDetermineAllCheck publication_candidate_projection_seal_contract = true := by
+  native_decide
+
+theorem publication_candidate_projection_seal_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes publication_candidate_projection_seal_contract :=
+  keysDetermineAllCheck_sound publication_candidate_projection_seal_contract
+    publication_candidate_projection_seal_candidate_keys_check
+
+theorem publication_candidate_projection_seal_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck publication_candidate_projection_seal_contract = true := by
+  native_decide
+
+theorem publication_candidate_projection_seal_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal publication_candidate_projection_seal_contract :=
+  declaredKeysMinimalCheck_sound publication_candidate_projection_seal_contract
+    publication_candidate_projection_seal_candidate_keys_minimal_check
+
+theorem publication_candidate_projection_seal_closure_fixed_check :
+    closureFixedPointCheck publication_candidate_projection_seal_contract = true := by
+  native_decide
+
+theorem publication_candidate_projection_seal_closure_reached_fixed_point :
+    ClosureReachedFixedPoint publication_candidate_projection_seal_contract :=
+  closureFixedPointCheck_sound publication_candidate_projection_seal_contract
+    publication_candidate_projection_seal_closure_fixed_check
+
+theorem publication_candidate_projection_seal_bcnf_check :
+    bcnfCheck publication_candidate_projection_seal_contract = true := by
+  native_decide
+
+theorem publication_candidate_projection_seal_bcnf : BCNF publication_candidate_projection_seal_contract :=
+  bcnfCheck_sound publication_candidate_projection_seal_contract publication_candidate_projection_seal_bcnf_check
 
 def publication_candidate_base_catalog_contract : RelationContract where
   name := "publication_candidate_base_catalog"
@@ -4569,11 +4802,11 @@ theorem publication_candidate_base_source_bcnf : BCNF publication_candidate_base
 
 def publication_selection_contract : RelationContract where
   name := "publication_selection"
-  attributes := ["candidate_id", "gallery_id", "publication_key", "item_sha256"]
+  attributes := ["candidate_id", "gallery_id", "publication_key"]
   declaredKeys := [["candidate_id", "gallery_id"], ["candidate_id", "publication_key"]]
   declaredFDs := [
-    { determinant := ["candidate_id", "gallery_id"], dependent := ["publication_key", "item_sha256"] },
-    { determinant := ["candidate_id", "publication_key"], dependent := ["gallery_id", "item_sha256"] }
+    { determinant := ["candidate_id", "gallery_id"], dependent := ["publication_key"] },
+    { determinant := ["candidate_id", "publication_key"], dependent := ["gallery_id"] }
   ]
 
 theorem publication_selection_schema_well_formed :
@@ -4614,12 +4847,59 @@ theorem publication_selection_bcnf_check :
 theorem publication_selection_bcnf : BCNF publication_selection_contract :=
   bcnfCheck_sound publication_selection_contract publication_selection_bcnf_check
 
+def publication_stage_contract : RelationContract where
+  name := "publication_stage"
+  attributes := ["stage", "stage_order", "cursor_codec"]
+  declaredKeys := [["stage"], ["stage_order"]]
+  declaredFDs := [
+    { determinant := ["stage"], dependent := ["stage_order", "cursor_codec"] },
+    { determinant := ["stage_order"], dependent := ["stage", "cursor_codec"] }
+  ]
+
+theorem publication_stage_schema_well_formed :
+    schemaWellFormedCheck publication_stage_contract = true := by
+  native_decide
+
+theorem publication_stage_candidate_keys_check :
+    keysDetermineAllCheck publication_stage_contract = true := by
+  native_decide
+
+theorem publication_stage_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes publication_stage_contract :=
+  keysDetermineAllCheck_sound publication_stage_contract
+    publication_stage_candidate_keys_check
+
+theorem publication_stage_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck publication_stage_contract = true := by
+  native_decide
+
+theorem publication_stage_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal publication_stage_contract :=
+  declaredKeysMinimalCheck_sound publication_stage_contract
+    publication_stage_candidate_keys_minimal_check
+
+theorem publication_stage_closure_fixed_check :
+    closureFixedPointCheck publication_stage_contract = true := by
+  native_decide
+
+theorem publication_stage_closure_reached_fixed_point :
+    ClosureReachedFixedPoint publication_stage_contract :=
+  closureFixedPointCheck_sound publication_stage_contract
+    publication_stage_closure_fixed_check
+
+theorem publication_stage_bcnf_check :
+    bcnfCheck publication_stage_contract = true := by
+  native_decide
+
+theorem publication_stage_bcnf : BCNF publication_stage_contract :=
+  bcnfCheck_sound publication_stage_contract publication_stage_bcnf_check
+
 def publication_checkpoint_contract : RelationContract where
   name := "publication_checkpoint"
-  attributes := ["candidate_id", "stage", "generation", "cursor", "state", "updated_at"]
+  attributes := ["candidate_id", "stage", "generation", "cursor", "processed_count", "state", "updated_at"]
   declaredKeys := [["candidate_id", "stage"]]
   declaredFDs := [
-    { determinant := ["candidate_id", "stage"], dependent := ["generation", "cursor", "state", "updated_at"] }
+    { determinant := ["candidate_id", "stage"], dependent := ["generation", "cursor", "processed_count", "state", "updated_at"] }
   ]
 
 theorem publication_checkpoint_schema_well_formed :
@@ -4662,10 +4942,11 @@ theorem publication_checkpoint_bcnf : BCNF publication_checkpoint_contract :=
 
 def publication_batch_receipt_contract : RelationContract where
   name := "publication_batch_receipt"
-  attributes := ["candidate_id", "stage", "batch_key", "row_count", "committed_at"]
-  declaredKeys := [["candidate_id", "stage", "batch_key"]]
+  attributes := ["candidate_id", "stage", "batch_key", "start_generation", "start_cursor", "start_processed_count", "next_cursor", "next_processed_count", "next_state", "row_count", "terminal", "committed_generation", "committed_at"]
+  declaredKeys := [["candidate_id", "stage", "batch_key"], ["candidate_id", "stage", "start_generation"]]
   declaredFDs := [
-    { determinant := ["candidate_id", "stage", "batch_key"], dependent := ["row_count", "committed_at"] }
+    { determinant := ["candidate_id", "stage", "batch_key"], dependent := ["start_generation", "start_cursor", "start_processed_count", "next_cursor", "next_processed_count", "next_state", "row_count", "terminal", "committed_generation", "committed_at"] },
+    { determinant := ["candidate_id", "stage", "start_generation"], dependent := ["batch_key", "start_cursor", "start_processed_count", "next_cursor", "next_processed_count", "next_state", "row_count", "terminal", "committed_generation", "committed_at"] }
   ]
 
 theorem publication_batch_receipt_schema_well_formed :
@@ -4706,13 +4987,154 @@ theorem publication_batch_receipt_bcnf_check :
 theorem publication_batch_receipt_bcnf : BCNF publication_batch_receipt_contract :=
   bcnfCheck_sound publication_batch_receipt_contract publication_batch_receipt_bcnf_check
 
+def artifact_zip_writer_policy_contract : RelationContract where
+  name := "artifact_zip_writer_policy"
+  attributes := ["artifact_algorithm_version", "zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"]
+  declaredKeys := [["artifact_algorithm_version"], ["zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"]]
+  declaredFDs := [
+    { determinant := ["artifact_algorithm_version"], dependent := ["zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"] },
+    { determinant := ["zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"], dependent := ["artifact_algorithm_version"] }
+  ]
+
+theorem artifact_zip_writer_policy_schema_well_formed :
+    schemaWellFormedCheck artifact_zip_writer_policy_contract = true := by
+  native_decide
+
+theorem artifact_zip_writer_policy_candidate_keys_check :
+    keysDetermineAllCheck artifact_zip_writer_policy_contract = true := by
+  native_decide
+
+theorem artifact_zip_writer_policy_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes artifact_zip_writer_policy_contract :=
+  keysDetermineAllCheck_sound artifact_zip_writer_policy_contract
+    artifact_zip_writer_policy_candidate_keys_check
+
+theorem artifact_zip_writer_policy_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck artifact_zip_writer_policy_contract = true := by
+  native_decide
+
+theorem artifact_zip_writer_policy_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal artifact_zip_writer_policy_contract :=
+  declaredKeysMinimalCheck_sound artifact_zip_writer_policy_contract
+    artifact_zip_writer_policy_candidate_keys_minimal_check
+
+theorem artifact_zip_writer_policy_closure_fixed_check :
+    closureFixedPointCheck artifact_zip_writer_policy_contract = true := by
+  native_decide
+
+theorem artifact_zip_writer_policy_closure_reached_fixed_point :
+    ClosureReachedFixedPoint artifact_zip_writer_policy_contract :=
+  closureFixedPointCheck_sound artifact_zip_writer_policy_contract
+    artifact_zip_writer_policy_closure_fixed_check
+
+theorem artifact_zip_writer_policy_bcnf_check :
+    bcnfCheck artifact_zip_writer_policy_contract = true := by
+  native_decide
+
+theorem artifact_zip_writer_policy_bcnf : BCNF artifact_zip_writer_policy_contract :=
+  bcnfCheck_sound artifact_zip_writer_policy_contract artifact_zip_writer_policy_bcnf_check
+
+def artifact_producer_fingerprint_contract : RelationContract where
+  name := "artifact_producer_fingerprint"
+  attributes := ["producer_fingerprint_sha256", "artifact_algorithm_version", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"]
+  declaredKeys := [["producer_fingerprint_sha256"], ["artifact_algorithm_version", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"]]
+  declaredFDs := [
+    { determinant := ["producer_fingerprint_sha256"], dependent := ["artifact_algorithm_version", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"] },
+    { determinant := ["artifact_algorithm_version", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"], dependent := ["producer_fingerprint_sha256"] }
+  ]
+
+theorem artifact_producer_fingerprint_schema_well_formed :
+    schemaWellFormedCheck artifact_producer_fingerprint_contract = true := by
+  native_decide
+
+theorem artifact_producer_fingerprint_candidate_keys_check :
+    keysDetermineAllCheck artifact_producer_fingerprint_contract = true := by
+  native_decide
+
+theorem artifact_producer_fingerprint_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes artifact_producer_fingerprint_contract :=
+  keysDetermineAllCheck_sound artifact_producer_fingerprint_contract
+    artifact_producer_fingerprint_candidate_keys_check
+
+theorem artifact_producer_fingerprint_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck artifact_producer_fingerprint_contract = true := by
+  native_decide
+
+theorem artifact_producer_fingerprint_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal artifact_producer_fingerprint_contract :=
+  declaredKeysMinimalCheck_sound artifact_producer_fingerprint_contract
+    artifact_producer_fingerprint_candidate_keys_minimal_check
+
+theorem artifact_producer_fingerprint_closure_fixed_check :
+    closureFixedPointCheck artifact_producer_fingerprint_contract = true := by
+  native_decide
+
+theorem artifact_producer_fingerprint_closure_reached_fixed_point :
+    ClosureReachedFixedPoint artifact_producer_fingerprint_contract :=
+  closureFixedPointCheck_sound artifact_producer_fingerprint_contract
+    artifact_producer_fingerprint_closure_fixed_check
+
+theorem artifact_producer_fingerprint_bcnf_check :
+    bcnfCheck artifact_producer_fingerprint_contract = true := by
+  native_decide
+
+theorem artifact_producer_fingerprint_bcnf : BCNF artifact_producer_fingerprint_contract :=
+  bcnfCheck_sound artifact_producer_fingerprint_contract artifact_producer_fingerprint_bcnf_check
+
+def artifact_storage_codec_contract : RelationContract where
+  name := "artifact_storage_codec"
+  attributes := ["storage_codec_version", "adapter_id", "locator_codec_version", "protection_token_codec_version"]
+  declaredKeys := [["storage_codec_version"], ["adapter_id"]]
+  declaredFDs := [
+    { determinant := ["storage_codec_version"], dependent := ["adapter_id", "locator_codec_version", "protection_token_codec_version"] },
+    { determinant := ["adapter_id"], dependent := ["storage_codec_version", "locator_codec_version", "protection_token_codec_version"] }
+  ]
+
+theorem artifact_storage_codec_schema_well_formed :
+    schemaWellFormedCheck artifact_storage_codec_contract = true := by
+  native_decide
+
+theorem artifact_storage_codec_candidate_keys_check :
+    keysDetermineAllCheck artifact_storage_codec_contract = true := by
+  native_decide
+
+theorem artifact_storage_codec_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes artifact_storage_codec_contract :=
+  keysDetermineAllCheck_sound artifact_storage_codec_contract
+    artifact_storage_codec_candidate_keys_check
+
+theorem artifact_storage_codec_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck artifact_storage_codec_contract = true := by
+  native_decide
+
+theorem artifact_storage_codec_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal artifact_storage_codec_contract :=
+  declaredKeysMinimalCheck_sound artifact_storage_codec_contract
+    artifact_storage_codec_candidate_keys_minimal_check
+
+theorem artifact_storage_codec_closure_fixed_check :
+    closureFixedPointCheck artifact_storage_codec_contract = true := by
+  native_decide
+
+theorem artifact_storage_codec_closure_reached_fixed_point :
+    ClosureReachedFixedPoint artifact_storage_codec_contract :=
+  closureFixedPointCheck_sound artifact_storage_codec_contract
+    artifact_storage_codec_closure_fixed_check
+
+theorem artifact_storage_codec_bcnf_check :
+    bcnfCheck artifact_storage_codec_contract = true := by
+  native_decide
+
+theorem artifact_storage_codec_bcnf : BCNF artifact_storage_codec_contract :=
+  bcnfCheck_sound artifact_storage_codec_contract artifact_storage_codec_bcnf_check
+
 def artifact_policy_semantics_contract : RelationContract where
   name := "artifact_policy_semantics"
-  attributes := ["policy_component_sha256", "artifact_algorithm_version", "max_image_short_side"]
-  declaredKeys := [["policy_component_sha256"], ["artifact_algorithm_version", "max_image_short_side"]]
+  attributes := ["policy_component_sha256", "artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"]
+  declaredKeys := [["policy_component_sha256"], ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"]]
   declaredFDs := [
-    { determinant := ["policy_component_sha256"], dependent := ["artifact_algorithm_version", "max_image_short_side"] },
-    { determinant := ["artifact_algorithm_version", "max_image_short_side"], dependent := ["policy_component_sha256"] }
+    { determinant := ["policy_component_sha256"], dependent := ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"] },
+    { determinant := ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"], dependent := ["policy_component_sha256"] }
   ]
 
 theorem artifact_policy_semantics_schema_well_formed :
@@ -4849,11 +5271,11 @@ theorem artifact_semantic_input_bcnf : BCNF artifact_semantic_input_contract :=
 
 def artifact_input_contract : RelationContract where
   name := "artifact_input"
-  attributes := ["artifact_input_id", "candidate_id", "publication_key", "artifact_name", "artifact_semantics_sha256"]
+  attributes := ["artifact_input_id", "candidate_id", "publication_key", "artifact_semantics_sha256"]
   declaredKeys := [["artifact_input_id"], ["candidate_id", "publication_key"]]
   declaredFDs := [
-    { determinant := ["artifact_input_id"], dependent := ["candidate_id", "publication_key", "artifact_name", "artifact_semantics_sha256"] },
-    { determinant := ["candidate_id", "publication_key"], dependent := ["artifact_input_id", "artifact_name", "artifact_semantics_sha256"] }
+    { determinant := ["artifact_input_id"], dependent := ["candidate_id", "publication_key", "artifact_semantics_sha256"] },
+    { determinant := ["candidate_id", "publication_key"], dependent := ["artifact_input_id", "artifact_semantics_sha256"] }
   ]
 
 theorem artifact_input_schema_well_formed :
@@ -4896,10 +5318,10 @@ theorem artifact_input_bcnf : BCNF artifact_input_contract :=
 
 def artifact_delta_old_contract : RelationContract where
   name := "artifact_delta_old"
-  attributes := ["candidate_id", "publication_key", "artifact_name", "artifact_semantics_sha256", "artifact_sha256"]
+  attributes := ["candidate_id", "publication_key", "artifact_semantics_sha256", "artifact_sha256"]
   declaredKeys := [["candidate_id", "publication_key"]]
   declaredFDs := [
-    { determinant := ["candidate_id", "publication_key"], dependent := ["artifact_name", "artifact_semantics_sha256", "artifact_sha256"] }
+    { determinant := ["candidate_id", "publication_key"], dependent := ["artifact_semantics_sha256", "artifact_sha256"] }
   ]
 
 theorem artifact_delta_old_schema_well_formed :
@@ -4942,10 +5364,10 @@ theorem artifact_delta_old_bcnf : BCNF artifact_delta_old_contract :=
 
 def artifact_delta_new_contract : RelationContract where
   name := "artifact_delta_new"
-  attributes := ["candidate_id", "publication_key", "artifact_name", "artifact_input_id"]
+  attributes := ["candidate_id", "publication_key", "artifact_input_id"]
   declaredKeys := [["candidate_id", "publication_key"]]
   declaredFDs := [
-    { determinant := ["candidate_id", "publication_key"], dependent := ["artifact_name", "artifact_input_id"] }
+    { determinant := ["candidate_id", "publication_key"], dependent := ["artifact_input_id"] }
   ]
 
 theorem artifact_delta_new_schema_well_formed :
@@ -4988,10 +5410,10 @@ theorem artifact_delta_new_bcnf : BCNF artifact_delta_new_contract :=
 
 def artifact_operation_contract : RelationContract where
   name := "artifact_operation"
-  attributes := ["candidate_id", "publication_key", "artifact_name", "operation"]
+  attributes := ["candidate_id", "publication_key", "operation"]
   declaredKeys := [["candidate_id", "publication_key"]]
   declaredFDs := [
-    { determinant := ["candidate_id", "publication_key"], dependent := ["artifact_name", "operation"] }
+    { determinant := ["candidate_id", "publication_key"], dependent := ["operation"] }
   ]
 
 theorem artifact_operation_schema_well_formed :
@@ -5080,10 +5502,11 @@ theorem artifact_blob_bcnf : BCNF artifact_blob_contract :=
 
 def prepared_artifact_contract : RelationContract where
   name := "prepared_artifact"
-  attributes := ["candidate_id", "publication_key", "artifact_name", "artifact_sha256", "protection_token", "state"]
-  declaredKeys := [["candidate_id", "publication_key"]]
+  attributes := ["candidate_id", "publication_key", "artifact_sha256", "storage_codec_version", "protection_token", "state"]
+  declaredKeys := [["candidate_id", "publication_key"], ["protection_token"]]
   declaredFDs := [
-    { determinant := ["candidate_id", "publication_key"], dependent := ["artifact_name", "artifact_sha256", "protection_token", "state"] }
+    { determinant := ["candidate_id", "publication_key"], dependent := ["artifact_sha256", "storage_codec_version", "protection_token", "state"] },
+    { determinant := ["protection_token"], dependent := ["candidate_id", "publication_key", "artifact_sha256", "storage_codec_version", "state"] }
   ]
 
 theorem prepared_artifact_schema_well_formed :
@@ -5172,12 +5595,13 @@ theorem catalog_revision_bcnf : BCNF catalog_revision_contract :=
 
 def publication_identity_contract : RelationContract where
   name := "publication_identity"
-  attributes := ["publication_key", "publication_id", "gid"]
-  declaredKeys := [["publication_key"], ["publication_id"], ["gid"]]
+  attributes := ["publication_key", "publication_id", "gid", "artifact_name"]
+  declaredKeys := [["publication_key"], ["publication_id"], ["gid"], ["artifact_name"]]
   declaredFDs := [
-    { determinant := ["publication_key"], dependent := ["publication_id", "gid"] },
-    { determinant := ["publication_id"], dependent := ["publication_key", "gid"] },
-    { determinant := ["gid"], dependent := ["publication_key", "publication_id"] }
+    { determinant := ["publication_key"], dependent := ["publication_id", "gid", "artifact_name"] },
+    { determinant := ["publication_id"], dependent := ["publication_key", "gid", "artifact_name"] },
+    { determinant := ["gid"], dependent := ["publication_key", "publication_id", "artifact_name"] },
+    { determinant := ["artifact_name"], dependent := ["publication_key", "publication_id", "gid"] }
   ]
 
 theorem publication_identity_schema_well_formed :
@@ -5406,11 +5830,11 @@ theorem title_sort_bcnf : BCNF title_sort_contract :=
 
 def catalog_publication_contract : RelationContract where
   name := "catalog_publication"
-  attributes := ["revision", "gallery_id", "publication_key", "summary_sha256", "language_sha256", "published_at", "modified_at", "redownload_required", "item_sha256"]
+  attributes := ["revision", "gallery_id", "publication_key", "summary_sha256", "language_sha256", "published_at", "modified_at", "item_sha256"]
   declaredKeys := [["revision", "gallery_id"], ["revision", "publication_key"]]
   declaredFDs := [
-    { determinant := ["revision", "gallery_id"], dependent := ["publication_key", "summary_sha256", "language_sha256", "published_at", "modified_at", "redownload_required", "item_sha256"] },
-    { determinant := ["revision", "publication_key"], dependent := ["gallery_id", "summary_sha256", "language_sha256", "published_at", "modified_at", "redownload_required", "item_sha256"] }
+    { determinant := ["revision", "gallery_id"], dependent := ["publication_key", "summary_sha256", "language_sha256", "published_at", "modified_at", "item_sha256"] },
+    { determinant := ["revision", "publication_key"], dependent := ["gallery_id", "summary_sha256", "language_sha256", "published_at", "modified_at", "item_sha256"] }
   ]
 
 theorem catalog_publication_schema_well_formed :
@@ -5450,6 +5874,53 @@ theorem catalog_publication_bcnf_check :
 
 theorem catalog_publication_bcnf : BCNF catalog_publication_contract :=
   bcnfCheck_sound catalog_publication_contract catalog_publication_bcnf_check
+
+def catalog_publication_order_contract : RelationContract where
+  name := "catalog_publication_order"
+  attributes := ["revision", "position", "publication_key"]
+  declaredKeys := [["revision", "position"], ["revision", "publication_key"]]
+  declaredFDs := [
+    { determinant := ["revision", "position"], dependent := ["publication_key"] },
+    { determinant := ["revision", "publication_key"], dependent := ["position"] }
+  ]
+
+theorem catalog_publication_order_schema_well_formed :
+    schemaWellFormedCheck catalog_publication_order_contract = true := by
+  native_decide
+
+theorem catalog_publication_order_candidate_keys_check :
+    keysDetermineAllCheck catalog_publication_order_contract = true := by
+  native_decide
+
+theorem catalog_publication_order_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes catalog_publication_order_contract :=
+  keysDetermineAllCheck_sound catalog_publication_order_contract
+    catalog_publication_order_candidate_keys_check
+
+theorem catalog_publication_order_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck catalog_publication_order_contract = true := by
+  native_decide
+
+theorem catalog_publication_order_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal catalog_publication_order_contract :=
+  declaredKeysMinimalCheck_sound catalog_publication_order_contract
+    catalog_publication_order_candidate_keys_minimal_check
+
+theorem catalog_publication_order_closure_fixed_check :
+    closureFixedPointCheck catalog_publication_order_contract = true := by
+  native_decide
+
+theorem catalog_publication_order_closure_reached_fixed_point :
+    ClosureReachedFixedPoint catalog_publication_order_contract :=
+  closureFixedPointCheck_sound catalog_publication_order_contract
+    catalog_publication_order_closure_fixed_check
+
+theorem catalog_publication_order_bcnf_check :
+    bcnfCheck catalog_publication_order_contract = true := by
+  native_decide
+
+theorem catalog_publication_order_bcnf : BCNF catalog_publication_order_contract :=
+  bcnfCheck_sound catalog_publication_order_contract catalog_publication_order_bcnf_check
 
 def catalog_publication_title_contract : RelationContract where
   name := "catalog_publication_title"
@@ -5732,10 +6203,11 @@ theorem artifact_identity_bcnf : BCNF artifact_identity_contract :=
 
 def artifact_location_contract : RelationContract where
   name := "artifact_location"
-  attributes := ["artifact_id", "artifact_locator_sha256"]
-  declaredKeys := [["artifact_id"]]
+  attributes := ["artifact_sha256", "artifact_locator_sha256"]
+  declaredKeys := [["artifact_sha256"], ["artifact_locator_sha256"]]
   declaredFDs := [
-    { determinant := ["artifact_id"], dependent := ["artifact_locator_sha256"] }
+    { determinant := ["artifact_sha256"], dependent := ["artifact_locator_sha256"] },
+    { determinant := ["artifact_locator_sha256"], dependent := ["artifact_sha256"] }
   ]
 
 theorem artifact_location_schema_well_formed :
@@ -5778,10 +6250,10 @@ theorem artifact_location_bcnf : BCNF artifact_location_contract :=
 
 def catalog_artifact_contract : RelationContract where
   name := "catalog_artifact"
-  attributes := ["revision", "artifact_id", "artifact_name", "artifact_semantics_sha256", "modified_at"]
+  attributes := ["revision", "artifact_id", "artifact_semantics_sha256", "modified_at"]
   declaredKeys := [["revision", "artifact_id"]]
   declaredFDs := [
-    { determinant := ["revision", "artifact_id"], dependent := ["artifact_name", "artifact_semantics_sha256", "modified_at"] }
+    { determinant := ["revision", "artifact_id"], dependent := ["artifact_semantics_sha256", "modified_at"] }
   ]
 
 theorem catalog_artifact_schema_well_formed :
@@ -5824,11 +6296,11 @@ theorem catalog_artifact_bcnf : BCNF catalog_artifact_contract :=
 
 def publication_receipt_contract : RelationContract where
   name := "publication_receipt"
-  attributes := ["receipt_id", "revision", "source_revision", "reserved_revision", "channel", "artifact_policy_id", "display_title_policy_id", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "state", "committed_at", "finalized_at"]
+  attributes := ["receipt_id", "revision", "source_revision", "reserved_revision", "channel", "artifact_policy_id", "display_title_policy_id", "publication_count", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "state", "committed_at", "finalized_at"]
   declaredKeys := [["receipt_id"], ["reserved_revision"]]
   declaredFDs := [
-    { determinant := ["receipt_id"], dependent := ["revision", "source_revision", "reserved_revision", "channel", "artifact_policy_id", "display_title_policy_id", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "state", "committed_at", "finalized_at"] },
-    { determinant := ["reserved_revision"], dependent := ["receipt_id", "revision", "source_revision", "channel", "artifact_policy_id", "display_title_policy_id", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "state", "committed_at", "finalized_at"] }
+    { determinant := ["receipt_id"], dependent := ["revision", "source_revision", "reserved_revision", "channel", "artifact_policy_id", "display_title_policy_id", "publication_count", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "state", "committed_at", "finalized_at"] },
+    { determinant := ["reserved_revision"], dependent := ["receipt_id", "revision", "source_revision", "channel", "artifact_policy_id", "display_title_policy_id", "publication_count", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "state", "committed_at", "finalized_at"] }
   ]
 
 theorem publication_receipt_schema_well_formed :
@@ -5930,6 +6402,7 @@ def manifestContracts : List RelationContract := [
   source_build_channel_contract,
   source_scope_contract,
   source_build_discovery_contract,
+  source_build_expected_gallery_contract,
   source_locator_identity_contract,
   gallery_identity_contract,
   gallery_observation_allocation_contract,
@@ -5947,6 +6420,7 @@ def manifestContracts : List RelationContract := [
   gallery_observation_raw_content_contract,
   gallery_observation_page_count_contract,
   gallery_observation_directory_contract,
+  gallery_observation_stat_contract,
   source_build_gallery_contract,
   file_name_identity_contract,
   content_blob_contract,
@@ -5962,6 +6436,7 @@ def manifestContracts : List RelationContract := [
   analysis_state_anchor_contract,
   analysis_state_ancestry_contract,
   source_snapshot_manifest_identity_contract,
+  analysis_snapshot_manifest_contract,
   source_revision_contract,
   source_revision_provenance_contract,
   source_head_contract,
@@ -5997,14 +6472,20 @@ def manifestContracts : List RelationContract := [
   analysis_gid_winner_tombstone_contract,
   analysis_gid_winner_resolved_contract,
   analysis_state_component_seal_contract,
+  analysis_stage_contract,
   analysis_checkpoint_contract,
   analysis_batch_receipt_contract,
   publication_candidate_contract,
+  publication_candidate_projection_seal_contract,
   publication_candidate_base_catalog_contract,
   publication_candidate_base_source_contract,
   publication_selection_contract,
+  publication_stage_contract,
   publication_checkpoint_contract,
   publication_batch_receipt_contract,
+  artifact_zip_writer_policy_contract,
+  artifact_producer_fingerprint_contract,
+  artifact_storage_codec_contract,
   artifact_policy_semantics_contract,
   artifact_policy_contract,
   artifact_semantic_input_contract,
@@ -6021,6 +6502,7 @@ def manifestContracts : List RelationContract := [
   display_title_choice_contract,
   title_sort_contract,
   catalog_publication_contract,
+  catalog_publication_order_contract,
   catalog_publication_title_contract,
   catalog_publication_content_contract,
   catalog_contributor_contract,
@@ -6034,7 +6516,7 @@ def manifestContracts : List RelationContract := [
 ]
 
 theorem manifest_relation_count :
-    manifestContracts.length = 115 := by
+    manifestContracts.length = 125 := by
   native_decide
 
 def source_build_and_optional_base_source_contract : BinaryDecompositionContract where
@@ -6589,12 +7071,13 @@ theorem tag_identity_and_gallery_observation_association_dependency_preserving :
 
 def artifact_payload_and_preparation_occurrence_contract : BinaryDecompositionContract where
   name := "artifact_payload_and_preparation_occurrence"
-  universalAttributes := ["candidate_id", "publication_key", "artifact_name", "artifact_sha256", "size_bytes", "protection_token", "state"]
+  universalAttributes := ["candidate_id", "publication_key", "artifact_sha256", "size_bytes", "storage_codec_version", "protection_token", "state"]
   leftAttributes := ["artifact_sha256", "size_bytes"]
-  rightAttributes := ["candidate_id", "publication_key", "artifact_name", "artifact_sha256", "protection_token", "state"]
+  rightAttributes := ["candidate_id", "publication_key", "artifact_sha256", "storage_codec_version", "protection_token", "state"]
   declaredFDs := [
     { determinant := ["artifact_sha256"], dependent := ["size_bytes"] },
-    { determinant := ["candidate_id", "publication_key"], dependent := ["artifact_name", "artifact_sha256", "protection_token", "state"] }
+    { determinant := ["candidate_id", "publication_key"], dependent := ["artifact_sha256", "storage_codec_version", "protection_token", "state"] },
+    { determinant := ["protection_token"], dependent := ["candidate_id", "publication_key", "artifact_sha256", "storage_codec_version", "state"] }
   ]
 
 theorem artifact_payload_and_preparation_occurrence_projection_check :
@@ -6631,6 +7114,98 @@ theorem artifact_payload_and_preparation_occurrence_dependency_preserving :
     DependencyPreserving artifact_payload_and_preparation_occurrence_contract :=
   dependencyPreservationCheck_sound artifact_payload_and_preparation_occurrence_contract
     artifact_payload_and_preparation_occurrence_dependency_preservation_check
+
+def artifact_payload_and_content_addressed_location_contract : BinaryDecompositionContract where
+  name := "artifact_payload_and_content_addressed_location"
+  universalAttributes := ["artifact_sha256", "size_bytes", "artifact_locator_sha256"]
+  leftAttributes := ["artifact_sha256", "size_bytes"]
+  rightAttributes := ["artifact_sha256", "artifact_locator_sha256"]
+  declaredFDs := [
+    { determinant := ["artifact_sha256"], dependent := ["size_bytes", "artifact_locator_sha256"] },
+    { determinant := ["artifact_locator_sha256"], dependent := ["artifact_sha256", "size_bytes"] }
+  ]
+
+theorem artifact_payload_and_content_addressed_location_projection_check :
+    binaryDecompositionWellFormedCheck
+      artifact_payload_and_content_addressed_location_contract = true := by
+  native_decide
+
+theorem artifact_payload_and_content_addressed_location_projection_well_formed :
+    BinaryDecompositionWellFormed artifact_payload_and_content_addressed_location_contract :=
+  binaryDecompositionWellFormedCheck_sound
+    artifact_payload_and_content_addressed_location_contract artifact_payload_and_content_addressed_location_projection_check
+
+theorem artifact_payload_and_content_addressed_location_intersection_check :
+    sameAttrSet (attributeIntersection
+      artifact_payload_and_content_addressed_location_contract.leftAttributes
+      artifact_payload_and_content_addressed_location_contract.rightAttributes)
+      ["artifact_sha256"] = true := by
+  native_decide
+
+theorem artifact_payload_and_content_addressed_location_lossless_check :
+    binaryLosslessCheck artifact_payload_and_content_addressed_location_contract = true := by
+  native_decide
+
+theorem artifact_payload_and_content_addressed_location_lossless : BinaryLossless artifact_payload_and_content_addressed_location_contract :=
+  ⟨artifact_payload_and_content_addressed_location_projection_well_formed,
+    binaryLosslessCheck_sound artifact_payload_and_content_addressed_location_contract
+      artifact_payload_and_content_addressed_location_lossless_check⟩
+
+theorem artifact_payload_and_content_addressed_location_dependency_preservation_check :
+    dependencyPreservationCheck artifact_payload_and_content_addressed_location_contract = true := by
+  native_decide
+
+theorem artifact_payload_and_content_addressed_location_dependency_preserving :
+    DependencyPreserving artifact_payload_and_content_addressed_location_contract :=
+  dependencyPreservationCheck_sound artifact_payload_and_content_addressed_location_contract
+    artifact_payload_and_content_addressed_location_dependency_preservation_check
+
+def artifact_policy_and_registered_producer_contract : BinaryDecompositionContract where
+  name := "artifact_policy_and_registered_producer"
+  universalAttributes := ["policy_component_sha256", "artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"]
+  leftAttributes := ["policy_component_sha256", "artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"]
+  rightAttributes := ["producer_fingerprint_sha256", "artifact_algorithm_version", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"]
+  declaredFDs := [
+    { determinant := ["policy_component_sha256"], dependent := ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"] },
+    { determinant := ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"], dependent := ["policy_component_sha256"] },
+    { determinant := ["producer_fingerprint_sha256"], dependent := ["artifact_algorithm_version", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"] },
+    { determinant := ["artifact_algorithm_version", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"], dependent := ["producer_fingerprint_sha256"] }
+  ]
+
+theorem artifact_policy_and_registered_producer_projection_check :
+    binaryDecompositionWellFormedCheck
+      artifact_policy_and_registered_producer_contract = true := by
+  native_decide
+
+theorem artifact_policy_and_registered_producer_projection_well_formed :
+    BinaryDecompositionWellFormed artifact_policy_and_registered_producer_contract :=
+  binaryDecompositionWellFormedCheck_sound
+    artifact_policy_and_registered_producer_contract artifact_policy_and_registered_producer_projection_check
+
+theorem artifact_policy_and_registered_producer_intersection_check :
+    sameAttrSet (attributeIntersection
+      artifact_policy_and_registered_producer_contract.leftAttributes
+      artifact_policy_and_registered_producer_contract.rightAttributes)
+      ["artifact_algorithm_version", "producer_fingerprint_sha256"] = true := by
+  native_decide
+
+theorem artifact_policy_and_registered_producer_lossless_check :
+    binaryLosslessCheck artifact_policy_and_registered_producer_contract = true := by
+  native_decide
+
+theorem artifact_policy_and_registered_producer_lossless : BinaryLossless artifact_policy_and_registered_producer_contract :=
+  ⟨artifact_policy_and_registered_producer_projection_well_formed,
+    binaryLosslessCheck_sound artifact_policy_and_registered_producer_contract
+      artifact_policy_and_registered_producer_lossless_check⟩
+
+theorem artifact_policy_and_registered_producer_dependency_preservation_check :
+    dependencyPreservationCheck artifact_policy_and_registered_producer_contract = true := by
+  native_decide
+
+theorem artifact_policy_and_registered_producer_dependency_preserving :
+    DependencyPreserving artifact_policy_and_registered_producer_contract :=
+  dependencyPreservationCheck_sound artifact_policy_and_registered_producer_contract
+    artifact_policy_and_registered_producer_dependency_preservation_check
 
 def artifact_payload_and_catalog_occurrence_contract : BinaryDecompositionContract where
   name := "artifact_payload_and_catalog_occurrence"
@@ -6680,13 +7255,13 @@ theorem artifact_payload_and_catalog_occurrence_dependency_preserving :
 
 def artifact_identity_and_catalog_occurrence_contract : BinaryDecompositionContract where
   name := "artifact_identity_and_catalog_occurrence"
-  universalAttributes := ["revision", "publication_key", "artifact_id", "artifact_name", "artifact_semantics_sha256", "artifact_sha256", "modified_at"]
+  universalAttributes := ["revision", "publication_key", "artifact_id", "artifact_semantics_sha256", "artifact_sha256", "modified_at"]
   leftAttributes := ["artifact_id", "publication_key", "artifact_sha256"]
-  rightAttributes := ["revision", "artifact_id", "artifact_name", "artifact_semantics_sha256", "modified_at"]
+  rightAttributes := ["revision", "artifact_id", "artifact_semantics_sha256", "modified_at"]
   declaredFDs := [
     { determinant := ["artifact_id"], dependent := ["publication_key", "artifact_sha256"] },
     { determinant := ["publication_key", "artifact_sha256"], dependent := ["artifact_id"] },
-    { determinant := ["revision", "artifact_id"], dependent := ["artifact_name", "artifact_semantics_sha256", "modified_at"] }
+    { determinant := ["revision", "artifact_id"], dependent := ["artifact_semantics_sha256", "modified_at"] }
   ]
 
 theorem artifact_identity_and_catalog_occurrence_projection_check :
@@ -6726,12 +7301,12 @@ theorem artifact_identity_and_catalog_occurrence_dependency_preserving :
 
 def artifact_input_and_new_delta_state_contract : BinaryDecompositionContract where
   name := "artifact_input_and_new_delta_state"
-  universalAttributes := ["artifact_input_id", "candidate_id", "publication_key", "artifact_name", "artifact_semantics_sha256"]
-  leftAttributes := ["artifact_input_id", "candidate_id", "publication_key", "artifact_name", "artifact_semantics_sha256"]
-  rightAttributes := ["candidate_id", "publication_key", "artifact_name", "artifact_input_id"]
+  universalAttributes := ["artifact_input_id", "candidate_id", "publication_key", "artifact_semantics_sha256"]
+  leftAttributes := ["artifact_input_id", "candidate_id", "publication_key", "artifact_semantics_sha256"]
+  rightAttributes := ["candidate_id", "publication_key", "artifact_input_id"]
   declaredFDs := [
-    { determinant := ["artifact_input_id"], dependent := ["candidate_id", "publication_key", "artifact_name", "artifact_semantics_sha256"] },
-    { determinant := ["candidate_id", "publication_key"], dependent := ["artifact_input_id", "artifact_name", "artifact_semantics_sha256"] }
+    { determinant := ["artifact_input_id"], dependent := ["candidate_id", "publication_key", "artifact_semantics_sha256"] },
+    { determinant := ["candidate_id", "publication_key"], dependent := ["artifact_input_id", "artifact_semantics_sha256"] }
   ]
 
 theorem artifact_input_and_new_delta_state_projection_check :
@@ -6748,7 +7323,7 @@ theorem artifact_input_and_new_delta_state_intersection_check :
     sameAttrSet (attributeIntersection
       artifact_input_and_new_delta_state_contract.leftAttributes
       artifact_input_and_new_delta_state_contract.rightAttributes)
-      ["artifact_input_id", "candidate_id", "publication_key", "artifact_name"] = true := by
+      ["artifact_input_id", "candidate_id", "publication_key"] = true := by
   native_decide
 
 theorem artifact_input_and_new_delta_state_lossless_check :
@@ -6861,12 +7436,12 @@ theorem publication_candidate_and_optional_base_catalog_dependency_preserving :
 
 def catalog_publication_and_title_basis_contract : BinaryDecompositionContract where
   name := "catalog_publication_and_title_basis"
-  universalAttributes := ["revision", "gallery_id", "publication_key", "display_title_policy_id", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "published_at", "modified_at", "redownload_required", "item_sha256"]
-  leftAttributes := ["revision", "gallery_id", "publication_key", "summary_sha256", "language_sha256", "published_at", "modified_at", "redownload_required", "item_sha256"]
+  universalAttributes := ["revision", "gallery_id", "publication_key", "display_title_policy_id", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "published_at", "modified_at", "item_sha256"]
+  leftAttributes := ["revision", "gallery_id", "publication_key", "summary_sha256", "language_sha256", "published_at", "modified_at", "item_sha256"]
   rightAttributes := ["revision", "publication_key", "display_title_policy_id", "source_title_sha256", "source_gallery_name"]
   declaredFDs := [
-    { determinant := ["revision", "gallery_id"], dependent := ["publication_key", "display_title_policy_id", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "published_at", "modified_at", "redownload_required", "item_sha256"] },
-    { determinant := ["revision", "publication_key"], dependent := ["gallery_id", "display_title_policy_id", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "published_at", "modified_at", "redownload_required", "item_sha256"] }
+    { determinant := ["revision", "gallery_id"], dependent := ["publication_key", "display_title_policy_id", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "published_at", "modified_at", "item_sha256"] },
+    { determinant := ["revision", "publication_key"], dependent := ["gallery_id", "display_title_policy_id", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "published_at", "modified_at", "item_sha256"] }
   ]
 
 theorem catalog_publication_and_title_basis_projection_check :
@@ -6951,12 +7526,12 @@ theorem catalog_title_basis_and_display_choice_dependency_preserving :
 
 def catalog_publication_and_optional_content_contract : BinaryDecompositionContract where
   name := "catalog_publication_and_optional_content"
-  universalAttributes := ["revision", "gallery_id", "publication_key", "summary_sha256", "language_sha256", "published_at", "modified_at", "redownload_required", "item_sha256", "content_sha256"]
-  leftAttributes := ["revision", "gallery_id", "publication_key", "summary_sha256", "language_sha256", "published_at", "modified_at", "redownload_required", "item_sha256"]
+  universalAttributes := ["revision", "gallery_id", "publication_key", "summary_sha256", "language_sha256", "published_at", "modified_at", "item_sha256", "content_sha256"]
+  leftAttributes := ["revision", "gallery_id", "publication_key", "summary_sha256", "language_sha256", "published_at", "modified_at", "item_sha256"]
   rightAttributes := ["revision", "publication_key", "content_sha256"]
   declaredFDs := [
-    { determinant := ["revision", "gallery_id"], dependent := ["publication_key", "summary_sha256", "language_sha256", "published_at", "modified_at", "redownload_required", "item_sha256", "content_sha256"] },
-    { determinant := ["revision", "publication_key"], dependent := ["gallery_id", "summary_sha256", "language_sha256", "published_at", "modified_at", "redownload_required", "item_sha256", "content_sha256"] }
+    { determinant := ["revision", "gallery_id"], dependent := ["publication_key", "summary_sha256", "language_sha256", "published_at", "modified_at", "item_sha256", "content_sha256"] },
+    { determinant := ["revision", "publication_key"], dependent := ["gallery_id", "summary_sha256", "language_sha256", "published_at", "modified_at", "item_sha256", "content_sha256"] }
   ]
 
 theorem catalog_publication_and_optional_content_projection_check :
@@ -7098,6 +7673,8 @@ theorem all_manifest_decompositions_lossless :
     BinaryLossless gallery_observation_file_and_filesystem_facts_contract ∧
     BinaryLossless tag_identity_and_gallery_observation_association_contract ∧
     BinaryLossless artifact_payload_and_preparation_occurrence_contract ∧
+    BinaryLossless artifact_payload_and_content_addressed_location_contract ∧
+    BinaryLossless artifact_policy_and_registered_producer_contract ∧
     BinaryLossless artifact_payload_and_catalog_occurrence_contract ∧
     BinaryLossless artifact_identity_and_catalog_occurrence_contract ∧
     BinaryLossless artifact_input_and_new_delta_state_contract ∧
@@ -7121,6 +7698,8 @@ theorem all_manifest_decompositions_lossless :
     gallery_observation_file_and_filesystem_facts_lossless,
     tag_identity_and_gallery_observation_association_lossless,
     artifact_payload_and_preparation_occurrence_lossless,
+    artifact_payload_and_content_addressed_location_lossless,
+    artifact_policy_and_registered_producer_lossless,
     artifact_payload_and_catalog_occurrence_lossless,
     artifact_identity_and_catalog_occurrence_lossless,
     artifact_input_and_new_delta_state_lossless,
@@ -7146,6 +7725,8 @@ theorem all_manifest_decompositions_dependency_preserving :
     DependencyPreserving gallery_observation_file_and_filesystem_facts_contract ∧
     DependencyPreserving tag_identity_and_gallery_observation_association_contract ∧
     DependencyPreserving artifact_payload_and_preparation_occurrence_contract ∧
+    DependencyPreserving artifact_payload_and_content_addressed_location_contract ∧
+    DependencyPreserving artifact_policy_and_registered_producer_contract ∧
     DependencyPreserving artifact_payload_and_catalog_occurrence_contract ∧
     DependencyPreserving artifact_identity_and_catalog_occurrence_contract ∧
     DependencyPreserving artifact_input_and_new_delta_state_contract ∧
@@ -7169,6 +7750,8 @@ theorem all_manifest_decompositions_dependency_preserving :
     gallery_observation_file_and_filesystem_facts_dependency_preserving,
     tag_identity_and_gallery_observation_association_dependency_preserving,
     artifact_payload_and_preparation_occurrence_dependency_preserving,
+    artifact_payload_and_content_addressed_location_dependency_preserving,
+    artifact_policy_and_registered_producer_dependency_preserving,
     artifact_payload_and_catalog_occurrence_dependency_preserving,
     artifact_identity_and_catalog_occurrence_dependency_preserving,
     artifact_input_and_new_delta_state_dependency_preserving,
@@ -7195,6 +7778,7 @@ theorem all_manifest_relations_bcnf :
     BCNF source_build_channel_contract ∧
     BCNF source_scope_contract ∧
     BCNF source_build_discovery_contract ∧
+    BCNF source_build_expected_gallery_contract ∧
     BCNF source_locator_identity_contract ∧
     BCNF gallery_identity_contract ∧
     BCNF gallery_observation_allocation_contract ∧
@@ -7212,6 +7796,7 @@ theorem all_manifest_relations_bcnf :
     BCNF gallery_observation_raw_content_contract ∧
     BCNF gallery_observation_page_count_contract ∧
     BCNF gallery_observation_directory_contract ∧
+    BCNF gallery_observation_stat_contract ∧
     BCNF source_build_gallery_contract ∧
     BCNF file_name_identity_contract ∧
     BCNF content_blob_contract ∧
@@ -7227,6 +7812,7 @@ theorem all_manifest_relations_bcnf :
     BCNF analysis_state_anchor_contract ∧
     BCNF analysis_state_ancestry_contract ∧
     BCNF source_snapshot_manifest_identity_contract ∧
+    BCNF analysis_snapshot_manifest_contract ∧
     BCNF source_revision_contract ∧
     BCNF source_revision_provenance_contract ∧
     BCNF source_head_contract ∧
@@ -7262,14 +7848,20 @@ theorem all_manifest_relations_bcnf :
     BCNF analysis_gid_winner_tombstone_contract ∧
     BCNF analysis_gid_winner_resolved_contract ∧
     BCNF analysis_state_component_seal_contract ∧
+    BCNF analysis_stage_contract ∧
     BCNF analysis_checkpoint_contract ∧
     BCNF analysis_batch_receipt_contract ∧
     BCNF publication_candidate_contract ∧
+    BCNF publication_candidate_projection_seal_contract ∧
     BCNF publication_candidate_base_catalog_contract ∧
     BCNF publication_candidate_base_source_contract ∧
     BCNF publication_selection_contract ∧
+    BCNF publication_stage_contract ∧
     BCNF publication_checkpoint_contract ∧
     BCNF publication_batch_receipt_contract ∧
+    BCNF artifact_zip_writer_policy_contract ∧
+    BCNF artifact_producer_fingerprint_contract ∧
+    BCNF artifact_storage_codec_contract ∧
     BCNF artifact_policy_semantics_contract ∧
     BCNF artifact_policy_contract ∧
     BCNF artifact_semantic_input_contract ∧
@@ -7286,6 +7878,7 @@ theorem all_manifest_relations_bcnf :
     BCNF display_title_choice_contract ∧
     BCNF title_sort_contract ∧
     BCNF catalog_publication_contract ∧
+    BCNF catalog_publication_order_contract ∧
     BCNF catalog_publication_title_contract ∧
     BCNF catalog_publication_content_contract ∧
     BCNF catalog_contributor_contract ∧
@@ -7310,6 +7903,7 @@ theorem all_manifest_relations_bcnf :
     source_build_channel_bcnf,
     source_scope_bcnf,
     source_build_discovery_bcnf,
+    source_build_expected_gallery_bcnf,
     source_locator_identity_bcnf,
     gallery_identity_bcnf,
     gallery_observation_allocation_bcnf,
@@ -7327,6 +7921,7 @@ theorem all_manifest_relations_bcnf :
     gallery_observation_raw_content_bcnf,
     gallery_observation_page_count_bcnf,
     gallery_observation_directory_bcnf,
+    gallery_observation_stat_bcnf,
     source_build_gallery_bcnf,
     file_name_identity_bcnf,
     content_blob_bcnf,
@@ -7342,6 +7937,7 @@ theorem all_manifest_relations_bcnf :
     analysis_state_anchor_bcnf,
     analysis_state_ancestry_bcnf,
     source_snapshot_manifest_identity_bcnf,
+    analysis_snapshot_manifest_bcnf,
     source_revision_bcnf,
     source_revision_provenance_bcnf,
     source_head_bcnf,
@@ -7377,14 +7973,20 @@ theorem all_manifest_relations_bcnf :
     analysis_gid_winner_tombstone_bcnf,
     analysis_gid_winner_resolved_bcnf,
     analysis_state_component_seal_bcnf,
+    analysis_stage_bcnf,
     analysis_checkpoint_bcnf,
     analysis_batch_receipt_bcnf,
     publication_candidate_bcnf,
+    publication_candidate_projection_seal_bcnf,
     publication_candidate_base_catalog_bcnf,
     publication_candidate_base_source_bcnf,
     publication_selection_bcnf,
+    publication_stage_bcnf,
     publication_checkpoint_bcnf,
     publication_batch_receipt_bcnf,
+    artifact_zip_writer_policy_bcnf,
+    artifact_producer_fingerprint_bcnf,
+    artifact_storage_codec_bcnf,
     artifact_policy_semantics_bcnf,
     artifact_policy_bcnf,
     artifact_semantic_input_bcnf,
@@ -7401,6 +8003,7 @@ theorem all_manifest_relations_bcnf :
     display_title_choice_bcnf,
     title_sort_bcnf,
     catalog_publication_bcnf,
+    catalog_publication_order_bcnf,
     catalog_publication_title_bcnf,
     catalog_publication_content_bcnf,
     catalog_contributor_bcnf,
@@ -7427,6 +8030,7 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes source_build_channel_contract ∧
     KeysDetermineAllAttributes source_scope_contract ∧
     KeysDetermineAllAttributes source_build_discovery_contract ∧
+    KeysDetermineAllAttributes source_build_expected_gallery_contract ∧
     KeysDetermineAllAttributes source_locator_identity_contract ∧
     KeysDetermineAllAttributes gallery_identity_contract ∧
     KeysDetermineAllAttributes gallery_observation_allocation_contract ∧
@@ -7444,6 +8048,7 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes gallery_observation_raw_content_contract ∧
     KeysDetermineAllAttributes gallery_observation_page_count_contract ∧
     KeysDetermineAllAttributes gallery_observation_directory_contract ∧
+    KeysDetermineAllAttributes gallery_observation_stat_contract ∧
     KeysDetermineAllAttributes source_build_gallery_contract ∧
     KeysDetermineAllAttributes file_name_identity_contract ∧
     KeysDetermineAllAttributes content_blob_contract ∧
@@ -7459,6 +8064,7 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes analysis_state_anchor_contract ∧
     KeysDetermineAllAttributes analysis_state_ancestry_contract ∧
     KeysDetermineAllAttributes source_snapshot_manifest_identity_contract ∧
+    KeysDetermineAllAttributes analysis_snapshot_manifest_contract ∧
     KeysDetermineAllAttributes source_revision_contract ∧
     KeysDetermineAllAttributes source_revision_provenance_contract ∧
     KeysDetermineAllAttributes source_head_contract ∧
@@ -7494,14 +8100,20 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes analysis_gid_winner_tombstone_contract ∧
     KeysDetermineAllAttributes analysis_gid_winner_resolved_contract ∧
     KeysDetermineAllAttributes analysis_state_component_seal_contract ∧
+    KeysDetermineAllAttributes analysis_stage_contract ∧
     KeysDetermineAllAttributes analysis_checkpoint_contract ∧
     KeysDetermineAllAttributes analysis_batch_receipt_contract ∧
     KeysDetermineAllAttributes publication_candidate_contract ∧
+    KeysDetermineAllAttributes publication_candidate_projection_seal_contract ∧
     KeysDetermineAllAttributes publication_candidate_base_catalog_contract ∧
     KeysDetermineAllAttributes publication_candidate_base_source_contract ∧
     KeysDetermineAllAttributes publication_selection_contract ∧
+    KeysDetermineAllAttributes publication_stage_contract ∧
     KeysDetermineAllAttributes publication_checkpoint_contract ∧
     KeysDetermineAllAttributes publication_batch_receipt_contract ∧
+    KeysDetermineAllAttributes artifact_zip_writer_policy_contract ∧
+    KeysDetermineAllAttributes artifact_producer_fingerprint_contract ∧
+    KeysDetermineAllAttributes artifact_storage_codec_contract ∧
     KeysDetermineAllAttributes artifact_policy_semantics_contract ∧
     KeysDetermineAllAttributes artifact_policy_contract ∧
     KeysDetermineAllAttributes artifact_semantic_input_contract ∧
@@ -7518,6 +8130,7 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes display_title_choice_contract ∧
     KeysDetermineAllAttributes title_sort_contract ∧
     KeysDetermineAllAttributes catalog_publication_contract ∧
+    KeysDetermineAllAttributes catalog_publication_order_contract ∧
     KeysDetermineAllAttributes catalog_publication_title_contract ∧
     KeysDetermineAllAttributes catalog_publication_content_contract ∧
     KeysDetermineAllAttributes catalog_contributor_contract ∧
@@ -7542,6 +8155,7 @@ theorem all_manifest_candidate_keys_determine_attributes :
     source_build_channel_candidate_keys_determine_all_attributes,
     source_scope_candidate_keys_determine_all_attributes,
     source_build_discovery_candidate_keys_determine_all_attributes,
+    source_build_expected_gallery_candidate_keys_determine_all_attributes,
     source_locator_identity_candidate_keys_determine_all_attributes,
     gallery_identity_candidate_keys_determine_all_attributes,
     gallery_observation_allocation_candidate_keys_determine_all_attributes,
@@ -7559,6 +8173,7 @@ theorem all_manifest_candidate_keys_determine_attributes :
     gallery_observation_raw_content_candidate_keys_determine_all_attributes,
     gallery_observation_page_count_candidate_keys_determine_all_attributes,
     gallery_observation_directory_candidate_keys_determine_all_attributes,
+    gallery_observation_stat_candidate_keys_determine_all_attributes,
     source_build_gallery_candidate_keys_determine_all_attributes,
     file_name_identity_candidate_keys_determine_all_attributes,
     content_blob_candidate_keys_determine_all_attributes,
@@ -7574,6 +8189,7 @@ theorem all_manifest_candidate_keys_determine_attributes :
     analysis_state_anchor_candidate_keys_determine_all_attributes,
     analysis_state_ancestry_candidate_keys_determine_all_attributes,
     source_snapshot_manifest_identity_candidate_keys_determine_all_attributes,
+    analysis_snapshot_manifest_candidate_keys_determine_all_attributes,
     source_revision_candidate_keys_determine_all_attributes,
     source_revision_provenance_candidate_keys_determine_all_attributes,
     source_head_candidate_keys_determine_all_attributes,
@@ -7609,14 +8225,20 @@ theorem all_manifest_candidate_keys_determine_attributes :
     analysis_gid_winner_tombstone_candidate_keys_determine_all_attributes,
     analysis_gid_winner_resolved_candidate_keys_determine_all_attributes,
     analysis_state_component_seal_candidate_keys_determine_all_attributes,
+    analysis_stage_candidate_keys_determine_all_attributes,
     analysis_checkpoint_candidate_keys_determine_all_attributes,
     analysis_batch_receipt_candidate_keys_determine_all_attributes,
     publication_candidate_candidate_keys_determine_all_attributes,
+    publication_candidate_projection_seal_candidate_keys_determine_all_attributes,
     publication_candidate_base_catalog_candidate_keys_determine_all_attributes,
     publication_candidate_base_source_candidate_keys_determine_all_attributes,
     publication_selection_candidate_keys_determine_all_attributes,
+    publication_stage_candidate_keys_determine_all_attributes,
     publication_checkpoint_candidate_keys_determine_all_attributes,
     publication_batch_receipt_candidate_keys_determine_all_attributes,
+    artifact_zip_writer_policy_candidate_keys_determine_all_attributes,
+    artifact_producer_fingerprint_candidate_keys_determine_all_attributes,
+    artifact_storage_codec_candidate_keys_determine_all_attributes,
     artifact_policy_semantics_candidate_keys_determine_all_attributes,
     artifact_policy_candidate_keys_determine_all_attributes,
     artifact_semantic_input_candidate_keys_determine_all_attributes,
@@ -7633,6 +8255,7 @@ theorem all_manifest_candidate_keys_determine_attributes :
     display_title_choice_candidate_keys_determine_all_attributes,
     title_sort_candidate_keys_determine_all_attributes,
     catalog_publication_candidate_keys_determine_all_attributes,
+    catalog_publication_order_candidate_keys_determine_all_attributes,
     catalog_publication_title_candidate_keys_determine_all_attributes,
     catalog_publication_content_candidate_keys_determine_all_attributes,
     catalog_contributor_candidate_keys_determine_all_attributes,

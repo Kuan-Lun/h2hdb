@@ -39,20 +39,25 @@ def _load_refinement() -> ModuleType:
 refinement = _load_refinement()
 
 
-def test_data_bootstrap_cells_are_exact_typed_ascii_enums() -> None:
+def test_data_bootstrap_cells_are_exact_typed_scalars() -> None:
     with PHYSICAL.open("rb") as stream:
         document = tomllib.load(stream)
 
     seeds = document["bootstrap_seed"]
-    assert len(seeds) == 23
+    assert len(seeds) == 59
     for seed in seeds:
         assert seed["version"] == 1
-        assert len(seed["value"]) == 1
-        cell = seed["value"][0]
-        assert set(cell) == {"attribute", "type", "encoding", "text"}
-        assert cell["type"] == "ascii_enum"
-        assert cell["encoding"] == "utf8"
-        cell["text"].encode("ascii")
+        assert seed["value"]
+        for cell in seed["value"]:
+            if cell["type"] == "ascii_enum":
+                assert set(cell) == {"attribute", "type", "encoding", "text"}
+                assert cell["encoding"] == "utf8"
+                cell["text"].encode("ascii")
+            else:
+                assert set(cell) == {"attribute", "type", "integer"}
+                assert cell["type"] in {"uint32", "uint64"}
+                assert isinstance(cell["integer"], int)
+                assert 0 <= cell["integer"] <= 2 ** int(cell["type"][4:]) - 1
 
 
 def test_data_runtime_obligation_bindings_are_an_exact_machine_bijection() -> None:
@@ -67,7 +72,7 @@ def test_data_runtime_obligation_bindings_are_an_exact_machine_bijection() -> No
         if not path.startswith("machine_contract.")
     }
     bindings = document["runtime_obligation_binding"]
-    assert len(bindings) == len(owners) == len(document["runtime_obligations"]) == 56
+    assert len(bindings) == len(owners) == len(document["runtime_obligations"]) == 79
     assert len({binding["path"] for binding in bindings}) == len(bindings)
     assert tuple(binding["text"] for binding in bindings) == tuple(
         document["runtime_obligations"]
@@ -82,9 +87,11 @@ def test_physical_loader_rejects_bootstrap_partition_drift(tmp_path: Path) -> No
     original = PHYSICAL.read_text(encoding="utf-8")
     invalid = original.replace(
         'seeded_relations = ["canonical_digest_policy", "channel_registry", '
-        '"source_provider_registry"]',
+        '"source_provider_registry", "analysis_stage", "publication_stage", '
+        '"artifact_zip_writer_policy", "artifact_storage_codec"]',
         'seeded_relations = ["canonical_digest_policy", "channel_registry", '
-        '"manifest_policy"]',
+        '"source_provider_registry", "analysis_stage", "manifest_policy", '
+        '"artifact_zip_writer_policy", "artifact_storage_codec"]',
         1,
     )
     assert invalid != original
@@ -93,7 +100,7 @@ def test_physical_loader_rejects_bootstrap_partition_drift(tmp_path: Path) -> No
 
     with pytest.raises(
         ValueError,
-        match="seeded and absent relations overlap|seed exactly three registries",
+        match="seeded and absent relations overlap|seed exactly seven registries",
     ):
         refinement.load_physical_schema(invalid_path, logical)
 
@@ -339,8 +346,8 @@ def test_physical_spec_is_closed_world_and_uses_real_overlay_views() -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
 
-    assert len(logical.relations) == 115
-    assert len(physical_spec.implemented_relations) == 115
+    assert len(logical.relations) == 125
+    assert len(physical_spec.implemented_relations) == 125
     assert len(physical_spec.pending_relations) == 0
     assert set(physical_spec.source_slice) == {
         relation.relation for relation in physical_spec.implemented_relations
@@ -352,6 +359,18 @@ def test_physical_spec_is_closed_world_and_uses_real_overlay_views() -> None:
     assert physical_spec.relation("analysis_batch_receipt") is not None
     assert physical_spec.relation("source_revision") is not None
     assert "publication_head" not in physical_spec.pending_relations
+    publication = physical_spec.relation("catalog_publication")
+    assert publication is not None
+    assert tuple(column.attribute for column in publication.columns) == (
+        "revision",
+        "gallery_id",
+        "publication_key",
+        "summary_sha256",
+        "language_sha256",
+        "published_at",
+        "modified_at",
+        "item_sha256",
+    )
     resolved = physical_spec.relation("analysis_file_hash_decision_resolved")
     assert resolved is not None
     assert resolved.kind == "view"
@@ -426,7 +445,7 @@ def test_physical_spec_is_closed_world_and_uses_real_overlay_views() -> None:
     expected_shapes = {
         "metadata_fingerprint": "BINARY(40)",
         "cursor": "VARBINARY(2048)",
-        "protection_token": "VARBINARY(512)",
+        "protection_token": "BINARY(184)",
     }
     direct_occurrences: dict[str, int] = {name: 0 for name in direct_payloads}
     for relation in physical_spec.implemented_relations:
@@ -445,7 +464,10 @@ def test_physical_spec_is_closed_world_and_uses_real_overlay_views() -> None:
                 continue
             direct_occurrences[column.attribute] += 1
             assert column.mariadb.type_name == expected_shapes[column.attribute]
-            assert all(column.attribute not in key for key in keys_and_indexes)
+            if column.attribute == "protection_token":
+                assert (column.attribute,) in keys_and_indexes
+            else:
+                assert all(column.attribute not in key for key in keys_and_indexes)
             assert column.attribute not in foreign_key_attributes
     assert direct_occurrences == {
         "metadata_fingerprint": 1,
@@ -560,7 +582,11 @@ def test_sqlite_canonical_page_positions_match_runtime_domains() -> None:
     artifact_policy = physical_spec.relation("artifact_policy_semantics")
     assert artifact_policy is not None
     assert artifact_policy.unique_keys == (
-        ("artifact_algorithm_version", "max_image_short_side"),
+        (
+            "artifact_algorithm_version",
+            "max_image_short_side",
+            "producer_fingerprint_sha256",
+        ),
     )
     semantic_input = physical_spec.relation("artifact_semantic_input")
     assert semantic_input is not None
@@ -575,13 +601,16 @@ def test_sqlite_canonical_page_positions_match_runtime_domains() -> None:
         ),
     )
     assert refinement.maximum_mariadb_index_width(physical_spec) == (
-        600,
-        "analysis_batch_receipt",
+        772,
+        "artifact_producer_fingerprint",
         (
-            "analysis_id",
-            "stage",
-            "committed_at",
-            "batch_key",
+            "artifact_algorithm_version",
+            "producer_equivalence_class",
+            "writer_id",
+            "python_abi",
+            "pillow_build",
+            "libjpeg_build",
+            "zlib_build",
         ),
     )
 
@@ -678,7 +707,7 @@ def test_fresh_complete_sqlite_ddl_refines_physical_spec() -> None:
     assert report.conforms
     assert report.fully_conforms
     assert not report.ddl_only
-    assert len(report.checked_relations) == 115
+    assert len(report.checked_relations) == 125
     assert len(report.pending_relations) == 0
     assert report.mismatches == ()
     assert report.render().splitlines()[0] == (
@@ -839,11 +868,20 @@ def test_analysis_sqlite_fixture_enforces_group_membership_and_checks() -> None:
             )
 
         connection.execute(
-            "INSERT INTO catalog_analysis_batch_receipts VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO catalog_analysis_batch_receipts "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 analysis_id,
-                b"HASH_STATS",
+                b"changed_gallery",
                 b"batch-1",
+                1,
+                b"",
+                0,
+                b"next",
+                2,
+                "OPEN",
+                2,
+                0,
                 2,
                 1_767_225_602_000_000,
             ),
@@ -851,6 +889,20 @@ def test_analysis_sqlite_fixture_enforces_group_membership_and_checks() -> None:
         assert connection.execute(
             "SELECT row_count FROM catalog_analysis_batch_receipts"
         ).fetchone() == (2,)
+
+        # state_component is an exact binary domain.  Its enum predicate must
+        # use binary literals as well; SQLite TEXT literals can never satisfy
+        # the simultaneous typeof(...)=blob constraint.
+        connection.execute(
+            "INSERT INTO catalog_analysis_state_component_seals VALUES (?, ?, ?, ?)",
+            (analysis_id, b"file_hash_decision", 0, 1_767_225_602_000_000),
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO catalog_analysis_state_component_seals "
+                "VALUES (?, ?, ?, ?)",
+                (analysis_id, "content_owner", 0, 1_767_225_602_000_000),
+            )
     finally:
         connection.close()
 
@@ -890,6 +942,17 @@ def test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states()
             "INSERT INTO catalog_source_build_base_source VALUES (?, ?, ?)",
             (b"b" * 16, 1, 1),
         )
+
+        connection.execute(
+            "INSERT INTO catalog_title_sort_policy VALUES (?, ?, ?)",
+            (1, 1, b"16.0.0"),
+        )
+        for malformed_unicode_version in (b"", b"v" * 33, "16.0.0"):
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    "INSERT INTO catalog_title_sort_policy VALUES (?, ?, ?)",
+                    (2, 1, malformed_unicode_version),
+                )
 
         source_build = "INSERT INTO catalog_source_builds VALUES (?, ?, ?, ?, ?, ?)"
         with pytest.raises(sqlite3.IntegrityError):
@@ -931,13 +994,13 @@ def test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states()
                 )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
-                "INSERT INTO catalog_analysis_checkpoints VALUES (?, ?, ?, ?, ?, ?)",
-                (b"a" * 16, b"HASH", 1, b"c" * 2049, "OPEN", 1),
+                "INSERT INTO catalog_analysis_checkpoints VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (b"a" * 16, b"HASH", 1, b"c" * 2049, 0, "OPEN", 1),
             )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
-                "INSERT INTO catalog_publication_checkpoints VALUES (?, ?, ?, ?, ?, ?)",
-                (b"p" * 16, b"ITEMS", 1, b"c" * 2049, "OPEN", 1),
+                "INSERT INTO catalog_publication_checkpoints VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (b"p" * 16, b"ITEMS", 1, b"c" * 2049, 0, "OPEN", 1),
             )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
@@ -990,7 +1053,7 @@ def test_mariadb_renderer_preserves_exact_binary_types_checks_and_views() -> Non
     assert "octet_length(metadata_fingerprint) = 40" in ddl
     assert "`cursor` VARBINARY(2048) NOT NULL" in ddl
     assert "octet_length(`cursor`) <= 2048" in ddl
-    assert "octet_length(protection_token) <= 512" in ddl
+    assert "octet_length(protection_token) = 184" in ddl
     assert "`summary_sha256` BINARY(32) NOT NULL" in ddl
     assert "`language_sha256` BINARY(32) NOT NULL" in ddl
     assert "`artifact_locator_sha256` BINARY(32) NOT NULL" in ddl
@@ -1005,7 +1068,7 @@ def test_mariadb_renderer_preserves_exact_binary_types_checks_and_views() -> Non
         in ddl
     )
     assert "`value_bytes`" not in ddl
-    assert refinement.maximum_mariadb_index_width(physical_spec)[0] == 600
+    assert refinement.maximum_mariadb_index_width(physical_spec)[0] == 772
     idempotent = refinement.render_mariadb_ddl(
         physical_spec,
         idempotent=True,

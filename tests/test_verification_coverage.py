@@ -59,11 +59,11 @@ def test_required_invariant_coverage_is_closed_and_nonempty() -> None:
     assert required_ids
     assert set(report.required_invariants) == required_ids
     assert report.evidence_ids
-    assert len(report.blockers) == (12 + 14) * 3
-    assert sum(blocker.startswith("catalog.") for blocker in report.blockers) == 12 * 3
+    assert len(report.blockers) == 44
+    assert sum(blocker.startswith("catalog.") for blocker in report.blockers) == 18
     assert (
         sum(blocker.startswith("h2hdb.operational.") for blocker in report.blockers)
-        == 14 * 3
+        == 26
     )
 
 
@@ -157,7 +157,7 @@ def test_stale_evidence_symbol_is_rejected(tmp_path: Path) -> None:
 def test_blocked_layer_requires_an_explicit_machine_blocker(tmp_path: Path) -> None:
     path = _write_mutation(
         tmp_path,
-        'blocker = "No production vNext writer recomputes and validates identity codecs from database rows inside the committing transaction."',
+        'blocker = "No production cross-backend fault matrix injects every invalid width, storage class, counter, timestamp, enum, and collation-sensitive value."',
         'blocker = "unknown"',
     )
 
@@ -173,8 +173,8 @@ def test_production_evidence_layer_cannot_stop_at_supporting(
 ) -> None:
     path = _write_mutation(
         tmp_path,
-        'runtime_refinement = { status = "blocked", evidence = ["runtime.physical-domains"], blocker = "No production operational writer validates every storage class, width, portable counter, timestamp, enum, and collation-sensitive value before SQL binding." }',
-        'runtime_refinement = { status = "supporting", evidence = ["runtime.physical-domains"] }',
+        'runtime_refinement = { status = "covered", evidence = ["runtime.physical-domains", "runtime.production.writer-bindings"] }',
+        'runtime_refinement = { status = "supporting", evidence = ["runtime.physical-domains", "runtime.production.writer-bindings"] }',
     )
 
     with pytest.raises(
@@ -227,10 +227,10 @@ def test_coverage_cli_is_a_required_machine_gate() -> None:
     )
 
     assert result.returncode == 1, result.stderr
-    assert "formal coverage blocked: invariants=26" in result.stdout
-    assert "catalog.identity-codecs.v1:runtime_refinement:" in result.stdout
+    assert "formal coverage blocked: invariants=27" in result.stdout
+    assert "catalog.identity-codecs.v1:fault:" in result.stdout
     assert "catalog.retention.v1:integration:" in result.stdout
-    assert "h2hdb.operational.gallery-staging.v1:runtime_refinement:" in result.stdout
+    assert "h2hdb.operational.gallery-staging.v1:fault:" in result.stdout
 
 
 def test_coverage_validate_only_reports_production_blockers() -> None:
@@ -250,9 +250,9 @@ def test_coverage_validate_only_reports_production_blockers() -> None:
     assert result.returncode == 0, result.stderr
     assert (
         "formal coverage contract valid; production readiness blocked: "
-        "invariants=26 evidence=46 blockers=78"
+        "invariants=27 evidence=103 blockers=44"
     ) in result.stdout
-    assert "catalog.identity-codecs.v1:runtime_refinement:" in result.stdout
+    assert "catalog.identity-codecs.v1:fault:" in result.stdout
     assert "h2hdb.operational.gallery-staging.v1:integration:" in result.stdout
 
 

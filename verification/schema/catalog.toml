@@ -85,7 +85,7 @@ encoding_version = 1
 framing = "ascii('h2hdb-vnext-source-scope-key\\0') || u32be(encoding_version) || u32be(source_provider_length) || source_provider_ascii || raw32(source_root_sha256) || u32be(identity_policy_version)"
 collision_model = "collision_free_identity_domain"
 write_obligation = "derive scope_key by domain-separated SHA-256 over the exact registered source_provider bytes, canonical source_root_sha256, and identity_policy_version; reject caller-supplied keys; recompute on every write; and on digest conflict require exact natural-tuple equality"
-seal_obligation = "before a source build seals, require source_build.scope_key to equal every joined gallery_identity.scope_key in source_build_gallery, verify every locator digest and exact framed nested locator payload, and reject cross-scope membership"
+seal_obligation = "before a source build seals, require the provider-private typed discovery plan to have uploaded one complete source_build_expected_gallery sequence ordered by exact unsigned locator_sha256 bytes with positions zero through gallery_count minus one and no duplicate gallery, require source_build.scope_key to equal every joined gallery_identity.scope_key in both expected membership and source_build_gallery, verify every locator digest and exact framed nested locator payload, and reject cross-scope or extra membership through the source_build_gallery foreign key; only the empty terminal operational assembly receipt after an independent exact expected-versus-linked merge and gallery_observation_stat accumulation may insert build_manifest and CAS the build OPEN to SEALED, while discovery/tree/manifest digests remain audit-only"
 
 [[identity_codec]]
 id = "gallery-key.v1"
@@ -178,11 +178,12 @@ digest_domain = "effective_content_v1"
 encoding_version = 1
 framing = "ascii('h2hdb-vnext-effective-content\\0') || u32be(encoding_version) || u64be(file_count) || repeated raw32(file_sha256) in unsigned bytewise ascending file_sha256 order after joining file_name_identity and retaining only resolved non-excluded CONTENT entries; duplicate digests remain repeated"
 collision_model = "collision_free_identity_domain"
-write_obligation = "build the exact effective-content preimage from resolved non-excluded CONTENT files only by an unsigned-bytewise keyset query or external bounded sort; preserve duplicate file digests so the result is permutation-invariant but multiplicity-sensitive; exclude METADATA and resolved spam; stream the declared file_count and ordered rows through iter_effective_content_payload_ordered and effective_content_digest_ordered into canonical_value_digest_parts without materializing the full sequence; persist it under the registered effective_content_v1 canonical digest policy, recompute content_sha256, and byte-compare the full preimage on every digest conflict"
+write_obligation = "production prepares effective content only as a database-owned private typed EffectiveContentPreparation, never as caller authority: from one immutable SEALED source_build snapshot and immutable COMPLETE analysis snapshot, stream only resolved non-excluded CONTENT file_sha256 values by an unsigned-bytewise keyset query into a deterministic external spool and typed receipt outside every canonical page transaction; exclude METADATA and resolved spam, preserve duplicate digests, and bind the receipt to the exact sealed build identity, sealed analysis identity, live ingest generation, file_count, byte_count, content_sha256, and private spool identity, while no public API accepts digest, count, sequence, or receipt authority; stream the exact permutation-invariant but multiplicity-sensitive frame through iter_effective_content_payload_ordered, effective_content_digest_ordered, and canonical_value_digest_parts without materializing the full sequence; bounded canonical page transactions validate and CAS the live-generation canonical_value_upload claim and resume only from database receipts; final candidate handoff runs in one transaction, locks and validates the private typed receipt, immutable SEALED build and COMPLETE analysis canonical identities, sealed canonical_value_identity, and the same current live-generation claim, writes the candidate, then deletes that claim; immutable snapshots permit deterministic spool and receipt reconstruction after response loss; every digest conflict recomputes content_sha256 and byte-compares the full preimage; no audit digest, caller-supplied digest/count/sequence/receipt, or unsealed snapshot authorizes write, resume, or handoff"
 read_obligation = "join every content_sha256 through canonical_value_identity, stream-validate the effective_content_v1 digest domain, declared file_count, unsigned-bytewise order, multiplicity, exact framed preimage, and exact EOF before exposing authority, and never use an unverified or non-injective grouping checksum as content identity"
 
 [source_snapshot_manifest_contract]
 relation = "source_snapshot_manifest_identity"
+analysis_binding_relation = "analysis_snapshot_manifest"
 digest_attribute = "snapshot_manifest_sha256"
 canonical_value_relation = "canonical_value_identity"
 canonical_digest_attribute = "value_sha256"
@@ -191,8 +192,10 @@ codec_version = 1
 framing = "ascii('h2hdb-vnext-source-snapshot-manifest\\0') || u32be(codec_version) || u32be(analysis_algorithm_version) || u64be(spam_artist_threshold) || u64be(spam_occurrence_threshold) || u32be(content_owner_rule_version) || u32be(gid_winner_rule_version) || u64be(gallery_count) || u64be(file_count) || u64be(byte_count) || u64be(gallery_entry_count) || repeated(raw32(gallery_key) || raw32(observation_identity_sha256) || u8(content_present) || if_present(raw32(content_sha256)) || u64be(gid)) || u64be(file_hash_decision_count) || repeated(raw32(file_sha256) || u64be(occurrence_count) || u64be(artist_count) || u64be(maximum_gallery_artist_count) || u8(excluded_flag)) || u64be(content_owner_count) || repeated(raw32(content_sha256) || raw32(owner_gallery_key)) || u64be(gid_winner_count) || repeated(u64be(gid) || raw32(winner_gallery_key))"
 canonical_order = "gallery entries by gallery_key; file-hash decisions by file_sha256; content owners by content_sha256; GID winners by unsigned gid; every repeated section count equals its exact row count and duplicate keys are forbidden"
 decision_predicate = "excluded_flag = 1 iff occurrence_count >= spam_occurrence_threshold AND maximum_gallery_artist_count > 0 AND artist_count > spam_artist_threshold * maximum_gallery_artist_count, evaluated in unbounded integers; otherwise excluded_flag = 0"
-write_obligation = "construct the payload only from one COMPLETED analysis policy natural tuple and its fully sealed resolved snapshot; join gallery_id surrogates through gallery_identity.gallery_key; require every gallery entry to carry its exact observation identity, positive GID, and an explicit content_present byte where zero encodes an empty or metadata-only gallery and is distinct from every 32-byte digest; include every resolved spam decision as the exact occurrence_count, artist_count, maximum_gallery_artist_count, and derived excluded_flag fields without granting identity authority to evidence_sha256; include every content owner and GID winner exactly once as its group key plus stable winner gallery_key without granting identity authority to decision_sha256; require owner/winner gallery keys to be members of the same snapshot; validate the three declared aggregate counts against the encoded snapshot; obtain exact section counts, payload_byte_count, order, membership, and aggregate evidence in a bounded preflight/keyset receipt, then replay through iter_source_snapshot_manifest_payload_rows_ordered and source_snapshot_manifest_digest_ordered into canonical_value_digest_parts without materializing the snapshot; recompute the canonical digest and byte-compare the complete payload on collision"
-retention = "source_snapshot_manifest_identity and its canonical_value_identity payload remain retained while any source_revision references the digest; if the last source_revision is removed by a future schema cleanup protocol, delete the manifest identity before garbage-collecting its otherwise-unreferenced canonical payload"
+write_obligation = "construct the payload only from one OPEN snapshot-ready analysis whose exact policy natural tuple and all five immutable component seals freeze its fully resolved snapshot; component rows are immutable once the fifth seal exists even while canonical preparation runs; join gallery_id surrogates through gallery_identity.gallery_key; require every gallery entry to carry its exact observation identity, positive GID, and an explicit content_present byte where zero encodes an empty or metadata-only gallery and is distinct from every 32-byte digest; include every resolved spam decision as the exact occurrence_count, artist_count, maximum_gallery_artist_count, and derived excluded_flag fields without granting identity authority to evidence_sha256; include every content owner and GID winner exactly once as its group key plus stable winner gallery_key without granting identity authority to decision_sha256; require owner/winner gallery keys to be members of the same snapshot; validate the three declared aggregate counts against the encoded snapshot; obtain exact section counts, payload_byte_count, order, membership, and aggregate evidence in a bounded preflight/keyset receipt, then replay through iter_source_snapshot_manifest_payload_rows_ordered and source_snapshot_manifest_digest_ordered into canonical_value_digest_parts without materializing the snapshot; recompute the canonical digest and byte-compare the complete payload on collision"
+handoff_obligation = "analysis completion accepts only a database-owned private typed canonical snapshot plan derived from the OPEN snapshot-ready analysis; after bounded canonical upload seals source_snapshot_manifest_identity, one transaction locks and validates that typed plan, the same OPEN analysis and all five immutable component seals, the sealed canonical identity, and the live-generation canonical_value_upload claim, inserts analysis_snapshot_manifest(analysis_id,snapshot_manifest_sha256), deletes exactly that claim, and CAS-transitions analysis_run from OPEN to COMPLETE with completed_at; all three mutations commit or roll back together; response loss replays by the analysis_id natural key and accepts only COMPLETE plus exact binding digest equality with the claim absent, and no caller digest, input_manifest_sha256, audit digest, count, or receipt is output authority"
+publication_obligation = "source publication and catalog publication join publication_candidate.analysis_id through analysis_snapshot_manifest to source_revision.snapshot_manifest_sha256 and require exact equality in the pointer transaction; source_revision_provenance alone is audit provenance and never proves which canonical output the analysis produced"
+retention = "source_snapshot_manifest_identity and its canonical_value_identity payload remain retained while any source_revision or analysis_snapshot_manifest references the digest; analysis cleanup deletes analysis_snapshot_manifest before analysis_run; if the last source revision and analysis binding are removed by future cleanup, delete the manifest identity before garbage-collecting its otherwise-unreferenced canonical payload"
 
 [retention_contract]
 version = 1
@@ -219,7 +222,7 @@ semantic_blockers = [
 ]
 derived_views = []
 child_phases = [
-  ["publication_batch_receipt", "prepared_artifact", "artifact_operation", "artifact_delta_new", "artifact_delta_old"],
+  ["publication_candidate_projection_seal", "publication_batch_receipt", "prepared_artifact", "artifact_operation", "artifact_delta_new", "artifact_delta_old"],
   ["artifact_input"],
   ["publication_checkpoint", "publication_selection"],
   ["publication_candidate_base_catalog", "publication_candidate_base_source"],
@@ -246,7 +249,7 @@ child_phases = [
   ["analysis_checkpoint"],
   ["analysis_state_ancestry"],
   ["analysis_state_anchor", "analysis_baseline"],
-  ["source_revision_provenance"],
+  ["source_revision_provenance", "analysis_snapshot_manifest"],
 ]
 phase_selectors = [
   { relation = "analysis_baseline", attributes = ["analysis_id"], referenced_relation = "analysis_run", referenced_attributes = ["analysis_id"] },
@@ -265,7 +268,8 @@ retained_outliving = []
 semantic_blockers = []
 derived_views = []
 child_phases = [
-  ["build_manifest", "source_build_discovery", "source_build_gallery"],
+  ["build_manifest", "source_build_gallery"],
+  ["source_build_discovery", "source_build_expected_gallery"],
   ["source_build_base_source", "source_build_channel"],
 ]
 
@@ -280,7 +284,7 @@ retained_outliving = []
 semantic_blockers = []
 derived_views = []
 child_phases = [
-  ["gallery_observation_file_hash_occurrence", "gallery_observation_artist", "gallery_manifest", "gallery_observation_tag", "gallery_observation_file_filesystem"],
+  ["gallery_observation_file_hash_occurrence", "gallery_observation_artist", "gallery_manifest", "gallery_observation_stat", "gallery_observation_tag", "gallery_observation_file_filesystem"],
   ["gallery_observation_file"],
   ["gallery_observation", "gallery_observation_tree_root", "gallery_observation_allocation_page", "gallery_observation_metadata", "gallery_observation_scan", "gallery_observation_discovery_fingerprint", "gallery_observation_metadata_digest", "gallery_observation_raw_content", "gallery_observation_page_count", "gallery_observation_directory"],
 ]
@@ -317,6 +321,7 @@ external_blockers = [
   { relation = "analysis_file_hash_artist_stat", attributes = ["artist_tag_id"], referenced_relation = "tag_term", referenced_attributes = ["tag_id"] },
   { relation = "catalog_subject", attributes = ["tag_id"], referenced_relation = "tag_term", referenced_attributes = ["tag_id"] },
   { relation = "source_revision", attributes = ["snapshot_manifest_sha256"], referenced_relation = "source_snapshot_manifest_identity", referenced_attributes = ["snapshot_manifest_sha256"] },
+  { relation = "analysis_snapshot_manifest", attributes = ["snapshot_manifest_sha256"], referenced_relation = "source_snapshot_manifest_identity", referenced_attributes = ["snapshot_manifest_sha256"] },
   { relation = "analysis_impacted_content", attributes = ["content_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
   { relation = "analysis_content_owner_candidate", attributes = ["content_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
   { relation = "analysis_content_owner", attributes = ["content_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
@@ -444,6 +449,7 @@ external_blockers = [
   { relation = "analysis_gid_candidate_shadow", attributes = ["gallery_id"], referenced_relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
   { relation = "analysis_gid_candidate_tombstone", attributes = ["gallery_id"], referenced_relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
   { relation = "analysis_gid_winner_shadow", attributes = ["winner_gallery_id"], referenced_relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
+  { relation = "source_build_expected_gallery", attributes = ["gallery_id"], referenced_relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
   { relation = "publication_selection", attributes = ["gallery_id"], referenced_relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
 ]
 retained_outliving = []
@@ -459,8 +465,11 @@ priority_attribute = "priority_key"
 candidate_digest_attribute = "candidate_sha256"
 stable_tie_break_attributes = ["scope_key", "locator_sha256"]
 encoding_version = 1
-framing = "u32be(encoding_version) || framed(nonunique policy comparator prefix fields)"
-runtime_obligation = "construct every content and GID priority_key solely as a potentially nonunique comparator prefix from immutable snapshot facts and the registered policy encoder; obtain the final globally unique deterministic total order only by joining gallery_identity and ordering by priority_key, exact BINARY(32) scope_key, then exact BINARY(32) locator_sha256; keep candidate_sha256 audit-only; and reject encoding gallery_id or the unique gallery location into priority_key, incumbent state, leaf name, allocation order, collation, truncation, or caller bytes as comparator inputs"
+framing = "ascii('h2hdb-vnext-analysis-candidate-priority\\0') || u32be(encoding_version=1) || u8(candidate_kind: CONTENT_OWNER=0,GID_WINNER=1) || u8(prefer_not_already_uploaded: marker_absent=1,marker_present=0) || u64be(unicode_scalar_title_length_int63) || u64be(download_time_int63) || if candidate_kind=CONTENT_OWNER then u64be(gid_positive_int63); the kind fixes the exact frame length and trailing bytes are forbidden"
+ordering_rule = "within each candidate relation and group select the lexicographically greatest tuple (priority_key, scope_key, locator_sha256), comparing every byte string unsigned bytewise; the SQL equivalent is ORDER BY priority_key DESC, scope_key DESC, locator_sha256 DESC; no collation, truncation, reversal, or incumbent input is permitted"
+already_uploaded_marker_rule = "the marker is exact ASCII bytes already uploaded; compare every exact strict-UTF-8 tag value after mapping only ASCII A-Z bytes to a-z, ignoring namespace; do not apply Unicode casefold, normalization, locale, collation, or trimming; any marker match encodes zero and absence encodes one"
+candidate_digest_framing = "candidate_sha256 = SHA256(ascii('h2hdb-vnext-analysis-candidate-audit\\0') || u32be(encoding_version=1) || u8(candidate_kind: CONTENT_OWNER=0,GID_WINNER=1) || raw16(analysis_id) || if CONTENT_OWNER raw32(content_sha256) else u64be(gid_positive_int63) || exact canonical priority_key of the same kind || raw32(scope_key) || raw32(locator_sha256)); the kind fixes every field boundary, exact EOF is required, and the digest is audit-only"
+runtime_obligation = "production streams the exact canonical title pages through StrictUtf8ScalarCounter and count_analysis_title_scalars to obtain one fixed AnalysisTitleScalarReceipt without materializing unbounded title bytes; the private production _encode_streamed_candidate_priority adapter first validates the exact metadata tree, then drives a second bounded page stream into that receipt and must remain byte-equal to the public reference encoder; encode_analysis_candidate_priority and validate_analysis_candidate_priority accept only that fixed scalar receipt, while decode_analysis_candidate_priority validates the stored frame over immutable snapshot facts; analysis_candidate_has_already_uploaded implements the exact ASCII-only marker rule; analysis_candidate_total_order_key implements the unsigned lexicographic maximum over priority_key, scope_key, and locator_sha256; analysis_content_candidate_digest and analysis_gid_candidate_digest construct candidate_sha256 solely as the exact audit frame; reject monolithic production title bytes, gallery_id, unique gallery location, incumbent state, leaf name, allocation order, Unicode database behavior, collation, truncation, caller bytes, or candidate_sha256 as comparator authority"
 
 [analysis_run_contract]
 relation = "analysis_run"
@@ -498,10 +507,11 @@ canonical_reference_attributes = [
 direct_payload_attributes = [
   "metadata_fingerprint",
   "cursor",
-  "protection_token",
+  "start_cursor",
+  "next_cursor",
 ]
 selection_rule = "use a canonical digest reference with its bounded owner-scoped chunk tree whenever exact bytes are unbounded, cross-relation stable, participate in a candidate key, or participate in equality/grouping identity; otherwise store dependent scalar bytes directly only under an exact executable maximum-byte protocol"
-rationale = "Arbitrary canonical payloads, including publication summary/language and artifact storage locator bytes, are streamed through deterministic bounded chunks rather than monolithic database values. Every remaining direct payload has an explicit cross-backend bound and may never become a logical or physical key/index without a separate identity design."
+rationale = "Arbitrary canonical payloads, including publication summary/language and artifact storage locator bytes, are streamed through deterministic bounded chunks rather than monolithic database values. Every remaining direct payload has an explicit cross-backend bound; protection_token is the sole separately framed fixed-184-byte identity with an explicit alternate key."
 
 [[byte_domain]]
 attribute = "source_gallery_name"
@@ -520,9 +530,58 @@ runtime_obligation = "persist the exact dirent bytes and reject empty values, se
 [[byte_domain]]
 attribute = "artifact_name"
 maximum_bytes = 255
-encoding = "utf8"
-source = "artifact_store_leaf"
-runtime_obligation = "reject empty names, separators, dot components, invalid UTF-8, or encoded length above 255 before candidate construction"
+encoding = "ascii"
+source = "positive_gid_artifact_name_v1"
+runtime_obligation = "derive only ascii('h2h-') || canonical positive signed-int63 decimal GID without leading zeros || ascii('.cbz'); reject caller-supplied names and exact-compare the derived bytes in publication_identity"
+
+[[byte_domain]]
+attribute = "adapter_id"
+maximum_bytes = 64
+encoding = "ascii"
+source = "artifact_storage_adapter_registry_v1"
+runtime_obligation = "accept only exact nonempty ASCII adapter identifiers from artifact_storage_codec and reject encoded length above 64"
+
+[[byte_domain]]
+attribute = "producer_equivalence_class"
+maximum_bytes = 128
+encoding = "opaque_bytes"
+source = "artifact_producer_registry_v1"
+runtime_obligation = "accept only exact nonempty bounded bytes from the closed producer registry and reject caller-defined certification classes"
+
+[[byte_domain]]
+attribute = "writer_id"
+maximum_bytes = 128
+encoding = "opaque_bytes"
+source = "artifact_producer_fingerprint_v1"
+runtime_obligation = "accept only exact nonempty writer identity bytes included in the registered producer fingerprint frame"
+
+[[byte_domain]]
+attribute = "python_abi"
+maximum_bytes = 128
+encoding = "opaque_bytes"
+source = "artifact_producer_fingerprint_v1"
+runtime_obligation = "accept only exact nonempty Python ABI/build bytes included in the registered producer fingerprint frame"
+
+[[byte_domain]]
+attribute = "pillow_build"
+maximum_bytes = 128
+encoding = "opaque_bytes"
+source = "artifact_producer_fingerprint_v1"
+runtime_obligation = "accept only exact nonempty Pillow build bytes included in the registered producer fingerprint frame"
+
+[[byte_domain]]
+attribute = "libjpeg_build"
+maximum_bytes = 128
+encoding = "opaque_bytes"
+source = "artifact_producer_fingerprint_v1"
+runtime_obligation = "accept only exact nonempty libjpeg build bytes included in the registered producer fingerprint frame"
+
+[[byte_domain]]
+attribute = "zlib_build"
+maximum_bytes = 128
+encoding = "opaque_bytes"
+source = "artifact_producer_fingerprint_v1"
+runtime_obligation = "accept only exact nonempty zlib build bytes included in the registered producer fingerprint frame"
 
 [[byte_domain]]
 attribute = "publication_id"
@@ -581,6 +640,20 @@ source = "checkpoint_stage_protocol_v1"
 runtime_obligation = "accept only the stage enum for the owning state machine and reject encoded length above 64"
 
 [[byte_domain]]
+attribute = "stage_order"
+maximum_bytes = 2
+encoding = "ascii"
+source = "checkpoint_stage_order_v1"
+runtime_obligation = "accept only the exact zero-padded ASCII order key provider-seeded for the registered stage and reject every noncanonical or out-of-registry value"
+
+[[byte_domain]]
+attribute = "cursor_codec"
+maximum_bytes = 64
+encoding = "ascii"
+source = "checkpoint_cursor_codec_registry_v1"
+runtime_obligation = "accept only the exact provider-seeded cursor codec identifier for the registered stage and dispatch through a closed production codec map"
+
+[[byte_domain]]
 attribute = "state_component"
 maximum_bytes = 64
 encoding = "ascii"
@@ -630,11 +703,59 @@ source = "server_owned_checkpoint_cursor_registry_v1"
 runtime_obligation = "construct only from the closed stage-specific server cursor codecs, reject caller-defined cursor bytes, and reject output above 2048 bytes"
 
 [[byte_domain]]
+attribute = "start_cursor"
+maximum_bytes = 2048
+encoding = "opaque_bytes"
+source = "server_owned_checkpoint_cursor_registry_v1"
+runtime_obligation = "persist only the exact pre-CAS server-owned stage cursor copied from the locked checkpoint, reject caller-defined cursor bytes, and reject output above 2048 bytes"
+
+[[byte_domain]]
+attribute = "next_cursor"
+maximum_bytes = 2048
+encoding = "opaque_bytes"
+source = "server_owned_checkpoint_cursor_registry_v1"
+runtime_obligation = "persist only the exact post-batch server-derived stage cursor committed by the checkpoint CAS, reject caller-defined cursor bytes, and reject output above 2048 bytes"
+
+[[byte_domain]]
 attribute = "protection_token"
-maximum_bytes = 512
+maximum_bytes = 184
 encoding = "opaque_bytes"
 source = "artifact_projection_protection_token_v1"
-runtime_obligation = "construct only from the registered artifact projection protection-token codec and reject output above 512 bytes on both backends"
+runtime_obligation = "construct and decode exactly the fixed 184-byte artifact-protection v1 frame, require exact EOF and derived receipt equality, resolve the embedded storage codec through artifact_storage_codec, and compare candidate, publication, blob, content-addressed locator, storage generation, and blob size against joined authority; caller token bytes are never authority"
+
+[artifact_name_contract]
+relation = "publication_identity"
+gid_attribute = "gid"
+name_attribute = "artifact_name"
+codec_version = 1
+framing = "ascii('h2h-') || canonical_positive_signed_int63_decimal_without_leading_zero || ascii('.cbz')"
+golden_gid = 7
+golden_name_hex = "6832682d372e63627a"
+runtime_obligation = "derive artifact_name only from the exact positive GID with artifact_name(gid); reject caller bytes, plus signs, zero, leading zeros, whitespace, alternate extensions, Unicode decimal digits, and names above the signed-int63 domain"
+
+[artifact_locator_contract]
+relation = "artifact_location"
+artifact_attribute = "artifact_sha256"
+locator_attribute = "artifact_locator_sha256"
+storage_codec_version = 1
+locator_codec_version = 1
+components = ["sha256", "lowerhex_artifact_sha256_prefix_2", "lowerhex_artifact_sha256_64_plus_dot_cbz"]
+derivation = "artifact_locator_components(raw32 artifact_sha256) = ('sha256', lowerhex[0:2], lowerhex64 + '.cbz')"
+golden_artifact_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+golden_payload_hex = "00000001000000030000000673686132353600000002616100000044616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161612e63627a"
+golden_locator_sha256 = "1400187c75cbf5721168d71ac3a15ad2d5decca92ce4dbf2c77c036b32f21f57"
+runtime_obligation = "derive all three segments from artifact_sha256, stream the complete artifact_locator_bytes_v1 canonical frame, reject caller components and uppercase hex, and exact-compare both candidate keys on every collision"
+
+[artifact_protection_token_contract]
+relation = "prepared_artifact"
+storage_codec_relation = "artifact_storage_codec"
+codec_version = 1
+exact_bytes = 184
+receipt_framing = "SHA256(ascii('h2hdb-vnext-artifact-storage-receipt\\0') || raw16(candidate_id) || raw32(publication_key) || raw32(artifact_sha256) || raw32(artifact_locator_sha256) || u64be(storage_generation) || u64be(size_bytes))[0:16]"
+token_framing = "ascii('h2hdb-vnext-artifact-protection\\0') || u32be(codec_version=1) || u32be(storage_codec_version) || raw16(candidate_id) || raw32(publication_key) || raw32(artifact_sha256) || raw32(artifact_locator_sha256) || raw16(receipt_id) || u64be(storage_generation) || u64be(size_bytes)"
+golden_receipt_id = "be24a65b2ded7965b31c3c317bc61cbf"
+golden_token_hex = "68326864622d766e6578742d61727469666163742d70726f74656374696f6e00000000010000000111111111111111111111111111111111222222222222222222222222222222222222222222222222222222222222222233333333333333333333333333333333333333333333333333333333333333334444444444444444444444444444444444444444444444444444444444444444be24a65b2ded7965b31c3c317bc61cbf00000000000000070000000000000009"
+runtime_obligation = "the repository accepts no caller receipt or token authority; construct receipt and token from joined exact fields, decode exact EOF, recompute receipt, require storage_codec_version in the closed registry, require the embedded locator to equal artifact_locator for the embedded blob, require embedded size to equal artifact_blob.size_bytes, and compare every field on replay"
 
 [artifact_delta_contract]
 classification = "exact_old_new_presence_and_semantic_equality"
@@ -646,13 +767,13 @@ semantic_components = ["source_manifest", "member_plan", "effective_content", "s
 operations = ["CREATE", "REBUILD", "DELETE", "UNCHANGED"]
 old_state_operations = ["REBUILD", "DELETE", "UNCHANGED"]
 new_state_operations = ["CREATE", "REBUILD", "UNCHANGED"]
-rebuild_rule = "REBUILD iff both old and new rows exist and artifact_semantics_sha256 differs; artifact_name never participates in byte-semantic equality"
-unchanged_rule = "UNCHANGED iff both old and new rows exist and artifact_semantics_sha256 is exactly equal, including when artifact_name differs"
-rename_rule = "artifact_operation always stores the desired new artifact_name; when UNCHANGED has old artifact_name != new artifact_name, reuse the old artifact identity/blob, materialize the new catalog_artifact name, and transactionally receipt removal of the old managed projection path plus creation of the new managed projection path; never silently skip the rename and never prepare/rebuild bytes"
+rebuild_rule = "REBUILD iff both old and new rows exist and artifact_semantics_sha256 differs; the GID-derived artifact name is normalized outside delta state"
+unchanged_rule = "UNCHANGED iff both old and new rows exist and artifact_semantics_sha256 is exactly equal; artifact names are not delta state because publication_identity derives them only from immutable positive GID"
+rename_rule = "artifact_name is globally derived from immutable positive GID in publication_identity and is absent from artifact input, delta, operation, prepared, and catalog occurrence relations; a GID change is a different publication identity, never an artifact rename"
 
 [transition_authority_contract]
 version = 1
-gate_relations = ["analysis_state_component_seal", "analysis_checkpoint", "analysis_batch_receipt", "publication_checkpoint", "publication_batch_receipt", "catalog_revision"]
+gate_relations = ["analysis_state_component_seal", "analysis_checkpoint", "analysis_batch_receipt", "publication_candidate_projection_seal", "publication_checkpoint", "publication_batch_receipt", "catalog_revision"]
 forbidden_digest_attributes = ["input_sha256", "output_sha256", "publication_sha256"]
 audit_only_digest_attributes = ["candidate_sha256", "decision_sha256", "evidence_sha256", "input_manifest_sha256", "item_sha256", "manifest_sha256"]
 batch_key_attribute = "batch_key"
@@ -662,7 +783,10 @@ ready_obligation = "READY validation is bounded to exact registry, active-head, 
 [artifact_byte_producer_contract]
 policy_relation = "artifact_policy_semantics"
 algorithm_attribute = "artifact_algorithm_version"
-independent_parameters = ["max_image_short_side"]
+producer_relation = "artifact_producer_fingerprint"
+zip_writer_policy_relation = "artifact_zip_writer_policy"
+storage_codec_relation = "artifact_storage_codec"
+independent_parameters = ["max_image_short_side", "producer_fingerprint_sha256"]
 algorithm_bundle = [
   "CBZ manifest serialization version",
   "streaming archive member naming and collision rules",
@@ -675,7 +799,10 @@ algorithm_bundle = [
   "GIF and JPEG encoding with quality 90, optimize, and alpha background",
   "exact producer fingerprint covering writer/schema plus Python, Pillow, libjpeg, and zlib versions and builds, or a certified byte-equivalence class",
 ]
-runtime_obligation = "construct the policy component from the registered byte-producer bundle, exact producer fingerprint, and max_image_short_side; reject unsupported or nonpositive resize bounds, bump artifact_algorithm_version for every possible bit change unless certified byte-equivalent, and never reuse an artifact input across a policy tuple change"
+producer_fingerprint_framing = "ascii('h2hdb-vnext-artifact-producer\\0') || u32be(codec_version=1) || lp32(writer_id) || lp32(python_abi) || lp32(pillow_build) || lp32(libjpeg_build) || lp32(zlib_build)"
+producer_fingerprint_golden_payload_hex = "68326864622d766e6578742d61727469666163742d70726f64756365720000000001000000067772697465720000000563703331340000000670696c6c6f77000000076c69626a706567000000047a6c6962"
+producer_fingerprint_golden_sha256 = "7c12521923b06e72b031807d2d2d82b5bee38afafd408595b5d29ed31cfe892c"
+runtime_obligation = "construct the policy-v2 component from the closed ZIP writer policy, registered exact producer fingerprint, and max_image_short_side; recompute the raw producer fingerprint frame, reject unsupported or nonpositive resize bounds, bump artifact_algorithm_version for every possible bit change unless certified byte-equivalent, and never reuse an artifact input across an algorithm/resize/producer tuple change"
 
 [artifact_member_plan_contract]
 semantic_relation = "artifact_semantic_input"
@@ -696,7 +823,8 @@ entry_fields = [
   "optional_exact_archive_member_name_bytes_absent_when_excluded",
   "transform_kind",
 ]
-runtime_obligation = "construct exactly one member_plan component for every artifact input; entry_position starts at zero and is contiguous across every source entry including excluded entries; protocol version one admits no generated archive member and the ZIP comment is not a member; entry_kind is SOURCE_FILE=0; source_role is METADATA=0 or CONTENT=1 and is derived exactly from file_name_identity; excluded_flag and archive_name_presence are exactly 0 or 1; excluded entries have presence zero and no archive member name; emitted entries have presence one and unique exact archive member name bytes in the non-excluded subsequence; transform_kind is RAW_COPY=0, GIF_NORMALIZE=1, or JPEG_NORMALIZE=2 and is derived from the exact case-insensitive ASCII suffix; every source_file_sha256 is collision-free payload identity whose exact size and bytes are rehashed and compared during prepare; reject every unknown tag, impossible presence combination, noncontiguous position, or trailing byte; first persist a bounded preflight/spool receipt proving entry_count, payload_byte_count, ordered projection, and unique archive names, then replay through iter_artifact_member_plan_payload and artifact_member_plan_digest_ordered into canonical_value_digest_parts; build effective_content from an unsigned-bytewise keyset projection through iter_artifact_effective_content_payload_ordered and artifact_effective_content_digest_ordered; never materialize either full high-cardinality payload; recompute the canonical plan payload digest and require byte-for-byte equality on collision"
+archive_member_name_rule = "excluded entries have no archive name; otherwise lowerhex16(entry_position) || ascii('__') || leaf, where METADATA requires RAW_COPY and leaf metadata.txt, CONTENT/RAW_COPY leaf content.bin, CONTENT/GIF_NORMALIZE leaf content.gif, and CONTENT/JPEG_NORMALIZE leaf content.jpg"
+runtime_obligation = "construct exactly one member_plan component for every artifact input; entry_position starts at zero and is contiguous across every source entry including excluded entries; protocol version one admits no generated archive member and the ZIP comment is not a member; entry_kind is SOURCE_FILE=0; source_role is METADATA=0 or CONTENT=1 and is derived exactly from file_name_identity; excluded_flag and archive_name_presence are exactly 0 or 1; excluded entries have presence zero; derive archive_member_name_bytes only from entry_position/source_role/transform_kind/excluded_flag with artifact_archive_member_name and reject caller names or mismatched encoded proof bytes; transform_kind is RAW_COPY=0, GIF_NORMALIZE=1, or JPEG_NORMALIZE=2 and is derived from the exact case-insensitive ASCII suffix; every source_file_sha256 is collision-free payload identity whose exact size and bytes are rehashed and compared during prepare; reject every unknown tag, impossible role/transform/presence combination, noncontiguous position, or trailing byte; first persist a bounded preflight/spool receipt proving entry_count, payload_byte_count and ordered projection, then replay through iter_artifact_member_plan_payload and artifact_member_plan_digest_ordered into canonical_value_digest_parts; build effective_content from an unsigned-bytewise keyset projection through iter_artifact_effective_content_payload_ordered and artifact_effective_content_digest_ordered; never materialize either full high-cardinality payload; recompute the canonical plan payload digest and require byte-for-byte equality on collision"
 ready_obligation = "before candidate seal and catalog publication, decode member_plan with the closed enum registry and prove exact equality with the ordered source snapshot, source sizes and rehashed payload identities, resolved per-file exclusion decisions, archive naming, and transform decisions; prove that no generated member exists and that the ZIP comment is not a member; separately reconstruct the unique ZIP comment envelope from the source_manifest and effective_content component digests; effective_content digest alone is never equality authority"
 
 [artifact_member_plan_enum]
@@ -725,8 +853,8 @@ digest_domain = "artifact_member_plan_v1"
 codec_version = 1
 framing = "artifact_member_plan_contract.framing"
 canonical_order = "entry_position ascending over every source entry, including excluded entries; version one has no generated member"
-golden_payload_hex = "68326864622d766e6578742d61727469666163742d6d656d6265722d706c616e000000000100000000000000020000000000000000000000000f67616c6c657279696e666f2e747874000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f000000000000007b0000010000000f67616c6c657279696e666f2e7478740000000000000000010000000009494d4147452e474946fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e0000000000000000001010001"
-golden_sha256 = "f71707af3aac3aebdab1df37422fac519e5924a7cef76bacde90b90dd0f3bf56"
+golden_payload_hex = "68326864622d766e6578742d61727469666163742d6d656d6265722d706c616e000000000100000000000000020000000000000000000000000f67616c6c657279696e666f2e747874000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f000000000000007b0000010000001e303030303030303030303030303030305f5f6d657461646174612e7478740000000000000000010000000009494d4147452e474946fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e0000000000000000001010001"
+golden_sha256 = "783a1b7b319bedd73edf61afa00cc9cd419ae34e9b85fe8f4c39bfae7c13f690"
 
 [[artifact_component_codec]]
 kind = "effective_content"
@@ -761,12 +889,12 @@ golden_sha256 = "32d8d54e00e421fd40af6c8ff6e5849dcefabe8bcfaa067dd16ba337677dd90
 [[artifact_component_codec]]
 kind = "policy"
 attribute = "policy_component_sha256"
-digest_domain = "artifact_policy_v1"
-codec_version = 1
-framing = "ascii('h2hdb-vnext-artifact-policy\\0') || u32be(codec_version) || u32be(artifact_algorithm_version) || u32be(max_image_short_side)"
+digest_domain = "artifact_policy_v2"
+codec_version = 2
+framing = "ascii('h2hdb-vnext-artifact-policy\\0') || u32be(codec_version=2) || u32be(artifact_algorithm_version) || u32be(max_image_short_side) || raw32(producer_fingerprint_sha256)"
 canonical_order = "single fixed field order"
-golden_payload_hex = "68326864622d766e6578742d61727469666163742d706f6c69637900000000010000000100000800"
-golden_sha256 = "ae7a4b756f62884bb7bcc10fc42e4d2d0caab2a6b2a117e8302650339c72b4fa"
+golden_payload_hex = "68326864622d766e6578742d61727469666163742d706f6c696379000000000200000001000008000303030303030303030303030303030303030303030303030303030303030303"
+golden_sha256 = "055021f55a25bb338b14aa4423b3fee9f8f87ff9ea442e4283ae89db88f47a60"
 
 [artifact_semantics_codec]
 digest_domain = "artifact_semantics_v1"
@@ -789,9 +917,139 @@ artifact_input_relation = "artifact_input"
 artifact_component_relation = "artifact_semantic_input"
 operation_relation = "artifact_operation"
 prepared_artifact_relation = "prepared_artifact"
+stage_relation = "publication_stage"
+projection_seal_relation = "publication_candidate_projection_seal"
+checkpoint_relation = "publication_checkpoint"
+batch_receipt_relation = "publication_batch_receipt"
+source_manifest_binding_relation = "analysis_snapshot_manifest"
 revision_relation = "catalog_revision"
 head_relation = "publication_head"
-runtime_obligation = "in one fenced publication protocol, validate the exact selected publication child set and publication_count; stream the exact strict-UTF-8 METADATA comment bytes without normalization or trimming through catalog_summary_digest_parts into catalog_summary_utf8_v1; select catalog_language_utf8_v1 from the nonempty exact tag-value bytes at the minimum gallery tag position whose namespace is the case-sensitive UTF-8 bytes language, or use the exact ASCII bytes und when absent, without normalization or trimming, and stream through catalog_language_digest_parts; build both canonical trees under the live generation upload claim; validate all six exactly-once artifact input component kinds and exact canonical payload bytes, artifact old/new delta classification, prepared artifact byte digest/size/member plan/exact ZIP comment and bounded protection token; validate the complete artifact_locator_bytes_v1 frame is at most 4096 bytes before exposing or storing any segment, stream it through iter_artifact_locator_payload and canonical_value_digest_parts exactly as u32be(codec_version=1) || u32be(segment_count) || repeated(u32be(segment_utf8_length) || strict_utf8_segment), rejecting empty/dot/NUL/separator segments, and store its canonical locator reference; readers validate exact EOF within the same 4096-byte cap before exposing a segment; the monolithic digest helpers are bounded convenience oracles and never the production write path for arbitrary summary/language bytes; compare every immutable revision child field and digest/count before making READY; publish only by compare-and-swap from the candidate-pinned base head to the reserved revision, and never expose a partial revision or perform an unbounded bind"
+finalization_stage = "FINALIZE_ARTIFACTS"
+selection_rule = "BUILD_SELECTION streams every immutable source_build_gallery member of candidate.analysis_id in unsigned positive gallery_id keyset order and inserts a row if and only if the gallery is its analysis_content_owner_resolved owner for its nonexcluded effective CONTENT digest, treating a gallery with no nonexcluded CONTENT digest as its own owner, and the same gallery is the analysis_gid_winner_resolved winner for its exact metadata GID; derive publication_key only with publication-key.v1 from that positive GID; publication_selection stores no audit digest; VALIDATE_SELECTION independently streams the same predicate, exact merge-compares candidate_id, gallery_id, and publication_key against the materialization, and only its empty terminal receipt owns publication_count"
+cursor_codec_rule = "publication_gallery_v1 is empty at genesis or u64be(positive gallery_id); publication_key_v1 is empty at genesis or raw32(publication_key); publication_catalog_child_v1 is empty at genesis or u8(version=1) || u8(child_kind: PUBLICATION=0,ORDER=1,TITLE=2,CONTENT=3,CONTRIBUTOR=4,CONTRIBUTOR_SORT_AS=5,SUBJECT=6,ARTIFACT=7) || raw32(publication_key) || u16be(subkey_length) || bounded subkey, where subkey is empty for singleton publication/title/content, u64be(position) for order/contributor/contributor_sort_as/subject, and u16be(artifact_id_length) || exact artifact_id bytes for artifact; exact EOF is required; gallery IDs compare unsigned integers and every other key compares unsigned bytes; the locked registered stage selects the codec and caller cursor bytes never select or alter a query"
+batch_rule = "initialize all seventeen provider-seeded publication stages in exact stage_order with generation one, empty cursor, processed_count zero, and OPEN state; stages 2 through 16 require the immediately preceding stage COMPLETE, BUILD_SELECTION additionally requires candidate OPEN plus its COMPLETE five-seal analysis, and FINALIZE_ARTIFACTS requires publication_receipt DB_COMMITTED; every hard-capped maximum-128 batch locks one checkpoint, derives the next exact keyset page server-side, inserts the full immutable pre/post publication_batch_receipt, and CAS-advances generation, cursor, processed_count, and state in one transaction; committed_generation equals start_generation plus one and next_processed_count equals start_processed_count plus row_count; exact retry by batch_key or start_generation field-compares and returns the complete stored tuple without writes; terminal is one if and only if the server-derived page is empty with row_count zero, unchanged cursor/count, and next_state COMPLETE, while nonterminal means positive row_count and next_state OPEN; no caller stage, cursor, count, state, terminal, digest, sequence, or receipt is authority"
+projection_seal_rule = "after VALIDATE_DUPLICATE_LOSER becomes COMPLETE, one short seal transaction locks the candidate and terminal checkpoints for VALIDATE_SELECTION, VALIDATE_CATALOG_PROJECTION, VALIDATE_ARTIFACT_INPUT_DELTA, VALIDATE_PREPARED_ARTIFACT, VALIDATE_CREATE, VALIDATE_REBUILD, VALIDATE_DELETE, VALIDATE_UNCHANGED, VALIDATE_NEW_GALLERY, VALIDATE_CHANGED_GALLERY, VALIDATE_REMOVED_GALLERY, and VALIDATE_DUPLICATE_LOSER; require VALIDATE_CATALOG_PROJECTION terminal COMPLETE after its independent exact child merge but never compare its child processed_count with publication count; take publication_count only from terminal VALIDATE_SELECTION, require prepared_artifact_count equals create_count plus rebuild_count, and require artifact_input_count equals create_count plus rebuild_count plus unchanged_count; copy only the named O(1) terminal validation scalars into publication_candidate_projection_seal and then CAS candidate OPEN to SEALED in the same transaction; never SUM receipts or child relations, trust an audit digest, or seal from a BUILD stage"
+finalization_rule = "after the pointer transaction commits publication_receipt state DB_COMMITTED, never mass-update prepared_artifact; the fixed FINALIZE_ARTIFACTS checkpoint uses an exact publication_key keyset cursor, processed_count, monotone generation, and OPEN or COMPLETE state; each hard-capped transaction locks that checkpoint, derives the next contiguous PREPARED rows server-side, releases their exact protection tokens, advances them to COMMITTED, inserts a full publication_batch_receipt response tuple, and CAS-advances cursor/count/generation together; exact batch_key retry returns the byte-for-byte latest stored response without writes; an empty terminal batch alone writes terminal=1 and COMPLETE with processed_count equal to projection-seal prepared_artifact_count; only that terminal authority permits the same transaction to advance publication_receipt from DB_COMMITTED to PROJECTION_FINALIZED"
+runtime_obligation = "in one fenced publication protocol, validate the exact selected publication child set and publication_count; assign every selected publication exactly one contiguous zero-based catalog_publication_order position under the exact registered title-sort bytes with publication_key as the stable tie break, and require the order-row count to equal publication_count; stream the exact strict-UTF-8 METADATA comment bytes without normalization or trimming through catalog_summary_digest_parts into catalog_summary_utf8_v1; select catalog_language_utf8_v1 from the nonempty exact tag-value bytes at the minimum gallery tag position whose namespace is the case-sensitive UTF-8 bytes language, or use the exact ASCII bytes und when absent, without normalization or trimming, and stream through catalog_language_digest_parts; build both canonical trees under the live generation upload claim; validate all six exactly-once artifact input component kinds and exact canonical payload bytes, artifact old/new delta classification, prepared artifact byte digest/size/member plan/exact ZIP comment and bounded protection token; validate the complete artifact_locator_bytes_v1 frame is at most 4096 bytes before exposing or storing any segment, stream it through iter_artifact_locator_payload and canonical_value_digest_parts exactly as u32be(codec_version=1) || u32be(segment_count) || repeated(u32be(segment_utf8_length) || strict_utf8_segment), rejecting empty/dot/NUL/separator segments, and store its canonical locator reference; readers validate exact EOF within the same 4096-byte cap before exposing a segment; the monolithic digest helpers are bounded convenience oracles and never the production write path for arbitrary summary/language bytes; before candidate state SEALED, bounded stage receipts plus an independent full evaluator must validate exact selection, order, every reserved-revision catalog child, artifact delta, artifact input, and prepared coverage, then insert publication_candidate_projection_seal with exact publication_count, artifact_input_count, prepared_artifact_count, CREATE/REBUILD/DELETE/UNCHANGED counts, and new_galleries/changed_galleries/removed_galleries/duplicate_losers; the final pointer transaction joins candidate.analysis_id through analysis_snapshot_manifest to the exact source_revision snapshot, joins the unique publication_candidate_preparation to its COMPLETE matching-policy current-generation effect seal, and compares only O(1) projection-seal, catalog_revision, and publication_receipt scalars before activation and head CAS, never COUNT or SUM over child rows; compare every immutable revision child field and digest/count before sealing the projection; publish only by compare-and-swap from the candidate-pinned base head to the reserved revision, never trust a caller/audit digest or guessed scalar, never expose a partial revision, and never perform an unbounded bind"
+
+[[publication_atomic_contract.batch_stage]]
+name = "BUILD_SELECTION"
+stage_order = 1
+cursor_codec = "publication_gallery_v1"
+prerequisite = "candidate_OPEN_and_analysis_COMPLETE_with_five_seals"
+sealed_scalar = "NONE"
+
+[[publication_atomic_contract.batch_stage]]
+name = "VALIDATE_SELECTION"
+stage_order = 2
+cursor_codec = "publication_gallery_v1"
+prerequisite = "BUILD_SELECTION"
+sealed_scalar = "publication_count"
+
+[[publication_atomic_contract.batch_stage]]
+name = "BUILD_CATALOG_PROJECTION"
+stage_order = 3
+cursor_codec = "publication_catalog_child_v1"
+prerequisite = "VALIDATE_SELECTION"
+sealed_scalar = "NONE"
+
+[[publication_atomic_contract.batch_stage]]
+name = "VALIDATE_CATALOG_PROJECTION"
+stage_order = 4
+cursor_codec = "publication_catalog_child_v1"
+prerequisite = "BUILD_CATALOG_PROJECTION"
+sealed_scalar = "NONE"
+
+[[publication_atomic_contract.batch_stage]]
+name = "BUILD_ARTIFACT_INPUT"
+stage_order = 5
+cursor_codec = "publication_key_v1"
+prerequisite = "VALIDATE_CATALOG_PROJECTION"
+sealed_scalar = "NONE"
+
+[[publication_atomic_contract.batch_stage]]
+name = "BUILD_ARTIFACT_DELTA_OPERATION"
+stage_order = 6
+cursor_codec = "publication_key_v1"
+prerequisite = "BUILD_ARTIFACT_INPUT"
+sealed_scalar = "NONE"
+
+[[publication_atomic_contract.batch_stage]]
+name = "VALIDATE_ARTIFACT_INPUT_DELTA"
+stage_order = 7
+cursor_codec = "publication_key_v1"
+prerequisite = "BUILD_ARTIFACT_DELTA_OPERATION"
+sealed_scalar = "artifact_input_count"
+
+[[publication_atomic_contract.batch_stage]]
+name = "VALIDATE_PREPARED_ARTIFACT"
+stage_order = 8
+cursor_codec = "publication_key_v1"
+prerequisite = "VALIDATE_ARTIFACT_INPUT_DELTA"
+sealed_scalar = "prepared_artifact_count"
+
+[[publication_atomic_contract.batch_stage]]
+name = "VALIDATE_CREATE"
+stage_order = 9
+cursor_codec = "publication_key_v1"
+prerequisite = "VALIDATE_PREPARED_ARTIFACT"
+sealed_scalar = "create_count"
+
+[[publication_atomic_contract.batch_stage]]
+name = "VALIDATE_REBUILD"
+stage_order = 10
+cursor_codec = "publication_key_v1"
+prerequisite = "VALIDATE_CREATE"
+sealed_scalar = "rebuild_count"
+
+[[publication_atomic_contract.batch_stage]]
+name = "VALIDATE_DELETE"
+stage_order = 11
+cursor_codec = "publication_key_v1"
+prerequisite = "VALIDATE_REBUILD"
+sealed_scalar = "delete_count"
+
+[[publication_atomic_contract.batch_stage]]
+name = "VALIDATE_UNCHANGED"
+stage_order = 12
+cursor_codec = "publication_key_v1"
+prerequisite = "VALIDATE_DELETE"
+sealed_scalar = "unchanged_count"
+
+[[publication_atomic_contract.batch_stage]]
+name = "VALIDATE_NEW_GALLERY"
+stage_order = 13
+cursor_codec = "publication_key_v1"
+prerequisite = "VALIDATE_UNCHANGED"
+sealed_scalar = "new_galleries"
+
+[[publication_atomic_contract.batch_stage]]
+name = "VALIDATE_CHANGED_GALLERY"
+stage_order = 14
+cursor_codec = "publication_key_v1"
+prerequisite = "VALIDATE_NEW_GALLERY"
+sealed_scalar = "changed_galleries"
+
+[[publication_atomic_contract.batch_stage]]
+name = "VALIDATE_REMOVED_GALLERY"
+stage_order = 15
+cursor_codec = "publication_key_v1"
+prerequisite = "VALIDATE_CHANGED_GALLERY"
+sealed_scalar = "removed_galleries"
+
+[[publication_atomic_contract.batch_stage]]
+name = "VALIDATE_DUPLICATE_LOSER"
+stage_order = 16
+cursor_codec = "publication_gallery_v1"
+prerequisite = "VALIDATE_REMOVED_GALLERY"
+sealed_scalar = "duplicate_losers"
+
+[[publication_atomic_contract.batch_stage]]
+name = "FINALIZE_ARTIFACTS"
+stage_order = 17
+cursor_codec = "publication_key_v1"
+prerequisite = "publication_receipt_DB_COMMITTED"
+sealed_scalar = "finalized_artifact_count"
 
 [title_sort_contract]
 policy_relation = "title_sort_policy"
@@ -832,6 +1090,11 @@ compaction = "depth_zero_full_shadow_at_limit_or_policy_change"
 compaction_ancestry = "self_only"
 cleanup_guard = "no_reachable_descendants"
 cleanup_transition = "remove_seal_then_ancestry_then_state"
+stage_relation = "analysis_stage"
+checkpoint_relation = "analysis_checkpoint"
+batch_receipt_relation = "analysis_batch_receipt"
+cursor_codec_rule = "analysis_gallery_v1 is u8(version=1) || u8(tag=0x47) || u8(key_present) || raw8(gallery_id_u64be_or_zero); analysis_digest_v1 is u8(version=1) || u8(tag=0x44) || u8(key_present) || raw32(digest_or_zero); analysis_gid_v1 is u8(version=1) || u8(tag=0x49) || u8(key_present) || raw8(gid_u64be_or_zero); each corresponding analysis_gallery_live_v1, analysis_digest_live_v1, or analysis_gid_live_v1 appends u64be(live_row_count_int63) used only by the independent component validator; key_present is exactly zero for the all-zero absent-key genesis and one for a positive gallery_id/gid or exact digest key; exact EOF is required, gallery/GID keysets compare unsigned integers, digest keysets compare unsigned bytes, and runtime validates the stage-selected codec before every query or CAS"
+batch_rule = "initialize all fifteen registered stages in exact stage_order with generation one, the exact codec-specific absent-key genesis cursor, processed_count zero, and OPEN state; every hard-capped batch locks one checkpoint, derives the next exact keyset page server-side using only that stage's registered cursor codec, inserts one complete immutable response receipt, and CAS-advances generation, cursor, processed_count, and state in the same transaction; committed_generation is exactly start_generation plus one and next_processed_count is exactly start_processed_count plus row_count; exact batch_key replay and exact start_generation replay field-compare and return the full stored tuple without writes; terminal is one if and only if the derived page is empty, row_count is zero, next_cursor equals start_cursor, next_processed_count equals start_processed_count, and next_state is COMPLETE, while every nonterminal receipt has positive row_count and next_state OPEN; caller stage, cursor, count, terminal, state, digest, sequence, or receipt bytes never authorize mutation"
 
 [[analysis_resolution_contract.component]]
 name = "file_hash_decision"
@@ -862,6 +1125,81 @@ name = "gid_winner"
 shadow_relation = "analysis_gid_winner_shadow"
 tombstone_relation = "analysis_gid_winner_tombstone"
 resolved_relation = "analysis_gid_winner_resolved"
+
+[[analysis_resolution_contract.batch_stage]]
+name = "changed_gallery"
+stage_order = 1
+cursor_codec = "analysis_gallery_v1"
+
+[[analysis_resolution_contract.batch_stage]]
+name = "changed_file_hash"
+stage_order = 2
+cursor_codec = "analysis_digest_v1"
+
+[[analysis_resolution_contract.batch_stage]]
+name = "file_hash_decision"
+stage_order = 3
+cursor_codec = "analysis_digest_v1"
+
+[[analysis_resolution_contract.batch_stage]]
+name = "validate_file_hash_decision"
+stage_order = 4
+cursor_codec = "analysis_digest_live_v1"
+
+[[analysis_resolution_contract.batch_stage]]
+name = "impacted_gallery"
+stage_order = 5
+cursor_codec = "analysis_gallery_v1"
+
+[[analysis_resolution_contract.batch_stage]]
+name = "impacted_content"
+stage_order = 6
+cursor_codec = "analysis_gallery_v1"
+
+[[analysis_resolution_contract.batch_stage]]
+name = "content_owner_candidate"
+stage_order = 7
+cursor_codec = "analysis_gallery_v1"
+
+[[analysis_resolution_contract.batch_stage]]
+name = "validate_content_owner_candidate"
+stage_order = 8
+cursor_codec = "analysis_gallery_live_v1"
+
+[[analysis_resolution_contract.batch_stage]]
+name = "content_owner"
+stage_order = 9
+cursor_codec = "analysis_digest_v1"
+
+[[analysis_resolution_contract.batch_stage]]
+name = "validate_content_owner"
+stage_order = 10
+cursor_codec = "analysis_digest_live_v1"
+
+[[analysis_resolution_contract.batch_stage]]
+name = "impacted_gid"
+stage_order = 11
+cursor_codec = "analysis_gallery_v1"
+
+[[analysis_resolution_contract.batch_stage]]
+name = "gid_candidate"
+stage_order = 12
+cursor_codec = "analysis_gallery_v1"
+
+[[analysis_resolution_contract.batch_stage]]
+name = "validate_gid_candidate"
+stage_order = 13
+cursor_codec = "analysis_gallery_live_v1"
+
+[[analysis_resolution_contract.batch_stage]]
+name = "gid_winner"
+stage_order = 14
+cursor_codec = "analysis_gid_v1"
+
+[[analysis_resolution_contract.batch_stage]]
+name = "validate_gid_winner"
+stage_order = 15
+cursor_codec = "analysis_gid_live_v1"
 
 # Prose is not executable authority. Every application-enforced rule below has
 # one stable machine identity, a bounded READY validator, and a versioned
@@ -925,14 +1263,16 @@ ready_check = "catalog_refinement.check_source_baseline_channel_v1"
 writer_hook = "catalog_writer.validate_source_baseline_channel_cas"
 writer_hook_version = 1
 scope = "catalog.source-baseline-channel"
-relations = ["channel_registry", "source_build", "source_build_channel", "source_build_base_source", "source_snapshot_manifest_identity", "source_revision", "source_revision_provenance", "source_head"]
+relations = ["channel_registry", "source_build", "source_build_channel", "source_build_base_source", "analysis_run", "analysis_state_component_seal", "source_snapshot_manifest_identity", "analysis_snapshot_manifest", "source_revision", "source_revision_provenance", "source_head"]
 covers = [
   "machine_contract.source-baseline-channel",
   "source_scope_identity_contract.seal_obligation",
   "source_snapshot_manifest_contract.write_obligation",
+  "source_snapshot_manifest_contract.handoff_obligation",
+  "source_snapshot_manifest_contract.publication_obligation",
   "byte_domain.channel.runtime_obligation",
 ]
-description = "Require one channel per build, channel-relative absent-row genesis, positive base revision/generation satellites, an exact canonical resolved snapshot manifest, source_revision.channel congruence, exactly one provenance path from every active source head through its completed analysis to the sealed build retained as the next delta base, and an exact channel/head-generation compare-and-swap when publishing a source revision."
+description = "Require one channel per build, channel-relative absent-row genesis, positive base revision/generation satellites, an exact canonical resolved snapshot manifest bound one-way to its producing analysis, source_revision.channel and manifest congruence, exactly one provenance path from every active source head through its completed analysis to the sealed build retained as the next delta base, and an exact channel/head-generation compare-and-swap when publishing a source revision."
 
 [[semantic_obligation]]
 id = "catalog.incremental-impact.v1"
@@ -960,12 +1300,16 @@ ready_check = "catalog_refinement.check_overlay_resolution_seal_v1"
 writer_hook = "catalog_writer.validate_overlay_component_transition"
 writer_hook_version = 1
 scope = "catalog.overlay-resolution-seal"
-relations = ["analysis_state_anchor", "analysis_state_ancestry", "analysis_state_component_seal", "analysis_checkpoint", "analysis_batch_receipt"]
+relations = ["analysis_stage", "analysis_state_anchor", "analysis_state_ancestry", "analysis_state_component_seal", "analysis_checkpoint", "analysis_batch_receipt"]
 covers = [
   "machine_contract.overlay-resolution-seal",
   "overlay.shadow_tombstone_exclusion",
   "overlay.ancestry_exactness",
   "overlay.full_evaluator_equality",
+  "analysis_resolution_contract.cursor_codec_rule",
+  "analysis_resolution_contract.batch_rule",
+  "byte_domain.stage_order.runtime_obligation",
+  "byte_domain.cursor_codec.runtime_obligation",
   "byte_domain.state_component.runtime_obligation",
 ]
 description = "Validate parent-only sealed ancestry, five mutually exclusive exact shadow/tombstone components, old/new workset coverage, full-evaluator equality, and immutable component seals before COMPLETE."
@@ -979,7 +1323,7 @@ ready_check = "catalog_refinement.check_artifact_semantics_v1"
 writer_hook = "catalog_writer.validate_artifact_semantics"
 writer_hook_version = 1
 scope = "catalog.artifact-semantics"
-relations = ["artifact_policy_semantics", "artifact_policy", "artifact_semantic_input", "artifact_input", "artifact_delta_old", "artifact_delta_new", "prepared_artifact"]
+relations = ["artifact_zip_writer_policy", "artifact_producer_fingerprint", "artifact_storage_codec", "artifact_policy_semantics", "artifact_policy", "artifact_semantic_input", "artifact_input", "artifact_delta_old", "artifact_delta_new", "prepared_artifact", "artifact_location", "publication_identity"]
 covers = [
   "machine_contract.artifact-semantics",
   "artifact_delta_contract.rebuild_rule",
@@ -989,8 +1333,11 @@ covers = [
   "artifact_member_plan_contract.runtime_obligation",
   "artifact_member_plan_contract.ready_obligation",
   "byte_domain.artifact_name.runtime_obligation",
+  "artifact_name_contract.runtime_obligation",
+  "artifact_locator_contract.runtime_obligation",
+  "artifact_protection_token_contract.runtime_obligation",
 ]
-description = "Validate all six exact component codecs, the collision-safe six-tuple semantic identity, artifact policy semantics, old/new classification, archive member plan, artifact bytes, and the single composite ZIP comment envelope."
+description = "Validate all six exact component codecs, policy-v2 producer semantics, the collision-safe six-tuple semantic identity, GID-derived names, content-addressed locators, fixed protection tokens, old/new classification, archive member naming/plan, artifact bytes, and the single composite ZIP comment envelope."
 
 [[semantic_obligation]]
 id = "catalog.publication-atomicity.v1"
@@ -1001,10 +1348,15 @@ ready_check = "catalog_refinement.check_publication_atomicity_v1"
 writer_hook = "catalog_writer.validate_publication_transition"
 writer_hook_version = 1
 scope = "catalog.publication-atomicity"
-relations = ["publication_candidate", "publication_selection", "publication_receipt", "publication_head", "canonical_value_allocation", "canonical_value_page", "canonical_value_identity", "catalog_revision", "catalog_publication", "artifact_location", "catalog_artifact"]
+relations = ["publication_candidate", "publication_candidate_projection_seal", "publication_selection", "publication_stage", "publication_checkpoint", "publication_batch_receipt", "artifact_input", "artifact_operation", "prepared_artifact", "publication_receipt", "publication_head", "analysis_snapshot_manifest", "source_revision", "canonical_value_allocation", "canonical_value_page", "canonical_value_identity", "catalog_revision", "catalog_publication", "catalog_publication_order", "artifact_location", "catalog_artifact"]
 covers = [
   "machine_contract.publication-atomicity",
+  "publication_atomic_contract.selection_rule",
+  "publication_atomic_contract.cursor_codec_rule",
+  "publication_atomic_contract.batch_rule",
+  "publication_atomic_contract.projection_seal_rule",
   "publication_atomic_contract.runtime_obligation",
+  "publication_atomic_contract.finalization_rule",
   "byte_domain.publication_id.runtime_obligation",
   "byte_domain.artifact_id.runtime_obligation",
   "byte_domain.stage.runtime_obligation",
@@ -1021,7 +1373,7 @@ ready_check = "catalog_refinement.check_state_machines_v1"
 writer_hook = "catalog_writer.validate_state_transition"
 writer_hook_version = 1
 scope = "catalog.state-machines"
-relations = ["source_build", "analysis_run", "analysis_checkpoint", "publication_candidate", "publication_checkpoint", "prepared_artifact", "publication_receipt"]
+relations = ["source_build", "analysis_run", "analysis_checkpoint", "publication_candidate", "publication_candidate_projection_seal", "publication_checkpoint", "publication_batch_receipt", "prepared_artifact", "publication_receipt"]
 covers = [
   "machine_contract.state-machines",
   "analysis_run_contract.attempt_rule",
@@ -1057,7 +1409,7 @@ ready_check = "catalog_refinement.check_physical_domains_v1"
 writer_hook = "catalog_writer.validate_physical_domain"
 writer_hook_version = 1
 scope = "catalog.physical-domains"
-relations = ["canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "source_locator_identity", "file_name_identity", "tag_term", "publication_identity", "artifact_identity", "artifact_location", "gallery_observation_page", "gallery_observation_allocation_page", "gallery_observation_page_descriptor", "gallery_observation_page_key_bounds", "gallery_observation_page_child", "gallery_observation_discovery_fingerprint", "analysis_checkpoint", "publication_checkpoint", "prepared_artifact"]
+relations = ["canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "source_locator_identity", "file_name_identity", "tag_term", "publication_identity", "artifact_identity", "artifact_location", "artifact_producer_fingerprint", "artifact_storage_codec", "gallery_observation_page", "gallery_observation_allocation_page", "gallery_observation_page_descriptor", "gallery_observation_page_key_bounds", "gallery_observation_page_child", "gallery_observation_discovery_fingerprint", "analysis_checkpoint", "publication_checkpoint", "publication_batch_receipt", "prepared_artifact"]
 covers = [
   "machine_contract.physical-domains",
   "byte_domain.source_gallery_name.runtime_obligation",
@@ -1067,9 +1419,18 @@ covers = [
   "byte_domain.role.runtime_obligation",
   "byte_domain.metadata_fingerprint.runtime_obligation",
   "byte_domain.cursor.runtime_obligation",
+  "byte_domain.start_cursor.runtime_obligation",
+  "byte_domain.next_cursor.runtime_obligation",
   "byte_domain.protection_token.runtime_obligation",
+  "byte_domain.adapter_id.runtime_obligation",
+  "byte_domain.producer_equivalence_class.runtime_obligation",
+  "byte_domain.writer_id.runtime_obligation",
+  "byte_domain.python_abi.runtime_obligation",
+  "byte_domain.pillow_build.runtime_obligation",
+  "byte_domain.libjpeg_build.runtime_obligation",
+  "byte_domain.zlib_build.runtime_obligation",
 ]
-description = "Validate exact storage classes, fixed binary widths, bounded key bytes, the exact 40-byte discovery fingerprint, stage-specific cursors capped at 2048 bytes, artifact protection tokens capped at 512 bytes, unsigned logical counters, and the shared 0..2^63-1 Unix-microsecond timestamp domain on both backends; arbitrary publication and artifact-locator bytes appear only through canonical references."
+description = "Validate exact storage classes, fixed binary widths, bounded key bytes, the exact 40-byte discovery fingerprint, stage-specific cursors capped at 2048 bytes, artifact protection tokens fixed at 184 bytes, closed producer/storage registry byte fields, unsigned logical counters, and the shared 0..2^63-1 Unix-microsecond timestamp domain on both backends; arbitrary publication and artifact-locator bytes appear only through canonical references."
 
 [[semantic_obligation]]
 id = "catalog.bootstrap.v1"
@@ -1093,7 +1454,7 @@ ready_check = "catalog_refinement.check_retention_contract_v1"
 writer_hook = "catalog_writer.validate_retention_transition"
 writer_hook_version = 1
 scope = "catalog.retention"
-relations = ["source_head", "publication_head", "publication_candidate", "publication_receipt", "source_build", "analysis_run", "source_revision", "source_revision_provenance", "source_snapshot_manifest_identity", "canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "canonical_value_identity", "gallery_observation_allocation", "gallery_observation", "gallery_observation_tree_root", "gallery_observation_page", "gallery_observation_allocation_page", "gallery_observation_page_descriptor", "gallery_observation_page_key_bounds", "gallery_observation_page_child", "catalog_revision"]
+relations = ["source_head", "publication_head", "publication_candidate", "publication_receipt", "source_build", "analysis_run", "source_revision", "source_revision_provenance", "source_snapshot_manifest_identity", "analysis_snapshot_manifest", "canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "canonical_value_identity", "gallery_observation_allocation", "gallery_observation", "gallery_observation_tree_root", "gallery_observation_page", "gallery_observation_allocation_page", "gallery_observation_page_descriptor", "gallery_observation_page_key_bounds", "gallery_observation_page_child", "catalog_revision"]
 covers = ["machine_contract.retention", "canonical_value_page_contract.cleanup_rule", "gallery_observation_page_contract.cleanup_rule"]
 description = "Validate active/working/pending-receipt/overlay-descendant blockers and enforce the exported child-first phase DAG before pruning any candidate, revision, analysis, or source-build state; delete source_revision_provenance as an ANALYSIS_RUN child while retaining the self-contained source revision and manifest."
 
@@ -1152,7 +1513,7 @@ relations = ["artifact_semantic_input"]
 
 [[canonical_reference_role]]
 attribute = "policy_component_sha256"
-digest_domain = "artifact_policy_v1"
+digest_domain = "artifact_policy_v2"
 relations = ["artifact_policy", "artifact_policy_semantics", "artifact_semantic_input"]
 
 [[canonical_reference_role]]
@@ -1183,7 +1544,7 @@ relations = ["source_scope"]
 [[canonical_reference_role]]
 attribute = "snapshot_manifest_sha256"
 digest_domain = "source_snapshot_manifest_v1"
-relations = ["source_revision", "source_snapshot_manifest_identity"]
+relations = ["analysis_snapshot_manifest", "source_revision", "source_snapshot_manifest_identity"]
 
 [[canonical_reference_role]]
 attribute = "source_title_sha256"
@@ -1218,6 +1579,210 @@ columns = ["source_provider"]
 values = ["filesystem"]
 
 [[bootstrap_seed]]
+id = "catalog.artifact-zip-writer-policy.v1"
+relation = "artifact_zip_writer_policy"
+columns = ["artifact_algorithm_version", "zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"]
+values = ["1", "1", "8", "9", "33", "0", "33188", "2048", "3", "1", "1"]
+
+[[bootstrap_seed]]
+id = "catalog.artifact-storage-codec.managed-filesystem.v1"
+relation = "artifact_storage_codec"
+columns = ["storage_codec_version", "adapter_id", "locator_codec_version", "protection_token_codec_version"]
+values = ["1", "managed-filesystem", "1", "1"]
+
+[[bootstrap_seed]]
+id = "catalog.analysis-stage.changed-gallery.v1"
+relation = "analysis_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["changed_gallery", "01", "analysis_gallery_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.analysis-stage.changed-file-hash.v1"
+relation = "analysis_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["changed_file_hash", "02", "analysis_digest_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.analysis-stage.file-hash-decision.v1"
+relation = "analysis_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["file_hash_decision", "03", "analysis_digest_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.analysis-stage.validate-file-hash-decision.v1"
+relation = "analysis_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["validate_file_hash_decision", "04", "analysis_digest_live_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.analysis-stage.impacted-gallery.v1"
+relation = "analysis_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["impacted_gallery", "05", "analysis_gallery_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.analysis-stage.impacted-content.v1"
+relation = "analysis_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["impacted_content", "06", "analysis_gallery_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.analysis-stage.content-owner-candidate.v1"
+relation = "analysis_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["content_owner_candidate", "07", "analysis_gallery_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.analysis-stage.validate-content-owner-candidate.v1"
+relation = "analysis_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["validate_content_owner_candidate", "08", "analysis_gallery_live_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.analysis-stage.content-owner.v1"
+relation = "analysis_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["content_owner", "09", "analysis_digest_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.analysis-stage.validate-content-owner.v1"
+relation = "analysis_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["validate_content_owner", "10", "analysis_digest_live_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.analysis-stage.impacted-gid.v1"
+relation = "analysis_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["impacted_gid", "11", "analysis_gallery_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.analysis-stage.gid-candidate.v1"
+relation = "analysis_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["gid_candidate", "12", "analysis_gallery_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.analysis-stage.validate-gid-candidate.v1"
+relation = "analysis_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["validate_gid_candidate", "13", "analysis_gallery_live_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.analysis-stage.gid-winner.v1"
+relation = "analysis_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["gid_winner", "14", "analysis_gid_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.analysis-stage.validate-gid-winner.v1"
+relation = "analysis_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["validate_gid_winner", "15", "analysis_gid_live_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.publication-stage.build-selection.v1"
+relation = "publication_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["BUILD_SELECTION", "01", "publication_gallery_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.publication-stage.validate-selection.v1"
+relation = "publication_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["VALIDATE_SELECTION", "02", "publication_gallery_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.publication-stage.build-catalog-projection.v1"
+relation = "publication_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["BUILD_CATALOG_PROJECTION", "03", "publication_catalog_child_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.publication-stage.validate-catalog-projection.v1"
+relation = "publication_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["VALIDATE_CATALOG_PROJECTION", "04", "publication_catalog_child_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.publication-stage.build-artifact-input.v1"
+relation = "publication_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["BUILD_ARTIFACT_INPUT", "05", "publication_key_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.publication-stage.build-artifact-delta-operation.v1"
+relation = "publication_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["BUILD_ARTIFACT_DELTA_OPERATION", "06", "publication_key_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.publication-stage.validate-artifact-input-delta.v1"
+relation = "publication_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["VALIDATE_ARTIFACT_INPUT_DELTA", "07", "publication_key_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.publication-stage.validate-prepared-artifact.v1"
+relation = "publication_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["VALIDATE_PREPARED_ARTIFACT", "08", "publication_key_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.publication-stage.validate-create.v1"
+relation = "publication_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["VALIDATE_CREATE", "09", "publication_key_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.publication-stage.validate-rebuild.v1"
+relation = "publication_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["VALIDATE_REBUILD", "10", "publication_key_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.publication-stage.validate-delete.v1"
+relation = "publication_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["VALIDATE_DELETE", "11", "publication_key_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.publication-stage.validate-unchanged.v1"
+relation = "publication_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["VALIDATE_UNCHANGED", "12", "publication_key_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.publication-stage.validate-new-gallery.v1"
+relation = "publication_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["VALIDATE_NEW_GALLERY", "13", "publication_key_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.publication-stage.validate-changed-gallery.v1"
+relation = "publication_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["VALIDATE_CHANGED_GALLERY", "14", "publication_key_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.publication-stage.validate-removed-gallery.v1"
+relation = "publication_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["VALIDATE_REMOVED_GALLERY", "15", "publication_key_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.publication-stage.validate-duplicate-loser.v1"
+relation = "publication_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["VALIDATE_DUPLICATE_LOSER", "16", "publication_gallery_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.publication-stage.finalize-artifacts.v1"
+relation = "publication_stage"
+columns = ["stage", "stage_order", "cursor_codec"]
+values = ["FINALIZE_ARTIFACTS", "17", "publication_key_v1"]
+
+[[bootstrap_seed]]
 id = "catalog.digest-domain.artifact-effective-content.v1"
 relation = "canonical_digest_policy"
 columns = ["digest_domain"]
@@ -1242,10 +1807,10 @@ columns = ["digest_domain"]
 values = ["artifact_owner_v1"]
 
 [[bootstrap_seed]]
-id = "catalog.digest-domain.artifact-policy.v1"
+id = "catalog.digest-domain.artifact-policy.v2"
 relation = "canonical_digest_policy"
 columns = ["digest_domain"]
-values = ["artifact_policy_v1"]
+values = ["artifact_policy_v2"]
 
 [[bootstrap_seed]]
 id = "catalog.digest-domain.artifact-selected.v1"
@@ -1300,6 +1865,18 @@ id = "catalog.digest-domain.effective-content.v1"
 relation = "canonical_digest_policy"
 columns = ["digest_domain"]
 values = ["effective_content_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.digest-domain.filesystem-fingerprint.v1"
+relation = "canonical_digest_policy"
+columns = ["digest_domain"]
+values = ["filesystem_fingerprint_v1"]
+
+[[bootstrap_seed]]
+id = "catalog.digest-domain.filesystem-source-identity.v1"
+relation = "canonical_digest_policy"
+columns = ["digest_domain"]
+values = ["filesystem_source_identity_v1"]
 
 [[bootstrap_seed]]
 id = "catalog.digest-domain.gallery-observation.v1"
@@ -1377,6 +1954,26 @@ classification = "payload_digest"
 rationale = "Domain-separated digest of immutable artifact bytes; artifact_blob is the sole digest-to-size authority."
 
 [[attribute_semantic]]
+name = "producer_fingerprint_sha256"
+classification = "payload_digest"
+rationale = "Raw SHA-256 identity of the exact versioned five-field producer/build frame; its collision-checked registry row supplies algorithm and certified-equivalence metadata."
+
+[[attribute_semantic]]
+name = "adapter_id"
+classification = "natural_key"
+rationale = "Exact closed artifact-storage adapter identifier equivalent to storage_codec_version."
+
+[[attribute_semantic]]
+name = "producer_equivalence_class"
+classification = "domain_discriminator"
+rationale = "Registered byte-equivalence certification class scoped by artifact algorithm and exact producer build tuple."
+
+[[attribute_semantic]]
+name = "writer_id"
+classification = "natural_key"
+rationale = "Exact artifact writer implementation identifier included in the collision-checked producer fingerprint frame."
+
+[[attribute_semantic]]
 name = "artifact_input_id"
 classification = "surrogate_identifier"
 rationale = "Opaque identifier for one candidate-scoped desired artifact input; no digest injectivity is assumed."
@@ -1404,7 +2001,7 @@ rationale = "Canonical exact-byte identity of the ordered repeated effective-con
 [[attribute_semantic]]
 name = "artifact_policy_id"
 classification = "surrogate_identifier"
-rationale = "Opaque artifact-policy identifier with the exact natural key (artifact_algorithm_version, max_image_short_side). The algorithm version names a registered complete byte-producer bundle; the independently configurable resize bound remains explicit."
+rationale = "Opaque artifact-policy identifier mapped one-to-one to the policy-v2 component whose natural tuple is artifact_algorithm_version, max_image_short_side, and producer_fingerprint_sha256."
 
 [[attribute_semantic]]
 name = "artifact_id"
@@ -1414,7 +2011,12 @@ rationale = "Catalog-facing artifact identity whose uniqueness is revision-scope
 [[attribute_semantic]]
 name = "artifact_name"
 classification = "natural_key"
-rationale = "User-facing artifact leaf name; uniqueness is candidate- or revision-scoped by declared keys."
+rationale = "Exact h2h-<positive canonical-decimal GID>.cbz identity representation; it is a candidate key only in publication_identity and is never repeated in occurrence relations."
+
+[[attribute_semantic]]
+name = "artifact_input_count"
+classification = "aggregate_count"
+rationale = "Exact immutable number of artifact-input rows independently verified for one sealed publication candidate."
 
 [[attribute_semantic]]
 name = "batch_key"
@@ -1445,6 +2047,21 @@ rationale = "Opaque publication-candidate identifier."
 name = "candidate_sha256"
 classification = "audit_digest"
 rationale = "Comparator-input checksum for audit/replay; no injectivity or reverse FD is assumed."
+
+[[attribute_semantic]]
+name = "create_count"
+classification = "aggregate_count"
+rationale = "Exact immutable number of CREATE artifact operations independently verified for one sealed publication candidate."
+
+[[attribute_semantic]]
+name = "cursor_codec"
+classification = "domain_discriminator"
+rationale = "Closed provider-seeded identifier selecting one exact stage cursor framing and validator."
+
+[[attribute_semantic]]
+name = "delete_count"
+classification = "aggregate_count"
+rationale = "Exact immutable number of DELETE artifact operations independently verified for one sealed publication candidate."
 
 [[attribute_semantic]]
 name = "selected_component_sha256"
@@ -1707,6 +2324,21 @@ classification = "aggregate_count"
 rationale = "Exact immutable number of public catalog publications in one catalog revision."
 
 [[attribute_semantic]]
+name = "prepared_artifact_count"
+classification = "aggregate_count"
+rationale = "Exact immutable number of prepared-artifact rows independently verified for one sealed publication candidate."
+
+[[attribute_semantic]]
+name = "processed_count"
+classification = "aggregate_count"
+rationale = "Monotone server-owned count of rows durably processed through one bounded publication stage."
+
+[[attribute_semantic]]
+name = "rebuild_count"
+classification = "aggregate_count"
+rationale = "Exact immutable number of REBUILD artifact operations independently verified for one sealed publication candidate."
+
+[[attribute_semantic]]
 name = "publication_key"
 classification = "canonical_identity_digest"
 rationale = "Canonical SHA-256 identity digest of publication_id; publication_identity declares it as a global alternate key, while candidate and revision relations reference that retained identity."
@@ -1725,6 +2357,26 @@ rationale = "Order-independent raw-content grouping digest; absence represents n
 name = "row_count"
 classification = "aggregate_count"
 rationale = "Batch-scoped affected-row total."
+
+[[attribute_semantic]]
+name = "start_processed_count"
+classification = "aggregate_count"
+rationale = "Expected processed-count checkpoint before an analysis or publication batch, retained for exact response-loss replay."
+
+[[attribute_semantic]]
+name = "stage_order"
+classification = "ordering_key"
+rationale = "Exact zero-padded ASCII order key unique within a closed stage registry."
+
+[[attribute_semantic]]
+name = "next_processed_count"
+classification = "aggregate_count"
+rationale = "Committed processed-count checkpoint after an analysis or publication batch, retained for exact response-loss replay."
+
+[[attribute_semantic]]
+name = "next_state"
+classification = "domain_discriminator"
+rationale = "Committed closed OPEN/COMPLETE checkpoint state after a receipted analysis batch, retained for exact response-loss replay."
 
 [[attribute_semantic]]
 name = "scope_key"
@@ -1755,6 +2407,11 @@ rationale = "Opaque exact-tag identifier with a separately declared namespace/va
 name = "tree_observation_sha256"
 classification = "observational_digest"
 rationale = "Order-independent discovery-tree checksum; it is an observation receipt and not an identity."
+
+[[attribute_semantic]]
+name = "unchanged_count"
+classification = "aggregate_count"
+rationale = "Exact immutable number of UNCHANGED artifact decisions independently verified for one sealed publication candidate."
 
 [[attribute_semantic]]
 name = "winner_gallery_id"
@@ -1964,6 +2621,25 @@ fds = [
 foreign_keys = [
   { attributes = ["build_id"], relation = "source_build", referenced_attributes = ["build_id"] },
 ]
+rationale = "Terminal audit record written only from the COMPLETE discovery checkpoint after its empty terminal receipt. gallery_count is copied from processed_count; scan_attempt and tree_observation_sha256 identify the provider-private frozen discovery plan for diagnosis only and never authorize membership, assembly, or sealing."
+
+[[relation]]
+name = "source_build_expected_gallery"
+kind = "source_of_truth"
+attributes = ["build_id", "position", "gallery_id"]
+declared_keys = [
+  ["build_id", "position"],
+  ["build_id", "gallery_id"],
+]
+fds = [
+  { determinant = ["build_id", "position"], dependent = ["gallery_id"] },
+  { determinant = ["build_id", "gallery_id"], dependent = ["position"] },
+]
+foreign_keys = [
+  { attributes = ["build_id"], relation = "source_build", referenced_attributes = ["build_id"] },
+  { attributes = ["gallery_id"], relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
+]
+rationale = "Complete expected source membership uploaded in bounded transactions from one provider-private typed discovery spool. position is server-derived zero-based order by exact unsigned locator_sha256 bytes; the alternate key rejects duplicate locators/galleries. This persisted set, not an audit digest or caller count, is assembly authority."
 
 [[relation]]
 name = "source_locator_identity"
@@ -2218,6 +2894,19 @@ foreign_keys = [
 ]
 
 [[relation]]
+name = "gallery_observation_stat"
+kind = "source_of_truth"
+attributes = ["gallery_id", "observation_id", "file_count", "byte_count"]
+declared_keys = [["gallery_id", "observation_id"]]
+fds = [
+  { determinant = ["gallery_id", "observation_id"], dependent = ["file_count", "byte_count"] },
+]
+foreign_keys = [
+  { attributes = ["gallery_id", "observation_id"], relation = "gallery_observation", referenced_attributes = ["gallery_id", "observation_id"] },
+]
+rationale = "Policy-independent exact observation counts copied O(1) from the terminal FILE checkpoint in the same transaction that seals the immutable gallery observation. FILE batches accumulate FileContentReceipt size; seal never COUNTs files or SUMs content_blob rows."
+
+[[relation]]
 name = "source_build_gallery"
 kind = "source_of_truth"
 attributes = ["build_id", "gallery_id", "observation_id"]
@@ -2227,8 +2916,10 @@ fds = [
 ]
 foreign_keys = [
   { attributes = ["build_id"], relation = "source_build", referenced_attributes = ["build_id"] },
+  { attributes = ["build_id", "gallery_id"], relation = "source_build_expected_gallery", referenced_attributes = ["build_id", "gallery_id"] },
   { attributes = ["gallery_id", "observation_id"], relation = "gallery_observation", referenced_attributes = ["gallery_id", "observation_id"] },
 ]
+rationale = "Final visible membership. The expected-membership foreign key forbids extra galleries at schema level; the bounded assembly evaluator independently proves no expected gallery is missing and consumes its exact observation statistics before build sealing."
 
 [[relation]]
 name = "file_name_identity"
@@ -2350,7 +3041,7 @@ fds = [
 foreign_keys = [
   { attributes = ["build_id"], relation = "source_build", referenced_attributes = ["build_id"] },
 ]
-materialization = { authoritative = false, rationale = "Persist the sealed canonical build digest and bounded counters so restart and publication never rescan source rows.", derived_from = ["source_build", "source_build_gallery", "gallery_observation", "gallery_observation_file", "gallery_observation_tag"], refresh_strategy = "replace once when the build seals" }
+materialization = { authoritative = false, rationale = "Persist the audit build digest and exact terminal assembly counters so restart and publication never rescan source rows; seal authority is the empty terminal assembly receipt, not manifest_sha256.", derived_from = ["source_build", "source_build_discovery", "source_build_expected_gallery", "source_build_gallery", "gallery_observation", "gallery_observation_stat", "gallery_manifest"], refresh_strategy = "after independent bounded exact membership validation reaches an empty page, copy only the terminal checkpoint gallery/file/byte counts and audit chain into one immutable row and CAS source_build OPEN to SEALED in the same transaction" }
 
 [[relation]]
 name = "gallery_manifest"
@@ -2475,6 +3166,20 @@ foreign_keys = [
   { attributes = ["snapshot_manifest_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
 ]
 rationale = "Retain one collision-checked canonical identity for the exact resolved source snapshot, policy natural tuple, and aggregate counts. The canonical payload is retained while a source revision references it."
+
+[[relation]]
+name = "analysis_snapshot_manifest"
+kind = "source_of_truth"
+attributes = ["analysis_id", "snapshot_manifest_sha256"]
+declared_keys = [["analysis_id"]]
+fds = [
+  { determinant = ["analysis_id"], dependent = ["snapshot_manifest_sha256"] },
+]
+foreign_keys = [
+  { attributes = ["analysis_id"], relation = "analysis_run", referenced_attributes = ["analysis_id"] },
+  { attributes = ["snapshot_manifest_sha256"], relation = "source_snapshot_manifest_identity", referenced_attributes = ["snapshot_manifest_sha256"] },
+]
+rationale = "Bind one completed analysis to the exact canonical snapshot it produced. analysis_id is the sole candidate key: distinct analyses may produce the same collision-checked snapshot, so snapshot_manifest_sha256 is deliberately nonunique. Publication joins this output authority instead of treating input_manifest_sha256 or source_revision_provenance as proof of output."
 
 [[relation]]
 name = "source_revision"
@@ -2977,6 +3682,17 @@ foreign_keys = [
 materialization = { authoritative = false, rationale = "Seal each overlay component only after its component-specific full evaluator proves exact shadow/tombstone equality in the same fenced transaction; no audit digest authorizes the transition, and sealed component rows are immutable; only a completely sealed same-policy run may be inherited.", derived_from = ["analysis_state_anchor", "analysis_state_ancestry", "analysis_file_hash_decision_shadow", "analysis_file_hash_decision_tombstone", "analysis_content_owner_candidate_shadow", "analysis_content_owner_candidate_tombstone", "analysis_content_owner_shadow", "analysis_content_owner_tombstone", "analysis_gid_candidate_shadow", "analysis_gid_candidate_tombstone", "analysis_gid_winner_shadow", "analysis_gid_winner_tombstone", "analysis_impacted_content", "analysis_impacted_gid", "analysis_checkpoint", "analysis_batch_receipt"], refresh_strategy = "from the immutable snapshot and server-owned cursor, recompute the exact bounded row projection and compare every materialized field, then insert one immutable seal in the same generation/fence CAS transaction; completion requires all 5 seals; cleanup removes seals, then ancestry, then state only when no sealed descendant reaches the run", completion_gate = "all_configured_components", immutable = true, validator = "component_specific_full_evaluator_v1", policy_compatibility = "same_policy_or_depth_zero_compaction", ancestry_invariant = "acyclic_depth_contiguous", delta_completeness = "exact_old_new_snapshot", compaction_validation = "full_evaluator_equality", cleanup_guard = "no_reachable_descendants", cleanup_transition = "remove_seal_then_ancestry_then_state" }
 
 [[relation]]
+name = "analysis_stage"
+kind = "source_of_truth"
+attributes = ["stage", "stage_order", "cursor_codec"]
+declared_keys = [["stage"], ["stage_order"]]
+fds = [
+  { determinant = ["stage"], dependent = ["stage_order", "cursor_codec"] },
+  { determinant = ["stage_order"], dependent = ["stage", "cursor_codec"] },
+]
+rationale = "Closed provider-seeded registry of the fifteen exact analysis batch stages. stage_order is the zero-padded ASCII order key 01..15 and cursor_codec selects the exact executable framing pinned by analysis_resolution_contract; runtime rejects every caller-defined or unregistered stage, order, or codec."
+
+[[relation]]
 name = "analysis_checkpoint"
 kind = "source_of_truth"
 attributes = [
@@ -2984,17 +3700,19 @@ attributes = [
   "stage",
   "generation",
   "cursor",
+  "processed_count",
   "state",
   "updated_at",
 ]
 declared_keys = [["analysis_id", "stage"]]
 fds = [
-  { determinant = ["analysis_id", "stage"], dependent = ["generation", "cursor", "state", "updated_at"] },
+  { determinant = ["analysis_id", "stage"], dependent = ["generation", "cursor", "processed_count", "state", "updated_at"] },
 ]
 foreign_keys = [
   { attributes = ["analysis_id"], relation = "analysis_run", referenced_attributes = ["analysis_id"] },
+  { attributes = ["stage"], relation = "analysis_stage", referenced_attributes = ["stage"] },
 ]
-rationale = "Server-owned cursor and generation state only. The closed stage-specific cursor codec emits at most 2048 exact bytes. A writer recomputes and field-compares the exact bounded projection before one fenced CAS; authorization excludes every audit digest and caller-defined cursor."
+rationale = "Server-owned cursor, processed_count, generation, and OPEN/COMPLETE state only. The exact seeded stage selects one closed cursor codec emitting at most 2048 bytes. A writer recomputes and field-compares the hard-capped projection before one fenced CAS; authorization excludes every audit digest, caller-defined cursor/count/state, and unknown stage."
 
 [[relation]]
 name = "analysis_batch_receipt"
@@ -3003,17 +3721,29 @@ attributes = [
   "analysis_id",
   "stage",
   "batch_key",
+  "start_generation",
+  "start_cursor",
+  "start_processed_count",
+  "next_cursor",
+  "next_processed_count",
+  "next_state",
   "row_count",
+  "terminal",
+  "committed_generation",
   "committed_at",
 ]
-declared_keys = [["analysis_id", "stage", "batch_key"]]
+declared_keys = [
+  ["analysis_id", "stage", "batch_key"],
+  ["analysis_id", "stage", "start_generation"],
+]
 fds = [
-  { determinant = ["analysis_id", "stage", "batch_key"], dependent = ["row_count", "committed_at"] },
+  { determinant = ["analysis_id", "stage", "batch_key"], dependent = ["start_generation", "start_cursor", "start_processed_count", "next_cursor", "next_processed_count", "next_state", "row_count", "terminal", "committed_generation", "committed_at"] },
+  { determinant = ["analysis_id", "stage", "start_generation"], dependent = ["batch_key", "start_cursor", "start_processed_count", "next_cursor", "next_processed_count", "next_state", "row_count", "terminal", "committed_generation", "committed_at"] },
 ]
 foreign_keys = [
   { attributes = ["analysis_id", "stage"], relation = "analysis_checkpoint", referenced_attributes = ["analysis_id", "stage"] },
 ]
-rationale = "Immutable idempotency receipt for one server-derived bounded projection. batch_key names only the attempt; authorization excludes every audit digest and comes from same-transaction field comparison plus CAS."
+rationale = "Immutable full pre/post response authority for one server-derived hard-capped projection. The two keys make exact batch_key retry and one locked start_generation resolve one complete response tuple. Replay field-compares and returns the stored start/next cursor, count, state, terminal, generation, and row_count without writes; only an empty derived page may be terminal and authorization excludes every caller field or audit digest."
 
 [[relation]]
 name = "publication_candidate"
@@ -3047,6 +3777,33 @@ foreign_keys = [
 rationale = "Pin one analysis projection attempt to its exact channel and artifact/display policies before any selection or artifact work. reserved_revision is the idempotent attempt key."
 
 [[relation]]
+name = "publication_candidate_projection_seal"
+kind = "source_of_truth"
+attributes = [
+  "candidate_id",
+  "publication_count",
+  "artifact_input_count",
+  "prepared_artifact_count",
+  "create_count",
+  "rebuild_count",
+  "delete_count",
+  "unchanged_count",
+  "new_galleries",
+  "changed_galleries",
+  "removed_galleries",
+  "duplicate_losers",
+  "projection_sealed_at",
+]
+declared_keys = [["candidate_id"]]
+fds = [
+  { determinant = ["candidate_id"], dependent = ["publication_count", "artifact_input_count", "prepared_artifact_count", "create_count", "rebuild_count", "delete_count", "unchanged_count", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "projection_sealed_at"] },
+]
+foreign_keys = [
+  { attributes = ["candidate_id"], relation = "publication_candidate", referenced_attributes = ["candidate_id"] },
+]
+rationale = "Immutable candidate-scoped O(1) projection authority inserted only after bounded stage receipts and an independent full evaluator prove complete selection/order/catalog-child, artifact-input/delta, prepared-byte, and four publication-result scalar coverage. No digest is stored because neither an audit checksum nor caller-supplied aggregate authorizes the pointer transaction."
+
+[[relation]]
 name = "publication_candidate_base_catalog"
 kind = "source_of_truth"
 attributes = ["candidate_id", "base_revision", "base_catalog_generation"]
@@ -3077,20 +3834,31 @@ rationale = "Optional positive base source head revision and generation for the 
 [[relation]]
 name = "publication_selection"
 kind = "controlled_materialization"
-attributes = ["candidate_id", "gallery_id", "publication_key", "item_sha256"]
+attributes = ["candidate_id", "gallery_id", "publication_key"]
 declared_keys = [
   ["candidate_id", "gallery_id"],
   ["candidate_id", "publication_key"],
 ]
 fds = [
-  { determinant = ["candidate_id", "gallery_id"], dependent = ["publication_key", "item_sha256"] },
-  { determinant = ["candidate_id", "publication_key"], dependent = ["gallery_id", "item_sha256"] },
+  { determinant = ["candidate_id", "gallery_id"], dependent = ["publication_key"] },
+  { determinant = ["candidate_id", "publication_key"], dependent = ["gallery_id"] },
 ]
 foreign_keys = [
   { attributes = ["candidate_id"], relation = "publication_candidate", referenced_attributes = ["candidate_id"] },
   { attributes = ["gallery_id"], relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
 ]
-materialization = { authoritative = false, rationale = "Freeze the complete selected winner set from canonical resolved owner/GID state and stable publication keys before artifact preparation and atomic publication.", derived_from = ["publication_candidate", "analysis_content_owner_resolved", "analysis_gid_winner_resolved", "gallery_identity"], refresh_strategy = "resolve the bounded overlays, replace by candidate_id until the candidate seals, and validate against the full evaluator" }
+materialization = { authoritative = false, rationale = "Freeze only the complete selected winner identity set from canonical resolved owner/GID state and publication-key.v1 before artifact preparation; no not-yet-built catalog item audit digest is invented at selection time.", derived_from = ["publication_candidate", "source_build_gallery", "gallery_observation_file", "file_name_identity", "analysis_file_hash_decision_resolved", "gallery_observation_metadata", "analysis_content_owner_resolved", "analysis_gid_winner_resolved", "gallery_identity", "publication_identity"], refresh_strategy = "BUILD_SELECTION evaluates the exact content-owner-and-GID-winner intersection in bounded gallery_id pages; VALIDATE_SELECTION independently merge-compares every identity field and its terminal processed_count becomes publication_count" }
+
+[[relation]]
+name = "publication_stage"
+kind = "source_of_truth"
+attributes = ["stage", "stage_order", "cursor_codec"]
+declared_keys = [["stage"], ["stage_order"]]
+fds = [
+  { determinant = ["stage"], dependent = ["stage_order", "cursor_codec"] },
+  { determinant = ["stage_order"], dependent = ["stage", "cursor_codec"] },
+]
+rationale = "Closed provider-seeded registry of the seventeen exact publication stages. stage_order is the zero-padded ASCII order key 01..17 and cursor_codec selects the executable bounded framing; no database text is dynamically dispatched outside the closed production map."
 
 [[relation]]
 name = "publication_checkpoint"
@@ -3100,17 +3868,19 @@ attributes = [
   "stage",
   "generation",
   "cursor",
+  "processed_count",
   "state",
   "updated_at",
 ]
 declared_keys = [["candidate_id", "stage"]]
 fds = [
-  { determinant = ["candidate_id", "stage"], dependent = ["generation", "cursor", "state", "updated_at"] },
+  { determinant = ["candidate_id", "stage"], dependent = ["generation", "cursor", "processed_count", "state", "updated_at"] },
 ]
 foreign_keys = [
   { attributes = ["candidate_id"], relation = "publication_candidate", referenced_attributes = ["candidate_id"] },
+  { attributes = ["stage"], relation = "publication_stage", referenced_attributes = ["stage"] },
 ]
-rationale = "Server-owned cursor and generation state only. The closed stage-specific cursor codec emits at most 2048 exact bytes. A writer recomputes and field-compares the exact bounded projection before one fenced CAS; authorization excludes every audit digest and caller-defined cursor."
+rationale = "Server-owned cursor, exact processed_count, and generation state only. The closed stage registry includes FINALIZE_ARTIFACTS whose cursor is empty at genesis or one exact raw32 publication_key and whose states are OPEN or COMPLETE. A writer derives and field-compares the exact hard-capped projection before one fenced CAS; only an empty terminal batch may set COMPLETE, and authorization excludes every audit digest, aggregate guessed from children, and caller-defined cursor."
 
 [[relation]]
 name = "publication_batch_receipt"
@@ -3119,34 +3889,89 @@ attributes = [
   "candidate_id",
   "stage",
   "batch_key",
+  "start_generation",
+  "start_cursor",
+  "start_processed_count",
+  "next_cursor",
+  "next_processed_count",
+  "next_state",
   "row_count",
+  "terminal",
+  "committed_generation",
   "committed_at",
 ]
-declared_keys = [["candidate_id", "stage", "batch_key"]]
+declared_keys = [
+  ["candidate_id", "stage", "batch_key"],
+  ["candidate_id", "stage", "start_generation"],
+]
 fds = [
-  { determinant = ["candidate_id", "stage", "batch_key"], dependent = ["row_count", "committed_at"] },
+  { determinant = ["candidate_id", "stage", "batch_key"], dependent = ["start_generation", "start_cursor", "start_processed_count", "next_cursor", "next_processed_count", "next_state", "row_count", "terminal", "committed_generation", "committed_at"] },
+  { determinant = ["candidate_id", "stage", "start_generation"], dependent = ["batch_key", "start_cursor", "start_processed_count", "next_cursor", "next_processed_count", "next_state", "row_count", "terminal", "committed_generation", "committed_at"] },
 ]
 foreign_keys = [
   { attributes = ["candidate_id", "stage"], relation = "publication_checkpoint", referenced_attributes = ["candidate_id", "stage"] },
 ]
-rationale = "Immutable idempotency receipt for one server-derived bounded projection. batch_key names only the attempt; authorization excludes every audit digest and comes from same-transaction field comparison plus CAS."
+rationale = "Immutable complete response receipt for one server-derived hard-capped projection. The two keys make one batch_key exact retry and one locked checkpoint generation produce exactly one start/next cursor, count, terminal, and committed-generation tuple. Exact replay compares and returns that full tuple without writes; batch_key names only the attempt, and authority comes from same-transaction field comparison plus checkpoint CAS rather than an audit digest or caller aggregate."
+
+[[relation]]
+name = "artifact_zip_writer_policy"
+kind = "source_of_truth"
+attributes = ["artifact_algorithm_version", "zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"]
+declared_keys = [
+  ["artifact_algorithm_version"],
+  ["zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"],
+]
+fds = [
+  { determinant = ["artifact_algorithm_version"], dependent = ["zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"] },
+  { determinant = ["zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"], dependent = ["artifact_algorithm_version"] },
+]
+rationale = "Closed ZIP/ZIP64 writer-policy registry. The algorithm version and complete fixed writer tuple are collision-checked equivalent keys, so no ambient ZIP-library default can change artifact bytes."
+
+[[relation]]
+name = "artifact_producer_fingerprint"
+kind = "source_of_truth"
+attributes = ["producer_fingerprint_sha256", "artifact_algorithm_version", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"]
+declared_keys = [
+  ["producer_fingerprint_sha256"],
+  ["artifact_algorithm_version", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"],
+]
+fds = [
+  { determinant = ["producer_fingerprint_sha256"], dependent = ["artifact_algorithm_version", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"] },
+  { determinant = ["artifact_algorithm_version", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"], dependent = ["producer_fingerprint_sha256"] },
+]
+foreign_keys = [
+  { attributes = ["artifact_algorithm_version"], relation = "artifact_zip_writer_policy", referenced_attributes = ["artifact_algorithm_version"] },
+]
+rationale = "Closed exact producer/build registry. producer_fingerprint_sha256 is raw SHA-256 of the five length-prefixed producer build byte strings; the registered algorithm and certified equivalence class are mapped metadata, never caller authority."
+
+[[relation]]
+name = "artifact_storage_codec"
+kind = "source_of_truth"
+attributes = ["storage_codec_version", "adapter_id", "locator_codec_version", "protection_token_codec_version"]
+declared_keys = [["storage_codec_version"], ["adapter_id"]]
+fds = [
+  { determinant = ["storage_codec_version"], dependent = ["adapter_id", "locator_codec_version", "protection_token_codec_version"] },
+  { determinant = ["adapter_id"], dependent = ["storage_codec_version", "locator_codec_version", "protection_token_codec_version"] },
+]
+rationale = "Closed storage-adapter codec registry. The numeric codec embedded in every protection token and the exact adapter identifier are equivalent keys."
 
 [[relation]]
 name = "artifact_policy_semantics"
 kind = "source_of_truth"
-attributes = ["policy_component_sha256", "artifact_algorithm_version", "max_image_short_side"]
+attributes = ["policy_component_sha256", "artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"]
 declared_keys = [
   ["policy_component_sha256"],
-  ["artifact_algorithm_version", "max_image_short_side"],
+  ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"],
 ]
 fds = [
-  { determinant = ["policy_component_sha256"], dependent = ["artifact_algorithm_version", "max_image_short_side"] },
-  { determinant = ["artifact_algorithm_version", "max_image_short_side"], dependent = ["policy_component_sha256"] },
+  { determinant = ["policy_component_sha256"], dependent = ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"] },
+  { determinant = ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"], dependent = ["policy_component_sha256"] },
 ]
 foreign_keys = [
   { attributes = ["policy_component_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { attributes = ["producer_fingerprint_sha256"], relation = "artifact_producer_fingerprint", referenced_attributes = ["producer_fingerprint_sha256"] },
 ]
-rationale = "The exact policy component payload is equivalent to the registered byte-producer bundle version and max image short side; runtime recomputes its stable-domain canonical payload and collision-checks the tuple."
+rationale = "The exact policy-v2 component payload is equivalent to the registered byte-producer bundle version, max image short side, and exact producer fingerprint; runtime recomputes its stable-domain canonical payload and collision-checks the tuple."
 
 [[relation]]
 name = "artifact_policy"
@@ -3192,7 +4017,6 @@ attributes = [
   "artifact_input_id",
   "candidate_id",
   "publication_key",
-  "artifact_name",
   "artifact_semantics_sha256",
 ]
 declared_keys = [
@@ -3200,8 +4024,8 @@ declared_keys = [
   ["candidate_id", "publication_key"],
 ]
 fds = [
-  { determinant = ["artifact_input_id"], dependent = ["candidate_id", "publication_key", "artifact_name", "artifact_semantics_sha256"] },
-  { determinant = ["candidate_id", "publication_key"], dependent = ["artifact_input_id", "artifact_name", "artifact_semantics_sha256"] },
+  { determinant = ["artifact_input_id"], dependent = ["candidate_id", "publication_key", "artifact_semantics_sha256"] },
+  { determinant = ["candidate_id", "publication_key"], dependent = ["artifact_input_id", "artifact_semantics_sha256"] },
 ]
 foreign_keys = [
   { attributes = ["candidate_id", "publication_key"], relation = "publication_selection", referenced_attributes = ["candidate_id", "publication_key"] },
@@ -3215,13 +4039,12 @@ kind = "controlled_materialization"
 attributes = [
   "candidate_id",
   "publication_key",
-  "artifact_name",
   "artifact_semantics_sha256",
   "artifact_sha256",
 ]
 declared_keys = [["candidate_id", "publication_key"]]
 fds = [
-  { determinant = ["candidate_id", "publication_key"], dependent = ["artifact_name", "artifact_semantics_sha256", "artifact_sha256"] },
+  { determinant = ["candidate_id", "publication_key"], dependent = ["artifact_semantics_sha256", "artifact_sha256"] },
 ]
 foreign_keys = [
   { attributes = ["candidate_id"], relation = "publication_candidate", referenced_attributes = ["candidate_id"] },
@@ -3236,12 +4059,11 @@ kind = "controlled_materialization"
 attributes = [
   "candidate_id",
   "publication_key",
-  "artifact_name",
   "artifact_input_id",
 ]
 declared_keys = [["candidate_id", "publication_key"]]
 fds = [
-  { determinant = ["candidate_id", "publication_key"], dependent = ["artifact_name", "artifact_input_id"] },
+  { determinant = ["candidate_id", "publication_key"], dependent = ["artifact_input_id"] },
 ]
 foreign_keys = [
   { attributes = ["artifact_input_id"], relation = "artifact_input", referenced_attributes = ["artifact_input_id"] },
@@ -3252,10 +4074,10 @@ materialization = { authoritative = false, rationale = "Pin the desired new arti
 [[relation]]
 name = "artifact_operation"
 kind = "controlled_materialization"
-attributes = ["candidate_id", "publication_key", "artifact_name", "operation"]
+attributes = ["candidate_id", "publication_key", "operation"]
 declared_keys = [["candidate_id", "publication_key"]]
 fds = [
-  { determinant = ["candidate_id", "publication_key"], dependent = ["artifact_name", "operation"] },
+  { determinant = ["candidate_id", "publication_key"], dependent = ["operation"] },
 ]
 foreign_keys = [
   { attributes = ["candidate_id"], relation = "publication_candidate", referenced_attributes = ["candidate_id"] },
@@ -3277,20 +4099,22 @@ kind = "controlled_materialization"
 attributes = [
   "candidate_id",
   "publication_key",
-  "artifact_name",
   "artifact_sha256",
+  "storage_codec_version",
   "protection_token",
   "state",
 ]
-declared_keys = [["candidate_id", "publication_key"]]
+declared_keys = [["candidate_id", "publication_key"], ["protection_token"]]
 fds = [
-  { determinant = ["candidate_id", "publication_key"], dependent = ["artifact_name", "artifact_sha256", "protection_token", "state"] },
+  { determinant = ["candidate_id", "publication_key"], dependent = ["artifact_sha256", "storage_codec_version", "protection_token", "state"] },
+  { determinant = ["protection_token"], dependent = ["candidate_id", "publication_key", "artifact_sha256", "storage_codec_version", "state"] },
 ]
 foreign_keys = [
   { attributes = ["candidate_id", "publication_key"], relation = "publication_selection", referenced_attributes = ["candidate_id", "publication_key"] },
   { attributes = ["artifact_sha256"], relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
+  { attributes = ["storage_codec_version"], relation = "artifact_storage_codec", referenced_attributes = ["storage_codec_version"] },
 ]
-materialization = { authoritative = false, rationale = "Receipt the exact protected artifact bytes and at-most-512-byte registered protection token before the database head can expose them, enabling crash-safe retry.", derived_from = ["artifact_input", "artifact_operation", "gallery_observation_file", "gallery_manifest"], refresh_strategy = "prepare only CREATE and REBUILD operations, reject an oversized protection token, then compare-and-swap by candidate_id, publication_key, and artifact_name" }
+materialization = { authoritative = false, rationale = "Receipt the exact protected artifact bytes, closed storage codec, and exact 184-byte self-describing protection token before the database head can expose them, enabling crash-safe retry.", derived_from = ["artifact_input", "artifact_operation", "artifact_location", "gallery_observation_file", "gallery_manifest"], refresh_strategy = "prepare only CREATE and REBUILD operations, decode and exact-compare every token field against registered/joined authority, then compare-and-swap by candidate_id and publication_key" }
 
 [[relation]]
 name = "catalog_revision"
@@ -3309,17 +4133,20 @@ rationale = "Immutable retained revision root. Publication readiness is authoriz
 [[relation]]
 name = "publication_identity"
 kind = "source_of_truth"
-attributes = ["publication_key", "publication_id", "gid"]
+attributes = ["publication_key", "publication_id", "gid", "artifact_name"]
 declared_keys = [
   ["publication_key"],
   ["publication_id"],
   ["gid"],
+  ["artifact_name"],
 ]
 fds = [
-  { determinant = ["publication_key"], dependent = ["publication_id", "gid"] },
-  { determinant = ["publication_id"], dependent = ["publication_key", "gid"] },
-  { determinant = ["gid"], dependent = ["publication_key", "publication_id"] },
+  { determinant = ["publication_key"], dependent = ["publication_id", "gid", "artifact_name"] },
+  { determinant = ["publication_id"], dependent = ["publication_key", "gid", "artifact_name"] },
+  { determinant = ["gid"], dependent = ["publication_key", "publication_id", "artifact_name"] },
+  { determinant = ["artifact_name"], dependent = ["publication_key", "publication_id", "gid"] },
 ]
+rationale = "The publication key, URN, positive GID, and exact h2h-<canonical-decimal-GID>.cbz leaf are four collision-checked representations of one identity; artifact names are stored nowhere else."
 
 [[relation]]
 name = "display_title_policy"
@@ -3391,7 +4218,6 @@ attributes = [
   "language_sha256",
   "published_at",
   "modified_at",
-  "redownload_required",
   "item_sha256",
 ]
 declared_keys = [
@@ -3399,8 +4225,8 @@ declared_keys = [
   ["revision", "publication_key"],
 ]
 fds = [
-  { determinant = ["revision", "gallery_id"], dependent = ["publication_key", "summary_sha256", "language_sha256", "published_at", "modified_at", "redownload_required", "item_sha256"] },
-  { determinant = ["revision", "publication_key"], dependent = ["gallery_id", "summary_sha256", "language_sha256", "published_at", "modified_at", "redownload_required", "item_sha256"] },
+  { determinant = ["revision", "gallery_id"], dependent = ["publication_key", "summary_sha256", "language_sha256", "published_at", "modified_at", "item_sha256"] },
+  { determinant = ["revision", "publication_key"], dependent = ["gallery_id", "summary_sha256", "language_sha256", "published_at", "modified_at", "item_sha256"] },
 ]
 foreign_keys = [
   { attributes = ["revision"], relation = "catalog_revision", referenced_attributes = ["revision"] },
@@ -3408,7 +4234,24 @@ foreign_keys = [
   { attributes = ["summary_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
   { attributes = ["language_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
 ]
-rationale = "Store immutable publication scalar facts plus exact canonical references for the arbitrary-length summary and language bytes. Writers stream those values from sealed METADATA/TAG authority through the generation-fenced canonical upload protocol before the catalog transaction; no publication transaction or bind materializes an unbounded LONGBLOB."
+rationale = "Store immutable publication scalar facts plus exact canonical references for the arbitrary-length summary and language bytes. Writers stream those values from sealed METADATA/TAG authority through the generation-fenced canonical upload protocol before the catalog transaction; no publication transaction or bind materializes an unbounded LONGBLOB. Mutable redownload queue state is deliberately absent and remains solely in the operational gallery_redownload_state relation, physically operational_gallery_redownload_states."
+
+[[relation]]
+name = "catalog_publication_order"
+kind = "controlled_materialization"
+attributes = ["revision", "position", "publication_key"]
+declared_keys = [
+  ["revision", "position"],
+  ["revision", "publication_key"],
+]
+fds = [
+  { determinant = ["revision", "position"], dependent = ["publication_key"] },
+  { determinant = ["revision", "publication_key"], dependent = ["position"] },
+]
+foreign_keys = [
+  { attributes = ["revision", "publication_key"], relation = "catalog_publication", referenced_attributes = ["revision", "publication_key"] },
+]
+materialization = { authoritative = false, rationale = "Persist the exact immutable display order without repeating title bytes or granting an audit digest ordering authority. Position is zero-based contiguous within one revision and the alternate publication key forbids omissions or duplicates.", derived_from = ["catalog_publication", "catalog_publication_title", "display_title_choice", "display_title_policy", "title_sort_policy", "title_sort"], refresh_strategy = "during bounded candidate preparation, stream-validate the exact registered sort-title canonical bytes, externally sort by unsigned UTF-8 bytes then publication_key, persist contiguous positions, and in the fenced publication transaction compare the exact receipted count before exposing the revision" }
 
 [[relation]]
 name = "catalog_publication_title"
@@ -3506,16 +4349,17 @@ rationale = "Give generated artifact IDs their true cross-revision identity: the
 [[relation]]
 name = "artifact_location"
 kind = "source_of_truth"
-attributes = ["artifact_id", "artifact_locator_sha256"]
-declared_keys = [["artifact_id"]]
+attributes = ["artifact_sha256", "artifact_locator_sha256"]
+declared_keys = [["artifact_sha256"], ["artifact_locator_sha256"]]
 fds = [
-  { determinant = ["artifact_id"], dependent = ["artifact_locator_sha256"] },
+  { determinant = ["artifact_sha256"], dependent = ["artifact_locator_sha256"] },
+  { determinant = ["artifact_locator_sha256"], dependent = ["artifact_sha256"] },
 ]
 foreign_keys = [
-  { attributes = ["artifact_id"], relation = "artifact_identity", referenced_attributes = ["artifact_id"] },
+  { attributes = ["artifact_sha256"], relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
   { attributes = ["artifact_locator_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
 ]
-rationale = "Store one canonical reference to the exact arbitrary-length storage locator bytes per artifact identity. The locator digest is deliberately not unique because a storage implementation may share one address across semantically distinct artifact identities; readers stream-decode it and revalidate storage-root containment before access."
+rationale = "Normalize the registered content-addressed locator identity at the immutable artifact-byte level. artifact_sha256 and the canonical digest of ('sha256', lowerhex[0:2], lowerhex64+'.cbz') are equivalent keys; artifact IDs join through artifact_identity and no caller locator is authority."
 
 [[relation]]
 name = "catalog_artifact"
@@ -3523,7 +4367,6 @@ kind = "source_of_truth"
 attributes = [
   "revision",
   "artifact_id",
-  "artifact_name",
   "artifact_semantics_sha256",
   "modified_at",
 ]
@@ -3531,14 +4374,14 @@ declared_keys = [
   ["revision", "artifact_id"],
 ]
 fds = [
-  { determinant = ["revision", "artifact_id"], dependent = ["artifact_name", "artifact_semantics_sha256", "modified_at"] },
+  { determinant = ["revision", "artifact_id"], dependent = ["artifact_semantics_sha256", "modified_at"] },
 ]
 foreign_keys = [
   { attributes = ["revision"], relation = "catalog_revision", referenced_attributes = ["revision"] },
   { attributes = ["artifact_id"], relation = "artifact_identity", referenced_attributes = ["artifact_id"] },
   { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input", referenced_attributes = ["artifact_semantics_sha256"] },
 ]
-rationale = "Store only revision occurrence facts. publication_key and artifact_sha256 live in artifact_identity, the canonical artifact_locator_sha256 reference lives in artifact_location, and exact six-component semantics use their global canonical identity. artifact_name remains a nonunique display leaf."
+rationale = "Store only revision occurrence facts. publication_key and artifact_sha256 live in artifact_identity, the content-addressed locator lives in artifact_location, artifact_name is derived once in publication_identity, and exact six-component semantics use their global canonical identity."
 
 [[relation]]
 name = "publication_receipt"
@@ -3551,6 +4394,7 @@ attributes = [
   "channel",
   "artifact_policy_id",
   "display_title_policy_id",
+  "publication_count",
   "new_galleries",
   "changed_galleries",
   "removed_galleries",
@@ -3564,8 +4408,8 @@ declared_keys = [
   ["reserved_revision"],
 ]
 fds = [
-  { determinant = ["receipt_id"], dependent = ["revision", "source_revision", "reserved_revision", "channel", "artifact_policy_id", "display_title_policy_id", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "state", "committed_at", "finalized_at"] },
-  { determinant = ["reserved_revision"], dependent = ["receipt_id", "revision", "source_revision", "channel", "artifact_policy_id", "display_title_policy_id", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "state", "committed_at", "finalized_at"] },
+  { determinant = ["receipt_id"], dependent = ["revision", "source_revision", "reserved_revision", "channel", "artifact_policy_id", "display_title_policy_id", "publication_count", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "state", "committed_at", "finalized_at"] },
+  { determinant = ["reserved_revision"], dependent = ["receipt_id", "revision", "source_revision", "channel", "artifact_policy_id", "display_title_policy_id", "publication_count", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "state", "committed_at", "finalized_at"] },
 ]
 foreign_keys = [
   { attributes = ["revision"], relation = "catalog_revision", referenced_attributes = ["revision"] },
@@ -3574,7 +4418,7 @@ foreign_keys = [
   { attributes = ["artifact_policy_id"], relation = "artifact_policy", referenced_attributes = ["artifact_policy_id"] },
   { attributes = ["display_title_policy_id"], relation = "display_title_policy", referenced_attributes = ["display_title_policy_id"] },
 ]
-rationale = "Durable recovery event keyed only by receipt and reserved attempt. The exact source revision, channel, and projection policies are pinned dependents; the same source input may be retried or projected under other channels or policies."
+rationale = "Durable recovery event keyed only by receipt and reserved attempt. The exact source revision, channel, projection policies, and publication_count are pinned dependents; publication writes the same exact child-count seal into catalog_revision in the fenced head-CAS transaction, so READY validation compares two O(1) authoritative scalars without scanning revision children. The same source input may be retried or projected under other channels or policies."
 
 [[relation]]
 name = "publication_head"
@@ -3820,21 +4664,50 @@ name = "artifact_payload_and_preparation_occurrence"
 universal_attributes = [
   "candidate_id",
   "publication_key",
-  "artifact_name",
   "artifact_sha256",
   "size_bytes",
+  "storage_codec_version",
   "protection_token",
   "state",
 ]
 fds = [
   { determinant = ["artifact_sha256"], dependent = ["size_bytes"] },
-  { determinant = ["candidate_id", "publication_key"], dependent = ["artifact_name", "artifact_sha256", "protection_token", "state"] },
+  { determinant = ["candidate_id", "publication_key"], dependent = ["artifact_sha256", "storage_codec_version", "protection_token", "state"] },
+  { determinant = ["protection_token"], dependent = ["candidate_id", "publication_key", "artifact_sha256", "storage_codec_version", "state"] },
 ]
 projections = [
   { relation = "artifact_blob", attributes = ["artifact_sha256", "size_bytes"] },
-  { relation = "prepared_artifact", attributes = ["candidate_id", "publication_key", "artifact_name", "artifact_sha256", "protection_token", "state"] },
+  { relation = "prepared_artifact", attributes = ["candidate_id", "publication_key", "artifact_sha256", "storage_codec_version", "protection_token", "state"] },
 ]
-rationale = "Separate immutable artifact byte facts from provider preparation state; artifact_sha256 determines the blob projection, making the decomposition lossless."
+rationale = "Separate immutable artifact byte facts from provider preparation state; artifact_sha256 determines only the blob projection, while candidate/publication and the fixed self-describing protection token are alternate preparation keys."
+
+[[decomposition]]
+name = "artifact_payload_and_content_addressed_location"
+universal_attributes = ["artifact_sha256", "size_bytes", "artifact_locator_sha256"]
+fds = [
+  { determinant = ["artifact_sha256"], dependent = ["size_bytes", "artifact_locator_sha256"] },
+  { determinant = ["artifact_locator_sha256"], dependent = ["artifact_sha256", "size_bytes"] },
+]
+projections = [
+  { relation = "artifact_blob", attributes = ["artifact_sha256", "size_bytes"] },
+  { relation = "artifact_location", attributes = ["artifact_sha256", "artifact_locator_sha256"] },
+]
+rationale = "Separate immutable byte size from the deterministic storage-address identity. artifact_sha256 is the lossless shared key and the exact managed-filesystem locator digest is an alternate identity for the same blob."
+
+[[decomposition]]
+name = "artifact_policy_and_registered_producer"
+universal_attributes = ["policy_component_sha256", "artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"]
+fds = [
+  { determinant = ["policy_component_sha256"], dependent = ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"] },
+  { determinant = ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"], dependent = ["policy_component_sha256"] },
+  { determinant = ["producer_fingerprint_sha256"], dependent = ["artifact_algorithm_version", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"] },
+  { determinant = ["artifact_algorithm_version", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"], dependent = ["producer_fingerprint_sha256"] },
+]
+projections = [
+  { relation = "artifact_policy_semantics", attributes = ["policy_component_sha256", "artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"] },
+  { relation = "artifact_producer_fingerprint", attributes = ["producer_fingerprint_sha256", "artifact_algorithm_version", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"] },
+]
+rationale = "Separate the policy occurrence of a producer fingerprint from its exact registered build tuple. The shared fingerprint is a producer key, so the join is lossless and both policy and producer determinants remain local to BCNF relations."
 
 [[decomposition]]
 name = "artifact_payload_and_catalog_occurrence"
@@ -3861,7 +4734,6 @@ universal_attributes = [
   "revision",
   "publication_key",
   "artifact_id",
-  "artifact_name",
   "artifact_semantics_sha256",
   "artifact_sha256",
   "modified_at",
@@ -3869,13 +4741,13 @@ universal_attributes = [
 fds = [
   { determinant = ["artifact_id"], dependent = ["publication_key", "artifact_sha256"] },
   { determinant = ["publication_key", "artifact_sha256"], dependent = ["artifact_id"] },
-  { determinant = ["revision", "artifact_id"], dependent = ["artifact_name", "artifact_semantics_sha256", "modified_at"] },
+  { determinant = ["revision", "artifact_id"], dependent = ["artifact_semantics_sha256", "modified_at"] },
 ]
 projections = [
   { relation = "artifact_identity", attributes = ["artifact_id", "publication_key", "artifact_sha256"] },
-  { relation = "catalog_artifact", attributes = ["revision", "artifact_id", "artifact_name", "artifact_semantics_sha256", "modified_at"] },
+  { relation = "catalog_artifact", attributes = ["revision", "artifact_id", "artifact_semantics_sha256", "modified_at"] },
 ]
-rationale = "Separate cross-revision artifact identity from revision occurrence facts. artifact_id determines the identity projection, making the join lossless; nonunique display names and exact global artifact semantics remain occurrence dependents, while locator is normalized under artifact_location."
+rationale = "Separate cross-revision artifact identity from revision occurrence facts. artifact_id determines the identity projection, making the join lossless; exact global artifact semantics remain occurrence dependents, while name and locator are normalized under publication_identity and artifact_location."
 
 [[decomposition]]
 name = "artifact_input_and_new_delta_state"
@@ -3883,16 +4755,15 @@ universal_attributes = [
   "artifact_input_id",
   "candidate_id",
   "publication_key",
-  "artifact_name",
   "artifact_semantics_sha256",
 ]
 fds = [
-  { determinant = ["artifact_input_id"], dependent = ["candidate_id", "publication_key", "artifact_name", "artifact_semantics_sha256"] },
-  { determinant = ["candidate_id", "publication_key"], dependent = ["artifact_input_id", "artifact_name", "artifact_semantics_sha256"] },
+  { determinant = ["artifact_input_id"], dependent = ["candidate_id", "publication_key", "artifact_semantics_sha256"] },
+  { determinant = ["candidate_id", "publication_key"], dependent = ["artifact_input_id", "artifact_semantics_sha256"] },
 ]
 projections = [
-  { relation = "artifact_input", attributes = ["artifact_input_id", "candidate_id", "publication_key", "artifact_name", "artifact_semantics_sha256"] },
-  { relation = "artifact_delta_new", attributes = ["candidate_id", "publication_key", "artifact_name", "artifact_input_id"] },
+  { relation = "artifact_input", attributes = ["artifact_input_id", "candidate_id", "publication_key", "artifact_semantics_sha256"] },
+  { relation = "artifact_delta_new", attributes = ["candidate_id", "publication_key", "artifact_input_id"] },
 ]
 rationale = "Separate frozen construction inputs from new-side delta presence. The candidate artifact key and artifact_input_id are alternate keys in the conceptual universal; row absence, not a nullable payload, denotes no new artifact."
 
@@ -3961,15 +4832,14 @@ universal_attributes = [
   "language_sha256",
   "published_at",
   "modified_at",
-  "redownload_required",
   "item_sha256",
 ]
 fds = [
-  { determinant = ["revision", "gallery_id"], dependent = ["publication_key", "display_title_policy_id", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "published_at", "modified_at", "redownload_required", "item_sha256"] },
-  { determinant = ["revision", "publication_key"], dependent = ["gallery_id", "display_title_policy_id", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "published_at", "modified_at", "redownload_required", "item_sha256"] },
+  { determinant = ["revision", "gallery_id"], dependent = ["publication_key", "display_title_policy_id", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "published_at", "modified_at", "item_sha256"] },
+  { determinant = ["revision", "publication_key"], dependent = ["gallery_id", "display_title_policy_id", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "published_at", "modified_at", "item_sha256"] },
 ]
 projections = [
-  { relation = "catalog_publication", attributes = ["revision", "gallery_id", "publication_key", "summary_sha256", "language_sha256", "published_at", "modified_at", "redownload_required", "item_sha256"] },
+  { relation = "catalog_publication", attributes = ["revision", "gallery_id", "publication_key", "summary_sha256", "language_sha256", "published_at", "modified_at", "item_sha256"] },
   { relation = "catalog_publication_title", attributes = ["revision", "publication_key", "display_title_policy_id", "source_title_sha256", "source_gallery_name"] },
 ]
 rationale = "Separate the immutable publication from its revision-scoped exact title-choice determinant. The publication key determines the shared intersection, so the binary decomposition is lossless and both projections remain BCNF."
@@ -4004,16 +4874,15 @@ universal_attributes = [
   "language_sha256",
   "published_at",
   "modified_at",
-  "redownload_required",
   "item_sha256",
   "content_sha256",
 ]
 fds = [
-  { determinant = ["revision", "gallery_id"], dependent = ["publication_key", "summary_sha256", "language_sha256", "published_at", "modified_at", "redownload_required", "item_sha256", "content_sha256"] },
-  { determinant = ["revision", "publication_key"], dependent = ["gallery_id", "summary_sha256", "language_sha256", "published_at", "modified_at", "redownload_required", "item_sha256", "content_sha256"] },
+  { determinant = ["revision", "gallery_id"], dependent = ["publication_key", "summary_sha256", "language_sha256", "published_at", "modified_at", "item_sha256", "content_sha256"] },
+  { determinant = ["revision", "publication_key"], dependent = ["gallery_id", "summary_sha256", "language_sha256", "published_at", "modified_at", "item_sha256", "content_sha256"] },
 ]
 projections = [
-  { relation = "catalog_publication", attributes = ["revision", "gallery_id", "publication_key", "summary_sha256", "language_sha256", "published_at", "modified_at", "redownload_required", "item_sha256"] },
+  { relation = "catalog_publication", attributes = ["revision", "gallery_id", "publication_key", "summary_sha256", "language_sha256", "published_at", "modified_at", "item_sha256"] },
   { relation = "catalog_publication_content", attributes = ["revision", "publication_key", "content_sha256"] },
 ]
 rationale = "Separate optional effective-content identity from the mandatory publication row. Positive content rows reconstruct losslessly by the publication key; row absence remains distinct from an invented empty content digest."

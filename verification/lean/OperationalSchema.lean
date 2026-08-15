@@ -787,9 +787,121 @@ keys and foreign keys executable.  They are unbounded over their type and list
 parameters; the concrete SQL implementations must refine the atomic predicates.
 -/
 
+inductive DownloadHandoffKind where
+  | downloader
+  | expiredTakeover
+deriving DecidableEq
+
+structure DownloadAuthority (Token : Type) where
+  generation : Nat
+  ownerToken : Token
+  leaseExpiresAt : Nat
+
+structure DownloadHandoff (Token : Type) where
+  generation : Nat
+  ownerToken : Token
+  kind : DownloadHandoffKind
+  requestedAt : Nat
+
+def DownloadHandoffAuthorized
+    (now : Nat) (authority : DownloadAuthority Token)
+    (handoff : DownloadHandoff Token) : Prop :=
+  handoff.generation = authority.generation ∧
+    handoff.ownerToken = authority.ownerToken ∧
+    ((handoff.kind = .downloader ∧ now < authority.leaseExpiresAt) ∨
+      (handoff.kind = .expiredTakeover ∧ authority.leaseExpiresAt ≤ now))
+
+def MutableDownloadAuthorityRemoved
+    (owner : Option Token) (lease : Option Nat) : Prop :=
+  owner = none ∧ lease = none
+
+def DownloadHandoffCommit
+    (now : Nat) (authority : DownloadAuthority Token)
+    (handoff : DownloadHandoff Token)
+    (remainingOwner : Option Token) (remainingLease : Option Nat) : Prop :=
+  DownloadHandoffAuthorized now authority handoff ∧
+    MutableDownloadAuthorityRemoved remainingOwner remainingLease
+
+theorem committed_download_handoff_removes_owner_and_lease
+    (commit : DownloadHandoffCommit now authority handoff owner lease) :
+    owner = none ∧ lease = none :=
+  commit.2
+
+theorem live_downloader_handoff_requires_exact_capability
+    (authorized : DownloadHandoffAuthorized now authority handoff) :
+    handoff.ownerToken = authority.ownerToken :=
+  authorized.2.1
+
+structure DownloadIngestConsumption where
+  downloadGeneration : Nat
+  ingestGeneration : Nat
+
+def DownloadConsumptionOneToOne
+    (consumptions : List DownloadIngestConsumption) : Prop :=
+  (∀ first second, first ∈ consumptions → second ∈ consumptions →
+    first.downloadGeneration = second.downloadGeneration → first = second) ∧
+  (∀ first second, first ∈ consumptions → second ∈ consumptions →
+    first.ingestGeneration = second.ingestGeneration → first = second)
+
+theorem one_download_handoff_cannot_feed_two_ingest_generations
+    (unique : DownloadConsumptionOneToOne consumptions)
+    (firstMember : first ∈ consumptions) (secondMember : second ∈ consumptions)
+    (sameDownload : first.downloadGeneration = second.downloadGeneration) :
+    first = second :=
+  unique.1 first second firstMember secondMember sameDownload
+
+structure CoordinatedIngestCompletion where
+  ingestGeneration : Nat
+  completedAt : Nat
+
+def LinkedDownloadCompletion
+    (consumption : DownloadIngestConsumption)
+    (completion : CoordinatedIngestCompletion)
+    (downloadCompletedGeneration : Nat) : Prop :=
+  completion.ingestGeneration = consumption.ingestGeneration ∧
+    downloadCompletedGeneration = consumption.downloadGeneration
+
+theorem linked_ingest_completion_advances_exact_download_generation
+    (linked : LinkedDownloadCompletion consumption completion completed) :
+    completed = consumption.downloadGeneration :=
+  linked.2
+
+def ExactCoordinatedReplay
+    (stored presented : CoordinatedIngestCompletion) : Prop :=
+  stored = presented
+
+theorem coordinated_response_loss_replay_rejects_mismatch
+    (mismatch : stored ≠ presented) :
+    ¬ ExactCoordinatedReplay stored presented :=
+  mismatch
+
 structure BuildGenerationReservation (Build : Type) where
   generation : Nat
   build : Build
+
+def BuildReservationWriterAuthorized
+    (currentGeneration ownerGeneration now leaseExpiresAt : Nat)
+    (reservation : BuildGenerationReservation Build) : Prop :=
+  reservation.generation = currentGeneration ∧
+    reservation.generation = ownerGeneration ∧
+    now < leaseExpiresAt
+
+def BuildReservationHistoryBacked
+    (history : List Nat) (reservation : BuildGenerationReservation Build) : Prop :=
+  reservation.generation ∈ history
+
+theorem build_reservation_requires_current_live_owner
+    (authorized : BuildReservationWriterAuthorized
+      currentGeneration ownerGeneration now leaseExpiresAt reservation) :
+    reservation.generation = currentGeneration ∧
+      reservation.generation = ownerGeneration ∧ now < leaseExpiresAt :=
+  authorized
+
+theorem completed_owner_removal_preserves_generation_history_authority
+    (backed : BuildReservationHistoryBacked history reservation)
+    (_remainingOwner : Option Nat) :
+    BuildReservationHistoryBacked history reservation :=
+  backed
 
 def CanReserveBuild
     (reservations : List (BuildGenerationReservation Build))
@@ -834,6 +946,70 @@ theorem no_build_generation_has_no_reservation
     GenerationHasNoBuild (Build := Build) [] generation := by
   intro existing member
   cases member
+
+structure DeletionRequestGenerationFact where
+  generation : Nat
+  allocatedAt : Nat
+
+structure DeletionRequestGenerationHead where
+  currentGeneration : Nat
+  updatedAt : Nat
+
+def DeletionGenerationHeadBacked
+    (history : List DeletionRequestGenerationFact)
+    (head : DeletionRequestGenerationHead) : Prop :=
+  ∃ fact, fact ∈ history ∧ fact.generation = head.currentGeneration
+
+def DeletionGenerationAdvance
+    (oldHead : DeletionRequestGenerationHead)
+    (presentedGeneration : Nat)
+    (newFact : DeletionRequestGenerationFact)
+    (newHead : DeletionRequestGenerationHead) : Prop :=
+  presentedGeneration = oldHead.currentGeneration ∧
+    oldHead.currentGeneration < 9223372036854775807 ∧
+    newFact.generation = oldHead.currentGeneration + 1 ∧
+    newHead.currentGeneration = newFact.generation ∧
+    oldHead.updatedAt ≤ newFact.allocatedAt ∧
+    newFact.allocatedAt ≤ newHead.updatedAt
+
+theorem deletion_generation_advance_allocates_exact_successor
+    (advance : DeletionGenerationAdvance
+      oldHead presentedGeneration newFact newHead) :
+    newFact.generation = oldHead.currentGeneration + 1 :=
+  advance.2.2.1
+
+theorem deletion_generation_advance_exact_cas_rejects_stale_writer
+    (stale : presentedGeneration ≠ oldHead.currentGeneration) :
+    ¬ DeletionGenerationAdvance
+      oldHead presentedGeneration newFact newHead := by
+  intro advance
+  exact stale advance.1
+
+theorem deletion_generation_exhaustion_fails_closed
+    (exhausted : oldHead.currentGeneration = 9223372036854775807) :
+    ¬ DeletionGenerationAdvance
+      oldHead presentedGeneration newFact newHead := by
+  intro advance
+  unfold DeletionGenerationAdvance at advance
+  rw [exhausted] at advance
+  omega
+
+theorem deletion_generation_advance_backs_new_head_with_inserted_history
+    (advance : DeletionGenerationAdvance
+      oldHead presentedGeneration newFact newHead) :
+    DeletionGenerationHeadBacked (newFact :: history) newHead := by
+  refine ⟨newFact, by simp, ?_⟩
+  exact advance.2.2.2.1.symm
+
+def DeletionPreparationGenerationCurrent
+    (preparedGeneration : Nat)
+    (head : DeletionRequestGenerationHead) : Prop :=
+  preparedGeneration = head.currentGeneration
+
+theorem changed_deletion_generation_rejects_prepared_publication
+    (changed : preparedGeneration ≠ head.currentGeneration) :
+    ¬ DeletionPreparationGenerationCurrent preparedGeneration head :=
+  changed
 
 structure DeletionRequestAttempt (Token : Type) where
   requestToken : Token
@@ -1010,30 +1186,88 @@ theorem deletion_consumption_subtype_is_exact_and_type_matched :
   exact ⟨rfl, rfl⟩
 
 structure OperationalEventCoordinate where
-  sourceRevision : Nat
+  preparationId : Nat
   sequenceNo : Nat
+
+def PreparationStreamBeginAtomic
+    (streamInserted preparationInserted checkpointsInserted : Prop) : Prop :=
+  streamInserted ↔ preparationInserted ∧ checkpointsInserted
+
+theorem failed_preparation_begin_leaves_no_standalone_stream
+    (atomic : PreparationStreamBeginAtomic
+      streamInserted preparationInserted checkpointsInserted)
+    (noPreparation : ¬ preparationInserted) :
+    ¬ streamInserted := by
+  intro stream
+  exact noPreparation (atomic.mp stream).1
+
+structure OperationalEffectSealModel (Digest : Type) where
+  eventCount : Nat
+  finalChain : Digest
+
+def ContiguousOperationalEffectCoordinates
+    (events : List OperationalEventCoordinate) (eventCount : Nat) : Prop :=
+  ∀ sequence, sequence < eventCount ↔
+    ∃ event, event ∈ events ∧ event.sequenceNo = sequence
+
+def OperationalEffectSealValid
+    (events : List OperationalEventCoordinate)
+    (computedFinalChain : Digest)
+    (effectSeal : OperationalEffectSealModel Digest) : Prop :=
+  ContiguousOperationalEffectCoordinates events effectSeal.eventCount ∧
+    effectSeal.finalChain = computedFinalChain
+
+theorem zero_event_effect_seal_is_valid
+    (emptyChain : Digest) :
+    OperationalEffectSealValid [] emptyChain
+      { eventCount := 0, finalChain := emptyChain } := by
+  constructor
+  · intro sequence
+    simp
+  · rfl
+
+def OperationalActivationAuthorized
+    (preparationComplete effectSealPresent deletionGenerationCurrent : Prop) : Prop :=
+  preparationComplete ∧ effectSealPresent ∧ deletionGenerationCurrent
+
+theorem operational_activation_requires_only_scalar_authority
+    (complete : preparationComplete)
+    (sealed : effectSealPresent)
+    (current : deletionGenerationCurrent) :
+    OperationalActivationAuthorized
+      preparationComplete effectSealPresent deletionGenerationCurrent :=
+  ⟨complete, sealed, current⟩
+
+def OperationalEventVisible
+    (eventPreparation activatedPreparation : Nat) : Prop :=
+  eventPreparation = activatedPreparation
+
+theorem event_without_matching_activation_is_invisible
+    (unactivated : eventPreparation ≠ activatedPreparation) :
+    ¬ OperationalEventVisible eventPreparation activatedPreparation :=
+  unactivated
 
 def AcknowledgesEveryExistingEventThrough
     (allEvents acknowledgedEvents : List OperationalEventCoordinate)
     (target : OperationalEventCoordinate) : Prop :=
   ∀ event, event ∈ allEvents →
-    event.sourceRevision = target.sourceRevision →
+    event.preparationId = target.preparationId →
     event.sequenceNo ≤ target.sequenceNo →
     event ∈ acknowledgedEvents
 
 def AckHighWaterAdvance
     (oldHead targetEvent : OperationalEventCoordinate)
     (allEvents acknowledgedEvents : List OperationalEventCoordinate) : Prop :=
-  targetEvent.sourceRevision = oldHead.sourceRevision ∧
+  targetEvent.preparationId = oldHead.preparationId ∧
     oldHead.sequenceNo ≤ targetEvent.sequenceNo ∧
     targetEvent ∈ allEvents ∧
     AcknowledgesEveryExistingEventThrough
       allEvents acknowledgedEvents targetEvent
 
-theorem ack_high_water_advance_stays_in_revision
+theorem ack_high_water_advance_stays_in_preparation
     (advance : AckHighWaterAdvance
       oldHead targetEvent allEvents acknowledgedEvents) :
-    targetEvent.sourceRevision = oldHead.sourceRevision :=
+    targetEvent.preparationId = oldHead.preparationId :=
   advance.1
 
 theorem ack_high_water_advance_is_monotone
@@ -1052,10 +1286,10 @@ theorem ack_high_water_covers_every_preceding_existing_event
     (advance : AckHighWaterAdvance
       oldHead targetEvent allEvents acknowledgedEvents)
     (eventMember : event ∈ allEvents)
-    (sameRevision : event.sourceRevision = targetEvent.sourceRevision)
+    (samePreparation : event.preparationId = targetEvent.preparationId)
     (atOrBefore : event.sequenceNo ≤ targetEvent.sequenceNo) :
     event ∈ acknowledgedEvents :=
-  advance.2.2.2 event eventMember sameRevision atOrBefore
+  advance.2.2.2 event eventMember samePreparation atOrBefore
 
 theorem ack_high_water_regression_is_rejected
     (regression : targetEvent.sequenceNo < oldHead.sequenceNo) :
@@ -1152,15 +1386,28 @@ theorem exhausted_allocator_sentinel_fails_closed :
 ## Machine obligations and bootstrap genesis
 
 These values are generated from the typed machine records in operational.toml.
-Allocator rows plus cleanup kind/phase registries are provider-owned genesis.
-Coordination, maintenance, owner, lease, event, queue, cache, and work facts are
-absent until their first transaction creates real state.  Schema epoch control
-is initialized independently by SchemaEpochCatalog.
+Allocator rows, the real deletion generation-zero empty-queue history/head,
+and cleanup kind/phase registries are provider-owned genesis.  Deletion attempts
+and per-gid heads, coordination, maintenance, owner, lease, preparation stream,
+effect seal, activation, event, cache, and work facts are absent until their
+first transaction creates real state.  Schema
+epoch control is initialized independently by SchemaEpochCatalog.
 -/
 
 structure RevisionAllocatorGenesis where
   stream : String
   nextRevision : Nat
+  updatedAt : Nat
+deriving DecidableEq, Repr
+
+structure DeletionGenerationGenesis where
+  generation : Nat
+  allocatedAt : Nat
+deriving DecidableEq, Repr
+
+structure DeletionGenerationHeadGenesis where
+  singletonId : Nat
+  currentGeneration : Nat
   updatedAt : Nat
 deriving DecidableEq, Repr
 
@@ -1247,6 +1494,27 @@ theorem operational_bootstrap_allocator_timestamps_start_at_zero :
       catalogRevisionAllocatorGenesis.updatedAt = 0 := by
   native_decide
 
+def deletionGenerationGenesis : DeletionGenerationGenesis :=
+  { generation := 0,
+    allocatedAt := 0 }
+
+def deletionGenerationHeadGenesis : DeletionGenerationHeadGenesis :=
+  { singletonId := 1,
+    currentGeneration := 0,
+    updatedAt := 0 }
+
+theorem deletion_generation_zero_is_a_real_history_fact :
+    deletionGenerationGenesis.generation = 0 ∧
+      deletionGenerationGenesis.allocatedAt = 0 := by
+  native_decide
+
+theorem deletion_generation_genesis_head_is_the_exact_singleton_reference :
+    deletionGenerationHeadGenesis.singletonId = 1 ∧
+      deletionGenerationHeadGenesis.currentGeneration =
+        deletionGenerationGenesis.generation ∧
+      deletionGenerationHeadGenesis.updatedAt = 0 := by
+  native_decide
+
 theorem ready_validation_accepts_a_legitimately_advanced_allocator :
     RevisionAllocatorCurrentValid
       { stream := "SOURCE", nextRevision := 2,
@@ -1255,21 +1523,21 @@ theorem ready_validation_accepts_a_legitimately_advanced_allocator :
   decide
 
 def operationalSemanticObligationIds : List String :=
-  ["h2hdb.operational.physical-domains.v1", "h2hdb.operational.epoch-manifest.v1", "h2hdb.operational.fencing.v1", "h2hdb.operational.maintenance-gate.v1", "h2hdb.operational.bounded-work.v1", "h2hdb.operational.queue-history.v1", "h2hdb.operational.canonical-hash-cache.v1", "h2hdb.operational.event-integrity.v1", "h2hdb.operational.build-generation.v1", "h2hdb.operational.attempt-identity.v1", "h2hdb.operational.cleanup-reachability.v1", "h2hdb.operational.revision-allocation.v1", "h2hdb.operational.gallery-staging.v1", "h2hdb.operational.bootstrap-genesis.v1"]
+  ["h2hdb.operational.physical-domains.v1", "h2hdb.operational.epoch-manifest.v1", "h2hdb.operational.fencing.v1", "h2hdb.operational.download-ingest-handoff.v1", "h2hdb.operational.maintenance-gate.v1", "h2hdb.operational.bounded-work.v1", "h2hdb.operational.queue-history.v1", "h2hdb.operational.canonical-hash-cache.v1", "h2hdb.operational.event-integrity.v1", "h2hdb.operational.build-generation.v1", "h2hdb.operational.attempt-identity.v1", "h2hdb.operational.cleanup-reachability.v1", "h2hdb.operational.revision-allocation.v1", "h2hdb.operational.gallery-staging.v1", "h2hdb.operational.bootstrap-genesis.v1"]
 
 theorem operational_semantic_obligation_ids_are_unique :
     operationalSemanticObligationIds.Nodup := by
   native_decide
 
 theorem operational_semantic_obligation_count :
-    operationalSemanticObligationIds.length = 14 := by
+    operationalSemanticObligationIds.length = 15 := by
   native_decide
 
 def operationalBuildingOnlyObligationIds : List String :=
   ["h2hdb.operational.bootstrap-genesis.v1"]
 
 def operationalReadyObligationIds : List String :=
-  ["h2hdb.operational.physical-domains.v1", "h2hdb.operational.epoch-manifest.v1", "h2hdb.operational.fencing.v1", "h2hdb.operational.maintenance-gate.v1", "h2hdb.operational.bounded-work.v1", "h2hdb.operational.queue-history.v1", "h2hdb.operational.canonical-hash-cache.v1", "h2hdb.operational.event-integrity.v1", "h2hdb.operational.build-generation.v1", "h2hdb.operational.attempt-identity.v1", "h2hdb.operational.cleanup-reachability.v1", "h2hdb.operational.revision-allocation.v1", "h2hdb.operational.gallery-staging.v1"]
+  ["h2hdb.operational.physical-domains.v1", "h2hdb.operational.epoch-manifest.v1", "h2hdb.operational.fencing.v1", "h2hdb.operational.download-ingest-handoff.v1", "h2hdb.operational.maintenance-gate.v1", "h2hdb.operational.bounded-work.v1", "h2hdb.operational.queue-history.v1", "h2hdb.operational.canonical-hash-cache.v1", "h2hdb.operational.event-integrity.v1", "h2hdb.operational.build-generation.v1", "h2hdb.operational.attempt-identity.v1", "h2hdb.operational.cleanup-reachability.v1", "h2hdb.operational.revision-allocation.v1", "h2hdb.operational.gallery-staging.v1"]
 
 theorem bootstrap_genesis_is_the_only_building_only_obligation :
     operationalBuildingOnlyObligationIds =
@@ -1282,10 +1550,10 @@ theorem building_only_and_ready_obligations_are_disjoint :
   native_decide
 
 def operationalBootstrapAbsentRelations : List String :=
-  ["ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "ingest_generation_lease", "ingest_generation_handoff", "source_build_generation", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "maintenance_work_state", "source_working_build", "catalog_working_candidate", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_owner", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_activation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "operational_consumer", "operational_event_ack", "operational_event_ack_head", "removed_gid_ack", "hash_cache_observation", "file_hash_cache", "cleanup_job", "cleanup_checkpoint", "cleanup_batch_receipt", "cleanup_completion"]
+  ["download_generation", "download_coordination_head", "download_generation_owner", "download_generation_lease", "download_ingest_handoff", "download_ingest_consumption", "coordinated_ingest_completion", "ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "ingest_generation_lease", "ingest_generation_handoff", "source_build_generation", "source_build_discovery_checkpoint", "source_build_discovery_batch_receipt", "source_build_assembly_checkpoint", "source_build_assembly_batch_receipt", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "maintenance_work_state", "source_working_build", "catalog_working_candidate", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_claim", "gallery_observation_staging_checkpoint", "gallery_observation_staging_request", "gallery_observation_staging_request_chunk", "gallery_observation_staging_request_owner", "gallery_observation_staging_request_predecessor", "gallery_observation_staging_page_request", "gallery_observation_staging_request_page", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_request", "gallery_observation_staging_match_receipt", "gallery_observation_staging_metadata_parser", "canonical_value_upload", "download_request", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "removed_gid", "gallery_redownload_state", "operational_policy", "operational_event_stream", "operational_preparation", "operational_preparation_checkpoint", "operational_preparation_batch_receipt", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_activation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "operational_consumer", "operational_event_ack", "operational_event_ack_head", "removed_gid_ack", "hash_cache_observation", "file_hash_cache", "cleanup_job", "cleanup_checkpoint", "cleanup_batch_receipt", "cleanup_completion"]
 
 theorem operational_bootstrap_has_no_invented_active_control_facts :
-    ∀ relation ∈ ["ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "ingest_generation_lease", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "operational_event", "download_request", "cleanup_job"],
+    ∀ relation ∈ ["ingest_generation", "ingest_coordination_head", "ingest_generation_owner", "ingest_generation_lease", "maintenance_gate_generation", "maintenance_gate_head", "maintenance_gate_owner", "maintenance_gate_holder", "operational_event_stream", "operational_preparation_effect_seal", "operational_event", "download_request", "deletion_request_attempt", "deletion_request_url", "deletion_request_head", "operational_preparation", "cleanup_job"],
       relation ∈ operationalBootstrapAbsentRelations := by
   native_decide
 
@@ -1293,12 +1561,18 @@ theorem revision_allocator_is_seeded_not_absent :
     "revision_allocator" ∉ operationalBootstrapAbsentRelations := by
   native_decide
 
+theorem deletion_generation_authority_is_seeded_not_absent :
+    "deletion_request_generation" ∉ operationalBootstrapAbsentRelations ∧
+      "deletion_request_generation_head" ∉
+        operationalBootstrapAbsentRelations := by
+  native_decide
+
 theorem schema_epoch_control_is_epoch_owned_not_absent :
     "schema_epoch_control" ∉ operationalBootstrapAbsentRelations := by
   native_decide
 
 /- BEGIN GENERATED OPERATIONAL CONTRACTS -/
-def operationalManifestSha256 : String := "6b6e438921eb621a8050abd00e82b7421a215c329b23c4cd9ad41e3f249f396c"
+def operationalManifestSha256 : String := "2671dae9e3f5ca8e43c0df5fef4dd5642b05f254843aed69e918844f8c01718c"
 
 /-! This section is mechanically generated from operational.toml. -/
 
@@ -1347,6 +1621,332 @@ theorem schema_epoch_control_bcnf_check :
 
 theorem schema_epoch_control_bcnf : BCNF schema_epoch_control_contract :=
   bcnfCheck_sound schema_epoch_control_contract schema_epoch_control_bcnf_check
+
+def download_generation_contract : RelationContract where
+  name := "download_generation"
+  attributes := ["generation", "started_at", "completed_at"]
+  declaredKeys := [["generation"]]
+  declaredFDs := [
+    { determinant := ["generation"], dependent := ["started_at", "completed_at"] }
+  ]
+
+theorem download_generation_schema_well_formed :
+    schemaWellFormedCheck download_generation_contract = true := by
+  native_decide
+
+theorem download_generation_candidate_keys_check :
+    keysDetermineAllCheck download_generation_contract = true := by
+  native_decide
+
+theorem download_generation_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes download_generation_contract :=
+  keysDetermineAllCheck_sound download_generation_contract
+    download_generation_candidate_keys_check
+
+theorem download_generation_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck download_generation_contract = true := by
+  native_decide
+
+theorem download_generation_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal download_generation_contract :=
+  declaredKeysMinimalCheck_sound download_generation_contract
+    download_generation_candidate_keys_minimal_check
+
+theorem download_generation_closure_fixed_check :
+    closureFixedPointCheck download_generation_contract = true := by
+  native_decide
+
+theorem download_generation_closure_reached_fixed_point :
+    ClosureReachedFixedPoint download_generation_contract :=
+  closureFixedPointCheck_sound download_generation_contract
+    download_generation_closure_fixed_check
+
+theorem download_generation_bcnf_check :
+    bcnfCheck download_generation_contract = true := by
+  native_decide
+
+theorem download_generation_bcnf : BCNF download_generation_contract :=
+  bcnfCheck_sound download_generation_contract download_generation_bcnf_check
+
+def download_coordination_head_contract : RelationContract where
+  name := "download_coordination_head"
+  attributes := ["singleton_id", "current_generation", "completed_generation", "last_transition_at"]
+  declaredKeys := [["singleton_id"]]
+  declaredFDs := [
+    { determinant := ["singleton_id"], dependent := ["current_generation", "completed_generation", "last_transition_at"] }
+  ]
+
+theorem download_coordination_head_schema_well_formed :
+    schemaWellFormedCheck download_coordination_head_contract = true := by
+  native_decide
+
+theorem download_coordination_head_candidate_keys_check :
+    keysDetermineAllCheck download_coordination_head_contract = true := by
+  native_decide
+
+theorem download_coordination_head_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes download_coordination_head_contract :=
+  keysDetermineAllCheck_sound download_coordination_head_contract
+    download_coordination_head_candidate_keys_check
+
+theorem download_coordination_head_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck download_coordination_head_contract = true := by
+  native_decide
+
+theorem download_coordination_head_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal download_coordination_head_contract :=
+  declaredKeysMinimalCheck_sound download_coordination_head_contract
+    download_coordination_head_candidate_keys_minimal_check
+
+theorem download_coordination_head_closure_fixed_check :
+    closureFixedPointCheck download_coordination_head_contract = true := by
+  native_decide
+
+theorem download_coordination_head_closure_reached_fixed_point :
+    ClosureReachedFixedPoint download_coordination_head_contract :=
+  closureFixedPointCheck_sound download_coordination_head_contract
+    download_coordination_head_closure_fixed_check
+
+theorem download_coordination_head_bcnf_check :
+    bcnfCheck download_coordination_head_contract = true := by
+  native_decide
+
+theorem download_coordination_head_bcnf : BCNF download_coordination_head_contract :=
+  bcnfCheck_sound download_coordination_head_contract download_coordination_head_bcnf_check
+
+def download_generation_owner_contract : RelationContract where
+  name := "download_generation_owner"
+  attributes := ["generation", "owner_token", "claimed_at"]
+  declaredKeys := [["generation"], ["owner_token"]]
+  declaredFDs := [
+    { determinant := ["generation"], dependent := ["owner_token", "claimed_at"] },
+    { determinant := ["owner_token"], dependent := ["generation", "claimed_at"] }
+  ]
+
+theorem download_generation_owner_schema_well_formed :
+    schemaWellFormedCheck download_generation_owner_contract = true := by
+  native_decide
+
+theorem download_generation_owner_candidate_keys_check :
+    keysDetermineAllCheck download_generation_owner_contract = true := by
+  native_decide
+
+theorem download_generation_owner_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes download_generation_owner_contract :=
+  keysDetermineAllCheck_sound download_generation_owner_contract
+    download_generation_owner_candidate_keys_check
+
+theorem download_generation_owner_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck download_generation_owner_contract = true := by
+  native_decide
+
+theorem download_generation_owner_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal download_generation_owner_contract :=
+  declaredKeysMinimalCheck_sound download_generation_owner_contract
+    download_generation_owner_candidate_keys_minimal_check
+
+theorem download_generation_owner_closure_fixed_check :
+    closureFixedPointCheck download_generation_owner_contract = true := by
+  native_decide
+
+theorem download_generation_owner_closure_reached_fixed_point :
+    ClosureReachedFixedPoint download_generation_owner_contract :=
+  closureFixedPointCheck_sound download_generation_owner_contract
+    download_generation_owner_closure_fixed_check
+
+theorem download_generation_owner_bcnf_check :
+    bcnfCheck download_generation_owner_contract = true := by
+  native_decide
+
+theorem download_generation_owner_bcnf : BCNF download_generation_owner_contract :=
+  bcnfCheck_sound download_generation_owner_contract download_generation_owner_bcnf_check
+
+def download_generation_lease_contract : RelationContract where
+  name := "download_generation_lease"
+  attributes := ["generation", "lease_expires_at"]
+  declaredKeys := [["generation"]]
+  declaredFDs := [
+    { determinant := ["generation"], dependent := ["lease_expires_at"] }
+  ]
+
+theorem download_generation_lease_schema_well_formed :
+    schemaWellFormedCheck download_generation_lease_contract = true := by
+  native_decide
+
+theorem download_generation_lease_candidate_keys_check :
+    keysDetermineAllCheck download_generation_lease_contract = true := by
+  native_decide
+
+theorem download_generation_lease_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes download_generation_lease_contract :=
+  keysDetermineAllCheck_sound download_generation_lease_contract
+    download_generation_lease_candidate_keys_check
+
+theorem download_generation_lease_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck download_generation_lease_contract = true := by
+  native_decide
+
+theorem download_generation_lease_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal download_generation_lease_contract :=
+  declaredKeysMinimalCheck_sound download_generation_lease_contract
+    download_generation_lease_candidate_keys_minimal_check
+
+theorem download_generation_lease_closure_fixed_check :
+    closureFixedPointCheck download_generation_lease_contract = true := by
+  native_decide
+
+theorem download_generation_lease_closure_reached_fixed_point :
+    ClosureReachedFixedPoint download_generation_lease_contract :=
+  closureFixedPointCheck_sound download_generation_lease_contract
+    download_generation_lease_closure_fixed_check
+
+theorem download_generation_lease_bcnf_check :
+    bcnfCheck download_generation_lease_contract = true := by
+  native_decide
+
+theorem download_generation_lease_bcnf : BCNF download_generation_lease_contract :=
+  bcnfCheck_sound download_generation_lease_contract download_generation_lease_bcnf_check
+
+def download_ingest_handoff_contract : RelationContract where
+  name := "download_ingest_handoff"
+  attributes := ["download_generation", "owner_token", "handoff_kind", "requested_at"]
+  declaredKeys := [["download_generation"], ["owner_token"]]
+  declaredFDs := [
+    { determinant := ["download_generation"], dependent := ["owner_token", "handoff_kind", "requested_at"] },
+    { determinant := ["owner_token"], dependent := ["download_generation", "handoff_kind", "requested_at"] }
+  ]
+
+theorem download_ingest_handoff_schema_well_formed :
+    schemaWellFormedCheck download_ingest_handoff_contract = true := by
+  native_decide
+
+theorem download_ingest_handoff_candidate_keys_check :
+    keysDetermineAllCheck download_ingest_handoff_contract = true := by
+  native_decide
+
+theorem download_ingest_handoff_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes download_ingest_handoff_contract :=
+  keysDetermineAllCheck_sound download_ingest_handoff_contract
+    download_ingest_handoff_candidate_keys_check
+
+theorem download_ingest_handoff_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck download_ingest_handoff_contract = true := by
+  native_decide
+
+theorem download_ingest_handoff_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal download_ingest_handoff_contract :=
+  declaredKeysMinimalCheck_sound download_ingest_handoff_contract
+    download_ingest_handoff_candidate_keys_minimal_check
+
+theorem download_ingest_handoff_closure_fixed_check :
+    closureFixedPointCheck download_ingest_handoff_contract = true := by
+  native_decide
+
+theorem download_ingest_handoff_closure_reached_fixed_point :
+    ClosureReachedFixedPoint download_ingest_handoff_contract :=
+  closureFixedPointCheck_sound download_ingest_handoff_contract
+    download_ingest_handoff_closure_fixed_check
+
+theorem download_ingest_handoff_bcnf_check :
+    bcnfCheck download_ingest_handoff_contract = true := by
+  native_decide
+
+theorem download_ingest_handoff_bcnf : BCNF download_ingest_handoff_contract :=
+  bcnfCheck_sound download_ingest_handoff_contract download_ingest_handoff_bcnf_check
+
+def download_ingest_consumption_contract : RelationContract where
+  name := "download_ingest_consumption"
+  attributes := ["download_generation", "ingest_generation", "consumed_at"]
+  declaredKeys := [["download_generation"], ["ingest_generation"]]
+  declaredFDs := [
+    { determinant := ["download_generation"], dependent := ["ingest_generation", "consumed_at"] },
+    { determinant := ["ingest_generation"], dependent := ["download_generation", "consumed_at"] }
+  ]
+
+theorem download_ingest_consumption_schema_well_formed :
+    schemaWellFormedCheck download_ingest_consumption_contract = true := by
+  native_decide
+
+theorem download_ingest_consumption_candidate_keys_check :
+    keysDetermineAllCheck download_ingest_consumption_contract = true := by
+  native_decide
+
+theorem download_ingest_consumption_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes download_ingest_consumption_contract :=
+  keysDetermineAllCheck_sound download_ingest_consumption_contract
+    download_ingest_consumption_candidate_keys_check
+
+theorem download_ingest_consumption_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck download_ingest_consumption_contract = true := by
+  native_decide
+
+theorem download_ingest_consumption_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal download_ingest_consumption_contract :=
+  declaredKeysMinimalCheck_sound download_ingest_consumption_contract
+    download_ingest_consumption_candidate_keys_minimal_check
+
+theorem download_ingest_consumption_closure_fixed_check :
+    closureFixedPointCheck download_ingest_consumption_contract = true := by
+  native_decide
+
+theorem download_ingest_consumption_closure_reached_fixed_point :
+    ClosureReachedFixedPoint download_ingest_consumption_contract :=
+  closureFixedPointCheck_sound download_ingest_consumption_contract
+    download_ingest_consumption_closure_fixed_check
+
+theorem download_ingest_consumption_bcnf_check :
+    bcnfCheck download_ingest_consumption_contract = true := by
+  native_decide
+
+theorem download_ingest_consumption_bcnf : BCNF download_ingest_consumption_contract :=
+  bcnfCheck_sound download_ingest_consumption_contract download_ingest_consumption_bcnf_check
+
+def coordinated_ingest_completion_contract : RelationContract where
+  name := "coordinated_ingest_completion"
+  attributes := ["ingest_generation", "owner_token", "completed_at"]
+  declaredKeys := [["ingest_generation"], ["owner_token"]]
+  declaredFDs := [
+    { determinant := ["ingest_generation"], dependent := ["owner_token", "completed_at"] },
+    { determinant := ["owner_token"], dependent := ["ingest_generation", "completed_at"] }
+  ]
+
+theorem coordinated_ingest_completion_schema_well_formed :
+    schemaWellFormedCheck coordinated_ingest_completion_contract = true := by
+  native_decide
+
+theorem coordinated_ingest_completion_candidate_keys_check :
+    keysDetermineAllCheck coordinated_ingest_completion_contract = true := by
+  native_decide
+
+theorem coordinated_ingest_completion_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes coordinated_ingest_completion_contract :=
+  keysDetermineAllCheck_sound coordinated_ingest_completion_contract
+    coordinated_ingest_completion_candidate_keys_check
+
+theorem coordinated_ingest_completion_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck coordinated_ingest_completion_contract = true := by
+  native_decide
+
+theorem coordinated_ingest_completion_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal coordinated_ingest_completion_contract :=
+  declaredKeysMinimalCheck_sound coordinated_ingest_completion_contract
+    coordinated_ingest_completion_candidate_keys_minimal_check
+
+theorem coordinated_ingest_completion_closure_fixed_check :
+    closureFixedPointCheck coordinated_ingest_completion_contract = true := by
+  native_decide
+
+theorem coordinated_ingest_completion_closure_reached_fixed_point :
+    ClosureReachedFixedPoint coordinated_ingest_completion_contract :=
+  closureFixedPointCheck_sound coordinated_ingest_completion_contract
+    coordinated_ingest_completion_closure_fixed_check
+
+theorem coordinated_ingest_completion_bcnf_check :
+    bcnfCheck coordinated_ingest_completion_contract = true := by
+  native_decide
+
+theorem coordinated_ingest_completion_bcnf : BCNF coordinated_ingest_completion_contract :=
+  bcnfCheck_sound coordinated_ingest_completion_contract coordinated_ingest_completion_bcnf_check
 
 def ingest_generation_contract : RelationContract where
   name := "ingest_generation"
@@ -1624,6 +2224,192 @@ theorem source_build_generation_bcnf_check :
 
 theorem source_build_generation_bcnf : BCNF source_build_generation_contract :=
   bcnfCheck_sound source_build_generation_contract source_build_generation_bcnf_check
+
+def source_build_discovery_checkpoint_contract : RelationContract where
+  name := "source_build_discovery_checkpoint"
+  attributes := ["build_id", "generation", "cursor_bytes", "processed_count", "state", "updated_at"]
+  declaredKeys := [["build_id"]]
+  declaredFDs := [
+    { determinant := ["build_id"], dependent := ["generation", "cursor_bytes", "processed_count", "state", "updated_at"] }
+  ]
+
+theorem source_build_discovery_checkpoint_schema_well_formed :
+    schemaWellFormedCheck source_build_discovery_checkpoint_contract = true := by
+  native_decide
+
+theorem source_build_discovery_checkpoint_candidate_keys_check :
+    keysDetermineAllCheck source_build_discovery_checkpoint_contract = true := by
+  native_decide
+
+theorem source_build_discovery_checkpoint_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes source_build_discovery_checkpoint_contract :=
+  keysDetermineAllCheck_sound source_build_discovery_checkpoint_contract
+    source_build_discovery_checkpoint_candidate_keys_check
+
+theorem source_build_discovery_checkpoint_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck source_build_discovery_checkpoint_contract = true := by
+  native_decide
+
+theorem source_build_discovery_checkpoint_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal source_build_discovery_checkpoint_contract :=
+  declaredKeysMinimalCheck_sound source_build_discovery_checkpoint_contract
+    source_build_discovery_checkpoint_candidate_keys_minimal_check
+
+theorem source_build_discovery_checkpoint_closure_fixed_check :
+    closureFixedPointCheck source_build_discovery_checkpoint_contract = true := by
+  native_decide
+
+theorem source_build_discovery_checkpoint_closure_reached_fixed_point :
+    ClosureReachedFixedPoint source_build_discovery_checkpoint_contract :=
+  closureFixedPointCheck_sound source_build_discovery_checkpoint_contract
+    source_build_discovery_checkpoint_closure_fixed_check
+
+theorem source_build_discovery_checkpoint_bcnf_check :
+    bcnfCheck source_build_discovery_checkpoint_contract = true := by
+  native_decide
+
+theorem source_build_discovery_checkpoint_bcnf : BCNF source_build_discovery_checkpoint_contract :=
+  bcnfCheck_sound source_build_discovery_checkpoint_contract source_build_discovery_checkpoint_bcnf_check
+
+def source_build_discovery_batch_receipt_contract : RelationContract where
+  name := "source_build_discovery_batch_receipt"
+  attributes := ["build_id", "batch_key", "start_generation", "start_cursor", "start_processed_count", "next_cursor", "next_processed_count", "next_state", "row_count", "terminal", "committed_generation", "committed_at"]
+  declaredKeys := [["build_id", "batch_key"], ["build_id", "start_generation"]]
+  declaredFDs := [
+    { determinant := ["build_id", "batch_key"], dependent := ["start_generation", "start_cursor", "start_processed_count", "next_cursor", "next_processed_count", "next_state", "row_count", "terminal", "committed_generation", "committed_at"] },
+    { determinant := ["build_id", "start_generation"], dependent := ["batch_key", "start_cursor", "start_processed_count", "next_cursor", "next_processed_count", "next_state", "row_count", "terminal", "committed_generation", "committed_at"] }
+  ]
+
+theorem source_build_discovery_batch_receipt_schema_well_formed :
+    schemaWellFormedCheck source_build_discovery_batch_receipt_contract = true := by
+  native_decide
+
+theorem source_build_discovery_batch_receipt_candidate_keys_check :
+    keysDetermineAllCheck source_build_discovery_batch_receipt_contract = true := by
+  native_decide
+
+theorem source_build_discovery_batch_receipt_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes source_build_discovery_batch_receipt_contract :=
+  keysDetermineAllCheck_sound source_build_discovery_batch_receipt_contract
+    source_build_discovery_batch_receipt_candidate_keys_check
+
+theorem source_build_discovery_batch_receipt_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck source_build_discovery_batch_receipt_contract = true := by
+  native_decide
+
+theorem source_build_discovery_batch_receipt_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal source_build_discovery_batch_receipt_contract :=
+  declaredKeysMinimalCheck_sound source_build_discovery_batch_receipt_contract
+    source_build_discovery_batch_receipt_candidate_keys_minimal_check
+
+theorem source_build_discovery_batch_receipt_closure_fixed_check :
+    closureFixedPointCheck source_build_discovery_batch_receipt_contract = true := by
+  native_decide
+
+theorem source_build_discovery_batch_receipt_closure_reached_fixed_point :
+    ClosureReachedFixedPoint source_build_discovery_batch_receipt_contract :=
+  closureFixedPointCheck_sound source_build_discovery_batch_receipt_contract
+    source_build_discovery_batch_receipt_closure_fixed_check
+
+theorem source_build_discovery_batch_receipt_bcnf_check :
+    bcnfCheck source_build_discovery_batch_receipt_contract = true := by
+  native_decide
+
+theorem source_build_discovery_batch_receipt_bcnf : BCNF source_build_discovery_batch_receipt_contract :=
+  bcnfCheck_sound source_build_discovery_batch_receipt_contract source_build_discovery_batch_receipt_bcnf_check
+
+def source_build_assembly_checkpoint_contract : RelationContract where
+  name := "source_build_assembly_checkpoint"
+  attributes := ["build_id", "generation", "cursor_bytes", "processed_gallery_count", "processed_file_count", "processed_byte_count", "manifest_chain_sha256", "state", "updated_at"]
+  declaredKeys := [["build_id"]]
+  declaredFDs := [
+    { determinant := ["build_id"], dependent := ["generation", "cursor_bytes", "processed_gallery_count", "processed_file_count", "processed_byte_count", "manifest_chain_sha256", "state", "updated_at"] }
+  ]
+
+theorem source_build_assembly_checkpoint_schema_well_formed :
+    schemaWellFormedCheck source_build_assembly_checkpoint_contract = true := by
+  native_decide
+
+theorem source_build_assembly_checkpoint_candidate_keys_check :
+    keysDetermineAllCheck source_build_assembly_checkpoint_contract = true := by
+  native_decide
+
+theorem source_build_assembly_checkpoint_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes source_build_assembly_checkpoint_contract :=
+  keysDetermineAllCheck_sound source_build_assembly_checkpoint_contract
+    source_build_assembly_checkpoint_candidate_keys_check
+
+theorem source_build_assembly_checkpoint_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck source_build_assembly_checkpoint_contract = true := by
+  native_decide
+
+theorem source_build_assembly_checkpoint_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal source_build_assembly_checkpoint_contract :=
+  declaredKeysMinimalCheck_sound source_build_assembly_checkpoint_contract
+    source_build_assembly_checkpoint_candidate_keys_minimal_check
+
+theorem source_build_assembly_checkpoint_closure_fixed_check :
+    closureFixedPointCheck source_build_assembly_checkpoint_contract = true := by
+  native_decide
+
+theorem source_build_assembly_checkpoint_closure_reached_fixed_point :
+    ClosureReachedFixedPoint source_build_assembly_checkpoint_contract :=
+  closureFixedPointCheck_sound source_build_assembly_checkpoint_contract
+    source_build_assembly_checkpoint_closure_fixed_check
+
+theorem source_build_assembly_checkpoint_bcnf_check :
+    bcnfCheck source_build_assembly_checkpoint_contract = true := by
+  native_decide
+
+theorem source_build_assembly_checkpoint_bcnf : BCNF source_build_assembly_checkpoint_contract :=
+  bcnfCheck_sound source_build_assembly_checkpoint_contract source_build_assembly_checkpoint_bcnf_check
+
+def source_build_assembly_batch_receipt_contract : RelationContract where
+  name := "source_build_assembly_batch_receipt"
+  attributes := ["build_id", "batch_key", "start_generation", "start_cursor", "start_gallery_count", "start_file_count", "start_byte_count", "start_manifest_chain_sha256", "next_cursor", "next_gallery_count", "next_file_count", "next_byte_count", "next_manifest_chain_sha256", "next_state", "row_count", "terminal", "committed_generation", "committed_at"]
+  declaredKeys := [["build_id", "batch_key"], ["build_id", "start_generation"]]
+  declaredFDs := [
+    { determinant := ["build_id", "batch_key"], dependent := ["start_generation", "start_cursor", "start_gallery_count", "start_file_count", "start_byte_count", "start_manifest_chain_sha256", "next_cursor", "next_gallery_count", "next_file_count", "next_byte_count", "next_manifest_chain_sha256", "next_state", "row_count", "terminal", "committed_generation", "committed_at"] },
+    { determinant := ["build_id", "start_generation"], dependent := ["batch_key", "start_cursor", "start_gallery_count", "start_file_count", "start_byte_count", "start_manifest_chain_sha256", "next_cursor", "next_gallery_count", "next_file_count", "next_byte_count", "next_manifest_chain_sha256", "next_state", "row_count", "terminal", "committed_generation", "committed_at"] }
+  ]
+
+theorem source_build_assembly_batch_receipt_schema_well_formed :
+    schemaWellFormedCheck source_build_assembly_batch_receipt_contract = true := by
+  native_decide
+
+theorem source_build_assembly_batch_receipt_candidate_keys_check :
+    keysDetermineAllCheck source_build_assembly_batch_receipt_contract = true := by
+  native_decide
+
+theorem source_build_assembly_batch_receipt_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes source_build_assembly_batch_receipt_contract :=
+  keysDetermineAllCheck_sound source_build_assembly_batch_receipt_contract
+    source_build_assembly_batch_receipt_candidate_keys_check
+
+theorem source_build_assembly_batch_receipt_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck source_build_assembly_batch_receipt_contract = true := by
+  native_decide
+
+theorem source_build_assembly_batch_receipt_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal source_build_assembly_batch_receipt_contract :=
+  declaredKeysMinimalCheck_sound source_build_assembly_batch_receipt_contract
+    source_build_assembly_batch_receipt_candidate_keys_minimal_check
+
+theorem source_build_assembly_batch_receipt_closure_fixed_check :
+    closureFixedPointCheck source_build_assembly_batch_receipt_contract = true := by
+  native_decide
+
+theorem source_build_assembly_batch_receipt_closure_reached_fixed_point :
+    ClosureReachedFixedPoint source_build_assembly_batch_receipt_contract :=
+  closureFixedPointCheck_sound source_build_assembly_batch_receipt_contract
+    source_build_assembly_batch_receipt_closure_fixed_check
+
+theorem source_build_assembly_batch_receipt_bcnf_check :
+    bcnfCheck source_build_assembly_batch_receipt_contract = true := by
+  native_decide
+
+theorem source_build_assembly_batch_receipt_bcnf : BCNF source_build_assembly_batch_receipt_contract :=
+  bcnfCheck_sound source_build_assembly_batch_receipt_contract source_build_assembly_batch_receipt_bcnf_check
 
 def maintenance_gate_generation_contract : RelationContract where
   name := "maintenance_gate_generation"
@@ -2183,10 +2969,10 @@ theorem gallery_observation_staging_claim_bcnf : BCNF gallery_observation_stagin
 
 def gallery_observation_staging_checkpoint_contract : RelationContract where
   name := "gallery_observation_staging_checkpoint"
-  attributes := ["staging_id", "component", "level", "cursor", "regular_count", "state", "updated_at"]
+  attributes := ["staging_id", "component", "level", "cursor", "regular_count", "processed_byte_count", "state", "updated_at"]
   declaredKeys := [["staging_id", "component", "level"]]
   declaredFDs := [
-    { determinant := ["staging_id", "component", "level"], dependent := ["cursor", "regular_count", "state", "updated_at"] }
+    { determinant := ["staging_id", "component", "level"], dependent := ["cursor", "regular_count", "processed_byte_count", "state", "updated_at"] }
   ]
 
 theorem gallery_observation_staging_checkpoint_schema_well_formed :
@@ -2506,11 +3292,11 @@ theorem gallery_observation_staging_request_page_bcnf : BCNF gallery_observation
 
 def gallery_observation_staging_receipt_contract : RelationContract where
   name := "gallery_observation_staging_receipt"
-  attributes := ["staging_id", "component", "level", "request_sha256", "committed_at"]
+  attributes := ["staging_id", "component", "level", "request_sha256", "start_processed_byte_count", "next_processed_byte_count", "committed_at"]
   declaredKeys := [["staging_id", "component", "level"], ["request_sha256"]]
   declaredFDs := [
-    { determinant := ["staging_id", "component", "level"], dependent := ["request_sha256", "committed_at"] },
-    { determinant := ["request_sha256"], dependent := ["staging_id", "component", "level", "committed_at"] }
+    { determinant := ["staging_id", "component", "level"], dependent := ["request_sha256", "start_processed_byte_count", "next_processed_byte_count", "committed_at"] },
+    { determinant := ["request_sha256"], dependent := ["staging_id", "component", "level", "start_processed_byte_count", "next_processed_byte_count", "committed_at"] }
   ]
 
 theorem gallery_observation_staging_receipt_schema_well_formed :
@@ -2876,6 +3662,98 @@ theorem download_request_bcnf_check :
 theorem download_request_bcnf : BCNF download_request_contract :=
   bcnfCheck_sound download_request_contract download_request_bcnf_check
 
+def deletion_request_generation_contract : RelationContract where
+  name := "deletion_request_generation"
+  attributes := ["generation", "allocated_at"]
+  declaredKeys := [["generation"]]
+  declaredFDs := [
+    { determinant := ["generation"], dependent := ["allocated_at"] }
+  ]
+
+theorem deletion_request_generation_schema_well_formed :
+    schemaWellFormedCheck deletion_request_generation_contract = true := by
+  native_decide
+
+theorem deletion_request_generation_candidate_keys_check :
+    keysDetermineAllCheck deletion_request_generation_contract = true := by
+  native_decide
+
+theorem deletion_request_generation_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes deletion_request_generation_contract :=
+  keysDetermineAllCheck_sound deletion_request_generation_contract
+    deletion_request_generation_candidate_keys_check
+
+theorem deletion_request_generation_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck deletion_request_generation_contract = true := by
+  native_decide
+
+theorem deletion_request_generation_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal deletion_request_generation_contract :=
+  declaredKeysMinimalCheck_sound deletion_request_generation_contract
+    deletion_request_generation_candidate_keys_minimal_check
+
+theorem deletion_request_generation_closure_fixed_check :
+    closureFixedPointCheck deletion_request_generation_contract = true := by
+  native_decide
+
+theorem deletion_request_generation_closure_reached_fixed_point :
+    ClosureReachedFixedPoint deletion_request_generation_contract :=
+  closureFixedPointCheck_sound deletion_request_generation_contract
+    deletion_request_generation_closure_fixed_check
+
+theorem deletion_request_generation_bcnf_check :
+    bcnfCheck deletion_request_generation_contract = true := by
+  native_decide
+
+theorem deletion_request_generation_bcnf : BCNF deletion_request_generation_contract :=
+  bcnfCheck_sound deletion_request_generation_contract deletion_request_generation_bcnf_check
+
+def deletion_request_generation_head_contract : RelationContract where
+  name := "deletion_request_generation_head"
+  attributes := ["singleton_id", "current_generation", "updated_at"]
+  declaredKeys := [["singleton_id"]]
+  declaredFDs := [
+    { determinant := ["singleton_id"], dependent := ["current_generation", "updated_at"] }
+  ]
+
+theorem deletion_request_generation_head_schema_well_formed :
+    schemaWellFormedCheck deletion_request_generation_head_contract = true := by
+  native_decide
+
+theorem deletion_request_generation_head_candidate_keys_check :
+    keysDetermineAllCheck deletion_request_generation_head_contract = true := by
+  native_decide
+
+theorem deletion_request_generation_head_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes deletion_request_generation_head_contract :=
+  keysDetermineAllCheck_sound deletion_request_generation_head_contract
+    deletion_request_generation_head_candidate_keys_check
+
+theorem deletion_request_generation_head_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck deletion_request_generation_head_contract = true := by
+  native_decide
+
+theorem deletion_request_generation_head_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal deletion_request_generation_head_contract :=
+  declaredKeysMinimalCheck_sound deletion_request_generation_head_contract
+    deletion_request_generation_head_candidate_keys_minimal_check
+
+theorem deletion_request_generation_head_closure_fixed_check :
+    closureFixedPointCheck deletion_request_generation_head_contract = true := by
+  native_decide
+
+theorem deletion_request_generation_head_closure_reached_fixed_point :
+    ClosureReachedFixedPoint deletion_request_generation_head_contract :=
+  closureFixedPointCheck_sound deletion_request_generation_head_contract
+    deletion_request_generation_head_closure_fixed_check
+
+theorem deletion_request_generation_head_bcnf_check :
+    bcnfCheck deletion_request_generation_head_contract = true := by
+  native_decide
+
+theorem deletion_request_generation_head_bcnf : BCNF deletion_request_generation_head_contract :=
+  bcnfCheck_sound deletion_request_generation_head_contract deletion_request_generation_head_bcnf_check
+
 def deletion_request_attempt_contract : RelationContract where
   name := "deletion_request_attempt"
   attributes := ["request_token", "gid", "requested_at"]
@@ -3153,6 +4031,52 @@ theorem operational_policy_bcnf_check :
 theorem operational_policy_bcnf : BCNF operational_policy_contract :=
   bcnfCheck_sound operational_policy_contract operational_policy_bcnf_check
 
+def operational_event_stream_contract : RelationContract where
+  name := "operational_event_stream"
+  attributes := ["preparation_id", "created_at"]
+  declaredKeys := [["preparation_id"]]
+  declaredFDs := [
+    { determinant := ["preparation_id"], dependent := ["created_at"] }
+  ]
+
+theorem operational_event_stream_schema_well_formed :
+    schemaWellFormedCheck operational_event_stream_contract = true := by
+  native_decide
+
+theorem operational_event_stream_candidate_keys_check :
+    keysDetermineAllCheck operational_event_stream_contract = true := by
+  native_decide
+
+theorem operational_event_stream_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes operational_event_stream_contract :=
+  keysDetermineAllCheck_sound operational_event_stream_contract
+    operational_event_stream_candidate_keys_check
+
+theorem operational_event_stream_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck operational_event_stream_contract = true := by
+  native_decide
+
+theorem operational_event_stream_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal operational_event_stream_contract :=
+  declaredKeysMinimalCheck_sound operational_event_stream_contract
+    operational_event_stream_candidate_keys_minimal_check
+
+theorem operational_event_stream_closure_fixed_check :
+    closureFixedPointCheck operational_event_stream_contract = true := by
+  native_decide
+
+theorem operational_event_stream_closure_reached_fixed_point :
+    ClosureReachedFixedPoint operational_event_stream_contract :=
+  closureFixedPointCheck_sound operational_event_stream_contract
+    operational_event_stream_closure_fixed_check
+
+theorem operational_event_stream_bcnf_check :
+    bcnfCheck operational_event_stream_contract = true := by
+  native_decide
+
+theorem operational_event_stream_bcnf : BCNF operational_event_stream_contract :=
+  bcnfCheck_sound operational_event_stream_contract operational_event_stream_bcnf_check
+
 def operational_preparation_contract : RelationContract where
   name := "operational_preparation"
   attributes := ["preparation_id", "build_id", "deletion_request_generation", "operational_policy_id", "state", "prepared_at", "completed_at"]
@@ -3293,6 +4217,99 @@ theorem operational_preparation_batch_receipt_bcnf_check :
 theorem operational_preparation_batch_receipt_bcnf : BCNF operational_preparation_batch_receipt_contract :=
   bcnfCheck_sound operational_preparation_batch_receipt_contract operational_preparation_batch_receipt_bcnf_check
 
+def operational_preparation_effect_seal_contract : RelationContract where
+  name := "operational_preparation_effect_seal"
+  attributes := ["preparation_id", "event_count", "final_chain_sha256", "sealed_at"]
+  declaredKeys := [["preparation_id"]]
+  declaredFDs := [
+    { determinant := ["preparation_id"], dependent := ["event_count", "final_chain_sha256", "sealed_at"] }
+  ]
+
+theorem operational_preparation_effect_seal_schema_well_formed :
+    schemaWellFormedCheck operational_preparation_effect_seal_contract = true := by
+  native_decide
+
+theorem operational_preparation_effect_seal_candidate_keys_check :
+    keysDetermineAllCheck operational_preparation_effect_seal_contract = true := by
+  native_decide
+
+theorem operational_preparation_effect_seal_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes operational_preparation_effect_seal_contract :=
+  keysDetermineAllCheck_sound operational_preparation_effect_seal_contract
+    operational_preparation_effect_seal_candidate_keys_check
+
+theorem operational_preparation_effect_seal_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck operational_preparation_effect_seal_contract = true := by
+  native_decide
+
+theorem operational_preparation_effect_seal_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal operational_preparation_effect_seal_contract :=
+  declaredKeysMinimalCheck_sound operational_preparation_effect_seal_contract
+    operational_preparation_effect_seal_candidate_keys_minimal_check
+
+theorem operational_preparation_effect_seal_closure_fixed_check :
+    closureFixedPointCheck operational_preparation_effect_seal_contract = true := by
+  native_decide
+
+theorem operational_preparation_effect_seal_closure_reached_fixed_point :
+    ClosureReachedFixedPoint operational_preparation_effect_seal_contract :=
+  closureFixedPointCheck_sound operational_preparation_effect_seal_contract
+    operational_preparation_effect_seal_closure_fixed_check
+
+theorem operational_preparation_effect_seal_bcnf_check :
+    bcnfCheck operational_preparation_effect_seal_contract = true := by
+  native_decide
+
+theorem operational_preparation_effect_seal_bcnf : BCNF operational_preparation_effect_seal_contract :=
+  bcnfCheck_sound operational_preparation_effect_seal_contract operational_preparation_effect_seal_bcnf_check
+
+def publication_candidate_preparation_contract : RelationContract where
+  name := "publication_candidate_preparation"
+  attributes := ["candidate_id", "preparation_id", "bound_at"]
+  declaredKeys := [["candidate_id"], ["preparation_id"]]
+  declaredFDs := [
+    { determinant := ["candidate_id"], dependent := ["preparation_id", "bound_at"] },
+    { determinant := ["preparation_id"], dependent := ["candidate_id", "bound_at"] }
+  ]
+
+theorem publication_candidate_preparation_schema_well_formed :
+    schemaWellFormedCheck publication_candidate_preparation_contract = true := by
+  native_decide
+
+theorem publication_candidate_preparation_candidate_keys_check :
+    keysDetermineAllCheck publication_candidate_preparation_contract = true := by
+  native_decide
+
+theorem publication_candidate_preparation_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes publication_candidate_preparation_contract :=
+  keysDetermineAllCheck_sound publication_candidate_preparation_contract
+    publication_candidate_preparation_candidate_keys_check
+
+theorem publication_candidate_preparation_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck publication_candidate_preparation_contract = true := by
+  native_decide
+
+theorem publication_candidate_preparation_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal publication_candidate_preparation_contract :=
+  declaredKeysMinimalCheck_sound publication_candidate_preparation_contract
+    publication_candidate_preparation_candidate_keys_minimal_check
+
+theorem publication_candidate_preparation_closure_fixed_check :
+    closureFixedPointCheck publication_candidate_preparation_contract = true := by
+  native_decide
+
+theorem publication_candidate_preparation_closure_reached_fixed_point :
+    ClosureReachedFixedPoint publication_candidate_preparation_contract :=
+  closureFixedPointCheck_sound publication_candidate_preparation_contract
+    publication_candidate_preparation_closure_fixed_check
+
+theorem publication_candidate_preparation_bcnf_check :
+    bcnfCheck publication_candidate_preparation_contract = true := by
+  native_decide
+
+theorem publication_candidate_preparation_bcnf : BCNF publication_candidate_preparation_contract :=
+  bcnfCheck_sound publication_candidate_preparation_contract publication_candidate_preparation_bcnf_check
+
 def operational_activation_contract : RelationContract where
   name := "operational_activation"
   attributes := ["source_revision", "preparation_id", "operational_policy_id", "activated_at"]
@@ -3342,11 +4359,11 @@ theorem operational_activation_bcnf : BCNF operational_activation_contract :=
 
 def operational_event_contract : RelationContract where
   name := "operational_event"
-  attributes := ["event_id", "source_revision", "sequence_no", "event_type", "event_sha256", "created_at"]
-  declaredKeys := [["event_id"], ["source_revision", "sequence_no"]]
+  attributes := ["event_id", "preparation_id", "sequence_no", "event_type", "event_sha256", "created_at"]
+  declaredKeys := [["event_id"], ["preparation_id", "sequence_no"]]
   declaredFDs := [
-    { determinant := ["event_id"], dependent := ["source_revision", "sequence_no", "event_type", "event_sha256", "created_at"] },
-    { determinant := ["source_revision", "sequence_no"], dependent := ["event_id", "event_type", "event_sha256", "created_at"] }
+    { determinant := ["event_id"], dependent := ["preparation_id", "sequence_no", "event_type", "event_sha256", "created_at"] },
+    { determinant := ["preparation_id", "sequence_no"], dependent := ["event_id", "event_type", "event_sha256", "created_at"] }
   ]
 
 theorem operational_event_schema_well_formed :
@@ -3576,10 +4593,10 @@ theorem operational_event_ack_bcnf : BCNF operational_event_ack_contract :=
 
 def operational_event_ack_head_contract : RelationContract where
   name := "operational_event_ack_head"
-  attributes := ["consumer_id", "source_revision", "through_sequence_no", "updated_at"]
-  declaredKeys := [["consumer_id", "source_revision"]]
+  attributes := ["consumer_id", "preparation_id", "through_sequence_no", "updated_at"]
+  declaredKeys := [["consumer_id", "preparation_id"]]
   declaredFDs := [
-    { determinant := ["consumer_id", "source_revision"], dependent := ["through_sequence_no", "updated_at"] }
+    { determinant := ["consumer_id", "preparation_id"], dependent := ["through_sequence_no", "updated_at"] }
   ]
 
 theorem operational_event_ack_head_schema_well_formed :
@@ -4084,12 +5101,23 @@ theorem cleanup_completion_bcnf : BCNF cleanup_completion_contract :=
 
 def manifestContracts : List RelationContract := [
   schema_epoch_control_contract,
+  download_generation_contract,
+  download_coordination_head_contract,
+  download_generation_owner_contract,
+  download_generation_lease_contract,
+  download_ingest_handoff_contract,
+  download_ingest_consumption_contract,
+  coordinated_ingest_completion_contract,
   ingest_generation_contract,
   ingest_coordination_head_contract,
   ingest_generation_owner_contract,
   ingest_generation_lease_contract,
   ingest_generation_handoff_contract,
   source_build_generation_contract,
+  source_build_discovery_checkpoint_contract,
+  source_build_discovery_batch_receipt_contract,
+  source_build_assembly_checkpoint_contract,
+  source_build_assembly_batch_receipt_contract,
   maintenance_gate_generation_contract,
   maintenance_gate_head_contract,
   maintenance_gate_owner_contract,
@@ -4117,15 +5145,20 @@ def manifestContracts : List RelationContract := [
   gallery_observation_staging_metadata_parser_contract,
   canonical_value_upload_contract,
   download_request_contract,
+  deletion_request_generation_contract,
+  deletion_request_generation_head_contract,
   deletion_request_attempt_contract,
   deletion_request_url_contract,
   deletion_request_head_contract,
   removed_gid_contract,
   gallery_redownload_state_contract,
   operational_policy_contract,
+  operational_event_stream_contract,
   operational_preparation_contract,
   operational_preparation_checkpoint_contract,
   operational_preparation_batch_receipt_contract,
+  operational_preparation_effect_seal_contract,
+  publication_candidate_preparation_contract,
   operational_activation_contract,
   operational_event_contract,
   operational_removed_gid_event_contract,
@@ -4146,17 +5179,28 @@ def manifestContracts : List RelationContract := [
 ]
 
 theorem manifest_relation_count :
-    manifestContracts.length = 60 := by
+    manifestContracts.length = 76 := by
   native_decide
 
 theorem all_manifest_relations_bcnf :
     BCNF schema_epoch_control_contract ∧
+    BCNF download_generation_contract ∧
+    BCNF download_coordination_head_contract ∧
+    BCNF download_generation_owner_contract ∧
+    BCNF download_generation_lease_contract ∧
+    BCNF download_ingest_handoff_contract ∧
+    BCNF download_ingest_consumption_contract ∧
+    BCNF coordinated_ingest_completion_contract ∧
     BCNF ingest_generation_contract ∧
     BCNF ingest_coordination_head_contract ∧
     BCNF ingest_generation_owner_contract ∧
     BCNF ingest_generation_lease_contract ∧
     BCNF ingest_generation_handoff_contract ∧
     BCNF source_build_generation_contract ∧
+    BCNF source_build_discovery_checkpoint_contract ∧
+    BCNF source_build_discovery_batch_receipt_contract ∧
+    BCNF source_build_assembly_checkpoint_contract ∧
+    BCNF source_build_assembly_batch_receipt_contract ∧
     BCNF maintenance_gate_generation_contract ∧
     BCNF maintenance_gate_head_contract ∧
     BCNF maintenance_gate_owner_contract ∧
@@ -4184,15 +5228,20 @@ theorem all_manifest_relations_bcnf :
     BCNF gallery_observation_staging_metadata_parser_contract ∧
     BCNF canonical_value_upload_contract ∧
     BCNF download_request_contract ∧
+    BCNF deletion_request_generation_contract ∧
+    BCNF deletion_request_generation_head_contract ∧
     BCNF deletion_request_attempt_contract ∧
     BCNF deletion_request_url_contract ∧
     BCNF deletion_request_head_contract ∧
     BCNF removed_gid_contract ∧
     BCNF gallery_redownload_state_contract ∧
     BCNF operational_policy_contract ∧
+    BCNF operational_event_stream_contract ∧
     BCNF operational_preparation_contract ∧
     BCNF operational_preparation_checkpoint_contract ∧
     BCNF operational_preparation_batch_receipt_contract ∧
+    BCNF operational_preparation_effect_seal_contract ∧
+    BCNF publication_candidate_preparation_contract ∧
     BCNF operational_activation_contract ∧
     BCNF operational_event_contract ∧
     BCNF operational_removed_gid_event_contract ∧
@@ -4211,12 +5260,23 @@ theorem all_manifest_relations_bcnf :
     BCNF cleanup_batch_receipt_contract ∧
     BCNF cleanup_completion_contract := by
   exact ⟨schema_epoch_control_bcnf,
+    download_generation_bcnf,
+    download_coordination_head_bcnf,
+    download_generation_owner_bcnf,
+    download_generation_lease_bcnf,
+    download_ingest_handoff_bcnf,
+    download_ingest_consumption_bcnf,
+    coordinated_ingest_completion_bcnf,
     ingest_generation_bcnf,
     ingest_coordination_head_bcnf,
     ingest_generation_owner_bcnf,
     ingest_generation_lease_bcnf,
     ingest_generation_handoff_bcnf,
     source_build_generation_bcnf,
+    source_build_discovery_checkpoint_bcnf,
+    source_build_discovery_batch_receipt_bcnf,
+    source_build_assembly_checkpoint_bcnf,
+    source_build_assembly_batch_receipt_bcnf,
     maintenance_gate_generation_bcnf,
     maintenance_gate_head_bcnf,
     maintenance_gate_owner_bcnf,
@@ -4244,15 +5304,20 @@ theorem all_manifest_relations_bcnf :
     gallery_observation_staging_metadata_parser_bcnf,
     canonical_value_upload_bcnf,
     download_request_bcnf,
+    deletion_request_generation_bcnf,
+    deletion_request_generation_head_bcnf,
     deletion_request_attempt_bcnf,
     deletion_request_url_bcnf,
     deletion_request_head_bcnf,
     removed_gid_bcnf,
     gallery_redownload_state_bcnf,
     operational_policy_bcnf,
+    operational_event_stream_bcnf,
     operational_preparation_bcnf,
     operational_preparation_checkpoint_bcnf,
     operational_preparation_batch_receipt_bcnf,
+    operational_preparation_effect_seal_bcnf,
+    publication_candidate_preparation_bcnf,
     operational_activation_bcnf,
     operational_event_bcnf,
     operational_removed_gid_event_bcnf,
@@ -4273,12 +5338,23 @@ theorem all_manifest_relations_bcnf :
 
 theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes schema_epoch_control_contract ∧
+    KeysDetermineAllAttributes download_generation_contract ∧
+    KeysDetermineAllAttributes download_coordination_head_contract ∧
+    KeysDetermineAllAttributes download_generation_owner_contract ∧
+    KeysDetermineAllAttributes download_generation_lease_contract ∧
+    KeysDetermineAllAttributes download_ingest_handoff_contract ∧
+    KeysDetermineAllAttributes download_ingest_consumption_contract ∧
+    KeysDetermineAllAttributes coordinated_ingest_completion_contract ∧
     KeysDetermineAllAttributes ingest_generation_contract ∧
     KeysDetermineAllAttributes ingest_coordination_head_contract ∧
     KeysDetermineAllAttributes ingest_generation_owner_contract ∧
     KeysDetermineAllAttributes ingest_generation_lease_contract ∧
     KeysDetermineAllAttributes ingest_generation_handoff_contract ∧
     KeysDetermineAllAttributes source_build_generation_contract ∧
+    KeysDetermineAllAttributes source_build_discovery_checkpoint_contract ∧
+    KeysDetermineAllAttributes source_build_discovery_batch_receipt_contract ∧
+    KeysDetermineAllAttributes source_build_assembly_checkpoint_contract ∧
+    KeysDetermineAllAttributes source_build_assembly_batch_receipt_contract ∧
     KeysDetermineAllAttributes maintenance_gate_generation_contract ∧
     KeysDetermineAllAttributes maintenance_gate_head_contract ∧
     KeysDetermineAllAttributes maintenance_gate_owner_contract ∧
@@ -4306,15 +5382,20 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes gallery_observation_staging_metadata_parser_contract ∧
     KeysDetermineAllAttributes canonical_value_upload_contract ∧
     KeysDetermineAllAttributes download_request_contract ∧
+    KeysDetermineAllAttributes deletion_request_generation_contract ∧
+    KeysDetermineAllAttributes deletion_request_generation_head_contract ∧
     KeysDetermineAllAttributes deletion_request_attempt_contract ∧
     KeysDetermineAllAttributes deletion_request_url_contract ∧
     KeysDetermineAllAttributes deletion_request_head_contract ∧
     KeysDetermineAllAttributes removed_gid_contract ∧
     KeysDetermineAllAttributes gallery_redownload_state_contract ∧
     KeysDetermineAllAttributes operational_policy_contract ∧
+    KeysDetermineAllAttributes operational_event_stream_contract ∧
     KeysDetermineAllAttributes operational_preparation_contract ∧
     KeysDetermineAllAttributes operational_preparation_checkpoint_contract ∧
     KeysDetermineAllAttributes operational_preparation_batch_receipt_contract ∧
+    KeysDetermineAllAttributes operational_preparation_effect_seal_contract ∧
+    KeysDetermineAllAttributes publication_candidate_preparation_contract ∧
     KeysDetermineAllAttributes operational_activation_contract ∧
     KeysDetermineAllAttributes operational_event_contract ∧
     KeysDetermineAllAttributes operational_removed_gid_event_contract ∧
@@ -4333,12 +5414,23 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes cleanup_batch_receipt_contract ∧
     KeysDetermineAllAttributes cleanup_completion_contract := by
   exact ⟨schema_epoch_control_candidate_keys_determine_all_attributes,
+    download_generation_candidate_keys_determine_all_attributes,
+    download_coordination_head_candidate_keys_determine_all_attributes,
+    download_generation_owner_candidate_keys_determine_all_attributes,
+    download_generation_lease_candidate_keys_determine_all_attributes,
+    download_ingest_handoff_candidate_keys_determine_all_attributes,
+    download_ingest_consumption_candidate_keys_determine_all_attributes,
+    coordinated_ingest_completion_candidate_keys_determine_all_attributes,
     ingest_generation_candidate_keys_determine_all_attributes,
     ingest_coordination_head_candidate_keys_determine_all_attributes,
     ingest_generation_owner_candidate_keys_determine_all_attributes,
     ingest_generation_lease_candidate_keys_determine_all_attributes,
     ingest_generation_handoff_candidate_keys_determine_all_attributes,
     source_build_generation_candidate_keys_determine_all_attributes,
+    source_build_discovery_checkpoint_candidate_keys_determine_all_attributes,
+    source_build_discovery_batch_receipt_candidate_keys_determine_all_attributes,
+    source_build_assembly_checkpoint_candidate_keys_determine_all_attributes,
+    source_build_assembly_batch_receipt_candidate_keys_determine_all_attributes,
     maintenance_gate_generation_candidate_keys_determine_all_attributes,
     maintenance_gate_head_candidate_keys_determine_all_attributes,
     maintenance_gate_owner_candidate_keys_determine_all_attributes,
@@ -4366,15 +5458,20 @@ theorem all_manifest_candidate_keys_determine_attributes :
     gallery_observation_staging_metadata_parser_candidate_keys_determine_all_attributes,
     canonical_value_upload_candidate_keys_determine_all_attributes,
     download_request_candidate_keys_determine_all_attributes,
+    deletion_request_generation_candidate_keys_determine_all_attributes,
+    deletion_request_generation_head_candidate_keys_determine_all_attributes,
     deletion_request_attempt_candidate_keys_determine_all_attributes,
     deletion_request_url_candidate_keys_determine_all_attributes,
     deletion_request_head_candidate_keys_determine_all_attributes,
     removed_gid_candidate_keys_determine_all_attributes,
     gallery_redownload_state_candidate_keys_determine_all_attributes,
     operational_policy_candidate_keys_determine_all_attributes,
+    operational_event_stream_candidate_keys_determine_all_attributes,
     operational_preparation_candidate_keys_determine_all_attributes,
     operational_preparation_checkpoint_candidate_keys_determine_all_attributes,
     operational_preparation_batch_receipt_candidate_keys_determine_all_attributes,
+    operational_preparation_effect_seal_candidate_keys_determine_all_attributes,
+    publication_candidate_preparation_candidate_keys_determine_all_attributes,
     operational_activation_candidate_keys_determine_all_attributes,
     operational_event_candidate_keys_determine_all_attributes,
     operational_removed_gid_event_candidate_keys_determine_all_attributes,

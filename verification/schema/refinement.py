@@ -1802,13 +1802,17 @@ def _validate_bootstrap_contract(
     is_data_contract = physical.logical_contract == "h2hdb-vnext-catalog"
     if is_data_contract:
         expected_seeded = {
+            "analysis_stage",
+            "artifact_storage_codec",
+            "artifact_zip_writer_policy",
             "canonical_digest_policy",
             "channel_registry",
+            "publication_stage",
             "source_provider_registry",
         }
-        if set(seeded) != expected_seeded or len(absent) != len(relation_names) - 3:
+        if set(seeded) != expected_seeded or len(absent) != len(relation_names) - 7:
             raise ValueError(
-                "data bootstrap_contract must seed exactly three registries and "
+                "data bootstrap_contract must seed exactly seven registries and "
                 "classify every other relation absent"
             )
 
@@ -1827,18 +1831,33 @@ def _validate_bootstrap_contract(
         if not is_data_contract:
             continue
         for cell in cells:
-            if set(cell) != {"attribute", "type", "encoding", "text"}:
-                raise ValueError(
-                    "data bootstrap seed cells must be exact typed UTF-8 text"
-                )
             _required_string(cell, "attribute")
-            if cell.get("type") != "ascii_enum" or cell.get("encoding") != "utf8":
-                raise ValueError("data bootstrap seed cells must use ascii_enum/utf8")
-            text = _required_string(cell, "text")
-            try:
-                text.encode("ascii")
-            except UnicodeEncodeError as error:
-                raise ValueError("data bootstrap seed text must be ASCII") from error
+            if set(cell) == {"attribute", "type", "encoding", "text"}:
+                if cell.get("type") != "ascii_enum" or cell.get("encoding") != "utf8":
+                    raise ValueError(
+                        "data text bootstrap cells must use ascii_enum/utf8"
+                    )
+                text = _required_string(cell, "text")
+                try:
+                    text.encode("ascii")
+                except UnicodeEncodeError as error:
+                    raise ValueError(
+                        "data bootstrap seed text must be ASCII"
+                    ) from error
+            elif set(cell) == {"attribute", "type", "integer"}:
+                integer = cell.get("integer")
+                if cell.get("type") not in {"uint32", "uint64"} or (
+                    not isinstance(integer, int)
+                    or isinstance(integer, bool)
+                    or integer < 0
+                ):
+                    raise ValueError(
+                        "data integer bootstrap cells must use an unsigned exact type"
+                    )
+            else:
+                raise ValueError(
+                    "data bootstrap cells must be exact typed ASCII or integers"
+                )
 
     for field in ("absence_rule", "epoch_rule"):
         if not isinstance(raw_contract.get(field), str) or not raw_contract[field]:
@@ -2092,7 +2111,11 @@ def _validate_physical_schema(
         if artifact_policy_semantics.primary_key != (
             "policy_component_sha256",
         ) or artifact_policy_semantics.unique_keys != (
-            ("artifact_algorithm_version", "max_image_short_side"),
+            (
+                "artifact_algorithm_version",
+                "max_image_short_side",
+                "producer_fingerprint_sha256",
+            ),
         ):
             raise ValueError(
                 "artifact policy semantics must implement component <-> natural tuple"
@@ -2104,17 +2127,33 @@ def _validate_physical_schema(
             "policy_component_sha256",
             "artifact_algorithm_version",
             "max_image_short_side",
+            "producer_fingerprint_sha256",
         }:
             raise ValueError(
                 "artifact policy physical columns are incomplete/redundant"
             )
         if not any(
-            "max_image_short_side" in value and "policy tuple change" in value
+            "max_image_short_side" in value
+            and "algorithm/resize/producer tuple change" in value
             for value in physical.runtime_obligations
         ):
             raise ValueError(
                 "artifact byte-producer policy runtime obligation is absent"
             )
+
+        producer = physical.relation("artifact_producer_fingerprint")
+        zip_policy = physical.relation("artifact_zip_writer_policy")
+        storage_codec = physical.relation("artifact_storage_codec")
+        if producer is None or zip_policy is None or storage_codec is None:
+            raise ValueError("artifact closed producer/storage registries are missing")
+        if producer.primary_key != ("producer_fingerprint_sha256",):
+            raise ValueError("artifact producer fingerprint has wrong primary key")
+        if zip_policy.primary_key != ("artifact_algorithm_version",):
+            raise ValueError("artifact ZIP writer policy has wrong primary key")
+        if storage_codec.primary_key != ("storage_codec_version",) or (
+            storage_codec.unique_keys != (("adapter_id",),)
+        ):
+            raise ValueError("artifact storage codec has wrong equivalent keys")
 
         semantic_input = physical.relation("artifact_semantic_input")
         if semantic_input is None:

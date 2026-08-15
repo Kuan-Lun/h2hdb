@@ -41,6 +41,28 @@ def test_execute_many(connector: SQLiteConnector) -> None:
         ]
 
 
+def test_execute_affected_reports_exact_cas_result(connector: SQLiteConnector) -> None:
+    with connector:
+        connector.execute(
+            "CREATE TABLE allocator (stream TEXT PRIMARY KEY, next_id INTEGER)"
+        )
+        connector.execute("INSERT INTO allocator VALUES (%s, %s)", ("GALLERY", 1))
+        assert (
+            connector.execute_affected(
+                "UPDATE allocator SET next_id = %s WHERE stream = %s AND next_id = %s",
+                (2, "GALLERY", 1),
+            )
+            == 1
+        )
+        assert (
+            connector.execute_affected(
+                "UPDATE allocator SET next_id = %s WHERE stream = %s AND next_id = %s",
+                (3, "GALLERY", 1),
+            )
+            == 0
+        )
+
+
 def test_duplicate_key_raises(connector: SQLiteConnector) -> None:
     with connector:
         connector.execute("CREATE TABLE widgets (id INTEGER PRIMARY KEY)")

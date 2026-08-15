@@ -1,146 +1,142 @@
 # Multi-repository deployment
 
-The former `python -m h2hdb` resident process is split by runtime responsibility.
-For a deployment that enables OPDS, one former resident container becomes two
-long-running containers:
-
-1. `h2hdb-ingest` scans the gallery mount, reconciles CBZ files, and publishes
-   complete catalog snapshots.
-2. `h2hdb-opds` serves the published projection over HTTP.
-
-Core is a library used by both processes. Its `python -m h2hdb` command is an
-administration command, not a third resident service. Run it as an init job for
-schema migration or compatibility checks. Existing downloader and Komga
-containers remain separate and are not included in the two-container count.
+`h2hdb` is a shared core library and schema administrator, not a resident
+service. Long-running behavior belongs to sibling processes such as ingest,
+OPDS, downloader, and Komga integrations. Those processes share one core-owned
+database and call the public vNext facades; they do not query `catalog_*` or
+operational tables directly.
 
 ## Database ownership
 
-There is one core-owned database. Its canonical gallery, file, tag, time, queue,
-and coordination tables are authoritative. Core also owns the revisioned
-catalog projection used by OPDS.
+There is one epoch-2/version-1 database. Its 125 catalog BCNF relations and 76
+operational BCNF relations are generated for both SQLite and MariaDB from the
+same logical manifests.
 
-Ingest receives read-write credentials. OPDS connects to that same database in
-read-only mode. For MariaDB, give OPDS a dedicated database account with only
-`SELECT` and `SHOW VIEW` privileges; the latter lets core validate critical view
-definitions during the read-only compatibility check. For SQLite, mount the
-same database file read-only in the OPDS container. Do not create a second
-writable OPDS database.
+Ingest and coordination workers receive read-write credentials. Catalog-serving
+consumers use read-only credentials and `VNextCatalogFacade`. For SQLite, mount
+the same database file read-only in read-only containers. For MariaDB, use a
+dedicated account with the metadata/read privileges required by the full schema
+check and application reads. Do not create a second writable projection
+database.
 
-Ingest and OPDS must see the immutable artifact-store mount at the same absolute
-container path because catalog revisions store physical artifact paths. Komga
-must scan only the separate current friendly CBZ library, never the immutable
-artifact store.
-
-## CBZ storage lifecycle and mounts
-
-The two CBZ roots are not interchangeable:
-
-- `cbz_path` is a replaceable, current-only projection with friendly filenames
-  for Komga. Ingest owns it read-write. Komga scans this root, but OPDS and the
-  downloader do not need it.
-- `artifact_store_path` is the durable, content-addressed source of every CBZ
-  published by a catalog revision. It also contains ingest's publication lock
-  and reconciliation state. Ingest needs read-write access. OPDS must mount the
-  same host directory read-only at the same absolute container path and set
-  `artifact_root` to that path. Komga and the downloader must not scan or write
-  this root.
-
-For example, a deployment using `/hentai/comics` for the Komga library and
-`/hentai/comics-artifacts` for published artifacts needs mounts equivalent to:
-
-```yaml
-services:
-  ingest:
-    volumes:
-      - /host/gallery-downloads:/hentai/download:ro
-      - /host/komga-comics:/hentai/comics:rw
-      - /host/h2hdb-artifacts:/hentai/comics-artifacts:rw
-  opds:
-    volumes:
-      - /host/h2hdb-artifacts:/hentai/comics-artifacts:ro
-  komga:
-    volumes:
-      - /host/komga-comics:/data/hentai/comics:ro
-```
-
-The OPDS config must use `artifact_root: /hentai/comics-artifacts`; mounting the
-same host directory at a different path is insufficient because catalog rows
-contain the ingest-visible absolute path. Both containers also need compatible
-numeric UID/GID or an explicit ACL so OPDS can read ingest-created owner-only
-files.
-
-Back up the database and artifact store as one publication set. Losing
-`cbz_path` is recoverable from current artifacts, but losing the artifact store
-breaks current and historical acquisition URLs. Old artifacts are retained for
-pinned historical revisions, so capacity grows with actual CBZ changes. There
-is currently no revision-retention or artifact-garbage-collection command; do
-not manually delete content-addressed files while catalog revisions reference
-them. The current projection is an independent copy rather than a hard link:
-software writing through a Komga filename therefore cannot mutate immutable
-history.
+Only a deployment init job runs schema construction. Consumer containers run a
+full check at startup and may use the lightweight readiness probe separately.
 
 ## Fresh initialization
 
-The current architecture starts with an empty database. Before replacing an
-older deployment, stop all writers and take a database and filesystem backup.
-Then point the current services at a new empty database and initialize it:
+The greenfield schema has no v1-v7 upgrade/adoption path, compatibility view,
+or dual-write period. Before replacing any earlier database, stop all writers
+and take the backups required by that deployment. Point the current services at
+a truly empty database, then run:
 
 ```bash
-python -m h2hdb migrate --config core.json
+python -m h2hdb migrate --config core-writer.json
 ```
 
-The runtime refuses every non-empty database without the current migration
-ledger. It has no schema-adoption or old-database upgrade path. Numbered
-migrations remain the initializer for an empty database and the mechanism for
-future forward-only changes to a current database.
+This constructs `h2hdb_schema_epoch` with `epoch=2`, `schema_version=1`, and a
+checksum-bound `BUILDING` state; applies the generated SQLite or MariaDB DDL and
+bootstrap facts; validates the exact manifests; and atomically marks the epoch
+`READY`.
 
-Verify compatibility before starting consumers:
+If the init job crashes, rerun the same command. It resumes only a matching
+`BUILDING` epoch. A previous, foreign, drifted, or malformed non-empty database
+is rejected without adoption or destructive repair.
+
+Verify the complete schema from a read-only configuration before starting
+consumers:
 
 ```bash
-python -m h2hdb check --config core.json
+python -m h2hdb check --config core-reader.json
 ```
 
-While consumers are still stopped, run the ingest-owned bootstrap. This is a
-distinct second phase: it performs no DDL and never writes the schema ledger.
-It rebuilds canonical rows from the gallery filesystem and publishes the
-initial projection:
+Use the O(1) epoch/version/manifest probe for frequent container readiness:
 
 ```bash
-python scripts/bootstrap-catalog.py \
-  --config ingest.json
+python -m h2hdb ready --config core-reader.json
 ```
 
-Run that command from the `h2hdb-ingest` checkout.
+`migrate`, `check`, and `ready` are the only core CLI operations. Despite its
+name, `migrate` constructs or resumes the single manifest-bound greenfield
+epoch; it does not execute numbered historical migrations.
 
-Then start the two steady-state residents:
+## Consumer boundaries
 
-```bash
-h2hdb-ingest --config ingest.json
-h2hdb-opds --config opds.json
-```
+Applications import these public entry points from `h2hdb`:
 
-If OPDS is not enabled, only ingest replaces the former H2HDB resident. The
-downloader and Komga processes continue using the core public API.
+- `VNextDatabaseAdminFacade` for initialization, full checks, and readiness.
+- `VNextCatalogFacade` for revision-pinned catalog reads.
+- `VNextDownloadQueueFacade` for normalized request/list/complete operations.
 
-## CBZ filenames
+Repository classes that accept a connector or unit of work are internal
+coordination surfaces. A sibling repository must not depend on physical table
+names, generated SQL, or a private repository method.
 
-Content-addressed physical names such as `gid-sha256.cbz` are an ingest storage
-choice, not an OPDS 2.0 requirement. They live in the immutable artifact store
-so historical OPDS revisions remain downloadable. OPDS sends the friendly
-catalog artifact name in `Content-Disposition`.
+The current integration boundary has three explicit limits:
 
-Ingest separately maintains a current friendly CBZ library for Komga. A rebuild
-atomically replaces that independent copy, so Komga sees one current book while
-the artifact store retains history.
+- Nonblank search fails closed until a normalized revision-pinned search index
+  is part of the schema and reader contract.
+- `CatalogPublication.redownload_required` has no closed durable
+  revision-scoped derivation contract, so consumers must not infer it from
+  transient operational state.
+- Core provides typed artifact preparation and storage protocols, but the
+  concrete filesystem/object-storage adapter and complete ingest orchestration
+  are consumer responsibilities. Core alone does not perform an end-to-end
+  filesystem bootstrap.
+
+## Artifact storage and mounts
+
+An ingest integration that publishes artifacts must implement the registered
+typed storage adapter. That adapter owns the mapping from core's verified,
+content-addressed artifact identity to a concrete filesystem or object-store
+locator and must acknowledge exact byte protection without changing the
+verified archive.
+
+If a filesystem-backed adapter is used, keep these conceptual roots separate:
+
+- A replaceable current library with friendly filenames for Komga.
+- An immutable, content-addressed artifact store used for published revisions.
+
+Ingest needs write access to both. Catalog-serving consumers need read access
+only to the artifact store when their acquisition adapter serves those bytes.
+Komga scans only the replaceable current library. Mount paths, permissions,
+locator encoding, reconciliation, and recovery are part of the concrete
+consumer adapter; do not hard-code them in core or reconstruct a locator from a
+catalog display name.
+
+Back up the database and protected artifact store as one publication set. An
+adapter must not delete content still retained by a catalog revision or a
+durable protection claim.
+
+## Startup sequence
+
+A deployment integration follows this order:
+
+1. Create a truly empty SQLite database or MariaDB schema.
+2. Run core `migrate` with read-write credentials.
+3. Run core `check` with the same read-only configuration consumers will use.
+4. After the consumer integration supplies the concrete source/artifact
+   adapters and a supported public orchestration boundary, run it to populate
+   and publish data through bounded vNext workflows.
+5. Start catalog readers, download workers, and other consumers only after the
+   required initial publication exists.
+6. Use core `ready` for frequent liveness/readiness probes; keep full `check`
+   as the stronger startup or deployment audit.
+
+Step 4 is still consumer-integration work: core does not expose a complete
+public ingest-orchestration facade. Until that adapter and boundary exist,
+schema `READY` means the exact database contract is present; it does not mean
+source data or artifacts have been ingested.
 
 ## Local multi-repository verification
 
 The repositories remain independent and do not form a uv workspace. From the
-core repository, build a disposable environment containing all seven editable
-installs and run a real SQLite public-API smoke test with:
+core repository, build a disposable environment containing the local editable
+installs with:
 
 ```bash
 ./scripts/rebuild-multirepo-integration.sh
 ```
 
-The script does not create or consume `uv.lock`.
+The script does not create or consume `uv.lock`. Its smoke test supplements,
+but does not replace, schema/Lean checks, strict coverage evidence, or live
+MariaDB integration tests.

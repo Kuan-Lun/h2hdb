@@ -2,29 +2,35 @@
 
 This directory specifies the proposed greenfield vNext database epoch. It does
 not describe, migrate, or silently replace the currently deployed schema.
-Production keeps using the legacy repositories until the explicit vNext admin
-operation and every recurring semantic validator are available.
+The explicit vNext admin operation and public database opener keep this epoch
+separate from legacy migration paths; the generated provider now resolves every
+recurring semantic validator and production writer binding.
 
 ## Current contract
 
 The generated contract currently contains:
 
-- 115 data-plane BCNF relations, including five executable overlay views;
-- 23 explicitly checked lossless and dependency-preserving decompositions;
-- 60 operational BCNF relations for fencing, staging, allocation, receipts,
-  maintenance, queues, activation, caches, and bounded cleanup;
-- 26 versioned semantic obligations: 12 data-plane and 14 operational; and
-- 3,944 typed bootstrap rows per backend, including 15 cleanup target kinds
+- 125 data-plane BCNF relations, including five executable overlay views;
+- 25 explicitly checked lossless and dependency-preserving decompositions;
+- 76 operational BCNF relations for fencing, downloader-to-ingest handoff,
+  staging, allocation, receipts, maintenance, queues, activation, caches, and
+  bounded cleanup;
+- 27 versioned semantic obligations: 12 data-plane and 15 operational; and
+- 3,985 typed bootstrap rows per backend, including the real deletion-request
+  generation-zero history/head and 15 cleanup target kinds
   expanded into 256 fixed shards each.
 
 There are no declared BCNF exceptions. The counts above are checked from the
 manifests rather than copied into the runtime provider by hand.
 
-The generated provider is intentionally fail-closed. It can expose and audit
-the generated data, but it cannot return a `SchemaEpochDefinition` while a
-recurring obligation lacks a trusted wheel-owned validator. The ordinary
-repository facade is not routed to vNext. Explicit `epoch-v2-*` admin commands
-exist so an eventual cutover cannot be confused with a legacy migration.
+The generated provider is intentionally fail-closed: it cannot return a
+`SchemaEpochDefinition` if a recurring obligation lacks a trusted wheel-owned
+validator or exact production writer binding. The wheel now binds all 25
+recurring obligations to closed families of real public repository methods.
+The two physical-domain bindings additionally install closed domain-guard tuples
+and distinguish caller-owned transactions from the schema-epoch runner. Explicit
+`epoch-v2-*` admin commands keep schema-epoch construction distinct from a
+legacy migration.
 
 ## Verification layers
 
@@ -83,6 +89,19 @@ bounded resumable state across arbitrary chunk boundaries. Final observation
 visibility occurs only after every component root, normalized-row congruence,
 metadata parse, and match receipt is complete.
 
+The persisted metadata-parser phase registry is closed and case-sensitive;
+runtime decoder aliases are never durable values. DIRECTORY, METADATA, and scan
+audit digests use fixed domain-separated frames and fixed FILE/TAG/METADATA/
+DIRECTORY ordering. They are diagnostic only and never authorize parser
+completion, observation reuse, membership, response-loss replay, or sealing.
+
+Source-build discovery persists the complete expected gallery membership from
+one provider-private typed spool through bounded checkpoint/receipt CAS. A
+separate bounded assembly evaluator exact-merges that membership with final
+gallery links and immutable observation statistics. Only its empty terminal
+receipt supplies the O(1) gallery/file/byte counters used to seal the build;
+discovery and manifest digests remain audit-only.
+
 SHA-256 collision freedom remains an explicit identity-model assumption. Exact
 preimage comparison reduces the operational risk but is not a mathematical
 proof that collisions cannot occur.
@@ -95,12 +114,49 @@ requests persist an exact bounded request preimage in chunks; the digest alone
 never authorizes response-loss replay. New commits, exact replay, and rejection
 are disjoint transitions.
 
-Canonical upload claims are keyed by `(generation, value_sha256)`. Sealing an
-identity retains the claim until the first retention-blocking external consumer
-is inserted in the same transaction that releases the claim. A phase-owned
-dictionary or type row alone does not qualify. This closes the
+Downloader coordination is independent of the ingest fence. A repository-
+issued 16-byte capability lives in normalized download owner/lease rows until
+either the live downloader hands it off or ingest takes over an expired lease;
+that transaction moves the capability into immutable handoff history and
+removes both mutable satellites. One handoff maps one-to-one to one ingest
+generation. Linked completion records its durable receipt, completes ingest,
+and advances the download completed head in one transaction, while periodic
+ingest is admitted only under quiescent download authority and never fabricates
+a download link. Retry compares the complete retained handoff, consumption,
+and completion tuples; no phase string or caller digest is authority.
+
+Canonical upload claims are keyed by `(generation, value_sha256)`. Both these
+claims and `source_build_generation` reference immutable `ingest_generation`
+history, not ephemeral owner rows. Their allocation and mutation transactions
+still lock and validate the exact current head, matching owner, unexpired
+lease, and maintenance authority; the FK is retention, never authorization.
+This lets a completed owner and lease be removed while residual cleanup
+authority remains.
+
+Sealing an identity retains the claim until the first retention-blocking
+external consumer is inserted in the same transaction that releases the claim.
+A phase-owned dictionary or type row alone does not qualify. This closes the
 seal-to-consumer GC window, including first source-root bootstrap. Completed or
 strictly superseded generations have an independent bounded claim sweep.
+
+Operational effects are built in a durable preparation-scoped stream while
+invisible. Begin inserts the stream, preparation, and initial checkpoints in
+one transaction, so a failed begin cannot leave an undiscoverable stream. Each
+bounded transaction writes a contiguous base-event range and
+exactly one typed subtype, advances the exact digest chain, and commits its
+receipt and checkpoint CAS together. After an empty terminal receipt, an
+immutable `(event_count, final_chain_sha256)` seal is written last; zero events
+use the registered empty-chain digest. Publication then performs only scalar
+checks—COMPLETE preparation, exact seal and policy, and current deletion
+generation—before atomically inserting activation with the source/catalog
+pointers. Readers and acknowledgement writers reach events through activation;
+ack heads are preparation-scoped and advance by bounded contiguous evidence.
+
+Activated COMPLETE preparation control rows may be compacted while the stream,
+seal, events, subtypes, activation, and acknowledgements outlive source
+storage. Unactivated COMPLETE work remains a publication/retry root. Only an
+ABANDONED preparation with no activation or acknowledgement authority can have
+its entire invisible stream removed child-first.
 
 Cleanup is a fixed 15-by-256 shard control plane. Each shard reuses one current
 job and latest completion generation; deterministic int63 identities prevent
@@ -116,16 +172,28 @@ claim safe pruning merely because a row appears inactive.
 
 ## Honest production boundary
 
-The closed-world coverage command currently exits nonzero while production
-vNext repository callsites, crash matrices, and SQLite/MariaDB end-to-end
-workflows are absent. That is the required result: generated hook names,
-caller-supplied booleans, sample queries, and manifest checks do not discharge a
-same-transaction writer obligation.
+The closed-world coverage command still exits nonzero, but production evidence
+is no longer absent. The index names exact vNext repository entrypoints, direct
+SQLite workflows, focused rollback and corruption tests, two live MariaDB
+workflows, and MariaDB SQL-shape recorders. Each recorder is explicitly only
+supporting evidence; it is never described as live MariaDB execution.
+
+The 25 installed writer bindings close runtime ownership for every declared
+repository family. Nine physical-boundary tests verify the exact production
+families and reject representative forged values before SQL or event derivation.
+They do not erase the remaining exhaustive fault and cross-backend gaps.
+
+The default generated provider now completes initialize, replay, read-only full
+check, readiness, and public open on fresh SQLite and live MariaDB, validating
+all 3,985 bootstrap rows. This closes the catalog and operational bootstrap
+runtime/integration claims, while their row-by-row corruption and partial-commit
+fault matrices remain explicit blockers.
 
 In particular, schema/Lean/TLC success does not by itself authorize `READY`.
-The runtime provider must remain unavailable until every recurring obligation
-has a bounded validator and every mutation path invokes its writer hook inside
-the committing transaction.
+The generated provider authorizes it only after its exact wheel-owned validators
+and all 25 production method families resolve and pass bounded checks. The
+strict evidence gate separately remains nonzero until its reported fault and
+integration blockers are discharged.
 
 FD completeness is also a domain-audit assumption. The checker and Lean can
 prove consequences of the declared FD set; they cannot infer an omitted real

@@ -166,7 +166,8 @@ def test_catalog_contract_is_valid_and_covers_vnext_workflows() -> None:
     assert set(long_value_contract.direct_payload_attributes) == {
         "metadata_fingerprint",
         "cursor",
-        "protection_token",
+        "start_cursor",
+        "next_cursor",
     }
     assert {"summary_sha256", "language_sha256", "artifact_locator_sha256"} <= set(
         long_value_contract.canonical_reference_attributes
@@ -232,7 +233,10 @@ def test_catalog_contract_is_valid_and_covers_vnext_workflows() -> None:
     member_plan = contract.artifact_member_plan_contract
     assert byte_producer is not None
     assert member_plan is not None
-    assert byte_producer.independent_parameters == ("max_image_short_side",)
+    assert byte_producer.independent_parameters == (
+        "max_image_short_side",
+        "producer_fingerprint_sha256",
+    )
     assert "DEFLATE compression level 9" in byte_producer.algorithm_bundle
     assert any(
         "exact producer fingerprint" in value
@@ -243,6 +247,7 @@ def test_catalog_contract_is_valid_and_covers_vnext_workflows() -> None:
         "policy_component_sha256",
         "artifact_algorithm_version",
         "max_image_short_side",
+        "producer_fingerprint_sha256",
     )
     assert member_plan.component_kind == "member_plan"
     assert "excluded_flag" in member_plan.entry_fields
@@ -280,8 +285,21 @@ def test_catalog_contract_is_valid_and_covers_vnext_workflows() -> None:
         "language_sha256",
         "published_at",
         "modified_at",
-        "redownload_required",
     } <= set(publication.attributes)
+    assert "redownload_required" not in publication.attributes
+    assert all(
+        "redownload_required" not in decomposition.universal_attributes
+        and all(
+            "redownload_required" not in dependency.determinant
+            and "redownload_required" not in dependency.dependent
+            for dependency in decomposition.functional_dependencies
+        )
+        and all(
+            "redownload_required" not in projection.attributes
+            for projection in decomposition.projections
+        )
+        for decomposition in contract.decompositions
+    )
     assert {"summary", "language"}.isdisjoint(publication.attributes)
     assert "source_title_sha256" not in publication.attributes
     assert (
@@ -410,6 +428,88 @@ def test_high_cardinality_canonical_codecs_require_bounded_streaming_paths() -> 
             checker.validate_contract(replace(contract, **{field_name: mutation}))
 
 
+def test_analysis_candidate_contract_is_one_closed_executable_v1_codec() -> None:
+    contract = checker.load_contract(CATALOG)
+    candidate = contract.analysis_candidate_contract
+    assert candidate is not None
+    mutations = (
+        replace(
+            candidate,
+            framing=candidate.framing.replace(
+                "u64be(download_time_int63)", "i64be(download_time)"
+            ),
+        ),
+        replace(
+            candidate,
+            ordering_rule=candidate.ordering_rule.replace("greatest", "least"),
+        ),
+        replace(
+            candidate,
+            already_uploaded_marker_rule=candidate.already_uploaded_marker_rule.replace(
+                "ASCII A-Z", "Unicode casefold"
+            ),
+        ),
+        replace(
+            candidate,
+            candidate_digest_framing=candidate.candidate_digest_framing.replace(
+                "raw16(analysis_id)", "u64be(gallery_id)"
+            ),
+        ),
+        replace(
+            candidate,
+            runtime_obligation=candidate.runtime_obligation.replace(
+                "validate_analysis_candidate_priority", "caller_priority_bytes"
+            ),
+        ),
+    )
+    for mutation in mutations:
+        with pytest.raises(
+            checker.ContractValidationError,
+            match="analysis candidate contract must equal the closed executable v1 codec",
+        ):
+            checker.validate_contract(
+                replace(contract, analysis_candidate_contract=mutation)
+            )
+
+
+def test_effective_content_contract_rejects_caller_authority_or_unsealed_handoff() -> (
+    None
+):
+    contract = checker.load_contract(CATALOG)
+    effective = contract.effective_content_contract
+    assert effective is not None
+    mutations = (
+        replace(
+            effective,
+            write_obligation=effective.write_obligation.replace(
+                "database-owned private typed EffectiveContentPreparation",
+                "caller-supplied digest receipt",
+            ),
+        ),
+        replace(
+            effective,
+            write_obligation=effective.write_obligation.replace(
+                "then deletes that claim", "leaves that claim reusable"
+            ),
+        ),
+        replace(
+            effective,
+            write_obligation=effective.write_obligation.replace(
+                "outside every canonical page transaction",
+                "inside one unbounded transaction",
+            ),
+        ),
+    )
+    for mutation in mutations:
+        with pytest.raises(
+            checker.ContractValidationError,
+            match="effective content contract must state exact preimage",
+        ):
+            checker.validate_contract(
+                replace(contract, effective_content_contract=mutation)
+            )
+
+
 def test_long_value_boundary_rejects_direct_payload_key_promotion() -> None:
     contract = checker.load_contract(CATALOG)
     metadata = next(
@@ -493,6 +593,204 @@ def test_publication_locator_requires_bounded_exact_streaming_codec() -> None:
             match="omits a required READY/CAS validation obligation",
         ):
             checker.validate_contract(invalid)
+
+
+def test_catalog_child_count_is_not_publication_count_authority() -> None:
+    contract = checker.load_contract(CATALOG)
+    publication = contract.publication_atomic_contract
+    assert publication is not None
+    validation_stage = next(
+        stage
+        for stage in publication.batch_stages
+        if stage.name == "VALIDATE_CATALOG_PROJECTION"
+    )
+    assert validation_stage.sealed_scalar == "NONE"
+    assert "publication_count only from terminal VALIDATE_SELECTION" in (
+        publication.projection_seal_rule
+    )
+
+    drifted_stage = replace(
+        validation_stage,
+        sealed_scalar="publication_count_crosscheck",
+    )
+    invalid_registry = replace(
+        contract,
+        publication_atomic_contract=replace(
+            publication,
+            batch_stages=tuple(
+                drifted_stage if stage is validation_stage else stage
+                for stage in publication.batch_stages
+            ),
+        ),
+    )
+    with pytest.raises(
+        checker.ContractValidationError,
+        match="stage/order/codec/prerequisite registry drifts",
+    ):
+        checker.validate_contract(invalid_registry)
+
+    invalid_rule = replace(
+        contract,
+        publication_atomic_contract=replace(
+            publication,
+            projection_seal_rule=(
+                publication.projection_seal_rule
+                + "; VALIDATE_CATALOG_PROJECTION processed_count equals "
+                "VALIDATE_SELECTION processed_count"
+            ),
+        ),
+    )
+    with pytest.raises(
+        checker.ContractValidationError,
+        match="must not equate catalog-child count with publication count",
+    ):
+        checker.validate_contract(invalid_rule)
+
+
+def test_publication_receipt_requires_authoritative_count_seal() -> None:
+    contract = checker.load_contract(CATALOG)
+    receipt = next(
+        relation
+        for relation in contract.relations
+        if relation.name == "publication_receipt"
+    )
+    invalid_receipt = replace(
+        receipt,
+        attributes=tuple(
+            attribute
+            for attribute in receipt.attributes
+            if attribute != "publication_count"
+        ),
+        functional_dependencies=tuple(
+            replace(
+                fd,
+                dependent=frozenset(
+                    attribute
+                    for attribute in fd.dependent
+                    if attribute != "publication_count"
+                ),
+            )
+            for fd in receipt.functional_dependencies
+        ),
+    )
+    invalid = replace(
+        contract,
+        relations=tuple(
+            invalid_receipt if relation is receipt else relation
+            for relation in contract.relations
+        ),
+    )
+
+    with pytest.raises(
+        checker.ContractValidationError,
+        match=r"requires an O\(1\) authoritative publication_count",
+    ):
+        checker.validate_contract(invalid)
+
+
+def test_analysis_snapshot_manifest_digest_is_deliberately_nonunique() -> None:
+    contract = checker.load_contract(CATALOG)
+    binding = next(
+        relation
+        for relation in contract.relations
+        if relation.name == "analysis_snapshot_manifest"
+    )
+    invalid_binding = replace(
+        binding,
+        declared_keys=(
+            *binding.declared_keys,
+            frozenset({"snapshot_manifest_sha256"}),
+        ),
+    )
+    invalid = replace(
+        contract,
+        relations=tuple(
+            invalid_binding if relation is binding else relation
+            for relation in contract.relations
+        ),
+    )
+    with pytest.raises(
+        checker.ContractValidationError,
+        match="analysis output binding must be one-way BCNF authority",
+    ):
+        checker.validate_contract(invalid)
+
+
+@pytest.mark.parametrize(
+    ("relation_name", "removed_attribute", "error_match"),
+    (
+        (
+            "publication_candidate_projection_seal",
+            "new_galleries",
+            "projection seal lacks exact digest-free BCNF shape",
+        ),
+        (
+            "publication_checkpoint",
+            "processed_count",
+            "checkpoint lacks processed-count terminal authority",
+        ),
+        (
+            "publication_batch_receipt",
+            "start_processed_count",
+            "batch receipt lacks exact replay response authority",
+        ),
+    ),
+)
+def test_publication_projection_authority_shapes_fail_closed(
+    relation_name: str,
+    removed_attribute: str,
+    error_match: str,
+) -> None:
+    contract = checker.load_contract(CATALOG)
+    relation = next(
+        value for value in contract.relations if value.name == relation_name
+    )
+    invalid_relation = replace(
+        relation,
+        attributes=tuple(
+            attribute
+            for attribute in relation.attributes
+            if attribute != removed_attribute
+        ),
+        functional_dependencies=tuple(
+            replace(
+                dependency,
+                dependent=frozenset(
+                    attribute
+                    for attribute in dependency.dependent
+                    if attribute != removed_attribute
+                ),
+            )
+            for dependency in relation.functional_dependencies
+        ),
+    )
+    invalid = replace(
+        contract,
+        relations=tuple(
+            invalid_relation if value is relation else value
+            for value in contract.relations
+        ),
+    )
+    with pytest.raises(checker.ContractValidationError, match=error_match):
+        checker.validate_contract(invalid)
+
+
+def test_publication_requires_bcnf_contiguous_order_projection() -> None:
+    contract = checker.load_contract(CATALOG)
+    invalid = replace(
+        contract,
+        relations=tuple(
+            relation
+            for relation in contract.relations
+            if relation.name != "catalog_publication_order"
+        ),
+    )
+
+    with pytest.raises(
+        checker.ContractValidationError,
+        match="requires a BCNF catalog_publication_order projection",
+    ):
+        checker.validate_contract(invalid)
 
 
 @pytest.mark.parametrize(
@@ -646,6 +944,32 @@ def test_relation_rejects_duplicate_attributes_before_set_reasoning() -> None:
     )
 
     with pytest.raises(checker.ContractValidationError, match="duplicate attributes"):
+        checker.validate_contract(invalid)
+
+
+def test_catalog_publication_rejects_mutable_redownload_state() -> None:
+    contract = checker.load_contract(CATALOG)
+    publication = next(
+        relation
+        for relation in contract.relations
+        if relation.name == "catalog_publication"
+    )
+    invalid_publication = replace(
+        publication,
+        attributes=(*publication.attributes, "redownload_required"),
+    )
+    invalid = replace(
+        contract,
+        relations=tuple(
+            invalid_publication if relation is publication else relation
+            for relation in contract.relations
+        ),
+    )
+
+    with pytest.raises(
+        checker.ContractValidationError,
+        match="must exclude mutable redownload queue state",
+    ):
         checker.validate_contract(invalid)
 
 
@@ -1003,19 +1327,19 @@ def test_artifact_delta_contract_rejects_wrong_truth_table() -> None:
         checker.validate_contract(invalid)
 
 
-def test_artifact_name_only_change_is_receipted_unchanged_not_rebuild() -> None:
+def test_artifact_name_is_normalized_identity_not_delta_state() -> None:
     contract = checker.load_contract(CATALOG)
     delta = contract.artifact_delta_contract
     assert delta is not None
     assert "artifact_semantics_sha256 is exactly equal" in delta.unchanged_rule
-    assert "artifact_name differs" in delta.unchanged_rule
-    assert "never prepare/rebuild bytes" in delta.rename_rule
-    assert "removal of the old managed projection path" in delta.rename_rule
-    assert "creation of the new managed projection path" in delta.rename_rule
+    assert "artifact names are not delta state" in delta.unchanged_rule
+    assert "globally derived from immutable positive GID" in delta.rename_rule
+    assert "absent from artifact input, delta, operation, prepared" in delta.rename_rule
+    assert "never an artifact rename" in delta.rename_rule
 
     with pytest.raises(
         checker.ContractValidationError,
-        match="rename-only projection rule is incomplete",
+        match="name-normalization rule is incomplete",
     ):
         checker.validate_contract(
             replace(
@@ -1026,6 +1350,52 @@ def test_artifact_name_only_change_is_receipted_unchanged_not_rebuild() -> None:
                 ),
             )
         )
+
+
+@pytest.mark.parametrize(
+    ("contract_attribute", "field", "replacement", "message"),
+    (
+        (
+            "artifact_name_contract",
+            "golden_name_hex",
+            "6832682d30372e63627a",
+            "artifact name contract drifts",
+        ),
+        (
+            "artifact_locator_contract",
+            "golden_payload_hex",
+            "00",
+            "artifact locator golden payload is not SHA-derived",
+        ),
+        (
+            "artifact_protection_token_contract",
+            "golden_receipt_id",
+            "00" * 16,
+            "artifact storage-receipt golden does not hash",
+        ),
+    ),
+)
+def test_artifact_derived_identity_contract_rejects_corrupt_goldens(
+    contract_attribute: str,
+    field: str,
+    replacement: object,
+    message: str,
+) -> None:
+    contract = checker.load_contract(CATALOG)
+    identity_contract = getattr(contract, contract_attribute)
+    assert identity_contract is not None
+    invalid = replace(
+        contract,
+        **{
+            contract_attribute: replace(
+                identity_contract,
+                **{field: replacement},
+            )
+        },
+    )
+
+    with pytest.raises(checker.ContractValidationError, match=message):
+        checker.validate_contract(invalid)
 
 
 def test_transition_gates_reject_audit_digest_authority() -> None:

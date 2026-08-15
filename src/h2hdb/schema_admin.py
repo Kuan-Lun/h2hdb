@@ -21,6 +21,8 @@ from .schema_epoch import (
     SchemaEpochValidationError,
     run_mariadb_schema_epoch,
     run_sqlite_schema_epoch,
+    validate_mariadb_schema_epoch,
+    validate_sqlite_schema_epoch,
 )
 from .sql_connector import SQLConnector
 
@@ -57,8 +59,9 @@ class VNextSchemaAdmin:
 
         resolved, definition = self._resolve_provider(provider)
         with self._context.SQLConnector() as connector:
-            self._readiness_with_connector(connector, definition)
-            return self._run(connector, resolved)
+            with connector.read_transaction():
+                self._readiness_with_connector(connector, definition)
+                return self._validate_ready(connector, resolved)
 
     def check_readiness(
         self, provider: SchemaEpochProvider | None = None
@@ -73,7 +76,8 @@ class VNextSchemaAdmin:
 
         _, definition = self._resolve_provider(provider)
         with self._context.SQLConnector() as connector:
-            return self._readiness_with_connector(connector, definition)
+            with connector.read_transaction():
+                return self._readiness_with_connector(connector, definition)
 
     def _resolve_provider(
         self, provider: SchemaEpochProvider | None
@@ -104,6 +108,17 @@ class VNextSchemaAdmin:
             return run_sqlite_schema_epoch(connector, provider)
         if self._context.sql_type == "mariadb":
             return run_mariadb_schema_epoch(connector, provider)
+        raise ValueError(f"Unsupported SQL type: {self._context.sql_type!r}")
+
+    def _validate_ready(
+        self,
+        connector: SQLConnector,
+        provider: SchemaEpochProvider,
+    ) -> SchemaEpochReport:
+        if self._context.sql_type == "sqlite":
+            return validate_sqlite_schema_epoch(connector, provider)
+        if self._context.sql_type == "mariadb":
+            return validate_mariadb_schema_epoch(connector, provider)
         raise ValueError(f"Unsupported SQL type: {self._context.sql_type!r}")
 
     @staticmethod

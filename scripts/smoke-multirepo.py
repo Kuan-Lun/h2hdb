@@ -1,180 +1,112 @@
 #!/usr/bin/env python3
-"""Exercise all editable packages through one temporary SQLite vertical slice."""
+"""Exercise the greenfield epoch and public consumers in one SQLite slice."""
 
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import tempfile
 from pathlib import Path
 
 import h2h_galleryinfo_parser
 import h2hdb_downloader
+import h2hdb_ingest
+import h2hdb_komga
 import hbrowser
 from fastapi import FastAPI
-from h2hdb_ingest import (
-    CBZReconciler,
-    DeduplicationPolicy,
-    FilesystemScanner,
-    LegacyIngestService,
-)
-from h2hdb_komga.metadata import publication_to_komga_metadata
 from h2hdb_opds import OPDSConfig, create_app
 from httpx import ASGITransport, AsyncClient
-from PIL import Image
 
-from h2hdb import H2HDB, CoreConfig, DatabaseConfig, open_database
-
-
-def _write_gallery(root: Path) -> None:
-    folder = root / "Integration Gallery [101]"
-    folder.mkdir(parents=True)
-    (folder / "galleryinfo.txt").write_text(
-        "\n".join(
-            (
-                "Title: Integration Gallery",
-                "Upload Time: 2026-08-07 10:00",
-                "Uploaded By: integration-user",
-                "Downloaded: 2026-08-07 11:00",
-                "Tags: artist:Example Artist, language:english",
-                "Uploader's Comments:",
-                "Cross-repository SQLite smoke test",
-                "Downloaded from E-Hentai Galleries by the Hentai@Home "
-                "Downloader <3",
-            )
-        ),
-        encoding="utf-8",
-    )
-    Image.new("RGB", (32, 24), (20, 40, 60)).save(folder / "001.png")
+from h2hdb import (
+    CatalogRevisionNotFoundError,
+    CoreConfig,
+    DatabaseAccessMode,
+    DatabaseConfig,
+    VNextDatabaseAdminFacade,
+    VNextDownloadQueueFacade,
+    open_database,
+)
 
 
-async def _exercise_opds_http(application: FastAPI, expected_content: bytes) -> None:
+async def _exercise_empty_opds(application: FastAPI) -> None:
     transport = ASGITransport(app=application)
     async with AsyncClient(
         transport=transport,
         base_url="http://integration.test",
     ) as client:
-        navigation = await client.get("/opds/v2?revision=1")
-        assert navigation.status_code == 200
-        feed = await client.get("/opds/v2/publications?revision=1")
-        assert feed.status_code == 200
-        assert feed.json()["publications"][0]["metadata"]["title"] == (
-            "Integration Gallery"
-        )
-        acquisition = await client.get(
-            "/opds/v2/acquisitions/urn:h2h:artifact:cbz:101?revision=1"
-        )
-        assert acquisition.status_code == 200
-        assert acquisition.content == expected_content
-        assert (
-            "Integration%20Gallery%20%5B101%5D.cbz"
-            in acquisition.headers["content-disposition"]
-        )
+        health = await client.get("/health")
+        assert health.status_code == 200
+        feed = await client.get("/opds/v2/publications")
+        assert feed.status_code == 404
+        assert feed.json() == {"detail": "Catalog revision current not found"}
+
+
+def _assert_no_legacy_migration_ledger(database_path: Path) -> None:
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'h2hdb_schema_migrations'"
+        ).fetchone()
+    assert row is None
 
 
 def main() -> None:
     with tempfile.TemporaryDirectory(prefix="h2hdb-multirepo-") as temporary:
-        # macOS exposes /var through the /private/var symlink. Canonicalize the
-        # shared root once so OPDS containment checks and catalog artifact
-        # locations compare the same path representation.
         root = Path(temporary).resolve()
-        gallery_root = root / "galleries"
-        _write_gallery(gallery_root)
-        config = CoreConfig(
+        database_path = root / "catalog.sqlite3"
+        writer_config = CoreConfig(
             database=DatabaseConfig(
                 sql_type="sqlite",
-                database=str(root / "catalog.sqlite3"),
+                database=str(database_path),
             )
         )
-        database = H2HDB(config)
-        database.migrate()
 
-        service = LegacyIngestService(
-            scanner=FilesystemScanner(gallery_root, hash_workers=1),
-            deduplication=DeduplicationPolicy(),
-            cbz=CBZReconciler(
-                artifact_store_path=root / "artifacts",
-                cbz_path=root / "komga",
-                max_image_short_side=16,
-            ),
-            catalog_reader=database,
-            catalog_publisher=database,
-            database_admin=database,
-        )
-        turn = database.claim_gallery_ingest(
-            lease_seconds=60,
-            periodic_scan=True,
-        )
-        assert turn is not None
-        outcome = service.synchronize_once(turn)
-        assert database.complete_gallery_ingest(turn)
-        assert outcome.revision == 1
-        assert outcome.new == 1
+        admin = VNextDatabaseAdminFacade(writer_config)
+        initialized = admin.initialize()
+        assert initialized.state == "READY"
+        replayed = admin.initialize()
+        checked = admin.check()
+        assert replayed.state == checked.state == "READY"
+        assert replayed.manifest_sha256 == initialized.manifest_sha256
+        assert checked.manifest_sha256 == initialized.manifest_sha256
+        readiness = admin.check_readiness()
+        assert readiness.state == "READY"
+        _assert_no_legacy_migration_ledger(database_path)
+
+        queue = VNextDownloadQueueFacade(writer_config, clock=lambda: 1)
+        request = queue.request_download(101, "https://example.invalid/g/101")
+        assert queue.get_download_request(101) == request
+        assert queue.list_download_requests() == (request,)
+        assert queue.complete_download_request(request)
+        assert queue.list_download_requests() == ()
 
         opds_config = OPDSConfig(
-            core=config,
+            core=writer_config,
             artifact_root=root / "artifacts",
             public_base_url="http://integration.test",
         )
-        assert opds_config.core.database.access_mode.value == "read-only"
+        assert opds_config.core.database.access_mode is DatabaseAccessMode.read_only
         reader = open_database(opds_config.core)
-        publication = reader.get_publication("urn:h2h:gallery:101")
-        assert publication is not None
-        assert publication.artifacts[0].name == "Integration Gallery [101].cbz"
-        assert (
-            publication.artifacts[0].location.parent == (root / "artifacts").resolve()
-        )
+        try:
+            reader.get_catalog_revision()
+        except CatalogRevisionNotFoundError:
+            pass
+        else:
+            raise AssertionError("fresh catalog unexpectedly has a current revision")
 
-        Image.new("RGB", (32, 24), (60, 40, 20)).save(
-            gallery_root / "Integration Gallery [101]" / "001.png"
-        )
-        next_turn = database.claim_gallery_ingest(
-            lease_seconds=60,
-            periodic_scan=True,
-        )
-        assert next_turn is not None
-        next_outcome = service.synchronize_once(next_turn)
-        assert database.complete_gallery_ingest(next_turn)
-        assert next_outcome.revision == 2
-        assert next_outcome.changed == 1
+        asyncio.run(_exercise_empty_opds(create_app(opds_config, catalog=reader)))
 
-        current_publication = reader.get_publication("urn:h2h:gallery:101")
-        assert current_publication is not None
-        assert current_publication.artifacts[0].location != (
-            publication.artifacts[0].location
-        )
-        assert publication.artifacts[0].location.is_file()
-        assert current_publication.artifacts[0].location.is_file()
-        current_cbz = root / "komga" / "Integration Gallery [101].cbz"
-        assert list((root / "komga").rglob("*.cbz")) == [current_cbz]
-        assert current_cbz.read_bytes() == (
-            current_publication.artifacts[0].location.read_bytes()
-        )
-
-        metadata = publication_to_komga_metadata(current_publication)
-        assert metadata["title"] == current_publication.title
-        assert any(author["role"] == "gid" for author in metadata["authors"])
-
-        application = create_app(opds_config, catalog=reader)
-        openapi_paths = application.openapi()["paths"]
-        assert "/opds/v2" in openapi_paths
-        assert set(openapi_paths["/opds/v2/acquisitions/{artifact_id}"]) == {
-            "get",
-            "head",
-        }
-        asyncio.run(
-            _exercise_opds_http(
-                application,
-                publication.artifacts[0].location.read_bytes(),
-            )
-        )
-
-        # Imports above ensure the remaining independently installed packages
-        # resolve in the exact same environment as the exercised vertical slice.
+        # Imports prove that the independently installed consumers resolve the
+        # same public core package. Full ingest is deliberately not simulated:
+        # its concrete storage adapter and vNext orchestration remain a consumer
+        # integration boundary documented by h2hdb.
         assert h2h_galleryinfo_parser is not None
         assert h2hdb_downloader is not None
+        assert h2hdb_ingest is not None
+        assert h2hdb_komga is not None
         assert hbrowser is not None
 
-    print("multi-repo SQLite public-API vertical slice: ok")
+    print("multi-repo greenfield epoch and public-consumer smoke: ok")
 
 
 if __name__ == "__main__":

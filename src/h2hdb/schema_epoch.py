@@ -44,6 +44,8 @@ __all__ = [
     "SQLiteSchemaEpochCatalog",
     "run_mariadb_schema_epoch",
     "run_sqlite_schema_epoch",
+    "validate_mariadb_schema_epoch",
+    "validate_sqlite_schema_epoch",
 ]
 
 import re
@@ -404,6 +406,10 @@ class _ReadOnlySemanticConnector(SQLConnector):
         del query, data
         self._reject_mutation("execute")
 
+    def execute_affected(self, query: str, data: tuple[Any, ...] = ()) -> int:
+        del query, data
+        self._reject_mutation("execute_affected")
+
     def execute_many(self, query: str, data: list[tuple[Any, ...]]) -> None:
         del query, data
         self._reject_mutation("execute_many")
@@ -435,7 +441,7 @@ class _ReadOnlySemanticConnector(SQLConnector):
             )
 
     @staticmethod
-    def _reject_mutation(operation: str) -> None:
+    def _reject_mutation(operation: str) -> NoReturn:
         raise SchemaEpochValidationError(
             "Semantic validators are read-only; "
             f"connector operation {operation!r} is forbidden"
@@ -915,7 +921,7 @@ class SchemaEpochRunner:
     def __init__(
         self,
         *,
-        gate: SchemaEpochGate,
+        gate: SchemaEpochGate | None,
         catalog: SchemaEpochCatalog,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
@@ -931,6 +937,11 @@ class SchemaEpochRunner:
         # validated by SchemaEpochDefinition before touching the database.
         manifest_sha256 = definition.manifest_sha256
         allowed_objects = definition.expected_objects | {self._catalog.control_object}
+
+        if self._gate is None:
+            raise SchemaEpochGateError(
+                "Schema construction requires an exclusive backend gate"
+            )
 
         with self._gate.acquire(connector):
             existing_objects = self._catalog.list_objects(connector)
@@ -1049,6 +1060,58 @@ class SchemaEpochRunner:
                 resumed_build=resumed_build,
                 transitioned_to_ready=True,
             )
+
+    def validate_ready(
+        self,
+        connector: SQLConnector,
+        provider: SchemaEpochProvider,
+    ) -> SchemaEpochReport:
+        """Fully validate an existing READY epoch without acquiring a write gate.
+
+        The caller owns a stable read transaction.  This path never creates,
+        seeds, resumes, or transitions schema state, so SQLite read-only
+        consumers do not need ``BEGIN IMMEDIATE`` and MariaDB consumers do not
+        need the advisory construction lock.
+        """
+
+        definition = provider.definition
+        manifest_sha256 = definition.manifest_sha256
+        allowed_objects = definition.expected_objects | {self._catalog.control_object}
+        existing_objects = self._catalog.list_objects(connector)
+        if self._catalog.control_object not in existing_objects:
+            raise SchemaEpochAdmissionError(
+                "Schema epoch 2 is not initialized: its control table is missing"
+            )
+        self._catalog.validate_control_table(connector)
+        self._assert_admissible_objects(connector, allowed_objects)
+        state = self._read_and_validate_control(
+            connector,
+            definition,
+            manifest_sha256,
+        )
+        if state != "READY":
+            raise SchemaEpochAdmissionError(
+                f"Schema epoch 2 is not READY (state={state!r})"
+            )
+        obligation_ids = self._validate_ready_schema(
+            connector,
+            provider,
+            definition,
+            validate_genesis=False,
+            semantic_phase=SchemaSemanticValidationPhase.READY,
+        )
+        return SchemaEpochReport(
+            epoch=definition.epoch,
+            schema_version=definition.schema_version,
+            state="READY",
+            manifest_sha256=manifest_sha256,
+            bootstrap_seed_ids=tuple(
+                seed.seed_id for seed in definition.bootstrap_seeds
+            ),
+            semantic_obligation_ids=obligation_ids,
+            resumed_build=True,
+            transitioned_to_ready=False,
+        )
 
     def _insert_building_control(
         self,
@@ -1208,6 +1271,19 @@ def run_sqlite_schema_epoch(
     return runner.run(connector, provider)
 
 
+def validate_sqlite_schema_epoch(
+    connector: SQLConnector,
+    provider: SchemaEpochProvider,
+) -> SchemaEpochReport:
+    """Read-only full validation of one existing SQLite READY epoch."""
+
+    runner = SchemaEpochRunner(
+        gate=None,
+        catalog=SQLiteSchemaEpochCatalog(),
+    )
+    return runner.validate_ready(connector, provider)
+
+
 def run_mariadb_schema_epoch(
     connector: SQLConnector,
     provider: SchemaEpochProvider,
@@ -1232,6 +1308,19 @@ def run_mariadb_schema_epoch(
         clock=clock,
     )
     return runner.run(connector, provider)
+
+
+def validate_mariadb_schema_epoch(
+    connector: SQLConnector,
+    provider: SchemaEpochProvider,
+) -> SchemaEpochReport:
+    """Read-only full validation of one existing MariaDB READY epoch."""
+
+    runner = SchemaEpochRunner(
+        gate=None,
+        catalog=MariaDBSchemaEpochCatalog(),
+    )
+    return runner.validate_ready(connector, provider)
 
 
 def mariadb_schema_epoch_gate_name(database_name: str) -> str:

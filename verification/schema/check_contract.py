@@ -158,6 +158,9 @@ class AnalysisCandidateContract:
     stable_tie_break_attributes: tuple[str, ...]
     encoding_version: int
     framing: str
+    ordering_rule: str
+    already_uploaded_marker_rule: str
+    candidate_digest_framing: str
     runtime_obligation: str
 
 
@@ -198,6 +201,7 @@ class EffectiveContentContract:
 @dataclass(frozen=True)
 class SourceSnapshotManifestContract:
     relation: str
+    analysis_binding_relation: str
     digest_attribute: str
     canonical_value_relation: str
     canonical_digest_attribute: str
@@ -207,6 +211,8 @@ class SourceSnapshotManifestContract:
     canonical_order: str
     decision_predicate: str
     write_obligation: str
+    handoff_obligation: str
+    publication_obligation: str
     retention: str
 
 
@@ -294,6 +300,15 @@ class TitleSortContract:
 
 
 @dataclass(frozen=True)
+class PublicationBatchStage:
+    name: str
+    stage_order: int
+    cursor_codec: str
+    prerequisite: str
+    sealed_scalar: str
+
+
+@dataclass(frozen=True)
 class PublicationAtomicContract:
     candidate_relation: str
     selection_relation: str
@@ -301,8 +316,20 @@ class PublicationAtomicContract:
     artifact_component_relation: str
     operation_relation: str
     prepared_artifact_relation: str
+    stage_relation: str
+    projection_seal_relation: str
+    checkpoint_relation: str
+    batch_receipt_relation: str
+    source_manifest_binding_relation: str
     revision_relation: str
     head_relation: str
+    finalization_stage: str
+    selection_rule: str
+    cursor_codec_rule: str
+    batch_rule: str
+    projection_seal_rule: str
+    batch_stages: tuple[PublicationBatchStage, ...]
+    finalization_rule: str
     runtime_obligation: str
 
 
@@ -356,8 +383,54 @@ class TransitionAuthorityContract:
 class ArtifactByteProducerContract:
     policy_relation: str
     algorithm_attribute: str
+    producer_relation: str
+    zip_writer_policy_relation: str
+    storage_codec_relation: str
     independent_parameters: tuple[str, ...]
     algorithm_bundle: tuple[str, ...]
+    producer_fingerprint_framing: str
+    producer_fingerprint_golden_payload_hex: str
+    producer_fingerprint_golden_sha256: str
+    runtime_obligation: str
+
+
+@dataclass(frozen=True)
+class ArtifactNameContract:
+    relation: str
+    gid_attribute: str
+    name_attribute: str
+    codec_version: int
+    framing: str
+    golden_gid: int
+    golden_name_hex: str
+    runtime_obligation: str
+
+
+@dataclass(frozen=True)
+class ArtifactLocatorContract:
+    relation: str
+    artifact_attribute: str
+    locator_attribute: str
+    storage_codec_version: int
+    locator_codec_version: int
+    components: tuple[str, ...]
+    derivation: str
+    golden_artifact_sha256: str
+    golden_payload_hex: str
+    golden_locator_sha256: str
+    runtime_obligation: str
+
+
+@dataclass(frozen=True)
+class ArtifactProtectionTokenContract:
+    relation: str
+    storage_codec_relation: str
+    codec_version: int
+    exact_bytes: int
+    receipt_framing: str
+    token_framing: str
+    golden_receipt_id: str
+    golden_token_hex: str
     runtime_obligation: str
 
 
@@ -418,10 +491,16 @@ class ZipCommentContract:
 
 @dataclass(frozen=True)
 class QueueHistoryContract:
+    deletion_generation_relation: str
+    deletion_generation_head_relation: str
     deletion_attempt_relation: str
     deletion_head_relation: str
     deletion_url_relation: str
     consumption_relation: str
+    preparation_relation: str
+    generation_rule: str
+    publication_rule: str
+    retention_rule: str
     rule: str
 
 
@@ -445,14 +524,27 @@ class CanonicalHashCacheContract:
 
 @dataclass(frozen=True)
 class OperationalEventIntegrityContract:
+    stream_relation: str
+    preparation_relation: str
+    seal_relation: str
+    activation_relation: str
+    candidate_binding_relation: str
     base_relation: str
     removed_subtype_relation: str
     deletion_subtype_relation: str
     removed_event_type: str
     deletion_event_type: str
+    event_digest_codec: str
+    chain_codec: str
+    empty_chain_sha256: str
+    stream_rule: str
     subtype_rule: str
+    seal_rule: str
+    activation_rule: str
+    candidate_binding_rule: str
     ack_head_relation: str
     ack_rule: str
+    cleanup_rule: str
 
 
 @dataclass(frozen=True)
@@ -472,6 +564,7 @@ class CleanupAttemptContract:
 class PreparationIdentityContract:
     preparation_relation: str
     policy_relation: str
+    deletion_generation_relation: str
     natural_key: tuple[str, ...]
     rule: str
 
@@ -482,6 +575,13 @@ class AnalysisStateComponent:
     shadow_relation: str
     tombstone_relation: str
     resolved_relation: str
+
+
+@dataclass(frozen=True)
+class AnalysisBatchStage:
+    name: str
+    stage_order: int
+    cursor_codec: str
 
 
 @dataclass(frozen=True)
@@ -507,6 +607,12 @@ class AnalysisResolutionContract:
     compaction_ancestry: str
     cleanup_guard: str
     cleanup_transition: str
+    stage_relation: str
+    checkpoint_relation: str
+    batch_receipt_relation: str
+    cursor_codec_rule: str
+    batch_rule: str
+    batch_stages: tuple[AnalysisBatchStage, ...]
 
 
 @dataclass(frozen=True)
@@ -659,6 +765,9 @@ class Contract:
     zip_comment_contract: ZipCommentContract | None = None
     source_root_contract: SourceRootContract | None = None
     gallery_observation_page_contract: GalleryObservationPageContract | None = None
+    artifact_name_contract: ArtifactNameContract | None = None
+    artifact_locator_contract: ArtifactLocatorContract | None = None
+    artifact_protection_token_contract: ArtifactProtectionTokenContract | None = None
 
 
 @dataclass(frozen=True)
@@ -689,6 +798,11 @@ class ContractValidationError(ContractError):
     def __init__(self, errors: Sequence[str]) -> None:
         self.errors = tuple(errors)
         super().__init__("schema contract validation failed:\n- " + "\n- ".join(errors))
+
+
+_FILESYSTEM_HASH_CACHE_DIGEST_DOMAINS = frozenset(
+    {"filesystem_source_identity_v1", "filesystem_fingerprint_v1"}
+)
 
 
 def attribute_closure(
@@ -932,6 +1046,21 @@ def load_contract(path: str | Path) -> Contract:
             "artifact_semantics_codec",
             _parse_artifact_semantics_codec,
         )
+        artifact_name_contract = _parse_optional_contract_table(
+            document,
+            "artifact_name_contract",
+            _parse_artifact_name_contract,
+        )
+        artifact_locator_contract = _parse_optional_contract_table(
+            document,
+            "artifact_locator_contract",
+            _parse_artifact_locator_contract,
+        )
+        artifact_protection_token_contract = _parse_optional_contract_table(
+            document,
+            "artifact_protection_token_contract",
+            _parse_artifact_protection_token_contract,
+        )
         zip_comment_contract = _parse_optional_contract_table(
             document,
             "zip_comment_contract",
@@ -1111,6 +1240,9 @@ def load_contract(path: str | Path) -> Contract:
         zip_comment_contract,
         source_root_contract,
         gallery_observation_page_contract,
+        artifact_name_contract,
+        artifact_locator_contract,
+        artifact_protection_token_contract,
     )
 
 
@@ -1258,6 +1390,9 @@ def validate_contract(contract: Contract) -> ValidationReport:
         )
     if contract.scope == "catalog_data_plane":
         errors.extend(_validate_artifact_codecs(contract))
+        errors.extend(
+            _validate_artifact_derived_identity_contracts(contract, relation_by_name)
+        )
     if contract.analysis_resolution_contract is not None:
         errors.extend(
             _validate_analysis_resolution_contract(
@@ -1299,6 +1434,252 @@ def validate_contract(contract: Contract) -> ValidationReport:
     return ValidationReport(
         tuple(reports), tuple(lossless), tuple(dependency_preserving)
     )
+
+
+def validate_cross_manifest_contracts(
+    catalog: Contract,
+    operational: Contract,
+) -> None:
+    """Bind every operational external authority to its catalog-owned shape."""
+
+    errors: list[str] = []
+    if catalog.scope != "catalog_data_plane":
+        errors.append("cross-manifest catalog contract has the wrong scope")
+    if operational.scope != "operational_control_plane":
+        errors.append("cross-manifest operational contract has the wrong scope")
+
+    hash_cache = operational.canonical_hash_cache_contract
+    if hash_cache is None:
+        errors.append(
+            "cross-manifest operational contract lacks canonical_hash_cache_contract"
+        )
+    else:
+        operational_domains = frozenset(
+            {hash_cache.source_domain, hash_cache.fingerprint_domain}
+        )
+        if operational_domains != _FILESYSTEM_HASH_CACHE_DIGEST_DOMAINS:
+            errors.append(
+                "operational canonical hash-cache domains must be exactly "
+                "filesystem_source_identity_v1 and filesystem_fingerprint_v1"
+            )
+
+    seeded_domains = frozenset(
+        seed.values[0]
+        for seed in catalog.bootstrap_seeds
+        if seed.relation == "canonical_digest_policy"
+        and seed.columns == ("digest_domain",)
+        and len(seed.values) == 1
+    )
+    missing_domains = _FILESYSTEM_HASH_CACHE_DIGEST_DOMAINS - seeded_domains
+    if missing_domains:
+        errors.append(
+            "catalog canonical_digest_policy bootstrap does not register the "
+            "operational hash-cache domains " + _format_set(missing_domains)
+        )
+
+    catalog_relations = {relation.name: relation for relation in catalog.relations}
+    operational_relations = {
+        relation.name: relation for relation in operational.relations
+    }
+    operational_externals = {
+        relation.name: relation for relation in operational.external_relations
+    }
+
+    expected_catalog_shapes = {
+        "source_build_expected_gallery": (
+            ("build_id", "position", "gallery_id"),
+            {
+                frozenset({"build_id", "position"}),
+                frozenset({"build_id", "gallery_id"}),
+            },
+        ),
+        "gallery_observation_stat": (
+            ("gallery_id", "observation_id", "file_count", "byte_count"),
+            {frozenset({"gallery_id", "observation_id"})},
+        ),
+    }
+    for relation_name, (attributes, keys) in expected_catalog_shapes.items():
+        relation = catalog_relations.get(relation_name)
+        if (
+            relation is None
+            or relation.attributes != attributes
+            or set(relation.declared_keys) != keys
+        ):
+            errors.append(
+                f"catalog {relation_name} must have the exact cross-manifest "
+                "authority shape"
+            )
+
+    expected_external_shapes = {
+        name: (attributes, keys)
+        for name, (attributes, keys) in expected_catalog_shapes.items()
+    }
+    for relation_name, (attributes, keys) in expected_external_shapes.items():
+        external_relation = operational_externals.get(relation_name)
+        if (
+            external_relation is None
+            or external_relation.attributes != attributes
+            or set(external_relation.declared_keys) != keys
+        ):
+            errors.append(
+                f"operational external {relation_name} must exactly match catalog"
+            )
+
+    expected_operational_shapes = {
+        "source_build_discovery_checkpoint": (
+            (
+                "build_id",
+                "generation",
+                "cursor_bytes",
+                "processed_count",
+                "state",
+                "updated_at",
+            ),
+            {frozenset({"build_id"})},
+        ),
+        "source_build_discovery_batch_receipt": (
+            (
+                "build_id",
+                "batch_key",
+                "start_generation",
+                "start_cursor",
+                "start_processed_count",
+                "next_cursor",
+                "next_processed_count",
+                "next_state",
+                "row_count",
+                "terminal",
+                "committed_generation",
+                "committed_at",
+            ),
+            {
+                frozenset({"build_id", "batch_key"}),
+                frozenset({"build_id", "start_generation"}),
+            },
+        ),
+        "source_build_assembly_checkpoint": (
+            (
+                "build_id",
+                "generation",
+                "cursor_bytes",
+                "processed_gallery_count",
+                "processed_file_count",
+                "processed_byte_count",
+                "manifest_chain_sha256",
+                "state",
+                "updated_at",
+            ),
+            {frozenset({"build_id"})},
+        ),
+        "source_build_assembly_batch_receipt": (
+            (
+                "build_id",
+                "batch_key",
+                "start_generation",
+                "start_cursor",
+                "start_gallery_count",
+                "start_file_count",
+                "start_byte_count",
+                "start_manifest_chain_sha256",
+                "next_cursor",
+                "next_gallery_count",
+                "next_file_count",
+                "next_byte_count",
+                "next_manifest_chain_sha256",
+                "next_state",
+                "row_count",
+                "terminal",
+                "committed_generation",
+                "committed_at",
+            ),
+            {
+                frozenset({"build_id", "batch_key"}),
+                frozenset({"build_id", "start_generation"}),
+            },
+        ),
+    }
+    for relation_name, (attributes, keys) in expected_operational_shapes.items():
+        relation = operational_relations.get(relation_name)
+        if (
+            relation is None
+            or relation.attributes != attributes
+            or set(relation.declared_keys) != keys
+        ):
+            errors.append(
+                f"operational {relation_name} must retain complete pre/post authority"
+            )
+
+    expected_membership = catalog_relations.get("source_build_expected_gallery")
+    membership = catalog_relations.get("source_build_gallery")
+    observation_stat = catalog_relations.get("gallery_observation_stat")
+    if expected_membership is not None and not (
+        _has_fk(
+            expected_membership,
+            ("build_id",),
+            "source_build",
+            ("build_id",),
+        )
+        and _has_fk(
+            expected_membership,
+            ("gallery_id",),
+            "gallery_identity",
+            ("gallery_id",),
+        )
+    ):
+        errors.append(
+            "catalog source_build_expected_gallery must bind build and gallery identity"
+        )
+    if membership is None or not _has_fk(
+        membership,
+        ("build_id", "gallery_id"),
+        "source_build_expected_gallery",
+        ("build_id", "gallery_id"),
+    ):
+        errors.append(
+            "catalog source_build_gallery must forbid extra expected membership"
+        )
+    if observation_stat is not None and not _has_fk(
+        observation_stat,
+        ("gallery_id", "observation_id"),
+        "gallery_observation",
+        ("gallery_id", "observation_id"),
+    ):
+        errors.append(
+            "catalog gallery_observation_stat must be observation-owned authority"
+        )
+
+    retention_targets = {target.target: target for target in catalog.retention_targets}
+    gallery_identity_target = retention_targets.get("GALLERY_IDENTITY")
+    expected_identity_edge = RetentionForeignKeyBoundary(
+        relation="source_build_expected_gallery",
+        attributes=("gallery_id",),
+        referenced_relation="gallery_identity",
+        referenced_attributes=("gallery_id",),
+    )
+    if (
+        gallery_identity_target is None
+        or expected_identity_edge not in gallery_identity_target.external_blockers
+    ):
+        errors.append("GALLERY_IDENTITY retention must list expected source membership")
+    gallery_observation_target = retention_targets.get("GALLERY_OBSERVATION")
+    if gallery_observation_target is None or not any(
+        "gallery_observation_stat" in phase
+        for phase in gallery_observation_target.child_phases
+    ):
+        errors.append(
+            "GALLERY_OBSERVATION cleanup must delete observation stat child-first"
+        )
+    source_build_target = retention_targets.get("SOURCE_BUILD")
+    if source_build_target is None or not any(
+        "source_build_expected_gallery" in phase
+        for phase in source_build_target.child_phases
+    ):
+        errors.append(
+            "SOURCE_BUILD cleanup must delete expected membership child-first"
+        )
+
+    if errors:
+        raise ContractValidationError(errors)
 
 
 _DATA_MACHINE_OBLIGATION_IDS = frozenset(
@@ -1729,8 +2110,12 @@ def _data_prose_obligation_paths(contract: Contract) -> frozenset[str]:
         "effective_content_contract.write_obligation",
         "effective_content_contract.read_obligation",
         "source_snapshot_manifest_contract.write_obligation",
+        "source_snapshot_manifest_contract.handoff_obligation",
+        "source_snapshot_manifest_contract.publication_obligation",
         "analysis_run_contract.write_obligation",
         "analysis_run_contract.attempt_rule",
+        "analysis_resolution_contract.cursor_codec_rule",
+        "analysis_resolution_contract.batch_rule",
         "analysis_candidate_contract.runtime_obligation",
         "artifact_delta_contract.rebuild_rule",
         "artifact_delta_contract.unchanged_rule",
@@ -1738,7 +2123,15 @@ def _data_prose_obligation_paths(contract: Contract) -> frozenset[str]:
         "artifact_byte_producer_contract.runtime_obligation",
         "artifact_member_plan_contract.runtime_obligation",
         "artifact_member_plan_contract.ready_obligation",
+        "artifact_name_contract.runtime_obligation",
+        "artifact_locator_contract.runtime_obligation",
+        "artifact_protection_token_contract.runtime_obligation",
+        "publication_atomic_contract.selection_rule",
+        "publication_atomic_contract.cursor_codec_rule",
+        "publication_atomic_contract.batch_rule",
+        "publication_atomic_contract.projection_seal_rule",
         "publication_atomic_contract.runtime_obligation",
+        "publication_atomic_contract.finalization_rule",
         "title_sort_contract.runtime_obligation",
         "transition_authority_contract.runtime_obligation",
         "transition_authority_contract.ready_obligation",
@@ -1945,7 +2338,7 @@ def _validate_canonical_reference_roles_and_bootstrap(
                 f"canonical-reference role {attribute!r} must list exact FK paths "
                 f"{_format_set(expected_relations)}"
             )
-        if not role.digest_domain.endswith("_v1"):
+        if re.fullmatch(r"[a-z0-9_]+_v[1-9][0-9]*", role.digest_domain) is None:
             errors.append(
                 f"canonical-reference role {attribute!r} lacks a versioned domain"
             )
@@ -1956,17 +2349,108 @@ def _validate_canonical_reference_roles_and_bootstrap(
         errors.append("data bootstrap seeds contain duplicate IDs")
     expected_domain_rows = {
         ("canonical_digest_policy", ("digest_domain",), (domain,))
-        for domain in {role.digest_domain for role in roles}
+        for domain in (
+            {role.digest_domain for role in roles}
+            | set(_FILESYSTEM_HASH_CACHE_DIGEST_DOMAINS)
+        )
     }
     expected_rows = expected_domain_rows | {
         ("channel_registry", ("channel",), ("default",)),
         ("source_provider_registry", ("source_provider",), ("filesystem",)),
+        (
+            "artifact_zip_writer_policy",
+            (
+                "artifact_algorithm_version",
+                "zip_codec_version",
+                "compression_method",
+                "compression_level",
+                "dos_date",
+                "dos_time",
+                "unix_mode",
+                "general_purpose_flags",
+                "create_system",
+                "archive_name_codec_version",
+                "artifact_name_codec_version",
+            ),
+            ("1", "1", "8", "9", "33", "0", "33188", "2048", "3", "1", "1"),
+        ),
+        (
+            "artifact_storage_codec",
+            (
+                "storage_codec_version",
+                "adapter_id",
+                "locator_codec_version",
+                "protection_token_codec_version",
+            ),
+            ("1", "managed-filesystem", "1", "1"),
+        ),
+        *{
+            (
+                "analysis_stage",
+                ("stage", "stage_order", "cursor_codec"),
+                (stage, f"{order:02d}", cursor_codec),
+            )
+            for stage, order, cursor_codec in (
+                ("changed_gallery", 1, "analysis_gallery_v1"),
+                ("changed_file_hash", 2, "analysis_digest_v1"),
+                ("file_hash_decision", 3, "analysis_digest_v1"),
+                ("validate_file_hash_decision", 4, "analysis_digest_live_v1"),
+                ("impacted_gallery", 5, "analysis_gallery_v1"),
+                ("impacted_content", 6, "analysis_gallery_v1"),
+                ("content_owner_candidate", 7, "analysis_gallery_v1"),
+                ("validate_content_owner_candidate", 8, "analysis_gallery_live_v1"),
+                ("content_owner", 9, "analysis_digest_v1"),
+                ("validate_content_owner", 10, "analysis_digest_live_v1"),
+                ("impacted_gid", 11, "analysis_gallery_v1"),
+                ("gid_candidate", 12, "analysis_gallery_v1"),
+                ("validate_gid_candidate", 13, "analysis_gallery_live_v1"),
+                ("gid_winner", 14, "analysis_gid_v1"),
+                ("validate_gid_winner", 15, "analysis_gid_live_v1"),
+            )
+        },
+        *{
+            (
+                "publication_stage",
+                ("stage", "stage_order", "cursor_codec"),
+                (stage, f"{order:02d}", cursor_codec),
+            )
+            for stage, order, cursor_codec in (
+                ("BUILD_SELECTION", 1, "publication_gallery_v1"),
+                ("VALIDATE_SELECTION", 2, "publication_gallery_v1"),
+                (
+                    "BUILD_CATALOG_PROJECTION",
+                    3,
+                    "publication_catalog_child_v1",
+                ),
+                (
+                    "VALIDATE_CATALOG_PROJECTION",
+                    4,
+                    "publication_catalog_child_v1",
+                ),
+                ("BUILD_ARTIFACT_INPUT", 5, "publication_key_v1"),
+                ("BUILD_ARTIFACT_DELTA_OPERATION", 6, "publication_key_v1"),
+                ("VALIDATE_ARTIFACT_INPUT_DELTA", 7, "publication_key_v1"),
+                ("VALIDATE_PREPARED_ARTIFACT", 8, "publication_key_v1"),
+                ("VALIDATE_CREATE", 9, "publication_key_v1"),
+                ("VALIDATE_REBUILD", 10, "publication_key_v1"),
+                ("VALIDATE_DELETE", 11, "publication_key_v1"),
+                ("VALIDATE_UNCHANGED", 12, "publication_key_v1"),
+                ("VALIDATE_NEW_GALLERY", 13, "publication_key_v1"),
+                ("VALIDATE_CHANGED_GALLERY", 14, "publication_key_v1"),
+                ("VALIDATE_REMOVED_GALLERY", 15, "publication_key_v1"),
+                ("VALIDATE_DUPLICATE_LOSER", 16, "publication_gallery_v1"),
+                ("FINALIZE_ARTIFACTS", 17, "publication_key_v1"),
+            )
+        },
     }
     actual_rows = {(seed.relation, seed.columns, seed.values) for seed in seeds}
     if actual_rows != expected_rows or len(actual_rows) != len(seeds):
         errors.append(
             "data bootstrap seeds must be exactly one default channel, one "
-            "filesystem provider, plus every canonical digest domain"
+            "filesystem provider, the artifact ZIP/storage registries, the fifteen analysis stages, the seventeen "
+            "publication stages, every catalog "
+            "canonical digest domain, and the two operational filesystem "
+            "hash-cache domains"
         )
     for seed in seeds:
         seeded_relation = relation_by_name.get(seed.relation)
@@ -1977,8 +2461,12 @@ def _validate_canonical_reference_roles_and_bootstrap(
             errors.append(f"bootstrap seed {seed.id!r} has an invalid row arity")
         if not set(seed.columns) <= set(seeded_relation.attributes):
             errors.append(f"bootstrap seed {seed.id!r} has unknown columns")
-        if frozenset(seed.columns) not in set(seeded_relation.declared_keys):
-            errors.append(f"bootstrap seed {seed.id!r} must supply an exact key row")
+        if not any(
+            key <= frozenset(seed.columns) for key in seeded_relation.declared_keys
+        ):
+            errors.append(
+                f"bootstrap seed {seed.id!r} must supply a complete keyed row"
+            )
     return errors
 
 
@@ -2170,6 +2658,32 @@ def _validate_source_scope_identity_contract(
     return errors
 
 
+_EFFECTIVE_CONTENT_WRITE_OBLIGATION_V1 = (
+    "production prepares effective content only as a database-owned private typed "
+    "EffectiveContentPreparation, never as caller authority: from one immutable "
+    "SEALED source_build snapshot and immutable COMPLETE analysis snapshot, stream "
+    "only resolved non-excluded CONTENT file_sha256 values by an unsigned-bytewise "
+    "keyset query into a deterministic external spool and typed receipt outside "
+    "every canonical page transaction; exclude METADATA and resolved spam, preserve "
+    "duplicate digests, and bind the receipt to the exact sealed build identity, "
+    "sealed analysis identity, live ingest generation, file_count, byte_count, "
+    "content_sha256, and private spool identity, while no public API accepts digest, "
+    "count, sequence, or receipt authority; stream the exact permutation-invariant "
+    "but multiplicity-sensitive frame through iter_effective_content_payload_ordered, "
+    "effective_content_digest_ordered, and canonical_value_digest_parts without "
+    "materializing the full sequence; bounded canonical page transactions validate "
+    "and CAS the live-generation canonical_value_upload claim and resume only from "
+    "database receipts; final candidate handoff runs in one transaction, locks and "
+    "validates the private typed receipt, immutable SEALED build and COMPLETE analysis "
+    "canonical identities, sealed canonical_value_identity, and the same current "
+    "live-generation claim, writes the candidate, then deletes that claim; immutable "
+    "snapshots permit deterministic spool and receipt reconstruction after response "
+    "loss; every digest conflict recomputes content_sha256 and byte-compares the full "
+    "preimage; no audit digest, caller-supplied digest/count/sequence/receipt, or "
+    "unsealed snapshot authorizes write, resume, or handoff"
+)
+
+
 def _validate_effective_content_contract(
     contract: EffectiveContentContract,
     relations: Mapping[str, Relation],
@@ -2194,22 +2708,7 @@ def _validate_effective_content_contract(
     ):
         if token not in contract.framing:
             errors.append(f"{prefix} framing omits {token}")
-    if not all(
-        token in contract.write_obligation
-        for token in (
-            "unsigned-bytewise keyset query or external bounded sort",
-            "permutation-invariant",
-            "multiplicity-sensitive",
-            "CONTENT",
-            "METADATA",
-            "spam",
-            "iter_effective_content_payload_ordered",
-            "effective_content_digest_ordered",
-            "canonical_value_digest_parts",
-            "without materializing the full sequence",
-            "byte-compare",
-        )
-    ) or not all(
+    if contract.write_obligation != _EFFECTIVE_CONTENT_WRITE_OBLIGATION_V1 or not all(
         token in contract.read_obligation
         for token in (
             "effective_content_v1",
@@ -2220,7 +2719,10 @@ def _validate_effective_content_contract(
             "non-injective",
         )
     ):
-        errors.append(f"{prefix} must state exact preimage and collision obligations")
+        errors.append(
+            f"{prefix} must state exact preimage, collision, and DB-owned typed "
+            "preparation obligations"
+        )
     expected_relations = {
         "analysis_impacted_content",
         "analysis_content_owner_candidate",
@@ -2277,6 +2779,7 @@ def _validate_source_snapshot_manifest_contract(
     )
     if (
         contract.relation != "source_snapshot_manifest_identity"
+        or contract.analysis_binding_relation != "analysis_snapshot_manifest"
         or contract.digest_attribute != "snapshot_manifest_sha256"
         or contract.canonical_value_relation != "canonical_value_identity"
         or contract.canonical_digest_attribute != "value_sha256"
@@ -2303,8 +2806,10 @@ def _validate_source_snapshot_manifest_contract(
     if contract.decision_predicate != expected_predicate:
         errors.append(f"{prefix} has the wrong exact spam decision predicate")
     write_terms = (
-        "COMPLETED analysis policy natural tuple",
-        "fully sealed resolved snapshot",
+        "OPEN snapshot-ready analysis",
+        "all five immutable component seals",
+        "component rows are immutable once the fifth seal exists",
+        "fully resolved snapshot",
         "gallery_identity.gallery_key",
         "empty or metadata-only gallery",
         "distinct from every 32-byte digest",
@@ -2328,11 +2833,42 @@ def _validate_source_snapshot_manifest_contract(
     )
     if any(term not in contract.write_obligation for term in write_terms):
         errors.append(f"{prefix} write validation is incomplete")
+    handoff_terms = (
+        "database-owned private typed canonical snapshot plan",
+        "OPEN snapshot-ready analysis",
+        "same OPEN analysis and all five immutable component seals",
+        "sealed canonical identity",
+        "live-generation canonical_value_upload claim",
+        "inserts analysis_snapshot_manifest",
+        "deletes exactly that claim",
+        "CAS-transitions analysis_run from OPEN to COMPLETE",
+        "all three mutations commit or roll back together",
+        "response loss",
+        "analysis_id natural key",
+        "exact binding digest equality with the claim absent",
+        "no caller digest",
+        "input_manifest_sha256",
+        "output authority",
+    )
+    publication_terms = (
+        "publication_candidate.analysis_id",
+        "through analysis_snapshot_manifest",
+        "source_revision.snapshot_manifest_sha256",
+        "exact equality",
+        "pointer transaction",
+        "source_revision_provenance alone is audit provenance",
+        "never proves",
+    )
+    if any(term not in contract.handoff_obligation for term in handoff_terms):
+        errors.append(f"{prefix} typed completion handoff is incomplete")
+    if any(term not in contract.publication_obligation for term in publication_terms):
+        errors.append(f"{prefix} publication output binding is incomplete")
     if not all(
         term in contract.retention
         for term in (
-            "while any source_revision references",
-            "last source_revision",
+            "while any source_revision or analysis_snapshot_manifest references",
+            "analysis cleanup deletes analysis_snapshot_manifest before analysis_run",
+            "last source revision and analysis binding",
             "garbage-collecting",
         )
     ):
@@ -2388,6 +2924,34 @@ def _validate_source_snapshot_manifest_contract(
         )
     ):
         errors.append(f"{prefix} optional prunable provenance has the wrong shape")
+    binding = relations.get(contract.analysis_binding_relation)
+    if (
+        binding is None
+        or set(binding.attributes) != {"analysis_id", contract.digest_attribute}
+        or set(binding.declared_keys) != {frozenset({"analysis_id"})}
+        or set(binding.functional_dependencies)
+        != {
+            FunctionalDependency(
+                frozenset({"analysis_id"}),
+                frozenset({contract.digest_attribute}),
+            )
+        }
+        or not _has_fk(
+            binding,
+            ("analysis_id",),
+            "analysis_run",
+            ("analysis_id",),
+        )
+        or not _has_fk(
+            binding,
+            (contract.digest_attribute,),
+            contract.relation,
+            (contract.digest_attribute,),
+        )
+    ):
+        errors.append(
+            f"{prefix} analysis output binding must be one-way BCNF authority"
+        )
     return errors
 
 
@@ -2404,15 +2968,253 @@ def _validate_publication_atomic_contract(
         "artifact_component_relation": "artifact_semantic_input",
         "operation_relation": "artifact_operation",
         "prepared_artifact_relation": "prepared_artifact",
+        "stage_relation": "publication_stage",
+        "projection_seal_relation": "publication_candidate_projection_seal",
+        "checkpoint_relation": "publication_checkpoint",
+        "batch_receipt_relation": "publication_batch_receipt",
+        "source_manifest_binding_relation": "analysis_snapshot_manifest",
         "revision_relation": "catalog_revision",
         "head_relation": "publication_head",
     }
     for field, name in expected_names.items():
         if getattr(contract, field) != name or name not in relations:
             errors.append(f"{prefix} {field} must be existing relation {name!r}")
+    catalog_publication = relations.get("catalog_publication")
+    expected_publication_attributes = {
+        "revision",
+        "gallery_id",
+        "publication_key",
+        "summary_sha256",
+        "language_sha256",
+        "published_at",
+        "modified_at",
+        "item_sha256",
+    }
+    if catalog_publication is None or set(catalog_publication.attributes) != (
+        expected_publication_attributes
+    ):
+        errors.append(
+            f"{prefix} immutable catalog publication must exclude mutable "
+            "redownload queue state"
+        )
+    expected_batch_stages = (
+        (
+            "BUILD_SELECTION",
+            1,
+            "publication_gallery_v1",
+            "candidate_OPEN_and_analysis_COMPLETE_with_five_seals",
+            "NONE",
+        ),
+        (
+            "VALIDATE_SELECTION",
+            2,
+            "publication_gallery_v1",
+            "BUILD_SELECTION",
+            "publication_count",
+        ),
+        (
+            "BUILD_CATALOG_PROJECTION",
+            3,
+            "publication_catalog_child_v1",
+            "VALIDATE_SELECTION",
+            "NONE",
+        ),
+        (
+            "VALIDATE_CATALOG_PROJECTION",
+            4,
+            "publication_catalog_child_v1",
+            "BUILD_CATALOG_PROJECTION",
+            "NONE",
+        ),
+        (
+            "BUILD_ARTIFACT_INPUT",
+            5,
+            "publication_key_v1",
+            "VALIDATE_CATALOG_PROJECTION",
+            "NONE",
+        ),
+        (
+            "BUILD_ARTIFACT_DELTA_OPERATION",
+            6,
+            "publication_key_v1",
+            "BUILD_ARTIFACT_INPUT",
+            "NONE",
+        ),
+        (
+            "VALIDATE_ARTIFACT_INPUT_DELTA",
+            7,
+            "publication_key_v1",
+            "BUILD_ARTIFACT_DELTA_OPERATION",
+            "artifact_input_count",
+        ),
+        (
+            "VALIDATE_PREPARED_ARTIFACT",
+            8,
+            "publication_key_v1",
+            "VALIDATE_ARTIFACT_INPUT_DELTA",
+            "prepared_artifact_count",
+        ),
+        (
+            "VALIDATE_CREATE",
+            9,
+            "publication_key_v1",
+            "VALIDATE_PREPARED_ARTIFACT",
+            "create_count",
+        ),
+        (
+            "VALIDATE_REBUILD",
+            10,
+            "publication_key_v1",
+            "VALIDATE_CREATE",
+            "rebuild_count",
+        ),
+        (
+            "VALIDATE_DELETE",
+            11,
+            "publication_key_v1",
+            "VALIDATE_REBUILD",
+            "delete_count",
+        ),
+        (
+            "VALIDATE_UNCHANGED",
+            12,
+            "publication_key_v1",
+            "VALIDATE_DELETE",
+            "unchanged_count",
+        ),
+        (
+            "VALIDATE_NEW_GALLERY",
+            13,
+            "publication_key_v1",
+            "VALIDATE_UNCHANGED",
+            "new_galleries",
+        ),
+        (
+            "VALIDATE_CHANGED_GALLERY",
+            14,
+            "publication_key_v1",
+            "VALIDATE_NEW_GALLERY",
+            "changed_galleries",
+        ),
+        (
+            "VALIDATE_REMOVED_GALLERY",
+            15,
+            "publication_key_v1",
+            "VALIDATE_CHANGED_GALLERY",
+            "removed_galleries",
+        ),
+        (
+            "VALIDATE_DUPLICATE_LOSER",
+            16,
+            "publication_gallery_v1",
+            "VALIDATE_REMOVED_GALLERY",
+            "duplicate_losers",
+        ),
+        (
+            "FINALIZE_ARTIFACTS",
+            17,
+            "publication_key_v1",
+            "publication_receipt_DB_COMMITTED",
+            "finalized_artifact_count",
+        ),
+    )
+    if (
+        tuple(
+            (
+                stage.name,
+                stage.stage_order,
+                stage.cursor_codec,
+                stage.prerequisite,
+                stage.sealed_scalar,
+            )
+            for stage in contract.batch_stages
+        )
+        != expected_batch_stages
+    ):
+        errors.append(f"{prefix} stage/order/codec/prerequisite registry drifts")
+    selection_terms = (
+        "immutable source_build_gallery",
+        "unsigned positive gallery_id keyset order",
+        "if and only if",
+        "analysis_content_owner_resolved owner",
+        "no nonexcluded CONTENT digest as its own owner",
+        "analysis_gid_winner_resolved winner",
+        "publication-key.v1",
+        "publication_selection stores no audit digest",
+        "VALIDATE_SELECTION independently",
+        "exact merge-compares candidate_id, gallery_id, and publication_key",
+        "empty terminal receipt owns publication_count",
+    )
+    if any(term not in contract.selection_rule for term in selection_terms):
+        errors.append(f"{prefix} selection predicate is not closed and executable")
+    cursor_terms = (
+        "publication_gallery_v1 is empty at genesis or u64be(positive gallery_id)",
+        "publication_key_v1 is empty at genesis or raw32(publication_key)",
+        "publication_catalog_child_v1 is empty at genesis",
+        "u8(child_kind",
+        "u16be(subkey_length)",
+        "exact EOF",
+        "unsigned bytes",
+        "locked registered stage selects the codec",
+        "caller cursor bytes never select or alter a query",
+    )
+    if any(term not in contract.cursor_codec_rule for term in cursor_terms):
+        errors.append(f"{prefix} cursor codec framing is not closed-world")
+    batch_terms = (
+        "all seventeen provider-seeded publication stages in exact stage_order",
+        "generation one, empty cursor, processed_count zero, and OPEN state",
+        "hard-capped maximum-128 batch",
+        "server-side",
+        "full immutable pre/post publication_batch_receipt",
+        "committed_generation equals start_generation plus one",
+        "next_processed_count equals start_processed_count plus row_count",
+        "complete stored tuple without writes",
+        "terminal is one if and only if the server-derived page is empty",
+        "next_state COMPLETE",
+        "nonterminal means positive row_count and next_state OPEN",
+        "no caller stage, cursor, count, state, terminal, digest, sequence, or receipt is authority",
+    )
+    if any(term not in contract.batch_rule for term in batch_terms):
+        errors.append(f"{prefix} batch receipt/CAS rule is incomplete")
+    seal_terms = (
+        "VALIDATE_DUPLICATE_LOSER becomes COMPLETE",
+        "terminal checkpoints for VALIDATE_SELECTION",
+        "VALIDATE_CATALOG_PROJECTION",
+        "VALIDATE_ARTIFACT_INPUT_DELTA",
+        "VALIDATE_PREPARED_ARTIFACT",
+        "VALIDATE_CREATE",
+        "VALIDATE_REBUILD",
+        "VALIDATE_DELETE",
+        "VALIDATE_UNCHANGED",
+        "VALIDATE_NEW_GALLERY",
+        "VALIDATE_CHANGED_GALLERY",
+        "VALIDATE_REMOVED_GALLERY",
+        "VALIDATE_DUPLICATE_LOSER",
+        "terminal COMPLETE after its independent exact child merge",
+        "never compare its child processed_count with publication count",
+        "publication_count only from terminal VALIDATE_SELECTION",
+        "prepared_artifact_count equals create_count plus rebuild_count",
+        "artifact_input_count equals create_count plus rebuild_count plus unchanged_count",
+        "named O(1) terminal validation scalars",
+        "never SUM receipts or child relations",
+    )
+    if any(term not in contract.projection_seal_rule for term in seal_terms):
+        errors.append(f"{prefix} projection-seal scalar authority is incomplete")
+    if any(
+        forbidden in contract.projection_seal_rule
+        for forbidden in (
+            "VALIDATE_CATALOG_PROJECTION processed_count equals VALIDATE_SELECTION",
+            "publication_count_crosscheck",
+        )
+    ):
+        errors.append(
+            f"{prefix} must not equate catalog-child count with publication count"
+        )
     obligation_terms = (
         "exact selected publication child set",
         "publication_count",
+        "catalog_publication_order",
+        "contiguous zero-based",
         "six exactly-once",
         "delta classification",
         "byte digest",
@@ -2436,6 +3238,17 @@ def _validate_publication_atomic_contract(
         "exact EOF",
         "u32be(segment_count)",
         "strict_utf8_segment",
+        "before candidate state SEALED",
+        "independent full evaluator",
+        "artifact_input_count",
+        "prepared_artifact_count",
+        "CREATE/REBUILD/DELETE/UNCHANGED counts",
+        "new_galleries/changed_galleries/removed_galleries/duplicate_losers",
+        "through analysis_snapshot_manifest",
+        "publication_candidate_preparation",
+        "only O(1)",
+        "never COUNT or SUM over child rows",
+        "never trust a caller/audit digest or guessed scalar",
     )
     if any(term not in contract.runtime_obligation for term in obligation_terms):
         errors.append(f"{prefix} omits a required READY/CAS validation obligation")
@@ -2446,6 +3259,154 @@ def _validate_publication_atomic_contract(
         errors.append(
             f"{prefix} must not treat nested-gallery artifact display names as unique"
         )
+    receipt = relations.get("publication_receipt")
+    receipt_scalars = {
+        "publication_count",
+        "new_galleries",
+        "changed_galleries",
+        "removed_galleries",
+        "duplicate_losers",
+    }
+    if receipt is None or not receipt_scalars <= set(receipt.attributes):
+        errors.append(
+            f"{prefix} requires an O(1) authoritative publication_count and "
+            "result scalars on "
+            "publication_receipt"
+        )
+    seal = relations.get(contract.projection_seal_relation)
+    seal_attributes = {
+        "candidate_id",
+        "publication_count",
+        "artifact_input_count",
+        "prepared_artifact_count",
+        "create_count",
+        "rebuild_count",
+        "delete_count",
+        "unchanged_count",
+        "new_galleries",
+        "changed_galleries",
+        "removed_galleries",
+        "duplicate_losers",
+        "projection_sealed_at",
+    }
+    if (
+        seal is None
+        or set(seal.attributes) != seal_attributes
+        or set(seal.declared_keys) != {frozenset({"candidate_id"})}
+        or not _has_fk(
+            seal,
+            ("candidate_id",),
+            contract.candidate_relation,
+            ("candidate_id",),
+        )
+        or any(
+            attribute.endswith("sha256") or attribute.endswith("digest")
+            for attribute in seal.attributes
+        )
+    ):
+        errors.append(f"{prefix} projection seal lacks exact digest-free BCNF shape")
+    checkpoint = relations.get(contract.checkpoint_relation)
+    stage_relation = relations.get(contract.stage_relation)
+    if (
+        stage_relation is None
+        or set(stage_relation.attributes) != {"stage", "stage_order", "cursor_codec"}
+        or set(stage_relation.declared_keys)
+        != {frozenset({"stage"}), frozenset({"stage_order"})}
+    ):
+        errors.append(f"{prefix} stage registry lacks its exact BCNF shape")
+    if (
+        checkpoint is None
+        or set(checkpoint.attributes)
+        != {
+            "candidate_id",
+            "stage",
+            "generation",
+            "cursor",
+            "processed_count",
+            "state",
+            "updated_at",
+        }
+        or set(checkpoint.declared_keys) != {frozenset({"candidate_id", "stage"})}
+        or not _has_fk(
+            checkpoint,
+            ("stage",),
+            contract.stage_relation,
+            ("stage",),
+        )
+    ):
+        errors.append(f"{prefix} checkpoint lacks processed-count terminal authority")
+    batch_receipt = relations.get(contract.batch_receipt_relation)
+    expected_batch_keys = {
+        frozenset({"candidate_id", "stage", "batch_key"}),
+        frozenset({"candidate_id", "stage", "start_generation"}),
+    }
+    if (
+        batch_receipt is None
+        or set(batch_receipt.attributes)
+        != {
+            "candidate_id",
+            "stage",
+            "batch_key",
+            "start_generation",
+            "start_cursor",
+            "start_processed_count",
+            "next_cursor",
+            "next_processed_count",
+            "next_state",
+            "row_count",
+            "terminal",
+            "committed_generation",
+            "committed_at",
+        }
+        or set(batch_receipt.declared_keys) != expected_batch_keys
+        or not _has_fk(
+            batch_receipt,
+            ("candidate_id", "stage"),
+            contract.checkpoint_relation,
+            ("candidate_id", "stage"),
+        )
+    ):
+        errors.append(f"{prefix} batch receipt lacks exact replay response authority")
+    finalization_terms = (
+        "DB_COMMITTED",
+        "never mass-update prepared_artifact",
+        "fixed FINALIZE_ARTIFACTS checkpoint",
+        "publication_key keyset cursor",
+        "processed_count",
+        "hard-capped transaction",
+        "PREPARED rows server-side",
+        "releases their exact protection tokens",
+        "COMMITTED",
+        "full publication_batch_receipt response tuple",
+        "exact batch_key retry",
+        "without writes",
+        "empty terminal batch alone",
+        "terminal=1 and COMPLETE",
+        "projection-seal prepared_artifact_count",
+        "PROJECTION_FINALIZED",
+    )
+    if contract.finalization_stage != "FINALIZE_ARTIFACTS" or any(
+        term not in contract.finalization_rule for term in finalization_terms
+    ):
+        errors.append(f"{prefix} bounded artifact finalization protocol is incomplete")
+    publication_order = relations.get("catalog_publication_order")
+    expected_order_keys = {
+        frozenset({"revision", "position"}),
+        frozenset({"revision", "publication_key"}),
+    }
+    if (
+        publication_order is None
+        or set(publication_order.attributes)
+        != {"revision", "position", "publication_key"}
+        or set(publication_order.declared_keys) != expected_order_keys
+        or not _has_fk(
+            publication_order,
+            ("revision", "publication_key"),
+            "catalog_publication",
+            ("revision", "publication_key"),
+        )
+    ):
+        errors.append(f"{prefix} requires a BCNF catalog_publication_order projection")
     return errors
 
 
@@ -2919,10 +3880,13 @@ def _validate_operational_integrity_contracts(
     assert preparation is not None
 
     expected_queue_names = {
+        "deletion_generation_relation": "deletion_request_generation",
+        "deletion_generation_head_relation": "deletion_request_generation_head",
         "deletion_attempt_relation": "deletion_request_attempt",
         "deletion_head_relation": "deletion_request_head",
         "deletion_url_relation": "deletion_request_url",
         "consumption_relation": "operational_deletion_consumption_event",
+        "preparation_relation": "operational_preparation",
     }
     for field, expected in expected_queue_names.items():
         if getattr(queue, field) != expected:
@@ -2931,10 +3895,73 @@ def _validate_operational_integrity_contracts(
         errors.append(
             "queue history rule must state optional URL and immutable history"
         )
+    if not all(
+        term in queue.generation_rule
+        for term in (
+            "generation zero",
+            "real immutable empty-queue genesis",
+            "never a sentinel",
+            "exactly current_generation plus one",
+            "exact-CAS",
+            "2^63-1 fails closed",
+        )
+    ):
+        errors.append(
+            "queue generation rule must state real genesis, checked successor, "
+            "exact CAS, and fail-closed exhaustion"
+        )
+    if not all(
+        term in queue.publication_rule
+        for term in ("exact FK-backed", "singleton head", "O(1)", "differ")
+    ):
+        errors.append(
+            "queue publication rule must state exact FK-backed O(1) head recheck"
+        )
+    if not all(
+        term in queue.retention_rule
+        for term in ("retained indefinitely", "immutable FK", "every preparation")
+    ):
+        errors.append("queue generation history must be retained as FK authority")
+    deletion_generation = relations.get(queue.deletion_generation_relation)
+    generation_head = relations.get(queue.deletion_generation_head_relation)
     attempt = relations.get(queue.deletion_attempt_relation)
     head = relations.get(queue.deletion_head_relation)
     url = relations.get(queue.deletion_url_relation)
+    queue_preparation = relations.get(queue.preparation_relation)
     consumption = relations.get(queue.consumption_relation)
+    if (
+        deletion_generation is None
+        or set(deletion_generation.attributes) != {"generation", "allocated_at"}
+        or set(deletion_generation.declared_keys) != {frozenset({"generation"})}
+        or set(deletion_generation.functional_dependencies)
+        != {
+            FunctionalDependency(frozenset({"generation"}), frozenset({"allocated_at"}))
+        }
+    ):
+        errors.append(
+            "deletion generation must be exact immutable generation-keyed history"
+        )
+    if (
+        generation_head is None
+        or set(generation_head.attributes)
+        != {"singleton_id", "current_generation", "updated_at"}
+        or set(generation_head.declared_keys) != {frozenset({"singleton_id"})}
+        or set(generation_head.functional_dependencies)
+        != {
+            FunctionalDependency(
+                frozenset({"singleton_id"}),
+                frozenset({"current_generation", "updated_at"}),
+            )
+        }
+    ):
+        errors.append("deletion generation head must have the exact singleton shape")
+    elif not _has_fk(
+        generation_head,
+        ("current_generation",),
+        queue.deletion_generation_relation,
+        ("generation",),
+    ):
+        errors.append("deletion generation head must reference exact history")
     if (
         attempt is None
         or set(attempt.attributes)
@@ -2979,6 +4006,13 @@ def _validate_operational_integrity_contracts(
         ("request_token",),
     ):
         errors.append("deletion consumption must reference immutable attempt history")
+    if queue_preparation is None or not _has_fk(
+        queue_preparation,
+        ("deletion_request_generation",),
+        queue.deletion_generation_relation,
+        ("generation",),
+    ):
+        errors.append("operational preparation must reference exact deletion history")
 
     expected_canonical_fields = {
         "canonical_value_relation": "canonical_value_identity",
@@ -3075,6 +4109,11 @@ def _validate_operational_integrity_contracts(
                 )
 
     expected_event_names = {
+        "stream_relation": "operational_event_stream",
+        "preparation_relation": "operational_preparation",
+        "seal_relation": "operational_preparation_effect_seal",
+        "activation_relation": "operational_activation",
+        "candidate_binding_relation": "publication_candidate_preparation",
         "base_relation": "operational_event",
         "removed_subtype_relation": "operational_removed_gid_event",
         "deletion_subtype_relation": "operational_deletion_consumption_event",
@@ -3090,17 +4129,139 @@ def _validate_operational_integrity_contracts(
     if event.removed_event_type == event.deletion_event_type:
         errors.append("event subtype type values must be distinct")
     if (
-        "exactly one" not in event.subtype_rule
+        "one transaction" not in event.stream_rule
+        or "no standalone invisible stream" not in event.stream_rule
+        or "exactly one" not in event.subtype_rule
+        or "event_count" not in event.seal_rule
+        or "zero events" not in event.seal_rule
+        or "reading or writing no event rows" not in event.activation_rule
+        or "candidate_id and preparation_id are both candidate keys"
+        not in event.candidate_binding_rule
+        or "must not search" not in event.candidate_binding_rule
         or "monotonically" not in event.ack_rule
-        or "every existing event" not in event.ack_rule
+        or "bounded" not in event.ack_rule
+        or "ABANDONED" not in event.cleanup_rule
     ):
-        errors.append("event integrity must state exact subtype and monotone ack rules")
+        errors.append(
+            "event integrity must state exact subtype, completeness seal, O(1) "
+            "activation, bounded monotone ack, and cleanup rules"
+        )
+    if (
+        event.empty_chain_sha256
+        != "e3963ad6e07ac045502ad95ddb3805ac57deea8ffbb038ddf7c538a816301e71"
+        or "preparation_id[16]" not in event.event_digest_codec
+        or "chain_0" not in event.chain_codec
+        or "chain_(n+1)" not in event.chain_codec
+    ):
+        errors.append("event digest and chain codecs must be exact and closed-world")
+    stream = relations.get(event.stream_relation)
+    preparation_event = relations.get(event.preparation_relation)
+    seal = relations.get(event.seal_relation)
+    activation = relations.get(event.activation_relation)
+    candidate_binding = relations.get(event.candidate_binding_relation)
     base = relations.get(event.base_relation)
     removed = relations.get(event.removed_subtype_relation)
     deletion = relations.get(event.deletion_subtype_relation)
     ack_head = relations.get(event.ack_head_relation)
-    if base is None or "event_type" not in base.attributes:
-        errors.append("event base must own event_type")
+    if (
+        stream is None
+        or set(stream.attributes) != {"preparation_id", "created_at"}
+        or set(stream.declared_keys) != {frozenset({"preparation_id"})}
+    ):
+        errors.append("event stream must be the durable preparation-keyed root")
+    if preparation_event is None or not _has_fk(
+        preparation_event,
+        ("preparation_id",),
+        event.stream_relation,
+        ("preparation_id",),
+    ):
+        errors.append("operational preparation must reference its durable stream")
+    if (
+        seal is None
+        or set(seal.attributes)
+        != {"preparation_id", "event_count", "final_chain_sha256", "sealed_at"}
+        or set(seal.declared_keys) != {frozenset({"preparation_id"})}
+        or not _has_fk(
+            seal,
+            ("preparation_id",),
+            event.stream_relation,
+            ("preparation_id",),
+        )
+    ):
+        errors.append("event effect seal must be exact durable stream authority")
+    if (
+        activation is None
+        or set(activation.attributes)
+        != {
+            "source_revision",
+            "preparation_id",
+            "operational_policy_id",
+            "activated_at",
+        }
+        or set(activation.declared_keys)
+        != {frozenset({"source_revision"}), frozenset({"preparation_id"})}
+        or not _has_fk(
+            activation,
+            ("preparation_id",),
+            event.seal_relation,
+            ("preparation_id",),
+        )
+    ):
+        errors.append("operational activation must reference the exact effect seal")
+    if (
+        candidate_binding is None
+        or set(candidate_binding.attributes)
+        != {"candidate_id", "preparation_id", "bound_at"}
+        or set(candidate_binding.declared_keys)
+        != {frozenset({"candidate_id"}), frozenset({"preparation_id"})}
+        or not _has_fk(
+            candidate_binding,
+            ("candidate_id",),
+            "publication_candidate",
+            ("candidate_id",),
+        )
+        or not _has_fk(
+            candidate_binding,
+            ("preparation_id",),
+            event.preparation_relation,
+            ("preparation_id",),
+        )
+        or not _has_fk(
+            candidate_binding,
+            ("preparation_id",),
+            event.seal_relation,
+            ("preparation_id",),
+        )
+    ):
+        errors.append(
+            "publication candidate preparation must be exact one-to-one sealed authority"
+        )
+    expected_event_keys = {
+        frozenset({"event_id"}),
+        frozenset({"preparation_id", "sequence_no"}),
+    }
+    if (
+        base is None
+        or set(base.attributes)
+        != {
+            "event_id",
+            "preparation_id",
+            "sequence_no",
+            "event_type",
+            "event_sha256",
+            "created_at",
+        }
+        or set(base.declared_keys) != expected_event_keys
+        or not _has_fk(
+            base,
+            ("preparation_id",),
+            event.stream_relation,
+            ("preparation_id",),
+        )
+    ):
+        errors.append(
+            "event base must use the preparation coordinate and durable stream FK"
+        )
     for label, subtype in (("removed", removed), ("deletion", deletion)):
         if subtype is None or not _has_fk(
             subtype, ("event_id",), event.base_relation, ("event_id",)
@@ -3111,21 +4272,20 @@ def _validate_operational_integrity_contracts(
         or set(ack_head.attributes)
         != {
             "consumer_id",
-            "source_revision",
+            "preparation_id",
             "through_sequence_no",
             "updated_at",
         }
-        or set(ack_head.declared_keys)
-        != {frozenset({"consumer_id", "source_revision"})}
+        or set(ack_head.declared_keys) != {frozenset({"consumer_id", "preparation_id"})}
     ):
-        errors.append("event ack head must be consumer/revision high-water state")
+        errors.append("event ack head must be consumer/preparation high-water state")
     elif not _has_fk(
         ack_head,
-        ("source_revision", "through_sequence_no"),
+        ("preparation_id", "through_sequence_no"),
         event.base_relation,
-        ("source_revision", "sequence_no"),
+        ("preparation_id", "sequence_no"),
     ):
-        errors.append("event ack head must target an event in the same revision")
+        errors.append("event ack head must target an event in the same preparation")
 
     if generation.reservation_relation != "source_build_generation":
         errors.append("build-generation reservation relation has the wrong name")
@@ -3142,10 +4302,55 @@ def _validate_operational_integrity_contracts(
         != {FunctionalDependency(frozenset({"generation"}), frozenset({"build_id"}))}
     ):
         errors.append("build-generation reservation must declare generation -> build")
-    if "strictly greater" not in generation.rule or "no row" not in generation.rule:
-        errors.append(
-            "build-generation rule must state takeover and no-build semantics"
+    if not all(
+        term in generation.rule
+        for term in (
+            "strictly greater",
+            "no row",
+            "exact current ingest head",
+            "matching owner",
+            "unexpired lease",
+            "rather than an FK",
         )
+    ):
+        errors.append(
+            "build-generation rule must state live writer authorization, takeover, "
+            "and no-build semantics"
+        )
+    elif reservation is not None and (
+        not _has_fk(
+            reservation,
+            ("generation",),
+            "ingest_generation",
+            ("generation",),
+        )
+        or _has_fk(
+            reservation,
+            ("generation",),
+            "ingest_generation_owner",
+            ("generation",),
+        )
+    ):
+        errors.append(
+            "build-generation mapping must reference immutable generation history"
+        )
+    upload = relations.get("canonical_value_upload")
+    if (
+        upload is None
+        or not _has_fk(
+            upload,
+            ("generation",),
+            "ingest_generation",
+            ("generation",),
+        )
+        or _has_fk(
+            upload,
+            ("generation",),
+            "ingest_generation_owner",
+            ("generation",),
+        )
+    ):
+        errors.append("canonical upload must reference immutable generation history")
 
     if cleanup.job_relation != "cleanup_job" or cleanup.attempt_attribute != (
         "cycle_generation"
@@ -3166,16 +4371,33 @@ def _validate_operational_integrity_contracts(
     if (
         preparation.preparation_relation != "operational_preparation"
         or (preparation.policy_relation != "operational_policy")
+        or preparation.deletion_generation_relation != "deletion_request_generation"
         or preparation.natural_key != expected_preparation_key
     ):
-        errors.append("preparation identity contract must include policy in its key")
+        errors.append(
+            "preparation identity contract must include policy and exact deletion "
+            "generation authority in its key"
+        )
     preparation_relation = relations.get(preparation.preparation_relation)
     if preparation_relation is None or frozenset(expected_preparation_key) not in (
         preparation_relation.declared_keys
     ):
         errors.append("operational preparation natural key omits policy")
-    if "policy change" not in preparation.rule:
-        errors.append("preparation identity must state policy-change behavior")
+    elif not _has_fk(
+        preparation_relation,
+        ("deletion_request_generation",),
+        preparation.deletion_generation_relation,
+        ("generation",),
+    ):
+        errors.append("operational preparation lacks exact deletion generation FK")
+    if not all(
+        term in preparation.rule
+        for term in ("policy", "FK-backed", "singleton", "publication")
+    ):
+        errors.append(
+            "preparation identity must state policy, exact generation, and "
+            "publication-head behavior"
+        )
 
     return errors
 
@@ -3230,43 +4452,36 @@ def _validate_artifact_delta_contract(
         )
     rebuild_terms = (
         "artifact_semantics_sha256 differs",
-        "artifact_name never participates",
+        "GID-derived artifact name is normalized",
     )
     unchanged_terms = (
         "artifact_semantics_sha256 is exactly equal",
-        "artifact_name differs",
+        "artifact names are not delta state",
     )
     rename_terms = (
-        "desired new artifact_name",
-        "reuse the old artifact identity/blob",
-        "materialize the new catalog_artifact name",
-        "removal of the old managed projection path",
-        "creation of the new managed projection path",
-        "never silently skip",
-        "never prepare/rebuild bytes",
+        "globally derived from immutable positive GID",
+        "absent from artifact input, delta, operation, prepared, and catalog occurrence",
+        "never an artifact rename",
     )
     if any(term not in delta_contract.rebuild_rule for term in rebuild_terms):
         errors.append("artifact delta REBUILD rule is not semantic-only")
     if any(term not in delta_contract.unchanged_rule for term in unchanged_terms):
-        errors.append("artifact delta UNCHANGED rule omits name-only changes")
+        errors.append("artifact delta UNCHANGED rule admits repeated name state")
     if any(term not in delta_contract.rename_rule for term in rename_terms):
-        errors.append("artifact delta rename-only projection rule is incomplete")
+        errors.append("artifact delta name-normalization rule is incomplete")
     relation_requirements = {
         delta_contract.operation_relation: {
             "candidate_id",
             "publication_key",
-            "artifact_name",
             "operation",
         },
         delta_contract.old_state_relation: {
             "candidate_id",
             "publication_key",
-            "artifact_name",
         },
         delta_contract.new_state_relation: {
             "candidate_id",
             "publication_key",
-            "artifact_name",
         },
     }
     if len(relation_requirements) != 3:
@@ -3341,6 +4556,7 @@ def _validate_transition_authority_contract(
         "analysis_state_component_seal",
         "analysis_checkpoint",
         "analysis_batch_receipt",
+        "publication_candidate_projection_seal",
         "publication_checkpoint",
         "publication_batch_receipt",
         "catalog_revision",
@@ -3455,6 +4671,7 @@ def _validate_artifact_codecs(contract: Contract) -> list[str]:
         "source_manifest": (
             "source_manifest_component_sha256",
             "artifact_source_manifest_v1",
+            1,
             "ascii('h2hdb-vnext-artifact-source-manifest\\0') || "
             "u32be(codec_version) || raw32(observation_identity_sha256) || "
             "u32be(manifest_algorithm_version) || u32be(file_order_version)",
@@ -3463,12 +4680,14 @@ def _validate_artifact_codecs(contract: Contract) -> list[str]:
         "member_plan": (
             "member_plan_component_sha256",
             "artifact_member_plan_v1",
+            1,
             "artifact_member_plan_contract.framing",
-            "f71707af3aac3aebdab1df37422fac519e5924a7cef76bacde90b90dd0f3bf56",
+            "783a1b7b319bedd73edf61afa00cc9cd419ae34e9b85fe8f4c39bfae7c13f690",
         ),
         "effective_content": (
             "effective_content_component_sha256",
             "artifact_effective_content_v1",
+            1,
             "ascii('h2hdb-vnext-artifact-effective-content\\0') || "
             "u32be(codec_version) || u64be(file_count) || repeated "
             "raw32(file_sha256)",
@@ -3477,6 +4696,7 @@ def _validate_artifact_codecs(contract: Contract) -> list[str]:
         "selected": (
             "selected_component_sha256",
             "artifact_selected_v1",
+            1,
             "ascii('h2hdb-vnext-artifact-selected\\0') || "
             "u32be(codec_version) || raw32(publication_key) || raw32(gallery_key)",
             "daa161fdd7112e9e73c7ab3c27c94e5dd871b77fc38d2701c0e680a1a11d0281",
@@ -3484,6 +4704,7 @@ def _validate_artifact_codecs(contract: Contract) -> list[str]:
         "owner": (
             "owner_component_sha256",
             "artifact_owner_v1",
+            1,
             "ascii('h2hdb-vnext-artifact-owner\\0') || u32be(codec_version) || "
             "raw32(content_sha256) || raw32(owner_gallery_key) || u64be(gid) || "
             "raw32(winner_gallery_key)",
@@ -3491,10 +4712,12 @@ def _validate_artifact_codecs(contract: Contract) -> list[str]:
         ),
         "policy": (
             "policy_component_sha256",
-            "artifact_policy_v1",
-            "ascii('h2hdb-vnext-artifact-policy\\0') || u32be(codec_version) || "
-            "u32be(artifact_algorithm_version) || u32be(max_image_short_side)",
-            "ae7a4b756f62884bb7bcc10fc42e4d2d0caab2a6b2a117e8302650339c72b4fa",
+            "artifact_policy_v2",
+            2,
+            "ascii('h2hdb-vnext-artifact-policy\\0') || u32be(codec_version=2) || "
+            "u32be(artifact_algorithm_version) || u32be(max_image_short_side) || "
+            "raw32(producer_fingerprint_sha256)",
+            "055021f55a25bb338b14aa4423b3fee9f8f87ff9ea442e4283ae89db88f47a60",
         ),
     }
     codecs = {codec.kind: codec for codec in contract.artifact_component_codecs}
@@ -3532,17 +4755,17 @@ def _validate_artifact_codecs(contract: Contract) -> list[str]:
         "build_manifest_sha256",
         "gallery_manifest_sha256",
     }
-    for kind, (attribute, domain, framing, golden) in expected.items():
+    for kind, (attribute, domain, codec_version, framing, golden) in expected.items():
         codec = codecs[kind]
         if (
             codec.attribute != attribute
             or codec.digest_domain != domain
-            or codec.codec_version != 1
+            or codec.codec_version != codec_version
             or codec.framing != framing
             or codec.golden_sha256 != golden
             or not codec.canonical_order.strip()
         ):
-            errors.append(f"artifact component codec {kind!r} drifts from v1")
+            errors.append(f"artifact component codec {kind!r} drifts from registry")
         if forbidden_audits & set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", codec.framing)):
             errors.append(
                 f"artifact component codec {kind!r} grants semantic authority "
@@ -3644,9 +4867,18 @@ def _validate_artifact_byte_producer_contract(
         errors.append(f"{prefix} must reference artifact_policy_semantics")
     if producer.algorithm_attribute != "artifact_algorithm_version":
         errors.append(f"{prefix} must version artifact_algorithm_version")
-    if producer.independent_parameters != ("max_image_short_side",):
+    if producer.producer_relation != "artifact_producer_fingerprint":
+        errors.append(f"{prefix} must reference artifact_producer_fingerprint")
+    if producer.zip_writer_policy_relation != "artifact_zip_writer_policy":
+        errors.append(f"{prefix} must reference artifact_zip_writer_policy")
+    if producer.storage_codec_relation != "artifact_storage_codec":
+        errors.append(f"{prefix} must reference artifact_storage_codec")
+    if producer.independent_parameters != (
+        "max_image_short_side",
+        "producer_fingerprint_sha256",
+    ):
         errors.append(
-            f"{prefix} independent parameters must be exactly max_image_short_side"
+            f"{prefix} independent parameters must be resize and producer fingerprint"
         )
     if set(producer.algorithm_bundle) != expected_bundle or len(
         producer.algorithm_bundle
@@ -3654,11 +4886,31 @@ def _validate_artifact_byte_producer_contract(
         errors.append(f"{prefix} implementation bundle is incomplete")
     if (
         "max_image_short_side" not in producer.runtime_obligation
+        or "policy-v2" not in producer.runtime_obligation
+        or "registered exact producer fingerprint" not in producer.runtime_obligation
         or "every possible bit change" not in producer.runtime_obligation
         or "certified byte-equivalent" not in producer.runtime_obligation
-        or "policy tuple change" not in producer.runtime_obligation
+        or "algorithm/resize/producer tuple change" not in producer.runtime_obligation
     ):
         errors.append(f"{prefix} runtime obligation is incomplete")
+    expected_fingerprint_framing = (
+        "ascii('h2hdb-vnext-artifact-producer\\0') || u32be(codec_version=1) || "
+        "lp32(writer_id) || lp32(python_abi) || lp32(pillow_build) || "
+        "lp32(libjpeg_build) || lp32(zlib_build)"
+    )
+    if producer.producer_fingerprint_framing != expected_fingerprint_framing:
+        errors.append(f"{prefix} producer fingerprint framing drifted")
+    try:
+        producer_payload = bytes.fromhex(
+            producer.producer_fingerprint_golden_payload_hex
+        )
+    except ValueError:
+        errors.append(f"{prefix} producer fingerprint golden is not lowercase hex")
+    else:
+        if hashlib.sha256(producer_payload).hexdigest() != (
+            producer.producer_fingerprint_golden_sha256
+        ):
+            errors.append(f"{prefix} producer fingerprint golden does not hash")
 
     policy = relation_by_name.get(producer.policy_relation)
     if policy is None:
@@ -3668,28 +4920,325 @@ def _validate_artifact_byte_producer_contract(
             "policy_component_sha256",
             producer.algorithm_attribute,
             "max_image_short_side",
+            "producer_fingerprint_sha256",
         }
         if set(policy.attributes) != expected_attributes:
             errors.append(f"{prefix} policy relation has redundant or missing columns")
         expected_keys = {
             frozenset({"policy_component_sha256"}),
-            frozenset({producer.algorithm_attribute, "max_image_short_side"}),
+            frozenset(
+                {
+                    producer.algorithm_attribute,
+                    "max_image_short_side",
+                    "producer_fingerprint_sha256",
+                }
+            ),
         }
         if set(policy.declared_keys) != expected_keys:
             errors.append(f"{prefix} policy relation has the wrong natural key")
         expected_dependencies = {
             FunctionalDependency(
                 frozenset({"policy_component_sha256"}),
-                frozenset({producer.algorithm_attribute, "max_image_short_side"}),
+                frozenset(
+                    {
+                        producer.algorithm_attribute,
+                        "max_image_short_side",
+                        "producer_fingerprint_sha256",
+                    }
+                ),
             ),
             FunctionalDependency(
-                frozenset({producer.algorithm_attribute, "max_image_short_side"}),
+                frozenset(
+                    {
+                        producer.algorithm_attribute,
+                        "max_image_short_side",
+                        "producer_fingerprint_sha256",
+                    }
+                ),
                 frozenset({"policy_component_sha256"}),
             ),
         }
         if set(policy.functional_dependencies) != expected_dependencies:
             errors.append(f"{prefix} policy relation has the wrong semantic FDs")
+        if not _has_fk(
+            policy,
+            ("producer_fingerprint_sha256",),
+            producer.producer_relation,
+            ("producer_fingerprint_sha256",),
+        ):
+            errors.append(f"{prefix} policy relation lacks producer FK")
+
+    producer_relation = relation_by_name.get(producer.producer_relation)
+    producer_natural = frozenset(
+        {
+            producer.algorithm_attribute,
+            "producer_equivalence_class",
+            "writer_id",
+            "python_abi",
+            "pillow_build",
+            "libjpeg_build",
+            "zlib_build",
+        }
+    )
+    if producer_relation is None:
+        errors.append(f"{prefix} producer registry is missing")
+    elif set(producer_relation.declared_keys) != {
+        frozenset({"producer_fingerprint_sha256"}),
+        producer_natural,
+    } or not _has_fk(
+        producer_relation,
+        (producer.algorithm_attribute,),
+        producer.zip_writer_policy_relation,
+        (producer.algorithm_attribute,),
+    ):
+        errors.append(f"{prefix} producer registry keys/FK are incomplete")
+
+    zip_policy = relation_by_name.get(producer.zip_writer_policy_relation)
+    if zip_policy is None or frozenset({producer.algorithm_attribute}) not in set(
+        zip_policy.declared_keys
+    ):
+        errors.append(f"{prefix} ZIP writer policy registry is missing its key")
+    storage = relation_by_name.get(producer.storage_codec_relation)
+    if storage is None or set(storage.declared_keys) != {
+        frozenset({"storage_codec_version"}),
+        frozenset({"adapter_id"}),
+    }:
+        errors.append(f"{prefix} storage codec registry keys are incomplete")
     return errors
+
+
+def _validate_artifact_derived_identity_contracts(
+    contract: Contract,
+    relation_by_name: Mapping[str, Relation],
+) -> list[str]:
+    """Pin caller-independent artifact names, locations, and protection evidence."""
+
+    errors: list[str] = []
+
+    name = contract.artifact_name_contract
+    expected_name_framing = (
+        "ascii('h2h-') || canonical_positive_signed_int63_decimal_without_leading_zero "
+        "|| ascii('.cbz')"
+    )
+    if name is None:
+        errors.append("artifact name contract is missing")
+    else:
+        name_relation = relation_by_name.get(name.relation)
+        expected_name_keys = {
+            frozenset({"publication_key"}),
+            frozenset({"publication_id"}),
+            frozenset({name.gid_attribute}),
+            frozenset({name.name_attribute}),
+        }
+        if (
+            name.relation != "publication_identity"
+            or name.gid_attribute != "gid"
+            or name.name_attribute != "artifact_name"
+            or name.codec_version != 1
+            or name.framing != expected_name_framing
+            or name.golden_gid != 7
+            or name.golden_name_hex != b"h2h-7.cbz".hex()
+            or "reject caller bytes" not in name.runtime_obligation
+            or "positive GID" not in name.runtime_obligation
+        ):
+            errors.append("artifact name contract drifts from exact GID codec v1")
+        if name_relation is None or set(name_relation.declared_keys) != (
+            expected_name_keys
+        ):
+            errors.append("artifact name relation lacks four equivalent identity keys")
+
+    locator = contract.artifact_locator_contract
+    expected_components = (
+        "sha256",
+        "lowerhex_artifact_sha256_prefix_2",
+        "lowerhex_artifact_sha256_64_plus_dot_cbz",
+    )
+    if locator is None:
+        errors.append("artifact locator contract is missing")
+    else:
+        location_relation = relation_by_name.get(locator.relation)
+        expected_location_keys = {
+            frozenset({locator.artifact_attribute}),
+            frozenset({locator.locator_attribute}),
+        }
+        if (
+            locator.relation != "artifact_location"
+            or locator.artifact_attribute != "artifact_sha256"
+            or locator.locator_attribute != "artifact_locator_sha256"
+            or locator.storage_codec_version != 1
+            or locator.locator_codec_version != 1
+            or locator.components != expected_components
+            or locator.derivation
+            != "artifact_locator_components(raw32 artifact_sha256) = "
+            "('sha256', lowerhex[0:2], lowerhex64 + '.cbz')"
+            or "reject caller components" not in locator.runtime_obligation
+            or "exact-compare both candidate keys" not in locator.runtime_obligation
+        ):
+            errors.append("artifact locator contract drifts from content codec v1")
+        if (
+            location_relation is None
+            or set(location_relation.attributes)
+            != {locator.artifact_attribute, locator.locator_attribute}
+            or set(location_relation.declared_keys) != expected_location_keys
+            or not _has_fk(
+                location_relation,
+                (locator.artifact_attribute,),
+                "artifact_blob",
+                ("artifact_sha256",),
+            )
+            or not _has_fk(
+                location_relation,
+                (locator.locator_attribute,),
+                "canonical_value_identity",
+                ("value_sha256",),
+            )
+        ):
+            errors.append(
+                "artifact locator relation lacks exact bidirectional keys/FKs"
+            )
+        artifact_sha256 = _decode_exact_lower_hex(
+            locator.golden_artifact_sha256,
+            32,
+            "artifact locator golden artifact SHA-256",
+            errors,
+        )
+        payload = _decode_exact_lower_hex(
+            locator.golden_payload_hex,
+            None,
+            "artifact locator golden payload",
+            errors,
+        )
+        if artifact_sha256 is not None and payload is not None:
+            lowerhex = artifact_sha256.hex().encode("ascii")
+            segments = (b"sha256", lowerhex[:2], lowerhex + b".cbz")
+            expected_payload = b"".join(
+                (
+                    (1).to_bytes(4, "big"),
+                    len(segments).to_bytes(4, "big"),
+                    *(
+                        len(segment).to_bytes(4, "big") + segment
+                        for segment in segments
+                    ),
+                )
+            )
+            if payload != expected_payload:
+                errors.append("artifact locator golden payload is not SHA-derived")
+            if _canonical_value_sha256("artifact_locator_bytes_v1", payload) != (
+                locator.golden_locator_sha256
+            ):
+                errors.append("artifact locator golden canonical digest does not hash")
+
+    protection = contract.artifact_protection_token_contract
+    expected_receipt_framing = (
+        "SHA256(ascii('h2hdb-vnext-artifact-storage-receipt\\0') || "
+        "raw16(candidate_id) || raw32(publication_key) || raw32(artifact_sha256) || "
+        "raw32(artifact_locator_sha256) || u64be(storage_generation) || "
+        "u64be(size_bytes))[0:16]"
+    )
+    expected_token_framing = (
+        "ascii('h2hdb-vnext-artifact-protection\\0') || u32be(codec_version=1) || "
+        "u32be(storage_codec_version) || raw16(candidate_id) || "
+        "raw32(publication_key) || raw32(artifact_sha256) || "
+        "raw32(artifact_locator_sha256) || raw16(receipt_id) || "
+        "u64be(storage_generation) || u64be(size_bytes)"
+    )
+    if protection is None:
+        errors.append("artifact protection-token contract is missing")
+    else:
+        prepared = relation_by_name.get(protection.relation)
+        storage = relation_by_name.get(protection.storage_codec_relation)
+        if (
+            protection.relation != "prepared_artifact"
+            or protection.storage_codec_relation != "artifact_storage_codec"
+            or protection.codec_version != 1
+            or protection.exact_bytes != 184
+            or protection.receipt_framing != expected_receipt_framing
+            or protection.token_framing != expected_token_framing
+            or "no caller receipt or token authority"
+            not in protection.runtime_obligation
+            or "decode exact EOF" not in protection.runtime_obligation
+            or "compare every field on replay" not in protection.runtime_obligation
+        ):
+            errors.append("artifact protection-token contract drifts from codec v1")
+        if (
+            prepared is None
+            or "protection_token" not in prepared.attributes
+            or frozenset({"protection_token"}) not in prepared.declared_keys
+            or not _has_fk(
+                prepared,
+                ("storage_codec_version",),
+                protection.storage_codec_relation,
+                ("storage_codec_version",),
+            )
+            or storage is None
+        ):
+            errors.append("prepared artifact lacks closed protection-token identity")
+        token = _decode_exact_lower_hex(
+            protection.golden_token_hex,
+            protection.exact_bytes,
+            "artifact protection-token golden",
+            errors,
+        )
+        receipt = _decode_exact_lower_hex(
+            protection.golden_receipt_id,
+            16,
+            "artifact storage-receipt golden",
+            errors,
+        )
+        if token is not None and receipt is not None:
+            candidate = bytes.fromhex("11" * 16)
+            publication = bytes.fromhex("22" * 32)
+            artifact = bytes.fromhex("33" * 32)
+            artifact_locator = bytes.fromhex("44" * 32)
+            generation = (7).to_bytes(8, "big")
+            size = (9).to_bytes(8, "big")
+            expected_receipt = hashlib.sha256(
+                b"h2hdb-vnext-artifact-storage-receipt\0"
+                + candidate
+                + publication
+                + artifact
+                + artifact_locator
+                + generation
+                + size
+            ).digest()[:16]
+            expected_token = (
+                b"h2hdb-vnext-artifact-protection\0"
+                + (1).to_bytes(4, "big")
+                + (1).to_bytes(4, "big")
+                + candidate
+                + publication
+                + artifact
+                + artifact_locator
+                + expected_receipt
+                + generation
+                + size
+            )
+            if receipt != expected_receipt:
+                errors.append("artifact storage-receipt golden does not hash")
+            if token != expected_token or len(token) != protection.exact_bytes:
+                errors.append("artifact protection-token golden does not encode")
+
+    return errors
+
+
+def _decode_exact_lower_hex(
+    value: str,
+    exact_bytes: int | None,
+    context: str,
+    errors: list[str],
+) -> bytes | None:
+    if (
+        len(value) % 2
+        or value != value.lower()
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        errors.append(f"{context} must be exact lowercase even-length hex")
+        return None
+    decoded = bytes.fromhex(value)
+    if exact_bytes is not None and len(decoded) != exact_bytes:
+        errors.append(f"{context} must be exactly {exact_bytes} bytes")
+        return None
+    return decoded
 
 
 def _validate_artifact_member_plan_contract(
@@ -3849,6 +5398,132 @@ def _validate_analysis_resolution_contract(
             errors.append(f"{prefix} {field} must be {value!r}, got {actual!r}")
     if resolution.max_overlay_depth <= 0:
         errors.append(f"{prefix} max_overlay_depth must be positive")
+
+    expected_batch_stages = (
+        ("changed_gallery", 1, "analysis_gallery_v1"),
+        ("changed_file_hash", 2, "analysis_digest_v1"),
+        ("file_hash_decision", 3, "analysis_digest_v1"),
+        ("validate_file_hash_decision", 4, "analysis_digest_live_v1"),
+        ("impacted_gallery", 5, "analysis_gallery_v1"),
+        ("impacted_content", 6, "analysis_gallery_v1"),
+        ("content_owner_candidate", 7, "analysis_gallery_v1"),
+        (
+            "validate_content_owner_candidate",
+            8,
+            "analysis_gallery_live_v1",
+        ),
+        ("content_owner", 9, "analysis_digest_v1"),
+        ("validate_content_owner", 10, "analysis_digest_live_v1"),
+        ("impacted_gid", 11, "analysis_gallery_v1"),
+        ("gid_candidate", 12, "analysis_gallery_v1"),
+        ("validate_gid_candidate", 13, "analysis_gallery_live_v1"),
+        ("gid_winner", 14, "analysis_gid_v1"),
+        ("validate_gid_winner", 15, "analysis_gid_live_v1"),
+    )
+    if (
+        resolution.stage_relation != "analysis_stage"
+        or resolution.checkpoint_relation != "analysis_checkpoint"
+        or resolution.batch_receipt_relation != "analysis_batch_receipt"
+        or tuple(
+            (stage.name, stage.stage_order, stage.cursor_codec)
+            for stage in resolution.batch_stages
+        )
+        != expected_batch_stages
+    ):
+        errors.append(f"{prefix} batch stage/order/cursor registry drifts")
+    cursor_terms = (
+        "analysis_gallery_v1 is u8(version=1)",
+        "analysis_digest_v1 is u8(version=1)",
+        "analysis_gid_v1 is u8(version=1)",
+        "analysis_gallery_live_v1",
+        "analysis_digest_live_v1",
+        "analysis_gid_live_v1",
+        "u64be(live_row_count_int63)",
+        "all-zero absent-key genesis",
+        "exact EOF",
+        "digest keysets compare unsigned bytes",
+        "stage-selected codec before every query or CAS",
+    )
+    if any(term not in resolution.cursor_codec_rule for term in cursor_terms):
+        errors.append(f"{prefix} cursor codec framing is not closed-world")
+    batch_rule_terms = (
+        "all fifteen registered stages in exact stage_order",
+        "hard-capped batch",
+        "server-side",
+        "same transaction",
+        "committed_generation is exactly start_generation plus one",
+        "next_processed_count is exactly start_processed_count plus row_count",
+        "full stored tuple without writes",
+        "terminal is one if and only if the derived page is empty",
+        "next_state is COMPLETE",
+        "nonterminal receipt has positive row_count",
+        "caller stage, cursor, count, terminal, state, digest, sequence, or receipt bytes never authorize mutation",
+    )
+    if any(term not in resolution.batch_rule for term in batch_rule_terms):
+        errors.append(f"{prefix} batch receipt/CAS rule is incomplete")
+
+    stage_relation = relation_by_name.get(resolution.stage_relation)
+    if (
+        stage_relation is None
+        or set(stage_relation.attributes) != {"stage", "stage_order", "cursor_codec"}
+        or set(stage_relation.declared_keys)
+        != {frozenset({"stage"}), frozenset({"stage_order"})}
+    ):
+        errors.append(f"{prefix} stage registry lacks its exact BCNF shape")
+    checkpoint = relation_by_name.get(resolution.checkpoint_relation)
+    if (
+        checkpoint is None
+        or set(checkpoint.attributes)
+        != {
+            "analysis_id",
+            "stage",
+            "generation",
+            "cursor",
+            "processed_count",
+            "state",
+            "updated_at",
+        }
+        or set(checkpoint.declared_keys) != {frozenset({"analysis_id", "stage"})}
+        or not _has_fk(
+            checkpoint,
+            ("stage",),
+            resolution.stage_relation,
+            ("stage",),
+        )
+    ):
+        errors.append(f"{prefix} checkpoint lacks exact typed stage progress authority")
+    receipt = relation_by_name.get(resolution.batch_receipt_relation)
+    if (
+        receipt is None
+        or set(receipt.attributes)
+        != {
+            "analysis_id",
+            "stage",
+            "batch_key",
+            "start_generation",
+            "start_cursor",
+            "start_processed_count",
+            "next_cursor",
+            "next_processed_count",
+            "next_state",
+            "row_count",
+            "terminal",
+            "committed_generation",
+            "committed_at",
+        }
+        or set(receipt.declared_keys)
+        != {
+            frozenset({"analysis_id", "stage", "batch_key"}),
+            frozenset({"analysis_id", "stage", "start_generation"}),
+        }
+        or not _has_fk(
+            receipt,
+            ("analysis_id", "stage"),
+            resolution.checkpoint_relation,
+            ("analysis_id", "stage"),
+        )
+    ):
+        errors.append(f"{prefix} receipt lacks exact pre/post replay authority")
 
     baseline = relation_by_name.get(resolution.baseline_relation)
     if baseline is None or not {
@@ -4180,7 +5855,14 @@ def _validate_byte_domains(
             "namespace": 128,
             "metadata_fingerprint": 40,
             "cursor": 2048,
-            "protection_token": 512,
+            "protection_token": 184,
+            "adapter_id": 64,
+            "producer_equivalence_class": 128,
+            "writer_id": 128,
+            "python_abi": 128,
+            "pillow_build": 128,
+            "libjpeg_build": 128,
+            "zlib_build": 128,
         }
         if contract.scope == "catalog_data_plane"
         else {}
@@ -4440,35 +6122,84 @@ def _validate_source_locator_contract(
     return errors
 
 
+_ANALYSIS_CANDIDATE_PRIORITY_FRAMING_V1 = (
+    "ascii('h2hdb-vnext-analysis-candidate-priority\\0') || "
+    "u32be(encoding_version=1) || u8(candidate_kind: "
+    "CONTENT_OWNER=0,GID_WINNER=1) || u8(prefer_not_already_uploaded: "
+    "marker_absent=1,marker_present=0) || "
+    "u64be(unicode_scalar_title_length_int63) || u64be(download_time_int63) || "
+    "if candidate_kind=CONTENT_OWNER then u64be(gid_positive_int63); the kind "
+    "fixes the exact frame length and trailing bytes are forbidden"
+)
+_ANALYSIS_CANDIDATE_ORDERING_RULE_V1 = (
+    "within each candidate relation and group select the lexicographically greatest "
+    "tuple (priority_key, scope_key, locator_sha256), comparing every byte string "
+    "unsigned bytewise; the SQL equivalent is ORDER BY priority_key DESC, scope_key "
+    "DESC, locator_sha256 DESC; no collation, truncation, reversal, or incumbent "
+    "input is permitted"
+)
+_ANALYSIS_CANDIDATE_MARKER_RULE_V1 = (
+    "the marker is exact ASCII bytes already uploaded; compare every exact "
+    "strict-UTF-8 tag value after mapping only ASCII A-Z bytes to a-z, ignoring "
+    "namespace; do not apply Unicode casefold, normalization, locale, collation, "
+    "or trimming; any marker match encodes zero and absence encodes one"
+)
+_ANALYSIS_CANDIDATE_DIGEST_FRAMING_V1 = (
+    "candidate_sha256 = SHA256(ascii('h2hdb-vnext-analysis-candidate-audit\\0') "
+    "|| u32be(encoding_version=1) || u8(candidate_kind: "
+    "CONTENT_OWNER=0,GID_WINNER=1) || raw16(analysis_id) || if CONTENT_OWNER "
+    "raw32(content_sha256) else u64be(gid_positive_int63) || exact canonical "
+    "priority_key of the same kind || raw32(scope_key) || raw32(locator_sha256)); "
+    "the kind fixes every field boundary, exact EOF is required, and the digest is "
+    "audit-only"
+)
+_ANALYSIS_CANDIDATE_RUNTIME_OBLIGATION_V1 = (
+    "production streams the exact canonical title pages through "
+    "StrictUtf8ScalarCounter and count_analysis_title_scalars to obtain one fixed "
+    "AnalysisTitleScalarReceipt without materializing unbounded title bytes; "
+    "the private production _encode_streamed_candidate_priority adapter first "
+    "validates the exact metadata tree, then drives a second bounded page stream "
+    "into that receipt and must remain byte-equal to the public reference encoder; "
+    "encode_analysis_candidate_priority and validate_analysis_candidate_priority "
+    "accept only that fixed scalar receipt, while "
+    "decode_analysis_candidate_priority validates the stored frame over immutable "
+    "snapshot facts; "
+    "analysis_candidate_has_already_uploaded implements the exact ASCII-only marker "
+    "rule; analysis_candidate_total_order_key implements the unsigned lexicographic "
+    "maximum over priority_key, scope_key, and locator_sha256; "
+    "analysis_content_candidate_digest and analysis_gid_candidate_digest construct "
+    "candidate_sha256 solely as the exact audit frame; reject monolithic production "
+    "title bytes, gallery_id, unique "
+    "gallery location, incumbent state, leaf name, allocation order, Unicode "
+    "database behavior, collation, truncation, caller bytes, or candidate_sha256 as "
+    "comparator authority"
+)
+
+
 def _validate_analysis_candidate_contract(
     candidate: AnalysisCandidateContract,
     relation_by_name: Mapping[str, Relation],
 ) -> list[str]:
     errors: list[str] = []
     prefix = "analysis candidate contract"
-    if candidate.stable_tie_break_attributes != ("scope_key", "locator_sha256"):
-        errors.append(f"{prefix} must tie-break by scope_key and locator_sha256")
-    if candidate.encoding_version != 1 or any(
-        value in candidate.framing for value in candidate.stable_tie_break_attributes
-    ):
-        errors.append(
-            f"{prefix} priority framing must remain a nonunique comparator prefix"
-        )
-    forbidden = ("incumbent", "gallery_id", "allocation order", "leaf name")
-    if any(value not in candidate.runtime_obligation for value in forbidden):
-        errors.append(
-            f"{prefix} must reject nondeterministic incumbent/allocation inputs"
-        )
-    required_order = (
-        "potentially nonunique comparator prefix",
-        "ordering by priority_key",
-        "scope_key",
-        "locator_sha256",
-        "reject encoding gallery_id or the unique gallery location into priority_key",
-        "candidate_sha256 audit-only",
+    expected_scalar_shape = (
+        candidate.content_relation == "analysis_content_owner_candidate"
+        and candidate.gid_relation == "analysis_gid_candidate"
+        and candidate.gallery_relation == "gallery_identity"
+        and candidate.priority_attribute == "priority_key"
+        and candidate.candidate_digest_attribute == "candidate_sha256"
+        and candidate.stable_tie_break_attributes == ("scope_key", "locator_sha256")
+        and candidate.encoding_version == 1
     )
-    if any(value not in candidate.runtime_obligation for value in required_order):
-        errors.append(f"{prefix} does not state the normalized stable total order")
+    exact_codec = (
+        candidate.framing == _ANALYSIS_CANDIDATE_PRIORITY_FRAMING_V1
+        and candidate.ordering_rule == _ANALYSIS_CANDIDATE_ORDERING_RULE_V1
+        and candidate.already_uploaded_marker_rule == _ANALYSIS_CANDIDATE_MARKER_RULE_V1
+        and candidate.candidate_digest_framing == _ANALYSIS_CANDIDATE_DIGEST_FRAMING_V1
+        and candidate.runtime_obligation == _ANALYSIS_CANDIDATE_RUNTIME_OBLIGATION_V1
+    )
+    if not expected_scalar_shape or not exact_codec:
+        errors.append(f"{prefix} must equal the closed executable v1 codec")
     gallery = relation_by_name.get(candidate.gallery_relation)
     if gallery is None or not {
         "gallery_id",
@@ -4519,7 +6250,8 @@ def _validate_long_value_storage_contract(
     expected_direct = {
         "metadata_fingerprint",
         "cursor",
-        "protection_token",
+        "start_cursor",
+        "next_cursor",
     }
     if set(storage.canonical_reference_attributes) != expected_canonical:
         errors.append(f"{prefix} canonical-reference registry is incomplete")
@@ -5293,6 +7025,11 @@ def _parse_analysis_candidate_contract(
         ),
         encoding_version=_integer(value, "encoding_version", context),
         framing=_string(value, "framing", context),
+        ordering_rule=_string(value, "ordering_rule", context),
+        already_uploaded_marker_rule=_string(
+            value, "already_uploaded_marker_rule", context
+        ),
+        candidate_digest_framing=_string(value, "candidate_digest_framing", context),
         runtime_obligation=_string(value, "runtime_obligation", context),
     )
 
@@ -5351,6 +7088,7 @@ def _parse_source_snapshot_manifest_contract(
     context = "contract.source_snapshot_manifest_contract"
     return SourceSnapshotManifestContract(
         relation=_string(value, "relation", context),
+        analysis_binding_relation=_string(value, "analysis_binding_relation", context),
         digest_attribute=_string(value, "digest_attribute", context),
         canonical_value_relation=_string(value, "canonical_value_relation", context),
         canonical_digest_attribute=_string(
@@ -5362,6 +7100,8 @@ def _parse_source_snapshot_manifest_contract(
         canonical_order=_string(value, "canonical_order", context),
         decision_predicate=_string(value, "decision_predicate", context),
         write_obligation=_string(value, "write_obligation", context),
+        handoff_obligation=_string(value, "handoff_obligation", context),
+        publication_obligation=_string(value, "publication_obligation", context),
         retention=_string(value, "retention", context),
     )
 
@@ -5381,8 +7121,31 @@ def _parse_publication_atomic_contract(
         prepared_artifact_relation=_string(
             value, "prepared_artifact_relation", context
         ),
+        stage_relation=_string(value, "stage_relation", context),
+        projection_seal_relation=_string(value, "projection_seal_relation", context),
+        checkpoint_relation=_string(value, "checkpoint_relation", context),
+        batch_receipt_relation=_string(value, "batch_receipt_relation", context),
+        source_manifest_binding_relation=_string(
+            value, "source_manifest_binding_relation", context
+        ),
         revision_relation=_string(value, "revision_relation", context),
         head_relation=_string(value, "head_relation", context),
+        finalization_stage=_string(value, "finalization_stage", context),
+        selection_rule=_string(value, "selection_rule", context),
+        cursor_codec_rule=_string(value, "cursor_codec_rule", context),
+        batch_rule=_string(value, "batch_rule", context),
+        projection_seal_rule=_string(value, "projection_seal_rule", context),
+        batch_stages=tuple(
+            PublicationBatchStage(
+                name=_string(stage, "name", f"{context}.batch_stage"),
+                stage_order=_integer(stage, "stage_order", f"{context}.batch_stage"),
+                cursor_codec=_string(stage, "cursor_codec", f"{context}.batch_stage"),
+                prerequisite=_string(stage, "prerequisite", f"{context}.batch_stage"),
+                sealed_scalar=_string(stage, "sealed_scalar", f"{context}.batch_stage"),
+            )
+            for stage in _table_list(value, "batch_stage", context)
+        ),
+        finalization_rule=_string(value, "finalization_rule", context),
         runtime_obligation=_string(value, "runtime_obligation", context),
     )
 
@@ -5575,8 +7338,74 @@ def _parse_artifact_byte_producer_contract(
     return ArtifactByteProducerContract(
         policy_relation=_string(value, "policy_relation", context),
         algorithm_attribute=_string(value, "algorithm_attribute", context),
+        producer_relation=_string(value, "producer_relation", context),
+        zip_writer_policy_relation=_string(
+            value, "zip_writer_policy_relation", context
+        ),
+        storage_codec_relation=_string(value, "storage_codec_relation", context),
         independent_parameters=_string_tuple(value, "independent_parameters", context),
         algorithm_bundle=_string_tuple(value, "algorithm_bundle", context),
+        producer_fingerprint_framing=_string(
+            value, "producer_fingerprint_framing", context
+        ),
+        producer_fingerprint_golden_payload_hex=_string(
+            value, "producer_fingerprint_golden_payload_hex", context
+        ),
+        producer_fingerprint_golden_sha256=_string(
+            value, "producer_fingerprint_golden_sha256", context
+        ),
+        runtime_obligation=_string(value, "runtime_obligation", context),
+    )
+
+
+def _parse_artifact_name_contract(
+    value: Mapping[str, Any],
+) -> ArtifactNameContract:
+    context = "contract.artifact_name_contract"
+    return ArtifactNameContract(
+        relation=_string(value, "relation", context),
+        gid_attribute=_string(value, "gid_attribute", context),
+        name_attribute=_string(value, "name_attribute", context),
+        codec_version=_integer(value, "codec_version", context),
+        framing=_string(value, "framing", context),
+        golden_gid=_integer(value, "golden_gid", context),
+        golden_name_hex=_string(value, "golden_name_hex", context),
+        runtime_obligation=_string(value, "runtime_obligation", context),
+    )
+
+
+def _parse_artifact_locator_contract(
+    value: Mapping[str, Any],
+) -> ArtifactLocatorContract:
+    context = "contract.artifact_locator_contract"
+    return ArtifactLocatorContract(
+        relation=_string(value, "relation", context),
+        artifact_attribute=_string(value, "artifact_attribute", context),
+        locator_attribute=_string(value, "locator_attribute", context),
+        storage_codec_version=_integer(value, "storage_codec_version", context),
+        locator_codec_version=_integer(value, "locator_codec_version", context),
+        components=_string_tuple(value, "components", context),
+        derivation=_string(value, "derivation", context),
+        golden_artifact_sha256=_string(value, "golden_artifact_sha256", context),
+        golden_payload_hex=_string(value, "golden_payload_hex", context),
+        golden_locator_sha256=_string(value, "golden_locator_sha256", context),
+        runtime_obligation=_string(value, "runtime_obligation", context),
+    )
+
+
+def _parse_artifact_protection_token_contract(
+    value: Mapping[str, Any],
+) -> ArtifactProtectionTokenContract:
+    context = "contract.artifact_protection_token_contract"
+    return ArtifactProtectionTokenContract(
+        relation=_string(value, "relation", context),
+        storage_codec_relation=_string(value, "storage_codec_relation", context),
+        codec_version=_integer(value, "codec_version", context),
+        exact_bytes=_integer(value, "exact_bytes", context),
+        receipt_framing=_string(value, "receipt_framing", context),
+        token_framing=_string(value, "token_framing", context),
+        golden_receipt_id=_string(value, "golden_receipt_id", context),
+        golden_token_hex=_string(value, "golden_token_hex", context),
         runtime_obligation=_string(value, "runtime_obligation", context),
     )
 
@@ -5682,10 +7511,20 @@ def _parse_optional_contract_table(
 def _parse_queue_history_contract(value: Mapping[str, Any]) -> QueueHistoryContract:
     context = "contract.queue_history_contract"
     return QueueHistoryContract(
+        deletion_generation_relation=_string(
+            value, "deletion_generation_relation", context
+        ),
+        deletion_generation_head_relation=_string(
+            value, "deletion_generation_head_relation", context
+        ),
         deletion_attempt_relation=_string(value, "deletion_attempt_relation", context),
         deletion_head_relation=_string(value, "deletion_head_relation", context),
         deletion_url_relation=_string(value, "deletion_url_relation", context),
         consumption_relation=_string(value, "consumption_relation", context),
+        preparation_relation=_string(value, "preparation_relation", context),
+        generation_rule=_string(value, "generation_rule", context),
+        publication_rule=_string(value, "publication_rule", context),
+        retention_rule=_string(value, "retention_rule", context),
         rule=_string(value, "rule", context),
     )
 
@@ -5727,14 +7566,29 @@ def _parse_operational_event_integrity_contract(
 ) -> OperationalEventIntegrityContract:
     context = "contract.operational_event_integrity_contract"
     return OperationalEventIntegrityContract(
+        stream_relation=_string(value, "stream_relation", context),
+        preparation_relation=_string(value, "preparation_relation", context),
+        seal_relation=_string(value, "seal_relation", context),
+        activation_relation=_string(value, "activation_relation", context),
+        candidate_binding_relation=_string(
+            value, "candidate_binding_relation", context
+        ),
         base_relation=_string(value, "base_relation", context),
         removed_subtype_relation=_string(value, "removed_subtype_relation", context),
         deletion_subtype_relation=_string(value, "deletion_subtype_relation", context),
         removed_event_type=_string(value, "removed_event_type", context),
         deletion_event_type=_string(value, "deletion_event_type", context),
+        event_digest_codec=_string(value, "event_digest_codec", context),
+        chain_codec=_string(value, "chain_codec", context),
+        empty_chain_sha256=_string(value, "empty_chain_sha256", context),
+        stream_rule=_string(value, "stream_rule", context),
         subtype_rule=_string(value, "subtype_rule", context),
+        seal_rule=_string(value, "seal_rule", context),
+        activation_rule=_string(value, "activation_rule", context),
+        candidate_binding_rule=_string(value, "candidate_binding_rule", context),
         ack_head_relation=_string(value, "ack_head_relation", context),
         ack_rule=_string(value, "ack_rule", context),
+        cleanup_rule=_string(value, "cleanup_rule", context),
     )
 
 
@@ -5766,6 +7620,9 @@ def _parse_preparation_identity_contract(
     return PreparationIdentityContract(
         preparation_relation=_string(value, "preparation_relation", context),
         policy_relation=_string(value, "policy_relation", context),
+        deletion_generation_relation=_string(
+            value, "deletion_generation_relation", context
+        ),
         natural_key=_string_tuple(value, "natural_key", context),
         rule=_string(value, "rule", context),
     )
@@ -5813,6 +7670,19 @@ def _parse_analysis_resolution_contract(
         compaction_ancestry=_string(value, "compaction_ancestry", context),
         cleanup_guard=_string(value, "cleanup_guard", context),
         cleanup_transition=_string(value, "cleanup_transition", context),
+        stage_relation=_string(value, "stage_relation", context),
+        checkpoint_relation=_string(value, "checkpoint_relation", context),
+        batch_receipt_relation=_string(value, "batch_receipt_relation", context),
+        cursor_codec_rule=_string(value, "cursor_codec_rule", context),
+        batch_rule=_string(value, "batch_rule", context),
+        batch_stages=tuple(
+            AnalysisBatchStage(
+                name=_string(stage, "name", f"{context}.batch_stage"),
+                stage_order=_integer(stage, "stage_order", f"{context}.batch_stage"),
+                cursor_codec=_string(stage, "cursor_codec", f"{context}.batch_stage"),
+            )
+            for stage in _table_list(value, "batch_stage", context)
+        ),
     )
 
 
@@ -5924,6 +7794,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         contract = load_contract(arguments.contract)
         report = validate_contract(contract)
+        companion_name = {
+            "catalog_data_plane": "operational.toml",
+            "operational_control_plane": "catalog.toml",
+        }.get(contract.scope)
+        if companion_name is not None:
+            companion_path = arguments.contract.with_name(companion_name)
+            if not companion_path.is_file():
+                raise ContractValidationError(
+                    [f"cross-manifest companion is missing: {companion_path}"]
+                )
+            companion = load_contract(companion_path)
+            validate_contract(companion)
+            if contract.scope == "catalog_data_plane":
+                validate_cross_manifest_contracts(contract, companion)
+            else:
+                validate_cross_manifest_contracts(companion, contract)
     except ContractError as error:
         print(error, file=sys.stderr)
         return 1

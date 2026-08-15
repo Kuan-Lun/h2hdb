@@ -160,6 +160,31 @@ class MariaDBConnector(SQLConnector):
         ):
             self.commit()
 
+    def execute_affected(self, query: str, data: tuple[Any, ...] = ()) -> int:
+        self._ensure_writable(query)
+        owns_implicit_write = not self._in_transaction and any(
+            key in query.upper() for key in AUTO_COMMIT_KEYS
+        )
+        try:
+            with MariaDBCursor(self.connection) as cursor:
+                cursor.execute(query, data)
+                affected = cursor.rowcount
+        except IntegrityError as error:
+            if owns_implicit_write:
+                self._rollback_after_failed_implicit_write()
+            raise MariaDBDuplicateKeyError(str(error)) from error
+        except Exception:
+            if owns_implicit_write:
+                self._rollback_after_failed_implicit_write()
+            raise
+        if affected < 0:
+            if owns_implicit_write:
+                self._rollback_after_failed_implicit_write()
+            raise RuntimeError("MariaDB did not report an affected-row count")
+        if owns_implicit_write:
+            self.commit()
+        return affected
+
     def execute_many(self, query: str, data: list[tuple[Any, ...]]) -> None:
         self._ensure_writable(query)
         is_insert = self._statement_keyword(query) == "INSERT"

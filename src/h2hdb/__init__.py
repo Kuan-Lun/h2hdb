@@ -117,6 +117,9 @@ __all__ = [
     "SchemaCompatibilityError",
     "SchemaEpochReadiness",
     "SchemaEpochReport",
+    "VNextCatalogFacade",
+    "VNextDatabaseAdminFacade",
+    "VNextDownloadQueueFacade",
     "load_config",
     "open_database",
     "resolve_environment_placeholders",
@@ -250,7 +253,6 @@ from .service import (
     H2HDB,
     CoordinatorUnavailableError,
     IngestTurnLostError,
-    open_database,
 )
 from .table_database_maintenance import DatabaseMaintenanceResult
 from .table_gallery_ingest_coordination import (
@@ -260,5 +262,11 @@ from .table_gallery_ingest_coordination import (
     GalleryIngestTurn,
 )
 from .todownload_queue import DownloadRequest, EnsureDownloadRequestResult
+from .vnext_facade import (
+    VNextCatalogFacade,
+    VNextDatabaseAdminFacade,
+    VNextDownloadQueueFacade,
+    open_database,
+)
 
 __author__ = "Kuan-Lun Wang"

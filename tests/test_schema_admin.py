@@ -3,12 +3,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from h2hdb import H2HDB, CoreConfig
+from h2hdb import H2HDB, CoreConfig, DatabaseAccessMode
 from h2hdb.repository import RepositoryContext
 from h2hdb.schema_admin import VNextSchemaAdmin
 from h2hdb.schema_epoch import (
@@ -25,7 +24,6 @@ from h2hdb.schema_epoch import (
 from h2hdb.sql_connector import SQLConnector
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_schema_provider import (
-    VNextSchemaProviderError,
     VNextSchemaProviderUnavailableError,
 )
 
@@ -149,6 +147,27 @@ def test_ready_full_check_and_marker_check_issue_no_writes(
     assert writes == []
 
 
+def test_ready_full_check_works_through_read_only_sqlite_config(
+    sqlite_config: CoreConfig,
+) -> None:
+    database = H2HDB(sqlite_config)
+    database.initialize_schema_epoch_v2(_provider())
+    read_only_config = sqlite_config.model_copy(
+        update={
+            "database": sqlite_config.database.model_copy(
+                update={"access_mode": DatabaseAccessMode.read_only}
+            )
+        }
+    )
+    admin = VNextSchemaAdmin(RepositoryContext.from_config(read_only_config))
+
+    assert admin.check_readiness(_provider()).state == "READY"
+    report = admin.check(_provider())
+
+    assert report.state == "READY"
+    assert not report.transitioned_to_ready
+
+
 def test_provider_unavailable_fails_before_opening_database(
     sqlite_config: CoreConfig,
 ) -> None:
@@ -161,20 +180,32 @@ def test_provider_unavailable_fails_before_opening_database(
     assert not database_path.exists()
 
 
-def test_default_generated_provider_fails_closed_before_opening_database(
+def test_default_generated_provider_admin_paths_initialize_and_validate_ready_epoch(
     sqlite_config: CoreConfig,
 ) -> None:
     database_path = Path(sqlite_config.database.database)
+    database = H2HDB(sqlite_config)
 
-    with pytest.raises(VNextSchemaProviderError):
-        H2HDB(sqlite_config).initialize_schema_epoch_v2()
+    initialized = database.initialize_schema_epoch_v2()
+    replayed = database.initialize_schema_epoch_v2()
+    checked = database.check_schema_epoch_v2()
+    readiness = database.check_schema_epoch_v2_readiness()
 
-    assert not database_path.exists()
-
-    with pytest.raises(VNextSchemaProviderError):
-        H2HDB(sqlite_config).check_schema_epoch_v2_readiness()
-
-    assert not database_path.exists()
+    assert database_path.exists()
+    assert initialized.state == replayed.state == checked.state == "READY"
+    assert initialized.transitioned_to_ready
+    assert not replayed.transitioned_to_ready
+    assert not checked.transitioned_to_ready
+    assert readiness.state == "READY"
+    assert {
+        initialized.manifest_sha256,
+        replayed.manifest_sha256,
+        checked.manifest_sha256,
+        readiness.manifest_sha256,
+    } == {initialized.manifest_sha256}
+    with database._context.SQLConnector() as connector:
+        assert connector.check_table_exists("h2hdb_schema_epoch")
+        assert not connector.check_table_exists("h2hdb_schema_migrations")
 
 
 def test_initialize_rejects_nonempty_legacy_or_foreign_database(
@@ -205,54 +236,43 @@ def test_full_check_does_not_resume_building_epoch(sqlite_config: CoreConfig) ->
 
 
 @pytest.mark.parametrize(
-    ("command", "expected_call"),
+    ("command", "expected_message"),
     [
-        ("epoch-v2-initialize", "initialize"),
-        ("epoch-v2-check", "check"),
-        ("epoch-v2-ready", "ready"),
+        ("migrate", "schema initialized"),
+        ("check", "schema is valid"),
+        ("ready", "database is ready"),
     ],
 )
-def test_cli_routes_epoch_v2_commands(
+def test_cli_routes_greenfield_schema_commands(
     command: str,
-    expected_call: str,
+    expected_message: str,
     monkeypatch: pytest.MonkeyPatch,
+    sqlite_config: CoreConfig,
 ) -> None:
     from h2hdb import __main__ as cli
 
-    calls: list[str] = []
+    provider = _provider()
+    if command != "migrate":
+        VNextSchemaAdmin(RepositoryContext.from_config(sqlite_config)).initialize(
+            provider
+        )
+    messages: list[str] = []
 
     class Logger:
         def info(self, message: str) -> None:
-            del message
+            messages.append(message)
 
-    class Database:
-        logger = Logger()
+    monkeypatch.setattr(cli, "load_config", lambda path: sqlite_config)
+    monkeypatch.setattr(cli, "setup_logger", lambda config: Logger())
 
-        def __init__(self, config: object) -> None:
-            del config
+    cli.main((command, "--config", "config.json"), provider=provider)
 
-        def initialize_schema_epoch_v2(self) -> object:
-            calls.append("initialize")
-            return SimpleNamespace(epoch=2, schema_version=1, state="READY")
-
-        def check_schema_epoch_v2(self) -> object:
-            calls.append("check")
-            return SimpleNamespace(epoch=2, schema_version=1, state="READY")
-
-        def check_schema_epoch_v2_readiness(self) -> object:
-            calls.append("ready")
-            return SimpleNamespace(
-                epoch=2,
-                schema_version=1,
-                manifest_sha256="44" * 32,
-            )
-
-    monkeypatch.setattr(cli, "load_config", lambda path: path)
-    monkeypatch.setattr(cli, "H2HDB", Database)
-
-    cli.main((command, "--config", "config.json"))
-
-    assert calls == [expected_call]
+    assert len(messages) == 1
+    assert expected_message in messages[0]
+    context = RepositoryContext.from_config(sqlite_config)
+    with context.SQLConnector() as connector:
+        assert connector.check_table_exists("h2hdb_schema_epoch")
+        assert not connector.check_table_exists("h2hdb_schema_migrations")
 
 
 def test_unreadable_readiness_marker_fails_closed(sqlite_config: CoreConfig) -> None:

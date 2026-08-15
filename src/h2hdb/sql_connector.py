@@ -118,6 +118,19 @@ class SQLConnector(ABC):
     def execute(self, query: str, data: tuple[Any, ...] = ()) -> None:
         pass
 
+    def execute_affected(self, query: str, data: tuple[Any, ...] = ()) -> int:
+        """Execute one mutation and return its exact affected-row count.
+
+        vNext compare-and-swap writers require this stronger primitive.  It is
+        deliberately not implemented in terms of ``execute`` plus a later
+        query because that would lose the statement-local CAS result.  Legacy
+        and test connectors that do not participate in vNext writes fail
+        closed until they implement the primitive explicitly.
+        """
+
+        del query, data
+        raise NotImplementedError("this connector cannot report affected rows")
+
     @abstractmethod
     def execute_many(self, query: str, data: list[tuple[Any, ...]]) -> None:
         pass

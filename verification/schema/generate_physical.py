@@ -114,12 +114,28 @@ def runtime_obligation_records(
             catalog["source_snapshot_manifest_contract"]["write_obligation"],
         ),
         (
+            "source_snapshot_manifest_contract.handoff_obligation",
+            catalog["source_snapshot_manifest_contract"]["handoff_obligation"],
+        ),
+        (
+            "source_snapshot_manifest_contract.publication_obligation",
+            catalog["source_snapshot_manifest_contract"]["publication_obligation"],
+        ),
+        (
             "analysis_run_contract.write_obligation",
             catalog["analysis_run_contract"]["write_obligation"],
         ),
         (
             "analysis_run_contract.attempt_rule",
             catalog["analysis_run_contract"]["attempt_rule"],
+        ),
+        (
+            "analysis_resolution_contract.batch_rule",
+            catalog["analysis_resolution_contract"]["batch_rule"],
+        ),
+        (
+            "analysis_resolution_contract.cursor_codec_rule",
+            catalog["analysis_resolution_contract"]["cursor_codec_rule"],
         ),
         (
             "analysis_candidate_contract.runtime_obligation",
@@ -150,8 +166,40 @@ def runtime_obligation_records(
             catalog["artifact_member_plan_contract"]["ready_obligation"],
         ),
         (
+            "artifact_name_contract.runtime_obligation",
+            catalog["artifact_name_contract"]["runtime_obligation"],
+        ),
+        (
+            "artifact_locator_contract.runtime_obligation",
+            catalog["artifact_locator_contract"]["runtime_obligation"],
+        ),
+        (
+            "artifact_protection_token_contract.runtime_obligation",
+            catalog["artifact_protection_token_contract"]["runtime_obligation"],
+        ),
+        (
+            "publication_atomic_contract.selection_rule",
+            catalog["publication_atomic_contract"]["selection_rule"],
+        ),
+        (
+            "publication_atomic_contract.cursor_codec_rule",
+            catalog["publication_atomic_contract"]["cursor_codec_rule"],
+        ),
+        (
+            "publication_atomic_contract.batch_rule",
+            catalog["publication_atomic_contract"]["batch_rule"],
+        ),
+        (
+            "publication_atomic_contract.projection_seal_rule",
+            catalog["publication_atomic_contract"]["projection_seal_rule"],
+        ),
+        (
             "publication_atomic_contract.runtime_obligation",
             catalog["publication_atomic_contract"]["runtime_obligation"],
+        ),
+        (
+            "publication_atomic_contract.finalization_rule",
+            catalog["publication_atomic_contract"]["finalization_rule"],
         ),
         (
             "title_sort_contract.runtime_obligation",
@@ -272,6 +320,7 @@ NEW_ATTRIBUTE_SHAPES: dict[str, dict[str, Any]] = {
     "change_kind": ASCII_32_TEXT,
     "changed_ns": SIGNED_I64_BYTES,
     "committed_at": UNIX_MICROSECONDS,
+    "committed_generation": U64,
     "completed_at": UNIX_MICROSECONDS,
     "computed_at": UNIX_MICROSECONDS,
     "content_owner_rule_version": U32,
@@ -337,8 +386,30 @@ NEW_ATTRIBUTE_SHAPES: dict[str, dict[str, Any]] = {
     "anchor_analysis_id": UUID_BYTES,
     "archive_format": ASCII_32_TEXT,
     "artifact_algorithm_version": U32,
+    "zip_codec_version": U32,
+    "compression_method": U32,
+    "compression_level": U32,
+    "dos_date": U32,
+    "dos_time": U32,
+    "unix_mode": U32,
+    "general_purpose_flags": U32,
+    "create_system": U32,
+    "archive_name_codec_version": U32,
+    "artifact_name_codec_version": U32,
+    "producer_fingerprint_sha256": DIGEST_BYTES,
+    "producer_equivalence_class": shape("BLOB", "VARBINARY(128)"),
+    "writer_id": shape("BLOB", "VARBINARY(128)"),
+    "python_abi": shape("BLOB", "VARBINARY(128)"),
+    "pillow_build": shape("BLOB", "VARBINARY(128)"),
+    "libjpeg_build": shape("BLOB", "VARBINARY(128)"),
+    "zlib_build": shape("BLOB", "VARBINARY(128)"),
+    "storage_codec_version": U32,
+    "adapter_id": shape("BLOB", "VARBINARY(64)"),
+    "locator_codec_version": U32,
+    "protection_token_codec_version": U32,
     "artifact_id": shape("BLOB", "VARBINARY(128)"),
     "artifact_input_id": UUID_BYTES,
+    "artifact_input_count": U64,
     "artifact_name": shape("BLOB", "VARBINARY(255)"),
     "artifact_policy_id": U64,
     "artifact_sha256": DIGEST_BYTES,
@@ -346,6 +417,8 @@ NEW_ATTRIBUTE_SHAPES: dict[str, dict[str, Any]] = {
     "base_revision": U64,
     "candidate_id": UUID_BYTES,
     "changed_galleries": U64,
+    "create_count": U64,
+    "cursor_codec": shape("BLOB", "VARBINARY(64)"),
     "code": shape("BLOB", "LONGBLOB"),
     "component_name": shape("BLOB", "LONGBLOB"),
     "component_value": shape("BLOB", "LONGBLOB"),
@@ -355,6 +428,7 @@ NEW_ATTRIBUTE_SHAPES: dict[str, dict[str, Any]] = {
     "title_sort_algorithm_version": U32,
     "unicode_data_version": shape("BLOB", "VARBINARY(32)"),
     "duplicate_losers": U64,
+    "delete_count": U64,
     "entry_order_version": U32,
     "finalized_at": shape("INTEGER", "BIGINT UNSIGNED", nullable=True),
     "item_sha256": DIGEST_BYTES,
@@ -362,16 +436,22 @@ NEW_ATTRIBUTE_SHAPES: dict[str, dict[str, Any]] = {
     "modified_at": UNIX_MICROSECONDS,
     "name": shape("BLOB", "LONGBLOB"),
     "new_galleries": U64,
+    "next_cursor": shape("BLOB", "VARBINARY(2048)"),
+    "next_processed_count": U64,
+    "next_state": ASCII_32_TEXT,
     "operation": ASCII_32_TEXT,
     "overlay_depth": U32,
-    "protection_token": shape("BLOB", "VARBINARY(512)"),
+    "protection_token": shape("BLOB", "BINARY(184)"),
+    "prepared_artifact_count": U64,
+    "processed_count": U64,
+    "projection_sealed_at": UNIX_MICROSECONDS,
     "publication_count": U64,
     "publication_id": shape("BLOB", "VARBINARY(64)"),
     "publication_key": DIGEST_BYTES,
     "publication_sha256": DIGEST_BYTES,
     "receipt_id": UUID_BYTES,
-    "redownload_required": shape("INTEGER", "TINYINT UNSIGNED"),
     "removed_galleries": U64,
+    "rebuild_count": U64,
     "reserved_revision": U64,
     "resolved_analysis_id": UUID_BYTES,
     "revision": U64,
@@ -385,9 +465,15 @@ NEW_ATTRIBUTE_SHAPES: dict[str, dict[str, Any]] = {
     "name_bytes": shape("BLOB", "VARBINARY(255)"),
     "namespace": shape("BLOB", "VARBINARY(128)"),
     "source_provider": shape("BLOB", "VARBINARY(64)"),
+    "start_cursor": shape("BLOB", "VARBINARY(2048)"),
+    "start_generation": U64,
+    "start_processed_count": U64,
     "channel": shape("BLOB", "VARBINARY(64)"),
     "stage": shape("BLOB", "VARBINARY(64)"),
+    "stage_order": shape("BLOB", "BINARY(2)"),
     "state_component": shape("BLOB", "VARBINARY(64)"),
+    "terminal": shape("INTEGER", "TINYINT UNSIGNED"),
+    "unchanged_count": U64,
     "file_role": shape("BLOB", "VARBINARY(8)"),
     "excluded_flag": shape("INTEGER", "TINYINT UNSIGNED"),
     "role": shape("BLOB", "VARBINARY(64)"),
@@ -479,6 +565,7 @@ TABLE_NAMES = {
     "analysis_gid_winner": "catalog_analysis_gid_winners",
     "analysis_checkpoint": "catalog_analysis_checkpoints",
     "analysis_batch_receipt": "catalog_analysis_batch_receipts",
+    "analysis_stage": "catalog_analysis_stages",
     "canonical_digest_policy": "catalog_canonical_digest_policies",
     "canonical_value_allocation": "catalog_canonical_value_allocations",
     "canonical_value_page": "catalog_canonical_value_pages",
@@ -524,9 +611,13 @@ TABLE_NAMES = {
     "publication_candidate": "catalog_publication_candidates",
     "publication_candidate_base_source": "catalog_publication_candidate_base_sources",
     "publication_selection": "catalog_publication_selections",
+    "publication_stage": "catalog_publication_stages",
     "publication_checkpoint": "catalog_publication_checkpoints",
     "publication_batch_receipt": "catalog_publication_batch_receipts",
     "artifact_policy": "catalog_artifact_policies",
+    "artifact_zip_writer_policy": "catalog_artifact_zip_writer_policies",
+    "artifact_producer_fingerprint": "catalog_artifact_producer_fingerprints",
+    "artifact_storage_codec": "catalog_artifact_storage_codecs",
     "artifact_input": "catalog_candidate_artifact_inputs",
     "artifact_input_component": "catalog_candidate_artifact_input_components",
     "artifact_delta_old": "catalog_artifact_delta_old",
@@ -541,6 +632,7 @@ TABLE_NAMES = {
     "display_title_choice": "catalog_display_title_choices",
     "title_sort": "catalog_title_sorts",
     "catalog_publication": "catalog_publications",
+    "catalog_publication_order": "catalog_publication_order",
     "catalog_publication_title": "catalog_publication_titles",
     "catalog_publication_content": "catalog_publication_contents",
     "catalog_contributor": "catalog_contributors",
@@ -847,26 +939,26 @@ INDEXES: dict[str, list[tuple[str, list[str], bool]]] = {
     "artifact_delta_old": [
         (
             "ix_artifact_delta_old_blob",
-            ["artifact_sha256", "candidate_id", "publication_key", "artifact_name"],
+            ["artifact_sha256", "candidate_id", "publication_key"],
             False,
         ),
     ],
     "artifact_operation": [
         (
             "ix_artifact_operation_kind",
-            ["candidate_id", "operation", "publication_key", "artifact_name"],
+            ["candidate_id", "operation", "publication_key"],
             False,
         )
     ],
     "prepared_artifact": [
         (
             "ix_prepared_artifact_state",
-            ["candidate_id", "state", "publication_key", "artifact_name"],
+            ["candidate_id", "state", "publication_key"],
             False,
         ),
         (
             "ix_prepared_artifact_blob",
-            ["artifact_sha256", "candidate_id", "publication_key", "artifact_name"],
+            ["artifact_sha256", "candidate_id", "publication_key"],
             False,
         ),
     ],
@@ -899,13 +991,7 @@ INDEXES: dict[str, list[tuple[str, list[str], bool]]] = {
             False,
         ),
     ],
-    "catalog_artifact": [
-        (
-            "ix_catalog_artifact_name",
-            ["revision", "artifact_name", "artifact_id"],
-            False,
-        ),
-    ],
+    "catalog_artifact": [],
     "publication_receipt": [
         ("ix_publication_receipt_state", ["state", "committed_at", "receipt_id"], False)
     ],
@@ -954,12 +1040,19 @@ def relation_checks(
             "removed_galleries",
             "duplicate_losers",
             "base_source_revision",
+            "compression_method",
+            "compression_level",
+            "dos_date",
+            "dos_time",
+            "unix_mode",
+            "general_purpose_flags",
+            "create_system",
         }
     }
     positive = {
         value
         for value in attributes
-        if value.endswith("_version")
+        if (value.endswith("_version") and value != "unicode_data_version")
         or value
         in {
             "gallery_id",
@@ -1006,6 +1099,12 @@ def relation_checks(
     for attribute in sorted(uuid_attrs):
         sqlite.append(f"typeof({attribute}) = 'blob' AND length({attribute}) = 16")
         maria.append(f"octet_length({attribute}) = 16")
+    if "unicode_data_version" in attributes:
+        sqlite.append(
+            "typeof(unicode_data_version) = 'blob' AND "
+            "length(unicode_data_version) BETWEEN 1 AND 32"
+        )
+        maria.append("octet_length(unicode_data_version) BETWEEN 1 AND 32")
     for attribute in sorted(integer_attrs - (set(attributes) & TIMESTAMP_ATTRIBUTES)):
         sqlite.append(f"typeof({attribute}) = 'integer'")
         sqlite.append(f"{attribute} <= 9223372036854775807")
@@ -1041,15 +1140,30 @@ def relation_checks(
         sqlite.append(expression)
         maria.append(expression)
     if name == "analysis_state_component_seal":
-        domain = "('file_hash_decision', 'content_owner_candidate', 'content_owner', 'gid_candidate', 'gid_winner')"
+        state_components = (
+            "file_hash_decision",
+            "content_owner_candidate",
+            "content_owner",
+            "gid_candidate",
+            "gid_winner",
+        )
+        # state_component is an exact VARBINARY/BLOB byte domain.  Text
+        # literals compare as TEXT in SQLite, making the previous predicate
+        # incompatible with the simultaneous typeof(...)=blob requirement.
+        # Render exact binary literals on both backends instead.
+        domain = (
+            "("
+            + ", ".join(
+                f"X'{value.encode('ascii').hex().upper()}'"
+                for value in state_components
+            )
+            + ")"
+        )
         sqlite.append(f"state_component IN {domain}")
         maria.append(f"state_component IN {domain}")
     if "artifacts_required" in attributes:
         sqlite.append("artifacts_required IN (0, 1)")
         maria.append("artifacts_required IN (0, 1)")
-    if "redownload_required" in attributes:
-        sqlite.append("redownload_required IN (0, 1)")
-        maria.append("redownload_required IN (0, 1)")
     if name == "source_build":
         sqlite.append("state IN ('OPEN', 'SEALED', 'ABANDONED')")
         maria.append("state IN ('OPEN', 'SEALED', 'ABANDONED')")
@@ -1062,7 +1176,7 @@ def relation_checks(
         state_rule = "(state = 'OPEN' AND completed_at IS NULL OR state = 'COMPLETE' AND completed_at IS NOT NULL OR state = 'ABANDONED' AND completed_at IS NULL)"
         sqlite.append(state_rule)
         maria.append(state_rule)
-    if name in {"publication_checkpoint"}:
+    if name in {"analysis_checkpoint", "publication_checkpoint"}:
         sqlite.append("state IN ('OPEN', 'COMPLETE')")
         maria.append("state IN ('OPEN', 'COMPLETE')")
     elif name == "publication_candidate":
@@ -1074,6 +1188,10 @@ def relation_checks(
     elif name == "prepared_artifact":
         sqlite.append("state IN ('PREPARED', 'COMMITTED')")
         maria.append("state IN ('PREPARED', 'COMMITTED')")
+        sqlite.append(
+            "typeof(protection_token) = 'blob' AND length(protection_token) = 184"
+        )
+        maria.append("octet_length(protection_token) = 184")
     elif name == "publication_receipt":
         sqlite.append("state IN ('DB_COMMITTED', 'PROJECTION_FINALIZED')")
         maria.append("state IN ('DB_COMMITTED', 'PROJECTION_FINALIZED')")
@@ -1083,6 +1201,23 @@ def relation_checks(
     if name == "artifact_operation":
         sqlite.append("operation IN ('CREATE', 'REBUILD', 'DELETE', 'UNCHANGED')")
         maria.append("operation IN ('CREATE', 'REBUILD', 'DELETE', 'UNCHANGED')")
+    if "next_state" in attributes:
+        sqlite.append("next_state IN ('OPEN', 'COMPLETE')")
+        maria.append("next_state IN ('OPEN', 'COMPLETE')")
+    if "terminal" in attributes:
+        sqlite.append("terminal IN (0, 1)")
+        maria.append("terminal IN (0, 1)")
+    if name in {"analysis_batch_receipt", "publication_batch_receipt"}:
+        receipt_rule = (
+            "committed_generation = start_generation + 1 AND "
+            "next_processed_count = start_processed_count + row_count AND "
+            "(terminal = 0 AND row_count > 0 AND next_state = 'OPEN' OR "
+            "terminal = 1 AND row_count = 0 AND next_state = 'COMPLETE' AND "
+            "next_cursor = start_cursor AND "
+            "next_processed_count = start_processed_count)"
+        )
+        sqlite.append(receipt_rule)
+        maria.append(receipt_rule)
     if name == "file_name_identity":
         sqlite.append("file_role IN (X'434F4E54454E54', X'4D45544144415441')")
         maria.append("file_role IN ('CONTENT', 'METADATA')")
@@ -1138,6 +1273,13 @@ def relation_checks(
         "component_kind",
         "state_component",
         "archive_format",
+        "adapter_id",
+        "producer_equivalence_class",
+        "writer_id",
+        "python_abi",
+        "pillow_build",
+        "libjpeg_build",
+        "zlib_build",
     ):
         if attribute in attributes:
             sqlite.append(f"length({attribute}) > 0")
@@ -1163,7 +1305,14 @@ def relation_checks(
         "digest_domain": 64,
         "metadata_fingerprint": 40,
         "cursor": 2048,
-        "protection_token": 512,
+        "protection_token": 184,
+        "adapter_id": 64,
+        "producer_equivalence_class": 128,
+        "writer_id": 128,
+        "python_abi": 128,
+        "pillow_build": 128,
+        "libjpeg_build": 128,
+        "zlib_build": 128,
     }
     for attribute, maximum in byte_bounds.items():
         if attribute in attributes:
@@ -1499,16 +1648,69 @@ def render() -> str:
         str(seed["relation"]) for seed in catalog.get("bootstrap_seed", [])
     }
     expected_seeded_relations = {
+        "analysis_stage",
+        "artifact_storage_codec",
+        "artifact_zip_writer_policy",
         "canonical_digest_policy",
         "channel_registry",
+        "publication_stage",
         "source_provider_registry",
     }
     if seeded_relation_set != expected_seeded_relations:
         raise RuntimeError(
-            "Data bootstrap seeds must target exactly the three closed registries"
+            "Data bootstrap seeds must target exactly the seven closed registries"
         )
     seeded_relations = tuple(name for name in order if name in seeded_relation_set)
     absent_relations = tuple(name for name in order if name not in seeded_relation_set)
+
+    def render_seed_cell(attribute: str, value: str) -> str:
+        attribute_shape = NEW_ATTRIBUTE_SHAPES.get(attribute)
+        sqlite_shape = (
+            attribute_shape.get("sqlite") if isinstance(attribute_shape, dict) else None
+        )
+        mariadb_shape = (
+            attribute_shape.get("mariadb")
+            if isinstance(attribute_shape, dict)
+            else None
+        )
+        sqlite_type = (
+            sqlite_shape.get("type") if isinstance(sqlite_shape, dict) else None
+        )
+        if sqlite_type == "INTEGER":
+            if not isinstance(mariadb_shape, dict):
+                raise RuntimeError(
+                    f"bootstrap seed integer {attribute!r} lacks a MariaDB shape"
+                )
+            try:
+                integer = int(value)
+            except ValueError as error:
+                raise RuntimeError(
+                    f"bootstrap seed integer {attribute!r} is not decimal"
+                ) from error
+            if str(integer) != value:
+                raise RuntimeError(
+                    f"bootstrap seed integer {attribute!r} is not canonical decimal"
+                )
+            value_type = (
+                "uint32" if mariadb_shape.get("type") == "INT UNSIGNED" else "uint64"
+            )
+            return (
+                "{ attribute = "
+                + q(attribute)
+                + ", type = "
+                + q(value_type)
+                + ", integer = "
+                + str(integer)
+                + " }"
+            )
+        return (
+            "{ attribute = "
+            + q(attribute)
+            + ', type = "ascii_enum", encoding = "utf8", text = '
+            + q(value)
+            + " }"
+        )
+
     header = [
         "physical_contract_version = 2",
         'name = "h2hdb-vnext-physical"',
@@ -1624,12 +1826,7 @@ def render() -> str:
                 f"relation = {q(seed['relation'])}",
                 "value = ["
                 + ", ".join(
-                    "{ attribute = "
-                    + q(attribute)
-                    + ', type = "ascii_enum"'
-                    + ', encoding = "utf8", text = '
-                    + q(value)
-                    + " }"
+                    render_seed_cell(attribute, value)
                     for attribute, value in zip(
                         seed["columns"], seed["values"], strict=True
                     )

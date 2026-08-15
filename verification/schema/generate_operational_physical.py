@@ -39,6 +39,9 @@ DIGEST32 = {
     "final_chain_sha256",
     "input_sha256",
     "manifest_sha256",
+    "manifest_chain_sha256",
+    "start_manifest_chain_sha256",
+    "next_manifest_chain_sha256",
     "output_sha256",
     "page_sha256",
     "last_page_sha256",
@@ -52,12 +55,15 @@ DIGEST32 = {
 TIMESTAMPS = {
     "acked_at",
     "activated_at",
+    "allocated_at",
     "applied_at",
     "assigned_at",
+    "bound_at",
     "cached_at",
     "claimed_at",
     "committed_at",
     "completed_at",
+    "consumed_at",
     "cycle_cutoff_at",
     "created_at",
     "last_evaluated_at",
@@ -83,9 +89,12 @@ COUNTERS = {
     "current_generation",
     "deleted_count",
     "deletion_request_generation",
+    "download_generation",
     "epoch",
+    "event_count",
     "gate_generation",
     "generation",
+    "start_generation",
     "ingest_generation",
     "claim_generation",
     "gid",
@@ -95,6 +104,19 @@ COUNTERS = {
     "operational_policy_id",
     "operational_schema_version",
     "processed_count",
+    "start_processed_count",
+    "next_processed_count",
+    "processed_gallery_count",
+    "processed_file_count",
+    "processed_byte_count",
+    "start_gallery_count",
+    "next_gallery_count",
+    "start_file_count",
+    "next_file_count",
+    "start_byte_count",
+    "next_byte_count",
+    "start_processed_byte_count",
+    "next_processed_byte_count",
     "phase_order",
     "row_count",
     "shard_no",
@@ -145,11 +167,13 @@ BINARY_CURSOR = {
 }
 ENUMS = {
     "event_type",
+    "handoff_kind",
     "key_codec",
     "mode",
     "phase",
     "selection_order_id",
     "state",
+    "next_state",
     "stream",
     "target_kind",
 }
@@ -170,6 +194,11 @@ SEMANTIC_OBLIGATION_CHECKS = {
         "ready_and_runtime",
         "transaction_protocol",
         "operational_refinement.check_fencing_contract_v1",
+    ),
+    "h2hdb.operational.download-ingest-handoff.v1": (
+        "ready_and_runtime",
+        "transaction_protocol",
+        "operational_refinement.check_download_ingest_handoff_contract_v1",
     ),
     "h2hdb.operational.maintenance-gate.v1": (
         "ready_and_runtime",
@@ -230,30 +259,140 @@ SEMANTIC_OBLIGATION_CHECKS = {
 SEMANTIC_VALIDATOR_HOOK = (
     "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
 )
+GENERATION_OBLIGATION_BINDINGS = {
+    "h2hdb.operational.download-ingest-handoff.v1": (
+        (
+            "download_generation",
+            "download_coordination_head",
+            "download_generation_owner",
+            "download_generation_lease",
+            "download_ingest_handoff",
+            "download_ingest_consumption",
+            "coordinated_ingest_completion",
+            "ingest_generation",
+            "ingest_coordination_head",
+            "ingest_generation_owner",
+            "ingest_generation_lease",
+        ),
+        "Validate repository-issued download capabilities, exact live handoff or expired takeover, one-to-one ingest consumption, quiescent periodic ingest, coordinated completion, and zero-write exact response-loss replay across normalized download and ingest authority.",
+    ),
+    "h2hdb.operational.bounded-work.v1": (
+        (
+            "operational_event_stream",
+            "operational_preparation",
+            "operational_preparation_checkpoint",
+            "operational_preparation_batch_receipt",
+            "operational_preparation_effect_seal",
+            "operational_event",
+            "operational_removed_gid_event",
+            "operational_deletion_consumption_event",
+            "cleanup_checkpoint",
+            "cleanup_batch_receipt",
+        ),
+        "Validate server-owned cursors, bounded same-transaction typed effects with receipt/checkpoint CAS, an empty terminal receipt, and an exact immutable effect-completeness seal written before COMPLETE without a publication-time event scan.",
+    ),
+    "h2hdb.operational.queue-history.v1": (
+        (
+            "deletion_request_generation",
+            "deletion_request_generation_head",
+            "deletion_request_attempt",
+            "deletion_request_head",
+            "deletion_request_url",
+            "operational_preparation",
+            "operational_deletion_consumption_event",
+        ),
+        "Validate the real immutable generation-zero empty-queue genesis, exact history-backed singleton generation CAS, immutable deletion attempts, independently mutable per-gid heads, optional exact URL satellites, preparation generation authority, O(1) publication recheck, and consumption references to immutable attempts.",
+    ),
+    "h2hdb.operational.attempt-identity.v1": (
+        (
+            "cleanup_job",
+            "operational_preparation",
+            "operational_policy",
+            "deletion_request_generation",
+            "deletion_request_generation_head",
+        ),
+        "Validate monotone cleanup attempt numbers and policy-qualified immutable preparation identity backed by an exact retained deletion generation; publication accepts only the preparation matching the singleton current generation.",
+    ),
+    "h2hdb.operational.event-integrity.v1": (
+        (
+            "operational_event_stream",
+            "operational_preparation",
+            "operational_preparation_effect_seal",
+            "publication_candidate_preparation",
+            "operational_activation",
+            "operational_event",
+            "operational_removed_gid_event",
+            "operational_deletion_consumption_event",
+            "operational_event_ack",
+            "operational_event_ack_head",
+        ),
+        "Validate invisible preparation-scoped event streams, contiguous exact digest chains and immutable effect seals, one-to-one candidate binding to an exact sealed preparation, O(1) activation, exactly one type-matching subtype, and monotone same-preparation acknowledgement only after activation and durable bounded-prefix coverage.",
+    ),
+    "h2hdb.operational.cleanup-reachability.v1": (
+        (
+            "cleanup_target_kind",
+            "cleanup_phase",
+            "cleanup_job",
+            "cleanup_checkpoint",
+            "source_build",
+            "publication_candidate",
+            "analysis_snapshot_manifest",
+            "source_revision",
+            "catalog_revision",
+            "canonical_value_identity",
+            "content_blob",
+            "operational_event_stream",
+            "operational_preparation",
+            "operational_preparation_effect_seal",
+            "publication_candidate_preparation",
+            "operational_activation",
+            "operational_event",
+            "operational_removed_gid_event",
+            "operational_deletion_consumption_event",
+            "operational_event_ack",
+            "operational_event_ack_head",
+        ),
+        "Validate the exact seeded cleanup kind/phase registry, 32-byte target-key codecs, static writer hooks, retention-root closure, blocker identities, candidate-to-preparation binding, and conditional child-first preparation cleanup: activated effects outlive control rows, bound or unactivated COMPLETE work is retained, and ABANDONED invisible streams leave no orphan.",
+    ),
+    "h2hdb.operational.bootstrap-genesis.v1": (
+        (
+            "revision_allocator",
+            "identity_allocator",
+            "deletion_request_generation",
+            "deletion_request_generation_head",
+        ),
+        "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG identity allocator genesis rows, the real immutable deletion generation-zero empty-queue fact and its singleton head, and the declared absence of all request, event, lease, staging, work, cache, policy, and cleanup facts.",
+    ),
+}
 
 
 def _column(relation: str, attribute: str) -> tuple[str, bool, str, str]:
-    nullable = attribute in {
-        "completed_at",
-        "last_page_sha256",
-        "ready_at",
-        "root_page_sha256",
-        "sealed_at",
-    } or (
-        relation == "gallery_observation_staging_metadata_parser"
-        and attribute
+    nullable = (
+        attribute
         in {
-            "gid",
-            "title_byte_count",
-            "comment_byte_count",
-            "upload_account_byte_count",
-            "upload_time",
-            "download_time",
-            "modified_time",
-            "scan_observation_version",
-            "source_file_count",
-            "page_count",
+            "completed_at",
+            "last_page_sha256",
+            "ready_at",
+            "root_page_sha256",
         }
+        or attribute == "sealed_at"
+        and relation == "gallery_observation_staging"
+        or (
+            relation == "gallery_observation_staging_metadata_parser"
+            and attribute
+            in {
+                "gid",
+                "title_byte_count",
+                "comment_byte_count",
+                "upload_account_byte_count",
+                "upload_time",
+                "download_time",
+                "modified_time",
+                "scan_observation_version",
+                "source_file_count",
+                "page_count",
+            }
+        )
     )
     if attribute == "request_bytes":
         return attribute, nullable, "BLOB", "BLOB"
@@ -466,7 +605,9 @@ def _semantic_obligations(
         )
         check = _string(value, "check", f"semantic obligation {obligation_id!r}")
         hook = _string(value, "hook", f"semantic obligation {obligation_id!r}")
-        _string(value, "description", f"semantic obligation {obligation_id!r}")
+        description = _string(
+            value, "description", f"semantic obligation {obligation_id!r}"
+        )
         relations = _string_array(
             value, "relations", f"semantic obligation {obligation_id!r}"
         )
@@ -475,6 +616,15 @@ def _semantic_obligations(
             raise ValueError(
                 f"semantic obligation {obligation_id!r} references unknown relations "
                 f"{sorted(unknown_relations)!r}"
+            )
+        generation_binding = GENERATION_OBLIGATION_BINDINGS.get(obligation_id)
+        if generation_binding is not None and generation_binding != (
+            relations,
+            description,
+        ):
+            raise ValueError(
+                f"semantic obligation {obligation_id!r} generation relation or "
+                "description binding drifts"
             )
         expected = SEMANTIC_OBLIGATION_CHECKS.get(obligation_id)
         if expected != (lifecycle, obligation_class, check):
@@ -527,6 +677,8 @@ def _bootstrap_seeds(
     if seeded != (
         "revision_allocator",
         "identity_allocator",
+        "deletion_request_generation",
+        "deletion_request_generation_head",
         "cleanup_target_kind",
         "cleanup_phase",
         "cleanup_sweep_target",
@@ -546,6 +698,18 @@ def _bootstrap_seeds(
     expected_identity_allocator_rows = {
         "h2hdb.operational.identity-allocator.gallery.v1": "GALLERY",
         "h2hdb.operational.identity-allocator.tag.v1": "TAG",
+    }
+    expected_deletion_generation_rows = {
+        "h2hdb.operational.deletion-request-generation.genesis.v1": (
+            "deletion_request_generation",
+            (0, 0),
+            ("uint64", "unix_microseconds"),
+        ),
+        "h2hdb.operational.deletion-request-generation-head.genesis.v1": (
+            "deletion_request_generation_head",
+            (1, 0, 0),
+            ("uint64", "uint64", "unix_microseconds"),
+        ),
     }
     targets = logical.get("cleanup_target")
     if not isinstance(targets, list) or not all(
@@ -613,6 +777,17 @@ def _bootstrap_seeds(
                 "uint64",
                 "unix_microseconds",
             )
+        elif relation_name in {
+            "deletion_request_generation",
+            "deletion_request_generation_head",
+        }:
+            deletion_row = expected_deletion_generation_rows.get(seed_id)
+            if deletion_row is None or deletion_row[0] != relation_name:
+                expected_values = None
+                expected_types = ()
+            else:
+                expected_values = deletion_row[1]
+                expected_types = deletion_row[2]
         elif relation_name == "cleanup_target_kind":
             expected_values = expected_target_rows.get(seed_id)
             expected_types = ("ascii_enum",)
@@ -642,6 +817,7 @@ def _bootstrap_seeds(
     expected_ids = (
         set(expected_allocator_rows)
         | set(expected_identity_allocator_rows)
+        | set(expected_deletion_generation_rows)
         | set(expected_target_rows)
         | set(expected_phase_rows)
     )
@@ -927,12 +1103,27 @@ def _checks(name: str, relation: dict[str, Any]) -> list[tuple[str, str, str]]:
                 f"{attribute} >= 0 AND {attribute} <= 9223372036854775807",
             )
         )
-    for attribute in sorted(attributes & {"completed_at", "ready_at", "sealed_at"}):
+    nullable_timestamps = {
+        attribute
+        for attribute in attributes & {"completed_at", "ready_at", "sealed_at"}
+        if _column(name, attribute)[1]
+    }
+    for attribute in sorted(nullable_timestamps):
         checks.append(
             (
                 _identifier(f"ck_{name}_{attribute}_nonneg"),
                 f"{attribute} IS NULL OR {attribute} >= 0 AND {attribute} <= 9223372036854775807",
                 f"{attribute} IS NULL OR {attribute} >= 0 AND {attribute} <= 9223372036854775807",
+            )
+        )
+    for attribute in sorted(
+        (attributes & {"completed_at", "ready_at", "sealed_at"}) - nullable_timestamps
+    ):
+        checks.append(
+            (
+                _identifier(f"ck_{name}_{attribute}_nonneg"),
+                f"{attribute} >= 0 AND {attribute} <= 9223372036854775807",
+                f"{attribute} >= 0 AND {attribute} <= 9223372036854775807",
             )
         )
     nonnegative_counters = attributes & COUNTERS
@@ -1072,7 +1263,30 @@ def _checks(name: str, relation: dict[str, Any]) -> list[tuple[str, str, str]]:
                     "(component = X'4449524543544F5259' AND level = 0 OR "
                     "regular_count = 0)",
                 ),
+                (
+                    "ck_gallery_observation_staging_checkpoint_byte_count",
+                    "(component = X'46494C45' AND level = 0 OR "
+                    "processed_byte_count = 0)",
+                    "(component = X'46494C45' AND level = 0 OR "
+                    "processed_byte_count = 0)",
+                ),
             ]
+        )
+    if name == "gallery_observation_staging_receipt":
+        checks.append(
+            (
+                "ck_gallery_observation_staging_receipt_byte_count",
+                "(component = X'46494C45' AND level = 0 AND "
+                "next_processed_byte_count >= start_processed_byte_count OR "
+                "(component != X'46494C45' OR level != 0) AND "
+                "start_processed_byte_count = 0 AND "
+                "next_processed_byte_count = 0)",
+                "(component = X'46494C45' AND level = 0 AND "
+                "next_processed_byte_count >= start_processed_byte_count OR "
+                "(component != X'46494C45' OR level != 0) AND "
+                "start_processed_byte_count = 0 AND "
+                "next_processed_byte_count = 0)",
+            )
         )
     if name == "gallery_observation_staging_frontier":
         checks.extend(
@@ -1246,6 +1460,30 @@ def _checks(name: str, relation: dict[str, Any]) -> list[tuple[str, str, str]]:
                 "phase IN ('READY', 'DOWNLOADING', 'INGEST_REQUESTED', 'INGESTING')",
             )
         )
+    if name == "download_generation":
+        checks.append(
+            (
+                "ck_download_generation_time_order",
+                "completed_at IS NULL OR completed_at >= started_at",
+                "completed_at IS NULL OR completed_at >= started_at",
+            )
+        )
+    if name == "download_coordination_head":
+        checks.append(
+            (
+                "ck_download_generation_order",
+                "completed_generation <= current_generation",
+                "completed_generation <= current_generation",
+            )
+        )
+    if name == "download_ingest_handoff":
+        checks.append(
+            (
+                "ck_download_ingest_handoff_kind",
+                "handoff_kind IN ('DOWNLOADER', 'EXPIRED_TAKEOVER')",
+                "handoff_kind IN ('DOWNLOADER', 'EXPIRED_TAKEOVER')",
+            )
+        )
     if name == "maintenance_gate_generation":
         checks.append(
             (
@@ -1279,12 +1517,68 @@ def _checks(name: str, relation: dict[str, Any]) -> list[tuple[str, str, str]]:
                 "stream IN ('SOURCE', 'CATALOG')",
             )
         )
-    if name in {"operational_preparation_checkpoint", "cleanup_checkpoint"}:
+    if name in {
+        "operational_preparation_checkpoint",
+        "cleanup_checkpoint",
+        "source_build_discovery_checkpoint",
+        "source_build_assembly_checkpoint",
+    }:
         checks.append(
             (
                 _identifier(f"ck_{name}_state"),
                 "state IN ('OPEN', 'COMPLETE')",
                 "state IN ('OPEN', 'COMPLETE')",
+            )
+        )
+    if name == "source_build_discovery_batch_receipt":
+        expression = (
+            "committed_generation = start_generation + 1 AND "
+            "next_processed_count = start_processed_count + row_count AND "
+            "(terminal = 0 AND row_count > 0 AND next_state = 'OPEN' OR "
+            "terminal = 1 AND row_count = 0 AND next_state = 'COMPLETE' AND "
+            "next_cursor = start_cursor AND "
+            "next_processed_count = start_processed_count)"
+        )
+        checks.append(
+            (
+                "ck_source_build_discovery_batch_receipt_transition",
+                expression,
+                expression,
+            )
+        )
+    if name == "source_build_assembly_batch_receipt":
+        expression = (
+            "committed_generation = start_generation + 1 AND "
+            "next_gallery_count = start_gallery_count + row_count AND "
+            "next_file_count >= start_file_count AND "
+            "next_byte_count >= start_byte_count AND "
+            "(terminal = 0 AND row_count > 0 AND next_state = 'OPEN' OR "
+            "terminal = 1 AND row_count = 0 AND next_state = 'COMPLETE' AND "
+            "next_cursor = start_cursor AND "
+            "next_gallery_count = start_gallery_count AND "
+            "next_file_count = start_file_count AND "
+            "next_byte_count = start_byte_count AND "
+            "next_manifest_chain_sha256 = start_manifest_chain_sha256)"
+        )
+        checks.append(
+            (
+                "ck_source_build_assembly_batch_receipt_transition",
+                expression,
+                expression,
+            )
+        )
+    if name == "operational_preparation":
+        checks.append(
+            (
+                "ck_operational_preparation_state_time",
+                "state IN ('OPEN', 'COMPLETE', 'FAILED', 'ABANDONED') AND "
+                "(state = 'OPEN' AND completed_at IS NULL OR "
+                "state IN ('COMPLETE', 'FAILED', 'ABANDONED') AND "
+                "completed_at IS NOT NULL AND completed_at >= prepared_at)",
+                "state IN ('OPEN', 'COMPLETE', 'FAILED', 'ABANDONED') AND "
+                "(state = 'OPEN' AND completed_at IS NULL OR "
+                "state IN ('COMPLETE', 'FAILED', 'ABANDONED') AND "
+                "completed_at IS NOT NULL AND completed_at >= prepared_at)",
             )
         )
     if name == "cleanup_job":

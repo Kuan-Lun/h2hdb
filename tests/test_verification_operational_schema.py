@@ -17,6 +17,7 @@ import pytest
 from h2hdb import CoreConfig
 from h2hdb.mariadb_connector import MariaDBConnector
 from h2hdb.vnext_identity import (
+    GALLERY_OBSERVATION_DURABLE_PARSER_PHASES,
     GalleryObservationMetadata,
     iter_gallery_observation_metadata_stream,
     validate_gallery_observation_metadata_parts,
@@ -196,12 +197,12 @@ def test_operational_contract_is_closed_world_bcnf_and_scope_separated() -> None
     assert contract.scope == "operational_control_plane"
     assert contract.excluded_data_plane_components
     assert not contract.excluded_operational_components
-    assert len(contract.relations) == 60
-    assert len(report.relations) == 60
+    assert len(contract.relations) == 76
+    assert len(report.relations) == 76
     assert not report.lossless_decompositions
     assert not report.dependency_preserving_decompositions
     assert all(not checker.bcnf_violations(value) for value in contract.relations)
-    assert len(contract.external_relations) == 29
+    assert len(contract.external_relations) == 33
     assert {
         "canonical_value_allocation",
         "canonical_value_page",
@@ -356,6 +357,56 @@ def test_operational_greenfield_identity_and_history_shapes() -> None:
     assert relations["source_build_generation"].declared_keys == (
         frozenset({"generation"}),
     )
+    assert any(
+        foreign_key.attributes == ("generation",)
+        and foreign_key.relation == "ingest_generation"
+        for foreign_key in relations["source_build_generation"].foreign_keys
+    )
+    assert all(
+        foreign_key.relation != "ingest_generation_owner"
+        for relation_name in ("source_build_generation", "canonical_value_upload")
+        for foreign_key in relations[relation_name].foreign_keys
+    )
+    stream = relations["operational_event_stream"]
+    assert stream.attributes == ("preparation_id", "created_at")
+    assert stream.declared_keys == (frozenset({"preparation_id"}),)
+    effect_seal = relations["operational_preparation_effect_seal"]
+    assert effect_seal.attributes == (
+        "preparation_id",
+        "event_count",
+        "final_chain_sha256",
+        "sealed_at",
+    )
+    assert effect_seal.declared_keys == (frozenset({"preparation_id"}),)
+    event = relations["operational_event"]
+    assert "source_revision" not in event.attributes
+    assert set(event.declared_keys) == {
+        frozenset({"event_id"}),
+        frozenset({"preparation_id", "sequence_no"}),
+    }
+    ack_head = relations["operational_event_ack_head"]
+    assert set(ack_head.declared_keys) == {frozenset({"consumer_id", "preparation_id"})}
+    deletion_generation = relations["deletion_request_generation"]
+    assert deletion_generation.attributes == ("generation", "allocated_at")
+    assert deletion_generation.declared_keys == (frozenset({"generation"}),)
+    assert deletion_generation.functional_dependencies == (
+        checker.FunctionalDependency(
+            frozenset({"generation"}), frozenset({"allocated_at"})
+        ),
+    )
+    deletion_generation_head = relations["deletion_request_generation_head"]
+    assert deletion_generation_head.attributes == (
+        "singleton_id",
+        "current_generation",
+        "updated_at",
+    )
+    assert deletion_generation_head.declared_keys == (frozenset({"singleton_id"}),)
+    assert any(
+        foreign_key.attributes == ("current_generation",)
+        and foreign_key.relation == "deletion_request_generation"
+        and foreign_key.referenced_attributes == ("generation",)
+        for foreign_key in deletion_generation_head.foreign_keys
+    )
     assert set(relations["operational_preparation"].declared_keys) == {
         frozenset({"preparation_id"}),
         frozenset(
@@ -366,6 +417,12 @@ def test_operational_greenfield_identity_and_history_shapes() -> None:
             }
         ),
     }
+    assert any(
+        foreign_key.attributes == ("deletion_request_generation",)
+        and foreign_key.relation == "deletion_request_generation"
+        and foreign_key.referenced_attributes == ("generation",)
+        for foreign_key in relations["operational_preparation"].foreign_keys
+    )
     assert set(relations["cleanup_job"].declared_keys) == {
         frozenset({"cleanup_id"}),
         frozenset({"target_key"}),
@@ -416,6 +473,36 @@ def test_operational_sqlite_history_and_attempts_accept_required_reuse() -> None
             "INSERT INTO catalog_source_builds (build_id) VALUES (?)",
             ((first_build,), (second_build,)),
         )
+        connection.execute(
+            "INSERT INTO operational_deletion_request_generations "
+            "(generation, allocated_at) VALUES (0, 0)"
+        )
+        connection.execute(
+            "INSERT INTO operational_deletion_request_generation_heads "
+            "(singleton_id, current_generation, updated_at) VALUES (1, 0, 0)"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "UPDATE operational_deletion_request_generation_heads "
+                "SET current_generation = 1, updated_at = 1 "
+                "WHERE singleton_id = 1 AND current_generation = 0"
+            )
+        connection.execute(
+            "INSERT INTO operational_deletion_request_generations "
+            "(generation, allocated_at) VALUES (1, 1)"
+        )
+        advanced = connection.execute(
+            "UPDATE operational_deletion_request_generation_heads "
+            "SET current_generation = 1, updated_at = 1 "
+            "WHERE singleton_id = 1 AND current_generation = 0"
+        )
+        assert advanced.rowcount == 1
+        stale = connection.execute(
+            "UPDATE operational_deletion_request_generation_heads "
+            "SET current_generation = 1, updated_at = 2 "
+            "WHERE singleton_id = 1 AND current_generation = 0"
+        )
+        assert stale.rowcount == 0
         connection.executemany(
             """
             INSERT INTO operational_ingest_generations
@@ -455,6 +542,17 @@ def test_operational_sqlite_history_and_attempts_accept_required_reuse() -> None
             """,
             (first_build, 2),
         )
+        connection.execute(
+            "UPDATE operational_ingest_generations "
+            "SET completed_at = 3 WHERE generation = 1"
+        )
+        connection.execute(
+            "DELETE FROM operational_ingest_generation_owners WHERE generation = 1"
+        )
+        assert connection.execute(
+            "SELECT build_id FROM operational_source_build_generations "
+            "WHERE generation = 1"
+        ).fetchone() == (first_build,)
 
         connection.executemany(
             """
@@ -545,6 +643,24 @@ def test_operational_sqlite_history_and_attempts_accept_required_reuse() -> None
         )
         connection.executemany(
             """
+            INSERT INTO operational_operational_event_streams
+                (preparation_id, created_at)
+            VALUES (?, ?)
+            """,
+            ((first_preparation, 1), (second_preparation, 2)),
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO operational_operational_preparations
+                    (preparation_id, build_id, deletion_request_generation,
+                     operational_policy_id, state, prepared_at, completed_at)
+                VALUES (?, ?, 2, 1, 'OPEN', 1, NULL)
+                """,
+                (first_preparation, first_build),
+            )
+        connection.executemany(
+            """
             INSERT INTO operational_operational_preparations
                 (preparation_id, build_id, deletion_request_generation,
                  operational_policy_id, state, prepared_at, completed_at)
@@ -581,41 +697,50 @@ def test_operational_sqlite_event_types_subtypes_and_ack_coordinates() -> None:
             VALUES (1, 1, 1, 100)
             """)
         connection.execute(
-            """
-            INSERT INTO operational_operational_activations
-                (source_revision, preparation_id, operational_policy_id, activated_at)
-            VALUES (1, ?, 1, 1)
-            """,
+            "INSERT INTO operational_operational_event_streams "
+            "(preparation_id, created_at) VALUES (?, 1)",
             (preparation,),
         )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
                 """
-                INSERT INTO operational_operational_events
-                    (event_id, source_revision, sequence_no, event_type,
-                     event_sha256, created_at)
-                VALUES (?, 1, 99, 'UNKNOWN', ?, 1)
+                INSERT INTO operational_operational_activations
+                    (source_revision, preparation_id, operational_policy_id,
+                     activated_at)
+                VALUES (1, ?, 1, 1)
                 """,
-                (bytes([99]) * 16, bytes([99]) * 32),
+                (preparation,),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO operational_operational_events
+                    (event_id, preparation_id, sequence_no, event_type,
+                     event_sha256, created_at)
+                VALUES (?, ?, 99, 'UNKNOWN', ?, 1)
+                """,
+                (bytes([99]) * 16, preparation, bytes([99]) * 32),
             )
         connection.executemany(
             """
             INSERT INTO operational_operational_events
-                (event_id, source_revision, sequence_no, event_type,
+                (event_id, preparation_id, sequence_no, event_type,
                  event_sha256, created_at)
-            VALUES (?, 1, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 (
                     removed_event,
-                    1,
+                    preparation,
+                    0,
                     "REMOVED_GID",
                     bytes([10]) * 32,
                     1,
                 ),
                 (
                     deletion_event,
-                    2,
+                    preparation,
+                    1,
                     "DELETION_CONSUMPTION",
                     bytes([11]) * 32,
                     2,
@@ -646,6 +771,34 @@ def test_operational_sqlite_event_types_subtypes_and_ack_coordinates() -> None:
             """,
             (deletion_event, deletion_request),
         )
+        assert connection.execute("""
+            SELECT COUNT(*)
+            FROM operational_operational_events AS event
+            JOIN operational_operational_activations AS activation
+              ON activation.preparation_id = event.preparation_id
+            """).fetchone() == (0,)
+        connection.execute(
+            """
+            INSERT INTO operational_operational_preparation_effect_seals
+                (preparation_id, event_count, final_chain_sha256, sealed_at)
+            VALUES (?, 2, ?, 2)
+            """,
+            (preparation, bytes([12]) * 32),
+        )
+        connection.execute(
+            """
+            INSERT INTO operational_operational_activations
+                (source_revision, preparation_id, operational_policy_id, activated_at)
+            VALUES (1, ?, 1, 2)
+            """,
+            (preparation,),
+        )
+        assert connection.execute("""
+            SELECT COUNT(*)
+            FROM operational_operational_events AS event
+            JOIN operational_operational_activations AS activation
+              ON activation.preparation_id = event.preparation_id
+            """).fetchone() == (2,)
         connection.execute("""
             INSERT INTO operational_operational_consumers
                 (consumer_id, consumer_name)
@@ -659,17 +812,109 @@ def test_operational_sqlite_event_types_subtypes_and_ack_coordinates() -> None:
             """,
             ((removed_event, 1), (deletion_event, 2)),
         )
-        connection.execute("""
+        connection.execute(
+            """
             INSERT INTO operational_operational_event_ack_heads
-                (consumer_id, source_revision, through_sequence_no, updated_at)
-            VALUES (1, 1, 2, 2)
-            """)
+                (consumer_id, preparation_id, through_sequence_no, updated_at)
+            VALUES (1, ?, 1, 2)
+            """,
+            (preparation,),
+        )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute("""
                 UPDATE operational_operational_event_ack_heads
-                SET through_sequence_no = 3
-                WHERE consumer_id = 1 AND source_revision = 1
+                SET through_sequence_no = 2
+                WHERE consumer_id = 1
                 """)
+        empty_preparation = bytes([6]) * 16
+        empty_chain = bytes.fromhex(
+            "e3963ad6e07ac045502ad95ddb3805ac57deea8ffbb038ddf7c538a816301e71"
+        )
+        connection.execute(
+            "INSERT INTO operational_operational_event_streams "
+            "(preparation_id, created_at) VALUES (?, 3)",
+            (empty_preparation,),
+        )
+        connection.execute(
+            """
+            INSERT INTO operational_operational_preparation_effect_seals
+                (preparation_id, event_count, final_chain_sha256, sealed_at)
+            VALUES (?, 0, ?, 3)
+            """,
+            (empty_preparation, empty_chain),
+        )
+        assert connection.execute(
+            "SELECT event_count FROM "
+            "operational_operational_preparation_effect_seals "
+            "WHERE preparation_id = ?",
+            (empty_preparation,),
+        ).fetchone() == (0,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM operational_operational_events "
+            "WHERE preparation_id = ?",
+            (empty_preparation,),
+        ).fetchone() == (0,)
+    finally:
+        connection.close()
+
+
+def test_generation_retention_rows_outlive_ephemeral_owner_authority() -> None:
+    _logical, _local_names, physical, stubs = _schemas()
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.executescript(
+            operational_refinement.render_sqlite_ddl(physical, stubs)
+        )
+        generation = 7
+        owner = bytes([7]) * 16
+        build_id = bytes([8]) * 16
+        value_sha256 = bytes([9]) * 32
+        connection.execute(
+            "INSERT INTO catalog_source_builds (build_id) VALUES (?)", (build_id,)
+        )
+        connection.execute(
+            """
+            INSERT INTO catalog_canonical_value_allocations
+                (value_sha256, digest_domain, byte_count, allocated_at)
+            VALUES (?, X'01', 0, 1)
+            """,
+            (value_sha256,),
+        )
+        connection.execute(
+            "INSERT INTO operational_ingest_generations "
+            "(generation, started_at, completed_at) VALUES (?, 1, NULL)",
+            (generation,),
+        )
+        connection.execute(
+            "INSERT INTO operational_ingest_generation_owners "
+            "(generation, owner_token, claimed_at) VALUES (?, ?, 1)",
+            (generation, owner),
+        )
+        connection.execute(
+            "INSERT INTO operational_source_build_generations "
+            "(build_id, generation) VALUES (?, ?)",
+            (build_id, generation),
+        )
+        connection.execute(
+            "INSERT INTO operational_canonical_value_uploads "
+            "(generation, value_sha256) VALUES (?, ?)",
+            (generation, value_sha256),
+        )
+        connection.execute(
+            "UPDATE operational_ingest_generations SET completed_at = 2 "
+            "WHERE generation = ?",
+            (generation,),
+        )
+        connection.execute(
+            "DELETE FROM operational_ingest_generation_owners WHERE generation = ?",
+            (generation,),
+        )
+        assert connection.execute(
+            "SELECT generation FROM operational_source_build_generations"
+        ).fetchall() == [(generation,)]
+        assert connection.execute(
+            "SELECT generation FROM operational_canonical_value_uploads"
+        ).fetchall() == [(generation,)]
     finally:
         connection.close()
 
@@ -712,6 +957,135 @@ def test_operational_external_shapes_match_catalog_candidate_keys() -> None:
     }
 
 
+def test_hash_cache_canonical_domains_are_fail_closed_across_manifests() -> None:
+    operational = checker.load_contract(LOGICAL_PATH)
+    catalog = checker.load_contract(CATALOG_PATH)
+    checker.validate_cross_manifest_contracts(catalog, operational)
+
+    hash_cache = operational.canonical_hash_cache_contract
+    assert hash_cache is not None
+    drifted_operational = replace(
+        operational,
+        canonical_hash_cache_contract=replace(
+            hash_cache,
+            source_domain="filesystem_source_identity_v2",
+        ),
+    )
+    with pytest.raises(
+        checker.ContractValidationError,
+        match="hash-cache domains must be exactly",
+    ):
+        checker.validate_cross_manifest_contracts(catalog, drifted_operational)
+
+    missing_catalog_seed = replace(
+        catalog,
+        bootstrap_seeds=tuple(
+            seed
+            for seed in catalog.bootstrap_seeds
+            if seed.values != ("filesystem_fingerprint_v1",)
+        ),
+    )
+    with pytest.raises(
+        checker.ContractValidationError,
+        match="does not register.*filesystem_fingerprint_v1",
+    ):
+        checker.validate_cross_manifest_contracts(
+            missing_catalog_seed,
+            operational,
+        )
+
+
+def test_source_build_authority_is_fail_closed_across_manifests() -> None:
+    operational = checker.load_contract(LOGICAL_PATH)
+    catalog = checker.load_contract(CATALOG_PATH)
+
+    expected_membership = next(
+        relation
+        for relation in catalog.relations
+        if relation.name == "source_build_expected_gallery"
+    )
+    missing_gallery_identity_fk = replace(
+        expected_membership,
+        foreign_keys=tuple(
+            foreign_key
+            for foreign_key in expected_membership.foreign_keys
+            if foreign_key.relation != "gallery_identity"
+        ),
+    )
+    drifted_catalog = replace(
+        catalog,
+        relations=tuple(
+            (
+                missing_gallery_identity_fk
+                if relation.name == expected_membership.name
+                else relation
+            )
+            for relation in catalog.relations
+        ),
+    )
+    with pytest.raises(
+        checker.ContractValidationError,
+        match="must bind build and gallery identity",
+    ):
+        checker.validate_cross_manifest_contracts(drifted_catalog, operational)
+
+    discovery_receipt = next(
+        relation
+        for relation in operational.relations
+        if relation.name == "source_build_discovery_batch_receipt"
+    )
+    incomplete_receipt = replace(
+        discovery_receipt,
+        attributes=tuple(
+            attribute
+            for attribute in discovery_receipt.attributes
+            if attribute != "next_state"
+        ),
+    )
+    drifted_operational = replace(
+        operational,
+        relations=tuple(
+            incomplete_receipt if relation.name == discovery_receipt.name else relation
+            for relation in operational.relations
+        ),
+    )
+    with pytest.raises(
+        checker.ContractValidationError,
+        match="discovery_batch_receipt must retain complete pre/post authority",
+    ):
+        checker.validate_cross_manifest_contracts(catalog, drifted_operational)
+
+    gallery_identity_target = next(
+        target
+        for target in catalog.retention_targets
+        if target.target == "GALLERY_IDENTITY"
+    )
+    incomplete_target = replace(
+        gallery_identity_target,
+        external_blockers=tuple(
+            edge
+            for edge in gallery_identity_target.external_blockers
+            if edge.relation != "source_build_expected_gallery"
+        ),
+    )
+    drifted_retention = replace(
+        catalog,
+        retention_targets=tuple(
+            (
+                incomplete_target
+                if target.target == gallery_identity_target.target
+                else target
+            )
+            for target in catalog.retention_targets
+        ),
+    )
+    with pytest.raises(
+        checker.ContractValidationError,
+        match="retention must list expected source membership",
+    ):
+        checker.validate_cross_manifest_contracts(drifted_retention, operational)
+
+
 def test_operational_physical_manifest_is_generated_without_drift() -> None:
     completed = subprocess.run(
         [sys.executable, str(GENERATOR_PATH), "--check"],
@@ -722,7 +1096,7 @@ def test_operational_physical_manifest_is_generated_without_drift() -> None:
     assert completed.returncode == 0, completed.stderr
     provider_relations = operational_refinement.provider_relation_names(PHYSICAL_PATH)
     assert "schema_epoch_control" not in provider_relations
-    assert len(provider_relations) == 59
+    assert len(provider_relations) == 75
 
 
 def test_operational_machine_obligations_and_genesis_are_closed_world() -> None:
@@ -730,8 +1104,8 @@ def test_operational_machine_obligations_and_genesis_are_closed_world() -> None:
         LOGICAL_PATH, PHYSICAL_PATH
     )
 
-    assert len(machine.obligations) == 14
-    assert len({value.obligation_id for value in machine.obligations}) == 14
+    assert len(machine.obligations) == 15
+    assert len({value.obligation_id for value in machine.obligations}) == 15
     assert all(value.version == 1 for value in machine.obligations)
     assert all(value.scope.startswith("operational.") for value in machine.obligations)
     assert all(
@@ -753,6 +1127,11 @@ def test_operational_machine_obligations_and_genesis_are_closed_world() -> None:
         and value.lifecycle == "ready_and_runtime"
         for value in machine.obligations
     )
+    assert any(
+        value.obligation_id == "h2hdb.operational.download-ingest-handoff.v1"
+        and value.lifecycle == "ready_and_runtime"
+        for value in machine.obligations
+    )
     assert all(value.lifecycle == "building_only" for value in machine.seeds)
     assert all(
         value.hook
@@ -762,13 +1141,15 @@ def test_operational_machine_obligations_and_genesis_are_closed_world() -> None:
     assert machine.seeded_relations == (
         "revision_allocator",
         "identity_allocator",
+        "deletion_request_generation",
+        "deletion_request_generation_head",
         "cleanup_target_kind",
         "cleanup_phase",
         "cleanup_sweep_target",
     )
     assert machine.epoch_owned_relation == "schema_epoch_control"
-    assert len(machine.absent_relations) == 54
-    assert len(machine.seeds) == 81
+    assert len(machine.absent_relations) == 68
+    assert len(machine.seeds) == 86
     assert {
         value.seed_id
         for value in machine.seeds
@@ -793,6 +1174,28 @@ def test_operational_machine_obligations_and_genesis_are_closed_world() -> None:
         ("GALLERY", 1, 0),
         ("TAG", 1, 0),
     }
+    assert {
+        value.relation: tuple(cell.value for cell in value.cells)
+        for value in machine.seeds
+        if value.relation.startswith("deletion_request_generation")
+    } == {
+        "deletion_request_generation": (0, 0),
+        "deletion_request_generation_head": (1, 0, 0),
+    }
+    queue_obligation = next(
+        value
+        for value in machine.obligations
+        if value.obligation_id == "h2hdb.operational.queue-history.v1"
+    )
+    assert queue_obligation.relations == (
+        "deletion_request_generation",
+        "deletion_request_generation_head",
+        "deletion_request_attempt",
+        "deletion_request_head",
+        "deletion_request_url",
+        "operational_preparation",
+        "operational_deletion_consumption_event",
+    )
 
 
 def test_cleanup_fk_descendant_and_root_codec_mutations_fail_closed() -> None:
@@ -850,7 +1253,7 @@ def test_cleanup_fk_descendant_and_root_codec_mutations_fail_closed() -> None:
 
 def test_cleanup_runtime_predicates_and_exact_key_codecs() -> None:
     facts = operational_refinement.PreparationCleanupFacts
-    assert not operational_refinement.operational_preparation_cleanup_eligible(
+    assert operational_refinement.operational_preparation_cleanup_eligible(
         facts("COMPLETE", True, True)
     )
     assert operational_refinement.operational_preparation_cleanup_eligible(
@@ -2385,12 +2788,24 @@ def test_cleanup_registry_foreign_keys_are_enforced_by_sqlite_and_mariadb() -> N
     ("table", "field", "invalid", "message"),
     [
         ("fencing_contract", "takeover_rule", "greater_or_equal", "fencing_contract"),
+        (
+            "download_ingest_handoff_contract",
+            "handoff_kinds",
+            ["DOWNLOADER"],
+            "download_ingest_handoff_contract",
+        ),
         ("maintenance_gate_contract", "slot_count", 63, "maintenance_gate_contract"),
         (
             "bounded_work_contract",
             "terminal_rule",
             "complete_without_receipt",
             "bounded_work_contract",
+        ),
+        (
+            "operational_event_integrity_contract",
+            "stream_rule",
+            "stream_may_commit_alone",
+            "operational_event_integrity_contract",
         ),
         (
             "revision_allocator_contract",
@@ -2416,6 +2831,52 @@ def test_operational_protocol_contract_mutations_fail_closed(
         )
 
 
+def test_gallery_parser_and_audit_contract_mutations_fail_closed() -> None:
+    with LOGICAL_PATH.open("rb") as stream:
+        logical = tomllib.load(stream)
+    with PHYSICAL_PATH.open("rb") as stream:
+        physical = tomllib.load(stream)
+
+    assert tuple(logical["gallery_staging_contract"]["durable_parser_phases"]) == (
+        GALLERY_OBSERVATION_DURABLE_PARSER_PHASES
+    )
+
+    alias_phase = deepcopy(logical)
+    phases = alias_phase["gallery_staging_contract"]["durable_parser_phases"]
+    phases[phases.index("UPLOAD_ACCOUNT_LENGTH")] = "LENGTH"
+    with pytest.raises(ValueError, match="structural contract drifts"):
+        operational_refinement.check_gallery_staging_contract_v1(alias_phase, physical)
+
+    reordered_audit = deepcopy(logical)
+    reordered_audit["gallery_staging_contract"]["scan_audit_framing"] = reordered_audit[
+        "gallery_staging_contract"
+    ]["scan_audit_framing"].replace(
+        "raw32(FILE root_page_sha256)", "raw32(TAG root_page_sha256)", 1
+    )
+    with pytest.raises(ValueError, match="structural contract drifts"):
+        operational_refinement.check_gallery_staging_contract_v1(
+            reordered_audit, physical
+        )
+
+    physical_alias = deepcopy(physical)
+    parser = next(
+        relation
+        for relation in physical_alias["relation"]
+        if relation["name"] == "gallery_observation_staging_metadata_parser"
+    )
+    phase_check = next(
+        check
+        for check in parser["check"]
+        if check["name"] == "ck_gallery_observation_staging_metadata_parser_phase"
+    )
+    for backend in ("sqlite_expression", "mariadb_expression"):
+        phase_check[backend] = phase_check[backend][:-1] + ", 'TITLE_TEXT')"
+    with pytest.raises(ValueError, match="physical phase registry is not exact"):
+        operational_refinement.check_gallery_staging_contract_v1(
+            logical, physical_alias
+        )
+
+
 def test_operational_machine_binding_and_typed_seed_mutations_fail_closed() -> None:
     with LOGICAL_PATH.open("rb") as stream:
         logical = tomllib.load(stream)
@@ -2438,6 +2899,121 @@ def test_operational_machine_binding_and_typed_seed_mutations_fail_closed() -> N
             invalid_seed, physical
         )
 
+    missing_generation_scope = deepcopy(logical)
+    queue_obligation = next(
+        value
+        for value in missing_generation_scope["semantic_obligation"]
+        if value["id"] == "h2hdb.operational.queue-history.v1"
+    )
+    queue_obligation["relations"].remove("deletion_request_generation_head")
+    with pytest.raises(ValueError, match="generation relation or description"):
+        operational_refinement.validate_operational_machine_contract_documents(
+            missing_generation_scope, physical
+        )
+
+    missing_preparation_authority = deepcopy(logical)
+    preparation = next(
+        value
+        for value in missing_preparation_authority["relation"]
+        if value["name"] == "operational_preparation"
+    )
+    preparation["foreign_keys"] = [
+        value
+        for value in preparation["foreign_keys"]
+        if value["relation"] != "deletion_request_generation"
+    ]
+    with pytest.raises(ValueError, match="lacks exact deletion generation FK"):
+        operational_refinement.validate_operational_machine_contract_documents(
+            missing_preparation_authority, physical
+        )
+
+    invented_genesis = deepcopy(logical)
+    generation_seed = next(
+        value
+        for value in invented_genesis["bootstrap_seed"]
+        if value["relation"] == "deletion_request_generation"
+    )
+    generation_seed["value"][0]["integer"] = 1
+    with pytest.raises(ValueError, match="wrong typed values"):
+        operational_refinement.validate_operational_machine_contract_documents(
+            invented_genesis, physical
+        )
+
+    old_publication_coordinate = deepcopy(logical)
+    event = next(
+        value
+        for value in old_publication_coordinate["relation"]
+        if value["name"] == "operational_event"
+    )
+    event["attributes"][1] = "source_revision"
+    event["declared_keys"][1][0] = "source_revision"
+    with pytest.raises(ValueError, match="coordinate shape drifts"):
+        operational_refinement.validate_operational_machine_contract_documents(
+            old_publication_coordinate, physical
+        )
+
+    missing_effect_seal_fk = deepcopy(logical)
+    activation = next(
+        value
+        for value in missing_effect_seal_fk["relation"]
+        if value["name"] == "operational_activation"
+    )
+    activation["foreign_keys"] = [
+        value
+        for value in activation["foreign_keys"]
+        if value["relation"] != "operational_preparation_effect_seal"
+    ]
+    with pytest.raises(ValueError, match="lacks exact effect FK"):
+        operational_refinement.validate_operational_machine_contract_documents(
+            missing_effect_seal_fk, physical
+        )
+
+    missing_candidate_binding_seal_fk = deepcopy(logical)
+    candidate_binding = next(
+        value
+        for value in missing_candidate_binding_seal_fk["relation"]
+        if value["name"] == "publication_candidate_preparation"
+    )
+    candidate_binding["foreign_keys"] = [
+        value
+        for value in candidate_binding["foreign_keys"]
+        if value["relation"] != "operational_preparation_effect_seal"
+    ]
+    with pytest.raises(ValueError, match="lacks exact effect FK"):
+        operational_refinement.validate_operational_machine_contract_documents(
+            missing_candidate_binding_seal_fk, physical
+        )
+
+    missing_effect_obligation = deepcopy(logical)
+    event_obligation = next(
+        value
+        for value in missing_effect_obligation["semantic_obligation"]
+        if value["id"] == "h2hdb.operational.event-integrity.v1"
+    )
+    event_obligation["relations"].remove("operational_preparation_effect_seal")
+    with pytest.raises(ValueError, match="relation or description binding drifts"):
+        operational_refinement.validate_operational_machine_contract_documents(
+            missing_effect_obligation, physical
+        )
+
+    ephemeral_generation_parent = deepcopy(logical)
+    for relation_name in ("source_build_generation", "canonical_value_upload"):
+        relation = next(
+            value
+            for value in ephemeral_generation_parent["relation"]
+            if value["name"] == relation_name
+        )
+        generation_fk = next(
+            value
+            for value in relation["foreign_keys"]
+            if value["attributes"] == ["generation"]
+        )
+        generation_fk["relation"] = "ingest_generation_owner"
+    with pytest.raises(ValueError, match="immutable history, not owner liveness"):
+        operational_refinement.validate_operational_machine_contract_documents(
+            ephemeral_generation_parent, physical
+        )
+
 
 def test_every_operational_foreign_key_has_explicit_left_prefix_access() -> None:
     with PHYSICAL_PATH.open("rb") as stream:
@@ -2446,16 +3022,20 @@ def test_every_operational_foreign_key_has_explicit_left_prefix_access() -> None
     expected_fk_indexes = {
         "ix_ingest_coordination_head_fk_1",
         "ix_ingest_coordination_head_fk_2",
+        "ix_download_coordination_head_fk_1",
+        "ix_download_coordination_head_fk_2",
         "ix_source_build_generation_fk_1",
         "ix_maintenance_gate_head_fk_1",
         "ix_maintenance_gate_owner_fk_1",
+        "ix_deletion_request_generation_head_fk_1",
         "ix_gallery_observation_staging_claim_fk_2",
         "ix_gallery_observation_staging_request_owner_fk_2",
         "ix_gallery_observation_staging_request_page_fk_2",
         "ix_canonical_value_upload_fk_2",
         "ix_gallery_redownload_state_fk_2",
-        "ix_operational_preparation_fk_2",
-        "ix_operational_activation_fk_2",
+        "ix_operational_preparation_fk_3",
+        "ix_operational_preparation_fk_4",
+        "ix_operational_activation_fk_3",
         "ix_operational_event_ack_head_fk_2",
         "ix_removed_gid_ack_fk_2",
         "ix_hash_cache_observation_fk_2",
@@ -2521,7 +3101,7 @@ def test_complete_operational_sqlite_fixture_physically_refines() -> None:
 
     assert report.conforms, report.render()
     assert report.fully_conforms
-    assert len(report.checked_relations) == 60
+    assert len(report.checked_relations) == 76
     assert report.pending_relations == ()
     assert database.table("h2hdb_schema_epoch") is not None
     assert database.table("operational_cleanup_batch_receipts") is not None
@@ -2531,16 +3111,20 @@ def test_complete_operational_sqlite_fixture_physically_refines() -> None:
     assert {
         "ix_ingest_coordination_head_fk_1",
         "ix_ingest_coordination_head_fk_2",
+        "ix_download_coordination_head_fk_1",
+        "ix_download_coordination_head_fk_2",
         "ix_source_build_generation_fk_1",
         "ix_maintenance_gate_head_fk_1",
         "ix_maintenance_gate_owner_fk_1",
+        "ix_deletion_request_generation_head_fk_1",
         "ix_gallery_observation_staging_claim_fk_2",
         "ix_gallery_observation_staging_request_owner_fk_2",
         "ix_gallery_observation_staging_request_page_fk_2",
         "ix_canonical_value_upload_fk_2",
         "ix_gallery_redownload_state_fk_2",
-        "ix_operational_preparation_fk_2",
-        "ix_operational_activation_fk_2",
+        "ix_operational_preparation_fk_3",
+        "ix_operational_preparation_fk_4",
+        "ix_operational_activation_fk_3",
         "ix_operational_event_ack_head_fk_2",
         "ix_removed_gid_ack_fk_2",
         "ix_hash_cache_observation_fk_2",
@@ -2573,6 +3157,14 @@ def test_operational_sqlite_typed_genesis_has_no_invented_control_facts() -> Non
             SELECT stream, next_revision, updated_at
             FROM operational_revision_allocators ORDER BY stream
             """).fetchall() == [("CATALOG", 1, 0), ("SOURCE", 1, 0)]
+        assert connection.execute("""
+            SELECT generation, allocated_at
+            FROM operational_deletion_request_generations
+            """).fetchall() == [(0, 0)]
+        assert connection.execute("""
+            SELECT singleton_id, current_generation, updated_at
+            FROM operational_deletion_request_generation_heads
+            """).fetchall() == [(1, 0, 0)]
         for relation_name in machine.absent_relations:
             table = relation_by_name[relation_name].table
             assert table is not None
@@ -2732,6 +3324,42 @@ def test_operational_mariadb_renderer_uses_exact_binary_domains() -> None:
         for statement in statements
         if statement.startswith("CREATE TABLE `operational_operational_preparations`")
     )
+    effect_seal_ddl = next(
+        statement
+        for statement in statements
+        if statement.startswith(
+            "CREATE TABLE `operational_operational_preparation_effect_seals`"
+        )
+    )
+    activation_ddl = next(
+        statement
+        for statement in statements
+        if statement.startswith("CREATE TABLE `operational_operational_activations`")
+    )
+    event_ddl = next(
+        statement
+        for statement in statements
+        if statement.startswith("CREATE TABLE `operational_operational_events`")
+    )
+    canonical_upload_ddl = next(
+        statement
+        for statement in statements
+        if statement.startswith("CREATE TABLE `operational_canonical_value_uploads`")
+    )
+    deletion_generation_ddl = next(
+        statement
+        for statement in statements
+        if statement.startswith(
+            "CREATE TABLE `operational_deletion_request_generations`"
+        )
+    )
+    deletion_generation_head_ddl = next(
+        statement
+        for statement in statements
+        if statement.startswith(
+            "CREATE TABLE `operational_deletion_request_generation_heads`"
+        )
+    )
     cleanup_ddl = next(
         statement
         for statement in statements
@@ -2761,8 +3389,49 @@ def test_operational_mariadb_renderer_uses_exact_binary_domains() -> None:
     assert "PRIMARY KEY (`generation`)" in generation_ddl
     assert "UNIQUE (`build_id`)" not in generation_ddl
     assert (
+        "FOREIGN KEY (`generation`) REFERENCES "
+        "`operational_ingest_generations` (`generation`)"
+    ) in generation_ddl
+    assert "REFERENCES `operational_ingest_generation_owners`" not in generation_ddl
+    assert (
+        "FOREIGN KEY (`generation`) REFERENCES "
+        "`operational_ingest_generations` (`generation`)"
+    ) in canonical_upload_ddl
+    assert (
+        "REFERENCES `operational_ingest_generation_owners`" not in canonical_upload_ddl
+    )
+    assert (
         "UNIQUE (`build_id`, `deletion_request_generation`, `operational_policy_id`)"
     ) in preparation_ddl
+    assert "PRIMARY KEY (`generation`)" in deletion_generation_ddl
+    assert "`allocated_at` BIGINT UNSIGNED NOT NULL" in deletion_generation_ddl
+    assert "PRIMARY KEY (`singleton_id`)" in deletion_generation_head_ddl
+    assert (
+        "FOREIGN KEY (`current_generation`) REFERENCES "
+        "`operational_deletion_request_generations` (`generation`)"
+    ) in deletion_generation_head_ddl
+    assert (
+        "FOREIGN KEY (`deletion_request_generation`) REFERENCES "
+        "`operational_deletion_request_generations` (`generation`)"
+    ) in preparation_ddl
+    assert (
+        "FOREIGN KEY (`preparation_id`) REFERENCES "
+        "`operational_operational_event_streams` (`preparation_id`)"
+    ) in preparation_ddl
+    assert "state IN ('OPEN', 'COMPLETE', 'FAILED', 'ABANDONED')" in preparation_ddl
+    assert "`event_count` BIGINT UNSIGNED NOT NULL" in effect_seal_ddl
+    assert "`final_chain_sha256` BINARY(32) NOT NULL" in effect_seal_ddl
+    assert "`sealed_at` BIGINT UNSIGNED NOT NULL" in effect_seal_ddl
+    assert (
+        "FOREIGN KEY (`preparation_id`) REFERENCES "
+        "`operational_operational_preparation_effect_seals` (`preparation_id`)"
+    ) in activation_ddl
+    assert "UNIQUE (`preparation_id`, `sequence_no`)" in event_ddl
+    assert "`source_revision`" not in event_ddl
+    assert (
+        "FOREIGN KEY (`preparation_id`) REFERENCES "
+        "`operational_operational_event_streams` (`preparation_id`)"
+    ) in event_ddl
     assert "UNIQUE (`target_key`)" in cleanup_ddl
     assert "`cycle_generation` BIGINT UNSIGNED NOT NULL" in cleanup_ddl
     assert "CHECK (`cursor` >= 0 AND `cursor` <= 9223372036854775807)" in (
@@ -2773,7 +3442,7 @@ def test_operational_mariadb_renderer_uses_exact_binary_domains() -> None:
         "CONSTRAINT `ck_operational_event_type` CHECK "
         "(event_type IN ('REMOVED_GID', 'DELETION_CONSUMPTION'))"
     ) in ddl
-    assert "CREATE INDEX `ix_operational_event_revision`" in ddl
+    assert "CREATE INDEX `ix_operational_event_revision`" not in ddl
     assert "CREATE INDEX `ix_file_hash_cache_hash`" in ddl
 
 
@@ -2898,16 +3567,20 @@ def test_complete_operational_mariadb_fixture_physically_refines(
     assert {
         "ix_ingest_coordination_head_fk_1",
         "ix_ingest_coordination_head_fk_2",
+        "ix_download_coordination_head_fk_1",
+        "ix_download_coordination_head_fk_2",
         "ix_source_build_generation_fk_1",
         "ix_maintenance_gate_head_fk_1",
         "ix_maintenance_gate_owner_fk_1",
+        "ix_deletion_request_generation_head_fk_1",
         "ix_gallery_observation_staging_claim_fk_2",
         "ix_gallery_observation_staging_request_owner_fk_2",
         "ix_gallery_observation_staging_request_page_fk_2",
         "ix_canonical_value_upload_fk_2",
         "ix_gallery_redownload_state_fk_2",
-        "ix_operational_preparation_fk_2",
-        "ix_operational_activation_fk_2",
+        "ix_operational_preparation_fk_3",
+        "ix_operational_preparation_fk_4",
+        "ix_operational_activation_fk_3",
         "ix_operational_event_ack_head_fk_2",
         "ix_removed_gid_ack_fk_2",
         "ix_hash_cache_observation_fk_2",

@@ -8,8 +8,10 @@ from typing import Any
 
 import pytest
 
-from h2hdb import CoreConfig
+from h2hdb import CoreConfig, DatabaseAccessMode
 from h2hdb.mariadb_connector import MariaDBConnector
+from h2hdb.repository import RepositoryContext
+from h2hdb.schema_admin import VNextSchemaAdmin
 from h2hdb.schema_epoch import (
     MARIADB_SCHEMA_EPOCH_GATE_NAME,
     SCHEMA_EPOCH_CONTROL_TABLE,
@@ -587,6 +589,34 @@ def test_mariadb_epoch_empty_database_reaches_ready_and_releases_lock(
         SchemaObject(SchemaObjectKind.TABLE, SCHEMA_EPOCH_CONTROL_TABLE)
     }
     assert free_lock == (1,)
+
+
+def test_mariadb_ready_epoch_fully_checks_through_read_only_config(
+    mariadb_config: CoreConfig,
+) -> None:
+    provider = MariaDBTestProvider(_definition())
+    with _mariadb_connector(mariadb_config) as connector:
+        run_mariadb_schema_epoch(
+            connector,
+            provider,
+            clock=lambda: NOW,
+            lock_timeout_seconds=0,
+        )
+    read_only_config = mariadb_config.model_copy(
+        update={
+            "database": mariadb_config.database.model_copy(
+                update={"access_mode": DatabaseAccessMode.read_only}
+            )
+        }
+    )
+
+    report = VNextSchemaAdmin(RepositoryContext.from_config(read_only_config)).check(
+        provider
+    )
+
+    assert report.state == "READY"
+    assert report.resumed_build
+    assert not report.transitioned_to_ready
 
 
 def test_mariadb_epoch_resumes_committed_partial_ddl(

@@ -104,6 +104,16 @@ class SQLiteConnector(SQLConnector):
         except sqlite3.IntegrityError as e:
             raise SQLiteDuplicateKeyError(str(e))
 
+    def execute_affected(self, query: str, data: tuple[Any, ...] = ()) -> int:
+        self._ensure_writable(query)
+        try:
+            cursor = self.connection.execute(_to_qmark(query), data)
+        except sqlite3.IntegrityError as error:
+            raise SQLiteDuplicateKeyError(str(error)) from error
+        if cursor.rowcount < 0:
+            raise RuntimeError("SQLite did not report an affected-row count")
+        return cursor.rowcount
+
     def execute_many(self, query: str, data: list[tuple[Any, ...]]) -> None:
         self._ensure_writable(query)
         try:

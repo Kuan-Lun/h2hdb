@@ -4,22 +4,23 @@ Guidance for coding agents working in the `h2hdb` core repository.
 
 ## Scope
 
-This package owns database connectors and transactions, domain models, schema
-migrations, the durable download queue, lease/token fencing, the database gate,
-and the revision catalog projection. It exports the public protocols
-`CatalogReader`, `CatalogPublisher`, `CatalogBuildCoordinator`,
-`CatalogBuildAnalyzer`, `CatalogBuildProjectionCoordinator`,
-`DownloadCoordinator`, and `DatabaseAdmin`.
+This package owns the SQLite/MariaDB connectors, greenfield schema epoch,
+normalized catalog and operational relations, bounded transactions, durable
+coordination state, and public application facades. The supported schema is
+epoch 2/version 1: 125 catalog BCNF relations, 25 lossless and
+dependency-preserving decompositions, and 76 operational BCNF relations.
 
 Core must not depend on Pillow, FastAPI, OPDS types, `hbrowser`, filesystem
-scanning, gallery parsing, or CBZ behavior. Those belong to sibling repos.
-Downloader, Komga, ingest, and OPDS must use exported public APIs rather than
-connector/repository/table internals.
+scanning, gallery parsing, or concrete CBZ/object-storage behavior. Those
+belong to sibling repositories or consumer adapters. Consumers use
+`VNextDatabaseAdminFacade`, `VNextCatalogFacade`, and
+`VNextDownloadQueueFacade` rather than connector, repository, generated-schema,
+or table internals.
 
 ## Environment and commands
 
-Use the repository's independent uv virtual environment. This repository is not
-part of a uv workspace, and `uv.lock` must remain ignored.
+Use the repository's independent uv virtual environment. This repository is
+not part of a uv workspace, and `uv.lock` must remain ignored.
 
 ```bash
 uv pip install -e ".[dev]"
@@ -31,14 +32,31 @@ uv run --no-sync python -m build
 ```
 
 Use `./scripts/rebuild-env.sh` after toolchain changes. Use
-`./scripts/rebuild-multirepo-integration.sh` for the isolated cross-repo
+`./scripts/rebuild-multirepo-integration.sh` for the isolated cross-repository
 editable-install smoke test.
 
-## Formal verification
+## Manifest-first schema workflow
 
-The executable vNext specifications live in `verification/`; they do not
-describe the currently deployed schema. Run the required checks with the
-repository-pinned Lean toolchain and checksum-pinned TLC release:
+The logical authoring surfaces are
+`verification/schema/catalog.toml` and
+`verification/schema/operational.toml`. The catalog manifest is closed-world
+over its declared functional dependencies. An omitted semantic dependency
+invalidates the real design claim even if the executable checker passes.
+
+Make schema changes in this order:
+
+1. Add or change every relation, key, functional dependency, decomposition,
+   bootstrap fact, semantic obligation, and materialization rationale in the
+   logical manifests.
+2. Regenerate `physical.toml`, `operational_physical.toml`, and the catalog and
+   operational Lean schema files with their repository generators.
+3. Regenerate the wheel-resident `_generated_vnext_schema.py` provider artifact.
+4. Implement or update exact runtime validators, recurring writer bindings,
+   repositories, and fault/integration evidence named by the manifests.
+5. Run the schema, Lean, coverage-metadata, runtime, and backend checks before
+   treating the new manifest as usable.
+
+Run drift and proof checks with:
 
 ```bash
 uv run --no-sync python scripts/verify-formal.py coverage --validate-only
@@ -49,106 +67,94 @@ uv run --no-sync python scripts/verify-formal.py tla \
   --tla-jar .formal-tools/tla2tools-1.7.4.jar
 ```
 
+Do not hand-edit generated physical manifests, generated Lean schema files, or
+the generated runtime-provider artifact. A relation-count change must be
+reflected consistently in manifests, checks, and documentation.
+
+## Formal verification
+
 `verification/invariants.toml` is a closed-world evidence index for every
-machine `semantic_obligation` ID declared by the data and operational
-contracts. New IDs must add real FD/Lean/TLA/runtime-refinement/fault/integration
-coverage; the gate rejects missing IDs, stale evidence symbols, and any claim
-that finite TLC exploration is an unbounded proof.
+machine `semantic_obligation` ID declared by the catalog and operational
+contracts. New IDs require real FD, Lean, TLA+, runtime-refinement, fault, or
+integration evidence as appropriate. The gate rejects missing IDs, stale
+evidence symbols, and claims that finite TLC exploration are unbounded proofs.
 
-The required CI check uses `coverage --validate-only`: it still rejects every
-invalid contract, ID, evidence symbol, and status while reporting production
-blockers. Plain `coverage` is the strict production-readiness gate and remains
-nonzero until all reported blockers are discharged. `all` retains that strict
-behavior and does not accept `--validate-only`.
+The required metadata check uses `coverage --validate-only`: it rejects an
+invalid evidence contract while reporting production blockers. Plain
+`coverage` is the strict production-readiness gate and remains nonzero until
+all blockers are discharged. Do not describe successful schema generation,
+Lean checks, or coverage metadata validation as strict production coverage.
 
-Use `--deep` only for the larger manual/nightly TLA+ profile; the default
-`Small` profile is the finite required check. TLC success exhausts reachable
-states only for the selected constants. Lean theorems are unbounded over their
-stated mathematical inputs, but depend on their explicit assumptions and do
-not establish that Python, SQL, transactions, or filesystem behavior refines
-the model.
-
-The BCNF proof is closed-world over exactly the functional dependencies in
-`verification/schema/catalog.toml`. Any design change must first add every
-semantic FD to that manifest, regenerate/check the Lean proof, and then update
-the SQL design. An omitted semantic FD invalidates the real-world BCNF claim
-even when the executable check passes. Keep all intended materializations and
-their refresh rationale explicit in the manifest.
+Use `--deep` only for the larger manual/nightly TLA+ profile. TLC exhausts
+reachable states only for the selected finite constants. Lean theorems are
+unbounded over their stated mathematical inputs and assumptions, but do not by
+themselves establish that Python, SQL, transactions, or filesystem effects
+refine the model.
 
 ## Architecture rules
 
-- `H2HDB` in `service.py` is the concrete public facade. Protocols live in
-  `ports.py`; neutral immutable data lives in `domain.py`.
+- Public consumers use the three `VNext*Facade` classes and immutable values
+  exported from `h2hdb`. Protocols live in `ports.py`; neutral data lives in
+  `domain.py`.
 - Backend-specific behavior stays behind `SQLConnector`. Write common SQL once
   with `%s` placeholders; SQLite translates them to `?`.
-- Cross-table workflows share one connector and managed transaction. Internal
-  connector-accepting methods may coordinate core repositories; consumers may
-  not call them.
-- SQLite writes use `BEGIN IMMEDIATE`; MariaDB uses row locks where fencing or
-  revision allocation requires serialization.
-- Read-only mode must be enforced by the connector, not merely by convention.
-- Request completion and lease transitions remain token/generation fenced.
-- Published catalog rows and `catalog_revision_history` descriptors are
-  immutable per revision. A publish requires a live `GalleryIngestTurn`; insert
-  the complete new snapshot and history descriptor before advancing the
-  `catalog_revision` pointer in the same fenced transaction.
-- Durable source builds use an independent UUID plus an exact opaque scope key;
-  ingest generation is fencing metadata, never build identity. Source-file
-  chunks are keyed by stable file-name digests rather than traversal position.
-  Scanner-facing plural header/file/completion calls must keep a bounded
-  multi-gallery batch in one transaction; never reintroduce one transaction per
-  gallery. Giant-gallery completion uses durable counters, not a file-row scan.
-  Persist source locators and filesystem observations needed for restart and
-  later validation. Scan-observation digests are not canonical source manifests.
-  Seal may validate bounded gallery/batch state, but a final pointer-publish
-  transaction must not rescan source files.
-- Catalog projection builds reserve revisions through the shared allocator;
-  legacy publication must use the same allocator. Candidate revision rows are
-  invisible until history insertion and pointer publication. Artifact and
-  selection checkpoints are hard-capped, payload-receipted CAS mutations.
-  Joint publication validates only O(1) sealed state while swapping source and
-  catalog pointers in one transaction. Persist a recovery receipt before
-  returning; a new live ingest turn may finalize a matching active published
-  receipt without inheriting the old owner token.
-- Operational source cutover is prepared by a build-scoped, hard-capped
-  keyset state machine after projection completion and before sealing. A
-  deletion-generation race must refresh the same invisible preparation even
-  when the build is already sealed; final publication validates only scalar
-  readiness and activates effects with the pointer transaction. Downloader
-  operations use the active source build only when its exact revision has a
-  matching operational activation, otherwise they use the legacy authority.
-- Removed-GID completion and deletion consumption remain exact-token fenced.
-  Runtime redownload timestamps are stable rows outside immutable source
-  builds. Legacy snapshot publication must not mutate canonical authority once
-  a source build has been activated.
-- Prune abandoned and unchanged-reuse projection candidates in bounded,
-  child-first transactions. Never cascade-delete a reserved revision, and
-  never remove its source history or publication receipt during orphan cleanup.
-- A finalized inactive published projection may be compacted child-first:
-  remove build-scoped projection rows, receipt, and descriptor while retaining
-  immutable historical catalog revision rows. Only then may source cleanup
-  begin. Cleanup discovery must exclude active, working, and pending-receipt
-  builds. Operational activations/events have no foreign key to prunable build
-  rows because unacknowledged events outlive source storage.
-- Prune inactive source builds only with bounded child-first batches. Never
-  cascade-delete a multi-million-row source build in one transaction.
-- Pagination over multiple calls must pin the `CatalogRevision` returned by the
-  first read.
+- Every cross-table workflow shares one connector and one managed transaction.
+  Internal connector/unit-of-work methods may coordinate repositories;
+  consumers may not call them.
+- SQLite writes use `BEGIN IMMEDIATE`; MariaDB uses row/advisory locks where
+  fencing, allocation, or epoch serialization requires them. Read-only mode is
+  connector-enforced.
+- Never accept caller digests, derived identifiers, counts, cursors, names,
+  generations, leases, or tokens as authority. Recompute or load exact durable
+  authority and fail closed on mismatch.
+- Arbitrary-length data uses bounded canonical pages and streaming validation.
+  Batches are hard-capped, keyset-paged, idempotent, and response-loss safe.
+- Immutable identity, history, event, receipt, and publication facts are not
+  updated in place. Mutable state is isolated in normalized heads, owners,
+  leases, checkpoints, and explicit state-machine relations.
+- Publication and coordinated completion validate sealed scalar state inside a
+  short transaction. They must not scan an unbounded source, projection,
+  artifact, queue, or event set.
+- Exact attempt/generation/token fencing must prevent a delayed retry from
+  completing or mutating replacement work.
+- Cleanup is bounded, child-first, and reachability checked. It must retain any
+  identity or history still referenced by active work, publication, pending
+  effects, or protection claims.
+- Catalog pagination across calls pins the `CatalogRevision` returned by the
+  first read. Nonblank search remains unavailable until a normalized,
+  revision-pinned index is added to the manifest.
+- Do not derive `redownload_required` from transient joins until the manifest
+  defines durable revision-scoped authority and replay semantics.
+- The artifact-preparation repository accepts a typed storage adapter. Concrete
+  filesystem/object-storage behavior and the missing complete public ingest
+  orchestration belong in the consumer integration.
 
-## Schema rules
+## Schema epoch rules
 
-Only this repository owns or migrates schema. Add forward-only numbered
-migrations in `migrations.py`; never couple schema version to package version.
-Migrations must be idempotent enough to recover safely from interrupted DDL.
-Consumers only call `check_compatibility()` and must fail clearly when the
-database is outside the supported schema range.
+Only this repository owns schema. The CLI exposes only `migrate`, `check`, and
+`ready` for epoch 2/version 1.
 
-Test every shared schema, transaction, migration, or connector change on
-SQLite. MariaDB cases use testcontainers and are enabled with
+`migrate` admits a truly empty database, writes a checksum-bound `BUILDING`
+marker, applies idempotent generated DDL/bootstrap slices, validates the exact
+object/seed/obligation manifests, and transitions to `READY`. An interrupted
+run may resume only the same manifest-bound `BUILDING` epoch. A `READY` rerun
+validates rather than mutates the data-plane schema.
+
+There is no numbered v1-v7 upgrade, schema adoption, compatibility view, or
+dual-write path. Do not add one. A previous, foreign, or drifted database must
+be rejected; rebuilding starts from a new empty database.
+
+`check` performs the complete `READY` audit in a read transaction. `ready` is
+the O(1) read-only epoch/version/manifest probe. Provider blockers must fail
+before opening or mutating a database. Consumers never initialize schema.
+
+Test every shared schema, transaction, connector, validator, or repository
+change on SQLite. MariaDB cases use testcontainers and are enabled with
 `H2HDB_TEST_MARIADB=1`; report exactly when Docker is unavailable.
 
 ## Working-tree discipline
 
-Preserve pre-existing uncommitted changes and do not commit, push, publish, or
-rewrite history unless the user explicitly requests it. Update README and agent
-guidance when an architecture change makes them stale.
+Preserve pre-existing uncommitted changes. Do not commit, push, publish, remove
+user files, or rewrite history unless the user explicitly requests it. Update
+README and agent guidance whenever architecture or schema policy makes them
+stale.

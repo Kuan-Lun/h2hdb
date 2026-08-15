@@ -18,7 +18,6 @@ from h2hdb import (
     GallerySourceRecord,
     IngestTurnLostError,
     SchemaCompatibilityError,
-    open_database,
 )
 
 EXPECTED_CANONICAL_TABLES = {
@@ -338,7 +337,7 @@ def test_read_only_compatibility_rejects_unsupported_schema_versions(
         SchemaCompatibilityError,
         match=rf"database={database_version}",
     ):
-        open_database(_read_only_config(sqlite_config))
+        H2HDB(_read_only_config(sqlite_config)).check_compatibility()
 
 
 def test_migrated_sqlite_opens_with_read_only_credentials(
@@ -347,7 +346,7 @@ def test_migrated_sqlite_opens_with_read_only_credentials(
     writable = H2HDB(sqlite_config)
     writable.migrate()
 
-    reader = open_database(_read_only_config(sqlite_config))
+    reader = H2HDB(_read_only_config(sqlite_config))
 
     assert reader.check_compatibility().database_version == 7
     assert reader.get_catalog_revision().revision == 0
@@ -935,7 +934,7 @@ def test_public_backend_contract_smoke(
         )
     assert database.get_catalog_revision() == current_revision
 
-    reader = open_database(_read_only_config(db_config))
+    reader = H2HDB(_read_only_config(db_config))
     assert reader.list_publications(limit=10).publications == ()
     assert reader.list_publications(
         limit=10,

@@ -4,7 +4,6 @@ __all__ = [
     "CoordinatorUnavailableError",
     "H2HDB",
     "IngestTurnLostError",
-    "open_database",
 ]
 
 import sqlite3
@@ -1856,10 +1855,3 @@ class H2HDB:
             turn,
             allow_expired_sqlite_lease=allow_expired_sqlite_lease,
         )
-
-
-def open_database(config: CoreConfig, *, require_compatible: bool = True) -> H2HDB:
-    database = H2HDB(config)
-    if require_compatible:
-        database.check_compatibility()
-    return database

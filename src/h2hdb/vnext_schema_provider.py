@@ -5,10 +5,11 @@ This module supplies the small handwritten trust boundary that turns it into a
 ``SchemaEpochProvider``.  It never imports the repository's verification
 package.
 
-The generated artifact advertises every unresolved formal or executable
-validator dependency as a blocker and :attr:`definition` fails closed.  It is
-not possible to transition an epoch to ``READY`` by merely echoing prose
-obligations or by omitting exact bootstrap-row validation.
+The generated artifact and wheel registries advertise every unresolved formal,
+executable-validator, or recurring writer-hook dependency as a blocker and
+:attr:`definition` fails closed.  It is not possible to transition an epoch to
+``READY`` by merely echoing prose obligations or by omitting exact bootstrap-row
+validation.
 """
 
 from __future__ import annotations
@@ -25,8 +26,9 @@ import json
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
-from typing import Any, Literal
+from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from ._generated_vnext_schema import ARTIFACT
 from .schema_epoch import (
@@ -40,6 +42,9 @@ from .schema_epoch import (
     SchemaSlice,
 )
 from .sql_connector import SQLConnector
+
+if TYPE_CHECKING:
+    from .catalog_writer import WriterHookBinding
 
 type Backend = Literal["sqlite", "mariadb"]
 type SemanticValidator = Callable[[SQLConnector], None]
@@ -70,19 +75,55 @@ class VNextSchemaArtifactDriftError(VNextSchemaProviderError):
 class GeneratedVNextSchemaProvider:
     """Backend-specific provider assembled from the generated wheel artifact.
 
-    The generated physical definition remains unavailable until production
-    repositories install the exact wheel-owned semantic validators.  Caller-
-    supplied callbacks are deliberately not accepted: allowing a mapping of
-    no-op functions here would turn machine-obligation names into a READY
-    bypass.
+    The generated physical definition remains unavailable until the exact
+    wheel-owned semantic validators *and* recurring transaction writer hooks
+    are installed.  Caller-supplied callbacks are deliberately not accepted:
+    allowing a mapping of no-op functions here would turn machine-obligation
+    names into a READY bypass.
     """
 
     backend: Backend
+    _installed_semantic_validators: Mapping[str, SemanticValidator] = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _semantic_registry_error: str | None = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _writer_hook_blockers: tuple[str, ...] = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _installed_writer_hook_bindings: Mapping[str, WriterHookBinding] = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         if self.backend not in {"sqlite", "mariadb"}:
             raise ValueError(f"Unsupported generated schema backend: {self.backend!r}")
         _validate_embedded_artifact(self.backend)
+        try:
+            validators = _load_builtin_semantic_validators()
+        except VNextSchemaProviderUnavailableError as error:
+            validators = MappingProxyType({})
+            registry_error: str | None = str(error)
+        else:
+            registry_error = None
+        object.__setattr__(self, "_installed_semantic_validators", validators)
+        object.__setattr__(self, "_semantic_registry_error", registry_error)
+        writer_bindings, writer_blockers = _load_builtin_writer_hook_bindings()
+        object.__setattr__(
+            self,
+            "_installed_writer_hook_bindings",
+            writer_bindings,
+        )
+        object.__setattr__(self, "_writer_hook_blockers", writer_blockers)
 
     @property
     def generated_definition_data(self) -> Mapping[str, Any]:
@@ -92,13 +133,26 @@ class GeneratedVNextSchemaProvider:
 
     @property
     def semantic_validators(self) -> Mapping[str, SemanticValidator]:
-        """Installed production validators; empty until repository wiring lands.
+        """Exact immutable wheel-owned recurring semantic-validator registry.
 
         This property is also the stable hook named by the generated physical
         manifest.  It intentionally has no setter or constructor parameter.
         """
 
-        return {}
+        if self._semantic_registry_error is not None:
+            raise VNextSchemaProviderUnavailableError(self._semantic_registry_error)
+        return self._installed_semantic_validators
+
+    @property
+    def writer_hook_bindings(self) -> Mapping[str, WriterHookBinding]:
+        """Exact immutable wheel-owned transaction writer bindings.
+
+        Unresolved recurring obligations are absent and remain represented by
+        :attr:`blockers`.  The constructor deliberately accepts no registry or
+        callback parameter.
+        """
+
+        return self._installed_writer_hook_bindings
 
     @property
     def blockers(self) -> tuple[str, ...]:
@@ -110,19 +164,23 @@ class GeneratedVNextSchemaProvider:
                 + _obligation_ids_for_phase(SchemaSemanticValidationPhase.READY)
             )
         )
-        validators = self.semantic_validators
-        missing = tuple(value for value in expected if value not in validators)
-        unexpected = tuple(sorted(set(validators) - set(expected)))
-        if missing:
-            result.append(
-                "executable semantic validators are missing for IDs: "
-                + ", ".join(repr(value) for value in missing)
-            )
-        if unexpected:
-            result.append(
-                "executable semantic validators were supplied for undeclared IDs: "
-                + ", ".join(repr(value) for value in unexpected)
-            )
+        if self._semantic_registry_error is not None:
+            result.append(self._semantic_registry_error)
+        else:
+            validators = self._installed_semantic_validators
+            missing = tuple(value for value in expected if value not in validators)
+            unexpected = tuple(sorted(set(validators) - set(expected)))
+            if missing:
+                result.append(
+                    "executable semantic validators are missing for IDs: "
+                    + ", ".join(repr(value) for value in missing)
+                )
+            if unexpected:
+                result.append(
+                    "executable semantic validators were supplied for undeclared "
+                    "IDs: " + ", ".join(repr(value) for value in unexpected)
+                )
+        result.extend(self._writer_hook_blockers)
         return tuple(dict.fromkeys(result))
 
     @property
@@ -595,11 +653,12 @@ def _mariadb_view_body_tokens(
     """Canonicalize a MariaDB view body without weakening its predicates.
 
     MariaDB persists the same SELECT with server-added current-schema
-    qualification, identifier quoting, keyword casing, and optional ``AS``
-    tokens for aliases.  Those presentation differences are removed while
-    every identifier, literal, operator, comma, and parenthesis is retained.
-    In particular, parentheses and boolean operators are never discarded, so
-    a same-column view with a different nearest-ancestor predicate fails the
+    qualification, identifier quoting, keyword casing, optional ``AS`` tokens
+    for aliases, redundant whole-clause parentheses, ``!`` for ``NOT EXISTS``,
+    and ``LIMIT 1`` inside ``EXISTS`` subqueries.  Only those structurally
+    proven, semantics-preserving presentation differences are removed.  Every
+    other identifier, literal, operator, comma, and parenthesis is retained,
+    so a same-column view with a different nearest-ancestor predicate fails the
     READY structural gate.
     """
 
@@ -651,7 +710,141 @@ def _mariadb_view_body_tokens(
     # view.  Removing AS everywhere is semantics-preserving for the SELECT
     # subset emitted by our closed renderer and still preserves both the
     # expression and alias tokens.
-    return tuple(token for token in without_database if token != "identifier:as")
+    without_alias_as = tuple(
+        token for token in without_database if token != "identifier:as"
+    )
+    return _canonicalize_mariadb_view_presentation(without_alias_as)
+
+
+def _canonicalize_mariadb_view_presentation(
+    tokens: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Remove only MariaDB's structurally recognizable SELECT rewrites.
+
+    MariaDB 11 canonicalizes generated views in three additional ways:
+
+    * ``NOT EXISTS`` is stored as ``!exists``;
+    * a complete joined ``FROM`` table-reference and its complete ``ON``
+      predicate are wrapped in parentheses; and
+    * an exact trailing ``LIMIT 1`` is added to ``EXISTS (SELECT ...)``.
+
+    Parenthesis pairs are validated before any rewrite.  A wrapper is removed
+    only when it encloses the complete clause, and ``LIMIT 1`` is removed only
+    at the tail of a directly ``EXISTS``-owned SELECT.  This deliberately does
+    not normalize arbitrary parentheses or limits.
+    """
+
+    canonical = list(tokens)
+    for position, token in enumerate(canonical[:-1]):
+        if token == "!" and canonical[position + 1] == "identifier:exists":
+            canonical[position] = "identifier:not"
+
+    pairs = _mariadb_parenthesis_pairs(canonical)
+    removed: set[int] = set()
+    for opening, closing in pairs.items():
+        if _mariadb_is_complete_join_wrapper(canonical, opening, closing):
+            removed.update((opening, closing))
+        elif _mariadb_is_complete_on_wrapper(canonical, opening, closing):
+            removed.update((opening, closing))
+
+        if (
+            opening > 0
+            and canonical[opening - 1] == "identifier:exists"
+            and opening + 1 < closing
+            and canonical[opening + 1] == "identifier:select"
+            and closing - opening >= 4
+            and canonical[closing - 2 : closing] == ["identifier:limit", "1"]
+        ):
+            removed.update((closing - 2, closing - 1))
+
+    return tuple(
+        token for position, token in enumerate(canonical) if position not in removed
+    )
+
+
+def _mariadb_parenthesis_pairs(tokens: Sequence[str]) -> dict[int, int]:
+    stack: list[int] = []
+    result: dict[int, int] = {}
+    for position, token in enumerate(tokens):
+        if token == "(":
+            stack.append(position)
+        elif token == ")":
+            if not stack:
+                raise SchemaEpochValidationError(
+                    "MariaDB view definition has unbalanced parentheses"
+                )
+            result[stack.pop()] = position
+    if stack:
+        raise SchemaEpochValidationError(
+            "MariaDB view definition has unbalanced parentheses"
+        )
+    return result
+
+
+_MARIADB_COMPLETE_CLAUSE_FOLLOWERS = frozenset(
+    {
+        "identifier:where",
+        "identifier:group",
+        "identifier:having",
+        "identifier:order",
+        "identifier:limit",
+        "identifier:union",
+        "identifier:join",
+        "identifier:left",
+        "identifier:right",
+        "identifier:inner",
+        "identifier:cross",
+        ")",
+    }
+)
+
+
+def _mariadb_wrapper_has_complete_clause_boundary(
+    tokens: Sequence[str], closing: int
+) -> bool:
+    return closing + 1 == len(tokens) or (
+        closing + 1 < len(tokens)
+        and tokens[closing + 1] in _MARIADB_COMPLETE_CLAUSE_FOLLOWERS
+    )
+
+
+def _mariadb_is_complete_join_wrapper(
+    tokens: Sequence[str], opening: int, closing: int
+) -> bool:
+    if (
+        opening == 0
+        or tokens[opening - 1] != "identifier:from"
+        or opening + 1 == closing
+        or tokens[opening + 1] == "identifier:select"
+        or not _mariadb_wrapper_has_complete_clause_boundary(tokens, closing)
+    ):
+        return False
+
+    depth = 0
+    has_top_level_join = False
+    for token in tokens[opening + 1 : closing]:
+        if token == "(":
+            depth += 1
+        elif token == ")":
+            depth -= 1
+        elif depth == 0:
+            if token == ",":
+                return False
+            if token == "identifier:join":
+                has_top_level_join = True
+    return has_top_level_join
+
+
+def _mariadb_is_complete_on_wrapper(
+    tokens: Sequence[str], opening: int, closing: int
+) -> bool:
+    return (
+        opening > 0
+        and tokens[opening - 1] == "identifier:on"
+        and opening + 1 < closing
+        and tokens[opening + 1] != "identifier:select"
+        and _mariadb_wrapper_has_complete_clause_boundary(tokens, closing)
+    )
 
 
 def _validate_bootstrap_seed_records(
@@ -726,6 +919,168 @@ def _validate_bootstrap_seed_records(
                 f"Bootstrap-absent relation {relation_name!r} contains data"
             )
     return tuple(completed)
+
+
+def _load_builtin_semantic_validators() -> Mapping[str, SemanticValidator]:
+    """Load and freeze only the two wheel-owned validator registries.
+
+    Imports are deliberately package-local and lazy.  Neither the repository's
+    ``verification`` tree nor a caller callback participates in runtime
+    dispatch.  Registry overlap, malformed entries, and loader errors all make
+    the provider unavailable before a database connector is opened.
+    """
+
+    try:
+        from .catalog_refinement import builtin_semantic_validators
+        from .operational_refinement import (
+            builtin_operational_semantic_validators,
+        )
+
+        registries: tuple[tuple[str, object], ...] = (
+            ("catalog", builtin_semantic_validators()),
+            ("operational", builtin_operational_semantic_validators()),
+        )
+        installed: dict[str, SemanticValidator] = {}
+        owners: dict[str, str] = {}
+        for registry_name, registry in registries:
+            if not isinstance(registry, Mapping):
+                raise TypeError(
+                    f"{registry_name} semantic-validator registry is not a mapping"
+                )
+            for obligation_id, validator in registry.items():
+                if not isinstance(obligation_id, str) or not obligation_id:
+                    raise TypeError(
+                        f"{registry_name} semantic-validator registry has an "
+                        "invalid obligation ID"
+                    )
+                if not callable(validator):
+                    raise TypeError(
+                        f"semantic validator for {obligation_id!r} is not callable"
+                    )
+                previous_owner = owners.get(obligation_id)
+                if previous_owner is not None:
+                    raise ValueError(
+                        f"semantic obligation {obligation_id!r} is supplied by both "
+                        f"{previous_owner} and {registry_name} registries"
+                    )
+                owners[obligation_id] = registry_name
+                installed[obligation_id] = validator
+    except VNextSchemaProviderUnavailableError:
+        raise
+    except Exception as error:
+        raise VNextSchemaProviderUnavailableError(
+            "The wheel-owned semantic-validator registries could not be loaded "
+            f"exactly: {type(error).__name__}: {error}"
+        ) from error
+    return MappingProxyType(installed)
+
+
+def _load_builtin_writer_hook_bindings() -> (
+    tuple[Mapping[str, WriterHookBinding], tuple[str, ...]]
+):
+    """Resolve every recurring hook through the closed wheel registry.
+
+    BUILDING-only bootstrap hooks are excluded: generated seed insertion plus
+    exact bootstrap validation is their executable path.  Every ACTIVATION or
+    READY obligation, however, must also have an exact immutable transaction
+    binding before this provider may publish ``READY``.
+    """
+
+    from .catalog_writer import (
+        WriterHookBinding,
+        WriterHookUnavailableError,
+        resolve_writer_hook,
+        validate_resolved_writer_hook_binding,
+    )
+
+    recurring_ids = tuple(
+        dict.fromkeys(
+            _obligation_ids_for_phase(SchemaSemanticValidationPhase.ACTIVATION)
+            + _obligation_ids_for_phase(SchemaSemanticValidationPhase.READY)
+        )
+    )
+    if len(recurring_ids) != len(set(recurring_ids)):
+        raise VNextSchemaArtifactDriftError(
+            "Generated recurring semantic-obligation IDs are not unique"
+        )
+    recurring_id_set = set(recurring_ids)
+    obligations = tuple(
+        obligation
+        for obligation in _dicts(
+            ARTIFACT.get("semantic_obligations"), "semantic obligations"
+        )
+        if _required_string(obligation, "id", "semantic obligation") in recurring_id_set
+    )
+    actual_ids = tuple(
+        _required_string(obligation, "id", "semantic obligation")
+        for obligation in obligations
+    )
+    if actual_ids != recurring_ids:
+        raise VNextSchemaArtifactDriftError(
+            "Generated recurring writer-hook obligations are not closed-world exact"
+        )
+
+    resolver: Callable[[str, str, int], object] = resolve_writer_hook
+    installed: dict[str, WriterHookBinding] = {}
+    blockers: list[str] = []
+    for obligation in obligations:
+        obligation_id = _required_string(obligation, "id", "semantic obligation")
+        contract = obligation.get("contract")
+        if not isinstance(contract, Mapping):
+            raise VNextSchemaArtifactDriftError(
+                f"Generated semantic obligation {obligation_id!r}.contract must "
+                "be a mapping"
+            )
+        hook_name = _required_string(
+            contract,
+            "writer_hook",
+            f"semantic obligation {obligation_id!r}.contract",
+        )
+        hook_version = _required_int(
+            contract,
+            "writer_hook_version",
+            f"semantic obligation {obligation_id!r}.contract",
+        )
+        hook_label = (
+            f"semantic obligation {obligation_id!r} writer hook "
+            f"{hook_name!r} v{hook_version}"
+        )
+        try:
+            resolved = resolver(obligation_id, hook_name, hook_version)
+        except WriterHookUnavailableError as error:
+            blockers.append(f"{hook_label} is unavailable: {error}")
+        except Exception as error:
+            blockers.append(
+                f"{hook_label} failed closed during resolution: "
+                f"{type(error).__name__}: {error}"
+            )
+        else:
+            try:
+                validate_resolved_writer_hook_binding(
+                    resolved,
+                    obligation_id=obligation_id,
+                    name=hook_name,
+                    version=hook_version,
+                )
+            except WriterHookUnavailableError as error:
+                blockers.append(
+                    f"{hook_label} failed closed during exact binding validation: "
+                    f"{error}"
+                )
+            except Exception as error:
+                blockers.append(
+                    f"{hook_label} failed closed during exact binding validation: "
+                    f"{type(error).__name__}: {error}"
+                )
+            else:
+                binding = cast(WriterHookBinding, resolved)
+                if obligation_id in installed:
+                    blockers.append(
+                        f"{hook_label} resolved a duplicate obligation binding"
+                    )
+                else:
+                    installed[obligation_id] = binding
+    return MappingProxyType(installed), tuple(blockers)
 
 
 def _validate_embedded_artifact(backend: Backend) -> None:
@@ -1044,6 +1399,7 @@ def _normalize_sqlite_ddl(value: str) -> str:
 
 
 def _normalize_check(value: str) -> str:
+    value = _normalize_mariadb_not_equal_operator(value)
     value = re.sub(r"\s+", " ", value.replace("`", "").strip()).casefold()
     value = re.sub(r"\s*,\s*", ",", value)
     value = re.sub(r"\(\s+", "(", value)
@@ -1054,6 +1410,37 @@ def _normalize_check(value: str) -> str:
             break
         value = inner
     return value
+
+
+def _normalize_mariadb_not_equal_operator(value: str) -> str:
+    """Canonicalize MariaDB's ``!=`` rewrite without touching literals."""
+
+    result: list[str] = []
+    position = 0
+    quote: str | None = None
+    while position < len(value):
+        character = value[position]
+        if quote is not None:
+            result.append(character)
+            if character == "\\" and position + 1 < len(value):
+                position += 1
+                result.append(value[position])
+            elif character == quote:
+                if position + 1 < len(value) and value[position + 1] == quote:
+                    position += 1
+                    result.append(value[position])
+                else:
+                    quote = None
+        elif character in {"'", '"'}:
+            quote = character
+            result.append(character)
+        elif value.startswith("!=", position):
+            result.append("<>")
+            position += 1
+        else:
+            result.append(character)
+        position += 1
+    return "".join(result)
 
 
 def _balanced_parentheses(value: str) -> bool:

@@ -4,28 +4,38 @@ import hashlib
 import inspect
 import random
 from dataclasses import fields
+from typing import cast
 
 import pytest
 
 from h2hdb.vnext_identity import (
+    ANALYSIS_ALREADY_UPLOADED_MARKER,
+    ANALYSIS_CANDIDATE_CODEC_VERSION,
     ANALYSIS_STATE_COMPONENTS,
     ARTIFACT_COMPONENT_CODEC_VERSION,
     ARTIFACT_COMPONENT_KINDS,
     ARTIFACT_LOCATOR_CODEC_VERSION,
     ARTIFACT_LOCATOR_MAXIMUM_BYTES,
     ARTIFACT_MEMBER_PLAN_VERSION,
+    ARTIFACT_POLICY_CODEC_VERSION,
+    ARTIFACT_PRODUCER_FINGERPRINT_CODEC_VERSION,
+    ARTIFACT_PROTECTION_TOKEN_CODEC_VERSION,
     CANONICAL_VALUE_CHUNK_BYTES,
     EFFECTIVE_CONTENT_ENCODING_VERSION,
     FILESYSTEM_STAT_FINGERPRINT_BYTES,
     GALLERY_OBSERVATION_DIRECTORY_LEAF_CAPACITY,
+    GALLERY_OBSERVATION_DURABLE_PARSER_PHASES,
     GALLERY_OBSERVATION_FILE_LEAF_CAPACITY,
     GALLERY_OBSERVATION_METADATA_CHUNK_BYTES,
     GALLERY_OBSERVATION_TAG_LEAF_CAPACITY,
     SOURCE_LOCATOR_CODEC_VERSION,
     SOURCE_PROVIDERS,
     SOURCE_SNAPSHOT_MANIFEST_CODEC_VERSION,
+    AnalysisCandidateKind,
+    AnalysisTitleScalarReceipt,
     ArtifactMemberEntryKind,
     ArtifactMemberPlanEntry,
+    ArtifactProtectionToken,
     ArtifactSourceRole,
     ArtifactTransformKind,
     ByteDomainError,
@@ -59,17 +69,27 @@ from h2hdb.vnext_identity import (
     SourceSnapshotGallery,
     SourceSnapshotGidWinner,
     SourceSnapshotPolicy,
+    StrictUtf8ScalarCounter,
+    analysis_candidate_has_already_uploaded,
+    analysis_candidate_total_order_key,
+    analysis_content_candidate_digest,
+    analysis_gid_candidate_digest,
+    artifact_archive_member_name,
     artifact_effective_content_digest,
     artifact_effective_content_digest_ordered,
     artifact_id,
+    artifact_locator_components,
     artifact_locator_digest,
     artifact_member_plan_digest,
     artifact_member_plan_digest_ordered,
+    artifact_name,
     artifact_owner_digest,
     artifact_policy_digest,
+    artifact_producer_fingerprint_sha256,
     artifact_selected_digest,
     artifact_semantics_digest,
     artifact_source_manifest_digest,
+    artifact_storage_receipt_id,
     build_canonical_value_tree,
     build_gallery_observation_metadata_tree,
     build_gallery_observation_tree,
@@ -81,8 +101,11 @@ from h2hdb.vnext_identity import (
     catalog_language_digest_parts,
     catalog_summary_digest,
     catalog_summary_digest_parts,
+    count_analysis_title_scalars,
+    decode_analysis_candidate_priority,
     decode_artifact_locator,
     decode_artifact_member_plan,
+    decode_artifact_protection_token,
     decode_canonical_value_page,
     decode_filesystem_stat_fingerprint,
     decode_gallery_observation_descriptor,
@@ -94,11 +117,14 @@ from h2hdb.vnext_identity import (
     digest_to_hex,
     effective_content_digest,
     effective_content_digest_ordered,
+    encode_analysis_candidate_priority,
     encode_artifact_effective_content,
     encode_artifact_locator,
     encode_artifact_member_plan,
     encode_artifact_owner,
     encode_artifact_policy,
+    encode_artifact_producer_fingerprint,
+    encode_artifact_protection_token,
     encode_artifact_selected,
     encode_artifact_semantics,
     encode_artifact_source_manifest,
@@ -113,11 +139,14 @@ from h2hdb.vnext_identity import (
     encode_zip_comment,
     file_key,
     file_role,
+    gallery_directory_audit_digest,
     gallery_key,
     gallery_key_hex,
+    gallery_metadata_audit_digest,
     gallery_observation_descriptor_digest,
     gallery_observation_page_digest,
     gallery_observation_page_key_bounds,
+    gallery_scan_audit_digest,
     iter_artifact_effective_content_payload_ordered,
     iter_artifact_locator_payload,
     iter_artifact_member_plan_payload,
@@ -136,12 +165,13 @@ from h2hdb.vnext_identity import (
     source_scope_key,
     source_snapshot_manifest_digest,
     source_snapshot_manifest_digest_ordered,
+    validate_analysis_candidate_priority,
     validate_artifact_component_kind,
-    validate_artifact_name,
     validate_canonical_value_identity,
     validate_canonical_value_tree,
     validate_file_name,
     validate_gallery_name,
+    validate_gallery_observation_durable_parser_phase,
     validate_gallery_observation_metadata_parts,
     validate_gallery_observation_tree,
     validate_namespace,
@@ -274,6 +304,26 @@ def test_artifact_locator_and_publication_payload_domains_are_exact() -> None:
         next(iter_decode_artifact_locator((bytes(4097),)))
 
 
+def test_artifact_locator_is_derived_only_from_artifact_sha256() -> None:
+    artifact_sha256 = bytes.fromhex("aa" * 32)
+    locator = artifact_locator_components(artifact_sha256)
+    payload = encode_artifact_locator(locator)
+
+    assert locator == ("sha256", "aa", "aa" * 32 + ".cbz")
+    assert payload.hex() == (
+        "00000001000000030000000673686132353600000002616100000044"
+        "6161616161616161616161616161616161616161616161616161616161616161"
+        "6161616161616161616161616161616161616161616161616161616161616161"
+        "2e63627a"
+    )
+    assert artifact_locator_digest(locator).hex() == (
+        "1400187c75cbf5721168d71ac3a15ad2d5decca92ce4dbf2c77c036b32f21f57"
+    )
+
+    with pytest.raises(DigestFormatError):
+        artifact_locator_components(bytes(31))
+
+
 def _manual_locator(components: tuple[str, ...]) -> bytes:
     return b"".join(
         (
@@ -384,6 +434,203 @@ def test_ordered_effective_content_streams_fail_closed_on_order_or_count_drift()
         artifact_effective_content_digest_ordered(2, iter((low,)))
 
 
+def test_analysis_candidate_priority_and_audit_frames_match_goldens() -> None:
+    analysis_id = bytes(range(16))
+    content_sha256 = bytes.fromhex("11" * 32)
+    scope_key = bytes.fromhex("22" * 32)
+    locator_sha256 = bytes.fromhex("33" * 32)
+    title_utf8 = "A😀é".encode()
+    content_priority = encode_analysis_candidate_priority(
+        AnalysisCandidateKind.CONTENT_OWNER,
+        tag_values_utf8=[b"ALREADY UPLOADED"],
+        title_scalar_receipt=count_analysis_title_scalars((title_utf8,)),
+        download_time=100,
+        gid=7,
+    )
+    gid_priority = encode_analysis_candidate_priority(
+        AnalysisCandidateKind.GID_WINNER,
+        tag_values_utf8=[b"new"],
+        title_scalar_receipt=count_analysis_title_scalars((title_utf8,)),
+        download_time=100,
+    )
+
+    assert ANALYSIS_CANDIDATE_CODEC_VERSION == 1
+    assert ANALYSIS_ALREADY_UPLOADED_MARKER == b"already uploaded"
+    assert content_priority.hex() == (
+        "68326864622d766e6578742d616e616c797369732d63616e6469646174652d"
+        "7072696f726974790000000001000000000000000000030000000000000064"
+        "0000000000000007"
+    )
+    assert gid_priority.hex() == (
+        "68326864622d766e6578742d616e616c797369732d63616e6469646174652d"
+        "7072696f726974790000000001010100000000000000030000000000000064"
+    )
+    content_digest = analysis_content_candidate_digest(
+        analysis_id,
+        content_sha256,
+        content_priority,
+        scope_key,
+        locator_sha256,
+    )
+    gid_digest = analysis_gid_candidate_digest(
+        analysis_id,
+        7,
+        gid_priority,
+        scope_key,
+        locator_sha256,
+    )
+    assert content_digest.hex() == (
+        "670fa33d3fe85e01000b7a89177e112093ae4a863a07a6ad8884b453a248296f"
+    )
+    assert gid_digest.hex() == (
+        "2cde6d9e35c6def1d9c38f37edf147068d4dc873c4be3a5474f011acbfac7895"
+    )
+    assert (
+        content_digest
+        == hashlib.sha256(
+            b"h2hdb-vnext-analysis-candidate-audit\0"
+            + (1).to_bytes(4, "big")
+            + bytes((0,))
+            + analysis_id
+            + content_sha256
+            + content_priority
+            + scope_key
+            + locator_sha256
+        ).digest()
+    )
+    assert (
+        gid_digest
+        == hashlib.sha256(
+            b"h2hdb-vnext-analysis-candidate-audit\0"
+            + (1).to_bytes(4, "big")
+            + bytes((1,))
+            + analysis_id
+            + (7).to_bytes(8, "big")
+            + gid_priority
+            + scope_key
+            + locator_sha256
+        ).digest()
+    )
+
+    assert decode_analysis_candidate_priority(content_priority) == (
+        validate_analysis_candidate_priority(
+            content_priority,
+            AnalysisCandidateKind.CONTENT_OWNER,
+            tag_values_utf8=[b"Already Uploaded"],
+            title_scalar_receipt=count_analysis_title_scalars((title_utf8,)),
+            download_time=100,
+            gid=7,
+        )
+    )
+    assert decode_analysis_candidate_priority(content_priority).title_scalar_length == 3
+
+
+def test_analysis_title_scalar_counter_streams_strict_utf8_with_fixed_receipt() -> None:
+    title = "A😀é".encode()
+    receipt = count_analysis_title_scalars(
+        (title[:2], title[2:4], title[4:6], title[6:])
+    )
+    assert receipt == AnalysisTitleScalarReceipt(byte_count=7, scalar_count=3)
+
+    counter = StrictUtf8ScalarCounter()
+    counter.feed(b"A\xf0\x9f")
+    with pytest.raises(ByteDomainError, match="ends inside a UTF-8 scalar"):
+        counter.finalize()
+
+
+def test_analysis_candidate_comparator_is_ascii_stable_and_lexicographic() -> None:
+    assert analysis_candidate_has_already_uploaded([b"aLrEaDy UpLoAdEd"])
+    assert not analysis_candidate_has_already_uploaded(["ＡLREADY UPLOADED".encode()])
+    kind = AnalysisCandidateKind.CONTENT_OWNER
+
+    def priority(
+        *, tags: tuple[bytes, ...] = (), title: str = "a", time: int = 1, gid: int = 1
+    ) -> bytes:
+        return encode_analysis_candidate_priority(
+            kind,
+            tag_values_utf8=tags,
+            title_scalar_receipt=count_analysis_title_scalars((title.encode(),)),
+            download_time=time,
+            gid=gid,
+        )
+
+    assert priority() > priority(tags=(b"already uploaded",))
+    assert priority(title="ab") > priority(title="a")
+    assert priority(time=2) > priority(time=1)
+    assert priority(gid=2) > priority(gid=1)
+    equal_priority = priority()
+    low_location = analysis_candidate_total_order_key(
+        equal_priority, kind, bytes(32), bytes(32)
+    )
+    high_scope = analysis_candidate_total_order_key(
+        equal_priority, kind, bytes([1]) * 32, bytes(32)
+    )
+    high_locator = analysis_candidate_total_order_key(
+        equal_priority, kind, bytes(32), bytes([1]) * 32
+    )
+    assert max(low_location, high_scope, high_locator) == high_scope
+
+
+def test_analysis_candidate_codecs_reject_mutated_or_ambiguous_inputs() -> None:
+    priority = encode_analysis_candidate_priority(
+        AnalysisCandidateKind.CONTENT_OWNER,
+        tag_values_utf8=(),
+        title_scalar_receipt=count_analysis_title_scalars((b"title",)),
+        download_time=1,
+        gid=2,
+    )
+    prefix_size = len(b"h2hdb-vnext-analysis-candidate-priority\0")
+    mutations = (
+        bytes([priority[0] ^ 1]) + priority[1:],
+        priority[:prefix_size] + (2).to_bytes(4, "big") + priority[prefix_size + 4 :],
+        priority[: prefix_size + 4] + bytes((9,)) + priority[prefix_size + 5 :],
+        priority[: prefix_size + 5] + bytes((2,)) + priority[prefix_size + 6 :],
+        priority + b"\0",
+        priority[:-1],
+    )
+    for mutation in mutations:
+        with pytest.raises((ByteDomainError, IntegerDomainError)):
+            decode_analysis_candidate_priority(mutation)
+
+    with pytest.raises(ByteDomainError, match="exact UTF-8"):
+        analysis_candidate_has_already_uploaded([b"\xff"])
+    with pytest.raises(ByteDomainError, match="strict UTF-8"):
+        count_analysis_title_scalars((b"\xff",))
+    with pytest.raises(ByteDomainError, match="AnalysisTitleScalarReceipt"):
+        encode_analysis_candidate_priority(
+            AnalysisCandidateKind.GID_WINNER,
+            tag_values_utf8=(),
+            title_scalar_receipt=cast(AnalysisTitleScalarReceipt, b"title"),
+            download_time=1,
+        )
+    with pytest.raises(ByteDomainError, match="must not contain gid"):
+        encode_analysis_candidate_priority(
+            AnalysisCandidateKind.GID_WINNER,
+            tag_values_utf8=(),
+            title_scalar_receipt=count_analysis_title_scalars((b"title",)),
+            download_time=1,
+            gid=2,
+        )
+    with pytest.raises(DigestMismatchError, match="snapshot facts"):
+        validate_analysis_candidate_priority(
+            priority,
+            AnalysisCandidateKind.CONTENT_OWNER,
+            tag_values_utf8=(),
+            title_scalar_receipt=count_analysis_title_scalars((b"different title",)),
+            download_time=1,
+            gid=2,
+        )
+    with pytest.raises(ByteDomainError, match="does not match relation"):
+        analysis_candidate_total_order_key(
+            priority,
+            AnalysisCandidateKind.GID_WINNER,
+            bytes(32),
+            bytes(32),
+        )
+    with pytest.raises(ByteDomainError, match="does not match audit tuple"):
+        analysis_gid_candidate_digest(bytes(16), 2, priority, bytes(32), bytes(32))
+
+
 def test_artifact_component_codecs_match_independent_hardcoded_goldens() -> None:
     one = bytes.fromhex("01" * 32)
     two = bytes.fromhex("02" * 32)
@@ -403,11 +650,12 @@ def test_artifact_component_codecs_match_independent_hardcoded_goldens() -> None
     )
     selected = encode_artifact_selected(one, two)
     owner = encode_artifact_owner(one, two, 7, three)
-    policy = encode_artifact_policy(1, 2048)
+    policy = encode_artifact_policy(1, 2048, three)
     semantics = encode_artifact_semantics(one, two, three, four, five, six)
     comment = encode_zip_comment(one, three)
 
     assert ARTIFACT_COMPONENT_CODEC_VERSION == 1
+    assert ARTIFACT_POLICY_CODEC_VERSION == 2
     assert artifact_source_manifest_digest(one, 1, 2).hex() == (
         "ba10d8d66e6eae463d8a23bf1547d16de02cedecdf03b3e76e4334cb736cf964"
     )
@@ -420,8 +668,8 @@ def test_artifact_component_codecs_match_independent_hardcoded_goldens() -> None
     assert artifact_owner_digest(one, two, 7, three).hex() == (
         "32d8d54e00e421fd40af6c8ff6e5849dcefabe8bcfaa067dd16ba337677dd908"
     )
-    assert artifact_policy_digest(1, 2048).hex() == (
-        "ae7a4b756f62884bb7bcc10fc42e4d2d0caab2a6b2a117e8302650339c72b4fa"
+    assert artifact_policy_digest(1, 2048, three).hex() == (
+        "055021f55a25bb338b14aa4423b3fee9f8f87ff9ea442e4283ae89db88f47a60"
     )
     assert artifact_semantics_digest(one, two, three, four, five, six).hex() == (
         "24e1140357d6956ded50b48db8ee90171c7eff0b1179c4cf3636cfaf3dda2047"
@@ -433,7 +681,7 @@ def test_artifact_component_codecs_match_independent_hardcoded_goldens() -> None
     assert effective.startswith(b"h2hdb-vnext-artifact-effective-content\0")
     assert selected.endswith(one + two)
     assert owner.endswith(one + two + (7).to_bytes(8, "big") + three)
-    assert policy.endswith((1).to_bytes(4, "big") + (2048).to_bytes(4, "big"))
+    assert policy.endswith((1).to_bytes(4, "big") + (2048).to_bytes(4, "big") + three)
     assert semantics.endswith(one + two + three + four + five + six)
     assert comment == (b"H2HDB-ZIP-COMMENT\0" + (1).to_bytes(4, "big") + one + three)
 
@@ -453,9 +701,137 @@ def test_artifact_semantic_codecs_exclude_noninjective_audit_inputs() -> None:
     with pytest.raises(IntegerDomainError):
         encode_artifact_owner(digest, digest, 0, digest)
     with pytest.raises(IntegerDomainError):
-        encode_artifact_policy(1, 0)
+        encode_artifact_policy(1, 0, digest)
     with pytest.raises(IntegerDomainError):
         encode_zip_comment(digest, digest, codec_version=2)
+
+
+def test_artifact_producer_fingerprint_matches_independent_golden() -> None:
+    values = (b"writer", b"cp314", b"pillow", b"libjpeg", b"zlib")
+    payload = encode_artifact_producer_fingerprint(*values)
+
+    assert ARTIFACT_PRODUCER_FINGERPRINT_CODEC_VERSION == 1
+    assert payload.hex() == (
+        "68326864622d766e6578742d61727469666163742d70726f647563657200"
+        "00000001000000067772697465720000000563703331340000000670696c6c6f"
+        "77000000076c69626a706567000000047a6c6962"
+    )
+    assert artifact_producer_fingerprint_sha256(*values).hex() == (
+        "7c12521923b06e72b031807d2d2d82b5bee38afafd408595b5d29ed31cfe892c"
+    )
+
+    with pytest.raises(ByteDomainError, match="must not be empty"):
+        encode_artifact_producer_fingerprint(b"", *values[1:])
+    with pytest.raises(IntegerDomainError, match="not registered"):
+        encode_artifact_producer_fingerprint(*values, codec_version=2)
+
+
+def test_artifact_names_and_archive_members_are_fully_derived() -> None:
+    assert artifact_name(7).hex() == "6832682d372e63627a"
+    assert artifact_name((1 << 63) - 1) == b"h2h-9223372036854775807.cbz"
+    metadata_name = artifact_archive_member_name(
+        0,
+        ArtifactSourceRole.METADATA,
+        ArtifactTransformKind.RAW_COPY,
+        False,
+    )
+    assert metadata_name is not None
+    assert metadata_name.hex() == (
+        "303030303030303030303030303030305f5f6d657461646174612e747874"
+    )
+    content_name = artifact_archive_member_name(
+        3,
+        ArtifactSourceRole.CONTENT,
+        ArtifactTransformKind.JPEG_NORMALIZE,
+        False,
+    )
+    assert content_name is not None
+    assert content_name.hex() == (
+        "303030303030303030303030303030335f5f636f6e74656e742e6a7067"
+    )
+    assert (
+        artifact_archive_member_name(
+            9,
+            ArtifactSourceRole.CONTENT,
+            ArtifactTransformKind.GIF_NORMALIZE,
+            True,
+        )
+        is None
+    )
+
+    for invalid_gid in (0, -1, 1 << 63, True):
+        with pytest.raises(IntegerDomainError):
+            artifact_name(invalid_gid)
+    with pytest.raises(ByteDomainError, match="METADATA.*RAW_COPY"):
+        artifact_archive_member_name(
+            0,
+            ArtifactSourceRole.METADATA,
+            ArtifactTransformKind.JPEG_NORMALIZE,
+            True,
+        )
+
+
+def test_artifact_protection_token_matches_fixed_184_byte_golden() -> None:
+    candidate_id = bytes.fromhex("11" * 16)
+    publication_key_value = bytes.fromhex("22" * 32)
+    artifact_sha256 = bytes.fromhex("33" * 32)
+    locator_sha256 = bytes.fromhex("44" * 32)
+    receipt_id = artifact_storage_receipt_id(
+        candidate_id,
+        publication_key_value,
+        artifact_sha256,
+        locator_sha256,
+        7,
+        9,
+    )
+    token = encode_artifact_protection_token(
+        1,
+        candidate_id,
+        publication_key_value,
+        artifact_sha256,
+        locator_sha256,
+        7,
+        9,
+    )
+
+    assert ARTIFACT_PROTECTION_TOKEN_CODEC_VERSION == 1
+    assert receipt_id.hex() == "be24a65b2ded7965b31c3c317bc61cbf"
+    assert len(token) == 184
+    assert token.hex() == (
+        "68326864622d766e6578742d61727469666163742d70726f74656374696f6e00"
+        "0000000100000001111111111111111111111111111111112222222222222222"
+        "2222222222222222222222222222222222222222222222223333333333333333"
+        "3333333333333333333333333333333333333333333333334444444444444444"
+        "444444444444444444444444444444444444444444444444be24a65b2ded7965"
+        "b31c3c317bc61cbf00000000000000070000000000000009"
+    )
+    assert decode_artifact_protection_token(token) == ArtifactProtectionToken(
+        codec_version=1,
+        storage_codec_version=1,
+        candidate_id=candidate_id,
+        publication_key=publication_key_value,
+        artifact_sha256=artifact_sha256,
+        artifact_locator_sha256=locator_sha256,
+        receipt_id=receipt_id,
+        storage_generation=7,
+        size_bytes=9,
+    )
+
+    for malformed in (token[:-1], token + b"x"):
+        with pytest.raises(ByteDomainError, match="exactly 184 bytes"):
+            decode_artifact_protection_token(malformed)
+    corrupt_prefix = bytearray(token)
+    corrupt_prefix[0] ^= 1
+    with pytest.raises(ByteDomainError, match="prefix"):
+        decode_artifact_protection_token(bytes(corrupt_prefix))
+    corrupt_version = bytearray(token)
+    corrupt_version[35] = 2
+    with pytest.raises(IntegerDomainError, match="not registered"):
+        decode_artifact_protection_token(bytes(corrupt_version))
+    corrupt_receipt = bytearray(token)
+    corrupt_receipt[152] ^= 1
+    with pytest.raises(DigestMismatchError, match="receipt_id"):
+        decode_artifact_protection_token(bytes(corrupt_receipt))
 
 
 def _source_snapshot_fixture() -> tuple[
@@ -1034,7 +1410,6 @@ def _golden_member_plan_entries() -> tuple[ArtifactMemberPlanEntry, ...]:
             source_file_sha256=bytes(range(32)),
             source_size_bytes=123,
             excluded_flag=False,
-            archive_member_name_bytes=b"galleryinfo.txt",
         ),
         ArtifactMemberPlanEntry(
             entry_position=1,
@@ -1042,7 +1417,6 @@ def _golden_member_plan_entries() -> tuple[ArtifactMemberPlanEntry, ...]:
             source_file_sha256=bytes(range(255, 223, -1)),
             source_size_bytes=0,
             excluded_flag=True,
-            archive_member_name_bytes=None,
         ),
     )
 
@@ -1050,32 +1424,12 @@ def _golden_member_plan_entries() -> tuple[ArtifactMemberPlanEntry, ...]:
 def test_artifact_member_plan_matches_hardcoded_closed_tag_golden() -> None:
     entries = _golden_member_plan_entries()
     expected_payload = bytes.fromhex(
-        "68326864622d766e6578742d61727469666163742d6d656d6265722d706c616e00"
-        "00000001"
-        "0000000000000002"
-        "0000000000000000"
-        "00"
-        "0000000f"
-        "67616c6c657279696e666f2e747874"
-        "000102030405060708090a0b0c0d0e0f"
-        "101112131415161718191a1b1c1d1e1f"
-        "000000000000007b"
-        "00"
-        "00"
-        "01"
-        "0000000f"
-        "67616c6c657279696e666f2e747874"
-        "00"
-        "0000000000000001"
-        "00"
-        "00000009"
-        "494d4147452e474946"
-        "fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0"
-        "efeeedecebeae9e8e7e6e5e4e3e2e1e0"
-        "0000000000000000"
-        "01"
-        "01"
-        "00"
+        "68326864622d766e6578742d61727469666163742d6d656d6265722d706c616e00000000"
+        "0100000000000000020000000000000000000000000f67616c6c657279696e666f2e7478"
+        "74000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f000000"
+        "000000007b0000010000001e303030303030303030303030303030305f5f6d6574616461"
+        "74612e7478740000000000000000010000000009494d4147452e474946fffefdfcfbfaf9"
+        "f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e00000000000000000010100"
         "01"
     )
 
@@ -1098,7 +1452,7 @@ def test_artifact_member_plan_matches_hardcoded_closed_tag_golden() -> None:
     ) == artifact_member_plan_digest(entries)
     assert decode_artifact_member_plan(actual) == entries
     assert artifact_member_plan_digest(entries).hex() == (
-        "f71707af3aac3aebdab1df37422fac519e5924a7cef76bacde90b90dd0f3bf56"
+        "783a1b7b319bedd73edf61afa00cc9cd419ae34e9b85fe8f4c39bfae7c13f690"
     )
     assert b"H2HDB-ZIP-COMMENT" not in actual
 
@@ -1162,18 +1516,21 @@ def test_artifact_member_plan_derives_role_and_transform_from_exact_name(
         source_file_sha256=bytes(32),
         source_size_bytes=0,
         excluded_flag=False,
-        archive_member_name_bytes=b"member",
     )
 
     assert entry.entry_kind is ArtifactMemberEntryKind.SOURCE_FILE
     assert entry.source_role is role
     assert entry.transform_kind is transform
+    assert entry.archive_member_name_bytes == artifact_archive_member_name(
+        entry.entry_position,
+        role,
+        transform,
+        False,
+    )
     assert decode_artifact_member_plan(encode_artifact_member_plan([entry])) == (entry,)
 
 
-def test_artifact_member_plan_rejects_noncontiguous_and_duplicate_emitted_names() -> (
-    None
-):
+def test_artifact_member_plan_rejects_noncontiguous_positions() -> None:
     first = _golden_member_plan_entries()[0]
     gap = ArtifactMemberPlanEntry(
         entry_position=2,
@@ -1181,22 +1538,10 @@ def test_artifact_member_plan_rejects_noncontiguous_and_duplicate_emitted_names(
         source_file_sha256=bytes.fromhex("22" * 32),
         source_size_bytes=1,
         excluded_flag=False,
-        archive_member_name_bytes=b"galleryinfo.txt",
     )
 
     with pytest.raises(ByteDomainError, match="contiguous"):
         encode_artifact_member_plan([first, gap])
-
-    duplicate_name = ArtifactMemberPlanEntry(
-        entry_position=1,
-        source_name_bytes=b"002.jpg",
-        source_file_sha256=bytes.fromhex("22" * 32),
-        source_size_bytes=1,
-        excluded_flag=False,
-        archive_member_name_bytes=b"galleryinfo.txt",
-    )
-    with pytest.raises(ByteDomainError, match="unique"):
-        encode_artifact_member_plan([first, duplicate_name])
 
     with pytest.raises(ByteDomainError, match="declared_byte_count"):
         artifact_member_plan_digest_ordered(
@@ -1207,33 +1552,6 @@ def test_artifact_member_plan_rejects_noncontiguous_and_duplicate_emitted_names(
 
 
 def test_artifact_member_plan_rejects_impossible_presence_and_domains() -> None:
-    with pytest.raises(ByteDomainError, match="must not have"):
-        ArtifactMemberPlanEntry(
-            entry_position=0,
-            source_name_bytes=b"001.jpg",
-            source_file_sha256=bytes(32),
-            source_size_bytes=1,
-            excluded_flag=True,
-            archive_member_name_bytes=b"001.jpg",
-        )
-    with pytest.raises(ByteDomainError, match="must have"):
-        ArtifactMemberPlanEntry(
-            entry_position=0,
-            source_name_bytes=b"001.jpg",
-            source_file_sha256=bytes(32),
-            source_size_bytes=1,
-            excluded_flag=False,
-            archive_member_name_bytes=None,
-        )
-    with pytest.raises(ByteDomainError, match="must not be empty"):
-        ArtifactMemberPlanEntry(
-            entry_position=0,
-            source_name_bytes=b"001.jpg",
-            source_file_sha256=bytes(32),
-            source_size_bytes=1,
-            excluded_flag=False,
-            archive_member_name_bytes=b"",
-        )
     with pytest.raises(ByteDomainError, match="exactly bool"):
         ArtifactMemberPlanEntry(
             entry_position=0,
@@ -1241,7 +1559,6 @@ def test_artifact_member_plan_rejects_impossible_presence_and_domains() -> None:
             source_file_sha256=bytes(32),
             source_size_bytes=1,
             excluded_flag=1,  # type: ignore[arg-type]
-            archive_member_name_bytes=b"001.jpg",
         )
     with pytest.raises(DigestFormatError):
         ArtifactMemberPlanEntry(
@@ -1250,7 +1567,6 @@ def test_artifact_member_plan_rejects_impossible_presence_and_domains() -> None:
             source_file_sha256=bytes(31),
             source_size_bytes=1,
             excluded_flag=False,
-            archive_member_name_bytes=b"001.jpg",
         )
     with pytest.raises(IntegerDomainError):
         ArtifactMemberPlanEntry(
@@ -1259,7 +1575,6 @@ def test_artifact_member_plan_rejects_impossible_presence_and_domains() -> None:
             source_file_sha256=bytes(32),
             source_size_bytes=-1,
             excluded_flag=False,
-            archive_member_name_bytes=b"001.jpg",
         )
 
 
@@ -1270,10 +1585,10 @@ def test_artifact_member_plan_rejects_impossible_presence_and_domains() -> None:
         (113, 9),  # unknown role
         (114, 2),  # non-boolean exclusion
         (115, 2),  # non-boolean presence
-        (135, 9),  # unknown transform
+        (150, 9),  # unknown transform
         (113, 1),  # registered role inconsistent with galleryinfo.txt
-        (135, 1),  # registered transform inconsistent with .txt
-        (143, 2),  # noncontiguous second position
+        (150, 1),  # registered transform inconsistent with .txt
+        (158, 2),  # noncontiguous second position
     ],
 )
 def test_artifact_member_plan_decoder_rejects_unknown_or_inconsistent_tags(
@@ -1309,14 +1624,11 @@ def test_leaf_byte_boundaries_preserve_exact_bytes() -> None:
     max_opaque = b"\xff" * 255
 
     assert len(validate_gallery_name(max_utf8)) == 255
-    assert len(validate_artifact_name(max_utf8)) == 255
     assert validate_file_name(max_opaque) is max_opaque
     assert validate_namespace("é" * 64) == ("é" * 64).encode()
 
     with pytest.raises(ByteDomainError):
         validate_gallery_name("é" * 128)
-    with pytest.raises(ByteDomainError):
-        validate_artifact_name("é" * 128)
     with pytest.raises(ByteDomainError):
         validate_file_name(max_opaque + b"x")
     with pytest.raises(ByteDomainError):
@@ -1324,10 +1636,7 @@ def test_leaf_byte_boundaries_preserve_exact_bytes() -> None:
 
 
 @pytest.mark.parametrize("value", ["", "\x00", ".", "..", "a/b", "a\\b"])
-@pytest.mark.parametrize(
-    "validator",
-    [validate_gallery_name, validate_artifact_name],
-)
+@pytest.mark.parametrize("validator", [validate_gallery_name])
 def test_utf8_leaf_domains_reject_non_leaf_values(
     value: str, validator: object
 ) -> None:
@@ -1348,9 +1657,7 @@ def test_posix_opaque_file_name_allows_backslash() -> None:
     assert validate_file_name(b"a\\b") == b"a\\b"
 
 
-@pytest.mark.parametrize(
-    "validator", [validate_gallery_name, validate_artifact_name, validate_namespace]
-)
+@pytest.mark.parametrize("validator", [validate_gallery_name, validate_namespace])
 def test_utf8_domains_reject_surrogates(validator: object) -> None:
     with pytest.raises(ByteDomainError):
         validator("bad\ud800name")  # type: ignore[operator]
@@ -2174,3 +2481,75 @@ def test_observation_descriptor_is_fixed_bounded_and_domain_separated() -> None:
     ) == _manual_canonical_digest("gallery_observation_v1", payload)
     with pytest.raises(ByteDomainError):
         decode_gallery_observation_descriptor(payload + b"\x00")
+
+
+def test_observation_audit_frames_and_durable_parser_registry_are_closed() -> None:
+    root = bytes(range(32))
+    assert gallery_directory_audit_digest(root, 7).hex() == (
+        "75cc50ba337da95a237aaecf984016af9ea667a80492aba5b0cadda10a16b9d7"
+    )
+    assert gallery_metadata_audit_digest(root, 11).hex() == (
+        "70bdb1d71ac3f6daabf19ac16334acd825149f65054bbe3384602b7e8a1d6d06"
+    )
+    roots = {
+        component: (bytes((int(component) + 1,)) * 32, int(component) + 3)
+        for component in GalleryObservationComponent
+    }
+    assert gallery_scan_audit_digest(roots).hex() == (
+        "b04306743e234c19165a72e2e4bc7831b6a90bb397f6c7a69fdee6fb03ab7042"
+    )
+    mutated = dict(roots)
+    mutated[GalleryObservationComponent.FILE] = (b"z" * 32, 3)
+    assert gallery_scan_audit_digest(mutated) != gallery_scan_audit_digest(roots)
+    with pytest.raises(ByteDomainError, match="exact component set"):
+        gallery_scan_audit_digest(
+            {
+                component: value
+                for component, value in roots.items()
+                if component is not GalleryObservationComponent.DIRECTORY
+            }
+        )
+    with pytest.raises(ByteDomainError, match="exact component set"):
+        gallery_scan_audit_digest({**roots, 99: (b"x" * 32, 1)})  # type: ignore[dict-item]
+    with pytest.raises(DigestFormatError):
+        gallery_directory_audit_digest(root[:-1], 7)
+    with pytest.raises(IntegerDomainError):
+        gallery_metadata_audit_digest(root, -1)
+
+    assert GALLERY_OBSERVATION_DURABLE_PARSER_PHASES == (
+        "PREFIX",
+        "VERSION",
+        "GID",
+        "TITLE_TAG",
+        "TITLE_LENGTH",
+        "TITLE",
+        "COMMENT_TAG",
+        "COMMENT_LENGTH",
+        "COMMENT",
+        "UPLOAD_ACCOUNT_TAG",
+        "UPLOAD_ACCOUNT_LENGTH",
+        "UPLOAD_ACCOUNT",
+        "UPLOAD_TIME",
+        "DOWNLOAD_TIME",
+        "MODIFIED_TIME",
+        "SCAN_VERSION",
+        "SOURCE_FILE_COUNT",
+        "PAGE_COUNT_PRESENCE",
+        "PAGE_COUNT",
+        "DONE",
+    )
+    for phase in GALLERY_OBSERVATION_DURABLE_PARSER_PHASES:
+        assert validate_gallery_observation_durable_parser_phase(phase) == phase.encode(
+            "ascii"
+        )
+    for alias in (
+        "TITLE_TEXT",
+        "COMMENT_TEXT",
+        "ACCOUNT_TAG",
+        "ACCOUNT_LENGTH",
+        "ACCOUNT_TEXT",
+        "LENGTH",
+        "unknown",
+    ):
+        with pytest.raises(RegisteredIdentifierError, match="not a registered"):
+            validate_gallery_observation_durable_parser_phase(alias)

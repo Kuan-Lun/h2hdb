@@ -119,6 +119,8 @@ def operational_preparation_cleanup_eligible(facts: PreparationCleanupFacts) -> 
         return False
     if facts.state == "ABANDONED":
         return not facts.activation_present
+    if facts.state == "COMPLETE":
+        return facts.activation_present
     return False
 
 
@@ -426,6 +428,12 @@ _OBLIGATION_BINDINGS = {
         "transaction_protocol",
         "operational_refinement.check_fencing_contract_v1",
     ),
+    "h2hdb.operational.download-ingest-handoff.v1": (
+        "operational.download-ingest-handoff",
+        "ready_and_runtime",
+        "transaction_protocol",
+        "operational_refinement.check_download_ingest_handoff_contract_v1",
+    ),
     "h2hdb.operational.maintenance-gate.v1": (
         "operational.maintenance-gate",
         "ready_and_runtime",
@@ -439,7 +447,7 @@ _OBLIGATION_BINDINGS = {
         "operational_refinement.check_bounded_work_contract_v1",
     ),
     "h2hdb.operational.queue-history.v1": (
-        "operational.deletion-history",
+        "operational.deletion-generation-history",
         "ready_and_runtime",
         "referential_protocol",
         "operational_refinement.check_queue_history_contract_v1",
@@ -491,6 +499,112 @@ _OBLIGATION_BINDINGS = {
         "building_only",
         "bootstrap_integrity",
         "operational_refinement.check_bootstrap_contract_v1",
+    ),
+}
+
+_GENERATION_OBLIGATION_RELATION_BINDINGS = {
+    "h2hdb.operational.download-ingest-handoff.v1": (
+        (
+            "download_generation",
+            "download_coordination_head",
+            "download_generation_owner",
+            "download_generation_lease",
+            "download_ingest_handoff",
+            "download_ingest_consumption",
+            "coordinated_ingest_completion",
+            "ingest_generation",
+            "ingest_coordination_head",
+            "ingest_generation_owner",
+            "ingest_generation_lease",
+        ),
+        "Validate repository-issued download capabilities, exact live handoff or expired takeover, one-to-one ingest consumption, quiescent periodic ingest, coordinated completion, and zero-write exact response-loss replay across normalized download and ingest authority.",
+    ),
+    "h2hdb.operational.bounded-work.v1": (
+        (
+            "operational_event_stream",
+            "operational_preparation",
+            "operational_preparation_checkpoint",
+            "operational_preparation_batch_receipt",
+            "operational_preparation_effect_seal",
+            "operational_event",
+            "operational_removed_gid_event",
+            "operational_deletion_consumption_event",
+            "cleanup_checkpoint",
+            "cleanup_batch_receipt",
+        ),
+        "Validate server-owned cursors, bounded same-transaction typed effects with receipt/checkpoint CAS, an empty terminal receipt, and an exact immutable effect-completeness seal written before COMPLETE without a publication-time event scan.",
+    ),
+    "h2hdb.operational.queue-history.v1": (
+        (
+            "deletion_request_generation",
+            "deletion_request_generation_head",
+            "deletion_request_attempt",
+            "deletion_request_head",
+            "deletion_request_url",
+            "operational_preparation",
+            "operational_deletion_consumption_event",
+        ),
+        "Validate the real immutable generation-zero empty-queue genesis, exact history-backed singleton generation CAS, immutable deletion attempts, independently mutable per-gid heads, optional exact URL satellites, preparation generation authority, O(1) publication recheck, and consumption references to immutable attempts.",
+    ),
+    "h2hdb.operational.attempt-identity.v1": (
+        (
+            "cleanup_job",
+            "operational_preparation",
+            "operational_policy",
+            "deletion_request_generation",
+            "deletion_request_generation_head",
+        ),
+        "Validate monotone cleanup attempt numbers and policy-qualified immutable preparation identity backed by an exact retained deletion generation; publication accepts only the preparation matching the singleton current generation.",
+    ),
+    "h2hdb.operational.event-integrity.v1": (
+        (
+            "operational_event_stream",
+            "operational_preparation",
+            "operational_preparation_effect_seal",
+            "publication_candidate_preparation",
+            "operational_activation",
+            "operational_event",
+            "operational_removed_gid_event",
+            "operational_deletion_consumption_event",
+            "operational_event_ack",
+            "operational_event_ack_head",
+        ),
+        "Validate invisible preparation-scoped event streams, contiguous exact digest chains and immutable effect seals, one-to-one candidate binding to an exact sealed preparation, O(1) activation, exactly one type-matching subtype, and monotone same-preparation acknowledgement only after activation and durable bounded-prefix coverage.",
+    ),
+    "h2hdb.operational.cleanup-reachability.v1": (
+        (
+            "cleanup_target_kind",
+            "cleanup_phase",
+            "cleanup_job",
+            "cleanup_checkpoint",
+            "source_build",
+            "publication_candidate",
+            "analysis_snapshot_manifest",
+            "source_revision",
+            "catalog_revision",
+            "canonical_value_identity",
+            "content_blob",
+            "operational_event_stream",
+            "operational_preparation",
+            "operational_preparation_effect_seal",
+            "publication_candidate_preparation",
+            "operational_activation",
+            "operational_event",
+            "operational_removed_gid_event",
+            "operational_deletion_consumption_event",
+            "operational_event_ack",
+            "operational_event_ack_head",
+        ),
+        "Validate the exact seeded cleanup kind/phase registry, 32-byte target-key codecs, static writer hooks, retention-root closure, blocker identities, candidate-to-preparation binding, and conditional child-first preparation cleanup: activated effects outlive control rows, bound or unactivated COMPLETE work is retained, and ABANDONED invisible streams leave no orphan.",
+    ),
+    "h2hdb.operational.bootstrap-genesis.v1": (
+        (
+            "revision_allocator",
+            "identity_allocator",
+            "deletion_request_generation",
+            "deletion_request_generation_head",
+        ),
+        "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG identity allocator genesis rows, the real immutable deletion generation-zero empty-queue fact and its singleton head, and the declared absence of all request, event, lease, staging, work, cache, policy, and cleanup facts.",
     ),
 }
 
@@ -575,6 +689,15 @@ def validate_operational_machine_contract_documents(
             raise ValueError(
                 f"semantic obligation {obligation_id!r} references unknown relations"
             )
+        generation_binding = _GENERATION_OBLIGATION_RELATION_BINDINGS.get(obligation_id)
+        if generation_binding is not None and generation_binding != (
+            relations,
+            description,
+        ):
+            raise ValueError(
+                f"semantic obligation {obligation_id!r} generation relation or "
+                "description binding drifts"
+            )
         obligations.append(
             SemanticObligation(
                 obligation_id,
@@ -601,6 +724,7 @@ def validate_operational_machine_contract_documents(
         "operational_refinement.check_physical_domains_v1": check_physical_domains_v1,
         "operational_refinement.check_epoch_manifest_v1": check_epoch_manifest_v1,
         "operational_refinement.check_fencing_contract_v1": check_fencing_contract_v1,
+        "operational_refinement.check_download_ingest_handoff_contract_v1": check_download_ingest_handoff_contract_v1,
         "operational_refinement.check_maintenance_gate_contract_v1": check_maintenance_gate_contract_v1,
         "operational_refinement.check_bounded_work_contract_v1": check_bounded_work_contract_v1,
         "operational_refinement.check_queue_history_contract_v1": check_queue_history_contract_v1,
@@ -648,6 +772,216 @@ def check_fencing_contract_v1(
     _require_exact_table(logical, "fencing_contract", expected)
 
 
+def check_download_ingest_handoff_contract_v1(
+    logical: Mapping[str, Any], physical: Mapping[str, Any]
+) -> None:
+    expected = {
+        "version": 1,
+        "download_generation_relation": "download_generation",
+        "download_head_relation": "download_coordination_head",
+        "download_owner_relation": "download_generation_owner",
+        "download_lease_relation": "download_generation_lease",
+        "handoff_relation": "download_ingest_handoff",
+        "consumption_relation": "download_ingest_consumption",
+        "completion_relation": "coordinated_ingest_completion",
+        "ingest_generation_relation": "ingest_generation",
+        "capability_bytes": 16,
+        "handoff_kinds": ["DOWNLOADER", "EXPIRED_TAKEOVER"],
+        "lock_order_rule": "every transaction locks the download singleton and exact current download generation satellites before the ingest singleton and exact current ingest generation satellites; each authority transition uses an exact observed-state CAS, and stale or corrupt authority performs zero writes",
+        "download_claim_rule": "the repository issues a fresh opaque 16-byte owner capability, creates a strictly greater download generation only while both download and ingest heads are quiescent, inserts exact owner and lease satellites, and CAS-advances the download current head; no new download generation may begin until the linked ingest completion has durably completed the prior download generation and advanced completed_generation",
+        "handoff_rule": "only the exact current downloader owner with an unexpired lease may insert DOWNLOADER handoff; when its lease is expired, ingest may fail-closed insert EXPIRED_TAKEOVER; either transaction atomically copies the exact owner_token into immutable handoff history and deletes both owner and lease so no live downloader authority remains",
+        "consumption_rule": "one immutable handoff is consumed by exactly one immutable ingest generation and each ingest generation consumes at most one handoff; handoff validation, ingest claim, and consumption insert commit in one transaction, and an existing different tuple rejects without mutation",
+        "periodic_rule": "a periodic ingest generation is allowed only while download authority is quiescent and has no handoff or consumption claim; it has no fabricated download linkage, and its completion never changes the download generation or head",
+        "completion_rule": "linked completion atomically inserts the exact durable coordinated completion receipt, completes the live ingest fence, sets download_generation.completed_at, and exact-CAS advances download_coordination_head.completed_generation; periodic completion inserts the same ingest-owner receipt and completes only the ingest fence",
+        "replay_rule": "response-loss replay exact-compares every retained handoff, consumption, and coordinated completion field including handoff kind, both generations, owner capabilities, and timestamps; an exact replay performs zero writes and every mismatch fails closed",
+    }
+    _require_exact_table(logical, "download_ingest_handoff_contract", expected)
+    relations = _raw_relation_map(logical)
+    shapes = {
+        "download_generation": (
+            ["generation", "started_at", "completed_at"],
+            [["generation"]],
+            [
+                {
+                    "determinant": ["generation"],
+                    "dependent": ["started_at", "completed_at"],
+                }
+            ],
+            [],
+        ),
+        "download_coordination_head": (
+            [
+                "singleton_id",
+                "current_generation",
+                "completed_generation",
+                "last_transition_at",
+            ],
+            [["singleton_id"]],
+            [
+                {
+                    "determinant": ["singleton_id"],
+                    "dependent": [
+                        "current_generation",
+                        "completed_generation",
+                        "last_transition_at",
+                    ],
+                }
+            ],
+            [
+                {
+                    "attributes": ["current_generation"],
+                    "relation": "download_generation",
+                    "referenced_attributes": ["generation"],
+                },
+                {
+                    "attributes": ["completed_generation"],
+                    "relation": "download_generation",
+                    "referenced_attributes": ["generation"],
+                },
+            ],
+        ),
+        "download_generation_owner": (
+            ["generation", "owner_token", "claimed_at"],
+            [["generation"], ["owner_token"]],
+            [
+                {
+                    "determinant": ["generation"],
+                    "dependent": ["owner_token", "claimed_at"],
+                },
+                {
+                    "determinant": ["owner_token"],
+                    "dependent": ["generation", "claimed_at"],
+                },
+            ],
+            [
+                {
+                    "attributes": ["generation"],
+                    "relation": "download_generation",
+                    "referenced_attributes": ["generation"],
+                }
+            ],
+        ),
+        "download_generation_lease": (
+            ["generation", "lease_expires_at"],
+            [["generation"]],
+            [
+                {
+                    "determinant": ["generation"],
+                    "dependent": ["lease_expires_at"],
+                }
+            ],
+            [
+                {
+                    "attributes": ["generation"],
+                    "relation": "download_generation",
+                    "referenced_attributes": ["generation"],
+                }
+            ],
+        ),
+        "download_ingest_handoff": (
+            ["download_generation", "owner_token", "handoff_kind", "requested_at"],
+            [["download_generation"], ["owner_token"]],
+            [
+                {
+                    "determinant": ["download_generation"],
+                    "dependent": ["owner_token", "handoff_kind", "requested_at"],
+                },
+                {
+                    "determinant": ["owner_token"],
+                    "dependent": [
+                        "download_generation",
+                        "handoff_kind",
+                        "requested_at",
+                    ],
+                },
+            ],
+            [
+                {
+                    "attributes": ["download_generation"],
+                    "relation": "download_generation",
+                    "referenced_attributes": ["generation"],
+                }
+            ],
+        ),
+        "download_ingest_consumption": (
+            ["download_generation", "ingest_generation", "consumed_at"],
+            [["download_generation"], ["ingest_generation"]],
+            [
+                {
+                    "determinant": ["download_generation"],
+                    "dependent": ["ingest_generation", "consumed_at"],
+                },
+                {
+                    "determinant": ["ingest_generation"],
+                    "dependent": ["download_generation", "consumed_at"],
+                },
+            ],
+            [
+                {
+                    "attributes": ["download_generation"],
+                    "relation": "download_ingest_handoff",
+                    "referenced_attributes": ["download_generation"],
+                },
+                {
+                    "attributes": ["ingest_generation"],
+                    "relation": "ingest_generation",
+                    "referenced_attributes": ["generation"],
+                },
+            ],
+        ),
+        "coordinated_ingest_completion": (
+            ["ingest_generation", "owner_token", "completed_at"],
+            [["ingest_generation"], ["owner_token"]],
+            [
+                {
+                    "determinant": ["ingest_generation"],
+                    "dependent": ["owner_token", "completed_at"],
+                },
+                {
+                    "determinant": ["owner_token"],
+                    "dependent": ["ingest_generation", "completed_at"],
+                },
+            ],
+            [
+                {
+                    "attributes": ["ingest_generation"],
+                    "relation": "ingest_generation",
+                    "referenced_attributes": ["generation"],
+                }
+            ],
+        ),
+    }
+    for relation_name, (attributes, keys, fds, foreign_keys) in shapes.items():
+        relation = relations.get(relation_name)
+        if relation is None or {
+            "attributes": relation.get("attributes"),
+            "declared_keys": relation.get("declared_keys"),
+            "fds": relation.get("fds"),
+            "foreign_keys": relation.get("foreign_keys", []),
+        } != {
+            "attributes": attributes,
+            "declared_keys": keys,
+            "fds": fds,
+            "foreign_keys": foreign_keys,
+        }:
+            raise ValueError(
+                f"download_ingest_handoff_contract relation {relation_name} drifts"
+            )
+
+    physical_relations = _raw_relation_map(physical)
+    handoff_checks = physical_relations["download_ingest_handoff"].get("check", [])
+    if not any(
+        value.get("name") == "ck_download_ingest_handoff_kind"
+        and value.get("sqlite_expression")
+        == "handoff_kind IN ('DOWNLOADER', 'EXPIRED_TAKEOVER')"
+        and value.get("mariadb_expression")
+        == "handoff_kind IN ('DOWNLOADER', 'EXPIRED_TAKEOVER')"
+        for value in handoff_checks
+        if isinstance(value, dict)
+    ):
+        raise ValueError("download_ingest_handoff_contract physical enum drifts")
+
+
 def check_maintenance_gate_contract_v1(
     logical: Mapping[str, Any], _physical: Mapping[str, Any]
 ) -> None:
@@ -679,8 +1013,12 @@ def check_bounded_work_contract_v1(
         "page_commit": "decision_rows_and_receipt_and_checkpoint_cas_in_one_transaction",
         "terminal_rule": "empty_page_receipt_before_complete",
         "preparation_policy_relation": "operational_policy",
+        "preparation_stream_relation": "operational_event_stream",
         "preparation_checkpoint_relation": "operational_preparation_checkpoint",
         "preparation_receipt_relation": "operational_preparation_batch_receipt",
+        "preparation_effect_seal_relation": "operational_preparation_effect_seal",
+        "preparation_event_relation": "operational_event",
+        "preparation_effect_rule": "each bounded page locks the OPEN preparation and exact checkpoint generation, writes a contiguous coordinate range of base events and exactly one matching typed subtype per event, recomputes every event digest and the running chain, and commits those rows with the request receipt and checkpoint CAS; an empty terminal page proves no remaining work, after which one transaction inserts the exact effect seal last and marks the preparation COMPLETE without scanning prior event rows",
         "cleanup_policy_relation": "cleanup_job",
         "cleanup_checkpoint_relation": "cleanup_checkpoint",
         "cleanup_receipt_relation": "cleanup_batch_receipt",
@@ -694,19 +1032,91 @@ def check_bounded_work_contract_v1(
     for relation_name, keys in expected_keys.items():
         if relations[relation_name].get("declared_keys") != keys:
             raise ValueError(f"{relation_name} checkpoint authority key drift")
+    seal = relations.get("operational_preparation_effect_seal")
+    if seal is None or {
+        "attributes": seal.get("attributes"),
+        "declared_keys": seal.get("declared_keys"),
+        "fds": seal.get("fds"),
+    } != {
+        "attributes": [
+            "preparation_id",
+            "event_count",
+            "final_chain_sha256",
+            "sealed_at",
+        ],
+        "declared_keys": [["preparation_id"]],
+        "fds": [
+            {
+                "determinant": ["preparation_id"],
+                "dependent": ["event_count", "final_chain_sha256", "sealed_at"],
+            }
+        ],
+    }:
+        raise ValueError("bounded operational effect completeness seal shape drifts")
 
 
 def check_queue_history_contract_v1(
     logical: Mapping[str, Any], _physical: Mapping[str, Any]
 ) -> None:
     expected = {
+        "deletion_generation_relation": "deletion_request_generation",
+        "deletion_generation_head_relation": "deletion_request_generation_head",
         "deletion_attempt_relation": "deletion_request_attempt",
         "deletion_head_relation": "deletion_request_head",
         "deletion_url_relation": "deletion_request_url",
         "consumption_relation": "operational_deletion_consumption_event",
-        "rule": "the current head may rotate or disappear without deleting immutable attempts referenced by consumption events; URL is an optional exact payload satellite",
+        "preparation_relation": "operational_preparation",
+        "generation_rule": "generation zero is the real immutable empty-queue genesis fact, never a sentinel; every actual deletion-request authority mutation transactionally inserts exactly current_generation plus one into immutable history, applies the queue mutation, and exact-CAS advances the singleton head from the observed generation, while exhaustion at 2^63-1 fails closed",
+        "publication_rule": "preparation records the exact FK-backed deletion generation it scanned; publication locks and compares that generation with the singleton head in O(1) and performs no activation when they differ",
+        "retention_rule": "deletion generation history is retained indefinitely as immutable FK and audit authority; the current head and every preparation always reference an exact history row",
+        "rule": "the per-gid current head may rotate or disappear without deleting immutable attempts referenced by consumption events; URL is an optional exact payload satellite, and every such authority mutation participates in the global generation insert-and-CAS transaction",
     }
     _require_exact_table(logical, "queue_history_contract", expected)
+    relations = _raw_relation_map(logical)
+    generation = relations.get("deletion_request_generation")
+    generation_head = relations.get("deletion_request_generation_head")
+    preparation = relations.get("operational_preparation")
+    if generation is None or {
+        "attributes": generation.get("attributes"),
+        "declared_keys": generation.get("declared_keys"),
+        "fds": generation.get("fds"),
+    } != {
+        "attributes": ["generation", "allocated_at"],
+        "declared_keys": [["generation"]],
+        "fds": [{"determinant": ["generation"], "dependent": ["allocated_at"]}],
+    }:
+        raise ValueError("deletion generation history BCNF shape drifts")
+    if generation_head is None or {
+        "attributes": generation_head.get("attributes"),
+        "declared_keys": generation_head.get("declared_keys"),
+        "fds": generation_head.get("fds"),
+    } != {
+        "attributes": ["singleton_id", "current_generation", "updated_at"],
+        "declared_keys": [["singleton_id"]],
+        "fds": [
+            {
+                "determinant": ["singleton_id"],
+                "dependent": ["current_generation", "updated_at"],
+            }
+        ],
+    }:
+        raise ValueError("deletion generation singleton head BCNF shape drifts")
+    exact_head_fk = {
+        "attributes": ["current_generation"],
+        "relation": "deletion_request_generation",
+        "referenced_attributes": ["generation"],
+    }
+    if exact_head_fk not in generation_head.get("foreign_keys", []):
+        raise ValueError("deletion generation head lacks exact history FK")
+    exact_preparation_fk = {
+        "attributes": ["deletion_request_generation"],
+        "relation": "deletion_request_generation",
+        "referenced_attributes": ["generation"],
+    }
+    if preparation is None or exact_preparation_fk not in preparation.get(
+        "foreign_keys", []
+    ):
+        raise ValueError("operational preparation lacks exact deletion generation FK")
 
 
 def check_canonical_hash_cache_contract_v1(
@@ -746,37 +1156,355 @@ def check_canonical_hash_cache_contract_v1(
 def check_event_integrity_contract_v1(
     logical: Mapping[str, Any], _physical: Mapping[str, Any]
 ) -> None:
-    value = logical.get("operational_event_integrity_contract")
-    if not isinstance(value, dict):
-        raise ValueError("operational_event_integrity_contract must be a table")
     expected = {
+        "stream_relation": "operational_event_stream",
+        "preparation_relation": "operational_preparation",
+        "seal_relation": "operational_preparation_effect_seal",
+        "activation_relation": "operational_activation",
+        "candidate_binding_relation": "publication_candidate_preparation",
         "base_relation": "operational_event",
         "removed_subtype_relation": "operational_removed_gid_event",
         "deletion_subtype_relation": "operational_deletion_consumption_event",
         "removed_event_type": "REMOVED_GID",
         "deletion_event_type": "DELETION_CONSUMPTION",
+        "event_digest_codec": "SHA256(ASCII(h2hdb-operational-event-v1) || NUL || preparation_id[16] || u64be(sequence_no) || u16be(event_type_byte_count) || ASCII(event_type) || u32be(subtype_frame_byte_count) || subtype_frame), where REMOVED_GID subtype_frame is u64be(gid) || request_token[16] and DELETION_CONSUMPTION subtype_frame is u64be(gid) || deletion_request_token[16]",
+        "chain_codec": "chain_0 = SHA256(ASCII(h2hdb-operational-event-chain-v1) || NUL); chain_(n+1) = SHA256(ASCII(h2hdb-operational-event-chain-link-v1) || NUL || chain_n[32] || event_sha256_n[32])",
+        "empty_chain_sha256": "e3963ad6e07ac045502ad95ddb3805ac57deea8ffbb038ddf7c538a816301e71",
+        "stream_rule": "begin preparation resolves or allocates one preparation_id from the policy-qualified natural key, then inserts the durable event stream, preparation, and required initial checkpoints in one transaction; commit contains all roots or none, retry resolves the same preparation, and no standalone invisible stream is permitted",
+        "subtype_rule": "every bounded event-page transaction inserts each base event and exactly one subtype whose type and exact canonical subtype frame agree with event_type, byte-compares an existing coordinate on retry, and advances the durable running chain only in the same receipt and checkpoint CAS",
+        "seal_rule": "after an empty terminal work receipt, insert exactly one immutable seal with event_count equal to the next contiguous sequence number and final_chain_sha256 equal to the durable running chain, then mark the preparation COMPLETE in the same transaction; sequence numbers are exactly zero through event_count minus one, every event digest and subtype are exact, zero events require no event rows and the registered empty-chain digest, and publication trusts only this writer-produced seal without scanning events",
+        "activation_rule": "one short publication transaction locks the exact COMPLETE preparation, its effect seal, matching operational policy, and singleton deletion-generation head; only when the preparation generation is current does it insert the unique source_revision-to-preparation activation with the source and catalog publication authorities, while reading or writing no event rows; readers expose an event only by joining its preparation_id through activation",
+        "candidate_binding_rule": "before publication_candidate may become SEALED, one transaction binds it to exactly one COMPLETE preparation and exact effect seal through publication_candidate_preparation; candidate_id and preparation_id are both candidate keys, both FKs are exact, and the preparation row pins the operational policy and retained deletion generation; final publication must use this bound preparation and must not search by build/generation/policy, LIMIT 2, caller identifier, or incidental uniqueness",
         "ack_head_relation": "operational_event_ack_head",
+        "ack_rule": "one consumer high-water sequence per preparation advances monotonically only to an existing event in that preparation after joining an immutable activation for its public source revision; each bounded CAS inserts or verifies complete acknowledgement evidence for every next contiguous event after the prior head through the target, so prior evidence plus the bounded page proves the full prefix without a history scan",
+        "cleanup_rule": "an activated COMPLETE preparation may lose only its control rows while stream, seal, events, subtypes, activation, and acknowledgements remain; an unactivated COMPLETE preparation is retained; an ABANDONED preparation with no activation or acknowledgement authority is deleted child-first through subtypes, events, seal, preparation, and stream; OPEN and FAILED are retained and no invisible orphan stream may remain",
     }
-    for key, expected_value in expected.items():
-        if value.get(key) != expected_value:
-            raise ValueError(f"operational event-integrity contract {key} drifts")
-    for key in ("subtype_rule", "ack_rule"):
-        if not isinstance(value.get(key), str) or not value[key]:
-            raise ValueError(f"operational event-integrity contract {key} is absent")
+    _require_exact_table(logical, "operational_event_integrity_contract", expected)
+    relations = _raw_relation_map(logical)
+    exact_shapes = {
+        "operational_event_stream": (
+            ["preparation_id", "created_at"],
+            [["preparation_id"]],
+        ),
+        "operational_preparation_effect_seal": (
+            ["preparation_id", "event_count", "final_chain_sha256", "sealed_at"],
+            [["preparation_id"]],
+        ),
+        "publication_candidate_preparation": (
+            ["candidate_id", "preparation_id", "bound_at"],
+            [["candidate_id"], ["preparation_id"]],
+        ),
+        "operational_activation": (
+            [
+                "source_revision",
+                "preparation_id",
+                "operational_policy_id",
+                "activated_at",
+            ],
+            [["source_revision"], ["preparation_id"]],
+        ),
+        "operational_event": (
+            [
+                "event_id",
+                "preparation_id",
+                "sequence_no",
+                "event_type",
+                "event_sha256",
+                "created_at",
+            ],
+            [["event_id"], ["preparation_id", "sequence_no"]],
+        ),
+        "operational_event_ack_head": (
+            [
+                "consumer_id",
+                "preparation_id",
+                "through_sequence_no",
+                "updated_at",
+            ],
+            [["consumer_id", "preparation_id"]],
+        ),
+    }
+    for relation_name, (attributes, keys) in exact_shapes.items():
+        relation = relations.get(relation_name)
+        if (
+            relation is None
+            or relation.get("attributes") != attributes
+            or relation.get("declared_keys") != keys
+        ):
+            raise ValueError(
+                f"operational event relation {relation_name} coordinate shape drifts"
+            )
+    expected_fks = {
+        "operational_preparation": {
+            "attributes": ["preparation_id"],
+            "relation": "operational_event_stream",
+            "referenced_attributes": ["preparation_id"],
+        },
+        "operational_preparation_effect_seal": {
+            "attributes": ["preparation_id"],
+            "relation": "operational_event_stream",
+            "referenced_attributes": ["preparation_id"],
+        },
+        "operational_activation": {
+            "attributes": ["preparation_id"],
+            "relation": "operational_preparation_effect_seal",
+            "referenced_attributes": ["preparation_id"],
+        },
+        "publication_candidate_preparation": {
+            "attributes": ["preparation_id"],
+            "relation": "operational_preparation_effect_seal",
+            "referenced_attributes": ["preparation_id"],
+        },
+        "operational_event": {
+            "attributes": ["preparation_id"],
+            "relation": "operational_event_stream",
+            "referenced_attributes": ["preparation_id"],
+        },
+        "operational_event_ack_head": {
+            "attributes": ["preparation_id", "through_sequence_no"],
+            "relation": "operational_event",
+            "referenced_attributes": ["preparation_id", "sequence_no"],
+        },
+    }
+    for relation_name, foreign_key in expected_fks.items():
+        if foreign_key not in relations[relation_name].get("foreign_keys", []):
+            raise ValueError(
+                f"operational event relation {relation_name} lacks exact effect FK"
+            )
+    if "source_revision" in relations["operational_event"].get("attributes", []):
+        raise ValueError("operational event still uses the publication coordinate")
 
 
 def check_build_generation_contract_v1(
-    logical: Mapping[str, Any], _physical: Mapping[str, Any]
+    logical: Mapping[str, Any], physical: Mapping[str, Any]
 ) -> None:
     _require_exact_table(
         logical,
         "source_build_generation_contract",
         {
             "reservation_relation": "source_build_generation",
-            "rule": "first begin or resume transactionally reserves at most one build for a generation; a strictly greater takeover generation may reserve the same build; a no-build generation has no row",
+            "rule": "first begin or resume locks and verifies the exact current ingest head, matching owner, and unexpired lease, then transactionally reserves at most one build for that immutable ingest generation; a strictly greater live takeover generation may reserve the same build, a no-build generation has no row, and the mapping may outlive deletion of its completed owner and lease because authorization is a writer check rather than an FK",
             "cleanup_rule": "before SOURCE_BUILD cleanup creates a job and before every destructive batch, each mapped generation must be durably completed or strictly superseded by the current coordination head; an unfinished current generation or any owner, lease, or handoff resume authority blocks phase one, while completed or superseded mappings and their residual canonical uploads are bounded owned children and make progress",
         },
     )
+    reservation = _raw_relation_map(logical)["source_build_generation"]
+    immutable_generation_fk = {
+        "attributes": ["generation"],
+        "relation": "ingest_generation",
+        "referenced_attributes": ["generation"],
+    }
+    ephemeral_owner_fk = {
+        "attributes": ["generation"],
+        "relation": "ingest_generation_owner",
+        "referenced_attributes": ["generation"],
+    }
+    if immutable_generation_fk not in reservation.get(
+        "foreign_keys", []
+    ) or ephemeral_owner_fk in reservation.get("foreign_keys", []):
+        raise ValueError(
+            "source-build generation must retain immutable history, not owner liveness"
+        )
+    upload = _raw_relation_map(logical)["canonical_value_upload"]
+    if immutable_generation_fk not in upload.get(
+        "foreign_keys", []
+    ) or ephemeral_owner_fk in upload.get("foreign_keys", []):
+        raise ValueError(
+            "canonical upload must retain immutable history, not owner liveness"
+        )
+    assembly = logical.get("source_build_assembly_contract")
+    expected_assembly_core = {
+        "version": 1,
+        "discovery_checkpoint_relation": "source_build_discovery_checkpoint",
+        "discovery_receipt_relation": "source_build_discovery_batch_receipt",
+        "assembly_checkpoint_relation": "source_build_assembly_checkpoint",
+        "assembly_receipt_relation": "source_build_assembly_batch_receipt",
+        "expected_membership_relation": "source_build_expected_gallery",
+        "observation_stat_relation": "gallery_observation_stat",
+        "membership_relation": "source_build_gallery",
+        "discovery_seal_relation": "source_build_discovery",
+        "build_seal_relation": "build_manifest",
+        "batch_rows_maximum": 256,
+        "empty_manifest_chain_sha256": (
+            "121f20d26c10f4c5ce6e621dc5e41b7da2c4028af840caa7547265068f2458e3"
+        ),
+    }
+    if not isinstance(assembly, Mapping) or any(
+        assembly.get(name) != value for name, value in expected_assembly_core.items()
+    ):
+        raise ValueError("source-build assembly structural contract drifts")
+    encoded_assembly = json.dumps(
+        assembly, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("ascii")
+    if hashlib.sha256(encoded_assembly).hexdigest() != (
+        "6f0c7c2e2be765b0eb5a4b9daf25cd0a8bb886631385e877b46ed5645f0265e1"
+    ):
+        raise ValueError("source-build assembly exact protocol text drifts")
+
+    relations = _raw_relation_map(logical)
+    expected_shapes = {
+        "source_build_discovery_checkpoint": (
+            [
+                "build_id",
+                "generation",
+                "cursor_bytes",
+                "processed_count",
+                "state",
+                "updated_at",
+            ],
+            [["build_id"]],
+        ),
+        "source_build_discovery_batch_receipt": (
+            [
+                "build_id",
+                "batch_key",
+                "start_generation",
+                "start_cursor",
+                "start_processed_count",
+                "next_cursor",
+                "next_processed_count",
+                "next_state",
+                "row_count",
+                "terminal",
+                "committed_generation",
+                "committed_at",
+            ],
+            [["build_id", "batch_key"], ["build_id", "start_generation"]],
+        ),
+        "source_build_assembly_checkpoint": (
+            [
+                "build_id",
+                "generation",
+                "cursor_bytes",
+                "processed_gallery_count",
+                "processed_file_count",
+                "processed_byte_count",
+                "manifest_chain_sha256",
+                "state",
+                "updated_at",
+            ],
+            [["build_id"]],
+        ),
+        "source_build_assembly_batch_receipt": (
+            [
+                "build_id",
+                "batch_key",
+                "start_generation",
+                "start_cursor",
+                "start_gallery_count",
+                "start_file_count",
+                "start_byte_count",
+                "start_manifest_chain_sha256",
+                "next_cursor",
+                "next_gallery_count",
+                "next_file_count",
+                "next_byte_count",
+                "next_manifest_chain_sha256",
+                "next_state",
+                "row_count",
+                "terminal",
+                "committed_generation",
+                "committed_at",
+            ],
+            [["build_id", "batch_key"], ["build_id", "start_generation"]],
+        ),
+    }
+    for relation_name, (attributes, keys) in expected_shapes.items():
+        relation = relations.get(relation_name)
+        if (
+            not isinstance(relation, Mapping)
+            or relation.get("attributes") != attributes
+            or relation.get("declared_keys") != keys
+        ):
+            raise ValueError(f"{relation_name} source-build authority shape drifts")
+
+    external = {
+        str(value.get("name")): value
+        for value in _raw_tables(logical.get("external_relation", []), "external")
+    }
+    expected_external = {
+        "source_build_expected_gallery": (
+            ["build_id", "position", "gallery_id"],
+            [["build_id", "position"], ["build_id", "gallery_id"]],
+        ),
+        "gallery_observation_stat": (
+            ["gallery_id", "observation_id", "file_count", "byte_count"],
+            [["gallery_id", "observation_id"]],
+        ),
+    }
+    for relation_name, (attributes, keys) in expected_external.items():
+        relation = external.get(relation_name)
+        if (
+            not isinstance(relation, Mapping)
+            or relation.get("attributes") != attributes
+            or relation.get("declared_keys") != keys
+        ):
+            raise ValueError(f"{relation_name} cross-manifest authority shape drifts")
+
+    source_cleanup = next(
+        (
+            value
+            for value in _raw_tables(logical.get("cleanup_target", []), "cleanup")
+            if value.get("target_kind") == "SOURCE_BUILD"
+        ),
+        None,
+    )
+    expected_phase_relations = {
+        "SB_CANONICAL_UPLOAD": [
+            "source_build_discovery_batch_receipt",
+            "source_build_assembly_batch_receipt",
+            "canonical_value_upload",
+        ],
+        "SB_GALLERY": [
+            "source_build_discovery_checkpoint",
+            "source_build_assembly_checkpoint",
+            "build_manifest",
+            "source_build_gallery",
+        ],
+        "SB_SATELLITES": [
+            "source_build_discovery",
+            "source_build_expected_gallery",
+            "source_build_base_source",
+            "source_build_channel",
+        ],
+    }
+    actual_phases = {
+        str(value.get("phase")): value.get("relations")
+        for value in _raw_tables(
+            source_cleanup.get("phases", []) if isinstance(source_cleanup, Mapping) else [],
+            "source cleanup phase",
+        )
+    }
+    if any(
+        actual_phases.get(phase) != relation_names
+        for phase, relation_names in expected_phase_relations.items()
+    ):
+        raise ValueError("SOURCE_BUILD cleanup omits child-first assembly authority")
+
+    physical_relations = _raw_relation_map(physical)
+    required_checks = {
+        "source_build_discovery_checkpoint": {
+            "ck_source_build_discovery_checkpoint_state"
+        },
+        "source_build_discovery_batch_receipt": {
+            "ck_source_build_discovery_batch_receipt_transition"
+        },
+        "source_build_assembly_checkpoint": {
+            "ck_source_build_assembly_checkpoint_state"
+        },
+        "source_build_assembly_batch_receipt": {
+            "ck_source_build_assembly_batch_receipt_transition"
+        },
+    }
+    for relation_name, expected_checks in required_checks.items():
+        actual_checks = {
+            _required_text(value, "name", f"{relation_name}.check")
+            for value in _raw_tables(
+                physical_relations[relation_name].get("check", []),
+                f"{relation_name}.check",
+            )
+        }
+        if not expected_checks <= actual_checks:
+            raise ValueError(f"{relation_name} physical transition checks drift")
 
 
 def check_attempt_identity_contract_v1(
@@ -797,14 +1525,22 @@ def check_attempt_identity_contract_v1(
         {
             "preparation_relation": "operational_preparation",
             "policy_relation": "operational_policy",
+            "deletion_generation_relation": "deletion_request_generation",
             "natural_key": [
                 "build_id",
                 "deletion_request_generation",
                 "operational_policy_id",
             ],
-            "rule": "exact retry under one policy resumes; policy change creates a distinct immutable preparation",
+            "rule": "exact retry under one policy and one FK-backed deletion-request generation resumes; policy or authoritative deletion generation change creates a distinct immutable preparation, and publication accepts only the preparation whose generation still equals the singleton deletion-generation head",
         },
     )
+    preparation = _raw_relation_map(logical)["operational_preparation"]
+    if {
+        "attributes": ["deletion_request_generation"],
+        "relation": "deletion_request_generation",
+        "referenced_attributes": ["generation"],
+    } not in preparation.get("foreign_keys", []):
+        raise ValueError("preparation identity lacks exact deletion generation FK")
 
 
 _CLEANUP_TARGET_SHAPES = {
@@ -865,7 +1601,14 @@ _CLEANUP_TARGET_SHAPES = {
         "operational_preparation_terminal_detached_v1",
         "operational_preparation_resume_authority_v1",
         "h2hdb.cleanup.operational_preparation.v1",
-        ("OP_BATCH", "OP_CHECKPOINT", "OP_ROOT"),
+        (
+            "OP_BATCH",
+            "OP_CHECKPOINT",
+            "OP_SUBTYPE",
+            "OP_EVENT",
+            "OP_SEAL",
+            "OP_ROOT",
+        ),
     ),
     "GALLERY_OBSERVATION": (
         "gallery_observation_allocation",
@@ -1109,7 +1852,12 @@ def check_cleanup_reachability_v1(
         }:
             extra_allowed.add("operational_blockers")
         if kind == "OPERATIONAL_PREPARATION":
-            extra_allowed = {"outliving_relations", "rationale"}
+            extra_allowed = {
+                "operational_blockers",
+                "outliving_relations",
+                "conditional_cleanup_rule",
+                "rationale",
+            }
         if kind == "CANONICAL_VALUE_UPLOAD":
             extra_allowed.add("claim_rule")
         if kind == "GALLERY_OBSERVATION_STAGING":
@@ -1244,13 +1992,37 @@ def check_cleanup_reachability_v1(
         ]:
             raise ValueError("active source-head provenance blocker drifts")
     prep = by_kind["OPERATIONAL_PREPARATION"]
+    if prep.get("operational_blockers") != [
+        {
+            "relation": "publication_candidate_preparation",
+            "attributes": ["preparation_id"],
+        }
+    ]:
+        raise ValueError("operational preparation candidate-binding blocker drifts")
     if prep.get("outliving_relations") != [
+        "operational_event_stream",
+        "operational_preparation_effect_seal",
         "operational_activation",
         "operational_event",
+        "operational_removed_gid_event",
+        "operational_deletion_consumption_event",
         "operational_event_ack",
         "operational_event_ack_head",
     ]:
         raise ValueError("operational activation outliving registry drifts")
+    if prep.get("conditional_cleanup_rule") != (
+        "under the exclusive gate, any publication_candidate_preparation row blocks preparation cleanup; after candidate cleanup, COMPLETE is eligible only with its exact activation and deletes batch receipts, checkpoints, and preparation while every activated effect relation remains; ABANDONED is eligible only with activation, acknowledgement, and candidate-binding authority absent and deletes receipts, checkpoints, both typed subtypes, base events, seal, preparation, then stream; every phase locks and rechecks state and activation, FAILED must first transition to ABANDONED, and completion rejects any remaining invisible unactivated stream"
+    ):
+        raise ValueError("operational preparation conditional cleanup rule drifts")
+    if [value.get("relations") for value in prep["phases"]] != [
+        ["operational_preparation_batch_receipt"],
+        ["operational_preparation_checkpoint"],
+        ["operational_removed_gid_event", "operational_deletion_consumption_event"],
+        ["operational_event"],
+        ["operational_preparation_effect_seal"],
+        ["operational_preparation", "operational_event_stream"],
+    ]:
+        raise ValueError("operational preparation child-first effect phases drift")
     if not isinstance(prep.get("rationale"), str) or "outlive" not in str(
         prep["rationale"]
     ):
@@ -1629,6 +2401,33 @@ def check_gallery_staging_contract_v1(
         "max_level": 8,
         "portable_id_maximum": 9223372036854775807,
         "predecessor_rule": "a predecessor edge is inserted only after locking both request_owner rows and proving both request identities belong to the same staging_id, the exact request frame names that prior digest, and the prior request has no successor; cross-staging predecessor edges fail closed, and cleanup deletes only outgoing edges owned by the selected staging while a corrupt cross-owner incoming edge is a blocker",
+        "durable_parser_phases": [
+            "PREFIX",
+            "VERSION",
+            "GID",
+            "TITLE_TAG",
+            "TITLE_LENGTH",
+            "TITLE",
+            "COMMENT_TAG",
+            "COMMENT_LENGTH",
+            "COMMENT",
+            "UPLOAD_ACCOUNT_TAG",
+            "UPLOAD_ACCOUNT_LENGTH",
+            "UPLOAD_ACCOUNT",
+            "UPLOAD_TIME",
+            "DOWNLOAD_TIME",
+            "MODIFIED_TIME",
+            "SCAN_VERSION",
+            "SOURCE_FILE_COUNT",
+            "PAGE_COUNT_PRESENCE",
+            "PAGE_COUNT",
+            "DONE",
+        ],
+        "runtime_parser_phase_rule": "only the in-process decoder aliases TITLE_TEXT, COMMENT_TEXT, ACCOUNT_TAG, ACCOUNT_LENGTH, and ACCOUNT_TEXT map respectively to the persisted TITLE, COMMENT, UPLOAD_ACCOUNT_TAG, UPLOAD_ACCOUNT_LENGTH, and UPLOAD_ACCOUNT states; database rows and public validators accept only the exact ordered durable_parser_phases registry, with ASCII case-sensitive equality and no LENGTH, runtime alias, unknown value, trimming, or normalization",
+        "directory_audit_framing": "SHA256(ascii('h2hdb-vnext-directory-observation-audit-v1\\0') || raw32(DIRECTORY root_page_sha256) || u64be(item_count_int63))",
+        "metadata_audit_framing": "SHA256(ascii('h2hdb-vnext-metadata-observation-audit-v1\\0') || raw32(METADATA root_page_sha256) || u64be(byte_count_int63))",
+        "scan_audit_framing": "SHA256(ascii('h2hdb-vnext-scan-observation-audit-v1\\0') || raw32(FILE root_page_sha256) || u64be(FILE item_count_int63) || raw32(TAG root_page_sha256) || u64be(TAG item_count_int63) || raw32(METADATA root_page_sha256) || u64be(METADATA byte_count_int63) || raw32(DIRECTORY root_page_sha256) || u64be(DIRECTORY item_count_int63))",
+        "audit_authority_rule": "gallery_directory_audit_digest, gallery_metadata_audit_digest, and gallery_scan_audit_digest validate these exact fixed frames and component order for diagnostics only; directory_observation_sha256, metadata_fingerprint, and scan_observation_sha256 never authorize observation identity, reuse, parser completion, source membership, sealing, or response-loss progress, all of which require typed roots, exact persisted counters, receipts, checkpoints, and canonical identity",
     }
     contract = logical.get("gallery_staging_contract")
     if not isinstance(contract, Mapping):
@@ -1639,7 +2438,7 @@ def check_gallery_staging_contract_v1(
         contract, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("ascii")
     if hashlib.sha256(encoded_contract).hexdigest() != (
-        "de39a06b12f5f4e1edc45acc9b12860d596c56ee9b5c78c2ceb0dbc055b90354"
+        "4ea7dda7d6489e2add32cf3bde3e92b2c4df5b67a15bbe6c69b6870b200e2186"
     ):
         raise ValueError("gallery staging exact protocol text drifts")
     gc_boundary = logical.get("gallery_page_gc_boundary")
@@ -1704,12 +2503,23 @@ def check_gallery_staging_contract_v1(
             "dependent": [
                 "cursor",
                 "regular_count",
+                "processed_byte_count",
                 "state",
                 "updated_at",
             ],
         },
     ]:
         raise ValueError("checkpoint must omit derivable generations and page facts")
+    if relations["gallery_observation_staging_receipt"].get("attributes") != [
+        "staging_id",
+        "component",
+        "level",
+        "request_sha256",
+        "start_processed_byte_count",
+        "next_processed_byte_count",
+        "committed_at",
+    ]:
+        raise ValueError("gallery staging receipt lacks exact FILE byte-count pre/post")
     physical_relations = _raw_relation_map(physical)
     required_checks = {
         "gallery_observation_staging": {
@@ -1724,6 +2534,10 @@ def check_gallery_staging_contract_v1(
             "ck_gallery_observation_staging_checkpoint_level",
             "ck_gallery_observation_staging_checkpoint_state",
             "ck_gallery_observation_staging_checkpoint_regular_count",
+            "ck_gallery_observation_staging_checkpoint_byte_count",
+        },
+        "gallery_observation_staging_receipt": {
+            "ck_gallery_observation_staging_receipt_byte_count",
         },
         "gallery_observation_staging_request_chunk": {
             "ck_gallery_observation_staging_request_chunk_bytes_bounded",
@@ -1757,6 +2571,26 @@ def check_gallery_staging_contract_v1(
         }
         if not names <= actual:
             raise ValueError(f"{relation_name} physical staging checks drift")
+    parser_checks = {
+        _required_text(value, "name", "metadata parser check"): value
+        for value in _raw_tables(
+            physical_relations["gallery_observation_staging_metadata_parser"].get(
+                "check", []
+            ),
+            "gallery_observation_staging_metadata_parser.check",
+        )
+    }
+    parser_phase_check = parser_checks.get(
+        "ck_gallery_observation_staging_metadata_parser_phase"
+    )
+    expected_phase_expression = "phase IN (" + ", ".join(
+        f"'{phase}'" for phase in expected_core["durable_parser_phases"]
+    ) + ")"
+    if not isinstance(parser_phase_check, Mapping) or any(
+        parser_phase_check.get(field) != expected_phase_expression
+        for field in ("sqlite_expression", "mariadb_expression")
+    ):
+        raise ValueError("metadata parser physical phase registry is not exact")
 
 
 @dataclass(frozen=True)
@@ -3179,6 +4013,8 @@ def _validate_bootstrap(
     if seeded != (
         "revision_allocator",
         "identity_allocator",
+        "deletion_request_generation",
+        "deletion_request_generation_head",
         "cleanup_target_kind",
         "cleanup_phase",
         "cleanup_sweep_target",
@@ -3195,6 +4031,18 @@ def _validate_bootstrap(
     identity_allocator_rows = {
         "h2hdb.operational.identity-allocator.gallery.v1": "GALLERY",
         "h2hdb.operational.identity-allocator.tag.v1": "TAG",
+    }
+    deletion_generation_rows = {
+        "h2hdb.operational.deletion-request-generation.genesis.v1": (
+            "deletion_request_generation",
+            (0, 0),
+            ("uint64", "unix_microseconds"),
+        ),
+        "h2hdb.operational.deletion-request-generation-head.genesis.v1": (
+            "deletion_request_generation_head",
+            (1, 0, 0),
+            ("uint64", "uint64", "unix_microseconds"),
+        ),
     }
     targets = _raw_tables(logical.get("cleanup_target", []), "cleanup_target")
     target_rows = {
@@ -3279,6 +4127,17 @@ def _validate_bootstrap(
                 "uint64",
                 "unix_microseconds",
             )
+        elif relation in {
+            "deletion_request_generation",
+            "deletion_request_generation_head",
+        }:
+            deletion_row = deletion_generation_rows.get(seed_id)
+            if deletion_row is None or deletion_row[0] != relation:
+                expected_values = None
+                expected_types = ()
+            else:
+                expected_values = deletion_row[1]
+                expected_types = deletion_row[2]
         elif relation == "cleanup_target_kind":
             expected_values = target_rows.get(seed_id)
             expected_types = ("ascii_enum",)
@@ -3309,6 +4168,7 @@ def _validate_bootstrap(
     expected_ids = (
         set(allocator_rows)
         | set(identity_allocator_rows)
+        | set(deletion_generation_rows)
         | set(target_rows)
         | set(phase_rows)
     )

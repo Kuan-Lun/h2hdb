@@ -22,7 +22,6 @@ from h2hdb import (
     GallerySourceRecord,
     GalleryTag,
     IngestTurnLostError,
-    open_database,
 )
 
 
@@ -416,7 +415,7 @@ def test_read_only_catalog_reader_can_read_but_cannot_publish(
     catalog: H2HDB,
     publications: tuple[CatalogPublication, ...],
 ) -> None:
-    reader = open_database(_read_only_config(sqlite_config))
+    reader = H2HDB(_read_only_config(sqlite_config))
 
     assert isinstance(reader, CatalogReader)
     assert reader.list_publications(limit=20).publications == publications
