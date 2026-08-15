@@ -35,6 +35,13 @@ Use `./scripts/rebuild-env.sh` after toolchain changes. Use
 `./scripts/rebuild-multirepo-integration.sh` for the isolated cross-repository
 editable-install smoke test.
 
+Install the repository Git hooks once per clone with
+`./scripts/install-git-hooks.sh`. An intentional `project.version` increase is
+a release boundary: its commit/merge hook automatically runs the complete local
+release gate and writes a receipt bound to the exact staged tree. An agent must
+not bypass these hooks with `--no-verify` or increase the version merely to test
+the gate.
+
 ## Manifest-first schema workflow
 
 The logical authoring surfaces are
@@ -85,11 +92,32 @@ invalid evidence contract while reporting production blockers. Plain
 all blockers are discharged. Do not describe successful schema generation,
 Lean checks, or coverage metadata validation as strict production coverage.
 
-Use `--deep` only for the larger manual/nightly TLA+ profile. TLC exhausts
+Use `--deep` only for the larger manual TLA+ profile. TLC exhausts
 reachable states only for the selected finite constants. Lean theorems are
 unbounded over their stated mathematical inputs and assumptions, but do not by
 themselves establish that Python, SQL, transactions, or filesystem effects
 refine the model.
+
+## Release verification
+
+The expensive release evidence is local, not an automatic GitHub-hosted gate.
+GitHub formal verification is available through `workflow_dispatch`; the PyPI
+workflow performs only version validation, distribution build/smoke, and
+trusted publishing.
+
+For a clean committed tree, run the same release gate explicitly with:
+
+```bash
+uv run --no-sync python scripts/release-gate.py run
+```
+
+The gate runs Black, Ruff, mypy, coverage metadata, schema drift, Lean, the full
+SQLite/MariaDB suite, required small TLC profiles, and the distribution-boundary
+probe. It deliberately excludes deep TLC. A successful receipt is stored in
+Git metadata and is valid only for its exact tree, project version, gate profile,
+and required-check set. Never commit or fabricate a receipt. If a version bump
+is staged, leave no unstaged or untracked files: the pre-commit hook must verify
+the exact candidate tree that will become the commit.
 
 ## Architecture rules
 

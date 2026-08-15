@@ -1,8 +1,6 @@
 name: Formal verification
 
 on:
-  pull_request:
-  push:
   workflow_dispatch:
     inputs:
       deep:
@@ -10,8 +8,6 @@ on:
         required: false
         type: boolean
         default: false
-  schedule:
-    - cron: "17 3 * * 1"
 
 permissions:
   contents: read
@@ -19,6 +15,7 @@ permissions:
 jobs:
   required-formal-contracts:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -96,6 +93,7 @@ jobs:
 
   required-tlc-small:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -112,9 +110,10 @@ jobs:
           --tla-runtime docker
           --tla-jar .formal-tools/tla2tools-1.7.4.jar
 
-  deep-tlc-nightly-or-manual:
-    if: github.event_name == 'schedule' || inputs.deep == true
+  deep-tlc-manual:
+    if: inputs.deep == true
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 

@@ -10,6 +10,8 @@ dist/
 !/.gitignore
 !/.github/
 !.github/**
+!/.githooks/
+!.githooks/**
 !/.vscode/
 !.vscode/**
 !.claude/

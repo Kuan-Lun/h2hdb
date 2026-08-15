@@ -252,7 +252,7 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument(
         "--deep",
         action="store_true",
-        help="execute the larger manual/nightly TLA+ profile",
+        help="execute the larger manual TLA+ profile",
     )
     parser.add_argument(
         "--tla-runtime",

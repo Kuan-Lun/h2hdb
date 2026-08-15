@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+updates=()
+has_release_candidate=0
+while IFS= read -r update; do
+    [[ -z "$update" ]] && continue
+    updates+=("$update")
+    read -r _ local_oid remote_ref remote_oid <<<"$update"
+    if [[ "$remote_ref" == "refs/heads/master" \
+        && ! "$local_oid" =~ ^0+$ \
+        && ! "$remote_oid" =~ ^0+$ ]]; then
+        has_release_candidate=1
+    fi
+done
+
+# Feature branches and tags have no release effect and must not require a local
+# Python environment merely to push.
+if [[ "$has_release_candidate" -eq 0 ]]; then
+    exit 0
+fi
+
+printf '%s\n' "${updates[@]}" \
+    | "$repo_root/.githooks/run-release-gate" pre-push "$@"

@@ -228,7 +228,7 @@ uv run --no-sync python scripts/verify-formal.py tla \
 
 The default command runs every `*Small.cfg` profile and must drain each state
 queue to zero. A clean partial run is not evidence. The larger profiles are
-manual/nightly only:
+manual only:
 
 ```bash
 uv run --no-sync python scripts/verify-formal.py tla \

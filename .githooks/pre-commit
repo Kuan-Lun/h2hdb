@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+git diff --cached --check
+
+# Ordinary commits stay instant. The Python gate is needed only when the
+# candidate commit changes pyproject.toml.
+if git diff --cached --quiet -- pyproject.toml; then
+    exit 0
+fi
+
+exec "$repo_root/.githooks/run-release-gate" pre-commit

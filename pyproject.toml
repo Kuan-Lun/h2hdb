@@ -32,6 +32,7 @@ dev = [
     "hypothesis>=6.165.8,<7.0.0",
     "testcontainers>=4.15.0",
     "build>=1.5.0",
+    "packaging>=26.0",
 ]
 
 [project.urls]

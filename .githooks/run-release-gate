@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+if [[ -x .venv/bin/python ]]; then
+    exec .venv/bin/python scripts/release-gate.py "$@"
+fi
+if [[ -x .venv/Scripts/python.exe ]]; then
+    exec .venv/Scripts/python.exe scripts/release-gate.py "$@"
+fi
+if command -v uv >/dev/null 2>&1; then
+    exec uv run --no-sync python scripts/release-gate.py "$@"
+fi
+
+echo "h2hdb Git hook: create the development environment or install uv." >&2
+exit 1

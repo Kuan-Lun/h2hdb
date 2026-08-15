@@ -12,6 +12,7 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       bumped: ${{ steps.version.outputs.bumped }}
     steps:
@@ -23,11 +24,13 @@ jobs:
         with:
           python-version: "3.14"
 
-      - name: Install packaging tools
-        run: python -m pip install --upgrade packaging build
+      - name: Install version parser
+        run: python -m pip install --upgrade packaging
 
       - name: Check version bump
         id: version
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           python - <<'PY'
           import os
@@ -42,26 +45,51 @@ jobs:
               return Version(str(tomllib.loads(document)["project"]["version"]))
 
 
+          def document_at(revision: str) -> str:
+              shown = subprocess.run(
+                  ["git", "show", f"{revision}:pyproject.toml"],
+                  check=False,
+                  capture_output=True,
+                  text=True,
+              )
+              if shown.returncode == 0:
+                  return shown.stdout
+
+              fetched = subprocess.run(
+                  ["git", "fetch", "--no-tags", "--depth=1", "origin", revision],
+                  check=False,
+                  capture_output=True,
+                  text=True,
+              )
+              if fetched.returncode != 0:
+                  detail = fetched.stderr.strip() or fetched.stdout.strip()
+                  raise SystemExit(
+                      f"cannot fetch the pre-push revision {revision}: {detail}"
+                  )
+              return subprocess.run(
+                  ["git", "show", f"{revision}:pyproject.toml"],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+              ).stdout
+
+
           current = project_version(
               Path("pyproject.toml").read_text(encoding="utf-8")
           )
-          previous_document = subprocess.run(
-              ["git", "show", "HEAD~1:pyproject.toml"],
-              check=False,
-              capture_output=True,
-              text=True,
-          )
+          before = os.environ["BEFORE_SHA"]
           previous = (
-              project_version(previous_document.stdout)
-              if previous_document.returncode == 0
-              else None
+              None
+              if before and set(before) == {"0"}
+              else project_version(document_at(before))
           )
           if previous is not None and current < previous:
               raise SystemExit(
                   f"project.version decreased from {previous} to {current}"
               )
 
-          bumped = previous is None or current > previous
+          # Creating or seeding a master branch is not a version transition.
+          bumped = previous is not None and current > previous
           output_path = Path(os.environ["GITHUB_OUTPUT"])
           with output_path.open("a", encoding="utf-8") as output:
               print(f"current={current}", file=output)
@@ -69,24 +97,12 @@ jobs:
               print(f"bumped={'true' if bumped else 'false'}", file=output)
           PY
 
-      - name: Install project and development dependencies
-        run: python -m pip install -e ".[dev]"
-
-      - name: Check formatting
-        run: python -m black --check src tests scripts
-
-      - name: Lint
-        run: python -m ruff check src tests scripts
-
-      - name: Type-check
-        run: python -m mypy src tests scripts
-
-      - name: Test (SQLite and MariaDB)
-        env:
-          H2HDB_TEST_MARIADB: "1"
-        run: python -m pytest
+      - name: Install project runtime and build tools
+        if: steps.version.outputs.bumped == 'true'
+        run: python -m pip install build .
 
       - name: Build and smoke-test distributions
+        if: steps.version.outputs.bumped == 'true'
         run: |
           python scripts/build-and-verify-distributions.py \
             --output-directory dist
@@ -103,6 +119,7 @@ jobs:
     needs: validate
     if: needs.validate.outputs.bumped == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     environment: pypi
     permissions:
       contents: read

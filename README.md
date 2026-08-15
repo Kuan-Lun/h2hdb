@@ -253,6 +253,50 @@ uv run --no-sync python scripts/build-and-verify-distributions.py \
 It builds in a fresh temporary directory, verifies the wheel, and confirms that
 the installed CLI exposes only `migrate`, `check`, and `ready`.
 
+### Local release gate
+
+Install the versioned Git hooks once per clone:
+
+```bash
+./scripts/install-git-hooks.sh
+```
+
+The installer refuses to disable an existing hooks path or executable legacy
+hook; compose those hooks explicitly before switching this clone to `.githooks`.
+VS Code's built-in Git and command-line Git honor the installed hooks. GitHub
+web edits and clones where the installer has not run do not.
+
+Ordinary commits and merges do not run the expensive release suite. When the
+staged `project.version` in `pyproject.toml` increases, the pre-commit or
+pre-merge-commit hook requires the candidate tree to have no unstaged or
+untracked files and automatically runs the complete local release gate:
+
+- Black, Ruff, and mypy;
+- coverage-contract and generated-schema drift checks;
+- Lean proofs and the required small TLC profiles;
+- the complete SQLite and MariaDB test suite; and
+- the installed-distribution boundary check.
+
+The gate requires the development environment, Docker for MariaDB, the Lean
+toolchain declared by `lean-toolchain`, and either host Java or Docker for TLC.
+Deep TLC remains an explicit manual check. A successful gate writes a local,
+non-versioned receipt under the repository's Git metadata and binds it to the
+exact staged tree and project version. The pre-push hook allows a
+version-increasing `master` push only when that receipt is valid, so retrying
+the same commit does not rerun the suite.
+
+To verify an already committed clean `HEAD` explicitly, or to force a fresh
+verification, run:
+
+```bash
+uv run --no-sync python scripts/release-gate.py run
+uv run --no-sync python scripts/release-gate.py run --refresh
+```
+
+GitHub-hosted formal verification is manual-only. The PyPI workflow rechecks
+the version transition, builds and smoke-tests the distributions, and publishes
+them; the expensive correctness evidence is owned by the local release gate.
+
 ## Multi-repository development
 
 The repositories remain independent projects. For an isolated editable-install
