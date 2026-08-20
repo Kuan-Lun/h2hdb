@@ -16,7 +16,7 @@ import tomllib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 try:
     from verification.schema import refinement
@@ -577,8 +577,15 @@ _GENERATION_OBLIGATION_RELATION_BINDINGS = {
             "cleanup_phase",
             "cleanup_job",
             "cleanup_checkpoint",
-            "source_build",
-            "publication_candidate",
+            "source_build_descriptor_seal",
+            "publication_candidate_anchor",
+            "publication_candidate_definition_seal",
+            "publication_candidate_analysis_id",
+            "publication_candidate_reserved_revision",
+            "publication_candidate_artifact_policy_id",
+            "publication_candidate_display_title_policy_id",
+            "publication_candidate_artifacts_required",
+            "publication_candidate_created_at",
             "analysis_snapshot_manifest",
             "source_revision",
             "catalog_revision",
@@ -1173,11 +1180,11 @@ def check_event_integrity_contract_v1(
         "stream_rule": "begin preparation resolves or allocates one preparation_id from the policy-qualified natural key, then inserts the durable event stream, preparation, and required initial checkpoints in one transaction; commit contains all roots or none, retry resolves the same preparation, and no standalone invisible stream is permitted",
         "subtype_rule": "every bounded event-page transaction inserts each base event and exactly one subtype whose type and exact canonical subtype frame agree with event_type, byte-compares an existing coordinate on retry, and advances the durable running chain only in the same receipt and checkpoint CAS",
         "seal_rule": "after an empty terminal work receipt, insert exactly one immutable seal with event_count equal to the next contiguous sequence number and final_chain_sha256 equal to the durable running chain, then mark the preparation COMPLETE in the same transaction; sequence numbers are exactly zero through event_count minus one, every event digest and subtype are exact, zero events require no event rows and the registered empty-chain digest, and publication trusts only this writer-produced seal without scanning events",
-        "activation_rule": "one short publication transaction locks the exact COMPLETE preparation, its effect seal, matching operational policy, and singleton deletion-generation head; only when the preparation generation is current does it insert the unique source_revision-to-preparation activation with the source and catalog publication authorities, while reading or writing no event rows; readers expose an event only by joining its preparation_id through activation",
+        "activation_rule": "one short publication transaction locks the exact COMPLETE preparation, its effect seal, matching operational policy, and singleton deletion-generation head; only when the preparation generation is current does it insert the unique preparation and operational-policy members into the common publication commit before its final seal, while reading or writing no event rows; operational_activation is a read-only projection of that sealed commit and readers expose an event only by joining its preparation_id through the derived activation",
         "candidate_binding_rule": "before publication_candidate may become SEALED, one transaction binds it to exactly one COMPLETE preparation and exact effect seal through publication_candidate_preparation; candidate_id and preparation_id are both candidate keys, both FKs are exact, and the preparation row pins the operational policy and retained deletion generation; final publication must use this bound preparation and must not search by build/generation/policy, LIMIT 2, caller identifier, or incidental uniqueness",
         "ack_head_relation": "operational_event_ack_head",
         "ack_rule": "one consumer high-water sequence per preparation advances monotonically only to an existing event in that preparation after joining an immutable activation for its public source revision; each bounded CAS inserts or verifies complete acknowledgement evidence for every next contiguous event after the prior head through the target, so prior evidence plus the bounded page proves the full prefix without a history scan",
-        "cleanup_rule": "an activated COMPLETE preparation may lose only its control rows while stream, seal, events, subtypes, activation, and acknowledgements remain; an unactivated COMPLETE preparation is retained; an ABANDONED preparation with no activation or acknowledgement authority is deleted child-first through subtypes, events, seal, preparation, and stream; OPEN and FAILED are retained and no invisible orphan stream may remain",
+        "cleanup_rule": "a COMPLETE preparation referenced by a sealed common commit may lose only its control rows while stream, seal, events, subtypes, derived activation, and acknowledgements remain; an uncommitted COMPLETE preparation is retained; an ABANDONED preparation with no commit member or acknowledgement authority is deleted child-first through subtypes, events, seal, preparation, and stream; OPEN and FAILED are retained and no invisible orphan stream may remain",
     }
     _require_exact_table(logical, "operational_event_integrity_contract", expected)
     relations = _raw_relation_map(logical)
@@ -1247,7 +1254,7 @@ def check_event_integrity_contract_v1(
         },
         "operational_activation": {
             "attributes": ["preparation_id"],
-            "relation": "operational_preparation_effect_seal",
+            "relation": "publication_commit_operational_preparation",
             "referenced_attributes": ["preparation_id"],
         },
         "publication_candidate_preparation": {
@@ -1321,8 +1328,8 @@ def check_build_generation_contract_v1(
         "expected_membership_relation": "source_build_expected_gallery",
         "observation_stat_relation": "gallery_observation_stat",
         "membership_relation": "source_build_gallery",
-        "discovery_seal_relation": "source_build_discovery",
-        "build_seal_relation": "build_manifest",
+        "discovery_seal_relation": "source_build_discovery_seal",
+        "build_seal_relation": "build_manifest_seal",
         "batch_rows_maximum": 256,
         "empty_manifest_chain_sha256": (
             "121f20d26c10f4c5ce6e621dc5e41b7da2c4028af840caa7547265068f2458e3"
@@ -1336,7 +1343,7 @@ def check_build_generation_contract_v1(
         assembly, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("ascii")
     if hashlib.sha256(encoded_assembly).hexdigest() != (
-        "6f0c7c2e2be765b0eb5a4b9daf25cd0a8bb886631385e877b46ed5645f0265e1"
+        "f50de2aafb39537cac192fb20fbf90f6b1ac265063eca501870c5066378c58c1"
     ):
         raise ValueError("source-build assembly exact protocol text drifts")
 
@@ -1457,20 +1464,35 @@ def check_build_generation_contract_v1(
         "SB_GALLERY": [
             "source_build_discovery_checkpoint",
             "source_build_assembly_checkpoint",
-            "build_manifest",
+            "build_manifest_seal",
+            "build_manifest_manifest_sha256",
+            "build_manifest_file_count",
+            "build_manifest_byte_count",
+            "build_manifest_anchor",
             "source_build_gallery",
         ],
+        "SB_DISCOVERY_SEAL": ["source_build_discovery_seal"],
+        "SB_DISCOVERY_VALUES": [
+            "source_build_discovery_scan_attempt",
+            "source_build_discovery_gallery_count",
+            "source_build_discovery_tree_observation_sha256",
+            "source_build_discovery_completed_at",
+        ],
+        "SB_DISCOVERY_ANCHOR": ["source_build_discovery_anchor"],
         "SB_SATELLITES": [
-            "source_build_discovery",
             "source_build_expected_gallery",
-            "source_build_base_source",
+            "source_build_base_publication_commit",
             "source_build_channel",
         ],
     }
     actual_phases = {
         str(value.get("phase")): value.get("relations")
         for value in _raw_tables(
-            source_cleanup.get("phases", []) if isinstance(source_cleanup, Mapping) else [],
+            (
+                source_cleanup.get("phases", [])
+                if isinstance(source_cleanup, Mapping)
+                else []
+            ),
             "source cleanup phase",
         )
     }
@@ -1545,7 +1567,7 @@ def check_attempt_identity_contract_v1(
 
 _CLEANUP_TARGET_SHAPES = {
     "SOURCE_BUILD": (
-        "source_build",
+        "source_build_anchor",
         ("build_id",),
         "target_kind_tag16_u64be_zero8_v1",
         "source_build_unreferenced_v1",
@@ -1554,42 +1576,60 @@ _CLEANUP_TARGET_SHAPES = {
         (
             "SB_CANONICAL_UPLOAD",
             "SB_GALLERY",
+            "SB_DISCOVERY_SEAL",
+            "SB_DISCOVERY_VALUES",
+            "SB_DISCOVERY_ANCHOR",
             "SB_SATELLITES",
             "SB_GENERATION",
             "SB_ROOT",
         ),
     ),
     "ANALYSIS_RUN": (
-        "analysis_run",
+        "analysis_run_anchor",
         ("analysis_id",),
         "target_kind_tag16_u64be_zero8_v1",
         "analysis_run_unpublished_leaf_v1",
         "analysis_descendant_reachability_v1",
         "h2hdb.cleanup.analysis_run.v1",
         (
-            "AR_BATCH",
-            "AR_SEALS",
+            "AR_BATCH_SEAL",
+            "AR_BATCH_VALUES",
+            "AR_BATCH_ANCHOR",
+            "AR_COMPONENT_SEAL",
+            "AR_COMPONENT_VALUES",
+            "AR_COMPONENT_ANCHOR",
             "AR_OVERLAY",
             "AR_EVIDENCE",
-            "AR_CHECKPOINT",
+            "AR_EXCLUSION_VALUES",
+            "AR_EXCLUSION_ANCHOR",
+            "AR_CHECKPOINT_SEAL",
+            "AR_CHECKPOINT_VALUES",
+            "AR_CHECKPOINT_ANCHOR",
             "AR_ANCESTRY",
-            "AR_LINKS",
+            "AR_BASELINE",
+            "AR_BINDINGS",
+            "AR_DESCRIPTOR",
+            "AR_RUN_VALUES",
             "AR_ROOT",
         ),
     ),
     "PUBLICATION_CANDIDATE": (
-        "publication_candidate",
+        "publication_candidate_anchor",
         ("candidate_id",),
         "target_kind_tag16_u64be_zero8_v1",
         "publication_candidate_inactive_v1",
         "publication_candidate_retention_roots_v1",
         "h2hdb.cleanup.publication_candidate.v1",
         (
-            "PC_DELTAS",
+            "PC_SEALS",
+            "PC_PREPARED_VALUES",
+            "PC_PREPARED_ANCHOR",
             "PC_INPUT",
-            "PC_SELECTION",
-            "PC_BATCH",
-            "PC_CHECKPOINT",
+            "PC_BATCH_VALUES",
+            "PC_BATCH_ANCHOR",
+            "PC_CHECKPOINT_SEAL",
+            "PC_CHECKPOINT_VALUES",
+            "PC_CHECKPOINT_ANCHOR",
             "PC_BASES",
             "PC_ROOT",
         ),
@@ -1626,7 +1666,15 @@ _CLEANUP_TARGET_SHAPES = {
             "GO_STAGING_CLAIM",
             "GO_STAGING_ROOT",
             "GO_FACTS",
+            "GO_FILESYSTEM_SEAL",
+            "GO_FILESYSTEM_VALUES",
+            "GO_FILESYSTEM_ANCHOR",
             "GO_FILES",
+            "GO_METADATA_SEAL",
+            "GO_METADATA_VALUES",
+            "GO_OBSERVATION_FACT_SEALS",
+            "GO_OBSERVATION_FACT_VALUES",
+            "GO_OBSERVATION_FACT_ANCHORS",
             "GO_DESCRIPTOR",
             "GO_ROOT",
         ),
@@ -1638,10 +1686,10 @@ _CLEANUP_TARGET_SHAPES = {
         "artifact_blob_unreferenced_v1",
         "artifact_blob_retention_roots_v1",
         "h2hdb.cleanup.artifact_blob.v1",
-        ("AB_LOCATIONS", "AB_IDENTITIES", "AB_ROOT"),
+        ("AB_LOCATIONS", "AB_ROOT"),
     ),
     "CANONICAL_VALUE": (
-        "canonical_value_allocation",
+        "canonical_value_allocation_anchor",
         ("value_sha256",),
         "target_kind_tag16_u64be_zero8_v1",
         "canonical_value_unreferenced_v1",
@@ -1666,7 +1714,7 @@ _CLEANUP_TARGET_SHAPES = {
         ("CB_ROOT",),
     ),
     "GALLERY_OBSERVATION_PAGE": (
-        "gallery_observation_page",
+        "gallery_observation_page_descriptor_anchor",
         ("page_sha256",),
         "target_kind_tag16_u64be_zero8_v1",
         "gallery_observation_page_unreferenced_v1",
@@ -1692,7 +1740,7 @@ _CLEANUP_TARGET_SHAPES = {
         ),
     ),
     "FILE_NAME_IDENTITY": (
-        "file_name_identity",
+        "file_name_identity_anchor",
         ("file_key",),
         "target_kind_tag16_u64be_zero8_v1",
         "file_name_identity_unreferenced_v1",
@@ -1710,13 +1758,31 @@ _CLEANUP_TARGET_SHAPES = {
         ("PI_ROOT",),
     ),
     "GALLERY_IDENTITY": (
-        "gallery_identity",
+        "gallery_identity_anchor",
         ("gallery_id",),
         "target_kind_tag16_u64be_zero8_v1",
         "gallery_identity_unreferenced_v1",
         "gallery_identity_retention_roots_v1",
         "h2hdb.cleanup.gallery_identity.v1",
-        ("GI_OBSERVATION_ALLOCATOR", "GI_ROOT"),
+        ("GI_OBSERVATION_ALLOCATOR", "GI_SOURCE_NAME_ACCESS", "GI_ROOT"),
+    ),
+    "SOURCE_GALLERY_NAME_GID": (
+        "source_gallery_name_gid",
+        ("source_gallery_name",),
+        "target_kind_tag16_u64be_zero8_v1",
+        "source_gallery_name_gid_unreferenced_v1",
+        "source_gallery_name_gid_retention_roots_v1",
+        "h2hdb.cleanup.source_gallery_name_gid.v1",
+        ("SNG_ROOT",),
+    ),
+    "GALLERY_UPLOAD_TIME": (
+        "gallery_upload_time",
+        ("gid",),
+        "target_kind_tag16_u64be_zero8_v1",
+        "gallery_upload_time_unreferenced_v1",
+        "gallery_upload_time_retention_roots_v1",
+        "h2hdb.cleanup.gallery_upload_time.v1",
+        ("GUT_ROOT",),
     ),
     "CANONICAL_VALUE_UPLOAD": (
         "canonical_value_upload",
@@ -1824,11 +1890,11 @@ def check_cleanup_reachability_v1(
             {"retained_fk_edges"} if kind != "OPERATIONAL_PREPARATION" else set()
         )
         if kind == "ANALYSIS_RUN":
-            extra_allowed.add("conditional_blockers")
+            extra_allowed.update({"conditional_blockers", "state_rule"})
         if kind == "SOURCE_BUILD":
             extra_allowed.update({"conditional_child_rules", "terminal_staging_rule"})
         if kind == "PUBLICATION_CANDIDATE":
-            extra_allowed.add("semantic_blockers")
+            extra_allowed.update({"semantic_blockers", "conditional_blockers"})
         if kind == "GALLERY_OBSERVATION":
             extra_allowed.update(
                 {
@@ -1895,26 +1961,37 @@ def check_cleanup_reachability_v1(
                     "gallery_id_mod_256_then_gallery_id_v1"
                     if kind == "GALLERY_IDENTITY"
                     else (
-                        "source_digest_first_byte_then_source_fingerprint_v1"
-                        if kind == "HASH_CACHE_OBSERVATION"
+                        "source_gallery_name_first_byte_then_bytes_v1"
+                        if kind == "SOURCE_GALLERY_NAME_GID"
                         else (
-                            "uuid_first_byte_then_uuid_v1"
-                            if kind
-                            in {
-                                "SOURCE_BUILD",
-                                "ANALYSIS_RUN",
-                                "PUBLICATION_CANDIDATE",
-                                "OPERATIONAL_PREPARATION",
-                                "GALLERY_OBSERVATION_STAGING",
-                            }
+                            "gid_mod_256_then_gid_v1"
+                            if kind == "GALLERY_UPLOAD_TIME"
                             else (
-                                "generation_then_value_sha256_v1"
-                                if kind == "CANONICAL_VALUE_UPLOAD"
+                                "source_digest_first_byte_then_source_fingerprint_v1"
+                                if kind == "HASH_CACHE_OBSERVATION"
                                 else (
-                                    "digest_first_byte_then_digest_v1"
+                                    "uuid_first_byte_then_uuid_v1"
                                     if kind
-                                    in {"FILE_NAME_IDENTITY", "PUBLICATION_IDENTITY"}
-                                    else "sha256_prefix_then_candidate_key_v1"
+                                    in {
+                                        "SOURCE_BUILD",
+                                        "ANALYSIS_RUN",
+                                        "PUBLICATION_CANDIDATE",
+                                        "OPERATIONAL_PREPARATION",
+                                        "GALLERY_OBSERVATION_STAGING",
+                                    }
+                                    else (
+                                        "generation_then_value_sha256_v1"
+                                        if kind == "CANONICAL_VALUE_UPLOAD"
+                                        else (
+                                            "digest_first_byte_then_digest_v1"
+                                            if kind
+                                            in {
+                                                "FILE_NAME_IDENTITY",
+                                                "PUBLICATION_IDENTITY",
+                                            }
+                                            else "sha256_prefix_then_candidate_key_v1"
+                                        )
+                                    )
                                 )
                             )
                         )
@@ -1960,17 +2037,7 @@ def check_cleanup_reachability_v1(
                 raise ValueError(
                     f"cleanup target {kind} prunable intermediary coverage drifts"
                 )
-            expected_via = (
-                [
-                    {
-                        "relation": "catalog_artifact",
-                        "attributes": ["artifact_id"],
-                        "via": ["artifact_identity"],
-                    }
-                ]
-                if kind == "ARTIFACT_BLOB"
-                else []
-            )
+            expected_via: list[dict[str, object]] = []
             if target.get("required_via_paths") != expected_via:
                 raise ValueError(f"cleanup target {kind} verified via paths drift")
         if kind == "GALLERY_OBSERVATION":
@@ -1987,22 +2054,60 @@ def check_cleanup_reachability_v1(
                 }
             ]:
                 raise ValueError("gallery staging cleanup liveness blocker drifts")
-        if kind == "ANALYSIS_RUN" and target.get("conditional_blockers") != [
-            "source_head.source_revision->source_revision_provenance.analysis_id when the revision is the active channel head"
-        ]:
-            raise ValueError("active source-head provenance blocker drifts")
+        if kind == "ANALYSIS_RUN":
+            if target.get("conditional_blockers") != [
+                "source_head.source_revision->source_revision_provenance.analysis_id when the revision is the active channel head"
+            ]:
+                raise ValueError("active source-head provenance blocker drifts")
+            if target.get("state_rule") != (
+                "OPEN is never cleanup-eligible; only COMPLETE or ABANDONED may be "
+                "selected, and ABANDONED requires the exact fenced owner to have "
+                "atomically removed the locked working root during the "
+                "OPEN-to-ABANDONED CAS"
+            ):
+                raise ValueError("analysis cleanup state rule drifts")
+        if kind == "PUBLICATION_CANDIDATE":
+            if target.get("semantic_blockers") != [
+                {
+                    "relation": "prepared_artifact_state",
+                    "attributes": ["candidate_id"],
+                    "root_attributes": ["candidate_id"],
+                    "blocking_predicate": "state IN ('PENDING','PREPARED')",
+                    "nonblocking_state": "COMMITTED",
+                    "semantic_obligation_id": "catalog.retention.v1",
+                    "release_obligation_id": "catalog.artifact-semantics.v1",
+                }
+            ]:
+                raise ValueError(
+                    "candidate cleanup prepared-artifact semantic blocker drifts"
+                )
+            if target.get("conditional_blockers") != [
+                {
+                    "relation": "prepared_artifact_state",
+                    "candidate_attribute": "candidate_id",
+                    "state_attribute": "state",
+                    "blocking_states": ["PENDING", "PREPARED"],
+                    "release_acknowledged_state": "COMMITTED",
+                    "release_token_relation": "prepared_artifact_protection_token",
+                    "rule": "under the locked candidate, initial eligibility, every phase batch, and final completion recheck reject every PENDING or PREPARED row; bounded orphan reconciliation must issue an immutable keyset page from current sealed family facts under the exact live EXCLUSIVE gate, commit exact candidate, page, family, and token revalidation before invoking the registered adapter's terminal release outside every database transaction, then revalidate under that gate and compare-and-swap either PENDING or PREPARED to COMMITTED from only the repository-issued opaque acknowledgement; response-loss retries reuse the same tokens, late protect cannot defeat the terminal tombstone, all-COMMITTED replay performs zero DML, and only COMMITTED permits child-first deletion",
+                }
+            ]:
+                raise ValueError("candidate cleanup external-protection blocker drifts")
     prep = by_kind["OPERATIONAL_PREPARATION"]
     if prep.get("operational_blockers") != [
         {
             "relation": "publication_candidate_preparation",
             "attributes": ["preparation_id"],
-        }
+        },
+        {
+            "relation": "publication_commit_operational_preparation",
+            "attributes": ["preparation_id"],
+        },
     ]:
         raise ValueError("operational preparation candidate-binding blocker drifts")
     if prep.get("outliving_relations") != [
         "operational_event_stream",
         "operational_preparation_effect_seal",
-        "operational_activation",
         "operational_event",
         "operational_removed_gid_event",
         "operational_deletion_consumption_event",
@@ -2011,7 +2116,7 @@ def check_cleanup_reachability_v1(
     ]:
         raise ValueError("operational activation outliving registry drifts")
     if prep.get("conditional_cleanup_rule") != (
-        "under the exclusive gate, any publication_candidate_preparation row blocks preparation cleanup; after candidate cleanup, COMPLETE is eligible only with its exact activation and deletes batch receipts, checkpoints, and preparation while every activated effect relation remains; ABANDONED is eligible only with activation, acknowledgement, and candidate-binding authority absent and deletes receipts, checkpoints, both typed subtypes, base events, seal, preparation, then stream; every phase locks and rechecks state and activation, FAILED must first transition to ABANDONED, and completion rejects any remaining invisible unactivated stream"
+        "under the exclusive gate, any publication_candidate_preparation row blocks preparation cleanup; after candidate cleanup, COMPLETE is eligible only when its unique sealed publication_commit_operational_preparation exists and deletes batch receipts, checkpoints, and preparation while every committed effect relation and derived activation remains; ABANDONED is eligible only with commit-member, acknowledgement, and candidate-binding authority absent and deletes receipts, checkpoints, both typed subtypes, base events, seal, preparation, then stream; every phase locks and rechecks state and sealed commit membership, FAILED must first transition to ABANDONED, and completion rejects any remaining invisible uncommitted stream"
     ):
         raise ValueError("operational preparation conditional cleanup rule drifts")
     if [value.get("relations") for value in prep["phases"]] != [
@@ -2335,9 +2440,22 @@ def _validate_catalog_cleanup_fk_coverage(
             (str(edge["relation"]), tuple(str(value) for value in edge["attributes"]))
             for edge in target.get("operational_blockers", [])
         }
+        # A verticalized cleanup root is protected through every owned catalog
+        # child as well as through the PK-only anchor itself.  Operational
+        # claims therefore remain blockers when their FK targets a completion
+        # seal or another family member instead of the anchor directly.
+        catalog_target = data_targets.get(kind)
+        protected_catalog_relations = {root}
+        if catalog_target is not None:
+            protected_catalog_relations.update(
+                relation
+                for phase in catalog_target.get("child_phases", [])
+                for relation in phase
+            )
         expected_blockers = {
             edge
-            for edge in operational_children.get(root, set())
+            for parent in protected_catalog_relations
+            for edge in operational_children.get(parent, set())
             if edge[0] not in deleted
         }
         if kind == "CANONICAL_VALUE":
@@ -2345,9 +2463,19 @@ def _validate_catalog_cleanup_fk_coverage(
                 ("hash_cache_observation", ("source_identity_sha256",)),
                 ("hash_cache_observation", ("fingerprint_sha256",)),
             }
+        if kind == "OPERATIONAL_PREPARATION":
+            # The permanent catalog commit member points at the effect seal,
+            # which is an owned child of this cleanup root.  Keep that
+            # cross-manifest boundary explicit even though it is represented
+            # as an external logical relation in the operational manifest.
+            expected_blockers.add(
+                ("publication_commit_operational_preparation", ("preparation_id",))
+            )
         if actual_blockers != expected_blockers:
             raise ValueError(
-                f"cleanup target {kind} operational FK boundary is incomplete"
+                f"cleanup target {kind} operational FK boundary is incomplete: "
+                f"missing={sorted(expected_blockers - actual_blockers)!r} "
+                f"stale={sorted(actual_blockers - expected_blockers)!r}"
             )
 
 
@@ -2438,7 +2566,7 @@ def check_gallery_staging_contract_v1(
         contract, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("ascii")
     if hashlib.sha256(encoded_contract).hexdigest() != (
-        "4ea7dda7d6489e2add32cf3bde3e92b2c4df5b67a15bbe6c69b6870b200e2186"
+        "e83d528d69fa4eb675255c167e7edff784bbabe2ba1f6848aaa35698c4022f8c"
     ):
         raise ValueError("gallery staging exact protocol text drifts")
     gc_boundary = logical.get("gallery_page_gc_boundary")
@@ -2583,9 +2711,14 @@ def check_gallery_staging_contract_v1(
     parser_phase_check = parser_checks.get(
         "ck_gallery_observation_staging_metadata_parser_phase"
     )
-    expected_phase_expression = "phase IN (" + ", ".join(
-        f"'{phase}'" for phase in expected_core["durable_parser_phases"]
-    ) + ")"
+    expected_phase_expression = (
+        "phase IN ("
+        + ", ".join(
+            f"'{phase}'"
+            for phase in cast(list[str], expected_core["durable_parser_phases"])
+        )
+        + ")"
+    )
     if not isinstance(parser_phase_check, Mapping) or any(
         parser_phase_check.get(field) != expected_phase_expression
         for field in ("sqlite_expression", "mariadb_expression")
@@ -3850,6 +3983,8 @@ def check_physical_domains_v1(
         "target_key",
     }
     for relation_name, relation in relations.items():
+        if relation.get("kind", "table") == "view":
+            continue
         if (
             relation_name == "schema_epoch_control"
             or relation.get("status") == "implemented"
@@ -3948,6 +4083,8 @@ def validate_operational_fk_access_paths(physical: Mapping[str, Any]) -> None:
     """Require a PK/UK/explicit-index left prefix for every child-side FK."""
 
     for relation_name, relation in _raw_relation_map(physical).items():
+        if relation.get("kind", "table") == "view":
+            continue
         access_paths = [
             tuple(str(value) for value in relation.get("primary_key", [])),
             *(
@@ -4192,6 +4329,8 @@ def _validate_bootstrap(
         "FILE_NAME_IDENTITY": "f948fd92fd7922e73a9355e49cf4814a",
         "PUBLICATION_IDENTITY": "fb6c69d2c3f04eca7b476f654f425843",
         "GALLERY_IDENTITY": "cd3e95057f39f5a06a08a0b5e14f9682",
+        "SOURCE_GALLERY_NAME_GID": "c976a237cd5c7f8e68b29150af31ae6f",
+        "GALLERY_UPLOAD_TIME": "56ec4397b9e9c240398b3e1baf1d1c75",
         "HASH_CACHE_OBSERVATION": "b09b8a0a89a3167806670e37a16c7f71",
     }
     range_kinds: set[str] = set()
@@ -4507,6 +4646,10 @@ def load_operational_physical_schema(
         }
         if physical_fks != logical_fks:
             raise ValueError(f"physical foreign keys drift for {relation.relation!r}")
+        if relation.kind == "view" and (relation.required_indexes or relation.checks):
+            raise ValueError(
+                f"physical view {relation.relation!r} cannot declare indexes or checks"
+            )
         for foreign_key in relation.foreign_keys:
             target = logical_schema.relation(foreign_key.referenced_relation)
             if target is None or frozenset(
@@ -4514,6 +4657,18 @@ def load_operational_physical_schema(
             ) not in set(target.candidate_keys):
                 raise ValueError(
                     f"foreign key {foreign_key.name!r} does not target a declared key"
+                )
+        if relation.derived_view is not None:
+            available_sources = {value.relation for value in relations} | set(
+                stub_by_relation
+            )
+            unknown_sources = (
+                set(relation.derived_view.source_relations) - available_sources
+            )
+            if unknown_sources:
+                raise ValueError(
+                    f"derived view {relation.relation!r} has unknown sources "
+                    f"{sorted(unknown_sources)!r}"
                 )
     return physical
 
@@ -4536,6 +4691,12 @@ def compare_operational_refinement(
         mappings,
     )
     mismatches = list(logical_report.mismatches)
+    relation_by_name = {
+        relation.relation: relation for relation in physical_schema.relations
+    }
+    relation_by_name.update(
+        (stub.relation, _external_physical_relation(stub)) for stub in stubs
+    )
     for relation in physical_schema.relations:
         assert relation.table is not None
         table = database.table(relation.table)
@@ -4545,6 +4706,7 @@ def compare_operational_refinement(
                     relation,
                     table,
                     database.backend,
+                    relation_by_name,
                 )
             )
     return refinement.PhysicalRefinementReport(
@@ -4570,6 +4732,38 @@ def _external_mapping(stub: ExternalStub) -> refinement.RelationMapping:
     )
 
 
+def _external_physical_relation(
+    stub: ExternalStub,
+) -> refinement.PhysicalRelationSpec:
+    """Supply column/table names needed to render cross-plane derived views."""
+
+    return refinement.PhysicalRelationSpec(
+        relation=stub.relation,
+        status="implemented",
+        rationale="Cross-plane physical rendering stub.",
+        table=stub.table,
+        columns=tuple(
+            refinement.PhysicalColumnSpec(
+                name,
+                name,
+                refinement.BackendColumnSpec(
+                    sqlite_type,
+                    name in stub.nullable_columns,
+                    None,
+                ),
+                refinement.BackendColumnSpec(
+                    mariadb_type,
+                    name in stub.nullable_columns,
+                    None,
+                ),
+            )
+            for name, sqlite_type, mariadb_type in stub.columns
+        ),
+        primary_key=stub.primary_key,
+        unique_keys=stub.unique_keys,
+    )
+
+
 def _ddl_identifier(value: str) -> str:
     """Return a deterministic identifier below MariaDB's 64-byte ceiling."""
 
@@ -4584,9 +4778,7 @@ def _ddl_relation_order(
 ) -> tuple[str, ...]:
     """Return a stable parent-before-child order for inline foreign keys."""
 
-    relation_by_name = {
-        relation.relation: relation for relation in physical.relations
-    }
+    relation_by_name = {relation.relation: relation for relation in physical.relations}
     preferred_order = physical.source_slice
     if (
         len(relation_by_name) != len(physical.relations)
@@ -4598,15 +4790,18 @@ def _ddl_relation_order(
         )
 
     local_names = set(relation_by_name)
-    dependencies = {
-        name: {
+    dependencies: dict[str, set[str]] = {}
+    for name in preferred_order:
+        relation = relation_by_name[name]
+        derived_view = relation.derived_view
+        dependencies[name] = {
             foreign_key.referenced_relation
-            for foreign_key in relation_by_name[name].foreign_keys
+            for foreign_key in relation.foreign_keys
             if foreign_key.referenced_relation in local_names
             and foreign_key.referenced_relation != name
-        }
-        for name in preferred_order
-    }
+        } | (
+            set(derived_view.source_relations) & local_names if derived_view else set()
+        )
     remaining = set(preferred_order)
     result: list[str] = []
     while remaining:
@@ -4624,9 +4819,7 @@ def _ddl_relation_order(
                 for name in preferred_order
                 if name in remaining
             }
-            raise ValueError(
-                f"operational physical dependency cycle: {unresolved!r}"
-            )
+            raise ValueError(f"operational physical dependency cycle: {unresolved!r}")
         remaining.remove(ready)
         result.append(ready)
     return tuple(result)
@@ -4671,10 +4864,24 @@ def render_sqlite_ddl(
         **{relation.relation: str(relation.table) for relation in physical.relations},
     }
     relation_by_name = {relation.relation: relation for relation in physical.relations}
+    relation_by_name.update(
+        (stub.relation, _external_physical_relation(stub)) for stub in stubs
+    )
     statements = ["PRAGMA foreign_keys = ON;", render_sqlite_external_stubs(stubs)]
     for relation_name in _ddl_relation_order(physical):
         relation = relation_by_name[relation_name]
         assert relation.table is not None
+        if relation.kind == "view":
+            statements.append(
+                refinement._render_view(  # noqa: SLF001
+                    relation,
+                    relation_by_name,
+                    "sqlite",
+                    idempotent=False,
+                )
+                + ";"
+            )
+            continue
         definitions: list[str] = []
         for column in relation.columns:
             backend = column.sqlite
@@ -4774,7 +4981,13 @@ def _external_runtime_only_key(stub: ExternalStub, key: tuple[str, ...]) -> bool
 
 def _sqlite_external_checks(stub: ExternalStub) -> tuple[str, ...]:
     portable_max = 9223372036854775807
-    if stub.relation == "gallery_identity":
+    if stub.relation in {
+        "gallery_identity_anchor",
+        "gallery_identity_coordinate",
+        "gallery_identity_gallery_key",
+        "gallery_identity_seal",
+        "gallery_identity",
+    }:
         return (f'CHECK ("gallery_id" >= 1 AND "gallery_id" <= {portable_max})',)
     if stub.relation == "gallery_observation_allocation":
         return (
@@ -4820,7 +5033,13 @@ def _sqlite_external_checks(stub: ExternalStub) -> tuple[str, ...]:
 
 def _mariadb_external_checks(stub: ExternalStub) -> tuple[str, ...]:
     portable_max = 9223372036854775807
-    if stub.relation == "gallery_identity":
+    if stub.relation in {
+        "gallery_identity_anchor",
+        "gallery_identity_coordinate",
+        "gallery_identity_gallery_key",
+        "gallery_identity_seal",
+        "gallery_identity",
+    }:
         return (f"CHECK (`gallery_id` >= 1 AND `gallery_id` <= {portable_max})",)
     if stub.relation == "gallery_observation_allocation":
         return (
@@ -4875,10 +5094,23 @@ def render_mariadb_ddl(
         **{relation.relation: str(relation.table) for relation in physical.relations},
     }
     relation_by_name = {relation.relation: relation for relation in physical.relations}
+    relation_by_name.update(
+        (stub.relation, _external_physical_relation(stub)) for stub in stubs
+    )
     statements = list(render_mariadb_external_stubs(stubs))
     for relation_name in _ddl_relation_order(physical):
         relation = relation_by_name[relation_name]
         assert relation.table is not None
+        if relation.kind == "view":
+            statements.append(
+                refinement._render_view(  # noqa: SLF001
+                    relation,
+                    relation_by_name,
+                    "mariadb",
+                    idempotent=False,
+                )
+            )
+            continue
         definitions: list[str] = []
         for column in relation.columns:
             backend = column.mariadb
@@ -4944,6 +5176,17 @@ def render_mariadb_ddl(
 
 def _physical_relation(raw: dict[str, Any]) -> refinement.PhysicalRelationSpec:
     relation_name = _string(raw, "name")
+    kind = str(raw.get("kind", "table"))
+    if kind not in {"table", "view"}:
+        raise ValueError(f"physical relation {relation_name!r} has invalid kind")
+    raw_view = raw.get("view")
+    derived_view = None
+    if kind == "view":
+        if not isinstance(raw_view, dict):
+            raise ValueError(f"physical view {relation_name!r} lacks view metadata")
+        derived_view = refinement.parse_derived_view_spec(raw_view, relation_name)
+    elif raw_view is not None:
+        raise ValueError(f"physical table {relation_name!r} declares a view")
     columns = tuple(
         refinement.PhysicalColumnSpec(
             _string(column, "attribute"),
@@ -4991,6 +5234,8 @@ def _physical_relation(raw: dict[str, Any]) -> refinement.PhysicalRelationSpec:
         foreign_keys=foreign_keys,
         required_indexes=indexes,
         checks=checks,
+        kind=kind,
+        derived_view=derived_view,
     )
 
 

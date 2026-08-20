@@ -334,8 +334,15 @@ GENERATION_OBLIGATION_BINDINGS = {
             "cleanup_phase",
             "cleanup_job",
             "cleanup_checkpoint",
-            "source_build",
-            "publication_candidate",
+            "source_build_descriptor_seal",
+            "publication_candidate_anchor",
+            "publication_candidate_definition_seal",
+            "publication_candidate_analysis_id",
+            "publication_candidate_reserved_revision",
+            "publication_candidate_artifact_policy_id",
+            "publication_candidate_display_title_policy_id",
+            "publication_candidate_artifacts_required",
+            "publication_candidate_created_at",
             "analysis_snapshot_manifest",
             "source_revision",
             "catalog_revision",
@@ -892,9 +899,7 @@ def _topological_relation_order(relations: list[dict[str, Any]]) -> list[str]:
     """Preserve logical order where possible while placing FK parents first."""
 
     preferred_order = [str(relation["name"]) for relation in relations]
-    relation_by_name = {
-        str(relation["name"]): relation for relation in relations
-    }
+    relation_by_name = {str(relation["name"]): relation for relation in relations}
     if len(relation_by_name) != len(relations):
         raise RuntimeError("Operational logical relations contain duplicate names")
 
@@ -1022,13 +1027,53 @@ def render() -> str:
         keys = [tuple(key) for key in raw_relation["declared_keys"]]
         primary = keys[0]
         relation_unique = keys[1:]
+        materialization = raw_relation.get("materialization")
+        view_materialization = (
+            materialization
+            if (
+                isinstance(materialization, dict)
+                and materialization.get("storage") == "logical_view"
+            )
+            else None
+        )
+        is_logical_view = view_materialization is not None
         lines.extend(
             [
                 "[[relation]]",
                 f"name = {_quote(name)}",
                 'status = "implemented"',
-                f"rationale = {_quote('BCNF operational authority or exact durable protocol state for ' + name + '.')}",
+                f"rationale = {_quote(str(view_materialization.get('rationale')) if view_materialization is not None else 'BCNF operational authority or exact durable protocol state for ' + name + '.')}",
                 f"table = {_quote(table)}",
+            ]
+        )
+        if is_logical_view:
+            assert view_materialization is not None
+            pattern = view_materialization.get("view_pattern")
+            derived_from = view_materialization.get("derived_from")
+            if not isinstance(pattern, str) or not pattern:
+                raise ValueError(
+                    f"Operational logical view {name!r} lacks view_pattern"
+                )
+            if (
+                not isinstance(derived_from, list)
+                or not derived_from
+                or not all(isinstance(value, str) and value for value in derived_from)
+            ):
+                raise ValueError(
+                    f"Operational logical view {name!r} lacks derived_from sources"
+                )
+            lines.extend(
+                [
+                    'kind = "view"',
+                    "view = { pattern = "
+                    + _quote(pattern)
+                    + ", source_relations = "
+                    + _array(derived_from)
+                    + " }",
+                ]
+            )
+        lines.extend(
+            [
                 f"primary_key = {_array(primary)}",
                 f"unique_keys = [{', '.join(_array(key) for key in relation_unique)}]",
             ]
@@ -1057,15 +1102,14 @@ def render() -> str:
             )
         # Physical specification can point to external logical relation names;
         # the independent loader maps them to the declared stub tables.
-        indexes = _indexes(name, raw_relation)
+        indexes = [] if is_logical_view else _indexes(name, raw_relation)
         for index_name, attributes in indexes:
             lines.append(
                 "[[relation.required_index]]\n"
                 f"name = {_quote(index_name)}\nattributes = {_array(attributes)}\nunique = false"
             )
-        for check_name, sqlite_expression, mariadb_expression in _checks(
-            name, raw_relation
-        ):
+        checks = [] if is_logical_view else _checks(name, raw_relation)
+        for check_name, sqlite_expression, mariadb_expression in checks:
             lines.append(
                 "[[relation.check]]\n"
                 f"name = {_quote(check_name)}\n"

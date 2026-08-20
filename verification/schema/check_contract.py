@@ -52,6 +52,8 @@ class Relation:
     foreign_keys: tuple[ForeignKey, ...]
     materialization: Mapping[str, Any] | None
     rationale: str = ""
+    referential_unique_keys: tuple[tuple[str, ...], ...] = ()
+    ordered_declared_keys: tuple[tuple[str, ...], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,133 @@ class Decomposition:
     functional_dependencies: tuple[FunctionalDependency, ...]
     projections: tuple[Projection, ...]
     rationale: str
+
+
+@dataclass(frozen=True)
+class VerticalFamilyJoin:
+    source_relation: str
+    source_attributes: tuple[str, ...]
+    member_attributes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class VerticalFamilyMember:
+    relation: str
+    key_attributes: tuple[str, ...]
+    value_attribute: str
+    projection_attribute: str
+    join: VerticalFamilyJoin
+    project: bool
+    required: bool
+    congruence_members: tuple[str, ...] | None
+
+
+@dataclass(frozen=True)
+class VerticalOptionalPresence:
+    member_relation: str
+    discriminator_relation: str
+    discriminator_attribute: str
+    present_value: str
+    absent_values: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class VerticalFamily:
+    """One sealed vertical split behind a read-only total/optional view."""
+
+    name: str
+    anchor_relation: str
+    seal_relation: str
+    view_relation: str
+    key_attributes: tuple[str, ...]
+    members: tuple[VerticalFamilyMember, ...]
+    optional_presence: VerticalOptionalPresence | None
+    marker_relation: str | None
+    marker_predicate: str | None
+    visibility: str
+    semantic_fds: tuple[FunctionalDependency, ...]
+    rationale: str
+    write_obligation: str
+
+
+@dataclass(frozen=True)
+class GenerationBaseline:
+    base_relation: str
+    view_relation: str
+    owner_attribute: str
+    revision_attribute: str
+    generation_attribute: str
+
+
+@dataclass(frozen=True)
+class GenerationStream:
+    """One durable revision/generation authority with narrow derived views."""
+
+    name: str
+    descriptor_relation: str
+    mapping_relation: str
+    revision_attribute: str
+    generation_attribute: str
+    head_revision_relation: str
+    head_time_relation: str
+    head_view_relation: str
+    head_channel_attribute: str
+    head_time_attribute: str
+    baselines: tuple[GenerationBaseline, ...]
+    rationale: str
+    write_obligation: str
+
+
+@dataclass(frozen=True)
+class PublicationCommitContract:
+    """Closed common publication receipt, descriptor, chain, and head graph."""
+
+    commit_family: str
+    catalog_descriptor_family: str
+    source_descriptor_family: str
+    generation_node_relation: str
+    generation_successor_relation: str
+    finalization_relation: str
+    head_receipt_relation: str
+    head_view_relation: str
+    catalog_published_relation: str
+    source_published_relation: str
+    catalog_generation_relation: str
+    source_generation_relation: str
+    source_build_baseline_relation: str
+    candidate_baseline_relation: str
+    activation_relation: str
+    operational_effect_seal_relation: str
+    operational_policy_relation: str
+    runtime_obligation: str
+    ready_obligation: str
+
+
+@dataclass(frozen=True)
+class BatchReceiptProjection:
+    """Reusable compact-key stored receipt plus exact derived response contract."""
+
+    name: str
+    vertical_family: str
+    owner_attribute: str
+    stage_attribute: str | None
+    batch_key_attribute: str
+    start_generation_attribute: str
+    start_cursor_attribute: str
+    start_processed_count_attribute: str
+    page_limit_attribute: str | None
+    next_cursor_attribute: str
+    next_processed_count_attribute: str
+    next_state_attribute: str
+    row_count_attribute: str
+    terminal_attribute: str
+    committed_generation_attribute: str
+    committed_at_attribute: str
+    coordinate_relation: str
+    stored_relation: str
+    view_relation: str
+    checkpoint_relation: str
+    write_obligation: str
 
 
 @dataclass(frozen=True)
@@ -151,16 +280,24 @@ class SourceRootContract:
 @dataclass(frozen=True)
 class AnalysisCandidateContract:
     content_relation: str
-    gid_relation: str
-    gallery_relation: str
-    priority_attribute: str
-    candidate_digest_attribute: str
-    stable_tie_break_attributes: tuple[str, ...]
-    encoding_version: int
-    framing: str
-    ordering_rule: str
+    content_group_attribute: str
+    content_gallery_attribute: str
+    content_stored_order_attributes: tuple[str, ...]
+    content_derived_order_attributes: tuple[str, ...]
+    content_gid_access_relation: str
+    content_gid_relation: str
+    content_coordinate_relation: str
+    content_ordering_rule: str
+    gid_candidate_membership_relation: str
+    gid_winner_selection_relation: str
+    gid_winner_shadow_relation: str
+    gid_keyset_relation: str
+    gid_run_build_relation: str
+    gid_build_membership_relation: str
+    gid_metadata_relation: str
+    gid_order_attributes: tuple[str, ...]
+    gid_ordering_rule: str
     already_uploaded_marker_rule: str
-    candidate_digest_framing: str
     runtime_obligation: str
 
 
@@ -391,6 +528,8 @@ class ArtifactByteProducerContract:
     producer_fingerprint_framing: str
     producer_fingerprint_golden_payload_hex: str
     producer_fingerprint_golden_sha256: str
+    producer_equivalence_class_framing: str
+    producer_equivalence_class_golden_hex: str
     runtime_obligation: str
 
 
@@ -585,6 +724,37 @@ class AnalysisBatchStage:
 
 
 @dataclass(frozen=True)
+class AnalysisImpactedKeyFamily:
+    name: str
+    key_attribute: str
+    anchor_relation: str
+    provenance_relation: str
+    witness_relation: str
+    seal_relation: str
+    view_relation: str
+    provenance_primary_key: tuple[str, ...]
+    provenance_lookup_index: tuple[str, ...]
+    witness_primary_key: tuple[str, ...]
+    witness_fk_attributes: tuple[str, ...]
+    population_stage: str
+    population_cursor_attribute: str
+    downstream_stage: str
+    downstream_cursor_attribute: str
+
+
+@dataclass(frozen=True)
+class AnalysisImpactedKeyContract:
+    version: int
+    maximum_page_galleries: int
+    maximum_provenance_rows: int
+    witness_rule: str
+    append_rule: str
+    replay_rule: str
+    cleanup_rule: str
+    families: tuple[AnalysisImpactedKeyFamily, ...]
+
+
+@dataclass(frozen=True)
 class AnalysisResolutionContract:
     mode: str
     max_overlay_depth: int
@@ -690,7 +860,10 @@ class RetentionSemanticBlocker:
     relation: str
     attributes: tuple[str, ...]
     root_attributes: tuple[str, ...]
+    blocking_predicate: str
+    nonblocking_state: str
     semantic_obligation_id: str
+    release_obligation_id: str
 
 
 @dataclass(frozen=True)
@@ -768,6 +941,11 @@ class Contract:
     artifact_name_contract: ArtifactNameContract | None = None
     artifact_locator_contract: ArtifactLocatorContract | None = None
     artifact_protection_token_contract: ArtifactProtectionTokenContract | None = None
+    vertical_families: tuple[VerticalFamily, ...] = ()
+    generation_streams: tuple[GenerationStream, ...] = ()
+    publication_commit_contract: PublicationCommitContract | None = None
+    batch_receipt_projections: tuple[BatchReceiptProjection, ...] = ()
+    analysis_impacted_key_contract: AnalysisImpactedKeyContract | None = None
 
 
 @dataclass(frozen=True)
@@ -775,6 +953,7 @@ class RelationReport:
     name: str
     candidate_keys: tuple[frozenset[str], ...]
     checked_determinants: int
+    bcnf_required: bool = True
 
 
 @dataclass(frozen=True)
@@ -782,6 +961,8 @@ class ValidationReport:
     relations: tuple[RelationReport, ...]
     lossless_decompositions: tuple[str, ...]
     dependency_preserving_decompositions: tuple[str, ...]
+    vertical_families: tuple[str, ...] = ()
+    generation_streams: tuple[str, ...] = ()
 
 
 class ContractError(ValueError):
@@ -968,6 +1149,25 @@ def load_contract(path: str | Path) -> Contract:
         decompositions = tuple(
             _parse_decomposition(value) for value in raw_decompositions
         )
+        vertical_families = tuple(
+            _parse_vertical_family(value)
+            for value in _optional_table_list(document, "vertical_family", "contract")
+        )
+        generation_streams = tuple(
+            _parse_generation_stream(value)
+            for value in _optional_table_list(document, "generation_stream", "contract")
+        )
+        publication_commit_contract = _parse_optional_contract_table(
+            document,
+            "publication_commit_contract",
+            _parse_publication_commit_contract,
+        )
+        batch_receipt_projections = tuple(
+            _parse_batch_receipt_projection(value)
+            for value in _optional_table_list(
+                document, "batch_receipt_projection", "contract"
+            )
+        )
         semantics = tuple(
             _parse_attribute_semantic(value)
             for value in _optional_table_list(
@@ -1108,6 +1308,11 @@ def load_contract(path: str | Path) -> Contract:
                 _table(document, "analysis_candidate_contract", "contract")
             )
         )
+        analysis_impacted_key_contract = _parse_optional_contract_table(
+            document,
+            "analysis_impacted_key_contract",
+            _parse_analysis_impacted_key_contract,
+        )
         analysis_run_contract = _parse_optional_contract_table(
             document, "analysis_run_contract", _parse_analysis_run_contract
         )
@@ -1243,6 +1448,11 @@ def load_contract(path: str | Path) -> Contract:
         artifact_name_contract,
         artifact_locator_contract,
         artifact_protection_token_contract,
+        vertical_families,
+        generation_streams,
+        publication_commit_contract,
+        batch_receipt_projections,
+        analysis_impacted_key_contract,
     )
 
 
@@ -1324,7 +1534,34 @@ def validate_contract(contract: Contract) -> ValidationReport:
         errors.extend(
             _validate_foreign_keys(relation, relation_by_name, external_by_name)
         )
-        errors.extend(_validate_materialization(relation, relation_by_name))
+        errors.extend(
+            _validate_materialization(relation, relation_by_name, external_by_name)
+        )
+
+    vertical_family_errors, validated_vertical_families = _validate_vertical_families(
+        contract.vertical_families, relation_by_name
+    )
+    errors.extend(vertical_family_errors)
+    if contract.scope == "catalog_data_plane":
+        errors.extend(
+            _validate_publication_commit_contract(
+                contract.publication_commit_contract,
+                contract.vertical_families,
+                relation_by_name,
+                external_by_name,
+            )
+        )
+        errors.extend(
+            _validate_batch_receipt_projections(
+                contract.batch_receipt_projections,
+                contract.vertical_families,
+                relation_by_name,
+            )
+        )
+    generation_stream_errors, validated_generation_streams = (
+        _validate_generation_streams(contract.generation_streams, relation_by_name)
+    )
+    errors.extend(generation_stream_errors)
 
     errors.extend(_validate_attribute_semantics(contract, relation_by_name))
     errors.extend(_validate_byte_domains(contract, relation_by_name))
@@ -1349,6 +1586,16 @@ def validate_contract(contract: Contract) -> ValidationReport:
             _validate_analysis_candidate_contract(
                 contract.analysis_candidate_contract,
                 relation_by_name,
+            )
+        )
+    if contract.scope == "catalog_data_plane":
+        errors.extend(
+            _validate_analysis_impacted_key_contract(
+                contract.analysis_impacted_key_contract,
+                relation_by_name,
+                contract.vertical_families,
+                contract.retention_targets,
+                contract.analysis_resolution_contract,
             )
         )
     if contract.long_value_storage_contract is not None:
@@ -1432,7 +1679,11 @@ def validate_contract(contract: Contract) -> ValidationReport:
     if errors:
         raise ContractValidationError(errors)
     return ValidationReport(
-        tuple(reports), tuple(lossless), tuple(dependency_preserving)
+        tuple(reports),
+        tuple(lossless),
+        tuple(dependency_preserving),
+        tuple(validated_vertical_families),
+        tuple(validated_generation_streams),
     )
 
 
@@ -1497,6 +1748,38 @@ def validate_cross_manifest_contracts(
             ("gallery_id", "observation_id", "file_count", "byte_count"),
             {frozenset({"gallery_id", "observation_id"})},
         ),
+        "source_revision_descriptor_seal": (
+            ("source_revision",),
+            {frozenset({"source_revision"})},
+        ),
+        "source_revision_snapshot_manifest": (
+            ("source_revision", "snapshot_manifest_sha256"),
+            {frozenset({"source_revision"})},
+        ),
+        "publication_commit_seal": (
+            ("receipt_id",),
+            {frozenset({"receipt_id"})},
+        ),
+        "publication_commit_source_revision": (
+            ("receipt_id", "source_revision"),
+            {frozenset({"receipt_id"}), frozenset({"source_revision"})},
+        ),
+        "publication_commit_operational_preparation": (
+            ("receipt_id", "preparation_id"),
+            {frozenset({"receipt_id"}), frozenset({"preparation_id"})},
+        ),
+        "publication_commit_operational_policy": (
+            ("receipt_id", "operational_policy_id"),
+            {frozenset({"receipt_id"})},
+        ),
+        "publication_commit_committed_at": (
+            ("receipt_id", "committed_at"),
+            {frozenset({"receipt_id"})},
+        ),
+        "publication_commit_artifact_policy": (
+            ("receipt_id", "artifact_policy_id"),
+            {frozenset({"receipt_id"})},
+        ),
     }
     for relation_name, (attributes, keys) in expected_catalog_shapes.items():
         relation = catalog_relations.get(relation_name)
@@ -1523,6 +1806,56 @@ def validate_cross_manifest_contracts(
         ):
             errors.append(
                 f"operational external {relation_name} must exactly match catalog"
+            )
+
+    catalog_externals = {
+        relation.name: relation for relation in catalog.external_relations
+    }
+    for relation_name in (
+        "operational_preparation_effect_seal",
+        "operational_policy",
+    ):
+        external = catalog_externals.get(relation_name)
+        operational_relation = operational_relations.get(relation_name)
+        if (
+            external is None
+            or operational_relation is None
+            or external.attributes != operational_relation.attributes
+            or set(external.declared_keys) != set(operational_relation.declared_keys)
+        ):
+            errors.append(
+                f"catalog external {relation_name} must exactly match operational"
+            )
+
+    activation = operational_relations.get("operational_activation")
+    if (
+        activation is None
+        or activation.kind != "controlled_materialization"
+        or not isinstance(activation.materialization, Mapping)
+        or activation.materialization.get("view_pattern")
+        != "publication_commit_activation"
+        or set(activation.materialization.get("derived_from", ()))
+        != {
+            "publication_commit_seal",
+            "publication_commit_source_revision",
+            "publication_commit_operational_preparation",
+            "publication_commit_operational_policy",
+            "publication_commit_committed_at",
+        }
+    ):
+        errors.append(
+            "operational activation must be the exact derived common-commit view"
+        )
+    for relation_name in ("gallery_redownload_state", "removed_gid_ack"):
+        relation = operational_relations.get(relation_name)
+        if relation is None or not _has_fk(
+            relation,
+            ("through_source_revision",),
+            "publication_commit_source_revision",
+            ("source_revision",),
+        ):
+            errors.append(
+                f"operational {relation_name} must require a committed source revision"
             )
 
     expected_operational_shapes = {
@@ -1611,18 +1944,18 @@ def validate_cross_manifest_contracts(
 
     expected_membership = catalog_relations.get("source_build_expected_gallery")
     membership = catalog_relations.get("source_build_gallery")
-    observation_stat = catalog_relations.get("gallery_observation_stat")
+    observation_stat_anchor = catalog_relations.get("gallery_observation_stat_anchor")
     if expected_membership is not None and not (
         _has_fk(
             expected_membership,
             ("build_id",),
-            "source_build",
+            "source_build_descriptor_seal",
             ("build_id",),
         )
         and _has_fk(
             expected_membership,
             ("gallery_id",),
-            "gallery_identity",
+            "gallery_identity_seal",
             ("gallery_id",),
         )
     ):
@@ -1638,8 +1971,8 @@ def validate_cross_manifest_contracts(
         errors.append(
             "catalog source_build_gallery must forbid extra expected membership"
         )
-    if observation_stat is not None and not _has_fk(
-        observation_stat,
+    if observation_stat_anchor is not None and not _has_fk(
+        observation_stat_anchor,
         ("gallery_id", "observation_id"),
         "gallery_observation",
         ("gallery_id", "observation_id"),
@@ -1653,7 +1986,7 @@ def validate_cross_manifest_contracts(
     expected_identity_edge = RetentionForeignKeyBoundary(
         relation="source_build_expected_gallery",
         attributes=("gallery_id",),
-        referenced_relation="gallery_identity",
+        referenced_relation="gallery_identity_seal",
         referenced_attributes=("gallery_id",),
     )
     if (
@@ -1663,7 +1996,7 @@ def validate_cross_manifest_contracts(
         errors.append("GALLERY_IDENTITY retention must list expected source membership")
     gallery_observation_target = retention_targets.get("GALLERY_OBSERVATION")
     if gallery_observation_target is None or not any(
-        "gallery_observation_stat" in phase
+        "gallery_observation_stat_anchor" in phase
         for phase in gallery_observation_target.child_phases
     ):
         errors.append(
@@ -1701,20 +2034,28 @@ _DATA_MACHINE_OBLIGATION_IDS = frozenset(
 
 
 _DATA_RETENTION_TARGETS: Mapping[str, tuple[str, tuple[str, ...]]] = {
-    "PUBLICATION_CANDIDATE": ("publication_candidate", ("candidate_id",)),
-    "ANALYSIS_RUN": ("analysis_run", ("analysis_id",)),
-    "SOURCE_BUILD": ("source_build", ("build_id",)),
+    "PUBLICATION_CANDIDATE": ("publication_candidate_anchor", ("candidate_id",)),
+    "ANALYSIS_RUN": ("analysis_run_anchor", ("analysis_id",)),
+    "SOURCE_BUILD": ("source_build_anchor", ("build_id",)),
     "GALLERY_OBSERVATION": (
         "gallery_observation_allocation",
         ("gallery_id", "observation_id"),
     ),
-    "GALLERY_OBSERVATION_PAGE": ("gallery_observation_page", ("page_sha256",)),
+    "GALLERY_OBSERVATION_PAGE": (
+        "gallery_observation_page_descriptor_anchor",
+        ("page_sha256",),
+    ),
     "ARTIFACT_BLOB": ("artifact_blob", ("artifact_sha256",)),
-    "CANONICAL_VALUE": ("canonical_value_allocation", ("value_sha256",)),
+    "CANONICAL_VALUE": ("canonical_value_allocation_anchor", ("value_sha256",)),
     "CONTENT_BLOB": ("content_blob", ("file_sha256",)),
-    "FILE_NAME_IDENTITY": ("file_name_identity", ("file_key",)),
+    "FILE_NAME_IDENTITY": ("file_name_identity_anchor", ("file_key",)),
     "PUBLICATION_IDENTITY": ("publication_identity", ("publication_key",)),
-    "GALLERY_IDENTITY": ("gallery_identity", ("gallery_id",)),
+    "GALLERY_IDENTITY": ("gallery_identity_anchor", ("gallery_id",)),
+    "SOURCE_GALLERY_NAME_GID": (
+        "source_gallery_name_gid",
+        ("source_gallery_name",),
+    ),
+    "GALLERY_UPLOAD_TIME": ("gallery_upload_time", ("gid",)),
 }
 
 
@@ -1743,24 +2084,76 @@ def _validate_retention_contract(
             f"{_format_set(unknown_retained)}"
         )
     required_retained = {
-        "source_revision",
-        "source_snapshot_manifest_identity",
-        "catalog_revision",
+        "analysis_stage_anchor",
+        "analysis_stage_order",
+        "analysis_stage_cursor_codec",
+        "analysis_stage_seal",
+        "publication_stage_anchor",
+        "publication_stage_order",
+        "publication_stage_cursor_codec",
+        "publication_stage_seal",
+        "source_revision_anchor",
+        "source_revision_channel",
+        "source_revision_snapshot_manifest",
+        "source_revision_descriptor_seal",
+        "source_snapshot_manifest_identity_anchor",
+        "source_snapshot_manifest_identity_gallery_count",
+        "source_snapshot_manifest_identity_file_count",
+        "source_snapshot_manifest_identity_byte_count",
+        "source_snapshot_manifest_identity_seal",
+        "catalog_revision_anchor",
+        "catalog_revision_publication_count",
+        "catalog_revision_descriptor_seal",
+        "publication_generation_node",
+        "publication_generation_successor",
+        "publication_commit_anchor",
+        "publication_commit_candidate",
+        "publication_commit_catalog_revision",
+        "publication_commit_source_revision",
+        "publication_commit_generation",
+        "publication_commit_operational_preparation",
+        "publication_commit_operational_policy",
+        "publication_commit_artifact_policy",
+        "publication_commit_display_title_policy",
+        "publication_commit_new_galleries",
+        "publication_commit_changed_galleries",
+        "publication_commit_removed_galleries",
+        "publication_commit_duplicate_losers",
+        "publication_commit_committed_at",
+        "publication_commit_seal",
+        "publication_commit_finalization",
+        "publication_commit_head_receipt",
+        "publication_finalization_checkpoint_anchor",
+        "publication_finalization_checkpoint_generation",
+        "publication_finalization_checkpoint_cursor",
+        "publication_finalization_checkpoint_processed_count",
+        "publication_finalization_checkpoint_state",
+        "publication_finalization_checkpoint_updated_at",
+        "publication_finalization_checkpoint_seal",
+        "publication_finalization_batch_receipt_anchor",
+        "publication_finalization_batch_receipt_coordinate",
+        "publication_finalization_batch_receipt_start_cursor",
+        "publication_finalization_batch_receipt_start_processed_count",
+        "publication_finalization_batch_receipt_next_cursor",
+        "publication_finalization_batch_receipt_row_count",
+        "publication_finalization_batch_receipt_committed_at",
+        "publication_finalization_batch_receipt_seal",
         "display_title_choice",
         "title_sort",
     }
     if set(retained) != required_retained:
         errors.append(
-            "retention contract indefinite history must be exactly source and "
-            "catalog revision history plus retained title dictionaries"
+            "retention contract indefinite history must be exactly the stage "
+            "registries, descriptor families, common commit/generation authority, "
+            "and retained title dictionaries"
         )
 
     expected_active_relations = {
         "active_head_relation": "source_head",
         "revision_relation": "source_revision",
         "provenance_relation": "source_revision_provenance",
-        "analysis_relation": "analysis_run",
-        "build_relation": "source_build",
+        "analysis_relation": "analysis_run_descriptor_seal",
+        "build_relation": "source_build_descriptor_seal",
     }
     for field, expected_relation in expected_active_relations.items():
         if getattr(retention, field) != expected_relation:
@@ -1814,14 +2207,40 @@ def _validate_retention_contract(
         assert provenance is not None
         assert analysis is not None
         assert build is not None
-        if not _has_fk(head, ("source_revision",), revision.name, ("source_revision",)):
+        common_head = relation_by_name.get("publication_commit_head")
+        head_receipt = relation_by_name.get("publication_commit_head_receipt")
+        commit_source = relation_by_name.get("publication_commit_source_revision")
+        if (
+            common_head is None
+            or head_receipt is None
+            or commit_source is None
+            or not _has_fk(
+                head,
+                ("channel",),
+                common_head.name,
+                ("channel",),
+            )
+            or not _has_fk(
+                common_head,
+                ("channel",),
+                head_receipt.name,
+                ("channel",),
+            )
+            or not _has_fk(
+                commit_source,
+                ("source_revision",),
+                "source_revision_descriptor_seal",
+                ("source_revision",),
+            )
+        ):
             errors.append(
-                "retention contract active head does not FK to source revision"
+                "retention contract active head does not reach the source revision "
+                "through the sealed common publication commit"
             )
         if not _has_fk(
             provenance,
             ("source_revision",),
-            revision.name,
+            "source_revision_descriptor_seal",
             ("source_revision",),
         ) or not _has_fk(
             provenance,
@@ -1835,7 +2254,22 @@ def _validate_retention_contract(
             frozenset({"analysis_id"}),
         }:
             errors.append("retention contract provenance must be exactly one-to-one")
-        if not _has_fk(analysis, ("build_id",), build.name, ("build_id",)):
+        analysis_build = relation_by_name.get("analysis_run_build_id")
+        if (
+            analysis_build is None
+            or not _has_fk(
+                analysis,
+                ("analysis_id",),
+                analysis_build.name,
+                ("analysis_id",),
+            )
+            or not _has_fk(
+                analysis_build,
+                ("build_id",),
+                build.name,
+                ("build_id",),
+            )
+        ):
             errors.append("retention contract analysis does not FK to its source build")
     else:
         errors.append("retention contract active provenance path is not resolvable")
@@ -1871,12 +2305,23 @@ def _validate_retention_contract(
             all_fk_edges.add(edge)
 
     for target in targets:
+        vertical_companions: dict[str, tuple[str, ...]] = {}
+        for family in contract.vertical_families:
+            bases = (
+                family.anchor_relation,
+                *(member.relation for member in family.members),
+                *((family.marker_relation,) if family.marker_relation else ()),
+                family.seal_relation,
+            )
+            for relation_name in bases:
+                vertical_companions[relation_name] = bases
         errors.extend(
             _validate_retention_target(
                 target,
                 relation_by_name,
                 reverse_fks,
                 all_fk_edges,
+                vertical_companions,
             )
         )
         expected_target = _DATA_RETENTION_TARGETS.get(target.target)
@@ -1893,6 +2338,7 @@ def _validate_retention_target(
     relation_by_name: Mapping[str, Relation],
     reverse_fks: Mapping[str, list[RetentionForeignKeyBoundary]],
     all_fk_edges: set[RetentionForeignKeyBoundary],
+    vertical_companions: Mapping[str, tuple[str, ...]],
 ) -> list[str]:
     errors: list[str] = []
     prefix = f"retention target {target.target!r}"
@@ -1902,16 +2348,16 @@ def _validate_retention_target(
     if not target.root_key or frozenset(target.root_key) not in set(root.declared_keys):
         errors.append(f"{prefix} root_key must be an exact candidate key")
 
-    phases: dict[str, int] = {}
+    phases: dict[str, tuple[int, int]] = {}
     for phase_index, phase in enumerate(target.child_phases):
         if not phase:
             errors.append(f"{prefix} contains an empty child phase")
-        for relation_name in phase:
+        for relation_index, relation_name in enumerate(phase):
             if relation_name in phases:
                 errors.append(
                     f"{prefix} child relation {relation_name!r} appears more than once"
                 )
-            phases[relation_name] = phase_index
+            phases[relation_name] = (phase_index, relation_index)
             if relation_name not in relation_by_name:
                 errors.append(
                     f"{prefix} child phase references unknown relation {relation_name!r}"
@@ -1979,14 +2425,49 @@ def _validate_retention_target(
             blocker.root_attributes
         ) <= set(root.attributes):
             errors.append(f"{prefix} semantic blocker has unknown join attributes")
-        if frozenset(blocker.attributes) not in set(
-            relation.declared_keys
-        ) or frozenset(blocker.root_attributes) not in set(root.declared_keys):
-            errors.append(f"{prefix} semantic blocker join must use exact keys")
+        exact_blocker_key = frozenset(blocker.attributes) in set(relation.declared_keys)
+        release_state_left_prefix = (
+            target.target == "PUBLICATION_CANDIDATE"
+            and blocker.relation == "prepared_artifact_state"
+            and blocker.attributes == ("candidate_id",)
+            and any(
+                key[: len(blocker.attributes)] == blocker.attributes
+                for key in relation.ordered_declared_keys
+            )
+        )
+        if not (exact_blocker_key or release_state_left_prefix) or frozenset(
+            blocker.root_attributes
+        ) not in set(root.declared_keys):
+            errors.append(
+                f"{prefix} semantic blocker join must use an exact key or its "
+                "registered indexed left prefix and an exact root key"
+            )
         if blocker.semantic_obligation_id != "catalog.retention.v1":
             errors.append(
                 f"{prefix} semantic blocker lacks its machine resolver obligation"
             )
+
+    expected_semantic_blockers = (
+        (
+            RetentionSemanticBlocker(
+                relation="prepared_artifact_state",
+                attributes=("candidate_id",),
+                root_attributes=("candidate_id",),
+                blocking_predicate="state IN ('PENDING','PREPARED')",
+                nonblocking_state="COMMITTED",
+                semantic_obligation_id="catalog.retention.v1",
+                release_obligation_id="catalog.artifact-semantics.v1",
+            ),
+        )
+        if target.target == "PUBLICATION_CANDIDATE"
+        else ()
+    )
+    if target.semantic_blockers != expected_semantic_blockers:
+        errors.append(
+            f"{prefix} prepared-artifact release semantic blocker must use the "
+            "exact indexed candidate prefix, PENDING/PREPARED predicate, "
+            "COMMITTED nonblocking state, and artifact release obligation"
+        )
 
     machine_gate_ids = [gate.id for gate in target.machine_gates]
     if len(machine_gate_ids) != len(set(machine_gate_ids)):
@@ -2029,6 +2510,15 @@ def _validate_retention_target(
             if child in phases:
                 visited_phases.add(child)
                 pending.append(child)
+                # Once any stored member of a sealed vertical family is
+                # selected by the cleanup root, the family key identifies all
+                # other stored bases.  Treat those companion bases as one
+                # ownership unit while preserving their declared child-first
+                # phase positions.  Logical views remain separately derived.
+                for companion in vertical_companions.get(child, ()):
+                    if companion in phases:
+                        visited_phases.add(companion)
+                        pending.append(companion)
                 continue
             errors.append(
                 f"{prefix} leaves FK descendant {child!r}{edge.attributes!r} "
@@ -2117,6 +2607,9 @@ def _data_prose_obligation_paths(contract: Contract) -> frozenset[str]:
         "analysis_resolution_contract.cursor_codec_rule",
         "analysis_resolution_contract.batch_rule",
         "analysis_candidate_contract.runtime_obligation",
+        "analysis_impacted_key_contract.append_rule",
+        "analysis_impacted_key_contract.replay_rule",
+        "analysis_impacted_key_contract.cleanup_rule",
         "artifact_delta_contract.rebuild_rule",
         "artifact_delta_contract.unchanged_rule",
         "artifact_delta_contract.rename_rule",
@@ -2132,6 +2625,11 @@ def _data_prose_obligation_paths(contract: Contract) -> frozenset[str]:
         "publication_atomic_contract.projection_seal_rule",
         "publication_atomic_contract.runtime_obligation",
         "publication_atomic_contract.finalization_rule",
+        "publication_commit_contract.runtime_obligation",
+        "publication_commit_contract.ready_obligation",
+        "batch_receipt_projection.analysis.write_obligation",
+        "batch_receipt_projection.publication.write_obligation",
+        "batch_receipt_projection.publication_finalization.write_obligation",
         "title_sort_contract.runtime_obligation",
         "transition_authority_contract.runtime_obligation",
         "transition_authority_contract.ready_obligation",
@@ -2206,6 +2704,24 @@ def _validate_data_semantic_obligations(
                     f"semantic rule {path!r} is multiply owned by {previous!r} "
                     f"and {obligation.id!r}"
                 )
+
+    physical_domains = by_id.get("catalog.physical-domains.v1")
+    relation_order = tuple(relation_by_name)
+    if (
+        physical_domains is not None
+        and "publication_candidate_anchor" in relation_by_name
+    ):
+        publication_start = relation_order.index("publication_candidate_anchor")
+        publication_graph = frozenset(relation_order[publication_start:])
+        missing_publication_relations = publication_graph - set(
+            physical_domains.relations
+        )
+        if missing_publication_relations:
+            errors.append(
+                "catalog physical-domain authority must close the complete publication "
+                "graph from publication_candidate_anchor through publication_head: "
+                f"{_format_set(missing_publication_relations)}"
+            )
 
     expected_paths = _data_prose_obligation_paths(contract)
     actual_paths = set(covered_by)
@@ -2357,6 +2873,17 @@ def _validate_canonical_reference_roles_and_bootstrap(
     expected_rows = expected_domain_rows | {
         ("channel_registry", ("channel",), ("default",)),
         ("source_provider_registry", ("source_provider",), ("filesystem",)),
+        *{
+            ("contributor_role_registry", ("role",), (role,))
+            for role in (
+                "artist",
+                "author",
+                "cosplayer",
+                "group",
+                "illustrator",
+                "uploader",
+            )
+        },
         (
             "artifact_zip_writer_policy",
             (
@@ -2383,6 +2910,11 @@ def _validate_canonical_reference_roles_and_bootstrap(
                 "protection_token_codec_version",
             ),
             ("1", "managed-filesystem", "1", "1"),
+        ),
+        (
+            "publication_generation_node",
+            ("generation",),
+            ("0",),
         ),
         *{
             (
@@ -2447,7 +2979,7 @@ def _validate_canonical_reference_roles_and_bootstrap(
     if actual_rows != expected_rows or len(actual_rows) != len(seeds):
         errors.append(
             "data bootstrap seeds must be exactly one default channel, one "
-            "filesystem provider, the artifact ZIP/storage registries, the fifteen analysis stages, the seventeen "
+            "filesystem provider, six contributor roles, the artifact ZIP/storage registries, the fifteen analysis stages, the seventeen "
             "publication stages, every catalog "
             "canonical digest domain, and the two operational filesystem "
             "hash-cache domains"
@@ -2569,11 +3101,29 @@ def _validate_analysis_run_contract(
         errors.append(f"{prefix} must use (build_id, policy_id) as the exact key")
     if not all(
         token in contract.write_obligation
-        for token in ("deterministically", "at most one analysis_id", "resume")
+        for token in (
+            "deterministically",
+            "first resolve",
+            "at most one analysis_id",
+            "proposed_analysis_id",
+            "fresh allocation capability",
+            "already stored analysis_id",
+            "ignoring proposed_analysis_id",
+        )
     ) or not all(
-        token in contract.attempt_rule for token in ("separate relation", "never")
+        token in contract.attempt_rule
+        for token in (
+            "proposed_analysis_id is fresh-allocation-only",
+            "preserves the durable analysis_id",
+            "ignores the retry proposal",
+            "no separate analysis-attempt history",
+            "no analysis_attempt_id authority",
+        )
     ):
-        errors.append(f"{prefix} must separate retries from semantic identity")
+        errors.append(
+            f"{prefix} must make retry proposals non-authoritative after "
+            "natural-key resolution"
+        )
     relation = relations.get(contract.relation)
     if relation is None:
         errors.append(f"{prefix} references an unknown relation")
@@ -2611,11 +3161,11 @@ def _validate_source_scope_identity_contract(
         "identity_policy_version",
     )
     if (
-        contract.relation != "source_scope"
+        contract.relation != "source_scope_identity"
         or contract.key_attribute != "scope_key"
         or contract.natural_key != expected_natural
         or contract.encoding_version != 1
-        or contract.collision_model != "collision_free_identity_domain"
+        or contract.collision_model != "collision_checked_stored_identity"
     ):
         errors.append(f"{prefix} has the wrong identity shape")
     if not all(value in contract.framing for value in expected_natural):
@@ -2629,6 +3179,11 @@ def _validate_source_scope_identity_contract(
             "source_build.scope_key",
             "gallery_identity.scope_key",
             "cross-scope",
+            "source_scope_source_root_sha256.source_root_sha256",
+            "canonical_value_allocation_anchor.value_sha256",
+            "never by treating scope_key as a canonical allocation key",
+            "every same-root scope family",
+            "removed atomically seal, identity, identity-policy, provider, root fact, then anchor",
         )
     ):
         errors.append(f"{prefix} must state collision and build-seal obligations")
@@ -2668,7 +3223,10 @@ _EFFECTIVE_CONTENT_WRITE_OBLIGATION_V1 = (
     "duplicate digests, and bind the receipt to the exact sealed build identity, "
     "sealed analysis identity, live ingest generation, file_count, byte_count, "
     "content_sha256, and private spool identity, while no public API accepts digest, "
-    "count, sequence, or receipt authority; stream the exact permutation-invariant "
+    "count, sequence, or receipt authority; the exact framed sequence deterministically "
+    "yields content_sha256, while digest-to-sequence is only a stored relation FD "
+    "established by UNIQUE, full-preimage comparison, rejection on mismatch, and the "
+    "immutable canonical_value_identity seal under the collision-checked stored-identity rule; stream the exact permutation-invariant "
     "but multiplicity-sensitive frame through iter_effective_content_payload_ordered, "
     "effective_content_digest_ordered, and canonical_value_digest_parts without "
     "materializing the full sequence; bounded canonical page transactions validate "
@@ -2696,7 +3254,7 @@ def _validate_effective_content_contract(
         or contract.canonical_digest_attribute != "value_sha256"
         or contract.digest_domain != "effective_content_v1"
         or contract.encoding_version != 1
-        or contract.collision_model != "collision_free_identity_domain"
+        or contract.collision_model != "collision_checked_stored_identity"
     ):
         errors.append(f"{prefix} has the wrong canonical digest shape")
     for token in (
@@ -2716,7 +3274,7 @@ def _validate_effective_content_contract(
             "multiplicity",
             "exact EOF",
             "never",
-            "non-injective",
+            "non-authoritative grouping checksum",
         )
     ):
         errors.append(
@@ -2725,10 +3283,16 @@ def _validate_effective_content_contract(
         )
     expected_relations = {
         "analysis_impacted_content",
-        "analysis_content_owner_candidate",
-        "analysis_content_owner",
+        "analysis_impacted_content_anchor",
+        "analysis_impacted_content_provenance",
+        "analysis_impacted_content_witness",
+        "analysis_impacted_content_seal",
+        "analysis_content_owner_candidate_shadow_content_sha256",
         "analysis_content_owner_candidate_shadow",
         "analysis_content_owner_candidate_resolved",
+        "analysis_content_owner_shadow_anchor",
+        "analysis_content_owner_shadow_owner_gallery_id",
+        "analysis_content_owner_shadow_seal",
         "analysis_content_owner_shadow",
         "analysis_content_owner_tombstone",
         "analysis_content_owner_resolved",
@@ -2741,16 +3305,45 @@ def _validate_effective_content_contract(
     }
     if actual_relations != expected_relations:
         errors.append(f"{prefix} relation registry is incomplete")
+
+    def has_canonical_authority(
+        relation_name: str,
+        attribute: str,
+        seen: frozenset[tuple[str, str]] = frozenset(),
+    ) -> bool:
+        coordinate = (relation_name, attribute)
+        if coordinate in seen:
+            return False
+        relation = relations.get(relation_name)
+        if relation is None or attribute not in relation.attributes:
+            return False
+        if relation_name == contract.canonical_value_relation:
+            return attribute == contract.canonical_digest_attribute
+        next_seen = seen | {coordinate}
+        for foreign_key in relation.foreign_keys:
+            for position, source_attribute in enumerate(foreign_key.attributes):
+                if source_attribute == attribute and has_canonical_authority(
+                    foreign_key.relation,
+                    foreign_key.referenced_attributes[position],
+                    next_seen,
+                ):
+                    return True
+        materialization = relation.materialization
+        if isinstance(materialization, Mapping):
+            raw_sources = materialization.get("derived_from")
+            if isinstance(raw_sources, list):
+                for source_name in raw_sources:
+                    if isinstance(source_name, str) and has_canonical_authority(
+                        source_name, attribute, next_seen
+                    ):
+                        return True
+        return False
+
     for relation_name in actual_relations:
-        relation = relations[relation_name]
-        if not _has_fk(
-            relation,
-            (contract.reference_attribute,),
-            contract.canonical_value_relation,
-            (contract.canonical_digest_attribute,),
-        ):
+        if not has_canonical_authority(relation_name, contract.reference_attribute):
             errors.append(
-                f"{prefix} relation {relation_name!r} lacks exact canonical payload FK"
+                f"{prefix} relation {relation_name!r} lacks structural canonical "
+                "payload authority"
             )
     return errors
 
@@ -2817,10 +3410,10 @@ def _validate_source_snapshot_manifest_contract(
         "occurrence_count",
         "artist_count",
         "maximum_gallery_artist_count",
-        "without granting identity authority to evidence_sha256",
+        "derived excluded_flag fields",
         "content owner",
         "GID winner",
-        "without granting identity authority to decision_sha256",
+        "atomic comparator facts without any persisted audit digest",
         "same snapshot",
         "three declared aggregate counts",
         "payload_byte_count",
@@ -2843,9 +3436,12 @@ def _validate_source_snapshot_manifest_contract(
         "deletes exactly that claim",
         "CAS-transitions analysis_run from OPEN to COMPLETE",
         "all three mutations commit or roll back together",
-        "response loss",
+        "production AnalysisRepository.handoff_snapshot_manifest COMPLETE response-loss replay",
         "analysis_id natural key",
-        "exact binding digest equality with the claim absent",
+        "exact-compares the binding digest and all three sealed snapshot count facts",
+        "requires the claim absent",
+        "performs zero writes",
+        "streams and validates collision-checked canonical page bytes",
         "no caller digest",
         "input_manifest_sha256",
         "output authority",
@@ -2875,6 +3471,12 @@ def _validate_source_snapshot_manifest_contract(
         errors.append(f"{prefix} retention/garbage-collection rule is incomplete")
 
     manifest = relations.get(contract.relation)
+    manifest_anchor = relations.get("source_snapshot_manifest_identity_anchor")
+    manifest_seal = relations.get("source_snapshot_manifest_identity_seal")
+    manifest_members = tuple(
+        relations.get(f"source_snapshot_manifest_identity_{suffix}")
+        for suffix in ("gallery_count", "file_count", "byte_count")
+    )
     if (
         manifest is None
         or set(manifest.attributes)
@@ -2885,12 +3487,24 @@ def _validate_source_snapshot_manifest_contract(
             "byte_count",
         }
         or set(manifest.declared_keys) != {frozenset({contract.digest_attribute})}
+        or manifest.kind != "controlled_materialization"
         or not _has_fk(
             manifest,
+            (contract.digest_attribute,),
+            "source_snapshot_manifest_identity_seal",
+            (contract.digest_attribute,),
+        )
+        or manifest_anchor is None
+        or manifest_anchor.attributes != (contract.digest_attribute,)
+        or not _has_fk(
+            manifest_anchor,
             (contract.digest_attribute,),
             contract.canonical_value_relation,
             (contract.canonical_digest_attribute,),
         )
+        or manifest_seal is None
+        or manifest_seal.attributes != (contract.digest_attribute,)
+        or any(member is None for member in manifest_members)
     ):
         errors.append(f"{prefix} identity relation has the wrong BCNF shape")
     revision = relations.get("source_revision")
@@ -2919,7 +3533,7 @@ def _validate_source_snapshot_manifest_contract(
         or not _has_fk(
             provenance,
             ("analysis_id",),
-            "analysis_run",
+            "analysis_run_descriptor_seal",
             ("analysis_id",),
         )
     ):
@@ -2939,13 +3553,13 @@ def _validate_source_snapshot_manifest_contract(
         or not _has_fk(
             binding,
             ("analysis_id",),
-            "analysis_run",
+            "analysis_run_descriptor_seal",
             ("analysis_id",),
         )
         or not _has_fk(
             binding,
             (contract.digest_attribute,),
-            contract.relation,
+            "source_snapshot_manifest_identity_seal",
             (contract.digest_attribute,),
         )
     ):
@@ -2982,13 +3596,11 @@ def _validate_publication_atomic_contract(
     catalog_publication = relations.get("catalog_publication")
     expected_publication_attributes = {
         "revision",
-        "gallery_id",
         "publication_key",
+        "gallery_id",
         "summary_sha256",
         "language_sha256",
-        "published_at",
         "modified_at",
-        "item_sha256",
     }
     if catalog_publication is None or set(catalog_publication.attributes) != (
         expected_publication_attributes
@@ -3161,14 +3773,21 @@ def _validate_publication_atomic_contract(
     if any(term not in contract.cursor_codec_rule for term in cursor_terms):
         errors.append(f"{prefix} cursor codec framing is not closed-world")
     batch_terms = (
-        "all seventeen provider-seeded publication stages in exact stage_order",
+        "provider registry remains exactly seventeen ordered stages",
+        "initialize candidate-owned checkpoints only for the first sixteen stages",
+        "FINALIZE_ARTIFACTS has no candidate-owned checkpoint",
+        "permanent receipt-owned finalization family",
         "generation one, empty cursor, processed_count zero, and OPEN state",
-        "hard-capped maximum-128 batch",
+        "hard-capped maximum-128 candidate batch",
         "server-side",
-        "full immutable pre/post publication_batch_receipt",
-        "committed_generation equals start_generation plus one",
-        "next_processed_count equals start_processed_count plus row_count",
-        "complete stored tuple without writes",
+        "compact start-generation-keyed receipt anchor",
+        "batch-key coordinate",
+        "five stored fact members",
+        "seal last",
+        "CAS-advances the checkpoint generation last",
+        "derives committed_generation as start_generation plus one",
+        "next_processed_count as start_processed_count plus row_count",
+        "complete derived tuple without writes",
         "terminal is one if and only if the server-derived page is empty",
         "next_state COMPLETE",
         "nonterminal means positive row_count and next_state OPEN",
@@ -3176,6 +3795,17 @@ def _validate_publication_atomic_contract(
     )
     if any(term not in contract.batch_rule for term in batch_terms):
         errors.append(f"{prefix} batch receipt/CAS rule is incomplete")
+    if any(
+        forbidden in contract.batch_rule
+        for forbidden in (
+            "initialize all seventeen",
+            "FINALIZE_ARTIFACTS requires the sealed publication commit",
+        )
+    ):
+        errors.append(
+            f"{prefix} must not allocate FINALIZE_ARTIFACTS in transient "
+            "candidate checkpoints"
+        )
     seal_terms = (
         "VALIDATE_DUPLICATE_LOSER becomes COMPLETE",
         "terminal checkpoints for VALIDATE_SELECTION",
@@ -3195,7 +3825,11 @@ def _validate_publication_atomic_contract(
         "publication_count only from terminal VALIDATE_SELECTION",
         "prepared_artifact_count equals create_count plus rebuild_count",
         "artifact_input_count equals create_count plus rebuild_count plus unchanged_count",
-        "named O(1) terminal validation scalars",
+        "PK-only publication_candidate_projection_seal certification marker",
+        "logical projection derives only create_count, rebuild_count, "
+        "delete_count, new_galleries, and changed_galleries",
+        "fixed O(1) terminal-receipt joins",
+        "never copy terminal validation scalars",
         "never SUM receipts or child relations",
     )
     if any(term not in contract.projection_seal_rule for term in seal_terms):
@@ -3205,6 +3839,8 @@ def _validate_publication_atomic_contract(
         for forbidden in (
             "VALIDATE_CATALOG_PROJECTION processed_count equals VALIDATE_SELECTION",
             "publication_count_crosscheck",
+            "copy only the named O(1) terminal validation scalars",
+            "CAS candidate OPEN to SEALED",
         )
     ):
         errors.append(
@@ -3238,12 +3874,15 @@ def _validate_publication_atomic_contract(
         "exact EOF",
         "u32be(segment_count)",
         "strict_utf8_segment",
-        "before candidate state SEALED",
+        "before graph-derived candidate lifecycle SEALED",
         "independent full evaluator",
         "artifact_input_count",
         "prepared_artifact_count",
         "CREATE/REBUILD/DELETE/UNCHANGED counts",
         "new_galleries/changed_galleries/removed_galleries/duplicate_losers",
+        "insert only the PK-only publication_candidate_projection_seal",
+        "derive the five logical projection counts only through fixed "
+        "terminal-receipt joins",
         "through analysis_snapshot_manifest",
         "publication_candidate_preparation",
         "only O(1)",
@@ -3273,39 +3912,88 @@ def _validate_publication_atomic_contract(
             "result scalars on "
             "publication_receipt"
         )
+    elif (
+        "reserved_revision" in receipt.attributes
+        or set(receipt.declared_keys)
+        != {
+            frozenset({"receipt_id"}),
+            frozenset({"revision"}),
+            frozenset({"source_revision"}),
+        }
+        or not _has_fk(
+            receipt,
+            ("receipt_id",),
+            "publication_commit_seal",
+            ("receipt_id",),
+        )
+        or any(
+            foreign_key.relation == contract.candidate_relation
+            for foreign_key in receipt.foreign_keys
+        )
+        or not isinstance(receipt.materialization, Mapping)
+        or receipt.materialization.get("storage") != "logical_view"
+        or receipt.materialization.get("view_pattern") != "publication_receipt"
+        or set(receipt.materialization.get("derived_from", ()))
+        != {
+            "publication_commit",
+            "catalog_revision_descriptor",
+            "source_revision_descriptor",
+            "publication_commit_finalization",
+            "publication_finalization_checkpoint",
+            "publication_finalization_batch_receipt",
+        }
+    ):
+        errors.append(
+            f"{prefix} receipt must remove reserved_revision, key receipt/revision/"
+            "source_revision exactly, derive only from the sealed common commit, "
+            "and never reference the transient candidate"
+        )
     seal = relations.get(contract.projection_seal_relation)
-    seal_attributes = {
-        "candidate_id",
-        "publication_count",
-        "artifact_input_count",
-        "prepared_artifact_count",
-        "create_count",
-        "rebuild_count",
-        "delete_count",
-        "unchanged_count",
-        "new_galleries",
-        "changed_galleries",
-        "removed_galleries",
-        "duplicate_losers",
-        "projection_sealed_at",
-    }
+    projection = relations.get("publication_candidate_projection")
     if (
         seal is None
-        or set(seal.attributes) != seal_attributes
+        or seal.attributes != ("candidate_id",)
         or set(seal.declared_keys) != {frozenset({"candidate_id"})}
+        or seal.functional_dependencies
         or not _has_fk(
             seal,
             ("candidate_id",),
-            contract.candidate_relation,
+            "publication_candidate_definition_seal",
             ("candidate_id",),
         )
-        or any(
-            attribute.endswith("sha256") or attribute.endswith("digest")
-            for attribute in seal.attributes
+        or projection is None
+        or projection.attributes
+        != (
+            "candidate_id",
+            "create_count",
+            "rebuild_count",
+            "delete_count",
+            "new_galleries",
+            "changed_galleries",
         )
+        or not _has_fk(
+            projection,
+            ("candidate_id",),
+            contract.projection_seal_relation,
+            ("candidate_id",),
+        )
+        or not isinstance(projection.materialization, Mapping)
+        or projection.materialization.get("storage") != "logical_view"
+        or projection.materialization.get("view_pattern")
+        != "publication_candidate_projection"
+        or set(projection.materialization.get("derived_from", ()))
+        != {
+            contract.projection_seal_relation,
+            contract.checkpoint_relation,
+            contract.batch_receipt_relation,
+        }
     ):
-        errors.append(f"{prefix} projection seal lacks exact digest-free BCNF shape")
+        errors.append(
+            f"{prefix} projection must be a PK-only certification seal plus "
+            "fixed terminal-receipt derivation"
+        )
     checkpoint = relations.get(contract.checkpoint_relation)
+    checkpoint_anchor = relations.get("publication_checkpoint_anchor")
     stage_relation = relations.get(contract.stage_relation)
     if (
         stage_relation is None
@@ -3329,8 +4017,15 @@ def _validate_publication_atomic_contract(
         or set(checkpoint.declared_keys) != {frozenset({"candidate_id", "stage"})}
         or not _has_fk(
             checkpoint,
+            ("candidate_id", "stage"),
+            "publication_checkpoint_seal",
+            ("candidate_id", "stage"),
+        )
+        or checkpoint_anchor is None
+        or not _has_fk(
+            checkpoint_anchor,
             ("stage",),
-            contract.stage_relation,
+            "publication_stage_seal",
             ("stage",),
         )
     ):
@@ -3339,6 +4034,7 @@ def _validate_publication_atomic_contract(
     expected_batch_keys = {
         frozenset({"candidate_id", "stage", "batch_key"}),
         frozenset({"candidate_id", "stage", "start_generation"}),
+        frozenset({"candidate_id", "stage", "committed_generation"}),
     }
     if (
         batch_receipt is None
@@ -3361,34 +4057,124 @@ def _validate_publication_atomic_contract(
         or set(batch_receipt.declared_keys) != expected_batch_keys
         or not _has_fk(
             batch_receipt,
-            ("candidate_id", "stage"),
-            contract.checkpoint_relation,
-            ("candidate_id", "stage"),
+            ("candidate_id", "stage", "start_generation"),
+            "publication_batch_receipt_seal",
+            ("candidate_id", "stage", "start_generation"),
         )
     ):
         errors.append(f"{prefix} batch receipt lacks exact replay response authority")
+    finalization_marker = relations.get("publication_commit_finalization")
+    finalization_checkpoint = relations.get("publication_finalization_checkpoint")
+    finalization_checkpoint_anchor = relations.get(
+        "publication_finalization_checkpoint_anchor"
+    )
+    finalization_receipt = relations.get("publication_finalization_batch_receipt")
+    commit_seal = relations.get("publication_commit_seal")
+    if (
+        finalization_marker is None
+        or finalization_marker.attributes != ("receipt_id",)
+        or set(finalization_marker.declared_keys) != {frozenset({"receipt_id"})}
+        or finalization_marker.functional_dependencies
+        or not _has_fk(
+            finalization_marker,
+            ("receipt_id",),
+            "publication_commit_seal",
+            ("receipt_id",),
+        )
+        or finalization_checkpoint is None
+        or set(finalization_checkpoint.attributes)
+        != {
+            "receipt_id",
+            "generation",
+            "cursor",
+            "processed_count",
+            "state",
+            "updated_at",
+        }
+        or set(finalization_checkpoint.declared_keys) != {frozenset({"receipt_id"})}
+        or finalization_checkpoint_anchor is None
+        or not _has_fk(
+            finalization_checkpoint_anchor,
+            ("receipt_id",),
+            "publication_commit_anchor",
+            ("receipt_id",),
+        )
+        or finalization_receipt is None
+        or set(finalization_receipt.attributes)
+        != {
+            "receipt_id",
+            "batch_key",
+            "start_generation",
+            "start_cursor",
+            "start_processed_count",
+            "next_cursor",
+            "next_processed_count",
+            "next_state",
+            "row_count",
+            "terminal",
+            "committed_generation",
+            "committed_at",
+        }
+        or set(finalization_receipt.declared_keys)
+        != {
+            frozenset({"receipt_id", "batch_key"}),
+            frozenset({"receipt_id", "start_generation"}),
+            frozenset({"receipt_id", "committed_generation"}),
+        }
+        or commit_seal is None
+        or not _has_fk(
+            commit_seal,
+            ("receipt_id",),
+            "publication_finalization_checkpoint_seal",
+            ("receipt_id",),
+        )
+    ):
+        errors.append(
+            f"{prefix} permanent receipt-owned finalization DAG is incomplete"
+        )
     finalization_terms = (
         "DB_COMMITTED",
         "never mass-update prepared_artifact",
-        "fixed FINALIZE_ARTIFACTS checkpoint",
+        "never use the transient candidate checkpoint or receipt",
+        "commit-owned permanent FINALIZE_ARTIFACTS checkpoint",
+        "initialized before publication_commit_seal",
         "publication_key keyset cursor",
         "processed_count",
-        "hard-capped transaction",
-        "PREPARED rows server-side",
-        "releases their exact protection tokens",
+        "maximum-128 page",
+        "issue read transaction",
+        "contiguous PREPARED rows plus protection tokens without mutation",
+        "outside every database transaction",
+        "separate commit transaction",
+        "exact-revalidates the same checkpoint generation/cursor",
+        "release acknowledgements",
         "COMMITTED",
-        "full publication_batch_receipt response tuple",
-        "exact batch_key retry",
+        "permanent receipt_id/start_generation response family with seal last",
+        "Exact batch_key or start_generation replay",
         "without writes",
-        "empty terminal batch alone",
-        "terminal=1 and COMPLETE",
-        "projection-seal prepared_artifact_count",
+        "after candidate cleanup or response loss",
+        "empty terminal page alone",
+        "terminal=1, row_count zero, next_state COMPLETE, checkpoint COMPLETE",
+        "PK-only publication_commit_finalization marker",
+        "terminal VALIDATE_PREPARED_ARTIFACT receipt count",
+        "exact COMPLETE checkpoint generation",
+        "finalized_at from that receipt committed_at",
+        "never from a stored marker timestamp, MAX, or an arbitrary terminal row",
         "PROJECTION_FINALIZED",
     )
     if contract.finalization_stage != "FINALIZE_ARTIFACTS" or any(
         term not in contract.finalization_rule for term in finalization_terms
     ):
         errors.append(f"{prefix} bounded artifact finalization protocol is incomplete")
+    if any(
+        forbidden in contract.finalization_rule
+        for forbidden in (
+            "each hard-capped transaction locks that checkpoint",
+            "full publication_batch_receipt response tuple",
+            "projection-seal prepared_artifact_count",
+            "advance publication_receipt from DB_COMMITTED",
+        )
+    ):
+        errors.append(f"{prefix} revives the transient in-transaction finalizer")
     publication_order = relations.get("catalog_publication_order")
     expected_order_keys = {
         frozenset({"revision", "position"}),
@@ -3402,7 +4188,7 @@ def _validate_publication_atomic_contract(
         or not _has_fk(
             publication_order,
             ("revision", "publication_key"),
-            "catalog_publication",
+            "catalog_publication_seal",
             ("revision", "publication_key"),
         )
     ):
@@ -3424,7 +4210,7 @@ def _validate_file_identity_contract(
         or contract.algorithm_version != 1
         or contract.role_classifier_version != 1
         or contract.metadata_name != "galleryinfo.txt"
-        or contract.collision_model != "collision_free_identity_domain"
+        or contract.collision_model != "collision_checked_stored_identity"
     ):
         errors.append(f"{prefix} has the wrong versioned identity/classifier shape")
     expected_framing = (
@@ -3675,6 +4461,7 @@ def _validate_gallery_observation_page_contract(
         "first_key and last_key",
         "file_name_identity",
         "content_blob",
+        "exact zero-based contiguous file_no",
         "gallery_observation_file_filesystem",
         "canonical tag-value payload",
         "sole row-level authority",
@@ -3683,9 +4470,15 @@ def _validate_gallery_observation_page_contract(
         "every nonregular DIRECTORY record to have no FILE record",
         "METADATA boundaries are exact u64be(byte_offset)",
         "next offset to equal the previous offset plus the exact previous chunk length",
+        "unsigned bytewise first_key less than or equal to last_key",
     )
     if any(term not in contract.materialization_rule for term in materialization_terms):
         errors.append(f"{prefix} exact decode materialization rule is incomplete")
+    if any(
+        term not in contract.collision_obligation
+        for term in ("byte-for-byte", "zero durable writes")
+    ):
+        errors.append(f"{prefix} collision mismatch rule is incomplete")
     metadata_terms = (
         "gallery-observation-metadata",
         "u8(field=1:title)",
@@ -3706,6 +4499,8 @@ def _validate_gallery_observation_page_contract(
             "exact receipted leaf-to-normalized-row coverage",
             "bounded scalar checkpoints",
             "never rescans",
+            "descriptor anchor, raw immutable page payload, component, level, and subtree-count fact",
+            "all semantic page readers require that descriptor seal",
         )
     ):
         errors.append(f"{prefix} final seal rule is incomplete")
@@ -3716,6 +4511,8 @@ def _validate_gallery_observation_page_contract(
         "outer maintenance gate",
         "skips FK-blocked rows",
         "repeats parent-level-first until convergence",
+        "bounds seal, facts, and anchor",
+        "descriptor seal, descriptor facts, raw page payload, and descriptor anchor",
     ):
         if term not in contract.cleanup_rule:
             errors.append(f"{prefix} cleanup rule omits {term!r}")
@@ -3822,17 +4619,22 @@ def _validate_title_sort_contract(
         errors.append(f"{prefix} runtime version obligation is incomplete")
     policy = relations.get(contract.policy_relation)
     display = relations.get(contract.display_policy_relation)
+    display_sort_member = relations.get("display_title_policy_title_sort_policy_id")
     sort = relations.get(contract.sort_relation)
     if policy is None or set(policy.declared_keys) != {
         frozenset({"title_sort_policy_id"}),
         frozenset({contract.algorithm_attribute, contract.unicode_attribute}),
     }:
         errors.append(f"{prefix} policy lacks ID and exact version keys")
-    if display is None or not _has_fk(
-        display,
-        ("title_sort_policy_id",),
-        contract.policy_relation,
-        ("title_sort_policy_id",),
+    if (
+        display is None
+        or display_sort_member is None
+        or not _has_fk(
+            display_sort_member,
+            ("title_sort_policy_id",),
+            "title_sort_policy_seal",
+            ("title_sort_policy_id",),
+        )
     ):
         errors.append(f"{prefix} display policy does not pin the sort policy")
     if sort is None or set(sort.declared_keys) != {
@@ -4202,12 +5004,38 @@ def _validate_operational_integrity_contracts(
         != {frozenset({"source_revision"}), frozenset({"preparation_id"})}
         or not _has_fk(
             activation,
+            ("source_revision",),
+            "publication_commit_source_revision",
+            ("source_revision",),
+        )
+        or not _has_fk(
+            activation,
             ("preparation_id",),
-            event.seal_relation,
+            "publication_commit_operational_preparation",
             ("preparation_id",),
         )
+        or not _has_fk(
+            activation,
+            ("operational_policy_id",),
+            "operational_policy",
+            ("operational_policy_id",),
+        )
+        or not isinstance(activation.materialization, Mapping)
+        or activation.materialization.get("storage") != "logical_view"
+        or activation.materialization.get("view_pattern")
+        != "publication_commit_activation"
+        or set(activation.materialization.get("derived_from", ()))
+        != {
+            "publication_commit_seal",
+            "publication_commit_source_revision",
+            "publication_commit_operational_preparation",
+            "publication_commit_operational_policy",
+            "publication_commit_committed_at",
+        }
     ):
-        errors.append("operational activation must reference the exact effect seal")
+        errors.append(
+            "operational activation must derive only from the sealed common commit"
+        )
     if (
         candidate_binding is None
         or set(candidate_binding.attributes)
@@ -4217,7 +5045,7 @@ def _validate_operational_integrity_contracts(
         or not _has_fk(
             candidate_binding,
             ("candidate_id",),
-            "publication_candidate",
+            "publication_candidate_definition_seal",
             ("candidate_id",),
         )
         or not _has_fk(
@@ -4567,11 +5395,7 @@ def _validate_transition_authority_contract(
         "publication_sha256",
     }
     expected_audit = {
-        "candidate_sha256",
-        "decision_sha256",
-        "evidence_sha256",
         "input_manifest_sha256",
-        "item_sha256",
         "manifest_sha256",
     }
     if authority.version != 1:
@@ -4605,9 +5429,15 @@ def _validate_transition_authority_contract(
         "exact immutable revision child projection and count",
     )
     ready_terms = (
-        "bounded",
-        "writer-hook name/version presence",
-        "never scans the full corpus",
+        "full SchemaAdmin.check deliberately performs a linear full-history scan",
+        "single sealed publication generation chain",
+        "exact node, successor-edge, and sealed-commit set equality",
+        "successor equals predecessor plus one",
+        "no fork, orphan, or gap",
+        "common-head equals the maximum tip",
+        "never scans the high-cardinality content corpus",
+        "quick check_readiness remains an epoch-only O(1) probe",
+        "fresh publication and replay remain tip-local O(1)",
         "future high-cardinality writes",
     )
     if any(term not in authority.runtime_obligation for term in runtime_terms):
@@ -4888,6 +5718,11 @@ def _validate_artifact_byte_producer_contract(
         "max_image_short_side" not in producer.runtime_obligation
         or "policy-v2" not in producer.runtime_obligation
         or "registered exact producer fingerprint" not in producer.runtime_obligation
+        or "derived exact producer equivalence class" not in producer.runtime_obligation
+        or "recompute the raw producer fingerprint frame and equivalence codec"
+        not in producer.runtime_obligation
+        or "reject every caller-supplied equivalence class"
+        not in producer.runtime_obligation
         or "every possible bit change" not in producer.runtime_obligation
         or "certified byte-equivalent" not in producer.runtime_obligation
         or "algorithm/resize/producer tuple change" not in producer.runtime_obligation
@@ -4911,6 +5746,20 @@ def _validate_artifact_byte_producer_contract(
             producer.producer_fingerprint_golden_sha256
         ):
             errors.append(f"{prefix} producer fingerprint golden does not hash")
+    expected_equivalence_framing = (
+        "ascii('h2hdb-vnext-artifact-producer-exact-equivalence-v1\\0') || "
+        "raw32(producer_fingerprint_sha256)"
+    )
+    if producer.producer_equivalence_class_framing != expected_equivalence_framing:
+        errors.append(f"{prefix} producer equivalence-class framing drifted")
+    expected_equivalence_golden = (
+        b"h2hdb-vnext-artifact-producer-exact-equivalence-v1\0"
+        + bytes.fromhex(
+            "7c12521923b06e72b031807d2d2d82b5bee38afafd408595b5d29ed31cfe892c"
+        )
+    ).hex()
+    if producer.producer_equivalence_class_golden_hex != expected_equivalence_golden:
+        errors.append(f"{prefix} producer equivalence-class golden drifted")
 
     policy = relation_by_name.get(producer.policy_relation)
     if policy is None:
@@ -4960,10 +5809,13 @@ def _validate_artifact_byte_producer_contract(
         }
         if set(policy.functional_dependencies) != expected_dependencies:
             errors.append(f"{prefix} policy relation has the wrong semantic FDs")
-        if not _has_fk(
-            policy,
+        policy_producer = relation_by_name.get(
+            "artifact_policy_semantics_producer_fingerprint_sha256"
+        )
+        if policy_producer is None or not _has_fk(
+            policy_producer,
             ("producer_fingerprint_sha256",),
-            producer.producer_relation,
+            "artifact_producer_fingerprint_seal",
             ("producer_fingerprint_sha256",),
         ):
             errors.append(f"{prefix} policy relation lacks producer FK")
@@ -4971,8 +5823,6 @@ def _validate_artifact_byte_producer_contract(
     producer_relation = relation_by_name.get(producer.producer_relation)
     producer_natural = frozenset(
         {
-            producer.algorithm_attribute,
-            "producer_equivalence_class",
             "writer_id",
             "python_abi",
             "pillow_build",
@@ -4984,14 +5834,56 @@ def _validate_artifact_byte_producer_contract(
         errors.append(f"{prefix} producer registry is missing")
     elif set(producer_relation.declared_keys) != {
         frozenset({"producer_fingerprint_sha256"}),
+        frozenset({"producer_equivalence_class"}),
         producer_natural,
     } or not _has_fk(
         producer_relation,
+        ("producer_fingerprint_sha256",),
+        "artifact_producer_fingerprint_seal",
+        ("producer_fingerprint_sha256",),
+    ):
+        errors.append(f"{prefix} producer registry view keys/seal are incomplete")
+    producer_algorithm = relation_by_name.get(
+        "artifact_producer_fingerprint_algorithm_version"
+    )
+    if producer_algorithm is None or not _has_fk(
+        producer_algorithm,
         (producer.algorithm_attribute,),
-        producer.zip_writer_policy_relation,
+        "artifact_zip_writer_policy_seal",
         (producer.algorithm_attribute,),
     ):
-        errors.append(f"{prefix} producer registry keys/FK are incomplete")
+        errors.append(f"{prefix} producer algorithm satellite lacks policy FK")
+    producer_identity = relation_by_name.get("artifact_producer_fingerprint_identity")
+    if producer_identity is None or set(producer_identity.declared_keys) != {
+        producer_natural,
+        frozenset({"producer_fingerprint_sha256"}),
+    }:
+        errors.append(f"{prefix} producer identity must key natural frame and digest")
+    producer_equivalence = relation_by_name.get(
+        "artifact_producer_fingerprint_equivalence_class"
+    )
+    expected_equivalence_keys = {
+        frozenset({"producer_fingerprint_sha256"}),
+        frozenset({"producer_equivalence_class"}),
+    }
+    expected_equivalence_fds = {
+        FunctionalDependency(
+            frozenset({"producer_fingerprint_sha256"}),
+            frozenset({"producer_equivalence_class"}),
+        ),
+        FunctionalDependency(
+            frozenset({"producer_equivalence_class"}),
+            frozenset({"producer_fingerprint_sha256"}),
+        ),
+    }
+    if (
+        producer_equivalence is None
+        or set(producer_equivalence.declared_keys) != expected_equivalence_keys
+        or set(producer_equivalence.functional_dependencies) != expected_equivalence_fds
+    ):
+        errors.append(
+            f"{prefix} producer equivalence codec must key both exact representations"
+        )
 
     zip_policy = relation_by_name.get(producer.zip_writer_policy_relation)
     if zip_policy is None or frozenset({producer.algorithm_attribute}) not in set(
@@ -5024,11 +5916,19 @@ def _validate_artifact_derived_identity_contracts(
         errors.append("artifact name contract is missing")
     else:
         name_relation = relation_by_name.get(name.relation)
-        expected_name_keys = {
+        expected_identity_keys = {
             frozenset({"publication_key"}),
-            frozenset({"publication_id"}),
             frozenset({name.gid_attribute}),
-            frozenset({name.name_attribute}),
+        }
+        expected_identity_fds = {
+            FunctionalDependency(
+                frozenset({"publication_key"}),
+                frozenset({name.gid_attribute}),
+            ),
+            FunctionalDependency(
+                frozenset({name.gid_attribute}),
+                frozenset({"publication_key"}),
+            ),
         }
         if (
             name.relation != "publication_identity"
@@ -5040,12 +5940,44 @@ def _validate_artifact_derived_identity_contracts(
             or name.golden_name_hex != b"h2h-7.cbz".hex()
             or "reject caller bytes" not in name.runtime_obligation
             or "positive GID" not in name.runtime_obligation
+            or "encode/decode round-trip" not in name.runtime_obligation
+            or "batch cap of 128" not in name.runtime_obligation
         ):
             errors.append("artifact name contract drifts from exact GID codec v1")
-        if name_relation is None or set(name_relation.declared_keys) != (
-            expected_name_keys
+        if (
+            name_relation is None
+            or name_relation.attributes != ("publication_key", name.gid_attribute)
+            or set(name_relation.declared_keys) != expected_identity_keys
+            or set(name_relation.functional_dependencies) != expected_identity_fds
+            or not _has_fk(
+                name_relation,
+                (name.gid_attribute,),
+                "gallery_upload_time",
+                (name.gid_attribute,),
+            )
         ):
-            errors.append("artifact name relation lacks four equivalent identity keys")
+            errors.append(
+                "publication identity must store only the collision-checked "
+                "publication-key/GID bijection with total upload-time authority"
+            )
+        domain_by_attribute = {
+            domain.attribute: domain for domain in contract.byte_domains
+        }
+        publication_id_domain = domain_by_attribute.get("publication_id")
+        if publication_id_domain is None or any(
+            term not in publication_id_domain.runtime_obligation
+            for term in (
+                "canonical positive signed-int63",
+                "encode/decode round-trip",
+                "SHA-256 publication_key",
+                "not assumed injective",
+                "full-compare the stored publication_key/GID pair",
+            )
+        ):
+            errors.append(
+                "publication-id codec must pin canonical round-trip and "
+                "collision-checked stored-pair validation"
+            )
 
     locator = contract.artifact_locator_contract
     expected_components = (
@@ -5147,6 +6079,10 @@ def _validate_artifact_derived_identity_contracts(
     else:
         prepared = relation_by_name.get(protection.relation)
         storage = relation_by_name.get(protection.storage_codec_relation)
+        token_fact = relation_by_name.get("prepared_artifact_protection_token")
+        codec_fact = relation_by_name.get("prepared_artifact_storage_codec_version")
+        generation_fact = relation_by_name.get("prepared_artifact_storage_generation")
+        state_fact = relation_by_name.get("prepared_artifact_state")
         if (
             protection.relation != "prepared_artifact"
             or protection.storage_codec_relation != "artifact_storage_codec"
@@ -5164,12 +6100,19 @@ def _validate_artifact_derived_identity_contracts(
             prepared is None
             or "protection_token" not in prepared.attributes
             or frozenset({"protection_token"}) not in prepared.declared_keys
+            or token_fact is None
+            or frozenset({"protection_token"}) not in token_fact.declared_keys
+            or codec_fact is None
             or not _has_fk(
-                prepared,
+                codec_fact,
                 ("storage_codec_version",),
-                protection.storage_codec_relation,
+                "artifact_storage_codec_seal",
                 ("storage_codec_version",),
             )
+            or generation_fact is None
+            or "storage_generation" not in generation_fact.attributes
+            or state_fact is None
+            or "state" not in state_fact.attributes
             or storage is None
         ):
             errors.append("prepared artifact lacks closed protection-token identity")
@@ -5281,8 +6224,8 @@ def _validate_artifact_member_plan_contract(
         "entry_kind is SOURCE_FILE=0",
         "source_role is METADATA=0 or CONTENT=1",
         "excluded entries have presence zero",
-        "source_file_sha256 is collision-free payload identity",
-        "bytes are rehashed and compared during prepare",
+        "source_file_sha256 is collision-checked stored payload identity",
+        "full bytes are rehashed, compared, and rejected on mismatch before immutable preparation seals",
         "reject every unknown tag",
         "bounded preflight/spool receipt",
         "payload_byte_count",
@@ -5359,13 +6302,20 @@ def _validate_artifact_member_plan_contract(
     if any(term not in plan.framing for term in framing_terms):
         errors.append(f"{prefix} framing is not an exact typed entry codec")
     relation = relation_by_name.get(plan.semantic_relation)
+    member_relation = relation_by_name.get(
+        "artifact_semantic_input_member_plan_component_sha256"
+    )
     if relation is None:
         errors.append(f"{prefix} references unknown semantic relation")
-    elif plan.component_attribute not in relation.attributes or not _has_fk(
-        relation,
-        (plan.component_attribute,),
-        plan.canonical_value_relation,
-        (plan.canonical_digest_attribute,),
+    elif (
+        plan.component_attribute not in relation.attributes
+        or member_relation is None
+        or not _has_fk(
+            member_relation,
+            (plan.component_attribute,),
+            plan.canonical_value_relation,
+            (plan.canonical_digest_attribute,),
+        )
     ):
         errors.append(
             f"{prefix} semantic relation does not reference canonical member-plan bytes"
@@ -5390,7 +6340,10 @@ def _validate_analysis_resolution_contract(
         "compaction": "depth_zero_full_shadow_at_limit_or_policy_change",
         "compaction_ancestry": "self_only",
         "cleanup_guard": "no_reachable_descendants",
-        "cleanup_transition": "remove_seal_then_ancestry_then_state",
+        "cleanup_transition": (
+            "remove_component_completion_seal_then_facts_then_ancestry_then_"
+            "analysis_descriptor"
+        ),
     }
     for field, value in expected.items():
         actual = getattr(resolution, field)
@@ -5448,16 +6401,26 @@ def _validate_analysis_resolution_contract(
         errors.append(f"{prefix} cursor codec framing is not closed-world")
     batch_rule_terms = (
         "all fifteen registered stages in exact stage_order",
-        "hard-capped batch",
+        "clamps caller max_rows to the positive server cap of 128",
         "server-side",
+        "compact start-generation-keyed receipt anchor",
+        "batch-key coordinate",
+        "stored page_limit and five response facts",
+        "seal last",
+        "checkpoint generation last",
         "same transaction",
-        "committed_generation is exactly start_generation plus one",
-        "next_processed_count is exactly start_processed_count plus row_count",
-        "full stored tuple without writes",
+        "derives committed_generation as start_generation plus one",
+        "next_processed_count as start_processed_count plus row_count",
+        "ignores retry caller max_rows",
+        "using only stored page_limit",
+        "returns without writes",
+        "all fifteen stages require this replay rule",
+        "formal coverage remains blocked",
         "terminal is one if and only if the derived page is empty",
         "next_state is COMPLETE",
         "nonterminal receipt has positive row_count",
-        "caller stage, cursor, count, terminal, state, digest, sequence, or receipt bytes never authorize mutation",
+        "caller stage, cursor, count, terminal, state, digest, sequence",
+        "never authorize mutation",
     )
     if any(term not in resolution.batch_rule for term in batch_rule_terms):
         errors.append(f"{prefix} batch receipt/CAS rule is incomplete")
@@ -5471,6 +6434,7 @@ def _validate_analysis_resolution_contract(
     ):
         errors.append(f"{prefix} stage registry lacks its exact BCNF shape")
     checkpoint = relation_by_name.get(resolution.checkpoint_relation)
+    checkpoint_anchor = relation_by_name.get("analysis_checkpoint_anchor")
     if (
         checkpoint is None
         or set(checkpoint.attributes)
@@ -5486,8 +6450,15 @@ def _validate_analysis_resolution_contract(
         or set(checkpoint.declared_keys) != {frozenset({"analysis_id", "stage"})}
         or not _has_fk(
             checkpoint,
+            ("analysis_id", "stage"),
+            "analysis_checkpoint_seal",
+            ("analysis_id", "stage"),
+        )
+        or checkpoint_anchor is None
+        or not _has_fk(
+            checkpoint_anchor,
             ("stage",),
-            resolution.stage_relation,
+            "analysis_stage_seal",
             ("stage",),
         )
     ):
@@ -5503,6 +6474,7 @@ def _validate_analysis_resolution_contract(
             "start_generation",
             "start_cursor",
             "start_processed_count",
+            "page_limit",
             "next_cursor",
             "next_processed_count",
             "next_state",
@@ -5515,12 +6487,13 @@ def _validate_analysis_resolution_contract(
         != {
             frozenset({"analysis_id", "stage", "batch_key"}),
             frozenset({"analysis_id", "stage", "start_generation"}),
+            frozenset({"analysis_id", "stage", "committed_generation"}),
         }
         or not _has_fk(
             receipt,
-            ("analysis_id", "stage"),
-            resolution.checkpoint_relation,
-            ("analysis_id", "stage"),
+            ("analysis_id", "stage", "start_generation"),
+            "analysis_batch_receipt_seal",
+            ("analysis_id", "stage", "start_generation"),
         )
     ):
         errors.append(f"{prefix} receipt lacks exact pre/post replay authority")
@@ -5551,19 +6524,13 @@ def _validate_analysis_resolution_contract(
             "same_policy_or_depth_zero_compaction"
         ):
             errors.append(f"{prefix} anchor relation permits cross-policy inheritance")
-        if set(anchor_metadata.get("derived_from", ())) != {
-            "analysis_run",
-            "analysis_baseline",
-        }:
-            errors.append(f"{prefix} anchor relation has a cyclic dependency graph")
-        if not all(
-            token in anchor_metadata.get("parent_anchor_precondition", "")
-            for token in ("base_analysis_id", "parent", "never read this run")
-        ) or not all(
-            token in anchor_metadata.get("sealed_parent_precondition", "")
-            for token in ("five", "base_analysis_id", "before")
+        if (
+            anchor_metadata.get("storage") != "logical_view"
+            or anchor_metadata.get("view_pattern") != "analysis_ancestry_endpoint"
+            or set(anchor_metadata.get("derived_from", ()))
+            != {"analysis_state_ancestry"}
         ):
-            errors.append(f"{prefix} anchor lacks exact sealed-parent preconditions")
+            errors.append(f"{prefix} anchor relation has a cyclic dependency graph")
 
     ancestry = relation_by_name.get(resolution.ancestry_relation)
     if ancestry is None or not {
@@ -5588,12 +6555,16 @@ def _validate_analysis_resolution_contract(
             )
         if set(ancestry_metadata.get("derived_from", ())) != {
             "analysis_baseline",
-            "analysis_state_anchor",
+            "analysis_state_component_completion_seal",
         }:
             errors.append(f"{prefix} ancestry relation has a cyclic dependency graph")
         if not all(
             token in ancestry_metadata.get("parent_ancestry_precondition", "")
-            for token in ("base_analysis_id", "sealed parent", "never read this run")
+            for token in (
+                "base_analysis_id",
+                "five parent",
+                "never read this run",
+            )
         ):
             errors.append(f"{prefix} ancestry lacks an exact parent-only precondition")
 
@@ -5770,10 +6741,16 @@ def _validate_analysis_resolution_contract(
             )
 
     seal = relation_by_name.get(resolution.seal_relation)
-    if seal is None:
+    seal_view = relation_by_name.get("analysis_state_component_seal")
+    if seal is None or seal_view is None:
         errors.append(f"{prefix} references unknown seal relation")
     else:
-        metadata = seal.materialization or {}
+        if (
+            seal.attributes != ("analysis_id", "state_component")
+            or seal.functional_dependencies
+        ):
+            errors.append(f"{prefix} completion seal must be PK-only")
+        metadata = seal_view.materialization or {}
         if metadata.get("completion_gate") != "all_configured_components":
             errors.append(f"{prefix} seal does not gate all components")
         if metadata.get("policy_compatibility") != (
@@ -5800,7 +6777,7 @@ _SEMANTIC_CLASSIFICATIONS = frozenset(
         "aggregate_count",
         "audit_digest",
         "canonical_identity_digest",
-        "comparator_key",
+        "comparator_digest",
         "domain_identifier",
         "domain_discriminator",
         "fencing_counter",
@@ -5827,6 +6804,10 @@ def _validate_byte_domains(
         for relation in relation_by_name.values()
         for attribute in relation.attributes
     }
+    # Strict boundary codecs are intentionally derived and therefore have no
+    # stored relation column.  They remain closed byte domains with executable
+    # round-trip obligations.
+    used_attributes.update({"publication_id", "artifact_name"})
     domains: dict[str, ByteDomain] = {}
     for domain in contract.byte_domains:
         prefix = f"byte domain {domain.attribute!r}"
@@ -5851,13 +6832,12 @@ def _validate_byte_domains(
             "name_bytes": 255,
             "artifact_name": 255,
             "publication_id": 64,
-            "artifact_id": 128,
             "namespace": 128,
             "metadata_fingerprint": 40,
             "cursor": 2048,
             "protection_token": 184,
             "adapter_id": 64,
-            "producer_equivalence_class": 128,
+            "producer_equivalence_class": 83,
             "writer_id": 128,
             "python_abi": 128,
             "pillow_build": 128,
@@ -5877,6 +6857,7 @@ def _validate_byte_domains(
         "metadata_fingerprint": "filesystem_stat_fingerprint_v1",
         "cursor": "server_owned_checkpoint_cursor_registry_v1",
         "protection_token": "artifact_projection_protection_token_v1",
+        "producer_equivalence_class": "artifact_producer_exact_equivalence_v1",
     }
     for attribute, source in exact_sources.items():
         registered_domain = domains.get(attribute)
@@ -5888,6 +6869,17 @@ def _validate_byte_domains(
         for term in ("exactly", "raw8(device_u64)", "40 bytes", "audit-only")
     ):
         errors.append("byte domain 'metadata_fingerprint' lacks its exact codec")
+    producer_equivalence = domains.get("producer_equivalence_class")
+    if producer_equivalence is not None and not all(
+        term in producer_equivalence.runtime_obligation
+        for term in (
+            "ascii('h2hdb-vnext-artifact-producer-exact-equivalence-v1\\0')",
+            "raw32(producer_fingerprint_sha256)",
+            "exactly 83 bytes",
+            "reject every caller-supplied equivalence class",
+        )
+    ):
+        errors.append("byte domain 'producer_equivalence_class' lacks its exact codec")
     return errors
 
 
@@ -5907,7 +6899,7 @@ def _validate_canonical_digest_contract(
             "u32be(digest_domain_length) || digest_domain_ascii || "
             "u64be(payload_length) || payload"
         ),
-        "collision_model": "collision_free_identity_domain",
+        "collision_model": "collision_checked_stored_identity",
     }
     for field, value in expected.items():
         if getattr(digest, field) != value:
@@ -6004,6 +6996,8 @@ def _validate_canonical_digest_contract(
             "byte-for-byte",
             "inserted last",
             "child-first",
+            "zero durable writes",
+            "both historical page views expose exactly the same complete page family",
         ):
             if term not in terms:
                 errors.append(f"{prefix} page graph omits {term!r}")
@@ -6122,21 +7116,21 @@ def _validate_source_locator_contract(
     return errors
 
 
-_ANALYSIS_CANDIDATE_PRIORITY_FRAMING_V1 = (
-    "ascii('h2hdb-vnext-analysis-candidate-priority\\0') || "
-    "u32be(encoding_version=1) || u8(candidate_kind: "
-    "CONTENT_OWNER=0,GID_WINNER=1) || u8(prefer_not_already_uploaded: "
-    "marker_absent=1,marker_present=0) || "
-    "u64be(unicode_scalar_title_length_int63) || u64be(download_time_int63) || "
-    "if candidate_kind=CONTENT_OWNER then u64be(gid_positive_int63); the kind "
-    "fixes the exact frame length and trailing bytes are forbidden"
+_ANALYSIS_CONTENT_CANDIDATE_ORDERING_RULE_V1 = (
+    "within each content_sha256 group select the unsigned lexicographically greatest "
+    "tuple (prefer_not_already_uploaded, title_scalar_count, download_time, derived "
+    "gid, derived scope_key, derived locator_sha256), all descending; derive gid "
+    "through gallery_source_name_access joined to source_gallery_name_gid and "
+    "scope_key/locator_sha256 through gallery_identity_coordinate; no persisted "
+    "packed priority or audit digest is authority"
 )
-_ANALYSIS_CANDIDATE_ORDERING_RULE_V1 = (
-    "within each candidate relation and group select the lexicographically greatest "
-    "tuple (priority_key, scope_key, locator_sha256), comparing every byte string "
-    "unsigned bytewise; the SQL equivalent is ORDER BY priority_key DESC, scope_key "
-    "DESC, locator_sha256 DESC; no collation, truncation, reversal, or incumbent "
-    "input is permitted"
+_ANALYSIS_GID_CANDIDATE_ORDERING_RULE_V1 = (
+    "within each immutable metadata GID group select the unsigned "
+    "lexicographically greatest tuple (prefer_not_already_uploaded, "
+    "title_scalar_count, download_time, scope_key, locator_sha256), all "
+    "descending; candidate rows store membership only, winner rows store only "
+    "the selected gallery, and GID is derived through the analysis-pinned build "
+    "metadata and frozen impacted-GID keyset"
 )
 _ANALYSIS_CANDIDATE_MARKER_RULE_V1 = (
     "the marker is exact ASCII bytes already uploaded; compare every exact "
@@ -6144,36 +7138,113 @@ _ANALYSIS_CANDIDATE_MARKER_RULE_V1 = (
     "namespace; do not apply Unicode casefold, normalization, locale, collation, "
     "or trimming; any marker match encodes zero and absence encodes one"
 )
-_ANALYSIS_CANDIDATE_DIGEST_FRAMING_V1 = (
-    "candidate_sha256 = SHA256(ascii('h2hdb-vnext-analysis-candidate-audit\\0') "
-    "|| u32be(encoding_version=1) || u8(candidate_kind: "
-    "CONTENT_OWNER=0,GID_WINNER=1) || raw16(analysis_id) || if CONTENT_OWNER "
-    "raw32(content_sha256) else u64be(gid_positive_int63) || exact canonical "
-    "priority_key of the same kind || raw32(scope_key) || raw32(locator_sha256)); "
-    "the kind fixes every field boundary, exact EOF is required, and the digest is "
-    "audit-only"
-)
 _ANALYSIS_CANDIDATE_RUNTIME_OBLIGATION_V1 = (
-    "production streams the exact canonical title pages through "
-    "StrictUtf8ScalarCounter and count_analysis_title_scalars to obtain one fixed "
-    "AnalysisTitleScalarReceipt without materializing unbounded title bytes; "
-    "the private production _encode_streamed_candidate_priority adapter first "
-    "validates the exact metadata tree, then drives a second bounded page stream "
-    "into that receipt and must remain byte-equal to the public reference encoder; "
-    "encode_analysis_candidate_priority and validate_analysis_candidate_priority "
-    "accept only that fixed scalar receipt, while "
-    "decode_analysis_candidate_priority validates the stored frame over immutable "
-    "snapshot facts; "
-    "analysis_candidate_has_already_uploaded implements the exact ASCII-only marker "
-    "rule; analysis_candidate_total_order_key implements the unsigned lexicographic "
-    "maximum over priority_key, scope_key, and locator_sha256; "
-    "analysis_content_candidate_digest and analysis_gid_candidate_digest construct "
-    "candidate_sha256 solely as the exact audit frame; reject monolithic production "
-    "title bytes, gallery_id, unique "
-    "gallery location, incumbent state, leaf name, allocation order, Unicode "
-    "database behavior, collation, truncation, caller bytes, or candidate_sha256 as "
-    "comparator authority"
+    "production streams exact canonical title pages through StrictUtf8ScalarCounter; "
+    "content candidates persist and replay only content_sha256, "
+    "prefer_not_already_uploaded, title_scalar_count, and download_time and derive "
+    "gid/scope_key/locator_sha256 from immutable sealed authority at comparison "
+    "time; GID candidates persist membership only, winner selection persists only "
+    "winner_gallery_id, and bounded set queries derive the exact GID group and "
+    "five-field maximum from the analysis-pinned build, resolved content atoms, "
+    "gallery identity coordinates, and impacted-GID keyset; reject monolithic title "
+    "bytes, packed comparator bytes, allocation order, collation, truncation, caller "
+    "comparator bytes, or any audit digest as authority"
 )
+_ANALYSIS_CONTENT_CANDIDATE_FACT_AUTHORITIES_V1 = {
+    "analysis_content_owner_candidate_shadow_content_sha256": (
+        frozenset(
+            {
+                "analysis_impacted_gallery",
+                "analysis_run_build_id",
+                "analysis_run_policy_id",
+                "analysis_policy",
+                "source_build_gallery",
+                "gallery_observation_file",
+                "file_name_identity",
+                "analysis_file_hash_decision_resolved",
+            }
+        ),
+        "for the candidate analysis_id, use analysis_run_build_id to bind the "
+        "current build and source_build_gallery to its one terminal observation "
+        "for the impacted gallery; stream only file_name_identity.file_role = "
+        "CONTENT rows from that observation, recompute excluded from the atomic "
+        "analysis_file_hash_decision_resolved counts under analysis_run_policy_id "
+        "and sealed analysis_policy thresholds, then frame the ordered "
+        "non-excluded hashes with the registered effective-content codec; "
+        "insert once and exact-compare on replay",
+    ),
+    "analysis_content_owner_candidate_shadow_prefer_not_already_uploaded": (
+        frozenset(
+            {
+                "analysis_impacted_gallery",
+                "analysis_run_build_id",
+                "source_build_gallery",
+                "gallery_observation_tag",
+                "tag_term_identity",
+                "canonical_value_identity",
+                "canonical_value_allocation",
+                "canonical_value_page",
+                "canonical_value_page_descriptor",
+                "canonical_value_page_parent",
+            }
+        ),
+        "for the candidate analysis_id, use analysis_run_build_id and "
+        "source_build_gallery to bind the impacted gallery to its one terminal "
+        "current observation; join only that observation's tags through "
+        "tag_term_identity, require canonical_value_allocation.digest_domain = "
+        "tag_value_utf8_v1, stream and digest-validate every exact canonical tag "
+        "value through canonical_value_identity, canonical_value_allocation, "
+        "canonical_value_page, canonical_value_page_descriptor, and "
+        "canonical_value_page_parent to exact EOF, "
+        "compare strict-UTF-8 bytes after ASCII A-Z folding only while ignoring "
+        "namespace, and store zero on the exact already uploaded marker match or "
+        "one on absence; insert once and exact-compare on replay",
+    ),
+    "analysis_content_owner_candidate_shadow_title_scalar_count": (
+        frozenset(
+            {
+                "analysis_impacted_gallery",
+                "analysis_run_build_id",
+                "source_build_gallery",
+                "gallery_observation_tree_root",
+                "gallery_observation_page_descriptor",
+                "gallery_observation_page",
+                "gallery_observation_page_child",
+            }
+        ),
+        "for the candidate analysis_id, use analysis_run_build_id and "
+        "source_build_gallery to bind the impacted gallery to its one terminal "
+        "current observation; select exactly one METADATA root and traverse only "
+        "sealed gallery_observation_page_descriptor, gallery_observation_page, "
+        "and gallery_observation_page_child facts while validating page digests, "
+        "descriptor equality, contiguous offsets, and exact EOF; stream the "
+        "framed title bytes through StrictUtf8ScalarCounter and never treat "
+        "gallery_observation_metadata as title authority; insert once and "
+        "exact-compare on replay",
+    ),
+    "analysis_content_owner_candidate_shadow_download_time": (
+        frozenset(
+            {
+                "analysis_impacted_gallery",
+                "analysis_run_build_id",
+                "source_build_gallery",
+                "gallery_observation_download_time",
+                "gallery_observation_tree_root",
+                "gallery_observation_page_descriptor",
+                "gallery_observation_page",
+                "gallery_observation_page_child",
+            }
+        ),
+        "for the candidate analysis_id, use analysis_run_build_id and "
+        "source_build_gallery to bind the impacted gallery to its one terminal "
+        "current observation; select exactly one METADATA root, replay the sealed "
+        "gallery_observation_page_descriptor, gallery_observation_page, and "
+        "gallery_observation_page_child stream to exact EOF, decode its "
+        "download_time, and exact-compare that value with the same observation's "
+        "gallery_observation_download_time fact; insert once and exact-compare on "
+        "replay",
+    ),
+}
 
 
 def _validate_analysis_candidate_contract(
@@ -6183,38 +7254,508 @@ def _validate_analysis_candidate_contract(
     errors: list[str] = []
     prefix = "analysis candidate contract"
     expected_scalar_shape = (
-        candidate.content_relation == "analysis_content_owner_candidate"
-        and candidate.gid_relation == "analysis_gid_candidate"
-        and candidate.gallery_relation == "gallery_identity"
-        and candidate.priority_attribute == "priority_key"
-        and candidate.candidate_digest_attribute == "candidate_sha256"
-        and candidate.stable_tie_break_attributes == ("scope_key", "locator_sha256")
-        and candidate.encoding_version == 1
+        candidate.content_relation == "analysis_content_owner_candidate_resolved"
+        and candidate.content_group_attribute == "content_sha256"
+        and candidate.content_gallery_attribute == "gallery_id"
+        and candidate.content_stored_order_attributes
+        == (
+            "prefer_not_already_uploaded",
+            "title_scalar_count",
+            "download_time",
+        )
+        and candidate.content_derived_order_attributes
+        == ("gid", "scope_key", "locator_sha256")
+        and candidate.content_gid_access_relation == "gallery_source_name_access"
+        and candidate.content_gid_relation == "source_gallery_name_gid"
+        and candidate.content_coordinate_relation == "gallery_identity_coordinate"
+        and candidate.gid_candidate_membership_relation
+        == "analysis_gid_candidate_resolved"
+        and candidate.gid_winner_selection_relation == "analysis_gid_winner_selection"
+        and candidate.gid_winner_shadow_relation == "analysis_gid_winner_shadow"
+        and candidate.gid_keyset_relation == "analysis_impacted_gid"
+        and candidate.gid_run_build_relation == "analysis_run_build_id"
+        and candidate.gid_build_membership_relation == "source_build_gallery"
+        and candidate.gid_metadata_relation == "gallery_observation_metadata"
+        and candidate.gid_order_attributes
+        == (
+            "prefer_not_already_uploaded",
+            "title_scalar_count",
+            "download_time",
+            "scope_key",
+            "locator_sha256",
+        )
     )
     exact_codec = (
-        candidate.framing == _ANALYSIS_CANDIDATE_PRIORITY_FRAMING_V1
-        and candidate.ordering_rule == _ANALYSIS_CANDIDATE_ORDERING_RULE_V1
+        candidate.content_ordering_rule == _ANALYSIS_CONTENT_CANDIDATE_ORDERING_RULE_V1
+        and candidate.gid_ordering_rule == _ANALYSIS_GID_CANDIDATE_ORDERING_RULE_V1
         and candidate.already_uploaded_marker_rule == _ANALYSIS_CANDIDATE_MARKER_RULE_V1
-        and candidate.candidate_digest_framing == _ANALYSIS_CANDIDATE_DIGEST_FRAMING_V1
         and candidate.runtime_obligation == _ANALYSIS_CANDIDATE_RUNTIME_OBLIGATION_V1
     )
     if not expected_scalar_shape or not exact_codec:
         errors.append(f"{prefix} must equal the closed executable v1 codec")
-    gallery = relation_by_name.get(candidate.gallery_relation)
-    if gallery is None or not {
-        "gallery_id",
-        *candidate.stable_tie_break_attributes,
-    } <= set(gallery.attributes):
-        errors.append(f"{prefix} references no complete gallery location identity")
-    for relation_name in (candidate.content_relation, candidate.gid_relation):
-        relation = relation_by_name.get(relation_name)
-        if relation is None or not {
-            "analysis_id",
-            "gallery_id",
-            candidate.priority_attribute,
-            candidate.candidate_digest_attribute,
-        } <= set(relation.attributes):
-            errors.append(f"{prefix} relation {relation_name!r} lacks comparator facts")
+    content = relation_by_name.get(candidate.content_relation)
+    expected_content_attributes = {
+        "analysis_id",
+        candidate.content_gallery_attribute,
+        candidate.content_group_attribute,
+        *candidate.content_stored_order_attributes,
+    }
+    if content is None or set(content.attributes) != expected_content_attributes:
+        errors.append(f"{prefix} content relation lacks its exact four stored facts")
+    elif not _has_fk(
+        content,
+        (candidate.content_group_attribute,),
+        "canonical_value_identity",
+        ("value_sha256",),
+    ):
+        errors.append(f"{prefix} content group lacks canonical payload authority")
+    for relation_name, (
+        expected_sources,
+        expected_refresh,
+    ) in _ANALYSIS_CONTENT_CANDIDATE_FACT_AUTHORITIES_V1.items():
+        fact = relation_by_name.get(relation_name)
+        metadata = fact.materialization if fact is not None else None
+        sources = (
+            tuple(metadata.get("derived_from", ()))
+            if isinstance(metadata, Mapping)
+            else ()
+        )
+        refresh = (
+            str(metadata.get("refresh_strategy", ""))
+            if isinstance(metadata, Mapping)
+            else ""
+        )
+        if (
+            fact is None
+            or not isinstance(metadata, Mapping)
+            or metadata.get("authoritative") is not False
+            or len(sources) != len(expected_sources)
+            or frozenset(sources) != expected_sources
+            or refresh != expected_refresh
+        ):
+            errors.append(
+                f"{prefix} fact {relation_name!r} must retain its exact current-"
+                "observation authority and replay path"
+            )
+    access = relation_by_name.get(candidate.content_gid_access_relation)
+    gid_lookup = relation_by_name.get(candidate.content_gid_relation)
+    coordinate = relation_by_name.get(candidate.content_coordinate_relation)
+    if (
+        access is None
+        or not {"gallery_id", "source_gallery_name"} <= set(access.attributes)
+        or gid_lookup is None
+        or not {"source_gallery_name", "gid"} <= set(gid_lookup.attributes)
+        or coordinate is None
+        or not {"gallery_id", "scope_key", "locator_sha256"}
+        <= set(coordinate.attributes)
+    ):
+        errors.append(f"{prefix} lacks the exact immutable derived-order joins")
+    membership = relation_by_name.get(candidate.gid_candidate_membership_relation)
+    selection = relation_by_name.get(candidate.gid_winner_selection_relation)
+    shadow = relation_by_name.get(candidate.gid_winner_shadow_relation)
+    keyset = relation_by_name.get(candidate.gid_keyset_relation)
+    run_build = relation_by_name.get(candidate.gid_run_build_relation)
+    build_membership = relation_by_name.get(candidate.gid_build_membership_relation)
+    gid_metadata = relation_by_name.get(candidate.gid_metadata_relation)
+    if (
+        membership is None
+        or set(membership.attributes) != {"analysis_id", "gallery_id"}
+        or set(membership.declared_keys) != {frozenset({"analysis_id", "gallery_id"})}
+        or membership.functional_dependencies
+    ):
+        errors.append(f"{prefix} GID candidates must store membership only")
+    if (
+        selection is None
+        or set(selection.attributes) != {"analysis_id", "winner_gallery_id"}
+        or set(selection.declared_keys)
+        != {frozenset({"analysis_id", "winner_gallery_id"})}
+        or selection.functional_dependencies
+    ):
+        errors.append(f"{prefix} GID winner base must store only the selection key")
+    expected_shadow_sources = {
+        "analysis_gid_winner_selection",
+        "analysis_impacted_gid",
+        "analysis_run_build_id",
+        "source_build_gallery",
+        "gallery_observation_metadata",
+    }
+    shadow_materialization = shadow.materialization if shadow is not None else None
+    if (
+        shadow is None
+        or set(shadow.attributes) != {"analysis_id", "gid", "winner_gallery_id"}
+        or not isinstance(shadow_materialization, Mapping)
+        or shadow_materialization.get("storage") != "logical_view"
+        or shadow_materialization.get("view_pattern") != "analysis_gid_winner_keyset"
+        or set(shadow_materialization.get("derived_from", ()))
+        != expected_shadow_sources
+    ):
+        errors.append(f"{prefix} GID winner shadow must be the exact derived keyset")
+    if keyset is None or set(keyset.attributes) != {"analysis_id", "gid"}:
+        errors.append(f"{prefix} lacks its frozen impacted-GID keyset")
+    if (
+        run_build is None
+        or not {"analysis_id", "build_id"} <= set(run_build.attributes)
+        or build_membership is None
+        or not {"build_id", "gallery_id", "observation_id"}
+        <= set(build_membership.attributes)
+        or gid_metadata is None
+        or not {"gallery_id", "observation_id", "gid"} <= set(gid_metadata.attributes)
+    ):
+        errors.append(f"{prefix} lacks its exact pinned-build GID derivation path")
+    if (
+        "analysis_gid_candidate" in relation_by_name
+        or "analysis_gid_winner" in relation_by_name
+    ):
+        errors.append(f"{prefix} must delete the write-only direct GID relations")
+    return errors
+
+
+_IMPACTED_KEY_WITNESS_RULE_V1 = (
+    "witness.gallery_id = MIN(provenance.gallery_id) for the same analysis/key"
+)
+_IMPACTED_KEY_APPEND_RULE_V1 = (
+    "population pages are strictly increasing by gallery_id; first insert fixes the "
+    "final minimum witness; after seal only provenance may append and every appended "
+    "gallery_id must be greater than the witness"
+)
+_IMPACTED_KEY_REPLAY_RULE_V1 = (
+    "exact-compare the complete old/new key set for every selected gallery, reject "
+    "missing or extra provenance and any witness change, and perform zero DML"
+)
+
+
+def _validate_analysis_impacted_key_contract(
+    contract: AnalysisImpactedKeyContract | None,
+    relation_by_name: Mapping[str, Relation],
+    vertical_families: tuple[VerticalFamily, ...],
+    retention_targets: tuple[RetentionTarget, ...],
+    resolution: AnalysisResolutionContract | None,
+) -> list[str]:
+    """Close the page-local provenance and deterministic MIN-witness protocol."""
+
+    if contract is None:
+        return ["data contract must declare analysis_impacted_key_contract"]
+    errors: list[str] = []
+    prefix = "analysis impacted-key contract"
+    if (
+        contract.version != 1
+        or contract.maximum_page_galleries != 128
+        or contract.maximum_provenance_rows != 257
+        or contract.witness_rule != _IMPACTED_KEY_WITNESS_RULE_V1
+        or contract.append_rule != _IMPACTED_KEY_APPEND_RULE_V1
+        or contract.replay_rule != _IMPACTED_KEY_REPLAY_RULE_V1
+        or contract.cleanup_rule != "seal_then_witness_then_provenance_then_anchor"
+    ):
+        errors.append(
+            f"{prefix} must pin the bounded 128-gallery/257-row MIN-witness v1 protocol"
+        )
+
+    expected_families = {
+        "content": AnalysisImpactedKeyFamily(
+            name="content",
+            key_attribute="content_sha256",
+            anchor_relation="analysis_impacted_content_anchor",
+            provenance_relation="analysis_impacted_content_provenance",
+            witness_relation="analysis_impacted_content_witness",
+            seal_relation="analysis_impacted_content_seal",
+            view_relation="analysis_impacted_content",
+            provenance_primary_key=("analysis_id", "gallery_id", "content_sha256"),
+            provenance_lookup_index=("analysis_id", "content_sha256", "gallery_id"),
+            witness_primary_key=("analysis_id", "content_sha256"),
+            witness_fk_attributes=(
+                "analysis_id",
+                "witness_gallery_id",
+                "content_sha256",
+            ),
+            population_stage="impacted_content",
+            population_cursor_attribute="gallery_id",
+            downstream_stage="content_owner",
+            downstream_cursor_attribute="content_sha256",
+        ),
+        "gid": AnalysisImpactedKeyFamily(
+            name="gid",
+            key_attribute="gid",
+            anchor_relation="analysis_impacted_gid_anchor",
+            provenance_relation="analysis_impacted_gid_provenance",
+            witness_relation="analysis_impacted_gid_witness",
+            seal_relation="analysis_impacted_gid_seal",
+            view_relation="analysis_impacted_gid",
+            provenance_primary_key=("analysis_id", "gallery_id", "gid"),
+            provenance_lookup_index=("analysis_id", "gid", "gallery_id"),
+            witness_primary_key=("analysis_id", "gid"),
+            witness_fk_attributes=("analysis_id", "witness_gallery_id", "gid"),
+            population_stage="impacted_gid",
+            population_cursor_attribute="gallery_id",
+            downstream_stage="gid_winner",
+            downstream_cursor_attribute="gid",
+        ),
+    }
+    family_by_name = {family.name: family for family in contract.families}
+    if (
+        len(family_by_name) != len(contract.families)
+        or family_by_name != expected_families
+    ):
+        errors.append(f"{prefix} family registry must equal content plus GID exactly")
+
+    vertical_by_name = {family.name: family for family in vertical_families}
+
+    def fk_shapes(
+        relation: Relation,
+    ) -> set[tuple[tuple[str, ...], str, tuple[str, ...]]]:
+        return {
+            (
+                foreign_key.attributes,
+                foreign_key.relation,
+                foreign_key.referenced_attributes,
+            )
+            for foreign_key in relation.foreign_keys
+        }
+
+    expected_sources = {
+        "content": {
+            "analysis_impacted_gallery",
+            "analysis_baseline",
+            "analysis_content_owner_candidate_resolved",
+            "analysis_run_build_id",
+            "analysis_run_policy_id",
+            "analysis_policy",
+            "source_build_gallery",
+            "analysis_file_hash_decision_resolved",
+            "gallery_observation_file",
+            "file_name_identity",
+            "gallery_manifest",
+        },
+        "gid": {
+            "analysis_impacted_gallery",
+            "analysis_baseline",
+            "analysis_run_build_id",
+            "source_build_gallery",
+            "gallery_observation_metadata",
+            "analysis_gid_candidate_resolved",
+            "analysis_content_owner_resolved",
+            "gallery_source_name_access",
+            "source_gallery_name_gid",
+        },
+    }
+    for name, expected in expected_families.items():
+        family = family_by_name.get(name)
+        if family is None:
+            continue
+        key = ("analysis_id", family.key_attribute)
+        anchor = relation_by_name.get(family.anchor_relation)
+        provenance = relation_by_name.get(family.provenance_relation)
+        witness = relation_by_name.get(family.witness_relation)
+        seal = relation_by_name.get(family.seal_relation)
+        view = relation_by_name.get(family.view_relation)
+        if None in (anchor, provenance, witness, seal, view):
+            errors.append(f"{prefix} family {name!r} references missing relations")
+            continue
+        assert anchor is not None
+        assert provenance is not None
+        assert witness is not None
+        assert seal is not None
+        assert view is not None
+        if (
+            anchor.kind != "source_of_truth"
+            or anchor.attributes != key
+            or anchor.declared_keys != (frozenset(key),)
+            or anchor.functional_dependencies
+        ):
+            errors.append(f"{prefix} family {name!r} anchor is not the exact key")
+        expected_provenance_fks = {
+            (key, family.anchor_relation, key),
+            (
+                ("analysis_id", "gallery_id"),
+                "analysis_impacted_gallery",
+                ("analysis_id", "gallery_id"),
+            ),
+        }
+        if (
+            provenance.attributes != family.provenance_primary_key
+            or provenance.declared_keys != (frozenset(family.provenance_primary_key),)
+            or provenance.functional_dependencies
+            or fk_shapes(provenance) != expected_provenance_fks
+        ):
+            errors.append(
+                f"{prefix} family {name!r} provenance must be one FD-free "
+                "analysis/gallery/key mapping scoped to an impacted gallery"
+            )
+        provenance_metadata = provenance.materialization
+        provenance_sources = (
+            set(provenance_metadata.get("derived_from", ()))
+            if isinstance(provenance_metadata, Mapping)
+            else set()
+        )
+        provenance_refresh = (
+            str(provenance_metadata.get("refresh_strategy", ""))
+            if isinstance(provenance_metadata, Mapping)
+            else ""
+        )
+        if provenance_sources != expected_sources[name] or any(
+            term not in provenance_refresh
+            for term in (
+                "append only",
+                "strictly increasing gallery_id",
+                "complete selected-gallery key set",
+                "zero DML",
+            )
+        ):
+            errors.append(
+                f"{prefix} family {name!r} provenance authority/replay rule drifts"
+            )
+        authority_terms = (
+            (
+                "analysis_baseline.base_analysis_id",
+                "baseline candidate overlay",
+                "genesis absence",
+                "current analysis_run_build_id",
+                "file_name_identity.file_role",
+                "only CONTENT files",
+                "current analysis_run_policy_id",
+                "sealed analysis_policy",
+            )
+            if name == "content"
+            else (
+                "analysis_gid_candidate_resolved only to delimit old membership",
+                "analysis_baseline",
+                "baseline analysis_run_build_id",
+                "current analysis_run_build_id",
+            )
+        )
+        if any(term not in provenance_refresh for term in authority_terms):
+            errors.append(
+                f"{prefix} family {name!r} does not separate immutable old/new "
+                "authority across downstream replay"
+            )
+        expected_witness_fd = FunctionalDependency(
+            frozenset(key), frozenset({"witness_gallery_id"})
+        )
+        if (
+            witness.attributes != (*key, "witness_gallery_id")
+            or witness.declared_keys != (frozenset(key),)
+            or witness.functional_dependencies != (expected_witness_fd,)
+            or fk_shapes(witness)
+            != {
+                (
+                    family.witness_fk_attributes,
+                    family.provenance_relation,
+                    family.provenance_primary_key,
+                )
+            }
+        ):
+            errors.append(
+                f"{prefix} family {name!r} witness must be key->gallery with one "
+                "full-tuple provenance FK"
+            )
+        witness_metadata = witness.materialization
+        witness_text = (
+            " ".join(
+                str(witness_metadata.get(field, ""))
+                for field in ("rationale", "refresh_strategy")
+            )
+            if isinstance(witness_metadata, Mapping)
+            else ""
+        )
+        if any(
+            term not in witness_text
+            for term in ("smallest", "minimum", "first", "never update", "replay")
+        ):
+            errors.append(
+                f"{prefix} family {name!r} witness does not pin immutable MIN semantics"
+            )
+        expected_seal_fks = {
+            (key, family.anchor_relation, key),
+            (key, family.witness_relation, key),
+        }
+        if (
+            seal.kind != "source_of_truth"
+            or seal.attributes != key
+            or seal.declared_keys != (frozenset(key),)
+            or seal.functional_dependencies
+            or fk_shapes(seal) != expected_seal_fks
+        ):
+            errors.append(f"{prefix} family {name!r} seal lacks anchor+witness proof")
+        view_metadata = view.materialization
+        if (
+            view.attributes != key
+            or view.declared_keys != (frozenset(key),)
+            or view.functional_dependencies
+            or fk_shapes(view) != {(key, family.seal_relation, key)}
+            or not isinstance(view_metadata, Mapping)
+            or view_metadata.get("storage") != "logical_view"
+        ):
+            errors.append(f"{prefix} family {name!r} hot workset is not key-only")
+        vertical = vertical_by_name.get(f"analysis_impacted_{name}_vertical")
+        if (
+            vertical is None
+            or vertical.anchor_relation != family.anchor_relation
+            or vertical.seal_relation != family.seal_relation
+            or vertical.view_relation != family.view_relation
+            or len(vertical.members) != 1
+            or vertical.members[0].relation != family.witness_relation
+            or vertical.members[0].project
+        ):
+            errors.append(
+                f"{prefix} family {name!r} must use one non-projected required witness"
+            )
+
+    if resolution is None:
+        errors.append(f"{prefix} requires the analysis stage registry")
+    else:
+        stages = {stage.name: stage for stage in resolution.batch_stages}
+        for family in expected_families.values():
+            population = stages.get(family.population_stage)
+            downstream = stages.get(family.downstream_stage)
+            expected_downstream_codec = (
+                "analysis_digest_v1" if family.name == "content" else "analysis_gid_v1"
+            )
+            if (
+                population is None
+                or population.cursor_codec != "analysis_gallery_v1"
+                or downstream is None
+                or downstream.cursor_codec != expected_downstream_codec
+                or population.stage_order >= downstream.stage_order
+            ):
+                errors.append(
+                    f"{prefix} family {family.name!r} population/downstream stage "
+                    "order or cursor codec drifts"
+                )
+
+    analysis_retention = next(
+        (target for target in retention_targets if target.target == "ANALYSIS_RUN"),
+        None,
+    )
+    if analysis_retention is None:
+        errors.append(f"{prefix} requires ANALYSIS_RUN cleanup phases")
+    else:
+        phase_by_relation = {
+            relation: phase
+            for phase, relations in enumerate(analysis_retention.child_phases)
+            for relation in relations
+        }
+        for family in expected_families.values():
+            ordered = (
+                family.seal_relation,
+                family.witness_relation,
+                family.provenance_relation,
+                family.anchor_relation,
+            )
+            positions = tuple(
+                phase_by_relation.get(relation, -1) for relation in ordered
+            )
+            if (
+                any(position < 0 for position in positions)
+                or positions != tuple(sorted(positions))
+                or len(set(positions)) != len(positions)
+            ):
+                errors.append(
+                    f"{prefix} family {family.name!r} cleanup must be seal, witness, "
+                    "provenance, then anchor"
+                )
+            if family.view_relation in phase_by_relation:
+                errors.append(
+                    f"{prefix} family {family.name!r} logical view must never be deleted"
+                )
     return errors
 
 
@@ -6234,7 +7775,6 @@ def _validate_long_value_storage_contract(
         "title_sha256",
         "sort_title_sha256",
         "contributor_name_sha256",
-        "sort_as_sha256",
         "snapshot_manifest_sha256",
         "artifact_semantics_sha256",
         "source_manifest_component_sha256",
@@ -6337,6 +7877,17 @@ def _validate_long_value_storage_contract(
         for relation in relation_by_name.values():
             if attribute not in relation.attributes:
                 continue
+            logical_view = (
+                relation.kind == "controlled_materialization"
+                and isinstance(relation.materialization, Mapping)
+                and relation.materialization.get("storage") == "logical_view"
+            )
+            if logical_view:
+                # The physical FK belongs to the narrow stored member.  The
+                # sealed view is already proven to project that member exactly;
+                # requiring a second view-level FK would either point at a view
+                # or duplicate storage authority in generated DDL.
+                continue
             if (relation.name, attribute) not in canonical_paths:
                 errors.append(
                     f"{prefix} canonical reference {attribute!r} in relation "
@@ -6358,8 +7909,8 @@ def _validate_attribute_semantics(
 ) -> list[str]:
     """Require an auditable semantic decision for FD-sensitive attributes.
 
-    Suffixes alone cannot tell us whether a digest is injective, whether an ID
-    is global, or whether a count is authoritative.  The registry makes those
+    Suffixes alone cannot tell us whether a digest has stored identity authority,
+    whether an ID is global, or whether a count is authoritative.  The registry makes those
     closed-world assumptions explicit.  Identity/payload digests additionally
     need a singleton candidate-key relation, preventing an occurrence table
     from silently being treated as the digest's payload authority.
@@ -6371,6 +7922,11 @@ def _validate_attribute_semantics(
         for relation in contract.relations
         for attribute in relation.attributes
     }
+    if contract.scope == "catalog_data_plane":
+        used_attributes.update({"publication_id", "artifact_name"})
+        used_attributes.update(
+            {"artifact_input_count", "prepared_artifact_count", "unchanged_count"}
+        )
     required = {
         attribute
         for attribute in used_attributes
@@ -6401,6 +7957,11 @@ def _validate_attribute_semantics(
     singleton_keys = {
         next(iter(key))
         for relation in relation_by_name.values()
+        if not (
+            relation.kind == "controlled_materialization"
+            and isinstance(relation.materialization, Mapping)
+            and relation.materialization.get("storage") == "logical_view"
+        )
         for key in enumerate_candidate_keys(
             relation.attributes, relation.functional_dependencies
         )
@@ -6419,6 +7980,44 @@ def _validate_attribute_semantics(
                 f"attribute semantic {semantic.name!r} classifies an identity "
                 "digest but no relation declares it as a singleton candidate key"
             )
+
+    forbidden_determinants = {
+        semantic.name
+        for semantic in contract.attribute_semantics
+        if semantic.classification
+        in {"audit_digest", "observational_digest", "comparator_digest"}
+    }
+    for relation in contract.relations:
+        for key in relation.declared_keys:
+            forbidden = key & forbidden_determinants
+            if forbidden:
+                errors.append(
+                    f"relation {relation.name!r} candidate key uses non-authoritative "
+                    f"digest {_format_set(forbidden)}"
+                )
+        for dependency in relation.functional_dependencies:
+            forbidden = dependency.determinant & forbidden_determinants
+            if forbidden:
+                errors.append(
+                    f"relation {relation.name!r} FD determinant uses non-authoritative "
+                    f"digest {_format_set(forbidden)}"
+                )
+    for decomposition in contract.decompositions:
+        for dependency in decomposition.functional_dependencies:
+            forbidden = dependency.determinant & forbidden_determinants
+            if forbidden:
+                errors.append(
+                    f"decomposition {decomposition.name!r} FD determinant uses "
+                    f"non-authoritative digest {_format_set(forbidden)}"
+                )
+    for family in contract.vertical_families:
+        for dependency in family.semantic_fds:
+            forbidden = dependency.determinant & forbidden_determinants
+            if forbidden:
+                errors.append(
+                    f"vertical family {family.name!r} semantic FD determinant uses "
+                    f"non-authoritative digest {_format_set(forbidden)}"
+                )
     return errors
 
 
@@ -6481,8 +8080,37 @@ def _validate_relation(relation: Relation) -> tuple[list[str], RelationReport]:
             + ", ".join(_format_set(key) for key in _sorted_sets(extra))
         )
 
+    seen_referential_keys: set[tuple[str, ...]] = set()
+    for referential_key in relation.referential_unique_keys:
+        key_set = frozenset(referential_key)
+        if not referential_key or len(referential_key) != len(key_set):
+            errors.append(
+                f"{prefix} referential unique key must be nonempty and contain "
+                "no duplicate attributes"
+            )
+            continue
+        unknown = key_set - attributes
+        if unknown:
+            errors.append(
+                f"{prefix} referential unique key {_format_set(key_set)} mentions "
+                f"unknown attributes {_format_set(unknown)}"
+            )
+        if referential_key in seen_referential_keys:
+            errors.append(f"{prefix} declares a duplicate referential unique key")
+        seen_referential_keys.add(referential_key)
+        if not any(candidate < key_set for candidate in computed_key_set):
+            errors.append(
+                f"{prefix} referential unique key {_format_set(key_set)} must "
+                "strictly contain a true candidate key"
+            )
+
+    logical_view = (
+        relation.kind == "controlled_materialization"
+        and isinstance(relation.materialization, Mapping)
+        and relation.materialization.get("storage") == "logical_view"
+    )
     violations = bcnf_violations(relation)
-    if violations:
+    if violations and not logical_view:
         determinant, dependent = min(
             violations,
             key=lambda item: (len(item[0]), tuple(sorted(item[0]))),
@@ -6496,6 +8124,7 @@ def _validate_relation(relation: Relation) -> tuple[list[str], RelationReport]:
         relation.name,
         tuple(_sorted_sets(computed_keys)),
         1 << len(attributes),
+        not logical_view,
     )
 
 
@@ -6541,6 +8170,7 @@ def _validate_foreign_keys(
                     target.attributes, target.functional_dependencies
                 )
             )
+            target_keys.update(frozenset(key) for key in target.referential_unique_keys)
             target_name = target.name
         else:
             assert external_target is not None
@@ -6557,8 +8187,8 @@ def _validate_foreign_keys(
         referenced = frozenset(foreign_key.referenced_attributes)
         if referenced not in target_keys:
             errors.append(
-                f"{prefix} target {_format_set(referenced)} is not a candidate key "
-                f"of {target_name!r}"
+                f"{prefix} target {_format_set(referenced)} is neither a candidate "
+                f"key nor a declared referential unique key of {target_name!r}"
             )
     return errors
 
@@ -6596,7 +8226,9 @@ def _validate_external_relation(external: ExternalRelation) -> list[str]:
 
 
 def _validate_materialization(
-    relation: Relation, relation_by_name: Mapping[str, Relation]
+    relation: Relation,
+    relation_by_name: Mapping[str, Relation],
+    external_by_name: Mapping[str, ExternalRelation] | None = None,
 ) -> list[str]:
     errors: list[str] = []
     metadata = relation.materialization
@@ -6626,13 +8258,1537 @@ def _validate_materialization(
             f"{prefix} materialization.derived_from must be a non-empty string array"
         )
     else:
-        unknown = set(derived_from) - set(relation_by_name)
+        known_sources = set(relation_by_name) | set(external_by_name or {})
+        unknown = set(derived_from) - known_sources
         if unknown:
             errors.append(
                 f"{prefix} materialization derives from unknown relations "
                 f"{_format_set(unknown)}"
             )
     return errors
+
+
+def _validate_generation_streams(
+    streams: tuple[GenerationStream, ...],
+    relation_by_name: Mapping[str, Relation],
+) -> tuple[list[str], list[str]]:
+    """Validate narrow revision/generation seals and their read-only projections."""
+
+    errors: list[str] = []
+    validated: list[str] = []
+    names: set[str] = set()
+    owned_views: set[str] = set()
+
+    def fd(
+        determinant: Iterable[str], dependent: Iterable[str]
+    ) -> FunctionalDependency:
+        return FunctionalDependency(frozenset(determinant), frozenset(dependent))
+
+    def has_fk(
+        relation: Relation,
+        attributes: tuple[str, ...],
+        target: str,
+        referenced: tuple[str, ...],
+    ) -> bool:
+        return _has_fk(relation, attributes, target, referenced)
+
+    def logical_view_shape(
+        relation: Relation,
+        pattern: str,
+        sources: set[str],
+    ) -> bool:
+        metadata = relation.materialization
+        return bool(
+            relation.kind == "controlled_materialization"
+            and isinstance(metadata, Mapping)
+            and metadata.get("authoritative") is False
+            and metadata.get("storage") == "logical_view"
+            and metadata.get("view_pattern") == pattern
+            and set(metadata.get("derived_from", ())) == sources
+        )
+
+    for stream in streams:
+        prefix = f"generation stream {stream.name!r}"
+        stream_errors: list[str] = []
+        if stream.name in names:
+            stream_errors.append(f"duplicate generation stream name {stream.name!r}")
+        names.add(stream.name)
+        if not stream.baselines:
+            stream_errors.append(f"{prefix} must declare at least one baseline")
+        if not stream.rationale.strip() or not stream.write_obligation.strip():
+            stream_errors.append(f"{prefix} must state rationale and write obligation")
+        if any(
+            token not in stream.write_obligation
+            for token in (
+                "mapping publication seal",
+                "READY",
+                "publication begin and commit",
+                "heads to be simultaneously absent at genesis",
+                "simultaneously present at the exact same generation",
+                "one shared previous-generation-plus-one value",
+                "historical readers",
+                "inner-join",
+                "unpublished and invisible",
+                "common sealed receipt authority",
+                "temporary full-history closed-world audit",
+                "identical source/catalog generation sets",
+                "no orphan mapping",
+                "unique contiguous 1..max generation sequence",
+            )
+        ):
+            stream_errors.append(
+                f"{prefix} must close temporary full-history READY and "
+                "historical-reader publication-mapping exposure"
+            )
+
+        relation_names = {
+            stream.descriptor_relation,
+            stream.mapping_relation,
+            stream.head_revision_relation,
+            stream.head_time_relation,
+            stream.head_view_relation,
+            *(baseline.base_relation for baseline in stream.baselines),
+            *(baseline.view_relation for baseline in stream.baselines),
+        }
+        missing = sorted(
+            name for name in relation_names if name not in relation_by_name
+        )
+        if missing:
+            stream_errors.append(f"{prefix} references unknown relations {missing!r}")
+            errors.extend(stream_errors)
+            continue
+
+        descriptor = relation_by_name[stream.descriptor_relation]
+        mapping = relation_by_name[stream.mapping_relation]
+        revision = stream.revision_attribute
+        generation = stream.generation_attribute
+        expected_mapping_fds = {
+            fd((revision,), (generation,)),
+            fd((generation,), (revision,)),
+        }
+        if (
+            mapping.kind != "source_of_truth"
+            or mapping.attributes != (revision, generation)
+            or set(mapping.declared_keys)
+            != {frozenset({revision}), frozenset({generation})}
+            or set(mapping.functional_dependencies) != expected_mapping_fds
+            or not has_fk(
+                mapping,
+                (revision,),
+                stream.descriptor_relation,
+                (revision,),
+            )
+        ):
+            stream_errors.append(
+                f"{prefix} mapping must be revision PK plus one UNIQUE generation "
+                "and FK to its descriptor"
+            )
+        if frozenset({revision}) not in set(descriptor.declared_keys):
+            stream_errors.append(
+                f"{prefix} descriptor revision must be a candidate key"
+            )
+
+        channel = stream.head_channel_attribute
+        timestamp = stream.head_time_attribute
+        head_revision = relation_by_name[stream.head_revision_relation]
+        head_time = relation_by_name[stream.head_time_relation]
+        head_view = relation_by_name[stream.head_view_relation]
+        if (
+            head_revision.kind != "source_of_truth"
+            or head_revision.attributes != (channel, revision)
+            or set(head_revision.declared_keys)
+            != {frozenset({channel}), frozenset({revision})}
+            or set(head_revision.functional_dependencies)
+            != {fd((channel,), (revision,)), fd((revision,), (channel,))}
+            or not has_fk(
+                head_revision,
+                (revision,),
+                stream.mapping_relation,
+                (revision,),
+            )
+        ):
+            stream_errors.append(
+                f"{prefix} head revision must expose channel and revision as exact "
+                "alternate keys and reference the publication mapping"
+            )
+        if (
+            head_time.kind != "source_of_truth"
+            or head_time.attributes != (channel, timestamp)
+            or set(head_time.declared_keys) != {frozenset({channel})}
+            or set(head_time.functional_dependencies) != {fd((channel,), (timestamp,))}
+            or not has_fk(
+                head_time,
+                (channel,),
+                stream.head_revision_relation,
+                (channel,),
+            )
+        ):
+            stream_errors.append(
+                f"{prefix} head timestamp must be channel PK plus one value and "
+                "reference the revision satellite"
+            )
+        head_attributes = (channel, revision, generation, timestamp)
+        head_keys = {
+            frozenset({channel}),
+            frozenset({revision}),
+            frozenset({generation}),
+        }
+        head_fds = {
+            fd((key,), set(head_attributes) - {key})
+            for key in (channel, revision, generation)
+        }
+        if (
+            head_view.attributes != head_attributes
+            or set(head_view.declared_keys) != head_keys
+            or set(head_view.functional_dependencies) != head_fds
+            or not logical_view_shape(
+                head_view,
+                "revision_generation_head",
+                {
+                    stream.head_revision_relation,
+                    stream.head_time_relation,
+                    stream.mapping_relation,
+                },
+            )
+        ):
+            stream_errors.append(
+                f"{prefix} head view must derive generation and declare channel, "
+                "revision, and generation as its exact candidate keys"
+            )
+        if stream.head_view_relation in owned_views:
+            stream_errors.append(f"{prefix} repeats a generation-derived view")
+        owned_views.add(stream.head_view_relation)
+
+        for baseline in stream.baselines:
+            base = relation_by_name[baseline.base_relation]
+            view = relation_by_name[baseline.view_relation]
+            owner = baseline.owner_attribute
+            base_revision = baseline.revision_attribute
+            base_generation = baseline.generation_attribute
+            if (
+                base.kind != "source_of_truth"
+                or base.attributes != (owner, base_revision)
+                or set(base.declared_keys) != {frozenset({owner})}
+                or set(base.functional_dependencies) != {fd((owner,), (base_revision,))}
+                or not has_fk(
+                    base,
+                    (base_revision,),
+                    stream.mapping_relation,
+                    (revision,),
+                )
+            ):
+                stream_errors.append(
+                    f"{prefix} baseline {baseline.base_relation!r} must be owner PK "
+                    "plus one mapped revision"
+                )
+            expected_view_fds = {
+                fd((owner,), (base_revision, base_generation)),
+                fd((base_revision,), (base_generation,)),
+                fd((base_generation,), (base_revision,)),
+            }
+            if (
+                view.attributes != (owner, base_revision, base_generation)
+                or set(view.declared_keys) != {frozenset({owner})}
+                or set(view.functional_dependencies) != expected_view_fds
+                or not logical_view_shape(
+                    view,
+                    "revision_generation_baseline",
+                    {baseline.base_relation, stream.mapping_relation},
+                )
+            ):
+                stream_errors.append(
+                    f"{prefix} baseline view {baseline.view_relation!r} must derive "
+                    "generation and preserve both mapping FDs"
+                )
+            if baseline.view_relation in owned_views:
+                stream_errors.append(f"{prefix} repeats a generation-derived view")
+            owned_views.add(baseline.view_relation)
+
+        if not stream_errors:
+            validated.append(stream.name)
+        errors.extend(stream_errors)
+
+    return errors, validated
+
+
+def _validate_publication_commit_contract(
+    contract: PublicationCommitContract | None,
+    families: tuple[VerticalFamily, ...],
+    relation_by_name: Mapping[str, Relation],
+    external_by_name: Mapping[str, ExternalRelation],
+) -> list[str]:
+    """Validate the one common sealed publication authority graph.
+
+    This is deliberately relation-role driven rather than SQL-name driven in
+    the generator.  The contract names each role once, while this checker pins
+    the mandatory member values, equivalent keys, lifecycle edges, and the
+    distinction between linear full READY validation and O(1) hot paths.
+    """
+
+    prefix = "publication commit contract"
+    if contract is None:
+        return [f"{prefix} is required for the catalog data plane"]
+    errors: list[str] = []
+    family_by_name = {family.name: family for family in families}
+    commit_family = family_by_name.get(contract.commit_family)
+    catalog_family = family_by_name.get(contract.catalog_descriptor_family)
+    source_family = family_by_name.get(contract.source_descriptor_family)
+    if commit_family is None or catalog_family is None or source_family is None:
+        errors.append(f"{prefix} references an unknown vertical family")
+        return errors
+
+    expected_roles = {
+        "generation_node_relation": "publication_generation_node",
+        "generation_successor_relation": "publication_generation_successor",
+        "finalization_relation": "publication_commit_finalization",
+        "head_receipt_relation": "publication_commit_head_receipt",
+        "head_view_relation": "publication_commit_head",
+        "catalog_published_relation": "catalog_revision",
+        "source_published_relation": "source_revision",
+        "catalog_generation_relation": "catalog_revision_generation",
+        "source_generation_relation": "source_revision_generation",
+        "source_build_baseline_relation": "source_build_base_publication_commit",
+        "candidate_baseline_relation": "publication_candidate_base_publication_commit",
+        "activation_relation": "operational_activation",
+        "operational_effect_seal_relation": "operational_preparation_effect_seal",
+        "operational_policy_relation": "operational_policy",
+    }
+    for field, expected in expected_roles.items():
+        if getattr(contract, field) != expected:
+            errors.append(f"{prefix} {field} must be {expected!r}")
+
+    if commit_family.key_attributes != ("receipt_id",):
+        errors.append(f"{prefix} family key must be receipt_id")
+    expected_member_values = (
+        "candidate_id",
+        "revision",
+        "source_revision",
+        "generation",
+        "preparation_id",
+        "operational_policy_id",
+        "artifact_policy_id",
+        "display_title_policy_id",
+        "new_galleries",
+        "changed_galleries",
+        "removed_galleries",
+        "duplicate_losers",
+        "committed_at",
+    )
+    if tuple(member.value_attribute for member in commit_family.members) != (
+        expected_member_values
+    ):
+        errors.append(f"{prefix} must seal exactly thirteen mandatory members")
+    commit_view = relation_by_name.get(commit_family.view_relation)
+    equivalent_keys = {
+        frozenset({attribute})
+        for attribute in (
+            "receipt_id",
+            "candidate_id",
+            "revision",
+            "source_revision",
+            "generation",
+            "preparation_id",
+        )
+    }
+    if commit_view is None or set(commit_view.declared_keys) != equivalent_keys:
+        errors.append(f"{prefix} must declare its six equivalent commit keys")
+
+    relation_for_value = {
+        member.value_attribute: relation_by_name.get(member.relation)
+        for member in commit_family.members
+    }
+    generation_member = relation_for_value.get("generation")
+    preparation_member = relation_for_value.get("preparation_id")
+    policy_member = relation_for_value.get("operational_policy_id")
+    catalog_member = relation_for_value.get("revision")
+    source_member = relation_for_value.get("source_revision")
+    if generation_member is None or not _has_fk(
+        generation_member,
+        ("generation",),
+        contract.generation_successor_relation,
+        ("successor_generation",),
+    ):
+        errors.append(f"{prefix} generation member must require one successor edge")
+    if (
+        preparation_member is None
+        or frozenset({"preparation_id"}) not in set(preparation_member.declared_keys)
+        or not _has_fk(
+            preparation_member,
+            ("preparation_id",),
+            contract.operational_effect_seal_relation,
+            ("preparation_id",),
+        )
+    ):
+        errors.append(
+            f"{prefix} preparation member must be unique and require the effect seal"
+        )
+    if policy_member is None or not _has_fk(
+        policy_member,
+        ("operational_policy_id",),
+        contract.operational_policy_relation,
+        ("operational_policy_id",),
+    ):
+        errors.append(f"{prefix} must pin the exact operational policy")
+    if catalog_member is None or not _has_fk(
+        catalog_member,
+        ("revision",),
+        catalog_family.seal_relation,
+        ("revision",),
+    ):
+        errors.append(f"{prefix} catalog member must require the descriptor seal")
+    if source_member is None or not _has_fk(
+        source_member,
+        ("source_revision",),
+        source_family.seal_relation,
+        ("source_revision",),
+    ):
+        errors.append(f"{prefix} source member must require the descriptor seal")
+
+    node = relation_by_name.get(contract.generation_node_relation)
+    successor = relation_by_name.get(contract.generation_successor_relation)
+    if (
+        node is None
+        or node.attributes != ("generation",)
+        or set(node.declared_keys) != {frozenset({"generation"})}
+        or node.functional_dependencies
+    ):
+        errors.append(f"{prefix} generation node must be a PK-only relation")
+    if (
+        successor is None
+        or successor.attributes != ("successor_generation", "predecessor_generation")
+        or set(successor.declared_keys)
+        != {
+            frozenset({"successor_generation"}),
+            frozenset({"predecessor_generation"}),
+        }
+        or node is None
+        or not _has_fk(
+            successor,
+            ("successor_generation",),
+            node.name,
+            ("generation",),
+        )
+        or not _has_fk(
+            successor,
+            ("predecessor_generation",),
+            node.name,
+            ("generation",),
+        )
+    ):
+        errors.append(f"{prefix} generation successor must be a no-fork node edge")
+
+    finalization = relation_by_name.get(contract.finalization_relation)
+    if (
+        finalization is None
+        or finalization.attributes != ("receipt_id",)
+        or set(finalization.declared_keys) != {frozenset({"receipt_id"})}
+        or finalization.functional_dependencies
+        or not _has_fk(
+            finalization,
+            ("receipt_id",),
+            commit_family.seal_relation,
+            ("receipt_id",),
+        )
+    ):
+        errors.append(f"{prefix} finalization must be one optional PK-only marker")
+    checkpoint_seal = relation_by_name.get("publication_finalization_checkpoint_seal")
+    commit_seal = relation_by_name.get(commit_family.seal_relation)
+    terminal_receipt = relation_by_name.get("publication_finalization_batch_receipt")
+    if (
+        checkpoint_seal is None
+        or commit_seal is None
+        or not _has_fk(
+            commit_seal,
+            ("receipt_id",),
+            checkpoint_seal.name,
+            ("receipt_id",),
+        )
+        or terminal_receipt is None
+        or not {
+            "receipt_id",
+            "terminal",
+            "next_state",
+            "committed_at",
+        }
+        <= set(terminal_receipt.attributes)
+    ):
+        errors.append(
+            f"{prefix} must seal a permanent checkpoint before commit and derive "
+            "finalization from its terminal receipt"
+        )
+
+    head_receipt = relation_by_name.get(contract.head_receipt_relation)
+    head_view = relation_by_name.get(contract.head_view_relation)
+    if (
+        head_receipt is None
+        or head_receipt.attributes != ("channel", "receipt_id")
+        or set(head_receipt.declared_keys)
+        != {frozenset({"channel"}), frozenset({"receipt_id"})}
+        or not _has_fk(
+            head_receipt,
+            ("receipt_id",),
+            commit_family.seal_relation,
+            ("receipt_id",),
+        )
+        or head_view is None
+        or set(head_view.declared_keys)
+        != (
+            equivalent_keys - {frozenset({"preparation_id"})} | {frozenset({"channel"})}
+        )
+    ):
+        errors.append(f"{prefix} must expose one common sealed receipt head")
+
+    for relation_name, owner in (
+        (contract.source_build_baseline_relation, "build_id"),
+        (contract.candidate_baseline_relation, "candidate_id"),
+    ):
+        baseline = relation_by_name.get(relation_name)
+        if (
+            baseline is None
+            or baseline.attributes != (owner, "base_receipt_id")
+            or set(baseline.declared_keys) != {frozenset({owner})}
+            or not _has_fk(
+                baseline,
+                ("base_receipt_id",),
+                commit_family.seal_relation,
+                ("receipt_id",),
+            )
+        ):
+            errors.append(f"{prefix} baseline {relation_name!r} has the wrong shape")
+
+    for external_name in (
+        contract.operational_effect_seal_relation,
+        contract.operational_policy_relation,
+    ):
+        if external_name not in external_by_name:
+            errors.append(f"{prefix} lacks external authority {external_name!r}")
+
+    runtime_terms = (
+        "tip-local O(1)",
+        "replay is candidate/preparation-key local O(1)",
+        "operational_activation is a derived read-only view",
+        "never inserted or updated",
+        "append-only",
+    )
+    ready_terms = (
+        "full SchemaAdmin.check",
+        "linear full-history scan",
+        "no fork, orphan, or gap",
+        "head is the maximum no-successor tip",
+        "quick check_readiness remains epoch-only O(1)",
+        "no OPDS hot path",
+    )
+    if any(term not in contract.runtime_obligation for term in runtime_terms):
+        errors.append(f"{prefix} hot-path obligation is incomplete")
+    if any(term not in contract.ready_obligation for term in ready_terms):
+        errors.append(f"{prefix} full READY/quick readiness distinction is incomplete")
+    return errors
+
+
+def _validate_batch_receipt_projections(
+    projections: tuple[BatchReceiptProjection, ...],
+    families: tuple[VerticalFamily, ...],
+    relation_by_name: Mapping[str, Relation],
+) -> list[str]:
+    """Validate reusable small-key batch receipts and their exact projections."""
+
+    errors: list[str] = []
+    family_by_name = {family.name: family for family in families}
+    if not projections:
+        return ["catalog must declare at least one batch receipt projection"]
+    names = [projection.name for projection in projections]
+    if len(names) != len(set(names)):
+        errors.append("batch receipt projections contain duplicate names")
+    for projection in projections:
+        prefix = f"batch receipt projection {projection.name!r}"
+        family = family_by_name.get(projection.vertical_family)
+        if family is None:
+            errors.append(f"{prefix} references an unknown vertical family")
+            continue
+        owner = projection.owner_attribute
+        stage = projection.stage_attribute
+        stage_key = (stage,) if stage is not None else ()
+        batch_key = projection.batch_key_attribute
+        start_generation = projection.start_generation_attribute
+        family_key = (owner, *stage_key, start_generation)
+        natural_key = (owner, *stage_key, batch_key)
+        if (
+            family.key_attributes != family_key
+            or family.view_relation != projection.stored_relation
+        ):
+            errors.append(
+                f"{prefix} must use the compact owner[/stage]/start-generation key"
+            )
+        coordinate = relation_by_name.get(projection.coordinate_relation)
+        if (
+            coordinate is None
+            or coordinate.attributes != (*natural_key, start_generation)
+            or not coordinate.declared_keys
+            or coordinate.declared_keys[0] != frozenset(natural_key)
+            or set(coordinate.declared_keys)
+            != {frozenset(natural_key), frozenset(family_key)}
+        ):
+            errors.append(
+                f"{prefix} coordinate must carry the large batch key exactly once"
+            )
+        members = {member.relation: member for member in family.members}
+        coordinate_member = members.get(projection.coordinate_relation)
+        if (
+            coordinate_member is None
+            or coordinate_member.key_attributes != natural_key
+            or coordinate_member.value_attribute != start_generation
+            or coordinate_member.join.source_attributes != family_key
+            or coordinate_member.join.member_attributes != family_key
+        ):
+            errors.append(f"{prefix} coordinate must join by its alternate family key")
+
+        fact_attributes = (
+            projection.start_cursor_attribute,
+            projection.start_processed_count_attribute,
+            *(
+                (projection.page_limit_attribute,)
+                if projection.page_limit_attribute
+                else ()
+            ),
+            projection.next_cursor_attribute,
+            projection.row_count_attribute,
+            projection.committed_at_attribute,
+        )
+        if (
+            tuple(member.value_attribute for member in family.members[1:])
+            != fact_attributes
+        ):
+            errors.append(
+                f"{prefix} must store exactly its declared independent hot facts"
+            )
+        family_base_names = {
+            family.anchor_relation,
+            family.seal_relation,
+            *(member.relation for member in family.members),
+        }
+        carrying_batch_key = {
+            name
+            for name in family_base_names
+            if batch_key in relation_by_name[name].attributes
+        }
+        if carrying_batch_key != {projection.coordinate_relation}:
+            errors.append(
+                f"{prefix} repeats the large batch key outside its coordinate"
+            )
+
+        stored = relation_by_name.get(projection.stored_relation)
+        view = relation_by_name.get(projection.view_relation)
+        expected_stored_attributes = (*family_key, batch_key, *fact_attributes)
+        expected_view_attributes = (
+            owner,
+            *stage_key,
+            batch_key,
+            start_generation,
+            projection.start_cursor_attribute,
+            projection.start_processed_count_attribute,
+            *(
+                (projection.page_limit_attribute,)
+                if projection.page_limit_attribute
+                else ()
+            ),
+            projection.next_cursor_attribute,
+            projection.next_processed_count_attribute,
+            projection.next_state_attribute,
+            projection.row_count_attribute,
+            projection.terminal_attribute,
+            projection.committed_generation_attribute,
+            projection.committed_at_attribute,
+        )
+        if stored is None or stored.attributes != expected_stored_attributes:
+            errors.append(f"{prefix} stored sealed view has the wrong projection")
+        expected_view_keys = {
+            frozenset(natural_key),
+            frozenset(family_key),
+            frozenset((owner, *stage_key, projection.committed_generation_attribute)),
+        }
+        if (
+            view is None
+            or view.attributes != expected_view_attributes
+            or set(view.declared_keys) != expected_view_keys
+        ):
+            errors.append(f"{prefix} derived replay view has the wrong keys or shape")
+            continue
+
+        fd_shapes = {
+            (dependency.determinant, dependency.dependent)
+            for dependency in view.functional_dependencies
+        }
+        required_derived_fds = {
+            (
+                frozenset({start_generation}),
+                frozenset({projection.committed_generation_attribute}),
+            ),
+            (
+                frozenset({projection.committed_generation_attribute}),
+                frozenset({start_generation}),
+            ),
+            (
+                frozenset(
+                    {
+                        projection.start_processed_count_attribute,
+                        projection.row_count_attribute,
+                    }
+                ),
+                frozenset({projection.next_processed_count_attribute}),
+            ),
+            (
+                frozenset(
+                    {
+                        projection.start_processed_count_attribute,
+                        projection.next_processed_count_attribute,
+                    }
+                ),
+                frozenset({projection.row_count_attribute}),
+            ),
+            (
+                frozenset(
+                    {
+                        projection.row_count_attribute,
+                        projection.next_processed_count_attribute,
+                    }
+                ),
+                frozenset({projection.start_processed_count_attribute}),
+            ),
+            (
+                frozenset({projection.row_count_attribute}),
+                frozenset(
+                    {projection.terminal_attribute, projection.next_state_attribute}
+                ),
+            ),
+            (
+                frozenset({projection.terminal_attribute}),
+                frozenset({projection.next_state_attribute}),
+            ),
+            (
+                frozenset({projection.next_state_attribute}),
+                frozenset({projection.terminal_attribute}),
+            ),
+        }
+        if not required_derived_fds <= fd_shapes:
+            errors.append(
+                f"{prefix} omits exact arithmetic/CASE functional dependencies"
+            )
+        invalid_reverse_fds = {
+            (
+                frozenset({projection.terminal_attribute}),
+                projection.row_count_attribute,
+            ),
+            (
+                frozenset({projection.next_state_attribute}),
+                projection.row_count_attribute,
+            ),
+        }
+        if any(
+            determinant == invalid_determinant and invalid_dependent in dependent
+            for determinant, dependent in fd_shapes
+            for invalid_determinant, invalid_dependent in invalid_reverse_fds
+        ):
+            errors.append(
+                f"{prefix} falsely treats nonterminal state as determining row_count"
+            )
+        obligation_terms = (
+            "start_generation plus one",
+            "start_processed_count plus row_count",
+            "int63 overflow",
+            "row_count is zero",
+            "next_state COMPLETE",
+            "strict codec successor",
+            "latest sealed receipt poststate equals the exact checkpoint",
+        )
+        if any(term not in projection.write_obligation for term in obligation_terms):
+            errors.append(f"{prefix} projection/CAS obligation is incomplete")
+        if projection.name == "analysis":
+            page_limit = projection.page_limit_attribute
+            if page_limit != "page_limit" or any(
+                term not in projection.write_obligation
+                for term in (
+                    "positive page_limit",
+                    "server cap of 128",
+                    "stored page_limit",
+                    "never trust retry caller max_rows or batch_key",
+                )
+            ):
+                errors.append(
+                    f"{prefix} must persist and replay the exact server-clamped page limit"
+                )
+        elif projection.page_limit_attribute is not None:
+            errors.append(f"{prefix} unexpectedly declares a page-limit fact")
+    return errors
+
+
+def _validate_vertical_families(
+    families: tuple[VerticalFamily, ...],
+    relation_by_name: Mapping[str, Relation],
+) -> tuple[list[str], list[str]]:
+    """Validate reusable narrow join trees behind intentional wide views.
+
+    Members may use different semantic determinants.  Their declared order is
+    a lossless join tree: every member joins on its complete candidate key to
+    the seal, anchor, or a preceding member, and an FK in that direction makes
+    participation total before the seal is visible.  Exhaustive closure
+    comparison proves that the member FDs preserve exactly the family semantic
+    FDs and that the read-only view declares their exact projection.
+    """
+
+    errors: list[str] = []
+    validated: list[str] = []
+    family_names: set[str] = set()
+    owned_roles: dict[str, str] = {}
+    projection_views = tuple(
+        relation
+        for relation in relation_by_name.values()
+        if isinstance(relation.materialization, Mapping)
+        and relation.materialization.get("view_pattern") == "sealed_vertical_projection"
+    )
+    recognized_projection_views: set[str] = set()
+
+    def exact_key(relation: Relation, key: tuple[str, ...]) -> bool:
+        return relation.declared_keys == (frozenset(key),)
+
+    def primary_key_is(relation: Relation, key: tuple[str, ...]) -> bool:
+        return bool(relation.declared_keys) and relation.declared_keys[0] == frozenset(
+            key
+        )
+
+    def fk_shapes(
+        relation: Relation,
+    ) -> set[tuple[tuple[str, ...], str, tuple[str, ...]]]:
+        return {
+            (
+                foreign_key.attributes,
+                foreign_key.relation,
+                foreign_key.referenced_attributes,
+            )
+            for foreign_key in relation.foreign_keys
+        }
+
+    for family in families:
+        prefix = f"vertical family {family.name!r}"
+        family_errors: list[str] = []
+        if family.name in family_names:
+            family_errors.append(f"duplicate vertical family name {family.name!r}")
+        family_names.add(family.name)
+        if family.visibility != "sealed_total":
+            family_errors.append(f"{prefix} visibility must be 'sealed_total'")
+        if not family.key_attributes or len(family.key_attributes) != len(
+            set(family.key_attributes)
+        ):
+            family_errors.append(f"{prefix} key_attributes must be nonempty and unique")
+        if not family.members:
+            family_errors.append(f"{prefix} must declare at least one member")
+
+        role_relations = (
+            family.anchor_relation,
+            family.seal_relation,
+            family.view_relation,
+        )
+        relation_names = (
+            *role_relations,
+            *(member.relation for member in family.members),
+            *((family.marker_relation,) if family.marker_relation is not None else ()),
+        )
+        if len(relation_names) != len(set(relation_names)):
+            family_errors.append(f"{prefix} relation roles must be distinct")
+        member_values = tuple(member.value_attribute for member in family.members)
+        if len(member_values) != len(set(member_values)):
+            family_errors.append(f"{prefix} member value attributes must be unique")
+        projection_values = tuple(
+            member.projection_attribute for member in family.members if member.project
+        )
+        if len(projection_values) != len(set(projection_values)):
+            family_errors.append(f"{prefix} projected member attributes must be unique")
+        owned_relation_names = (
+            *role_relations,
+            *((family.marker_relation,) if family.marker_relation is not None else ()),
+        )
+        for relation_name in owned_relation_names:
+            previous = owned_roles.setdefault(relation_name, family.name)
+            if previous != family.name:
+                family_errors.append(
+                    f"{prefix} relation {relation_name!r} is already owned by "
+                    f"vertical family {previous!r}"
+                )
+
+        resolved = {
+            relation_name: relation_by_name.get(relation_name)
+            for relation_name in relation_names
+        }
+        missing = sorted(
+            name for name, relation in resolved.items() if relation is None
+        )
+        if missing:
+            family_errors.append(f"{prefix} references unknown relations {missing!r}")
+            errors.extend(family_errors)
+            continue
+
+        anchor = resolved[family.anchor_relation]
+        seal = resolved[family.seal_relation]
+        view = resolved[family.view_relation]
+        assert anchor is not None
+        assert seal is not None
+        assert view is not None
+        key = family.key_attributes
+        if not family.rationale.strip() or not family.write_obligation.strip():
+            family_errors.append(
+                f"{prefix} must declare semantic rationale and write obligation"
+            )
+        if family.name == "artifact_producer_fingerprint_vertical" and any(
+            token not in family.write_obligation
+            for token in (
+                "production registration transaction",
+                "not a bootstrap seed",
+                "natural-key, digest, or equivalence-class conflict",
+                "derives producer_equivalence_class exactly as ascii('h2hdb-vnext-artifact-producer-exact-equivalence-v1\\0') || raw32(producer_fingerprint_sha256)",
+                "rejecting every caller-supplied equivalence class",
+                "byte-compares the full five-field preimage",
+                "digest collision",
+                "seal last",
+                "READY and every consuming policy path recompute and full-compare",
+            )
+        ):
+            family_errors.append(
+                f"{prefix} must pin collision-checked runtime registration and "
+                "consumption"
+            )
+        if family.name == "prepared_artifact_vertical" and any(
+            token not in family.write_obligation
+            for token in (
+                "state PENDING",
+                "before calling external protect",
+                "one monotone per-token lifecycle",
+                "release is terminal",
+                "delayed protect can never resurrect",
+                "inactive-and-unpublished orphan reconciliation",
+                "exact live EXCLUSIVE maintenance gate",
+                "immutable keyset page solely from current sealed",
+                "outside every database transaction",
+                "repository-issued opaque acknowledgement",
+                "either PENDING or PREPARED to COMMITTED",
+                "same durable tokens",
+                "all-COMMITTED acknowledgement replay performs zero DML",
+            )
+        ):
+            family_errors.append(
+                f"{prefix} must pin durable prepare, terminal external release, "
+                "and exact orphan-reconciliation replay"
+            )
+        if family.name == "publication_candidate_vertical" and any(
+            token not in family.write_obligation
+            for token in (
+                "all six immutable facts",
+                "PK-only definition seal last",
+                "derives channel through analysis_run_build_id and "
+                "source_build_channel",
+                "derives OPEN from definition without projection or commit",
+                "SEALED from projection seal without commit",
+                "PUBLISHED from the permanent publication_commit_candidate "
+                "and commit seal",
+                "OPEN has no sealed_at observation",
+                "VALIDATE_DUPLICATE_LOSER terminal receipt",
+                "committed_generation, next_cursor, next_processed_count, "
+                "next_state COMPLETE, and terminal flag exactly match its "
+                "current COMPLETE checkpoint",
+                "no stored timestamp, MAX, stale or arbitrary terminal receipt, "
+                "ABANDONED predicate",
+            )
+        ):
+            family_errors.append(
+                f"{prefix} must pin the unique definition, channel, lifecycle, "
+                "and derived sealed-at authority"
+            )
+
+        for role, relation in (("anchor", anchor), ("seal", seal)):
+            if relation.kind != "source_of_truth":
+                family_errors.append(f"{prefix} {role} must be source_of_truth")
+            if relation.attributes != key:
+                family_errors.append(f"{prefix} {role} must contain only the key")
+            if not exact_key(relation, key) or relation.functional_dependencies:
+                family_errors.append(
+                    f"{prefix} {role} must have only the exact key and no FDs"
+                )
+
+        if (family.marker_relation is None) != (family.marker_predicate is None):
+            family_errors.append(
+                f"{prefix} marker relation and predicate must be declared together"
+            )
+        if family.marker_relation is not None:
+            marker = resolved[family.marker_relation]
+            assert marker is not None
+            if (
+                marker.kind != "source_of_truth"
+                or marker.attributes != key
+                or not exact_key(marker, key)
+                or marker.functional_dependencies
+                or fk_shapes(marker) != {(key, family.anchor_relation, key)}
+            ):
+                family_errors.append(
+                    f"{prefix} optional marker must be one PK-only anchor child"
+                )
+            if (
+                family.name == "analysis_exclusion_delta_vertical"
+                and family.marker_predicate != "old_excluded != new_excluded"
+            ):
+                family_errors.append(
+                    f"{prefix} change marker must encode exact old/new inequality"
+                )
+
+        available_sources = {family.anchor_relation, family.seal_relation}
+        member_dependencies: list[FunctionalDependency] = []
+        participation_edges: dict[
+            str, set[tuple[tuple[str, ...], str, tuple[str, ...]]]
+        ] = {}
+        for member in family.members:
+            member_relation = resolved[member.relation]
+            assert member_relation is not None
+            if member_relation.kind not in {
+                "source_of_truth",
+                "controlled_materialization",
+            }:
+                family_errors.append(
+                    f"{prefix} member {member.relation!r} has unsupported kind"
+                )
+            if (
+                member_relation.kind == "controlled_materialization"
+                and isinstance(member_relation.materialization, Mapping)
+                and member_relation.materialization.get("storage") == "logical_view"
+            ):
+                family_errors.append(
+                    f"{prefix} member {member.relation!r} must be a base table"
+                )
+            member_key = member.key_attributes
+            member_key_set = frozenset(member_key)
+            if not member_key or len(member_key) != len(member_key_set):
+                family_errors.append(
+                    f"{prefix} member {member.relation!r} key must be nonempty and unique"
+                )
+            if member.value_attribute in member_key_set:
+                family_errors.append(
+                    f"{prefix} member {member.relation!r} value repeats its key"
+                )
+            if member_relation.attributes != (*member_key, member.value_attribute):
+                family_errors.append(
+                    f"{prefix} member {member.relation!r} must be its key plus exactly "
+                    f"{member.value_attribute!r}"
+                )
+            expected_fd = FunctionalDependency(
+                member_key_set, frozenset({member.value_attribute})
+            )
+            if not primary_key_is(
+                member_relation, member_key
+            ) or expected_fd not in set(member_relation.functional_dependencies):
+                family_errors.append(
+                    f"{prefix} member {member.relation!r} must use its semantic key "
+                    f"as the physical PK and declare key -> {member.value_attribute}"
+                )
+            projection_rename = {member.value_attribute: member.projection_attribute}
+            member_dependencies.extend(
+                (
+                    FunctionalDependency(
+                        frozenset(
+                            projection_rename.get(value, value)
+                            for value in fd.determinant
+                        ),
+                        frozenset(
+                            projection_rename.get(value, value)
+                            for value in fd.dependent
+                        ),
+                    )
+                    if member.project
+                    else fd
+                )
+                for fd in member_relation.functional_dependencies
+            )
+
+            join = member.join
+            if join.source_relation not in available_sources:
+                family_errors.append(
+                    f"{prefix} member {member.relation!r} join source must be the "
+                    "anchor, seal, or a preceding member"
+                )
+            source = resolved.get(join.source_relation)
+            if source is None:
+                family_errors.append(
+                    f"{prefix} member {member.relation!r} has unknown join source "
+                    f"{join.source_relation!r}"
+                )
+            if (
+                not join.source_attributes
+                or len(join.source_attributes) != len(join.member_attributes)
+                or len(set(join.source_attributes)) != len(join.source_attributes)
+                or len(set(join.member_attributes)) != len(join.member_attributes)
+                or frozenset(join.member_attributes)
+                not in set(member_relation.declared_keys)
+            ):
+                family_errors.append(
+                    f"{prefix} member {member.relation!r} join must map unique source "
+                    "attributes onto one complete ordered candidate key"
+                )
+            elif source is not None:
+                unknown_source = set(join.source_attributes) - set(source.attributes)
+                if unknown_source:
+                    family_errors.append(
+                        f"{prefix} member {member.relation!r} join source lacks "
+                        f"{_format_set(unknown_source)}"
+                    )
+                if member.required:
+                    participation_fk = (
+                        join.source_attributes,
+                        member.relation,
+                        join.member_attributes,
+                    )
+                    participation_edges.setdefault(join.source_relation, set()).add(
+                        participation_fk
+                    )
+                    if participation_fk not in fk_shapes(source):
+                        family_errors.append(
+                            f"{prefix} member {member.relation!r} lacks its total-"
+                            f"participation FK from {join.source_relation!r}"
+                        )
+                else:
+                    optional_fk = (
+                        join.member_attributes,
+                        join.source_relation,
+                        join.source_attributes,
+                    )
+                    if optional_fk not in fk_shapes(member_relation):
+                        family_errors.append(
+                            f"{prefix} optional member {member.relation!r} must "
+                            f"reference its join source {join.source_relation!r}"
+                        )
+            available_sources.add(member.relation)
+
+        optional_members = tuple(
+            member for member in family.members if not member.required
+        )
+        presence = family.optional_presence
+        if optional_members and presence is None:
+            family_errors.append(
+                f"{prefix} optional members require one closed presence rule"
+            )
+        elif not optional_members and presence is not None:
+            family_errors.append(f"{prefix} presence rule requires an optional member")
+        elif presence is not None:
+            optional_names = {member.relation for member in optional_members}
+            discriminator = next(
+                (
+                    member
+                    for member in family.members
+                    if member.relation == presence.discriminator_relation
+                ),
+                None,
+            )
+            if optional_names != {presence.member_relation}:
+                family_errors.append(
+                    f"{prefix} presence rule must name the sole optional member"
+                )
+            if (
+                discriminator is None
+                or not discriminator.required
+                or not discriminator.project
+                or presence.discriminator_attribute
+                not in {
+                    discriminator.value_attribute,
+                    discriminator.projection_attribute,
+                }
+            ):
+                family_errors.append(
+                    f"{prefix} presence discriminator must be a mandatory projected fact"
+                )
+            if (
+                not presence.absent_values
+                or len(presence.absent_values) != len(set(presence.absent_values))
+                or presence.present_value in set(presence.absent_values)
+            ):
+                family_errors.append(
+                    f"{prefix} presence values must be nonempty, disjoint, and unique"
+                )
+
+        # A non-projected natural-identity member whose sole value is the
+        # family key duplicates the projected atomic facts deliberately: the
+        # facts remain narrow hot-read tables while the identity preserves the
+        # true natural candidate key.  Make that duplication structural, not
+        # a writer convention.  Every identity (K, f) pair must reference an
+        # explicitly redundant UNIQUE(K, f) on the corresponding fact table.
+        fact_members = tuple(
+            member
+            for member in family.members
+            if member.project and member.key_attributes == key
+        )
+        identity_members = tuple(
+            member
+            for member in family.members
+            if not member.project
+            and member.value_attribute in set(key)
+            and member.key_attributes != key
+        )
+        for identity in identity_members:
+            identity_relation = resolved[identity.relation]
+            assert identity_relation is not None
+            fact_by_name = {member.relation: member for member in fact_members}
+            if identity.congruence_members is None:
+                congruent_facts = fact_members
+            else:
+                if (
+                    not identity.congruence_members
+                    or len(identity.congruence_members)
+                    != len(set(identity.congruence_members))
+                    or not set(identity.congruence_members) <= set(fact_by_name)
+                ):
+                    family_errors.append(
+                        f"{prefix} natural identity {identity.relation!r} selects "
+                        "unknown, duplicate, or empty congruence members"
+                    )
+                    continue
+                congruent_facts = tuple(
+                    fact_by_name[name] for name in identity.congruence_members
+                )
+            identity_context = tuple(
+                attribute for attribute in key if attribute != identity.value_attribute
+            )
+            expected_identity_key = (
+                *identity_context,
+                *(member.value_attribute for member in congruent_facts),
+            )
+            if identity.key_attributes != expected_identity_key:
+                family_errors.append(
+                    f"{prefix} natural identity {identity.relation!r} key must be "
+                    "the ordered selected projected atomic facts"
+                )
+                continue
+            identity_fks = fk_shapes(identity_relation)
+            for fact in congruent_facts:
+                fact_relation = resolved[fact.relation]
+                assert fact_relation is not None
+                congruence_key = (*key, fact.value_attribute)
+                if fact_relation.referential_unique_keys != (congruence_key,):
+                    family_errors.append(
+                        f"{prefix} fact {fact.relation!r} must declare exactly the "
+                        f"referential UNIQUE {congruence_key!r}"
+                    )
+                congruence_fk = (
+                    congruence_key,
+                    fact.relation,
+                    congruence_key,
+                )
+                if congruence_fk not in identity_fks:
+                    family_errors.append(
+                        f"{prefix} natural identity {identity.relation!r} lacks "
+                        f"congruence FK {congruence_key!r} to {fact.relation!r}"
+                    )
+
+        expected_seal_fks = {
+            (key, family.anchor_relation, key),
+            *participation_edges.get(family.seal_relation, set()),
+        }
+        if family.name == "publication_commit_vertical":
+            expected_seal_fks.add(
+                (key, "publication_finalization_checkpoint_seal", key)
+            )
+        if fk_shapes(seal) != expected_seal_fks:
+            family_errors.append(
+                f"{prefix} seal must reference exactly its anchor and direct join members"
+            )
+
+        projected_values = tuple(
+            (
+                member.projection_attribute
+                if attribute == member.value_attribute
+                else attribute
+            )
+            for member in family.members
+            if member.project
+            for attribute in resolved[member.relation].attributes  # type: ignore[union-attr]
+            if attribute not in set(member.join.member_attributes)
+        )
+        if len((*key, *projected_values)) != len(set((*key, *projected_values))):
+            family_errors.append(
+                f"{prefix} projected attributes must be distinct from the family key"
+            )
+        expected_view_attributes = (*key, *projected_values)
+        if view.kind != "controlled_materialization":
+            family_errors.append(f"{prefix} view must be controlled_materialization")
+        if len(view.attributes) != len(expected_view_attributes) or set(
+            view.attributes
+        ) != set(expected_view_attributes):
+            family_errors.append(
+                f"{prefix} view must project exactly the family key and every "
+                "non-join attribute of each marked member"
+            )
+        if not primary_key_is(view, key):
+            family_errors.append(f"{prefix} view must use the family key as its PK")
+        expected_view_fk = (key, family.seal_relation, key)
+        if fk_shapes(view) != {expected_view_fk}:
+            family_errors.append(
+                f"{prefix} view must reference only the completion seal"
+            )
+
+        materialization = view.materialization
+        expected_sources = {
+            family.anchor_relation,
+            family.seal_relation,
+            *(member.relation for member in family.members),
+        }
+        if not isinstance(materialization, Mapping):
+            family_errors.append(f"{prefix} view lacks materialization metadata")
+        else:
+            raw_sources = materialization.get("derived_from")
+            source_set = (
+                set(raw_sources)
+                if isinstance(raw_sources, list)
+                and all(isinstance(value, str) for value in raw_sources)
+                else set()
+            )
+            if (
+                materialization.get("authoritative") is not False
+                or materialization.get("storage") != "logical_view"
+                or source_set != expected_sources
+                or len(source_set) != len(raw_sources or ())
+            ):
+                family_errors.append(
+                    f"{prefix} view must be a non-authoritative logical_view "
+                    "derived exactly from its anchor, members, and seal"
+                )
+
+        universal_attributes = frozenset(
+            (
+                *key,
+                *(
+                    (
+                        member.projection_attribute
+                        if member.project and attribute == member.value_attribute
+                        else attribute
+                    )
+                    for member in family.members
+                    for attribute in resolved[member.relation].attributes  # type: ignore[union-attr]
+                ),
+            )
+        )
+        for dependency in family.semantic_fds:
+            unknown = (
+                dependency.determinant | dependency.dependent
+            ) - universal_attributes
+            if unknown:
+                family_errors.append(
+                    f"{prefix} semantic FD mentions unknown attributes "
+                    f"{_format_set(unknown)}"
+                )
+            if not dependency.dependent:
+                family_errors.append(f"{prefix} semantic FD has an empty dependent")
+        if not family.semantic_fds:
+            family_errors.append(f"{prefix} must declare semantic_fds")
+
+        ordered_universal = tuple(sorted(universal_attributes))
+        for size in range(len(ordered_universal) + 1):
+            for values in itertools.combinations(ordered_universal, size):
+                determinant = frozenset(values)
+                semantic_closure = (
+                    attribute_closure(determinant, family.semantic_fds)
+                    & universal_attributes
+                )
+                member_closure = (
+                    attribute_closure(determinant, member_dependencies)
+                    & universal_attributes
+                )
+                if semantic_closure != member_closure:
+                    family_errors.append(
+                        f"{prefix} member FDs are not an exact dependency-"
+                        f"preserving cover at determinant {_format_set(determinant)}"
+                    )
+                    break
+            else:
+                continue
+            break
+
+        view_attributes = frozenset(view.attributes)
+        ordered_view = tuple(sorted(view_attributes))
+        for size in range(len(ordered_view) + 1):
+            for values in itertools.combinations(ordered_view, size):
+                determinant = frozenset(values)
+                semantic_projection = (
+                    attribute_closure(determinant, family.semantic_fds)
+                    & view_attributes
+                )
+                declared_projection = (
+                    attribute_closure(determinant, view.functional_dependencies)
+                    & view_attributes
+                )
+                if semantic_projection != declared_projection:
+                    family_errors.append(
+                        f"{prefix} view FDs are not the exact semantic projection "
+                        f"at determinant {_format_set(determinant)}"
+                    )
+                    break
+            else:
+                continue
+                break
+
+        # One family may expose additional historical read shapes without a
+        # second seal or duplicated facts.  A sealed_vertical_projection may
+        # join any dependency-closed subset of family members, but may expose
+        # only attributes already proved by those members and must declare the
+        # exact F+ projection of the family's semantic dependencies.
+        member_by_name = {member.relation: member for member in family.members}
+        for projection_view in projection_views:
+            projection_metadata = projection_view.materialization
+            assert isinstance(projection_metadata, Mapping)
+            if projection_metadata.get("vertical_family") != family.name:
+                continue
+            recognized_projection_views.add(projection_view.name)
+            projection_prefix = f"{prefix} sealed projection {projection_view.name!r}"
+            raw_member_names = projection_metadata.get("projection_members")
+            if not isinstance(raw_member_names, list) or not all(
+                isinstance(value, str) and value for value in raw_member_names
+            ):
+                family_errors.append(
+                    f"{projection_prefix} must list nonempty projection_members"
+                )
+                continue
+            member_names = tuple(raw_member_names)
+            if not member_names or len(member_names) != len(set(member_names)):
+                family_errors.append(
+                    f"{projection_prefix} projection_members must be nonempty and unique"
+                )
+                continue
+            unknown_members = set(member_names) - set(member_by_name)
+            if unknown_members:
+                family_errors.append(
+                    f"{projection_prefix} names unknown members "
+                    f"{_format_set(unknown_members)}"
+                )
+                continue
+            selected = tuple(member_by_name[name] for name in member_names)
+            selected_names = set(member_names)
+            for member in selected:
+                source_name = member.join.source_relation
+                if source_name not in {
+                    family.anchor_relation,
+                    family.seal_relation,
+                    *selected_names,
+                }:
+                    family_errors.append(
+                        f"{projection_prefix} omits join dependency {source_name!r}"
+                    )
+            available_attributes = set(key)
+            contribution: dict[str, str] = {}
+            for member in selected:
+                member_relation = resolved[member.relation]
+                assert member_relation is not None
+                join_attributes = set(member.join.member_attributes)
+                for attribute in member_relation.attributes:
+                    if attribute in join_attributes:
+                        continue
+                    projected_attribute = (
+                        member.projection_attribute
+                        if member.project and attribute == member.value_attribute
+                        else attribute
+                    )
+                    previous = contribution.setdefault(
+                        projected_attribute, member.relation
+                    )
+                    if previous != member.relation:
+                        family_errors.append(
+                            f"{projection_prefix} derives "
+                            f"{projected_attribute!r} ambiguously"
+                        )
+                    available_attributes.add(projected_attribute)
+            if projection_view.kind != "controlled_materialization":
+                family_errors.append(
+                    f"{projection_prefix} must be controlled_materialization"
+                )
+            if not primary_key_is(projection_view, key):
+                family_errors.append(
+                    f"{projection_prefix} must retain the family primary key"
+                )
+            projected_attributes = set(projection_view.attributes)
+            if (
+                tuple(projection_view.attributes[: len(key)]) != key
+                or not projected_attributes <= available_attributes
+                or projected_attributes == set(key)
+            ):
+                family_errors.append(
+                    f"{projection_prefix} exposes attributes not supplied by its "
+                    "selected members or no value attribute"
+                )
+            used_members = {
+                contribution[attribute]
+                for attribute in projected_attributes - set(key)
+                if attribute in contribution
+            }
+            if used_members != selected_names:
+                family_errors.append(
+                    f"{projection_prefix} must not join an unused member"
+                )
+            if fk_shapes(projection_view) != {(key, family.seal_relation, key)}:
+                family_errors.append(
+                    f"{projection_prefix} must reference only the shared completion seal"
+                )
+            raw_sources = projection_metadata.get("derived_from")
+            expected_projection_sources = {
+                family.anchor_relation,
+                family.seal_relation,
+                *selected_names,
+            }
+            source_set = (
+                set(raw_sources)
+                if isinstance(raw_sources, list)
+                and all(isinstance(value, str) for value in raw_sources)
+                else set()
+            )
+            if (
+                projection_metadata.get("authoritative") is not False
+                or projection_metadata.get("storage") != "logical_view"
+                or source_set != expected_projection_sources
+                or len(source_set) != len(raw_sources or ())
+            ):
+                family_errors.append(
+                    f"{projection_prefix} must be a non-authoritative logical view "
+                    "derived exactly from the shared seal, anchor, and selected members"
+                )
+            projection_attribute_set = frozenset(projection_view.attributes)
+            ordered_projection = tuple(sorted(projection_attribute_set))
+            for size in range(len(ordered_projection) + 1):
+                for values in itertools.combinations(ordered_projection, size):
+                    determinant = frozenset(values)
+                    semantic_projection = (
+                        attribute_closure(determinant, family.semantic_fds)
+                        & projection_attribute_set
+                    )
+                    declared_projection = (
+                        attribute_closure(
+                            determinant,
+                            projection_view.functional_dependencies,
+                        )
+                        & projection_attribute_set
+                    )
+                    if semantic_projection != declared_projection:
+                        family_errors.append(
+                            f"{projection_prefix} FDs are not the exact semantic "
+                            f"projection at determinant {_format_set(determinant)}"
+                        )
+                        break
+                else:
+                    continue
+                break
+
+        if not family_errors:
+            validated.append(family.name)
+        errors.extend(family_errors)
+
+    unknown_projection_views = {
+        relation.name for relation in projection_views
+    } - recognized_projection_views
+    if unknown_projection_views:
+        errors.append(
+            "sealed vertical projections reference unknown vertical families: "
+            f"{_format_set(unknown_projection_views)}"
+        )
+
+    return errors, validated
 
 
 def _validate_decomposition(
@@ -6703,6 +9859,10 @@ def _validate_decomposition(
 
 def _parse_relation(value: Mapping[str, Any]) -> Relation:
     context = f"relation {value.get('name', '<unnamed>')!r}"
+    ordered_declared_keys = tuple(
+        _string_sequence(item, f"{context}.declared_keys")
+        for item in _list(value, "declared_keys", context)
+    )
     return Relation(
         name=_string(value, "name", context),
         kind=_string(value, "kind", context),
@@ -6711,10 +9871,7 @@ def _parse_relation(value: Mapping[str, Any]) -> Relation:
             _parse_fd(item, f"{context}.fds")
             for item in _table_list(value, "fds", context)
         ),
-        declared_keys=tuple(
-            frozenset(_string_sequence(item, f"{context}.declared_keys"))
-            for item in _list(value, "declared_keys", context)
-        ),
+        declared_keys=tuple(frozenset(item) for item in ordered_declared_keys),
         foreign_keys=tuple(
             _parse_foreign_key(item, f"{context}.foreign_keys")
             for item in _optional_table_list(value, "foreign_keys", context)
@@ -6723,6 +9880,15 @@ def _parse_relation(value: Mapping[str, Any]) -> Relation:
         rationale=(
             value["rationale"] if isinstance(value.get("rationale"), str) else ""
         ),
+        referential_unique_keys=(
+            tuple(
+                _string_sequence(item, f"{context}.referential_unique_keys")
+                for item in _list(value, "referential_unique_keys", context)
+            )
+            if "referential_unique_keys" in value
+            else ()
+        ),
+        ordered_declared_keys=ordered_declared_keys,
     )
 
 
@@ -6757,6 +9923,230 @@ def _parse_decomposition(value: Mapping[str, Any]) -> Decomposition:
             for item in _table_list(value, "projections", context)
         ),
         rationale=_string(value, "rationale", context),
+    )
+
+
+def _parse_vertical_family(value: Mapping[str, Any]) -> VerticalFamily:
+    context = f"vertical family {value.get('name', '<unnamed>')!r}"
+    return VerticalFamily(
+        name=_string(value, "name", context),
+        anchor_relation=_string(value, "anchor_relation", context),
+        seal_relation=_string(value, "seal_relation", context),
+        view_relation=_string(value, "view_relation", context),
+        key_attributes=_string_tuple(value, "key_attributes", context),
+        members=tuple(
+            VerticalFamilyMember(
+                relation=_string(item, "relation", f"{context}.members"),
+                key_attributes=_string_tuple(
+                    item, "key_attributes", f"{context}.members"
+                ),
+                value_attribute=_string(item, "value_attribute", f"{context}.members"),
+                projection_attribute=(
+                    _string(item, "projection_attribute", f"{context}.members")
+                    if "projection_attribute" in item
+                    else _string(item, "value_attribute", f"{context}.members")
+                ),
+                join=VerticalFamilyJoin(
+                    source_relation=_string(
+                        _table(item, "join", f"{context}.members"),
+                        "source_relation",
+                        f"{context}.members.join",
+                    ),
+                    source_attributes=_string_tuple(
+                        _table(item, "join", f"{context}.members"),
+                        "source_attributes",
+                        f"{context}.members.join",
+                    ),
+                    member_attributes=_string_tuple(
+                        _table(item, "join", f"{context}.members"),
+                        "member_attributes",
+                        f"{context}.members.join",
+                    ),
+                ),
+                project=_boolean(item, "project", f"{context}.members"),
+                required=(
+                    _boolean(item, "required", f"{context}.members")
+                    if "required" in item
+                    else True
+                ),
+                congruence_members=(
+                    _string_tuple(item, "congruence_members", f"{context}.members")
+                    if "congruence_members" in item
+                    else None
+                ),
+            )
+            for item in _table_list(value, "members", context)
+        ),
+        optional_presence=(
+            VerticalOptionalPresence(
+                member_relation=_string(
+                    _table(value, "optional_presence", context),
+                    "member_relation",
+                    f"{context}.optional_presence",
+                ),
+                discriminator_relation=_string(
+                    _table(value, "optional_presence", context),
+                    "discriminator_relation",
+                    f"{context}.optional_presence",
+                ),
+                discriminator_attribute=_string(
+                    _table(value, "optional_presence", context),
+                    "discriminator_attribute",
+                    f"{context}.optional_presence",
+                ),
+                present_value=_string(
+                    _table(value, "optional_presence", context),
+                    "present_value",
+                    f"{context}.optional_presence",
+                ),
+                absent_values=_string_tuple(
+                    _table(value, "optional_presence", context),
+                    "absent_values",
+                    f"{context}.optional_presence",
+                ),
+            )
+            if "optional_presence" in value
+            else None
+        ),
+        marker_relation=(
+            _string(value, "marker_relation", context)
+            if "marker_relation" in value
+            else None
+        ),
+        marker_predicate=(
+            _string(value, "marker_predicate", context)
+            if "marker_predicate" in value
+            else None
+        ),
+        visibility=_string(value, "visibility", context),
+        semantic_fds=tuple(
+            _parse_fd(item, f"{context}.semantic_fds")
+            for item in _table_list(value, "semantic_fds", context)
+        ),
+        rationale=_string(value, "rationale", context),
+        write_obligation=_string(value, "write_obligation", context),
+    )
+
+
+def _parse_generation_stream(value: Mapping[str, Any]) -> GenerationStream:
+    context = f"generation stream {value.get('name', '<unnamed>')!r}"
+    return GenerationStream(
+        name=_string(value, "name", context),
+        descriptor_relation=_string(value, "descriptor_relation", context),
+        mapping_relation=_string(value, "mapping_relation", context),
+        revision_attribute=_string(value, "revision_attribute", context),
+        generation_attribute=_string(value, "generation_attribute", context),
+        head_revision_relation=_string(value, "head_revision_relation", context),
+        head_time_relation=_string(value, "head_time_relation", context),
+        head_view_relation=_string(value, "head_view_relation", context),
+        head_channel_attribute=_string(value, "head_channel_attribute", context),
+        head_time_attribute=_string(value, "head_time_attribute", context),
+        baselines=tuple(
+            GenerationBaseline(
+                base_relation=_string(item, "base_relation", f"{context}.baselines"),
+                view_relation=_string(item, "view_relation", f"{context}.baselines"),
+                owner_attribute=_string(
+                    item, "owner_attribute", f"{context}.baselines"
+                ),
+                revision_attribute=_string(
+                    item, "revision_attribute", f"{context}.baselines"
+                ),
+                generation_attribute=_string(
+                    item, "generation_attribute", f"{context}.baselines"
+                ),
+            )
+            for item in _table_list(value, "baselines", context)
+        ),
+        rationale=_string(value, "rationale", context),
+        write_obligation=_string(value, "write_obligation", context),
+    )
+
+
+def _parse_publication_commit_contract(
+    value: Mapping[str, Any],
+) -> PublicationCommitContract:
+    context = "publication_commit_contract"
+    return PublicationCommitContract(
+        commit_family=_string(value, "commit_family", context),
+        catalog_descriptor_family=_string(value, "catalog_descriptor_family", context),
+        source_descriptor_family=_string(value, "source_descriptor_family", context),
+        generation_node_relation=_string(value, "generation_node_relation", context),
+        generation_successor_relation=_string(
+            value, "generation_successor_relation", context
+        ),
+        finalization_relation=_string(value, "finalization_relation", context),
+        head_receipt_relation=_string(value, "head_receipt_relation", context),
+        head_view_relation=_string(value, "head_view_relation", context),
+        catalog_published_relation=_string(
+            value, "catalog_published_relation", context
+        ),
+        source_published_relation=_string(value, "source_published_relation", context),
+        catalog_generation_relation=_string(
+            value, "catalog_generation_relation", context
+        ),
+        source_generation_relation=_string(
+            value, "source_generation_relation", context
+        ),
+        source_build_baseline_relation=_string(
+            value, "source_build_baseline_relation", context
+        ),
+        candidate_baseline_relation=_string(
+            value, "candidate_baseline_relation", context
+        ),
+        activation_relation=_string(value, "activation_relation", context),
+        operational_effect_seal_relation=_string(
+            value, "operational_effect_seal_relation", context
+        ),
+        operational_policy_relation=_string(
+            value, "operational_policy_relation", context
+        ),
+        runtime_obligation=_string(value, "runtime_obligation", context),
+        ready_obligation=_string(value, "ready_obligation", context),
+    )
+
+
+def _parse_batch_receipt_projection(
+    value: Mapping[str, Any],
+) -> BatchReceiptProjection:
+    context = f"batch receipt projection {value.get('name', '<unnamed>')!r}"
+    return BatchReceiptProjection(
+        name=_string(value, "name", context),
+        vertical_family=_string(value, "vertical_family", context),
+        owner_attribute=_string(value, "owner_attribute", context),
+        stage_attribute=(
+            _string(value, "stage_attribute", context)
+            if "stage_attribute" in value
+            else None
+        ),
+        batch_key_attribute=_string(value, "batch_key_attribute", context),
+        start_generation_attribute=_string(
+            value, "start_generation_attribute", context
+        ),
+        start_cursor_attribute=_string(value, "start_cursor_attribute", context),
+        start_processed_count_attribute=_string(
+            value, "start_processed_count_attribute", context
+        ),
+        page_limit_attribute=(
+            _string(value, "page_limit_attribute", context)
+            if "page_limit_attribute" in value
+            else None
+        ),
+        next_cursor_attribute=_string(value, "next_cursor_attribute", context),
+        next_processed_count_attribute=_string(
+            value, "next_processed_count_attribute", context
+        ),
+        next_state_attribute=_string(value, "next_state_attribute", context),
+        row_count_attribute=_string(value, "row_count_attribute", context),
+        terminal_attribute=_string(value, "terminal_attribute", context),
+        committed_generation_attribute=_string(
+            value, "committed_generation_attribute", context
+        ),
+        committed_at_attribute=_string(value, "committed_at_attribute", context),
+        coordinate_relation=_string(value, "coordinate_relation", context),
+        stored_relation=_string(value, "stored_relation", context),
+        view_relation=_string(value, "view_relation", context),
+        checkpoint_relation=_string(value, "checkpoint_relation", context),
+        write_obligation=_string(value, "write_obligation", context),
     )
 
 
@@ -6870,7 +10260,10 @@ def _parse_retention_semantic_blocker(
         relation=_string(value, "relation", context),
         attributes=_string_tuple(value, "attributes", context),
         root_attributes=_string_tuple(value, "root_attributes", context),
+        blocking_predicate=_string(value, "blocking_predicate", context),
+        nonblocking_state=_string(value, "nonblocking_state", context),
         semantic_obligation_id=_string(value, "semantic_obligation_id", context),
+        release_obligation_id=_string(value, "release_obligation_id", context),
     )
 
 
@@ -7014,23 +10407,98 @@ def _parse_analysis_candidate_contract(
     context = "contract.analysis_candidate_contract"
     return AnalysisCandidateContract(
         content_relation=_string(value, "content_relation", context),
-        gid_relation=_string(value, "gid_relation", context),
-        gallery_relation=_string(value, "gallery_relation", context),
-        priority_attribute=_string(value, "priority_attribute", context),
-        candidate_digest_attribute=_string(
-            value, "candidate_digest_attribute", context
+        content_group_attribute=_string(value, "content_group_attribute", context),
+        content_gallery_attribute=_string(value, "content_gallery_attribute", context),
+        content_stored_order_attributes=_string_tuple(
+            value, "content_stored_order_attributes", context
         ),
-        stable_tie_break_attributes=_string_tuple(
-            value, "stable_tie_break_attributes", context
+        content_derived_order_attributes=_string_tuple(
+            value, "content_derived_order_attributes", context
         ),
-        encoding_version=_integer(value, "encoding_version", context),
-        framing=_string(value, "framing", context),
-        ordering_rule=_string(value, "ordering_rule", context),
+        content_gid_access_relation=_string(
+            value, "content_gid_access_relation", context
+        ),
+        content_gid_relation=_string(value, "content_gid_relation", context),
+        content_coordinate_relation=_string(
+            value, "content_coordinate_relation", context
+        ),
+        content_ordering_rule=_string(value, "content_ordering_rule", context),
+        gid_candidate_membership_relation=_string(
+            value, "gid_candidate_membership_relation", context
+        ),
+        gid_winner_selection_relation=_string(
+            value, "gid_winner_selection_relation", context
+        ),
+        gid_winner_shadow_relation=_string(
+            value, "gid_winner_shadow_relation", context
+        ),
+        gid_keyset_relation=_string(value, "gid_keyset_relation", context),
+        gid_run_build_relation=_string(value, "gid_run_build_relation", context),
+        gid_build_membership_relation=_string(
+            value, "gid_build_membership_relation", context
+        ),
+        gid_metadata_relation=_string(value, "gid_metadata_relation", context),
+        gid_order_attributes=_string_tuple(value, "gid_order_attributes", context),
+        gid_ordering_rule=_string(value, "gid_ordering_rule", context),
         already_uploaded_marker_rule=_string(
             value, "already_uploaded_marker_rule", context
         ),
-        candidate_digest_framing=_string(value, "candidate_digest_framing", context),
         runtime_obligation=_string(value, "runtime_obligation", context),
+    )
+
+
+def _parse_analysis_impacted_key_contract(
+    value: Mapping[str, Any],
+) -> AnalysisImpactedKeyContract:
+    context = "contract.analysis_impacted_key_contract"
+    return AnalysisImpactedKeyContract(
+        version=_integer(value, "version", context),
+        maximum_page_galleries=_integer(value, "maximum_page_galleries", context),
+        maximum_provenance_rows=_integer(value, "maximum_provenance_rows", context),
+        witness_rule=_string(value, "witness_rule", context),
+        append_rule=_string(value, "append_rule", context),
+        replay_rule=_string(value, "replay_rule", context),
+        cleanup_rule=_string(value, "cleanup_rule", context),
+        families=tuple(
+            AnalysisImpactedKeyFamily(
+                name=_string(family, "name", f"{context}.family"),
+                key_attribute=_string(family, "key_attribute", f"{context}.family"),
+                anchor_relation=_string(family, "anchor_relation", f"{context}.family"),
+                provenance_relation=_string(
+                    family, "provenance_relation", f"{context}.family"
+                ),
+                witness_relation=_string(
+                    family, "witness_relation", f"{context}.family"
+                ),
+                seal_relation=_string(family, "seal_relation", f"{context}.family"),
+                view_relation=_string(family, "view_relation", f"{context}.family"),
+                provenance_primary_key=_string_tuple(
+                    family, "provenance_primary_key", f"{context}.family"
+                ),
+                provenance_lookup_index=_string_tuple(
+                    family, "provenance_lookup_index", f"{context}.family"
+                ),
+                witness_primary_key=_string_tuple(
+                    family, "witness_primary_key", f"{context}.family"
+                ),
+                witness_fk_attributes=_string_tuple(
+                    family, "witness_fk_attributes", f"{context}.family"
+                ),
+                population_stage=_string(
+                    family, "population_stage", f"{context}.family"
+                ),
+                population_cursor_attribute=_string(
+                    family, "population_cursor_attribute", f"{context}.family"
+                ),
+                downstream_stage=_string(
+                    family, "downstream_stage", f"{context}.family"
+                ),
+                downstream_cursor_attribute=_string(
+                    family, "downstream_cursor_attribute", f"{context}.family"
+                ),
+            )
+            for family in _table_list(value, "family", context)
+        ),
     )
 
 
@@ -7353,6 +10821,12 @@ def _parse_artifact_byte_producer_contract(
         ),
         producer_fingerprint_golden_sha256=_string(
             value, "producer_fingerprint_golden_sha256", context
+        ),
+        producer_equivalence_class_framing=_string(
+            value, "producer_equivalence_class_framing", context
+        ),
+        producer_equivalence_class_golden_hex=_string(
+            value, "producer_equivalence_class_golden_hex", context
         ),
         runtime_obligation=_string(value, "runtime_obligation", context),
     )
@@ -7757,6 +11231,13 @@ def _integer(value: Mapping[str, Any], key: str, context: str) -> int:
     return result
 
 
+def _boolean(value: Mapping[str, Any], key: str, context: str) -> bool:
+    result = value.get(key)
+    if not isinstance(result, bool):
+        raise ContractFormatError(f"{context}.{key} must be a boolean")
+    return result
+
+
 def _string_tuple(value: Mapping[str, Any], key: str, context: str) -> tuple[str, ...]:
     return tuple(_string_sequence(_list(value, key, context), f"{context}.{key}"))
 
@@ -7813,8 +11294,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ContractError as error:
         print(error, file=sys.stderr)
         return 1
+    bcnf_base_count = sum(item.bcnf_required for item in report.relations)
+    logical_view_count = len(report.relations) - bcnf_base_count
     print(
-        f"validated {len(report.relations)} BCNF relations and "
+        f"validated {bcnf_base_count} BCNF base relations and "
+        f"{logical_view_count} intentional logical views and "
         f"{len(report.lossless_decompositions)} lossless decompositions "
         f"and {len(report.dependency_preserving_decompositions)} "
         "dependency-preserving decompositions "

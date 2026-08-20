@@ -9,8 +9,6 @@ import tempfile
 from pathlib import Path
 
 import h2h_galleryinfo_parser
-import h2hdb_downloader
-import h2hdb_ingest
 import h2hdb_komga
 import hbrowser
 from fastapi import FastAPI
@@ -97,12 +95,10 @@ def main() -> None:
         asyncio.run(_exercise_empty_opds(create_app(opds_config, catalog=reader)))
 
         # Imports prove that the independently installed consumers resolve the
-        # same public core package. Full ingest is deliberately not simulated:
-        # its concrete storage adapter and vNext orchestration remain a consumer
-        # integration boundary documented by h2hdb.
+        # same public core package. Ingest and downloader are deliberately not
+        # installed in this epoch-2 smoke until their production orchestration
+        # has been ported away from the removed v1-v7 API.
         assert h2h_galleryinfo_parser is not None
-        assert h2hdb_downloader is not None
-        assert h2hdb_ingest is not None
         assert h2hdb_komga is not None
         assert hbrowser is not None
 

@@ -46,6 +46,26 @@ from .vnext_allocator_repository import (
     IdentityStream,
     VNextAllocatorRepository,
 )
+from .vnext_canonical_value_family import (
+    CanonicalValueCollisionError,
+    CanonicalValueNotReadyError,
+    load_sealed_value_identity,
+    persist_in_memory_canonical_value,
+)
+from .vnext_canonical_value_repository import CanonicalValueRepository
+from .vnext_catalog_identity_family import (
+    CatalogIdentityCollisionError,
+    FileNameIdentity,
+    GalleryObservationFile,
+    TagTerm,
+    ensure_file_name_identities,
+    ensure_gallery_observation_files,
+    ensure_tag_term,
+    load_file_name_identities,
+    load_gallery_identities,
+    load_gallery_observation_files,
+    load_tag_terms,
+)
 from .vnext_domains import (
     INT63_MAX,
     require_bounded_bytes,
@@ -70,9 +90,9 @@ from .vnext_identity import (
     GalleryObservationNodeKind,
     GalleryObservationPage,
     GalleryObservationTagEntry,
-    build_canonical_value_tree,
+    VNextIdentityError,
+    artifact_source_manifest_digest,
     canonical_value_digest,
-    decode_canonical_value_page,
     decode_gallery_observation_page,
     encode_gallery_observation_descriptor,
     encode_gallery_observation_page,
@@ -97,6 +117,12 @@ from .vnext_maintenance_gate_repository import (
     GateMode,
     MaintenanceGateRepository,
 )
+from .vnext_manifest_family import (
+    ManifestFamilyCollisionError,
+    ensure_gallery_manifest_family,
+    load_gallery_manifest_family,
+    load_source_build_family,
+)
 from .vnext_transaction import (
     LockRank,
     VNextUnitOfWork,
@@ -120,8 +146,17 @@ _MATCH_RECEIPT = "operational_gallery_observation_staging_match_receipts"
 _PARSER = "operational_gallery_observation_staging_metadata_parsers"
 
 _PAGE = "catalog_gallery_observation_pages"
-_PAGE_DESCRIPTOR = "catalog_gallery_observation_page_descriptors"
-_PAGE_BOUNDS = "catalog_gallery_observation_page_key_bounds"
+_PAGE_DESCRIPTOR_ANCHOR = "catalog_gallery_observation_page_descriptor_anchors"
+_PAGE_DESCRIPTOR_COMPONENT = "catalog_gallery_observation_page_descriptor_components"
+_PAGE_DESCRIPTOR_LEVEL = "catalog_gallery_observation_page_descriptor_levels"
+_PAGE_DESCRIPTOR_COUNT = (
+    "catalog_gallery_observation_page_descriptor_subtree_item_counts"
+)
+_PAGE_DESCRIPTOR_SEAL = "catalog_gallery_observation_page_descriptor_seals"
+_PAGE_BOUNDS_ANCHOR = "catalog_gallery_observation_page_key_bounds_anchors"
+_PAGE_BOUNDS_FIRST = "catalog_gallery_observation_page_key_bounds_first_keys"
+_PAGE_BOUNDS_LAST = "catalog_gallery_observation_page_key_bounds_last_keys"
+_PAGE_BOUNDS_SEAL = "catalog_gallery_observation_page_key_bounds_seals"
 _PAGE_CHILD = "catalog_gallery_observation_page_children"
 _ALLOCATION_PAGE = "catalog_gallery_observation_allocation_pages"
 _TREE_ROOT = "catalog_gallery_observation_tree_roots"
@@ -529,7 +564,7 @@ class GalleryObservationStagingRepository:
         gallery = require_positive_int63(gallery_id, field="gallery_id")
         timestamp = require_int63(now, field="now")
         generation = _authorize_outer(work, gate_lease, ingest_turn, now=timestamp)
-        scope = _lock_and_require_working_build(
+        scope, _build_state = _lock_and_require_working_build(
             work,
             generation=generation,
             build_id=build,
@@ -563,11 +598,14 @@ class GalleryObservationStagingRepository:
                 claim.claim_generation,
             )
 
-        identity = work.connector.fetch_one(
-            "SELECT scope_key FROM catalog_gallery_identities WHERE gallery_id = %s",
-            (gallery,),
-        )
-        if identity != (scope,):
+        try:
+            identity = load_gallery_identities(
+                work.connector,
+                gallery_ids=(gallery,),
+            ).get(gallery)
+        except CatalogIdentityCollisionError as error:
+            raise GalleryStagingConflictError(str(error)) from error
+        if identity is None or identity.scope_key != scope:
             raise GalleryStagingNotReadyError(
                 "gallery identity is absent or belongs to another source scope"
             )
@@ -668,10 +706,17 @@ class GalleryObservationStagingRepository:
             gallery_id=identity.gallery_id,
             now=now,
         )
-        durable = work.connector.fetch_one(
-            "SELECT gallery_key, scope_key, locator_sha256 "
-            "FROM catalog_gallery_identities WHERE gallery_id = %s",
-            (identity.gallery_id,),
+        try:
+            stored = load_gallery_identities(
+                work.connector,
+                gallery_ids=(identity.gallery_id,),
+            ).get(identity.gallery_id)
+        except CatalogIdentityCollisionError as error:
+            raise GalleryStagingConflictError(str(error)) from error
+        durable = (
+            ()
+            if stored is None
+            else (stored.gallery_key, stored.scope_key, stored.locator_sha256)
         )
         expected = (
             identity.gallery_key,
@@ -1035,9 +1080,10 @@ class GalleryObservationStagingRepository:
             ingest_turn=ingest_turn,
             handle=current,
             now=timestamp,
+            allow_terminal_sealed_build=True,
         )
         if header.state in {"SEALED", "REUSED"}:
-            return _validate_seal_replay(work.connector, current, header.state)
+            return _validate_seal_replay(work, current, header.state)
         if header.state != "OPEN":
             raise GalleryStagingNotReadyError("staging is not OPEN")
 
@@ -1143,19 +1189,19 @@ class GalleryObservationStagingRepository:
             now=timestamp,
             retain_claim=True,
         )
-        allocation = work.connector.fetch_one(
-            "SELECT digest_domain, byte_count FROM catalog_canonical_value_allocations "
-            "WHERE value_sha256 = %s",
-            (observation_digest,),
-        )
-        if allocation != (_OBSERVATION_DOMAIN.encode("ascii"), len(descriptor_bytes)):
-            raise GalleryStagingConflictError("observation canonical preimage differs")
-        identity = work.connector.fetch_one(
-            "SELECT root_page_sha256 FROM catalog_canonical_value_identities "
-            "WHERE value_sha256 = %s",
-            (observation_digest,),
-        )
-        if identity != (canonical_root,):
+        try:
+            identity = load_sealed_value_identity(
+                work.connector,
+                value_sha256=observation_digest,
+            )
+        except CanonicalValueCollisionError as error:
+            raise GalleryStagingConflictError(str(error)) from error
+        if (
+            identity is None
+            or identity.digest_domain != _OBSERVATION_DOMAIN.encode("ascii")
+            or identity.byte_count != len(descriptor_bytes)
+            or identity.root_page_sha256 != canonical_root
+        ):
             raise GalleryStagingConflictError("observation canonical root differs")
 
         existing = work.connector.fetch_one(
@@ -1185,19 +1231,33 @@ class GalleryObservationStagingRepository:
                 "VALUES (%s, %s, %s)",
                 (current.gallery_id, current.observation_id, observation_digest),
             )
-            work.connector.execute(
-                "INSERT INTO catalog_gallery_observation_stat "
-                "(gallery_id, observation_id, file_count, byte_count) "
-                "VALUES (%s, %s, %s, %s)",
-                (
-                    current.gallery_id,
-                    current.observation_id,
-                    file_count,
-                    byte_count,
-                ),
+            _persist_stat_fact(
+                work.connector,
+                gallery_id=current.gallery_id,
+                observation_id=current.observation_id,
+                file_count=file_count,
+                byte_count=byte_count,
             )
             final_observation = current.observation_id
             state = "SEALED"
+
+        try:
+            build = load_source_build_family(
+                work.connector,
+                build_id=current.build_id,
+            )
+            if build is None or build.state != "OPEN":
+                raise GalleryStagingNotReadyError(
+                    "gallery manifest requires the OPEN source build"
+                )
+            ensure_gallery_manifest_family(
+                work,
+                gallery_id=current.gallery_id,
+                observation_id=final_observation,
+                manifest_policy_id=build.manifest_policy_id,
+            )
+        except ManifestFamilyCollisionError as error:
+            raise GalleryStagingConflictError(str(error)) from error
 
         link = work.connector.fetch_one(
             "SELECT observation_id FROM catalog_source_build_galleries "
@@ -1451,30 +1511,13 @@ def _put_component_page(
                 root,
             )
         elif component is GalleryObservationComponent.DIRECTORY:
-            _insert_or_require(
+            directory_digest = gallery_directory_audit_digest(root, next_cursor)
+            _persist_directory_fact(
                 work.connector,
-                label="gallery directory audit",
-                select_sql=(
-                    "SELECT directory_entry_count, directory_observation_sha256 "
-                    "FROM catalog_gallery_observation_directories "
-                    "WHERE gallery_id = %s AND observation_id = %s"
-                ),
-                select_data=(handle.gallery_id, handle.observation_id),
-                insert_sql=(
-                    "INSERT INTO catalog_gallery_observation_directories "
-                    "(gallery_id, observation_id, directory_entry_count, "
-                    "directory_observation_sha256) VALUES (%s, %s, %s, %s)"
-                ),
-                insert_data=(
-                    handle.gallery_id,
-                    handle.observation_id,
-                    next_cursor,
-                    gallery_directory_audit_digest(root, next_cursor),
-                ),
-                expected=(
-                    next_cursor,
-                    gallery_directory_audit_digest(root, next_cursor),
-                ),
+                gallery_id=handle.gallery_id,
+                observation_id=handle.observation_id,
+                directory_entry_count=next_cursor,
+                directory_observation_sha256=directory_digest,
             )
     return GalleryStagingReceipt(
         request_sha256,
@@ -1510,17 +1553,23 @@ def _authorize_staging(
     ingest_turn: IngestTurn,
     handle: GalleryStagingHandle,
     now: int,
+    allow_terminal_sealed_build: bool = False,
 ) -> tuple[_Header, _Claim]:
     generation = _authorize_outer(work, gate_lease, ingest_turn, now=now)
     if generation != handle.ingest_generation:
         raise GalleryStagingNotReadyError("handle belongs to another ingest generation")
-    _lock_and_require_working_build(
+    _scope, build_state = _lock_and_require_working_build(
         work,
         generation=generation,
         build_id=handle.build_id,
+        allow_sealed=allow_terminal_sealed_build,
     )
     header, claim = _lock_header_and_claim(work, handle.staging_id)
     _require_handle_rows(handle, header, claim)
+    if build_state == "SEALED" and header.state not in {"SEALED", "REUSED"}:
+        raise GalleryStagingNotReadyError(
+            "only terminal staging may replay against a SEALED source build"
+        )
     return header, claim
 
 
@@ -1529,7 +1578,8 @@ def _lock_and_require_working_build(
     *,
     generation: int,
     build_id: bytes,
-) -> bytes:
+    allow_sealed: bool = False,
+) -> tuple[bytes, str]:
     mapping = work.lock_row(
         LockRank.WORKING_ROOT,
         encode_lock_key("source-build", 0, generation),
@@ -1548,13 +1598,15 @@ def _lock_and_require_working_build(
     )
     if working != (build_id,):
         raise GalleryStagingNotReadyError("source build is not the working root")
-    build = work.connector.fetch_one(
-        "SELECT scope_key, state FROM catalog_source_builds WHERE build_id = %s",
-        (build_id,),
-    )
-    if len(build) != 2 or build[1] != "OPEN":
-        raise GalleryStagingNotReadyError("source build is not OPEN")
-    return require_digest32(build[0], field="source build scope_key")
+    try:
+        build = load_source_build_family(work.connector, build_id=build_id)
+    except ManifestFamilyCollisionError as error:
+        raise GalleryStagingNotReadyError(str(error)) from error
+    allowed_states = {"OPEN", "SEALED"} if allow_sealed else {"OPEN"}
+    if build is None or build.state not in allowed_states:
+        detail = "replayable" if allow_sealed else "OPEN"
+        raise GalleryStagingNotReadyError(f"source build is not {detail}")
+    return build.scope_key, build.state
 
 
 def _lock_header_and_claim(
@@ -2047,6 +2099,18 @@ def _try_replay_page(
         raise GalleryStagingConflictError(
             "replayed request does not match durable checkpoint poststate"
         )
+    _require_exact_observation_page_materialization(work.connector, prepared)
+    _require_observation_page_association(
+        work.connector,
+        handle,
+        prepared.page_sha256,
+    )
+    _require_exact_normalized_leaf_facts(
+        work,
+        handle,
+        prepared,
+        source_entries,
+    )
     root = _component_root(work.connector, handle, component)[0] if terminal else None
     return GalleryStagingReceipt(
         request_sha256,
@@ -2064,100 +2128,79 @@ def _persist_observation_page(
     handle: GalleryStagingHandle,
     prepared: _PreparedPage,
 ) -> None:
-    existing = connector.fetch_one(
-        f"SELECT page_bytes FROM {_PAGE} WHERE page_sha256 = %s",
-        (prepared.page_sha256,),
-    )
-    if existing:
-        if existing != (prepared.page_bytes,):
-            raise GalleryStagingConflictError(
-                "page digest collision has different exact bytes"
-            )
+    existing = _load_page_descriptor_family(connector, prepared.page_sha256)
+    if existing is not None:
+        _require_exact_observation_page_materialization(connector, prepared)
     else:
+        connector.execute(
+            f"INSERT INTO {_PAGE_DESCRIPTOR_ANCHOR} (page_sha256) VALUES (%s)",
+            (prepared.page_sha256,),
+        )
         connector.execute(
             f"INSERT INTO {_PAGE} (page_sha256, page_bytes) VALUES (%s, %s)",
             (prepared.page_sha256, prepared.page_bytes),
         )
-    descriptor = (
-        prepared.page_sha256,
-        _COMPONENT_BYTES[prepared.component],
-        prepared.page.level,
-        prepared.page.subtree_item_count,
-    )
-    _insert_or_require(
-        connector,
-        label="gallery page descriptor",
-        select_sql=(
-            f"SELECT page_sha256, component, level, subtree_item_count "
-            f"FROM {_PAGE_DESCRIPTOR} WHERE page_sha256 = %s"
-        ),
-        select_data=(prepared.page_sha256,),
-        insert_sql=(
-            f"INSERT INTO {_PAGE_DESCRIPTOR} "
-            "(page_sha256, component, level, subtree_item_count) "
-            "VALUES (%s, %s, %s, %s)"
-        ),
-        insert_data=descriptor,
-        expected=descriptor,
-    )
-    child_bounds: dict[bytes, tuple[bytes, bytes]] = {}
-    if prepared.page.node_kind is GalleryObservationNodeKind.BRANCH:
-        for position, entry in enumerate(prepared.page.entries):
-            assert isinstance(entry, GalleryObservationBranchEntry)
-            child_descriptor = connector.fetch_one(
-                f"SELECT component, level, subtree_item_count "
-                f"FROM {_PAGE_DESCRIPTOR} WHERE page_sha256 = %s",
-                (entry.child_sha256,),
-            )
-            if child_descriptor != (
-                _COMPONENT_BYTES[prepared.component],
-                prepared.page.level - 1,
-                entry.child_subtree_item_count,
-            ):
-                raise GalleryStagingConflictError("branch child descriptor differs")
-            child_bound = connector.fetch_one(
-                f"SELECT first_key, last_key FROM {_PAGE_BOUNDS} "
-                "WHERE page_sha256 = %s",
-                (entry.child_sha256,),
-            )
-            if len(child_bound) != 2:
-                raise GalleryStagingConflictError("nonempty branch child lacks bounds")
-            child_bounds[entry.child_sha256] = (child_bound[0], child_bound[1])
-            _insert_or_require(
-                connector,
-                label="gallery page child",
-                select_sql=(
-                    f"SELECT parent_sha256, position, child_sha256 FROM {_PAGE_CHILD} "
-                    "WHERE parent_sha256 = %s AND position = %s"
-                ),
-                select_data=(prepared.page_sha256, position),
-                insert_sql=(
-                    f"INSERT INTO {_PAGE_CHILD} "
-                    "(parent_sha256, position, child_sha256) VALUES (%s, %s, %s)"
-                ),
-                insert_data=(prepared.page_sha256, position, entry.child_sha256),
-                expected=(prepared.page_sha256, position, entry.child_sha256),
-            )
-    bounds = gallery_observation_page_key_bounds(
-        prepared.page,
-        child_bounds=child_bounds or None,
-    )
-    existing_bounds = connector.fetch_one(
-        f"SELECT first_key, last_key FROM {_PAGE_BOUNDS} WHERE page_sha256 = %s",
-        (prepared.page_sha256,),
-    )
-    if bounds is None:
-        if existing_bounds:
-            raise GalleryStagingConflictError("empty page unexpectedly has bounds")
-    elif existing_bounds:
-        if existing_bounds != bounds:
-            raise GalleryStagingConflictError("page key bounds differ")
-    else:
         connector.execute(
-            f"INSERT INTO {_PAGE_BOUNDS} (page_sha256, first_key, last_key) "
-            "VALUES (%s, %s, %s)",
-            (prepared.page_sha256, bounds[0], bounds[1]),
+            f"INSERT INTO {_PAGE_DESCRIPTOR_COMPONENT} "
+            "(page_sha256, component) VALUES (%s, %s)",
+            (prepared.page_sha256, _COMPONENT_BYTES[prepared.component]),
         )
+        connector.execute(
+            f"INSERT INTO {_PAGE_DESCRIPTOR_LEVEL} "
+            "(page_sha256, level) VALUES (%s, %s)",
+            (prepared.page_sha256, prepared.page.level),
+        )
+        connector.execute(
+            f"INSERT INTO {_PAGE_DESCRIPTOR_COUNT} "
+            "(page_sha256, subtree_item_count) VALUES (%s, %s)",
+            (prepared.page_sha256, prepared.page.subtree_item_count),
+        )
+        connector.execute(
+            f"INSERT INTO {_PAGE_DESCRIPTOR_SEAL} (page_sha256) VALUES (%s)",
+            (prepared.page_sha256,),
+        )
+
+        children, bounds = _derive_observation_page_materialization(
+            connector,
+            prepared,
+        )
+        existing_children = _load_page_children(connector, prepared.page_sha256)
+        if existing_children:
+            raise GalleryStagingConflictError(
+                "new gallery page already has normalized children"
+            )
+        for position, child_sha256 in children:
+            connector.execute(
+                f"INSERT INTO {_PAGE_CHILD} "
+                "(parent_sha256, position, child_sha256) VALUES (%s, %s, %s)",
+                (prepared.page_sha256, position, child_sha256),
+            )
+        existing_bounds = _load_page_bounds_family(
+            connector,
+            prepared.page_sha256,
+            component=prepared.component,
+        )
+        if existing_bounds is not None:
+            raise GalleryStagingConflictError("new gallery page already has key bounds")
+        if bounds is not None:
+            connector.execute(
+                f"INSERT INTO {_PAGE_BOUNDS_ANCHOR} (page_sha256) VALUES (%s)",
+                (prepared.page_sha256,),
+            )
+            connector.execute(
+                f"INSERT INTO {_PAGE_BOUNDS_FIRST} "
+                "(page_sha256, first_key) VALUES (%s, %s)",
+                (prepared.page_sha256, bounds[0]),
+            )
+            connector.execute(
+                f"INSERT INTO {_PAGE_BOUNDS_LAST} "
+                "(page_sha256, last_key) VALUES (%s, %s)",
+                (prepared.page_sha256, bounds[1]),
+            )
+            connector.execute(
+                f"INSERT INTO {_PAGE_BOUNDS_SEAL} (page_sha256) VALUES (%s)",
+                (prepared.page_sha256,),
+            )
     association = connector.fetch_one(
         f"SELECT gallery_id, observation_id, page_sha256 FROM {_ALLOCATION_PAGE} "
         "WHERE gallery_id = %s AND observation_id = %s AND page_sha256 = %s",
@@ -2179,6 +2222,440 @@ def _persist_observation_page(
         )
 
 
+def _load_page_descriptor_family(
+    connector: Any,
+    page_sha256: bytes,
+) -> tuple[bytes, GalleryObservationPage] | None:
+    row = connector.fetch_one(
+        f"SELECT anchor.page_sha256, page.page_bytes, component_fact.component, "
+        f"level_fact.level, count_fact.subtree_item_count, seal.page_sha256 "
+        "FROM (SELECT %s AS page_sha256) AS requested "
+        f"LEFT JOIN {_PAGE_DESCRIPTOR_ANCHOR} AS anchor "
+        "ON anchor.page_sha256 = requested.page_sha256 "
+        f"LEFT JOIN {_PAGE} AS page "
+        "ON page.page_sha256 = requested.page_sha256 "
+        f"LEFT JOIN {_PAGE_DESCRIPTOR_COMPONENT} AS component_fact "
+        "ON component_fact.page_sha256 = requested.page_sha256 "
+        f"LEFT JOIN {_PAGE_DESCRIPTOR_LEVEL} AS level_fact "
+        "ON level_fact.page_sha256 = requested.page_sha256 "
+        f"LEFT JOIN {_PAGE_DESCRIPTOR_COUNT} AS count_fact "
+        "ON count_fact.page_sha256 = requested.page_sha256 "
+        f"LEFT JOIN {_PAGE_DESCRIPTOR_SEAL} AS seal "
+        "ON seal.page_sha256 = requested.page_sha256",
+        (page_sha256,),
+    )
+    if len(row) != 6:
+        raise GalleryStagingConflictError("gallery page family has an invalid shape")
+    if all(value is None for value in row):
+        return None
+    if any(value is None for value in row):
+        raise GalleryStagingConflictError("gallery page family is partial or unsealed")
+    if row[0] != page_sha256 or row[5] != page_sha256:
+        raise GalleryStagingConflictError("gallery page family identity differs")
+    page_bytes = require_bounded_bytes(
+        row[1], field="gallery page bytes", minimum=1, maximum=65_536
+    )
+    if gallery_observation_page_digest(page_bytes) != page_sha256:
+        raise GalleryStagingConflictError("gallery page digest differs from bytes")
+    try:
+        page = decode_gallery_observation_page(page_bytes)
+    except ByteDomainError as error:
+        raise GalleryStagingConflictError("gallery page bytes are invalid") from error
+    component = _COMPONENT_FROM_BYTES.get(row[2])
+    level = require_int63(row[3], field="gallery page level")
+    count = require_int63(row[4], field="gallery page subtree_item_count")
+    if (
+        component is None
+        or page.component is not component
+        or page.level != level
+        or page.subtree_item_count != count
+    ):
+        raise GalleryStagingConflictError(
+            "gallery page descriptor facts differ from exact bytes"
+        )
+    return page_bytes, page
+
+
+def _load_page_bounds_family(
+    connector: Any,
+    page_sha256: bytes,
+    *,
+    component: GalleryObservationComponent,
+) -> tuple[bytes, bytes] | None:
+    row = connector.fetch_one(
+        f"SELECT anchor.page_sha256, first_fact.first_key, last_fact.last_key, "
+        f"seal.page_sha256 FROM (SELECT %s AS page_sha256) AS requested "
+        f"LEFT JOIN {_PAGE_BOUNDS_ANCHOR} AS anchor "
+        "ON anchor.page_sha256 = requested.page_sha256 "
+        f"LEFT JOIN {_PAGE_BOUNDS_FIRST} AS first_fact "
+        "ON first_fact.page_sha256 = requested.page_sha256 "
+        f"LEFT JOIN {_PAGE_BOUNDS_LAST} AS last_fact "
+        "ON last_fact.page_sha256 = requested.page_sha256 "
+        f"LEFT JOIN {_PAGE_BOUNDS_SEAL} AS seal "
+        "ON seal.page_sha256 = requested.page_sha256",
+        (page_sha256,),
+    )
+    if len(row) != 4:
+        raise GalleryStagingConflictError(
+            "gallery page bounds family has an invalid shape"
+        )
+    if all(value is None for value in row):
+        return None
+    if any(value is None for value in row):
+        raise GalleryStagingConflictError(
+            "gallery page bounds family is partial or unsealed"
+        )
+    if row[0] != page_sha256 or row[3] != page_sha256:
+        raise GalleryStagingConflictError("gallery page bounds identity differs")
+    first = require_bounded_bytes(
+        row[1], field="gallery page first_key", minimum=1, maximum=255
+    )
+    last = require_bounded_bytes(
+        row[2], field="gallery page last_key", minimum=1, maximum=255
+    )
+    if first > last:
+        raise GalleryStagingConflictError("gallery page key bounds are reversed")
+    if component is not GalleryObservationComponent.DIRECTORY and (
+        len(first) != 8 or len(last) != 8
+    ):
+        raise GalleryStagingConflictError(
+            "gallery page key bounds have the wrong component width"
+        )
+    return first, last
+
+
+def _load_page_children(
+    connector: Any,
+    page_sha256: bytes,
+) -> list[tuple[int, bytes]]:
+    rows = connector.fetch_all(
+        f"SELECT position, child_sha256 FROM {_PAGE_CHILD} "
+        "WHERE parent_sha256 = %s ORDER BY position LIMIT 257",
+        (page_sha256,),
+    )
+    output: list[tuple[int, bytes]] = []
+    for position, row in enumerate(rows):
+        if len(row) != 2 or row[0] != position:
+            raise GalleryStagingConflictError(
+                "gallery page child positions are not exact and contiguous"
+            )
+        output.append(
+            (position, require_digest32(row[1], field="gallery page child_sha256"))
+        )
+    return output
+
+
+def _derive_observation_page_materialization(
+    connector: Any,
+    prepared: _PreparedPage,
+) -> tuple[list[tuple[int, bytes]], tuple[bytes, bytes] | None]:
+    children: list[tuple[int, bytes]] = []
+    child_bounds: dict[bytes, tuple[bytes, bytes]] = {}
+    if prepared.page.node_kind is GalleryObservationNodeKind.BRANCH:
+        for position, entry in enumerate(prepared.page.entries):
+            if not isinstance(entry, GalleryObservationBranchEntry):
+                raise GalleryStagingConflictError(
+                    "gallery branch contains a nonbranch entry"
+                )
+            child = _load_page_descriptor_family(connector, entry.child_sha256)
+            if child is None:
+                raise GalleryStagingConflictError(
+                    "branch child descriptor is missing or unsealed"
+                )
+            child_page = child[1]
+            if (
+                child_page.component is not prepared.component
+                or child_page.level != prepared.page.level - 1
+                or child_page.subtree_item_count != entry.child_subtree_item_count
+            ):
+                raise GalleryStagingConflictError("branch child descriptor differs")
+            bound = _load_page_bounds_family(
+                connector,
+                entry.child_sha256,
+                component=prepared.component,
+            )
+            if bound is None:
+                raise GalleryStagingConflictError("nonempty branch child lacks bounds")
+            children.append((position, entry.child_sha256))
+            child_bounds[entry.child_sha256] = bound
+    bounds = gallery_observation_page_key_bounds(
+        prepared.page,
+        child_bounds=child_bounds or None,
+    )
+    if bounds is not None:
+        if bounds[0] > bounds[1]:
+            raise GalleryStagingConflictError(
+                "derived gallery page bounds are reversed"
+            )
+        if prepared.component is not GalleryObservationComponent.DIRECTORY and (
+            len(bounds[0]) != 8 or len(bounds[1]) != 8
+        ):
+            raise GalleryStagingConflictError(
+                "derived gallery page bounds have the wrong component width"
+            )
+    return children, bounds
+
+
+def _require_exact_observation_page_materialization(
+    connector: Any,
+    prepared: _PreparedPage,
+) -> None:
+    stored = _load_page_descriptor_family(connector, prepared.page_sha256)
+    if stored is None:
+        raise GalleryStagingConflictError("gallery page family is missing")
+    if stored != (prepared.page_bytes, prepared.page):
+        raise GalleryStagingConflictError(
+            "page digest collision has different exact bytes or descriptor"
+        )
+    expected_children, expected_bounds = _derive_observation_page_materialization(
+        connector,
+        prepared,
+    )
+    if _load_page_children(connector, prepared.page_sha256) != expected_children:
+        raise GalleryStagingConflictError(
+            "normalized gallery page children differ from exact bytes"
+        )
+    stored_bounds = _load_page_bounds_family(
+        connector,
+        prepared.page_sha256,
+        component=prepared.component,
+    )
+    if stored_bounds != expected_bounds:
+        raise GalleryStagingConflictError(
+            "gallery page key bounds differ from exact bytes"
+        )
+
+
+def _require_observation_page_association(
+    connector: Any,
+    handle: GalleryStagingHandle,
+    page_sha256: bytes,
+) -> None:
+    expected = (handle.gallery_id, handle.observation_id, page_sha256)
+    row = connector.fetch_one(
+        f"SELECT gallery_id, observation_id, page_sha256 FROM {_ALLOCATION_PAGE} "
+        "WHERE gallery_id = %s AND observation_id = %s AND page_sha256 = %s",
+        expected,
+    )
+    if row != expected:
+        raise GalleryStagingConflictError(
+            "replayed gallery page lacks its exact allocation association"
+        )
+
+
+def _require_exact_normalized_leaf_facts(
+    work: VNextUnitOfWork,
+    handle: GalleryStagingHandle,
+    prepared: _PreparedPage,
+    source_entries: Sequence[Any],
+) -> None:
+    """Validate every normalized leaf before accepting response-loss replay.
+
+    A replay is deliberately read-only.  Missing family members are therefore
+    corruption, not an invitation to finish an interrupted write in place.
+    """
+
+    connector = work.connector
+    pairs = tuple(zip(prepared.page.entries, source_entries, strict=True))
+    if prepared.component is GalleryObservationComponent.FILE:
+        expected_files: list[GalleryObservationFile] = []
+        expected_names: list[FileNameIdentity] = []
+        expected_content: dict[bytes, int] = {}
+        expected_filesystem: dict[bytes, tuple[bytes, bytes, bytes, bytes]] = {}
+        for page_entry, source in pairs:
+            assert isinstance(page_entry, GalleryObservationFileEntry)
+            assert isinstance(source, FileObservation)
+            expected_files.append(
+                GalleryObservationFile(
+                    handle.gallery_id,
+                    handle.observation_id,
+                    page_entry.file_no,
+                    page_entry.file_key,
+                    source.content.file_sha256,
+                )
+            )
+            expected_names.append(
+                FileNameIdentity(
+                    page_entry.file_key,
+                    source.name_bytes,
+                    file_role(source.name_bytes),
+                )
+            )
+            expected_content[source.content.file_sha256] = source.content.size_bytes
+            expected_filesystem[page_entry.file_key] = (
+                source.device.to_bytes(8, "big"),
+                source.inode.to_bytes(8, "big"),
+                source.modified_ns.to_bytes(8, "big", signed=True),
+                source.changed_ns.to_bytes(8, "big", signed=True),
+            )
+        if not expected_files:
+            return
+        try:
+            stored_files = load_gallery_observation_files(
+                connector,
+                gallery_id=handle.gallery_id,
+                observation_id=handle.observation_id,
+                file_keys=tuple(item.file_key for item in expected_files),
+                file_nos=tuple(item.file_no for item in expected_files),
+            )
+            stored_names = load_file_name_identities(
+                connector,
+                file_keys=tuple(item.file_key for item in expected_names),
+                name_bytes=tuple(item.name_bytes for item in expected_names),
+            )
+        except CatalogIdentityCollisionError as error:
+            raise GalleryStagingConflictError(str(error)) from error
+        if stored_files != {item.file_key: item for item in expected_files}:
+            raise GalleryStagingConflictError(
+                "replayed FILE normalized observation facts differ"
+            )
+        if stored_names != {item.file_key: item for item in expected_names}:
+            raise GalleryStagingConflictError("replayed FILE name identities differ")
+        content_rows = connector.fetch_all(
+            "SELECT file_sha256, size_bytes FROM catalog_content_blobs "
+            f"WHERE file_sha256 IN ({_sql_placeholders(len(expected_content))}) "
+            "ORDER BY file_sha256",
+            tuple(expected_content),
+        )
+        if {row[0]: row[1] for row in content_rows} != expected_content:
+            raise GalleryStagingConflictError("replayed FILE content identities differ")
+        filesystem_rows = connector.fetch_all(
+            _filesystem_family_query(len(expected_filesystem)),
+            (
+                *tuple(expected_filesystem),
+                handle.gallery_id,
+                handle.observation_id,
+            ),
+        )
+        stored_filesystem: dict[bytes, tuple[bytes, bytes, bytes, bytes]] = {}
+        for row in filesystem_rows:
+            key = row[0]
+            expected_key = (handle.gallery_id, handle.observation_id, key)
+            if len(row) != 23 or any(
+                tuple(row[index : index + 3]) != expected_key
+                for index in (1, 4, 8, 12, 16, 20)
+            ):
+                raise GalleryStagingConflictError(
+                    "replayed FILE filesystem family is incomplete"
+                )
+            stored_filesystem[key] = (row[7], row[11], row[15], row[19])
+        if stored_filesystem != expected_filesystem:
+            raise GalleryStagingConflictError("replayed FILE filesystem facts differ")
+        return
+
+    if prepared.component is GalleryObservationComponent.TAG:
+        expected_tags: list[tuple[int, TagObservation]] = []
+        for page_entry, source in pairs:
+            assert isinstance(page_entry, GalleryObservationTagEntry)
+            assert isinstance(source, TagObservation)
+            expected_tags.append((page_entry.position, source))
+        if not expected_tags:
+            return
+        positions = tuple(position for position, _source in expected_tags)
+        association_rows = connector.fetch_all(
+            "SELECT position, tag_id FROM catalog_gallery_observation_tags "
+            "WHERE gallery_id = %s AND observation_id = %s "
+            f"AND position IN ({_sql_placeholders(len(positions))}) "
+            "ORDER BY position",
+            (handle.gallery_id, handle.observation_id, *positions),
+        )
+        if tuple(row[0] for row in association_rows) != positions:
+            raise GalleryStagingConflictError(
+                "replayed TAG associations are missing or reordered"
+            )
+        try:
+            stored_terms = load_tag_terms(
+                connector,
+                tag_ids=tuple(row[1] for row in association_rows),
+            )
+        except CatalogIdentityCollisionError as error:
+            raise GalleryStagingConflictError(str(error)) from error
+        for association, (_position, source) in zip(
+            association_rows,
+            expected_tags,
+            strict=True,
+        ):
+            term = stored_terms.get(association[1])
+            if term is None or (
+                term.namespace,
+                term.tag_value_sha256,
+            ) != (source._namespace_bytes, source._value_sha256):
+                raise GalleryStagingConflictError("replayed TAG term identity differs")
+            payload = bytearray()
+            try:
+                receipt = CanonicalValueRepository.stream_and_validate(
+                    work,
+                    value_sha256=source._value_sha256,
+                    consume_provisional=payload.extend,
+                )
+            except (
+                CanonicalValueCollisionError,
+                CanonicalValueNotReadyError,
+                VNextIdentityError,
+            ) as error:
+                raise GalleryStagingConflictError(str(error)) from error
+            if (
+                receipt.digest_domain != _TAG_VALUE_DOMAIN.encode("ascii")
+                or bytes(payload) != source._value_bytes
+            ):
+                raise GalleryStagingConflictError(
+                    "replayed TAG canonical payload differs"
+                )
+        claim_rows = connector.fetch_all(
+            "SELECT value_sha256 FROM operational_canonical_value_uploads "
+            "WHERE generation = %s "
+            f"AND value_sha256 IN ({_sql_placeholders(len(expected_tags))})",
+            (
+                handle.ingest_generation,
+                *(source._value_sha256 for _position, source in expected_tags),
+            ),
+        )
+        if claim_rows:
+            raise GalleryStagingConflictError(
+                "replayed TAG canonical claim was not handed off"
+            )
+
+
+def _sql_placeholders(count: int) -> str:
+    if count < 1 or count > 256:
+        raise ValueError("bounded SQL list must contain between 1 and 256 values")
+    return ", ".join("%s" for _ in range(count))
+
+
+def _filesystem_family_query(count: int) -> str:
+    expected_keys = " UNION ALL ".join(
+        "SELECT %s AS file_key" if index == 0 else "SELECT %s" for index in range(count)
+    )
+    return (
+        f"WITH expected_keys(file_key) AS ({expected_keys}) "
+        "SELECT k.file_key, a.gallery_id, a.observation_id, a.file_key, "
+        "d.gallery_id, d.observation_id, d.file_key, d.device, "
+        "i.gallery_id, i.observation_id, i.file_key, i.inode, "
+        "m.gallery_id, m.observation_id, m.file_key, m.modified_ns, "
+        "c.gallery_id, c.observation_id, c.file_key, c.changed_ns, "
+        "s.gallery_id, s.observation_id, s.file_key "
+        "FROM expected_keys AS k "
+        "LEFT JOIN catalog_gallery_observation_file_filesystem_anchors AS a "
+        "ON a.gallery_id = %s AND a.observation_id = %s "
+        "AND a.file_key = k.file_key "
+        "LEFT JOIN catalog_gallery_observation_file_filesystem_devices AS d "
+        "ON d.gallery_id = a.gallery_id AND d.observation_id = a.observation_id "
+        "AND d.file_key = a.file_key "
+        "LEFT JOIN catalog_gallery_observation_file_filesystem_inodes AS i "
+        "ON i.gallery_id = a.gallery_id AND i.observation_id = a.observation_id "
+        "AND i.file_key = a.file_key "
+        "LEFT JOIN catalog_gallery_observation_file_filesystem_modified_nses AS m "
+        "ON m.gallery_id = a.gallery_id AND m.observation_id = a.observation_id "
+        "AND m.file_key = a.file_key "
+        "LEFT JOIN catalog_gallery_observation_file_filesystem_changed_nses AS c "
+        "ON c.gallery_id = a.gallery_id AND c.observation_id = a.observation_id "
+        "AND c.file_key = a.file_key "
+        "LEFT JOIN catalog_gallery_observation_file_filesystem_seals AS s "
+        "ON s.gallery_id = a.gallery_id AND s.observation_id = a.observation_id "
+        "AND s.file_key = a.file_key ORDER BY k.file_key"
+    )
+
+
 def _persist_normalized_leaf_facts(
     work: VNextUnitOfWork,
     handle: GalleryStagingHandle,
@@ -2189,27 +2666,34 @@ def _persist_normalized_leaf_facts(
 ) -> None:
     connector = work.connector
     if prepared.component is GalleryObservationComponent.FILE:
-        for page_entry, source in zip(
-            prepared.page.entries, source_entries, strict=True
-        ):
+        pairs = tuple(zip(prepared.page.entries, source_entries, strict=True))
+        file_names: list[FileNameIdentity] = []
+        occurrences: list[GalleryObservationFile] = []
+        for page_entry, source in pairs:
             assert isinstance(page_entry, GalleryObservationFileEntry)
             assert isinstance(source, FileObservation)
-            role = file_role(source.name_bytes)
-            _insert_or_require(
-                connector,
-                label="file-name identity",
-                select_sql=(
-                    "SELECT file_key, name_bytes, file_role "
-                    "FROM catalog_file_name_identities WHERE file_key = %s"
-                ),
-                select_data=(page_entry.file_key,),
-                insert_sql=(
-                    "INSERT INTO catalog_file_name_identities "
-                    "(file_key, name_bytes, file_role) VALUES (%s, %s, %s)"
-                ),
-                insert_data=(page_entry.file_key, source.name_bytes, role),
-                expected=(page_entry.file_key, source.name_bytes, role),
+            file_names.append(
+                FileNameIdentity(
+                    page_entry.file_key,
+                    source.name_bytes,
+                    file_role(source.name_bytes),
+                )
             )
+            occurrences.append(
+                GalleryObservationFile(
+                    handle.gallery_id,
+                    handle.observation_id,
+                    page_entry.file_no,
+                    page_entry.file_key,
+                    source.content.file_sha256,
+                )
+            )
+        try:
+            ensure_file_name_identities(connector, identities=tuple(file_names))
+        except CatalogIdentityCollisionError as error:
+            raise GalleryStagingConflictError(str(error)) from error
+        for _page_entry, source in pairs:
+            assert isinstance(source, FileObservation)
             _insert_or_require(
                 connector,
                 label="content blob",
@@ -2228,38 +2712,38 @@ def _persist_normalized_leaf_facts(
                 ),
                 expected=(source.content.file_sha256, source.content.size_bytes),
             )
-            connector.execute(
-                "INSERT INTO catalog_gallery_observation_files "
-                "(gallery_id, observation_id, file_no, file_key, file_sha256) "
-                "VALUES (%s, %s, %s, %s, %s)",
-                (
-                    handle.gallery_id,
-                    handle.observation_id,
-                    page_entry.file_no,
-                    page_entry.file_key,
-                    source.content.file_sha256,
-                ),
+        try:
+            ensure_gallery_observation_files(
+                connector,
+                identities=tuple(occurrences),
             )
-            connector.execute(
-                "INSERT INTO catalog_gallery_observation_file_filesystem "
-                "(gallery_id, observation_id, file_key, device, inode, "
-                "modified_ns, changed_ns) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                (
-                    handle.gallery_id,
-                    handle.observation_id,
-                    page_entry.file_key,
-                    source.device.to_bytes(8, "big"),
-                    source.inode.to_bytes(8, "big"),
-                    source.modified_ns.to_bytes(8, "big", signed=True),
-                    source.changed_ns.to_bytes(8, "big", signed=True),
-                ),
+        except CatalogIdentityCollisionError as error:
+            raise GalleryStagingConflictError(str(error)) from error
+        for page_entry, source in pairs:
+            assert isinstance(page_entry, GalleryObservationFileEntry)
+            assert isinstance(source, FileObservation)
+            _persist_file_filesystem_fact(
+                connector,
+                gallery_id=handle.gallery_id,
+                observation_id=handle.observation_id,
+                file_key=page_entry.file_key,
+                device=source.device.to_bytes(8, "big"),
+                inode=source.inode.to_bytes(8, "big"),
+                modified_ns=source.modified_ns.to_bytes(8, "big", signed=True),
+                changed_ns=source.changed_ns.to_bytes(8, "big", signed=True),
             )
     elif prepared.component is GalleryObservationComponent.TAG:
-        for page_entry, source in zip(
-            prepared.page.entries, source_entries, strict=True
-        ):
+        pairs = tuple(zip(prepared.page.entries, source_entries, strict=True))
+        natural_keys: list[tuple[bytes, bytes]] = []
+        for page_entry, source in pairs:
             assert isinstance(page_entry, GalleryObservationTagEntry)
             assert isinstance(source, TagObservation)
+            natural = (source._namespace_bytes, source._value_sha256)
+            if natural in natural_keys:
+                raise GalleryStagingConflictError(
+                    "TAG batch repeats one exact natural identity"
+                )
+            natural_keys.append(natural)
             _persist_canonical_value(
                 work,
                 generation=handle.ingest_generation,
@@ -2268,24 +2752,68 @@ def _persist_normalized_leaf_facts(
                 now=now,
                 retain_claim=True,
             )
-            row = connector.fetch_one(
-                "SELECT tag_id FROM catalog_tag_terms "
-                "WHERE namespace = %s AND tag_value_sha256 = %s",
-                (source._namespace_bytes, source._value_sha256),
+        try:
+            existing_terms = load_tag_terms(
+                connector,
+                identities=tuple(natural_keys),
             )
-            if row:
-                tag_id = require_positive_int63(row[0], field="tag_id")
-            else:
-                tag_id = VNextAllocatorRepository.allocate_identity(
+        except CatalogIdentityCollisionError as error:
+            raise GalleryStagingConflictError(str(error)) from error
+        by_natural = {
+            (term.namespace, term.tag_value_sha256): term
+            for term in existing_terms.values()
+        }
+        resolved: list[TagTerm] = []
+        for namespace, value_sha256 in natural_keys:
+            term = by_natural.get((namespace, value_sha256))
+            if term is None:
+                allocated_id = VNextAllocatorRepository.allocate_identity(
                     work,
                     IdentityStream.TAG,
                     updated_at=now,
                 )
-                connector.execute(
-                    "INSERT INTO catalog_tag_terms "
-                    "(tag_id, namespace, tag_value_sha256) VALUES (%s, %s, %s)",
-                    (tag_id, source._namespace_bytes, source._value_sha256),
+                # The TAG allocator is the global creation lock.  Another
+                # transaction may have installed the same natural identity
+                # while this writer waited, so re-read after acquiring it.
+                try:
+                    after_lock = load_tag_terms(
+                        connector,
+                        tag_ids=(allocated_id,),
+                        identities=((namespace, value_sha256),),
+                    )
+                except CatalogIdentityCollisionError as error:
+                    raise GalleryStagingConflictError(str(error)) from error
+                natural_match = next(
+                    (
+                        candidate
+                        for candidate in after_lock.values()
+                        if (candidate.namespace, candidate.tag_value_sha256)
+                        == (namespace, value_sha256)
+                    ),
+                    None,
                 )
+                allocated_match = after_lock.get(allocated_id)
+                if natural_match is not None:
+                    if allocated_match is not None and allocated_match != natural_match:
+                        raise GalleryStagingConflictError(
+                            "allocated TAG surrogate collides after lock re-read"
+                        )
+                    term = natural_match
+                else:
+                    term = TagTerm(allocated_id, namespace, value_sha256)
+                    try:
+                        created = ensure_tag_term(connector, term=term)
+                    except CatalogIdentityCollisionError as error:
+                        raise GalleryStagingConflictError(str(error)) from error
+                    if not created:
+                        raise GalleryStagingConflictError(
+                            "TAG term appeared after its allocator re-read"
+                        )
+                by_natural[(namespace, value_sha256)] = term
+            resolved.append(term)
+        for (page_entry, source), term in zip(pairs, resolved, strict=True):
+            assert isinstance(page_entry, GalleryObservationTagEntry)
+            assert isinstance(source, TagObservation)
             connector.execute(
                 "INSERT INTO catalog_gallery_observation_tags "
                 "(gallery_id, observation_id, position, tag_id) "
@@ -2294,7 +2822,7 @@ def _persist_normalized_leaf_facts(
                     handle.gallery_id,
                     handle.observation_id,
                     page_entry.position,
-                    tag_id,
+                    term.tag_id,
                 ),
             )
             deleted = connector.execute_affected(
@@ -2570,7 +3098,8 @@ def _frontier_pages(
         f"d.subtree_item_count FROM {_FRONTIER} f "
         f"JOIN {_PAGE_REQUEST} q ON q.request_sha256 = f.request_sha256 "
         f"JOIN {_REQUEST_PAGE} rp ON rp.request_sha256 = f.request_sha256 "
-        f"JOIN {_PAGE_DESCRIPTOR} d ON d.page_sha256 = rp.page_sha256 "
+        f"JOIN {_PAGE_DESCRIPTOR_SEAL} s ON s.page_sha256 = rp.page_sha256 "
+        f"JOIN {_PAGE_DESCRIPTOR_COUNT} d ON d.page_sha256 = s.page_sha256 "
         "WHERE q.staging_id = %s AND q.component = %s AND q.level = %s "
         "ORDER BY f.position",
         (staging_id, _COMPONENT_BYTES[component], level),
@@ -2640,138 +3169,20 @@ def _persist_canonical_value(
     now: int,
     retain_claim: bool,
 ) -> bytes:
-    value_sha256 = canonical_value_digest(digest_domain, payload)
-    domain_bytes = digest_domain.encode("ascii")
-    if work.connector.fetch_one(
-        "SELECT digest_domain FROM catalog_canonical_digest_policies "
-        "WHERE digest_domain = %s",
-        (domain_bytes,),
-    ) != (domain_bytes,):
-        raise GalleryStagingNotReadyError(
-            f"canonical digest policy {digest_domain!r} is not registered"
+    try:
+        receipt = persist_in_memory_canonical_value(
+            work,
+            generation=generation,
+            digest_domain=digest_domain,
+            payload=payload,
+            now=now,
+            retain_claim=retain_claim,
         )
-    allocation = work.connector.fetch_one(
-        "SELECT digest_domain, byte_count FROM catalog_canonical_value_allocations "
-        "WHERE value_sha256 = %s",
-        (value_sha256,),
-    )
-    if allocation:
-        if allocation != (domain_bytes, len(payload)):
-            raise GalleryStagingConflictError("canonical digest preimage differs")
-    else:
-        work.connector.execute(
-            "INSERT INTO catalog_canonical_value_allocations "
-            "(value_sha256, digest_domain, byte_count, allocated_at) "
-            "VALUES (%s, %s, %s, %s)",
-            (value_sha256, domain_bytes, len(payload), now),
-        )
-    claim = work.connector.fetch_one(
-        "SELECT generation, value_sha256 FROM operational_canonical_value_uploads "
-        "WHERE generation = %s AND value_sha256 = %s",
-        (generation, value_sha256),
-    )
-    if claim:
-        if claim != (generation, value_sha256):
-            raise GalleryStagingConflictError("canonical upload claim differs")
-    else:
-        work.connector.execute(
-            "INSERT INTO operational_canonical_value_uploads "
-            "(generation, value_sha256) VALUES (%s, %s)",
-            (generation, value_sha256),
-        )
-    tree = build_canonical_value_tree(value_sha256, len(payload), (payload,))
-    for encoded in tree.pages:
-        page = decode_canonical_value_page(encoded.page_bytes)
-        _insert_or_require(
-            work.connector,
-            label="canonical page",
-            select_sql=(
-                "SELECT page_sha256, value_sha256, page_bytes "
-                "FROM catalog_canonical_value_pages WHERE page_sha256 = %s"
-            ),
-            select_data=(encoded.page_sha256,),
-            insert_sql=(
-                "INSERT INTO catalog_canonical_value_pages "
-                "(page_sha256, value_sha256, page_bytes) VALUES (%s, %s, %s)"
-            ),
-            insert_data=(encoded.page_sha256, value_sha256, encoded.page_bytes),
-            expected=(encoded.page_sha256, value_sha256, encoded.page_bytes),
-        )
-        descriptor = (
-            encoded.page_sha256,
-            value_sha256,
-            page.level,
-            page.page_position,
-            page.subtree_byte_count,
-        )
-        _insert_or_require(
-            work.connector,
-            label="canonical page descriptor",
-            select_sql=(
-                "SELECT page_sha256, value_sha256, level, page_position, "
-                "subtree_item_count FROM catalog_canonical_value_page_descriptors "
-                "WHERE page_sha256 = %s"
-            ),
-            select_data=(encoded.page_sha256,),
-            insert_sql=(
-                "INSERT INTO catalog_canonical_value_page_descriptors "
-                "(page_sha256, value_sha256, level, page_position, "
-                "subtree_item_count) VALUES (%s, %s, %s, %s, %s)"
-            ),
-            insert_data=descriptor,
-            expected=descriptor,
-        )
-        if page.node_kind is GalleryObservationNodeKind.BRANCH:
-            for position, entry in enumerate(page.entries):
-                _insert_or_require(
-                    work.connector,
-                    label="canonical parent edge",
-                    select_sql=(
-                        "SELECT child_sha256, parent_sha256, position "
-                        "FROM catalog_canonical_value_page_parents "
-                        "WHERE child_sha256 = %s"
-                    ),
-                    select_data=(entry.child_page_sha256,),  # type: ignore[union-attr]
-                    insert_sql=(
-                        "INSERT INTO catalog_canonical_value_page_parents "
-                        "(child_sha256, parent_sha256, position) "
-                        "VALUES (%s, %s, %s)"
-                    ),
-                    insert_data=(
-                        entry.child_page_sha256,  # type: ignore[union-attr]
-                        encoded.page_sha256,
-                        position,
-                    ),
-                    expected=(
-                        entry.child_page_sha256,  # type: ignore[union-attr]
-                        encoded.page_sha256,
-                        position,
-                    ),
-                )
-    _insert_or_require(
-        work.connector,
-        label="canonical identity",
-        select_sql=(
-            "SELECT value_sha256, root_page_sha256 "
-            "FROM catalog_canonical_value_identities WHERE value_sha256 = %s"
-        ),
-        select_data=(value_sha256,),
-        insert_sql=(
-            "INSERT INTO catalog_canonical_value_identities "
-            "(value_sha256, root_page_sha256) VALUES (%s, %s)"
-        ),
-        insert_data=(value_sha256, tree.root_page_sha256),
-        expected=(value_sha256, tree.root_page_sha256),
-    )
-    if not retain_claim:
-        deleted = work.connector.execute_affected(
-            "DELETE FROM operational_canonical_value_uploads "
-            "WHERE generation = %s AND value_sha256 = %s",
-            (generation, value_sha256),
-        )
-        if deleted != 1:
-            raise GalleryStagingConflictError("canonical upload claim changed")
-    return tree.root_page_sha256
+    except CanonicalValueNotReadyError as error:
+        raise GalleryStagingNotReadyError(str(error)) from error
+    except CanonicalValueCollisionError as error:
+        raise GalleryStagingConflictError(str(error)) from error
+    return receipt.root_page_sha256
 
 
 def _match_batch_rows(
@@ -2781,16 +3192,54 @@ def _match_batch_rows(
     start_file: int,
 ) -> tuple[list[tuple[Any, ...]], bool]:
     rows = work.connector.fetch_all(
-        "SELECT f.file_no, f.file_key, n.name_bytes, f.file_sha256, b.size_bytes, "
-        "s.device, s.inode, s.modified_ns, s.changed_ns "
-        "FROM catalog_gallery_observation_files f "
-        "JOIN catalog_file_name_identities n ON n.file_key = f.file_key "
-        "JOIN catalog_content_blobs b ON b.file_sha256 = f.file_sha256 "
-        "JOIN catalog_gallery_observation_file_filesystem s "
-        "ON s.gallery_id = f.gallery_id AND s.observation_id = f.observation_id "
-        "AND s.file_key = f.file_key "
-        "WHERE f.gallery_id = %s AND f.observation_id = %s AND f.file_no >= %s "
-        "ORDER BY f.file_no LIMIT 257",
+        "SELECT fno.file_no, fs.file_key, name.name_bytes, fsha.file_sha256, "
+        "blob.size_bytes, device.device, inode.inode, modified.modified_ns, "
+        "changed.changed_ns "
+        "FROM catalog_gallery_observation_file_seals AS fs "
+        "JOIN catalog_gallery_observation_file_anchors AS fa "
+        "ON fa.gallery_id = fs.gallery_id "
+        "AND fa.observation_id = fs.observation_id AND fa.file_key = fs.file_key "
+        "JOIN catalog_gallery_observation_file_file_nos AS fno "
+        "ON fno.gallery_id = fs.gallery_id "
+        "AND fno.observation_id = fs.observation_id AND fno.file_key = fs.file_key "
+        "JOIN catalog_gallery_observation_file_file_sha256s AS fsha "
+        "ON fsha.gallery_id = fs.gallery_id "
+        "AND fsha.observation_id = fs.observation_id AND fsha.file_key = fs.file_key "
+        "JOIN catalog_file_name_identity_seals AS names "
+        "ON names.file_key = fs.file_key "
+        "JOIN catalog_file_name_identity_anchors AS name_anchor "
+        "ON name_anchor.file_key = names.file_key "
+        "JOIN catalog_file_name_identity_name_bytes AS name "
+        "ON name.file_key = names.file_key "
+        "JOIN catalog_file_name_identity_file_roles AS role "
+        "ON role.file_key = names.file_key "
+        "JOIN catalog_content_blobs AS blob ON blob.file_sha256 = fsha.file_sha256 "
+        "JOIN catalog_gallery_observation_file_filesystem_seals AS filesystem "
+        "ON filesystem.gallery_id = fs.gallery_id "
+        "AND filesystem.observation_id = fs.observation_id "
+        "AND filesystem.file_key = fs.file_key "
+        "JOIN catalog_gallery_observation_file_filesystem_anchors AS fsa "
+        "ON fsa.gallery_id = filesystem.gallery_id "
+        "AND fsa.observation_id = filesystem.observation_id "
+        "AND fsa.file_key = filesystem.file_key "
+        "JOIN catalog_gallery_observation_file_filesystem_devices AS device "
+        "ON device.gallery_id = filesystem.gallery_id "
+        "AND device.observation_id = filesystem.observation_id "
+        "AND device.file_key = filesystem.file_key "
+        "JOIN catalog_gallery_observation_file_filesystem_inodes AS inode "
+        "ON inode.gallery_id = filesystem.gallery_id "
+        "AND inode.observation_id = filesystem.observation_id "
+        "AND inode.file_key = filesystem.file_key "
+        "JOIN catalog_gallery_observation_file_filesystem_modified_nses AS modified "
+        "ON modified.gallery_id = filesystem.gallery_id "
+        "AND modified.observation_id = filesystem.observation_id "
+        "AND modified.file_key = filesystem.file_key "
+        "JOIN catalog_gallery_observation_file_filesystem_changed_nses AS changed "
+        "ON changed.gallery_id = filesystem.gallery_id "
+        "AND changed.observation_id = filesystem.observation_id "
+        "AND changed.file_key = filesystem.file_key "
+        "WHERE fs.gallery_id = %s AND fs.observation_id = %s "
+        "AND fno.file_no >= %s ORDER BY fno.file_no LIMIT 257",
         (handle.gallery_id, handle.observation_id, start_file),
     )
     terminal = len(rows) <= 256
@@ -2841,8 +3290,10 @@ def _lookup_directory_entry(
     page_sha = root
     for expected_level in range(8, -1, -1):
         row = connector.fetch_one(
-            f"SELECT p.page_bytes, d.level FROM {_PAGE} p JOIN {_PAGE_DESCRIPTOR} d "
-            "ON d.page_sha256 = p.page_sha256 WHERE p.page_sha256 = %s",
+            f"SELECT p.page_bytes, d.level FROM {_PAGE_DESCRIPTOR_SEAL} s "
+            f"JOIN {_PAGE} p ON p.page_sha256 = s.page_sha256 "
+            f"JOIN {_PAGE_DESCRIPTOR_LEVEL} d ON d.page_sha256 = s.page_sha256 "
+            "WHERE s.page_sha256 = %s",
             (page_sha,),
         )
         if len(row) != 2:
@@ -2865,19 +3316,44 @@ def _lookup_directory_entry(
                 )
             return matches[0]
         children = connector.fetch_all(
-            f"SELECT c.child_sha256, b.first_key, b.last_key FROM {_PAGE_CHILD} c "
-            f"JOIN {_PAGE_BOUNDS} b ON b.page_sha256 = c.child_sha256 "
+            f"SELECT c.position, c.child_sha256, b.first_key, e.last_key, "
+            f"d.subtree_item_count FROM {_PAGE_CHILD} c "
+            f"JOIN {_PAGE_BOUNDS_SEAL} s ON s.page_sha256 = c.child_sha256 "
+            f"JOIN {_PAGE_BOUNDS_FIRST} b ON b.page_sha256 = s.page_sha256 "
+            f"JOIN {_PAGE_BOUNDS_LAST} e ON e.page_sha256 = s.page_sha256 "
+            f"JOIN {_PAGE_DESCRIPTOR_COUNT} d ON d.page_sha256 = s.page_sha256 "
             "WHERE c.parent_sha256 = %s ORDER BY c.position",
             (page_sha,),
         )
         if not 1 <= len(children) <= 256:
             raise GalleryStagingConflictError("DIRECTORY branch fanout differs")
-        candidates = [row for row in children if row[1] <= name_bytes <= row[2]]
+        encoded_children: list[tuple[int, bytes, int]] = []
+        for position, entry in enumerate(page.entries):
+            if not isinstance(entry, GalleryObservationBranchEntry):
+                raise GalleryStagingConflictError(
+                    "DIRECTORY branch contains a leaf entry"
+                )
+            encoded_children.append(
+                (position, entry.child_sha256, entry.child_subtree_item_count)
+            )
+        normalized_children = [
+            (
+                require_int63(row[0], field="directory child position"),
+                require_digest32(row[1], field="directory child digest"),
+                require_int63(row[4], field="directory child subtree count"),
+            )
+            for row in children
+        ]
+        if normalized_children != encoded_children:
+            raise GalleryStagingConflictError(
+                "DIRECTORY normalized children differ from exact page bytes"
+            )
+        candidates = [row for row in children if row[2] <= name_bytes <= row[3]]
         if len(candidates) != 1:
             raise GalleryStagingConflictError(
                 "DIRECTORY bounds do not select one exact child"
             )
-        page_sha = require_digest32(candidates[0][0], field="directory child")
+        page_sha = require_digest32(candidates[0][1], field="directory child")
     raise GalleryStagingConflictError("DIRECTORY lookup exceeds depth eight")
 
 
@@ -3101,8 +3577,9 @@ def _terminal_checkpoint_authority(
         f"pr.prior_request_sha256 FROM {_RECEIPT} r "
         f"JOIN {_PAGE_REQUEST} q ON q.request_sha256 = r.request_sha256 "
         f"JOIN {_REQUEST_PAGE} rp ON rp.request_sha256 = r.request_sha256 "
-        f"JOIN {_PAGE_DESCRIPTOR} d ON d.page_sha256 = rp.page_sha256 "
-        f"JOIN {_PAGE} p ON p.page_sha256 = rp.page_sha256 "
+        f"JOIN {_PAGE_DESCRIPTOR_SEAL} ds ON ds.page_sha256 = rp.page_sha256 "
+        f"JOIN {_PAGE_DESCRIPTOR_COUNT} d ON d.page_sha256 = ds.page_sha256 "
+        f"JOIN {_PAGE} p ON p.page_sha256 = ds.page_sha256 "
         f"LEFT JOIN {_PREDECESSOR} pr ON pr.request_sha256 = r.request_sha256 "
         "WHERE r.staging_id = %s AND r.level = 0",
         (handle.staging_id,),
@@ -3213,9 +3690,12 @@ def _bounded_component_roots(
     handle: GalleryStagingHandle,
 ) -> dict[GalleryObservationComponent, tuple[bytes, int]]:
     rows = connector.fetch_all(
-        f"SELECT r.root_page_sha256, d.component, d.subtree_item_count "
-        f"FROM {_TREE_ROOT} r JOIN {_PAGE_DESCRIPTOR} d "
-        "ON d.page_sha256 = r.root_page_sha256 "
+        f"SELECT r.root_page_sha256, d.component, c.subtree_item_count "
+        f"FROM {_TREE_ROOT} r JOIN {_PAGE_DESCRIPTOR_SEAL} s "
+        "ON s.page_sha256 = r.root_page_sha256 "
+        f"JOIN {_PAGE_DESCRIPTOR_COMPONENT} d "
+        "ON d.page_sha256 = s.page_sha256 "
+        f"JOIN {_PAGE_DESCRIPTOR_COUNT} c ON c.page_sha256 = s.page_sha256 "
         "WHERE r.gallery_id = %s AND r.observation_id = %s",
         (handle.gallery_id, handle.observation_id),
     )
@@ -3242,8 +3722,11 @@ def _component_root(
 ) -> tuple[bytes, int]:
     rows = connector.fetch_all(
         f"SELECT r.root_page_sha256, d.subtree_item_count FROM {_TREE_ROOT} r "
-        f"JOIN {_PAGE_DESCRIPTOR} d ON d.page_sha256 = r.root_page_sha256 "
-        "WHERE r.gallery_id = %s AND r.observation_id = %s AND d.component = %s",
+        f"JOIN {_PAGE_DESCRIPTOR_SEAL} s "
+        "ON s.page_sha256 = r.root_page_sha256 "
+        f"JOIN {_PAGE_DESCRIPTOR_COMPONENT} c ON c.page_sha256 = s.page_sha256 "
+        f"JOIN {_PAGE_DESCRIPTOR_COUNT} d ON d.page_sha256 = s.page_sha256 "
+        "WHERE r.gallery_id = %s AND r.observation_id = %s AND c.component = %s",
         (handle.gallery_id, handle.observation_id, _COMPONENT_BYTES[component]),
     )
     if len(rows) != 1:
@@ -3282,34 +3765,107 @@ def _persist_metadata_facts(
     root_page_sha256: bytes,
 ) -> None:
     receipt = GalleryObservationMetadataDecoder(state).finish()
+    source_gallery_name = _derive_source_gallery_name(
+        connector,
+        gallery_id=handle.gallery_id,
+    )
     _insert_or_require(
         connector,
-        label="gallery metadata",
+        label="gallery upload time",
         select_sql=(
-            "SELECT gid, upload_time, download_time, modified_time "
-            "FROM catalog_gallery_observation_metadata "
+            "SELECT upload_time FROM catalog_gallery_upload_times WHERE gid = %s"
+        ),
+        select_data=(receipt.gid,),
+        insert_sql=(
+            "INSERT INTO catalog_gallery_upload_times "
+            "(gid, upload_time) VALUES (%s, %s)"
+        ),
+        insert_data=(receipt.gid, receipt.upload_time),
+        expected=(receipt.upload_time,),
+    )
+    _insert_or_require(
+        connector,
+        label="source gallery name GID",
+        select_sql=(
+            "SELECT gid FROM catalog_source_gallery_name_gids "
+            "WHERE source_gallery_name = %s"
+        ),
+        select_data=(source_gallery_name,),
+        insert_sql=(
+            "INSERT INTO catalog_source_gallery_name_gids "
+            "(source_gallery_name, gid) VALUES (%s, %s)"
+        ),
+        insert_data=(source_gallery_name, receipt.gid),
+        expected=(receipt.gid,),
+    )
+    _insert_or_require(
+        connector,
+        label="gallery source name access",
+        select_sql=(
+            "SELECT source_gallery_name FROM catalog_gallery_source_name_accesses "
+            "WHERE gallery_id = %s"
+        ),
+        select_data=(handle.gallery_id,),
+        insert_sql=(
+            "INSERT INTO catalog_gallery_source_name_accesses "
+            "(gallery_id, source_gallery_name) VALUES (%s, %s)"
+        ),
+        insert_data=(handle.gallery_id, source_gallery_name),
+        expected=(source_gallery_name,),
+    )
+    _insert_or_require(
+        connector,
+        label="gallery metadata anchor",
+        select_sql=(
+            "SELECT gallery_id, observation_id "
+            "FROM catalog_gallery_observation_metadata_anchors "
             "WHERE gallery_id = %s AND observation_id = %s"
         ),
         select_data=(handle.gallery_id, handle.observation_id),
         insert_sql=(
-            "INSERT INTO catalog_gallery_observation_metadata "
-            "(gallery_id, observation_id, gid, upload_time, download_time, "
-            "modified_time) VALUES (%s, %s, %s, %s, %s, %s)"
+            "INSERT INTO catalog_gallery_observation_metadata_anchors "
+            "(gallery_id, observation_id) VALUES (%s, %s)"
+        ),
+        insert_data=(handle.gallery_id, handle.observation_id),
+        expected=(handle.gallery_id, handle.observation_id),
+    )
+    _insert_or_require(
+        connector,
+        label="gallery observation download time",
+        select_sql=(
+            "SELECT download_time FROM catalog_gallery_observation_download_times "
+            "WHERE gallery_id = %s AND observation_id = %s"
+        ),
+        select_data=(handle.gallery_id, handle.observation_id),
+        insert_sql=(
+            "INSERT INTO catalog_gallery_observation_download_times "
+            "(gallery_id, observation_id, download_time) VALUES (%s, %s, %s)"
         ),
         insert_data=(
             handle.gallery_id,
             handle.observation_id,
-            receipt.gid,
-            receipt.upload_time,
             receipt.download_time,
+        ),
+        expected=(receipt.download_time,),
+    )
+    _insert_or_require(
+        connector,
+        label="gallery observation modified time",
+        select_sql=(
+            "SELECT modified_time FROM catalog_gallery_observation_modified_times "
+            "WHERE gallery_id = %s AND observation_id = %s"
+        ),
+        select_data=(handle.gallery_id, handle.observation_id),
+        insert_sql=(
+            "INSERT INTO catalog_gallery_observation_modified_times "
+            "(gallery_id, observation_id, modified_time) VALUES (%s, %s, %s)"
+        ),
+        insert_data=(
+            handle.gallery_id,
+            handle.observation_id,
             receipt.modified_time,
         ),
-        expected=(
-            receipt.gid,
-            receipt.upload_time,
-            receipt.download_time,
-            receipt.modified_time,
-        ),
+        expected=(receipt.modified_time,),
     )
     metadata_root_count = _component_root(
         connector,
@@ -3351,6 +3907,295 @@ def _persist_metadata_facts(
             insert_data=(handle.gallery_id, handle.observation_id, receipt.page_count),
             expected=(receipt.page_count,),
         )
+    _insert_or_require(
+        connector,
+        label="gallery metadata seal",
+        select_sql=(
+            "SELECT gallery_id, observation_id "
+            "FROM catalog_gallery_observation_metadata_seals "
+            "WHERE gallery_id = %s AND observation_id = %s"
+        ),
+        select_data=(handle.gallery_id, handle.observation_id),
+        insert_sql=(
+            "INSERT INTO catalog_gallery_observation_metadata_seals "
+            "(gallery_id, observation_id) VALUES (%s, %s)"
+        ),
+        insert_data=(handle.gallery_id, handle.observation_id),
+        expected=(handle.gallery_id, handle.observation_id),
+    )
+
+
+def _derive_source_gallery_name(connector: Any, *, gallery_id: int) -> bytes:
+    row = connector.fetch_one(
+        "SELECT coordinate.locator_sha256, locator.source_gallery_name "
+        "FROM catalog_gallery_identity_seals AS seal "
+        "JOIN catalog_gallery_identity_anchors AS anchor "
+        "ON anchor.gallery_id = seal.gallery_id "
+        "JOIN catalog_gallery_identity_coordinates AS coordinate "
+        "ON coordinate.gallery_id = seal.gallery_id "
+        "JOIN catalog_gallery_identity_gallery_keys AS gallery_key "
+        "ON gallery_key.gallery_id = seal.gallery_id "
+        "JOIN catalog_source_locator_identity AS locator "
+        "ON locator.locator_sha256 = coordinate.locator_sha256 "
+        "WHERE seal.gallery_id = %s",
+        (gallery_id,),
+    )
+    if len(row) != 2:
+        raise GalleryStagingConflictError(
+            "gallery identity has no exact source locator leaf"
+        )
+    require_digest32(row[0], field="gallery identity locator_sha256")
+    return require_bounded_bytes(
+        row[1],
+        field="source_gallery_name",
+        minimum=1,
+        maximum=255,
+    )
+
+
+def _persist_directory_fact(
+    connector: Any,
+    *,
+    gallery_id: int,
+    observation_id: int,
+    directory_entry_count: int,
+    directory_observation_sha256: bytes,
+) -> None:
+    key = (gallery_id, observation_id)
+    _insert_or_require(
+        connector,
+        label="gallery directory anchor",
+        select_sql=(
+            "SELECT gallery_id, observation_id "
+            "FROM catalog_gallery_observation_directory_anchors "
+            "WHERE gallery_id = %s AND observation_id = %s"
+        ),
+        select_data=key,
+        insert_sql=(
+            "INSERT INTO catalog_gallery_observation_directory_anchors "
+            "(gallery_id, observation_id) VALUES (%s, %s)"
+        ),
+        insert_data=key,
+        expected=key,
+    )
+    _insert_or_require(
+        connector,
+        label="gallery directory entry count",
+        select_sql=(
+            "SELECT directory_entry_count "
+            "FROM catalog_gallery_observation_directory_entry_counts "
+            "WHERE gallery_id = %s AND observation_id = %s"
+        ),
+        select_data=key,
+        insert_sql=(
+            "INSERT INTO catalog_gallery_observation_directory_entry_counts "
+            "(gallery_id, observation_id, directory_entry_count) "
+            "VALUES (%s, %s, %s)"
+        ),
+        insert_data=(*key, directory_entry_count),
+        expected=(directory_entry_count,),
+    )
+    _insert_or_require(
+        connector,
+        label="gallery directory observation digest",
+        select_sql=(
+            "SELECT directory_observation_sha256 "
+            "FROM catalog_gallery_observation_directory_observation_sha256s "
+            "WHERE gallery_id = %s AND observation_id = %s"
+        ),
+        select_data=key,
+        insert_sql=(
+            "INSERT INTO catalog_gallery_observation_directory_observation_sha256s "
+            "(gallery_id, observation_id, directory_observation_sha256) "
+            "VALUES (%s, %s, %s)"
+        ),
+        insert_data=(*key, directory_observation_sha256),
+        expected=(directory_observation_sha256,),
+    )
+    _insert_or_require(
+        connector,
+        label="gallery directory seal",
+        select_sql=(
+            "SELECT gallery_id, observation_id "
+            "FROM catalog_gallery_observation_directory_seals "
+            "WHERE gallery_id = %s AND observation_id = %s"
+        ),
+        select_data=key,
+        insert_sql=(
+            "INSERT INTO catalog_gallery_observation_directory_seals "
+            "(gallery_id, observation_id) VALUES (%s, %s)"
+        ),
+        insert_data=key,
+        expected=key,
+    )
+
+
+def _persist_stat_fact(
+    connector: Any,
+    *,
+    gallery_id: int,
+    observation_id: int,
+    file_count: int,
+    byte_count: int,
+) -> None:
+    key = (gallery_id, observation_id)
+    _insert_or_require(
+        connector,
+        label="gallery stat anchor",
+        select_sql=(
+            "SELECT gallery_id, observation_id "
+            "FROM catalog_gallery_observation_stat_anchors "
+            "WHERE gallery_id = %s AND observation_id = %s"
+        ),
+        select_data=key,
+        insert_sql=(
+            "INSERT INTO catalog_gallery_observation_stat_anchors "
+            "(gallery_id, observation_id) VALUES (%s, %s)"
+        ),
+        insert_data=key,
+        expected=key,
+    )
+    _insert_or_require(
+        connector,
+        label="gallery stat file count",
+        select_sql=(
+            "SELECT file_count FROM catalog_gallery_observation_stat_file_counts "
+            "WHERE gallery_id = %s AND observation_id = %s"
+        ),
+        select_data=key,
+        insert_sql=(
+            "INSERT INTO catalog_gallery_observation_stat_file_counts "
+            "(gallery_id, observation_id, file_count) VALUES (%s, %s, %s)"
+        ),
+        insert_data=(*key, file_count),
+        expected=(file_count,),
+    )
+    _insert_or_require(
+        connector,
+        label="gallery stat byte count",
+        select_sql=(
+            "SELECT byte_count FROM catalog_gallery_observation_stat_byte_counts "
+            "WHERE gallery_id = %s AND observation_id = %s"
+        ),
+        select_data=key,
+        insert_sql=(
+            "INSERT INTO catalog_gallery_observation_stat_byte_counts "
+            "(gallery_id, observation_id, byte_count) VALUES (%s, %s, %s)"
+        ),
+        insert_data=(*key, byte_count),
+        expected=(byte_count,),
+    )
+    _insert_or_require(
+        connector,
+        label="gallery stat seal",
+        select_sql=(
+            "SELECT gallery_id, observation_id "
+            "FROM catalog_gallery_observation_stat_seals "
+            "WHERE gallery_id = %s AND observation_id = %s"
+        ),
+        select_data=key,
+        insert_sql=(
+            "INSERT INTO catalog_gallery_observation_stat_seals "
+            "(gallery_id, observation_id) VALUES (%s, %s)"
+        ),
+        insert_data=key,
+        expected=key,
+    )
+
+
+def _persist_file_filesystem_fact(
+    connector: Any,
+    *,
+    gallery_id: int,
+    observation_id: int,
+    file_key: bytes,
+    device: bytes,
+    inode: bytes,
+    modified_ns: bytes,
+    changed_ns: bytes,
+) -> None:
+    key = (gallery_id, observation_id, file_key)
+    _insert_or_require(
+        connector,
+        label="gallery file filesystem anchor",
+        select_sql=(
+            "SELECT gallery_id, observation_id, file_key "
+            "FROM catalog_gallery_observation_file_filesystem_anchors "
+            "WHERE gallery_id = %s AND observation_id = %s AND file_key = %s"
+        ),
+        select_data=key,
+        insert_sql=(
+            "INSERT INTO catalog_gallery_observation_file_filesystem_anchors "
+            "(gallery_id, observation_id, file_key) VALUES (%s, %s, %s)"
+        ),
+        insert_data=key,
+        expected=key,
+    )
+    for label, select_sql, insert_sql, value in (
+        (
+            "gallery file filesystem device",
+            "SELECT device FROM catalog_gallery_observation_file_filesystem_devices "
+            "WHERE gallery_id = %s AND observation_id = %s AND file_key = %s",
+            "INSERT INTO catalog_gallery_observation_file_filesystem_devices "
+            "(gallery_id, observation_id, file_key, device) "
+            "VALUES (%s, %s, %s, %s)",
+            device,
+        ),
+        (
+            "gallery file filesystem inode",
+            "SELECT inode FROM catalog_gallery_observation_file_filesystem_inodes "
+            "WHERE gallery_id = %s AND observation_id = %s AND file_key = %s",
+            "INSERT INTO catalog_gallery_observation_file_filesystem_inodes "
+            "(gallery_id, observation_id, file_key, inode) "
+            "VALUES (%s, %s, %s, %s)",
+            inode,
+        ),
+        (
+            "gallery file filesystem modified_ns",
+            "SELECT modified_ns "
+            "FROM catalog_gallery_observation_file_filesystem_modified_nses "
+            "WHERE gallery_id = %s AND observation_id = %s AND file_key = %s",
+            "INSERT INTO catalog_gallery_observation_file_filesystem_modified_nses "
+            "(gallery_id, observation_id, file_key, modified_ns) "
+            "VALUES (%s, %s, %s, %s)",
+            modified_ns,
+        ),
+        (
+            "gallery file filesystem changed_ns",
+            "SELECT changed_ns "
+            "FROM catalog_gallery_observation_file_filesystem_changed_nses "
+            "WHERE gallery_id = %s AND observation_id = %s AND file_key = %s",
+            "INSERT INTO catalog_gallery_observation_file_filesystem_changed_nses "
+            "(gallery_id, observation_id, file_key, changed_ns) "
+            "VALUES (%s, %s, %s, %s)",
+            changed_ns,
+        ),
+    ):
+        _insert_or_require(
+            connector,
+            label=label,
+            select_sql=select_sql,
+            select_data=key,
+            insert_sql=insert_sql,
+            insert_data=(*key, value),
+            expected=(value,),
+        )
+    _insert_or_require(
+        connector,
+        label="gallery file filesystem seal",
+        select_sql=(
+            "SELECT gallery_id, observation_id, file_key "
+            "FROM catalog_gallery_observation_file_filesystem_seals "
+            "WHERE gallery_id = %s AND observation_id = %s AND file_key = %s"
+        ),
+        select_data=key,
+        insert_sql=(
+            "INSERT INTO catalog_gallery_observation_file_filesystem_seals "
+            "(gallery_id, observation_id, file_key) VALUES (%s, %s, %s)"
+        ),
+        insert_data=key,
+        expected=key,
+    )
 
 
 def _persist_scan_fact(
@@ -3362,29 +4207,79 @@ def _persist_scan_fact(
     source_file_count: int,
 ) -> None:
     scan_digest = gallery_scan_audit_digest(roots)
+    key = (handle.gallery_id, handle.observation_id)
     _insert_or_require(
         connector,
-        label="gallery scan",
+        label="gallery scan anchor",
         select_sql=(
-            "SELECT scan_observation_sha256, scan_observation_version, "
-            "source_file_count FROM catalog_gallery_observation_scans "
+            "SELECT gallery_id, observation_id "
+            "FROM catalog_gallery_observation_scan_anchors "
             "WHERE gallery_id = %s AND observation_id = %s"
         ),
-        select_data=(handle.gallery_id, handle.observation_id),
+        select_data=key,
         insert_sql=(
-            "INSERT INTO catalog_gallery_observation_scans "
-            "(gallery_id, observation_id, scan_observation_sha256, "
-            "scan_observation_version, source_file_count) "
-            "VALUES (%s, %s, %s, %s, %s)"
+            "INSERT INTO catalog_gallery_observation_scan_anchors "
+            "(gallery_id, observation_id) VALUES (%s, %s)"
         ),
-        insert_data=(
-            handle.gallery_id,
-            handle.observation_id,
+        insert_data=key,
+        expected=key,
+    )
+    for label, select_sql, insert_sql, value in (
+        (
+            "gallery scan observation digest",
+            "SELECT scan_observation_sha256 "
+            "FROM catalog_gallery_observation_scan_observation_sha256s "
+            "WHERE gallery_id = %s AND observation_id = %s",
+            "INSERT INTO catalog_gallery_observation_scan_observation_sha256s "
+            "(gallery_id, observation_id, scan_observation_sha256) "
+            "VALUES (%s, %s, %s)",
             scan_digest,
+        ),
+        (
+            "gallery scan observation version",
+            "SELECT scan_observation_version "
+            "FROM catalog_gallery_observation_scan_observation_versions "
+            "WHERE gallery_id = %s AND observation_id = %s",
+            "INSERT INTO catalog_gallery_observation_scan_observation_versions "
+            "(gallery_id, observation_id, scan_observation_version) "
+            "VALUES (%s, %s, %s)",
             scan_observation_version,
+        ),
+        (
+            "gallery scan source file count",
+            "SELECT source_file_count "
+            "FROM catalog_gallery_observation_scan_source_file_counts "
+            "WHERE gallery_id = %s AND observation_id = %s",
+            "INSERT INTO catalog_gallery_observation_scan_source_file_counts "
+            "(gallery_id, observation_id, source_file_count) "
+            "VALUES (%s, %s, %s)",
             source_file_count,
         ),
-        expected=(scan_digest, scan_observation_version, source_file_count),
+    ):
+        _insert_or_require(
+            connector,
+            label=label,
+            select_sql=select_sql,
+            select_data=key,
+            insert_sql=insert_sql,
+            insert_data=(*key, value),
+            expected=(value,),
+        )
+    _insert_or_require(
+        connector,
+        label="gallery scan seal",
+        select_sql=(
+            "SELECT gallery_id, observation_id "
+            "FROM catalog_gallery_observation_scan_seals "
+            "WHERE gallery_id = %s AND observation_id = %s"
+        ),
+        select_data=key,
+        insert_sql=(
+            "INSERT INTO catalog_gallery_observation_scan_seals "
+            "(gallery_id, observation_id) VALUES (%s, %s)"
+        ),
+        insert_data=key,
+        expected=key,
     )
 
 
@@ -3528,10 +4423,11 @@ def _runtime_parser_phase(durable: object) -> str:
 
 
 def _validate_seal_replay(
-    connector: Any,
+    work: VNextUnitOfWork,
     handle: GalleryStagingHandle,
     state: str,
 ) -> GalleryStagingSeal:
+    connector = work.connector
     checkpoints = {
         component: _read_level_zero_checkpoint(
             connector,
@@ -3567,6 +4463,44 @@ def _validate_seal_replay(
         raise GalleryStagingConflictError("terminal observation stat differs")
     if (state == "SEALED") != (observation == handle.observation_id):
         raise GalleryStagingConflictError("terminal staging state/link disagree")
+    try:
+        build = load_source_build_family(connector, build_id=handle.build_id)
+        if build is None or build.state not in {"OPEN", "SEALED"}:
+            raise GalleryStagingConflictError(
+                "terminal staging source build is not replayable"
+            )
+        policy = connector.fetch_one(
+            "SELECT algorithm.manifest_algorithm_version, "
+            "orders.file_order_version "
+            "FROM catalog_manifest_policy_seals seal "
+            "JOIN catalog_manifest_policy_manifest_algorithm_versions algorithm "
+            "ON algorithm.manifest_policy_id = seal.manifest_policy_id "
+            "JOIN catalog_manifest_policy_file_order_versions orders "
+            "ON orders.manifest_policy_id = seal.manifest_policy_id "
+            "WHERE seal.manifest_policy_id = %s",
+            (build.manifest_policy_id,),
+        )
+        if len(policy) != 2:
+            raise GalleryStagingConflictError(
+                "terminal staging manifest policy is unsealed"
+            )
+        expected_manifest = artifact_source_manifest_digest(
+            require_digest32(link[1], field="sealed observation identity"),
+            require_positive_int63(policy[0], field="manifest_algorithm_version"),
+            require_positive_int63(policy[1], field="file_order_version"),
+        )
+        manifest = load_gallery_manifest_family(
+            connector,
+            gallery_id=handle.gallery_id,
+            observation_id=observation,
+            manifest_policy_id=build.manifest_policy_id,
+        )
+        if manifest is None or manifest.manifest_sha256 != expected_manifest:
+            raise GalleryStagingConflictError(
+                "terminal staging has no exact sealed gallery manifest"
+            )
+    except ManifestFamilyCollisionError as error:
+        raise GalleryStagingConflictError(str(error)) from error
     return GalleryStagingSeal(
         handle.build_id,
         handle.gallery_id,

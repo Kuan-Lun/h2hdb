@@ -8,6 +8,32 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from vnext_analysis_fixtures import (
+    seed_analysis_component,
+    seed_analysis_run,
+    set_analysis_component_live_count,
+)
+from vnext_canonical_value_fixtures import seed_canonical_value
+from vnext_catalog_identity_fixtures import seed_gallery_identity, seed_tag_term
+from vnext_catalog_registry_fixtures import (
+    seed_analysis_policy,
+    seed_artifact_policy_semantics,
+    seed_artifact_producer_fingerprint,
+    seed_display_title_policy,
+    seed_manifest_policy,
+    seed_source_scope,
+    seed_title_sort_policy,
+)
+from vnext_gallery_page_fixtures import (
+    seed_gallery_page_bounds,
+    seed_gallery_page_descriptor,
+)
+from vnext_manifest_fixtures import (
+    seed_build_manifest,
+    seed_snapshot_manifest,
+    seed_source_build,
+)
+from vnext_publication_fixtures import seed_publication_commit
 
 from h2hdb import vnext_identity as identity
 from h2hdb._generated_vnext_schema import ARTIFACT
@@ -19,6 +45,7 @@ from h2hdb.vnext_maintenance_gate_repository import (
     MaintenanceGateRepository,
 )
 from h2hdb.vnext_publication_candidate_repository import (
+    PublicationCandidate,
     PublicationCandidateConflictError,
     PublicationCandidateHeadRaceError,
     PublicationCandidateNotReadyError,
@@ -29,6 +56,9 @@ from h2hdb.vnext_transaction import VNextUnitOfWork
 _BUILD = b"b" * 16
 _ANALYSIS = b"a" * 16
 _CANDIDATE = b"c" * 16
+_BASE_RECEIPT = b"q" * 16
+_BASE_CANDIDATE = b"p" * 16
+_BASE_PREPARATION = b"e" * 16
 _PRODUCER_FIELDS = (
     b"h2hdb-test-writer",
     b"cpython-test-abi",
@@ -38,6 +68,27 @@ _PRODUCER_FIELDS = (
 )
 _PRODUCER_FINGERPRINT = identity.artifact_producer_fingerprint_sha256(*_PRODUCER_FIELDS)
 _CHANNEL = b"default"
+
+
+def test_publication_candidate_dto_rejects_non_graph_abandoned_state() -> None:
+    with pytest.raises(ValueError, match="state is not registered"):
+        PublicationCandidate(
+            candidate_id=_CANDIDATE,
+            analysis_id=_ANALYSIS,
+            build_id=_BUILD,
+            reserved_revision=1,
+            channel=_CHANNEL,
+            artifact_policy_id=1,
+            display_title_policy_id=1,
+            artifacts_required=False,
+            state="ABANDONED",
+            created_at=1,
+            base_source_revision=None,
+            base_source_generation=None,
+            base_catalog_revision=None,
+            base_catalog_generation=None,
+            replayed=False,
+        )
 
 
 def _generated_database(path: Path) -> SQLiteConnector:
@@ -74,33 +125,16 @@ def _canonical_identity(
     assert len(tree.pages) == 1
     encoded_page = tree.pages[0]
     page = identity.decode_canonical_value_page(encoded_page.page_bytes)
-    connector.execute(
-        "INSERT INTO catalog_canonical_value_allocations "
-        "(value_sha256, digest_domain, byte_count, allocated_at) "
-        "VALUES (%s, %s, %s, %s)",
-        (value_sha256, domain, len(exact_payload), 1),
-    )
-    connector.execute(
-        "INSERT INTO catalog_canonical_value_pages "
-        "(page_sha256, value_sha256, page_bytes) VALUES (%s, %s, %s)",
-        (encoded_page.page_sha256, value_sha256, encoded_page.page_bytes),
-    )
-    connector.execute(
-        "INSERT INTO catalog_canonical_value_page_descriptors "
-        "(page_sha256, value_sha256, level, page_position, subtree_item_count) "
-        "VALUES (%s, %s, %s, %s, %s)",
-        (
-            encoded_page.page_sha256,
-            value_sha256,
-            page.level,
-            page.page_position,
-            page.subtree_byte_count,
-        ),
-    )
-    connector.execute(
-        "INSERT INTO catalog_canonical_value_identities "
-        "(value_sha256, root_page_sha256) VALUES (%s, %s)",
-        (value_sha256, tree.root_page_sha256),
+    seed_canonical_value(
+        connector,
+        value_sha256=value_sha256,
+        digest_domain=domain,
+        page_sha256=encoded_page.page_sha256,
+        page_bytes=encoded_page.page_bytes,
+        subtree_item_count=page.subtree_byte_count,
+        allocated_at=1,
+        level=page.level,
+        page_position=page.page_position,
     )
 
 
@@ -123,6 +157,89 @@ def _authorities(connector: SQLiteConnector) -> tuple[GateLease, IngestTurn]:
             lease_duration=1_000_000,
         )
     return gate, turn
+
+
+def _seed_base_publication_commit(
+    connector: SQLiteConnector,
+    *,
+    snapshot_manifest_sha256: bytes,
+) -> None:
+    connector.execute(
+        "INSERT INTO catalog_source_revision_anchors (source_revision) VALUES (%s)",
+        (1,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_source_revision_channels (source_revision, channel) "
+        "VALUES (%s, %s)",
+        (1, _CHANNEL),
+    )
+    connector.execute(
+        "INSERT INTO catalog_source_revision_snapshot_manifests "
+        "(source_revision, snapshot_manifest_sha256) VALUES (%s, %s)",
+        (1, snapshot_manifest_sha256),
+    )
+    connector.execute(
+        "INSERT INTO catalog_source_revision_descriptor_seals (source_revision) "
+        "VALUES (%s)",
+        (1,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_revision_anchors (revision) VALUES (%s)",
+        (1,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_revision_publication_counts "
+        "(revision, publication_count) VALUES (%s, %s)",
+        (1, 0),
+    )
+    connector.execute(
+        "INSERT INTO catalog_revision_descriptor_seals (revision) VALUES (%s)",
+        (1,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_publication_generation_nodes (generation) VALUES (%s)",
+        (1,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_publication_generation_successors "
+        "(successor_generation, predecessor_generation) VALUES (%s, %s)",
+        (1, 0),
+    )
+    connector.execute(
+        "INSERT INTO operational_operational_policys "
+        "(operational_policy_id, operational_schema_version, algorithm_version, "
+        "max_batch_rows) VALUES (%s, %s, %s, %s)",
+        (1, 1, 1, 128),
+    )
+    connector.execute(
+        "INSERT INTO operational_operational_event_streams "
+        "(preparation_id, created_at) VALUES (%s, %s)",
+        (_BASE_PREPARATION, 19),
+    )
+    connector.execute(
+        "INSERT INTO operational_operational_preparation_effect_seals "
+        "(preparation_id, event_count, final_chain_sha256, sealed_at) "
+        "VALUES (%s, %s, %s, %s)",
+        (_BASE_PREPARATION, 0, b"f" * 32, 20),
+    )
+    seed_publication_commit(
+        connector,
+        receipt_id=_BASE_RECEIPT,
+        candidate_id=_BASE_CANDIDATE,
+        revision=1,
+        source_revision=1,
+        generation=1,
+        preparation_id=_BASE_PREPARATION,
+        operational_policy_id=1,
+        artifact_policy_id=1,
+        display_title_policy_id=1,
+        new_galleries=0,
+        changed_galleries=0,
+        removed_galleries=0,
+        duplicate_losers=0,
+        committed_at=20,
+        channel=_CHANNEL,
+    )
 
 
 def _seed_completed_analysis(
@@ -169,88 +286,71 @@ def _seed_completed_analysis(
             _PRODUCER_FINGERPRINT,
         ),
     )
-    connector.execute(
-        "INSERT INTO catalog_source_scopes "
-        "(scope_key, source_provider, source_root_sha256, identity_policy_version) "
-        "VALUES (%s, %s, %s, %s)",
-        (b"s" * 32, b"filesystem", source_root, 1),
+    scope = seed_source_scope(connector, source_root_sha256=source_root)
+    seed_manifest_policy(connector)
+    seed_snapshot_manifest(
+        connector,
+        snapshot_manifest_sha256=snapshot,
+        gallery_count=0,
+        file_count=0,
+        byte_count=0,
     )
-    connector.execute(
-        "INSERT INTO catalog_manifest_policies "
-        "(manifest_policy_id, manifest_algorithm_version, file_order_version) "
-        "VALUES (%s, %s, %s)",
-        (1, 1, 1),
+    producer = seed_artifact_producer_fingerprint(
+        connector,
+        artifact_algorithm_version=1,
+        writer_id=_PRODUCER_FIELDS[0],
+        python_abi=_PRODUCER_FIELDS[1],
+        pillow_build=_PRODUCER_FIELDS[2],
+        libjpeg_build=_PRODUCER_FIELDS[3],
+        zlib_build=_PRODUCER_FIELDS[4],
     )
-    connector.execute(
-        "INSERT INTO catalog_source_snapshot_manifest_identity "
-        "(snapshot_manifest_sha256, gallery_count, file_count, byte_count) "
-        "VALUES (%s, %s, %s, %s)",
-        (snapshot, 0, 0, 0),
+    assert producer.producer_fingerprint_sha256 == _PRODUCER_FINGERPRINT
+    semantics = seed_artifact_policy_semantics(
+        connector,
+        producer_fingerprint_sha256=_PRODUCER_FINGERPRINT,
     )
-    connector.execute(
-        "INSERT INTO catalog_artifact_producer_fingerprints "
-        "(producer_fingerprint_sha256, artifact_algorithm_version, "
-        "producer_equivalence_class, writer_id, python_abi, pillow_build, "
-        "libjpeg_build, zlib_build) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-        (
-            _PRODUCER_FINGERPRINT,
-            1,
-            b"test-equivalence-v1",
-            *_PRODUCER_FIELDS,
-        ),
-    )
-    connector.execute(
-        "INSERT INTO catalog_artifact_policy_semantics "
-        "(policy_component_sha256, artifact_algorithm_version, "
-        "max_image_short_side, producer_fingerprint_sha256) "
-        "VALUES (%s, %s, %s, %s)",
-        (policy_component, 1, 2048, _PRODUCER_FINGERPRINT),
-    )
+    assert semantics.policy_component_sha256 == policy_component
     connector.execute(
         "INSERT INTO catalog_artifact_policies "
         "(artifact_policy_id, policy_component_sha256) VALUES (%s, %s)",
         (1, policy_component),
     )
-    connector.execute(
-        "INSERT INTO catalog_title_sort_policy "
-        "(title_sort_policy_id, title_sort_algorithm_version, "
-        "unicode_data_version) VALUES (%s, %s, %s)",
-        (1, 1, unicodedata.unidata_version.encode("ascii")),
+    seed_title_sort_policy(
+        connector,
+        unicode_data_version=unicodedata.unidata_version.encode("ascii"),
     )
-    connector.execute(
-        "INSERT INTO catalog_display_title_policies "
-        "(display_title_policy_id, display_title_algorithm_version, "
-        "title_sort_policy_id) VALUES (%s, %s, %s)",
-        (1, 1, 1),
-    )
-    connector.execute(
-        "INSERT INTO catalog_analysis_policies "
-        "(policy_id, algorithm_version, spam_artist_threshold, "
-        "spam_occurrence_threshold, content_owner_rule_version, "
-        "gid_winner_rule_version) VALUES (%s, %s, %s, %s, %s, %s)",
-        (1, 1, 1, 3, 1, 1),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_builds "
-        "(build_id, scope_key, manifest_policy_id, state, created_at, sealed_at) "
-        "VALUES (%s, %s, %s, %s, %s, %s)",
-        (_BUILD, b"s" * 32, 1, "SEALED", 15, 20),
+    seed_display_title_policy(connector)
+    seed_analysis_policy(connector)
+    seed_source_build(
+        connector,
+        build_id=_BUILD,
+        scope_key=scope.scope_key,
+        state="SEALED",
+        created_at=15,
+        sealed_at=20,
     )
     connector.execute(
         "INSERT INTO catalog_source_build_channel (build_id, channel) VALUES (%s, %s)",
         (_BUILD, _CHANNEL),
     )
-    connector.execute(
-        "INSERT INTO catalog_build_manifests "
-        "(build_id, manifest_sha256, gallery_count, file_count, byte_count, "
-        "computed_at) VALUES (%s, %s, %s, %s, %s, %s)",
-        (_BUILD, b"d" * 32, 0, 0, 0, 21),
+    seed_build_manifest(
+        connector,
+        build_id=_BUILD,
+        manifest_sha256=b"d" * 32,
+        gallery_count=0,
+        file_count=0,
+        byte_count=0,
+        computed_at=20,
     )
-    connector.execute(
-        "INSERT INTO catalog_analysis_runs "
-        "(analysis_id, build_id, policy_id, input_manifest_sha256, state, "
-        "started_at, completed_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-        (_ANALYSIS, _BUILD, 1, b"x" * 32, "COMPLETE", 22, 35),
+    seed_analysis_run(
+        connector,
+        analysis_id=_ANALYSIS,
+        build_id=_BUILD,
+        policy_id=1,
+        input_manifest_sha256=b"x" * 32,
+        started_at=22,
+        state="COMPLETE",
+        completed_at=35,
     )
     for component in (
         b"content_owner",
@@ -259,11 +359,13 @@ def _seed_completed_analysis(
         b"gid_candidate",
         b"gid_winner",
     ):
-        connector.execute(
-            "INSERT INTO catalog_analysis_state_component_seals "
-            "(analysis_id, state_component, row_count, sealed_at) "
-            "VALUES (%s, %s, %s, %s)",
-            (_ANALYSIS, component, 0, 34),
+        seed_analysis_component(
+            connector,
+            analysis_id=_ANALYSIS,
+            state_component=component,
+            row_count=0,
+            sealed_at=34,
+            terminal_receipt=True,
         )
     connector.execute(
         "INSERT INTO catalog_analysis_snapshot_manifest "
@@ -282,34 +384,14 @@ def _seed_completed_analysis(
     )
 
     if with_base:
-        connector.execute(
-            "INSERT INTO catalog_source_revisions "
-            "(source_revision, channel, snapshot_manifest_sha256, published_at) "
-            "VALUES (%s, %s, %s, %s)",
-            (1, _CHANNEL, snapshot, 20),
+        _seed_base_publication_commit(
+            connector,
+            snapshot_manifest_sha256=snapshot,
         )
         connector.execute(
-            "INSERT INTO catalog_source_heads "
-            "(channel, source_revision, generation, advanced_at) "
-            "VALUES (%s, %s, %s, %s)",
-            (_CHANNEL, 1, 1, 20),
-        )
-        connector.execute(
-            "INSERT INTO catalog_source_build_base_source "
-            "(build_id, base_source_revision, base_source_generation) "
-            "VALUES (%s, %s, %s)",
-            (_BUILD, 1, 1),
-        )
-        connector.execute(
-            "INSERT INTO catalog_revisions "
-            "(revision, publication_count, published_at) VALUES (%s, %s, %s)",
-            (1, 0, 20),
-        )
-        connector.execute(
-            "INSERT INTO catalog_publication_heads "
-            "(channel, revision, generation, advanced_at) "
-            "VALUES (%s, %s, %s, %s)",
-            (_CHANNEL, 1, 1, 20),
+            "INSERT INTO catalog_source_build_base_publication_commits "
+            "(build_id, base_receipt_id) VALUES (%s, %s)",
+            (_BUILD, _BASE_RECEIPT),
         )
         connector.execute(
             "UPDATE operational_revision_allocators SET next_revision = %s "
@@ -324,11 +406,11 @@ def _seed_selected_galleries(
     count: int,
     locator_components_by_gallery: dict[int, tuple[str, ...]] | None = None,
 ) -> None:
-    connector.execute(
-        "INSERT INTO catalog_analysis_state_anchors "
-        "(analysis_id, anchor_analysis_id, overlay_depth) VALUES (%s, %s, %s)",
-        (_ANALYSIS, _ANALYSIS, 0),
+    scopes = connector.fetch_all(
+        "SELECT scope_key FROM catalog_source_scope_seals ORDER BY scope_key LIMIT 2"
     )
+    assert len(scopes) == 1
+    scope_key = scopes[0][0]
     connector.execute(
         "INSERT INTO catalog_analysis_state_ancestry "
         "(analysis_id, ancestor_depth, ancestor_analysis_id) VALUES (%s, %s, %s)",
@@ -370,11 +452,12 @@ def _seed_selected_galleries(
             "(locator_sha256, source_gallery_name) VALUES (%s, %s)",
             (locator, f"gallery-{gallery_id}".encode()),
         )
-        connector.execute(
-            "INSERT INTO catalog_gallery_identities "
-            "(gallery_id, gallery_key, scope_key, locator_sha256) "
-            "VALUES (%s, %s, %s, %s)",
-            (gallery_id, gallery_key, b"s" * 32, locator),
+        seed_gallery_identity(
+            connector,
+            gallery_id=gallery_id,
+            gallery_key=gallery_key,
+            scope_key=scope_key,
+            locator_sha256=locator,
         )
         connector.execute(
             "INSERT INTO catalog_gallery_observation_allocations "
@@ -393,11 +476,41 @@ def _seed_selected_galleries(
             "VALUES (%s, %s, %s)",
             (gallery_id, 1, observation),
         )
+        source_gallery_name = f"gallery-{gallery_id}".encode()
         connector.execute(
-            "INSERT INTO catalog_gallery_observation_metadata "
-            "(gallery_id, observation_id, gid, upload_time, download_time, "
-            "modified_time) VALUES (%s, %s, %s, %s, %s, %s)",
-            (gallery_id, 1, 10_000 + gallery_id, 1, 2, 3),
+            "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
+            "VALUES (%s, %s)",
+            (10_000 + gallery_id, 1),
+        )
+        connector.execute(
+            "INSERT INTO catalog_source_gallery_name_gids "
+            "(source_gallery_name, gid) VALUES (%s, %s)",
+            (source_gallery_name, 10_000 + gallery_id),
+        )
+        connector.execute(
+            "INSERT INTO catalog_gallery_source_name_accesses "
+            "(gallery_id, source_gallery_name) VALUES (%s, %s)",
+            (gallery_id, source_gallery_name),
+        )
+        connector.execute(
+            "INSERT INTO catalog_gallery_observation_metadata_anchors "
+            "(gallery_id, observation_id) VALUES (%s, 1)",
+            (gallery_id,),
+        )
+        connector.execute(
+            "INSERT INTO catalog_gallery_observation_download_times "
+            "(gallery_id, observation_id, download_time) VALUES (%s, 1, 2)",
+            (gallery_id,),
+        )
+        connector.execute(
+            "INSERT INTO catalog_gallery_observation_modified_times "
+            "(gallery_id, observation_id, modified_time) VALUES (%s, 1, 3)",
+            (gallery_id,),
+        )
+        connector.execute(
+            "INSERT INTO catalog_gallery_observation_metadata_seals "
+            "(gallery_id, observation_id) VALUES (%s, 1)",
+            (gallery_id,),
         )
         connector.execute(
             "INSERT INTO catalog_source_build_expected_gallery "
@@ -409,29 +522,52 @@ def _seed_selected_galleries(
             "(build_id, gallery_id, observation_id) VALUES (%s, %s, %s)",
             (_BUILD, gallery_id, 1),
         )
+        gid = 10_000 + gallery_id
         connector.execute(
-            "INSERT INTO catalog_analysis_gid_winner_shadows "
-            "(analysis_id, gid, winner_gallery_id, decision_sha256) "
-            "VALUES (%s, %s, %s, %s)",
-            (
-                _ANALYSIS,
-                10_000 + gallery_id,
-                gallery_id,
-                sha256(b"winner\0" + gallery_id.to_bytes(8, "big")).digest(),
-            ),
+            "INSERT INTO catalog_analysis_impacted_galleries "
+            "(analysis_id, gallery_id) VALUES (%s, %s)",
+            (_ANALYSIS, gallery_id),
+        )
+        connector.execute(
+            "INSERT INTO catalog_a_impacted_gid_anchors "
+            "(analysis_id, gid) VALUES (%s, %s)",
+            (_ANALYSIS, gid),
+        )
+        connector.execute(
+            "INSERT INTO catalog_a_impacted_gid_provenance "
+            "(analysis_id, gallery_id, gid) VALUES (%s, %s, %s)",
+            (_ANALYSIS, gallery_id, gid),
+        )
+        connector.execute(
+            "INSERT INTO catalog_a_impacted_gid_witnesses "
+            "(analysis_id, gid, witness_gallery_id) VALUES (%s, %s, %s)",
+            (_ANALYSIS, gid, gallery_id),
+        )
+        connector.execute(
+            "INSERT INTO catalog_a_impacted_gid_seals "
+            "(analysis_id, gid) VALUES (%s, %s)",
+            (_ANALYSIS, gid),
+        )
+        connector.execute(
+            "INSERT INTO catalog_analysis_gid_winner_selections "
+            "(analysis_id, winner_gallery_id) VALUES (%s, %s)",
+            (_ANALYSIS, gallery_id),
         )
     connector.execute(
-        "UPDATE catalog_build_manifests SET gallery_count = %s WHERE build_id = %s",
+        "UPDATE catalog_source_build_discovery_gallery_counts "
+        "SET gallery_count = %s WHERE build_id = %s",
         (count, _BUILD),
     )
     connector.execute(
-        "UPDATE catalog_source_snapshot_manifest_identity SET gallery_count = %s",
+        "UPDATE catalog_source_snapshot_manifest_identity_gallery_counts "
+        "SET gallery_count = %s",
         (count,),
     )
-    connector.execute(
-        "UPDATE catalog_analysis_state_component_seals SET row_count = %s "
-        "WHERE analysis_id = %s AND state_component = %s",
-        (count, _ANALYSIS, b"gid_winner"),
+    set_analysis_component_live_count(
+        connector,
+        analysis_id=_ANALYSIS,
+        state_component=b"gid_winner",
+        row_count=count,
     )
 
 
@@ -455,24 +591,18 @@ def _seed_projection_metadata(
             None,
         )
         tree = identity.build_gallery_observation_metadata_tree(metadata)
+        bounds_by_page: dict[bytes, tuple[bytes, bytes]] = {}
         for encoded in tree.pages:
             page = identity.decode_gallery_observation_page(encoded.page_bytes)
-            connector.execute(
-                "INSERT INTO catalog_gallery_observation_pages "
-                "(page_sha256, page_bytes) VALUES (%s, %s)",
-                (encoded.page_sha256, encoded.page_bytes),
+            seed_gallery_page_descriptor(
+                connector,
+                page_sha256=encoded.page_sha256,
+                page_bytes=encoded.page_bytes,
+                component=b"METADATA",
+                level=page.level,
+                subtree_item_count=page.subtree_item_count,
             )
-            connector.execute(
-                "INSERT INTO catalog_gallery_observation_page_descriptors "
-                "(page_sha256, component, level, subtree_item_count) "
-                "VALUES (%s, %s, %s, %s)",
-                (
-                    encoded.page_sha256,
-                    b"METADATA",
-                    page.level,
-                    page.subtree_item_count,
-                ),
-            )
+            child_bounds: dict[bytes, tuple[bytes, bytes]] = {}
             if page.node_kind is identity.GalleryObservationNodeKind.BRANCH:
                 for position, entry in enumerate(page.entries):
                     assert isinstance(entry, identity.GalleryObservationBranchEntry)
@@ -482,6 +612,21 @@ def _seed_projection_metadata(
                         "VALUES (%s, %s, %s)",
                         (encoded.page_sha256, position, entry.child_sha256),
                     )
+                    child_bounds[entry.child_sha256] = bounds_by_page[
+                        entry.child_sha256
+                    ]
+            bounds = identity.gallery_observation_page_key_bounds(
+                page,
+                child_bounds=child_bounds or None,
+            )
+            assert bounds is not None
+            seed_gallery_page_bounds(
+                connector,
+                page_sha256=encoded.page_sha256,
+                first_key=bounds[0],
+                last_key=bounds[1],
+            )
+            bounds_by_page[encoded.page_sha256] = bounds
         connector.execute(
             "INSERT INTO catalog_gallery_observation_tree_roots "
             "(gallery_id, observation_id, root_page_sha256) VALUES (%s, %s, %s)",
@@ -504,10 +649,11 @@ def _seed_projection_metadata(
                 serial=10_000 + tag_id,
                 payload=value,
             )
-            connector.execute(
-                "INSERT INTO catalog_tag_terms "
-                "(tag_id, namespace, tag_value_sha256) VALUES (%s, %s, %s)",
-                (tag_id, namespace, value_sha256),
+            seed_tag_term(
+                connector,
+                tag_id=tag_id,
+                namespace=namespace,
+                tag_value_sha256=value_sha256,
             )
             connector.execute(
                 "INSERT INTO catalog_gallery_observation_tags "
@@ -663,10 +809,21 @@ def test_begin_derives_revision_channel_and_exact_optional_bases(
     assert candidate.base_catalog_generation == (1 if with_base else None)
     assert not candidate.replayed
     assert connector.fetch_one(
-        "SELECT analysis_id, reserved_revision, channel, state, sealed_at "
+        "SELECT analysis_id, reserved_revision, artifact_policy_id, "
+        "display_title_policy_id, artifacts_required, created_at "
         "FROM catalog_publication_candidates WHERE candidate_id = %s",
         (_CANDIDATE,),
-    ) == (_ANALYSIS, expected_revision, _CHANNEL, "OPEN", None)
+    ) == (_ANALYSIS, expected_revision, 1, 1, 0, 100)
+    assert connector.fetch_one(
+        "SELECT candidate_id FROM catalog_publication_candidate_definition_seals "
+        "WHERE candidate_id = %s",
+        (_CANDIDATE,),
+    ) == (_CANDIDATE,)
+    assert not connector.fetch_one(
+        "SELECT candidate_id FROM catalog_publication_candidate_projection_seals "
+        "WHERE candidate_id = %s",
+        (_CANDIDATE,),
+    )
     assert connector.fetch_one(
         "SELECT candidate_id FROM operational_catalog_working_candidates "
         "WHERE slot = %s",
@@ -749,6 +906,51 @@ def test_forged_artifact_policy_canonical_preimage_fails_without_reservation(
     connector.close()
 
 
+def test_begin_rejects_permanent_candidate_identity_after_transient_cleanup(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "permanent-candidate-collision.sqlite3")
+    gate, turn = _authorities(connector)
+    _seed_completed_analysis(connector, turn, with_base=True)
+    connector.execute(
+        "INSERT INTO catalog_publication_commit_finalizations "
+        "(receipt_id) VALUES (%s)",
+        (_BASE_RECEIPT,),
+    )
+    connector.execute(
+        "DELETE FROM catalog_publication_commit_head_receipts WHERE channel = %s",
+        (_CHANNEL,),
+    )
+    before = connector.connection.total_changes
+
+    with (
+        patch(
+            "h2hdb.vnext_publication_candidate_repository._new_candidate_id",
+            return_value=_BASE_CANDIDATE,
+        ),
+        pytest.raises(PublicationCandidateConflictError, match="already exists"),
+    ):
+        with connector.transaction():
+            PublicationCandidateRepository.begin(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                ingest_turn=turn,
+                analysis_id=_ANALYSIS,
+                artifact_policy_id=1,
+                display_title_policy_id=1,
+                artifacts_required=False,
+                now=100,
+            )
+
+    assert connector.connection.total_changes == before
+    assert not connector.fetch_one("SELECT 1 FROM catalog_publication_candidates")
+    assert connector.fetch_one(
+        "SELECT next_revision FROM operational_revision_allocators WHERE stream = %s",
+        ("CATALOG",),
+    ) == (2,)
+    connector.close()
+
+
 def test_begin_rejects_drifted_closed_stage_registry_before_reservation(
     tmp_path: Path,
 ) -> None:
@@ -756,7 +958,8 @@ def test_begin_rejects_drifted_closed_stage_registry_before_reservation(
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=False)
     connector.execute(
-        "UPDATE catalog_publication_stages SET cursor_codec = %s WHERE stage = %s",
+        "UPDATE catalog_publication_stage_cursor_codecs SET cursor_codec = %s "
+        "WHERE stage = %s",
         (b"caller_bytes_v1", b"BUILD_SELECTION"),
     )
 
@@ -795,26 +998,25 @@ def test_begin_requires_exact_live_generation_and_source_working_authority(
     connector.close()
 
 
-@pytest.mark.parametrize("head", ["source", "catalog"])
+@pytest.mark.parametrize("phase", ["fresh", "resume"])
 def test_begin_or_resume_base_race_fails_without_allocator_leak(
     tmp_path: Path,
-    head: str,
+    phase: str,
 ) -> None:
-    connector = _generated_database(tmp_path / f"base-race-{head}.sqlite3")
+    connector = _generated_database(tmp_path / f"base-race-{phase}.sqlite3")
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=True)
-    if head == "catalog":
+    if phase == "resume":
         _begin(connector, gate, turn)
     connector.execute(
-        f"UPDATE {'catalog_source_heads' if head == 'source' else 'catalog_publication_heads'} "
-        "SET generation = %s WHERE channel = %s",
-        (2, _CHANNEL),
+        "DELETE FROM catalog_publication_commit_head_receipts WHERE channel = %s",
+        (_CHANNEL,),
     )
 
     with pytest.raises(PublicationCandidateHeadRaceError):
         _begin(connector, gate, turn, now=101)
 
-    if head == "source":
+    if phase == "fresh":
         assert not connector.fetch_one("SELECT 1 FROM catalog_publication_candidates")
         assert connector.fetch_one(
             "SELECT next_revision FROM operational_revision_allocators "
@@ -823,8 +1025,16 @@ def test_begin_or_resume_base_race_fails_without_allocator_leak(
         ) == (2,)
     else:
         assert connector.fetch_one(
-            "SELECT state FROM catalog_publication_candidates"
-        ) == ("OPEN",)
+            "SELECT candidate_id FROM catalog_publication_candidates"
+        ) == (_CANDIDATE,)
+        assert not connector.fetch_one(
+            "SELECT candidate_id FROM catalog_publication_candidate_projection_seals"
+        )
+        assert not connector.fetch_one(
+            "SELECT receipt_id FROM catalog_publication_commit_candidates "
+            "WHERE candidate_id = %s",
+            (_CANDIDATE,),
+        )
     connector.close()
 
 
@@ -837,8 +1047,8 @@ def test_each_begin_mutation_fault_rolls_back_allocator_candidate_and_bases(
     _seed_completed_analysis(base, turn, with_base=True)
     base.close()
 
-    # Allocator, candidate, source base, catalog base, checkpoint set, working root.
-    for failure_at in range(1, 7):
+    # Allocator, candidate, common base, seven checkpoint-family writes, working root.
+    for failure_at in range(1, 12):
         path = tmp_path / f"begin-fault-{failure_at}.sqlite3"
         copyfile(base_path, path)
         connector = SQLiteConnector(str(path))
@@ -1116,13 +1326,19 @@ def test_catalog_projection_uses_typed_disk_plan_and_independent_validation(
 
     publication_key = identity.publication_key(10_001)
     assert connector.fetch_one(
-        "SELECT publication_count FROM catalog_revisions WHERE revision = 1"
+        "SELECT publication_count FROM catalog_revision_descriptors WHERE revision = 1"
     ) == (1,)
     assert connector.fetch_one(
-        "SELECT gallery_id, published_at, modified_at "
+        "SELECT gallery_id, modified_at "
         "FROM catalog_publications WHERE revision = 1 AND publication_key = %s",
         (publication_key,),
-    ) == (1, 1, 3)
+    ) == (1, 3)
+    assert connector.fetch_one(
+        "SELECT upload.upload_time FROM catalog_publication_identities AS identity "
+        "JOIN catalog_gallery_upload_times AS upload ON upload.gid = identity.gid "
+        "WHERE identity.publication_key = %s",
+        (publication_key,),
+    ) == (1,)
     assert connector.fetch_one(
         "SELECT position, publication_key FROM catalog_publication_order "
         "WHERE revision = 1"
@@ -1228,7 +1444,7 @@ def test_catalog_projection_high_cardinality_mutations_are_fixed_128_children(
         assert [batch.row_count for batch in checked] == [128, 72, 0]
         assert checked[-1].terminal and checked[-1].next_processed_count == 200
     assert connector.fetch_one(
-        "SELECT publication_count FROM catalog_revisions WHERE revision = 1"
+        "SELECT publication_count FROM catalog_revision_descriptors WHERE revision = 1"
     ) == (50,)
     connector.close()
 
@@ -1266,9 +1482,9 @@ def test_catalog_projection_major_statement_faults_roll_back_all_children(
         original_execute = connector.execute
         original_execute_affected = connector.execute_affected
         failures = (
-            "INSERT INTO catalog_publications",
-            "INSERT INTO catalog_publication_batch_receipts",
-            "UPDATE catalog_publication_checkpoints",
+            "INSERT INTO catalog_publication_anchors",
+            "INSERT INTO catalog_publication_batch_receipt_seals",
+            "UPDATE catalog_publication_checkpoint_generations",
         )
         for index, target in enumerate(failures):
 
@@ -1307,7 +1523,9 @@ def test_catalog_projection_major_statement_faults_roll_back_all_children(
                         batch_key=b"fault-" + bytes((index,)),
                         now=112 + index,
                     )
-            assert not connector.fetch_one("SELECT 1 FROM catalog_revisions")
+            assert not connector.fetch_one(
+                "SELECT 1 FROM catalog_revision_descriptor_seals"
+            )
             assert not connector.fetch_one("SELECT 1 FROM catalog_publications")
             assert not connector.fetch_one("SELECT 1 FROM catalog_publication_order")
             assert not connector.fetch_one("SELECT 1 FROM catalog_publication_titles")
@@ -1349,7 +1567,9 @@ def test_catalog_projection_major_statement_faults_roll_back_all_children(
                     batch_key=b"missing-claim",
                     now=120,
                 )
-        assert not connector.fetch_one("SELECT 1 FROM catalog_revisions")
+        assert not connector.fetch_one(
+            "SELECT 1 FROM catalog_revision_descriptor_seals"
+        )
     connector.close()
 
 
@@ -1402,7 +1622,7 @@ def test_independent_catalog_validation_rejects_missing_child_without_progress(
                     now=112 + index,
                 )
         connector.execute(
-            "DELETE FROM catalog_publication_titles WHERE revision = %s",
+            "DELETE FROM catalog_publication_title_seals WHERE revision = %s",
             (1,),
         )
         with pytest.raises(PublicationCandidateConflictError, match="independent"):
@@ -1473,19 +1693,16 @@ def test_selection_response_loss_replays_under_a_new_live_ingest_turn(
     connector.close()
 
 
-@pytest.mark.parametrize("head", ["source", "catalog"])
 def test_selection_reauthorizes_candidate_base_heads_before_mutation(
     tmp_path: Path,
-    head: str,
 ) -> None:
-    connector = _generated_database(tmp_path / f"selection-head-race-{head}.sqlite3")
+    connector = _generated_database(tmp_path / "selection-head-race.sqlite3")
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=True)
     _begin(connector, gate, turn)
     connector.execute(
-        f"UPDATE {'catalog_source_heads' if head == 'source' else 'catalog_publication_heads'} "
-        "SET generation = %s WHERE channel = %s",
-        (2, _CHANNEL),
+        "DELETE FROM catalog_publication_commit_head_receipts WHERE channel = %s",
+        (_CHANNEL,),
     )
 
     with pytest.raises(PublicationCandidateHeadRaceError):
@@ -1568,8 +1785,8 @@ def test_each_selection_batch_mutation_fault_rolls_back_children_receipt_and_cas
     _begin(base, gate, turn)
     base.close()
 
-    # Publication identity, selection, immutable receipt, checkpoint CAS.
-    for failure_at in range(1, 5):
+    # Identity, selection, eight receipt-family writes, and four changed CAS members.
+    for failure_at in range(1, 15):
         path = tmp_path / f"selection-fault-{failure_at}.sqlite3"
         copyfile(base_path, path)
         connector = SQLiteConnector(str(path))
@@ -1644,8 +1861,9 @@ def test_mariadb_begin_lock_sql_uses_server_placeholders_and_for_update() -> Non
             query: str,
             data: tuple[Any, ...] = (),
         ) -> tuple[Any, ...]:
-            del data
             self.query = query
+            if "FROM catalog_channel_registry" in query:
+                return (data[0], None, None, None, None, None, None, None, None)
             return ()
 
     connector: Any = RecordingConnector()
@@ -1655,6 +1873,14 @@ def test_mariadb_begin_lock_sql_uses_server_placeholders_and_for_update() -> Non
     )
     assert connector.query.endswith(" FOR UPDATE")
     assert "%s" in connector.query and "?" not in connector.query
+
+    assert module._lock_common_head(
+        VNextUnitOfWork(connector, backend="mariadb"),
+        _CHANNEL,
+    ) == (None, None)
+    assert "catalog_publication_commit_head_receipts" in connector.query
+    assert "catalog_publication_commit_generations" in connector.query
+    assert connector.query.endswith(" FOR UPDATE")
 
 
 def test_mariadb_selection_and_checkpoint_sql_keep_closed_server_shape() -> None:
@@ -1732,10 +1958,28 @@ def test_mariadb_selection_and_checkpoint_sql_keep_closed_server_shape() -> None
         and "SUM(" not in connector.query.upper()
     )
 
+    assert (
+        module._catalog_child_kind_rows(
+            work,
+            revision=1,
+            kind=module._CATALOG_CHILD_ARTIFACT,
+            after_key=b"k" * 32,
+            after_subkey=b"",
+            limit=128,
+        )
+        == ()
+    )
+    assert connector.query.count("%s") == 3 and "?" not in connector.query
+    assert "FROM catalog_artifact_seals AS seal" in connector.query
+    assert "JOIN catalog_artifact_sha256s AS digest" in connector.query
+    assert "JOIN catalog_artifact_semantics_sha256s AS semantics" in connector.query
+    assert "ORDER BY seal.publication_key LIMIT %s" in connector.query
+    assert "artifact_id" not in connector.query
+
     module._initialize_candidate_checkpoints(work, _CANDIDATE, now=100)
     assert "SELECT %s, stage" in connector.query
-    assert "FROM catalog_publication_stages ORDER BY stage_order" in connector.query
-    assert connector.query.count("%s") == 6 and "?" not in connector.query
+    assert "FROM catalog_publication_stage_seals ORDER BY stage" in connector.query
+    assert connector.query.count("%s") == 1 and "?" not in connector.query
 
 
 @pytest.mark.parametrize(
@@ -1753,7 +1997,7 @@ def test_mariadb_selection_and_checkpoint_sql_keep_closed_server_shape() -> None
         ),
         (
             b"publication_catalog_child_v1",
-            b"\x01\x07" + b"k" * 32 + b"\x00\x05\x00\x03cbz",
+            b"\x01\x06" + b"k" * 32 + b"\x00\x00",
         ),
     ],
 )
@@ -1784,6 +2028,10 @@ def test_closed_publication_cursor_codecs_accept_only_exact_frames(
         (
             b"publication_catalog_child_v1",
             b"\x01\x07" + b"k" * 32 + b"\x00\x05\x00\x04cbz",
+        ),
+        (
+            b"publication_catalog_child_v1",
+            b"\x01\x06" + b"k" * 32 + b"\x00\x05\x00\x03cbz",
         ),
     ],
 )

@@ -113,8 +113,11 @@ class MariaDBConnector(SQLConnector):
             self._max_allowed_packet = None
 
     def check_table_exists(self, table_name: str) -> bool:
-        query = f"SHOW TABLES LIKE '{table_name}'"
-        result = self.fetch_one(query)
+        query = (
+            "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s"
+        )
+        result = self.fetch_one(query, (table_name,))
         return bool(result)
 
     def commit(self) -> None:

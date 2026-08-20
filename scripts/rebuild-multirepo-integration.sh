@@ -13,8 +13,6 @@ REPOSITORIES=(
     "$CORE_REPO"
     "$REPOS_ROOT/h2h-galleryinfo-parser.clone"
     "$REPOS_ROOT/hbrowser.clone"
-    "$REPOS_ROOT/h2hdb-ingest.clone"
-    "$REPOS_ROOT/h2hdb-downloader.clone"
     "$REPOS_ROOT/h2hdb-komga.clone"
     "$REPOS_ROOT/h2hdb-opds.clone"
 )

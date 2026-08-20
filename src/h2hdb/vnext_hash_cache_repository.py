@@ -14,6 +14,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from hashlib import sha256
 
+from .vnext_canonical_value_family import load_sealed_value_identity
 from .vnext_canonical_value_repository import (
     CanonicalValueCollisionError,
     CanonicalValueNotReadyError,
@@ -313,15 +314,20 @@ def _require_sealed_plan(
     plan: CanonicalValueUploadPlan,
 ) -> None:
     tree = plan.tree_receipt
-    row = work.connector.fetch_one(
-        "SELECT a.digest_domain, a.byte_count, i.root_page_sha256 "
-        "FROM catalog_canonical_value_allocations AS a "
-        "JOIN catalog_canonical_value_identities AS i "
-        "ON i.value_sha256 = a.value_sha256 WHERE a.value_sha256 = %s",
-        (plan.value_sha256,),
+    identity = load_sealed_value_identity(
+        work.connector,
+        value_sha256=plan.value_sha256,
     )
     expected = (plan.digest_domain, plan.byte_count, tree.root_page_sha256)
-    if row != expected:
+    if (
+        identity is None
+        or (
+            identity.digest_domain,
+            identity.byte_count,
+            identity.root_page_sha256,
+        )
+        != expected
+    ):
         raise FileHashCacheNotReadyError(
             "canonical hash-cache preimage is not exact and sealed"
         )

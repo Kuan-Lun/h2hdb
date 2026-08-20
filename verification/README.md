@@ -1,36 +1,51 @@
 # Formal verification
 
-This directory specifies the proposed greenfield vNext database epoch. It does
-not describe, migrate, or silently replace the currently deployed schema.
-The explicit vNext admin operation and public database opener keep this epoch
-separate from legacy migration paths; the generated provider now resolves every
+This directory specifies the only production schema shipped by this package:
+the greenfield epoch-2 database. It does not describe, adopt, or silently
+replace an earlier database. The numbered migration runner and hand-written
+legacy schema have been removed; the generated provider resolves every
 recurring semantic validator and production writer binding.
 
 ## Current contract
 
 The generated contract currently contains:
 
-- 125 data-plane BCNF relations, including five executable overlay views;
-- 25 explicitly checked lossless and dependency-preserving decompositions;
-- 76 operational BCNF relations for fencing, downloader-to-ingest handoff,
-  staging, allocation, receipts, maintenance, queues, activation, caches, and
-  bounded cleanup;
+- 361 data-plane base relations checked as BCNF, plus 82 executable logical
+  views and 53 reusable sealed vertical families;
+- 28 explicitly checked lossless and dependency-preserving decompositions;
+- an exact 320-relation catalog physical-domain closure, split into 260
+  mutation relations and 60 read-only views;
+- 75 operational BCNF base relations plus one derived activation view for
+  fencing, downloader-to-ingest handoff, staging, allocation, receipts,
+  maintenance, queues, caches, and bounded cleanup;
 - 27 versioned semantic obligations: 12 data-plane and 15 operational; and
-- 3,985 typed bootstrap rows per backend, including the real deletion-request
-  generation-zero history/head and 15 cleanup target kinds
+- 4,645 typed bootstrap rows per backend, including the real deletion-request
+  generation-zero history/head and 17 cleanup target kinds
   expanded into 256 fixed shards each.
 
-There are no declared BCNF exceptions. The counts above are checked from the
-manifests rather than copied into the runtime provider by hand.
+There are no declared BCNF exceptions among base tables. BCNF does not impose
+the narrower product layout: a separate closed-world gate requires every
+physical `catalog_*` base table to be its semantic primary key plus at most one
+atomic non-key column. It currently reports all 361 bases compliant and no
+width exceptions; views are excluded and may deliberately expose
+denormalized read shapes. The counts above are checked from the manifests
+rather than copied into the runtime provider by hand.
+
+Full `SchemaAdmin.check()` deliberately scans the single sealed publication
+generation chain to prove exact node/edge/commit-set equality, successor
+arithmetic, absence of forks, gaps and orphans, and that the common receipt
+head is the maximum tip. It does not scan content, projection, artifact, queue,
+or event rows. The hot `check_readiness()` probe remains epoch-only and O(1),
+while fresh publication and replay validate only the locked chain tip locally.
 
 The generated provider is intentionally fail-closed: it cannot return a
 `SchemaEpochDefinition` if a recurring obligation lacks a trusted wheel-owned
 validator or exact production writer binding. The wheel now binds all 25
 recurring obligations to closed families of real public repository methods.
 The two physical-domain bindings additionally install closed domain-guard tuples
-and distinguish caller-owned transactions from the schema-epoch runner. Explicit
-`epoch-v2-*` admin commands keep schema-epoch construction distinct from a
-legacy migration.
+and distinguish caller-owned transactions from the schema-epoch runner. The
+public `migrate`, `check`, and `ready` commands all enter this schema-epoch
+boundary; none executes a numbered migration.
 
 ## Verification layers
 
@@ -43,7 +58,9 @@ The layers prove different things and are not interchangeable.
   candidate keys, checks BCNF, validates declared decompositions, and applies
   closed-world checks to identity, staging, retention, and bootstrap metadata.
 - `lean/VNextSchema.lean` and `lean/OperationalSchema.lean` prove BCNF for the
-  exact generated FD contracts. `lean/ArtifactDelta.lean` and
+  exact generated FD contracts; the data-plane proof also establishes the
+  unbounded minimum-witness, greater-only provenance append, exact replay, and
+  child-first cleanup theorems for both impacted-key families. `lean/ArtifactDelta.lean` and
   `GalleryDeduplication.lean` prove the listed abstract delta and deduplication
   theorems.
 - `schema/physical.toml` and `schema/operational_physical.toml` give complete
@@ -102,9 +119,10 @@ gallery links and immutable observation statistics. Only its empty terminal
 receipt supplies the O(1) gallery/file/byte counters used to seal the build;
 discovery and manifest digests remain audit-only.
 
-SHA-256 collision freedom remains an explicit identity-model assumption. Exact
-preimage comparison reduces the operational risk but is not a mathematical
-proof that collisions cannot occur.
+SHA-256 is modeled only as a collision-checked stored identity. Exact
+preimages deterministically yield digests; the
+reverse stored FD exists only through uniqueness, full-preimage comparison,
+mismatch rejection, and an immutable completion seal.
 
 ## Fencing, replay, and cleanup
 
@@ -148,8 +166,11 @@ receipt and checkpoint CAS together. After an empty terminal receipt, an
 immutable `(event_count, final_chain_sha256)` seal is written last; zero events
 use the registered empty-chain digest. Publication then performs only scalar
 checks—COMPLETE preparation, exact seal and policy, and current deletion
-generation—before atomically inserting activation with the source/catalog
-pointers. Readers and acknowledgement writers reach events through activation;
+generation—before atomically sealing one common publication commit and swapping
+its single receipt head. Operational activation is a read-only view derived
+from the sealed commit's source revision, preparation, policy, and commit time;
+there is no independent activation mutation. Readers and acknowledgement
+writers reach events through activation;
 ack heads are preparation-scoped and advance by bounded contiguous evidence.
 
 Activated COMPLETE preparation control rows may be compacted while the stream,
@@ -158,7 +179,7 @@ storage. Unactivated COMPLETE work remains a publication/retry root. Only an
 ABANDONED preparation with no activation or acknowledgement authority can have
 its entire invisible stream removed child-first.
 
-Cleanup is a fixed 15-by-256 shard control plane. Each shard reuses one current
+Cleanup is a fixed 17-by-256 shard control plane. Each shard reuses one current
 job and latest completion generation; deterministic int63 identities prevent
 ABA without unbounded attempt history. Candidate selection is keyset bounded,
 child-first phases are closed against the catalog and operational FK graphs,
@@ -185,7 +206,8 @@ They do not erase the remaining exhaustive fault and cross-backend gaps.
 
 The default generated provider now completes initialize, replay, read-only full
 check, readiness, and public open on fresh SQLite and live MariaDB, validating
-all 3,985 bootstrap rows. This closes the catalog and operational bootstrap
+all 4,645 bootstrap rows per backend. This closes the catalog and operational
+bootstrap
 runtime/integration claims, while their row-by-row corruption and partial-commit
 fault matrices remain explicit blockers.
 
@@ -200,6 +222,11 @@ prove consequences of the declared FD set; they cannot infer an omitted real
 FD from a column name, digest rationale, or business policy. A semantic design
 change must first declare all resulting FDs, then regenerate and recheck both
 logical and physical artifacts.
+
+That limitation also applies to schema coverage: the manifest proof alone does
+not prove that a Python package contains no second hand-written schema. The
+source and wheel schema-surface gate separately rejects production SQL relation
+identifiers outside the physical manifests and the epoch-control relation.
 
 ## Commands
 

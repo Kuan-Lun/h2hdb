@@ -12,10 +12,8 @@ transaction.
 from __future__ import annotations
 
 __all__ = [
-    "ActivationGenerationRaceError",
     "DeletionConsumption",
     "OperationalAckReceipt",
-    "OperationalActivation",
     "OperationalBatchLimitError",
     "OperationalBatchReceipt",
     "OperationalEffect",
@@ -54,7 +52,6 @@ _PREPARATION_TABLE = "operational_operational_preparations"
 _CHECKPOINT_TABLE = "operational_operational_preparation_checkpoints"
 _RECEIPT_TABLE = "operational_operational_preparation_batch_receipts"
 _SEAL_TABLE = "operational_operational_preparation_effect_seals"
-_ACTIVATION_TABLE = "operational_operational_activations"
 _EVENT_TABLE = "operational_operational_events"
 _REMOVED_TABLE = "operational_operational_removed_gid_events"
 _DELETION_TABLE = "operational_operational_deletion_consumption_events"
@@ -62,8 +59,12 @@ _CONSUMER_TABLE = "operational_operational_consumers"
 _ACK_TABLE = "operational_operational_event_acks"
 _ACK_HEAD_TABLE = "operational_operational_event_ack_heads"
 
-_SOURCE_BUILD_TABLE = "catalog_source_builds"
-_SOURCE_REVISION_TABLE = "catalog_source_revisions"
+_SOURCE_BUILD_STATE_TABLE = "catalog_source_build_states"
+_COMMIT_SEAL_TABLE = "catalog_publication_commit_seals"
+_COMMIT_SOURCE_REVISION_TABLE = "catalog_publication_commit_source_revisions"
+_COMMIT_PREPARATION_TABLE = "catalog_publication_commit_operational_preparations"
+_COMMIT_POLICY_TABLE = "catalog_publication_commit_operational_policies"
+_COMMIT_TIME_TABLE = "catalog_publication_commit_committed_ats"
 _DELETION_ATTEMPT_TABLE = "operational_deletion_request_attempts"
 _DELETION_GENERATION_HEAD_TABLE = "operational_deletion_request_generation_heads"
 _BUILD_GENERATION_TABLE = "operational_source_build_generations"
@@ -97,10 +98,6 @@ class OperationalEffectCorruptionError(RuntimeError):
 
 class OperationalBatchLimitError(ValueError):
     """One mutation exceeds the operational policy's database-owned cap."""
-
-
-class ActivationGenerationRaceError(OperationalEffectStateError):
-    """Deletion-request authority advanced after the preparation began."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,15 +158,6 @@ class OperationalEffectSeal:
 
 
 @dataclass(frozen=True, slots=True)
-class OperationalActivation:
-    source_revision: int
-    preparation_id: bytes
-    operational_policy_id: int
-    activated_at: int
-    replayed: bool
-
-
-@dataclass(frozen=True, slots=True)
 class OperationalAckReceipt:
     consumer_id: int
     source_revision: int
@@ -212,7 +200,7 @@ class _PreparedEvent:
 
 
 class OperationalEffectRepository:
-    """Prepare, seal, activate, and acknowledge bounded operational effects."""
+    """Prepare and seal effects, then acknowledge commit-derived activation."""
 
     @staticmethod
     def begin(
@@ -241,7 +229,7 @@ class OperationalEffectRepository:
         authority = work.lock_row(
             LockRank.WORKING_ROOT,
             encode_lock_key("operational-preparation", 2, build, policy_id),
-            f"SELECT b.state, p.max_batch_rows FROM {_SOURCE_BUILD_TABLE} b "
+            f"SELECT b.state, p.max_batch_rows FROM {_SOURCE_BUILD_STATE_TABLE} b "
             f"JOIN {_POLICY_TABLE} p ON p.operational_policy_id = %s "
             "WHERE b.build_id = %s",
             (policy_id, build),
@@ -639,120 +627,6 @@ class OperationalEffectRepository:
         )
 
     @staticmethod
-    def activate(
-        work: VNextUnitOfWork,
-        *,
-        gate_lease: GateLease,
-        ingest_turn: IngestTurn,
-        preparation_id: bytes,
-        source_revision: int,
-        operational_policy_id: int,
-        now: int,
-    ) -> OperationalActivation:
-        preparation = require_uuid16(preparation_id, field="operational preparation id")
-        revision = require_positive_int63(
-            source_revision, field="operational activation source_revision"
-        )
-        policy_id = require_int63(
-            operational_policy_id, field="operational activation policy id"
-        )
-        timestamp = require_int63(now, field="operational activated_at")
-
-        build = _load_preparation_build(work, preparation)
-        _authorize_build(
-            work,
-            gate_lease=gate_lease,
-            ingest_turn=ingest_turn,
-            build_id=build,
-            now=timestamp,
-        )
-        row = OperationalEffectRepository._lock_preparation(work, preparation)
-        if row.build_id != build:
-            raise OperationalEffectCorruptionError(
-                "operational preparation build changed during authorization"
-            )
-        if row.state != "COMPLETE" or row.operational_policy_id != policy_id:
-            raise OperationalEffectStateError(
-                "activation requires COMPLETE state and the exact preparation policy"
-            )
-        seal_row = work.lock_row(
-            LockRank.CHECKPOINT,
-            encode_lock_key("operational-effect-seal", preparation),
-            f"SELECT event_count, final_chain_sha256, sealed_at FROM {_SEAL_TABLE} "
-            "WHERE preparation_id = %s",
-            (preparation,),
-        )
-        seal = _require_seal_row(preparation, seal_row, replayed=False)
-
-        source_row = work.connector.fetch_one(
-            f"SELECT source_revision FROM {_SOURCE_REVISION_TABLE} "
-            "WHERE source_revision = %s",
-            (revision,),
-        )
-        if len(source_row) != 1:
-            raise OperationalEffectStateError("source revision is missing")
-        require_positive_int63(source_row[0], field="stored activation source_revision")
-        generation_row = work.lock_row(
-            LockRank.HEAD,
-            encode_lock_key("operational-activation", revision),
-            f"SELECT current_generation FROM {_DELETION_GENERATION_HEAD_TABLE} "
-            "WHERE singleton_id = %s",
-            (1,),
-        )
-        if len(generation_row) != 1:
-            raise OperationalEffectStateError("deletion-generation head is missing")
-        current_generation = require_int63(
-            generation_row[0],
-            field="activation current deletion generation",
-        )
-
-        existing_rows = work.connector.fetch_all(
-            f"SELECT source_revision, preparation_id, operational_policy_id, "
-            f"activated_at FROM {_ACTIVATION_TABLE} "
-            "WHERE source_revision = %s OR preparation_id = %s "
-            "ORDER BY source_revision LIMIT 2",
-            (revision, preparation),
-        )
-        if existing_rows:
-            if len(existing_rows) != 1:
-                raise OperationalEffectCorruptionError(
-                    "activation uniqueness returned multiple authorities"
-                )
-            existing = _require_activation_row(existing_rows[0], replayed=True)
-            if (
-                existing.source_revision != revision
-                or existing.preparation_id != preparation
-                or existing.operational_policy_id != policy_id
-            ):
-                raise OperationalEffectConflictError(
-                    "source revision or preparation is activated differently"
-                )
-            return existing
-
-        if current_generation != row.deletion_request_generation:
-            raise ActivationGenerationRaceError(
-                "deletion-request generation changed before activation"
-            )
-        if timestamp < seal.sealed_at:
-            raise OperationalEffectStateError(
-                "operational activation timestamp precedes its effect seal"
-            )
-
-        work.connector.execute(
-            f"INSERT INTO {_ACTIVATION_TABLE} "
-            "(source_revision, preparation_id, operational_policy_id, activated_at) "
-            "VALUES (%s, %s, %s, %s)",
-            (revision, preparation, policy_id, timestamp),
-        )
-        return OperationalActivation(
-            revision,
-            preparation,
-            policy_id,
-            timestamp,
-            False,
-        )
-
-    @staticmethod
     def acknowledge_through(
         work: VNextUnitOfWork,
         *,
@@ -766,15 +640,34 @@ class OperationalEffectRepository:
         target = require_int63(through_sequence_no, field="ack through_sequence_no")
         timestamp = require_int63(now, field="operational acked_at")
 
-        activation_row = work.lock_row(
+        source_member = work.lock_row(
             LockRank.WORKING_ROOT,
             encode_lock_key("operational-ack-authority", revision, consumer),
-            f"SELECT preparation_id, operational_policy_id, activated_at "
-            f"FROM {_ACTIVATION_TABLE} WHERE source_revision = %s",
+            f"SELECT receipt_id FROM {_COMMIT_SOURCE_REVISION_TABLE} "
+            "WHERE source_revision = %s",
             (revision,),
         )
-        if len(activation_row) != 3:
+        if len(source_member) != 1:
             raise OperationalEffectStateError("operational activation is missing")
+        receipt_id = require_uuid16(
+            source_member[0], field="activation publication receipt id"
+        )
+        activation_row = work.connector.fetch_one(
+            f"SELECT preparation.preparation_id, policy.operational_policy_id, "
+            f"committed.committed_at FROM {_COMMIT_SEAL_TABLE} sealed "
+            f"JOIN {_COMMIT_PREPARATION_TABLE} preparation "
+            "ON preparation.receipt_id = sealed.receipt_id "
+            f"JOIN {_COMMIT_POLICY_TABLE} policy "
+            "ON policy.receipt_id = sealed.receipt_id "
+            f"JOIN {_COMMIT_TIME_TABLE} committed "
+            "ON committed.receipt_id = sealed.receipt_id "
+            "WHERE sealed.receipt_id = %s",
+            (receipt_id,),
+        )
+        if len(activation_row) != 3:
+            raise OperationalEffectCorruptionError(
+                "sealed publication activation members are incomplete"
+            )
         preparation = require_uuid16(activation_row[0], field="ack preparation id")
         policy_id = require_int63(activation_row[1], field="ack operational policy id")
         activated_at = require_int63(activation_row[2], field="stored activated_at")
@@ -1465,19 +1358,5 @@ def _require_seal_row(
         require_int63(row[0], field="sealed event count"),
         require_digest32(row[1], field="sealed final chain"),
         require_int63(row[2], field="effect sealed_at"),
-        replayed,
-    )
-
-
-def _require_activation_row(
-    row: tuple[object, ...], *, replayed: bool
-) -> OperationalActivation:
-    if len(row) != 4:
-        raise OperationalEffectCorruptionError("activation row is malformed")
-    return OperationalActivation(
-        require_positive_int63(row[0], field="stored activation source_revision"),
-        require_uuid16(row[1], field="stored activation preparation id"),
-        require_int63(row[2], field="stored activation policy id"),
-        require_int63(row[3], field="stored activation timestamp"),
         replayed,
     )

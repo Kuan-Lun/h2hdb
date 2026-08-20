@@ -37,6 +37,7 @@ from .schema_epoch import SchemaEpochRunner
 from .vnext_allocator_repository import VNextAllocatorRepository
 from .vnext_analysis_repository import AnalysisRepository
 from .vnext_artifact_preparation_repository import ArtifactPreparationRepository
+from .vnext_artifact_release_repository import ArtifactReleaseRepository
 from .vnext_canonical_value_repository import CanonicalValueRepository
 from .vnext_cleanup_repository import VNextCleanupRepository
 from .vnext_download_ingest_repository import DownloadIngestRepository
@@ -56,6 +57,9 @@ from .vnext_physical_domains import (
     OPERATIONAL_SCHEMA_EPOCH_WRITERS,
 )
 from .vnext_publication_candidate_repository import PublicationCandidateRepository
+from .vnext_publication_finalization_repository import (
+    PublicationFinalizationRepository,
+)
 from .vnext_publication_repository import PublicationRepository
 from .vnext_queue_repository import VNextQueueRepository
 from .vnext_source_build_repository import SourceBuildRepository
@@ -198,6 +202,9 @@ _PRODUCTION_METHOD_OWNERS: Mapping[str, frozenset[str]] = MappingProxyType(
         "h2hdb.vnext_artifact_preparation_repository": frozenset(
             {"ArtifactPreparationRepository"}
         ),
+        "h2hdb.vnext_artifact_release_repository": frozenset(
+            {"ArtifactReleaseRepository"}
+        ),
         "h2hdb.vnext_canonical_value_repository": frozenset(
             {"CanonicalValueRepository"}
         ),
@@ -221,6 +228,9 @@ _PRODUCTION_METHOD_OWNERS: Mapping[str, frozenset[str]] = MappingProxyType(
         ),
         "h2hdb.vnext_publication_candidate_repository": frozenset(
             {"PublicationCandidateRepository"}
+        ),
+        "h2hdb.vnext_publication_finalization_repository": frozenset(
+            {"PublicationFinalizationRepository"}
         ),
         "h2hdb.vnext_publication_repository": frozenset({"PublicationRepository"}),
         "h2hdb.vnext_queue_repository": frozenset({"VNextQueueRepository"}),
@@ -509,6 +519,16 @@ _ARTIFACT_BATCH_WRITERS: tuple[WriterEntrypoint, ...] = (
     ArtifactPreparationRepository.validate_duplicate_loser_batch,
 )
 
+_ARTIFACT_PRODUCER_REGISTRY_RELATIONS = frozenset(
+    {
+        "artifact_producer_fingerprint_anchor",
+        "artifact_producer_fingerprint_algorithm_version",
+        "artifact_producer_fingerprint_equivalence_class",
+        "artifact_producer_fingerprint_identity",
+        "artifact_producer_fingerprint_seal",
+    }
+)
+
 _PUBLICATION_CANDIDATE_BATCH_WRITERS: tuple[WriterEntrypoint, ...] = (
     PublicationCandidateRepository.process_selection_batch,
     PublicationCandidateRepository.validate_selection_batch,
@@ -553,6 +573,7 @@ _IDENTITY_WRITERS: tuple[WriterEntrypoint, ...] = (
     PublicationCandidateRepository.validate_catalog_projection_batch,
     *_ARTIFACT_BATCH_WRITERS,
     ArtifactPreparationRepository.persist_prepared_artifact,
+    ArtifactPreparationRepository.confirm_prepared_artifact,
     ArtifactPreparationRepository.bind_operational_preparation,
     PublicationRepository.commit,
 )
@@ -633,27 +654,41 @@ _CLEANUP_WRITERS: tuple[WriterEntrypoint, ...] = (
     VNextCleanupRepository.advance,
 )
 
+_ARTIFACT_RELEASE_WRITERS: tuple[WriterEntrypoint, ...] = (
+    ArtifactReleaseRepository.issue_page,
+    ArtifactReleaseRepository.release_page,
+    ArtifactReleaseRepository.commit_page,
+)
+
+_PUBLICATION_FINALIZATION_WRITERS: tuple[WriterEntrypoint, ...] = (
+    PublicationFinalizationRepository.issue_page,
+    PublicationFinalizationRepository.release_page,
+    PublicationFinalizationRepository.commit_page,
+)
+
 _INGEST_FENCED_WRITERS: tuple[WriterEntrypoint, ...] = (
     CanonicalValueRepository.allocate,
     CanonicalValueRepository.put_page,
     CanonicalValueRepository.seal,
+    ArtifactPreparationRepository.register_producer,
     GalleryIdentityRepository.handoff_locator,
     *_BUILD_GENERATION_WRITERS,
     *_GALLERY_STAGING_WRITERS,
     VNextHashCacheRepository.handoff,
     AnalysisRepository.begin,
+    AnalysisRepository.abandon,
     *_ANALYSIS_BATCH_WRITERS,
     AnalysisRepository.handoff_snapshot_manifest,
     PublicationCandidateRepository.begin,
     *_PUBLICATION_CANDIDATE_BATCH_WRITERS,
     *_ARTIFACT_BATCH_WRITERS,
     ArtifactPreparationRepository.persist_prepared_artifact,
+    ArtifactPreparationRepository.confirm_prepared_artifact,
     ArtifactPreparationRepository.bind_operational_preparation,
     OperationalEffectRepository.begin,
     OperationalEffectRepository.append_batch,
     OperationalEffectRepository.seal,
     PublicationRepository.commit,
-    PublicationRepository.finalize_artifacts,
 )
 
 _FENCE_AUTHORITY_WRITERS: tuple[WriterEntrypoint, ...] = (
@@ -674,6 +709,8 @@ _MAINTENANCE_GATE_AUTHORITY_WRITERS: tuple[WriterEntrypoint, ...] = (
     MaintenanceGateRepository.release,
     *_INGEST_FENCED_WRITERS,
     *_CLEANUP_WRITERS,
+    *_ARTIFACT_RELEASE_WRITERS,
+    *_PUBLICATION_FINALIZATION_WRITERS,
 )
 
 _BOUNDED_WORK_WRITERS: tuple[WriterEntrypoint, ...] = (
@@ -681,6 +718,7 @@ _BOUNDED_WORK_WRITERS: tuple[WriterEntrypoint, ...] = (
     OperationalEffectRepository.append_batch,
     OperationalEffectRepository.seal,
     *_CLEANUP_WRITERS,
+    *_PUBLICATION_FINALIZATION_WRITERS,
 )
 
 _QUEUE_HISTORY_WRITERS: tuple[WriterEntrypoint, ...] = (
@@ -703,6 +741,7 @@ _EVENT_INTEGRITY_WRITERS: tuple[WriterEntrypoint, ...] = (
     OperationalEffectRepository.seal,
     OperationalEffectRepository.acknowledge_through,
     ArtifactPreparationRepository.bind_operational_preparation,
+    ArtifactPreparationRepository.confirm_prepared_artifact,
     PublicationRepository.commit,
 )
 
@@ -773,11 +812,16 @@ _BOUND_BINDINGS = (
     _binding(
         "catalog.artifact-semantics.v1",
         (
+            ArtifactPreparationRepository.register_producer,
             ArtifactPreparationRepository.issue_input_projection_authority,
             *_ARTIFACT_BATCH_WRITERS,
             ArtifactPreparationRepository.audit_inputs,
             ArtifactPreparationRepository.prepare_with_storage_adapter,
             ArtifactPreparationRepository.persist_prepared_artifact,
+            ArtifactPreparationRepository.protect_prepared_artifact,
+            ArtifactPreparationRepository.confirm_prepared_artifact,
+            *_ARTIFACT_RELEASE_WRITERS,
+            *_PUBLICATION_FINALIZATION_WRITERS,
         ),
         frozenset(
             {
@@ -790,7 +834,8 @@ _BOUND_BINDINGS = (
                 "artifact_location",
                 "publication_identity",
             }
-        ),
+        )
+        | _ARTIFACT_PRODUCER_REGISTRY_RELATIONS,
     ),
     _binding(
         "catalog.publication-atomicity.v1",
@@ -798,9 +843,11 @@ _BOUND_BINDINGS = (
             PublicationCandidateRepository.begin,
             *_PUBLICATION_CANDIDATE_BATCH_WRITERS,
             *_ARTIFACT_BATCH_WRITERS,
+            ArtifactPreparationRepository.persist_prepared_artifact,
+            ArtifactPreparationRepository.confirm_prepared_artifact,
             ArtifactPreparationRepository.bind_operational_preparation,
             PublicationRepository.commit,
-            PublicationRepository.finalize_artifacts,
+            *_PUBLICATION_FINALIZATION_WRITERS,
         ),
         _contract_relations("catalog.publication-atomicity.v1") - {"publication_stage"},
     ),
@@ -808,14 +855,17 @@ _BOUND_BINDINGS = (
         "catalog.state-machines.v1",
         (
             SourceBuildRepository.assemble_batch,
+            AnalysisRepository.abandon,
             *_ANALYSIS_BATCH_WRITERS,
             AnalysisRepository.handoff_snapshot_manifest,
             PublicationCandidateRepository.begin,
             *_PUBLICATION_CANDIDATE_BATCH_WRITERS,
             *_ARTIFACT_BATCH_WRITERS,
             ArtifactPreparationRepository.persist_prepared_artifact,
+            ArtifactPreparationRepository.confirm_prepared_artifact,
+            *_ARTIFACT_RELEASE_WRITERS,
             PublicationRepository.commit,
-            PublicationRepository.finalize_artifacts,
+            *_PUBLICATION_FINALIZATION_WRITERS,
         ),
         _contract_relations("catalog.state-machines.v1"),
     ),
@@ -894,7 +944,13 @@ _BOUND_BINDINGS = (
         "h2hdb.operational.build-generation.v1",
         _BUILD_GENERATION_WRITERS,
         _contract_relations("h2hdb.operational.build-generation.v1")
-        - {"gallery_observation_stat"},
+        - {
+            "gallery_observation_stat_anchor",
+            "gallery_observation_stat_file_count",
+            "gallery_observation_stat_byte_count",
+            "gallery_observation_stat_seal",
+            "gallery_observation_stat",
+        },
     ),
     _binding(
         "h2hdb.operational.attempt-identity.v1",
@@ -904,7 +960,7 @@ _BOUND_BINDINGS = (
     ),
     _binding(
         "h2hdb.operational.cleanup-reachability.v1",
-        _CLEANUP_WRITERS,
+        (*_CLEANUP_WRITERS, *_ARTIFACT_RELEASE_WRITERS),
         _contract_relations("h2hdb.operational.cleanup-reachability.v1"),
     ),
     _binding(

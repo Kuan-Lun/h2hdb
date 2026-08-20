@@ -104,8 +104,8 @@ def mariadb_config(mariadb_container: Any) -> Iterator[CoreConfig]:
 
 @pytest.fixture
 def sqlite_config(tmp_path: Path) -> CoreConfig:
-    # Must be a real file, not `:memory:`: every H2HDB method opens its own
-    # connection, and SQLite's in-memory databases are connection-scoped.
+    # Must be a real file, not `:memory:`: facade calls open fresh connections,
+    # and SQLite's in-memory databases are connection-scoped.
     database_path = tmp_path / "h2hdb_test.sqlite3"
     return CoreConfig(
         database=DatabaseConfig(sql_type="sqlite", database=str(database_path))

@@ -206,6 +206,29 @@ def test_begin_read_rejects_an_existing_transaction() -> None:
     assert not connector._in_transaction
 
 
+def test_check_table_exists_binds_the_exact_table_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _PacketRecordingConnection()
+    connector = _packet_connector_with(connection)
+    calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    def fetch_one(query: str, data: tuple[Any, ...] = ()) -> tuple[Any, ...]:
+        calls.append((query, data))
+        return ("catalog_source_builds",)
+
+    monkeypatch.setattr(connector, "fetch_one", fetch_one)
+
+    assert connector.check_table_exists("catalog_source_builds")
+    assert calls == [
+        (
+            "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s",
+            ("catalog_source_builds",),
+        )
+    ]
+
+
 def test_execute_many_caches_session_packet_limit_for_physical_connection() -> None:
     connection = _PacketRecordingConnection()
     connector = _packet_connector_with(connection)

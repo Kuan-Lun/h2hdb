@@ -26,7 +26,14 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .vnext_allocator_repository import IdentityStream, VNextAllocatorRepository
+from .vnext_canonical_value_family import load_sealed_value_identity
 from .vnext_canonical_value_repository import CanonicalValueUploadPlan
+from .vnext_catalog_identity_family import (
+    CatalogIdentityCollisionError,
+    GalleryIdentity,
+    ensure_gallery_identity,
+    load_gallery_identity_candidates,
+)
 from .vnext_domains import (
     require_ascii_bytes,
     require_digest32,
@@ -45,6 +52,10 @@ from .vnext_maintenance_gate_repository import (
     GateLease,
     GateMode,
     MaintenanceGateRepository,
+)
+from .vnext_manifest_family import (
+    ManifestFamilyCollisionError,
+    load_source_build_family,
 )
 from .vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 
@@ -231,18 +242,22 @@ class GalleryIdentityRepository:
                 (command.locator_sha256, command.source_gallery_name),
             )
 
-        expected_gallery = (
-            gallery_id,
-            stable_key,
-            scope,
-            command.locator_sha256,
-        )
-        connector.execute(
-            "INSERT INTO catalog_gallery_identities "
-            "(gallery_id, gallery_key, scope_key, locator_sha256) "
-            "VALUES (%s, %s, %s, %s)",
-            expected_gallery,
-        )
+        try:
+            created = ensure_gallery_identity(
+                connector,
+                identity=GalleryIdentity(
+                    gallery_id,
+                    stable_key,
+                    scope,
+                    command.locator_sha256,
+                ),
+            )
+        except CatalogIdentityCollisionError as error:
+            raise GalleryIdentityConflictError(str(error)) from error
+        if not created:
+            raise GalleryIdentityConflictError(
+                "gallery identity appeared after its allocator re-read"
+            )
         connector.execute(
             "INSERT INTO operational_gallery_observation_allocators "
             "(gallery_id, next_observation_id, updated_at) VALUES (%s, 1, %s)",
@@ -304,13 +319,13 @@ def _lock_working_build(
     )
     if working != (build_id,):
         raise GalleryIdentityNotReadyError("source build is not the working root")
-    row = work.connector.fetch_one(
-        "SELECT scope_key, state FROM catalog_source_builds WHERE build_id = %s",
-        (build_id,),
-    )
-    if len(row) != 2 or row[1] != "OPEN":
+    try:
+        row = load_source_build_family(work.connector, build_id=build_id)
+    except ManifestFamilyCollisionError as error:
+        raise GalleryIdentityConflictError(str(error)) from error
+    if row is None or row.state != "OPEN":
         raise GalleryIdentityNotReadyError("source build is not OPEN")
-    return require_digest32(row[0], field="source build scope_key")
+    return row.scope_key
 
 
 def _validate_plan(
@@ -338,8 +353,9 @@ def _validate_plan(
         or receipt.byte_count != command.payload_byte_count
     ):
         raise GalleryIdentityConflictError("locator tree receipt differs")
-    # The command was fully codec-validated before the transaction and its
-    # domain-separated digest is the canonical collision-free identity.  Do
+    # The command was fully codec-validated before the transaction.  Its
+    # domain-separated digest is a collision-checked stored identity: an
+    # existing key is accepted only after exact framed-input comparison.  Do
     # not replay the potentially unbounded spool in this handoff transaction.
 
 
@@ -348,19 +364,28 @@ def _require_sealed_locator(
     command: SourceLocatorCommand,
     plan: CanonicalValueUploadPlan,
 ) -> None:
-    row = connector.fetch_one(
-        "SELECT a.digest_domain, a.byte_count, i.root_page_sha256 "
-        "FROM catalog_canonical_value_allocations a "
-        "JOIN catalog_canonical_value_identities i "
-        "ON i.value_sha256 = a.value_sha256 WHERE a.value_sha256 = %s",
-        (command.locator_sha256,),
+    identity = load_sealed_value_identity(
+        connector,
+        value_sha256=command.locator_sha256,
     )
     expected = (
         _LOCATOR_DOMAIN_BYTES,
         command.payload_byte_count,
         plan.root_page_sha256,
     )
-    _require_exact("sealed source locator", row, expected)
+    _require_exact(
+        "sealed source locator",
+        (
+            (
+                identity.digest_domain,
+                identity.byte_count,
+                identity.root_page_sha256,
+            )
+            if identity is not None
+            else ()
+        ),
+        expected,
+    )
 
 
 def _load_gallery_identity(
@@ -370,41 +395,31 @@ def _load_gallery_identity(
     locator_sha256: bytes,
     stable_key: bytes,
 ) -> int | None:
-    expected_tail = (stable_key, scope, locator_sha256)
-    by_natural = connector.fetch_one(
-        "SELECT gallery_id, gallery_key, scope_key, locator_sha256 "
-        "FROM catalog_gallery_identities "
-        "WHERE scope_key = %s AND locator_sha256 = %s",
-        (scope, locator_sha256),
-    )
-    by_key = connector.fetch_one(
-        "SELECT gallery_id, gallery_key, scope_key, locator_sha256 "
-        "FROM catalog_gallery_identities WHERE gallery_key = %s",
-        (stable_key,),
-    )
-    if by_natural:
-        gallery_id = require_positive_int63(by_natural[0], field="persisted gallery_id")
-        _require_exact(
-            "gallery natural identity",
-            by_natural,
-            (gallery_id, *expected_tail),
+    try:
+        rows = load_gallery_identity_candidates(
+            connector,
+            scope_key=scope,
+            locator_sha256=locator_sha256,
+            gallery_key=stable_key,
         )
-        if by_key:
-            _require_exact(
-                "gallery key identity",
-                by_key,
-                (gallery_id, *expected_tail),
-            )
-        return gallery_id
-    if by_key:
-        gallery_id = require_positive_int63(by_key[0], field="persisted gallery_id")
-        _require_exact(
-            "gallery key collision",
-            by_key,
-            (gallery_id, *expected_tail),
+    except CatalogIdentityCollisionError as error:
+        raise GalleryIdentityConflictError(str(error)) from error
+    if not rows:
+        return None
+    if len(rows) != 1:
+        raise GalleryIdentityConflictError(
+            "gallery natural identity and stable key name different surrogates"
         )
-        return gallery_id
-    return None
+    identity = rows[0]
+    if (
+        identity.gallery_key,
+        identity.scope_key,
+        identity.locator_sha256,
+    ) != (stable_key, scope, locator_sha256):
+        raise GalleryIdentityConflictError(
+            "gallery natural identity or stable key collision differs"
+        )
+    return identity.gallery_id
 
 
 def _require_observation_allocator(connector: Any, gallery_id: int) -> None:

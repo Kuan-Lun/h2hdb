@@ -15,10 +15,11 @@ declared key determines every attribute, and that no proper subset of a
 declared key is a superkey.
 
 This is a closed-world proof over the manifest FDs.  It assumes the manifest
-lists every semantic nontrivial FD.  It also assumes hash identifiers are
-collision-free for canonical bytes and canonical encoders/policies are
-deterministic.  It does not prove that SQL DDL, migrations, collations, indexes,
-foreign keys, or transactions implement the manifest.
+lists every semantic nontrivial FD.  SHA digests are collision-checked stored
+identities: exact preimages deterministically yield digests, while reverse FDs
+require declared uniqueness, full-preimage comparison, mismatch rejection, and
+an immutable seal.  It does not prove that SQL DDL, migrations, collations,
+indexes, foreign keys, or transactions implement the manifest.
 -/
 
 namespace H2HDB.Verification.OperationalSchema
@@ -585,6 +586,583 @@ theorem compacted_state_survives_old_ancestry_cleanup
     (_beforeCleanup _afterCleanup : OldStorage) :
     resolveOverlay (compactedOverlay target) = target :=
   depth_zero_compaction_equals_full_recompute target
+
+/-! ## Sealed vertical families -/
+
+structure VerticalMemberContract where
+  relationName : String
+  keyAttributes : List Attribute
+  valueAttribute : Attribute
+  projectionAttribute : Attribute
+  attributes : List Attribute
+  declaredKeys : List (List Attribute)
+  declaredFDs : List FD
+  sourceRelation : String
+  sourceRelationAttributes : List Attribute
+  sourceAttributes : List Attribute
+  memberAttributes : List Attribute
+  congruenceMembers : List String
+  project : Bool
+  required : Bool
+deriving DecidableEq, Repr
+
+structure VerticalOptionalPresenceContract where
+  memberRelation : String
+  discriminatorRelation : String
+  discriminatorAttribute : Attribute
+  presentValue : String
+  absentValues : List String
+deriving DecidableEq, Repr
+
+structure VerticalFamilyContract where
+  name : String
+  anchorRelation : String
+  sealRelation : String
+  keyAttributes : List Attribute
+  anchorAttributes : List Attribute
+  sealAttributes : List Attribute
+  semanticAttributes : List Attribute
+  semanticFDs : List FD
+  viewAttributes : List Attribute
+  viewFDs : List FD
+  members : List VerticalMemberContract
+  optionalPresence : Option VerticalOptionalPresenceContract
+  markerRelation : Option String
+  markerAttributes : List Attribute
+  markerPredicate : Option String
+deriving DecidableEq, Repr
+
+def verticalSourceShapeCheck
+    (contract : VerticalFamilyContract)
+    (prior : List VerticalMemberContract)
+    (member : VerticalMemberContract) : Bool :=
+  if member.sourceRelation == contract.anchorRelation then
+    sameAttrSet member.sourceRelationAttributes contract.anchorAttributes
+  else if member.sourceRelation == contract.sealRelation then
+    sameAttrSet member.sourceRelationAttributes contract.sealAttributes
+  else
+    prior.any (fun candidate =>
+      candidate.relationName == member.sourceRelation &&
+        sameAttrSet candidate.attributes member.sourceRelationAttributes)
+
+def verticalOrderedJoinCheck
+    (contract : VerticalFamilyContract) :
+    List VerticalMemberContract → List VerticalMemberContract → Bool
+  | [], _ => true
+  | member :: remaining, prior =>
+      verticalSourceShapeCheck contract prior member &&
+        !member.sourceAttributes.isEmpty &&
+        noDuplicates member.sourceAttributes &&
+        noDuplicates member.memberAttributes &&
+        member.sourceAttributes.length == member.memberAttributes.length &&
+        attrSubset member.sourceAttributes member.sourceRelationAttributes &&
+        member.declaredKeys.any
+          (fun key => sameAttrSet member.memberAttributes key) &&
+        verticalOrderedJoinCheck contract remaining (prior ++ [member])
+
+def verticalProjectedAttribute
+    (member : VerticalMemberContract)
+    (attr : Attribute) : Attribute :=
+  if member.project && attr == member.valueAttribute then
+    member.projectionAttribute
+  else
+    attr
+
+def verticalMemberFDs (contract : VerticalFamilyContract) : List FD :=
+  contract.members.flatMap (fun member =>
+    member.declaredFDs.map (fun fd =>
+      { determinant := fd.determinant.map (verticalProjectedAttribute member)
+        dependent := fd.dependent.map (verticalProjectedAttribute member) }))
+
+def verticalSemanticRelation
+    (contract : VerticalFamilyContract) : RelationContract where
+  name := contract.name ++ ".semantic"
+  attributes := contract.semanticAttributes
+  declaredKeys := []
+  declaredFDs := contract.semanticFDs
+
+def verticalMemberFDRelation
+    (contract : VerticalFamilyContract) : RelationContract where
+  name := contract.name ++ ".members"
+  attributes := contract.semanticAttributes
+  declaredKeys := []
+  declaredFDs := verticalMemberFDs contract
+
+def verticalViewRelation
+    (contract : VerticalFamilyContract) : RelationContract where
+  name := contract.name ++ ".view"
+  attributes := contract.viewAttributes
+  declaredKeys := []
+  declaredFDs := contract.viewFDs
+
+def verticalFDClosureEquivalenceCheck
+    (contract : VerticalFamilyContract) : Bool :=
+  (subsets contract.semanticAttributes).all (fun seed =>
+    sameAttrSet
+      (closureF (verticalSemanticRelation contract) seed)
+      (closureF (verticalMemberFDRelation contract) seed))
+
+def verticalProjectedFDClosureEquivalenceCheck
+    (contract : VerticalFamilyContract) : Bool :=
+  (subsets contract.viewAttributes).all (fun seed =>
+    sameAttrSet
+      ((closureF (verticalSemanticRelation contract) seed).filter
+        (fun attr => attr ∈ contract.viewAttributes))
+      (closureF (verticalViewRelation contract) seed))
+
+/-- The view projects the family key plus every marked member non-join attribute. -/
+def verticalFamilyViewProjectionCheck
+    (contract : VerticalFamilyContract) : Bool :=
+  sameAttrSet contract.viewAttributes
+    (contract.keyAttributes ++
+      (contract.members.filter (fun member => member.project)).flatMap
+        (fun member =>
+          (member.attributes.filter
+            (fun attr => attr ∉ member.memberAttributes)).map
+              (verticalProjectedAttribute member)))
+
+/-- Optional facts need one closed discriminator rule; mandatory families need none. -/
+def verticalOptionalPresenceCheck (contract : VerticalFamilyContract) : Bool :=
+  let optionalMembers := contract.members.filter (fun member => !member.required)
+  match contract.optionalPresence with
+  | none => optionalMembers.isEmpty
+  | some presence =>
+      optionalMembers.length == 1 &&
+        optionalMembers.any (fun member =>
+          member.relationName == presence.memberRelation) &&
+        contract.members.any (fun member =>
+          member.relationName == presence.discriminatorRelation &&
+            member.required && member.project &&
+            (member.valueAttribute == presence.discriminatorAttribute ||
+              member.projectionAttribute == presence.discriminatorAttribute)) &&
+        !presence.absentValues.isEmpty &&
+        noDuplicates presence.absentValues &&
+        !presence.absentValues.contains presence.presentValue
+
+/-- A cold natural identity may demand congruence with an explicit subset of hot facts. -/
+def verticalSelectedCongruenceCheck
+    (contract : VerticalFamilyContract)
+    (member : VerticalMemberContract) : Bool :=
+  if member.congruenceMembers.isEmpty then
+    true
+  else
+    !member.project &&
+      noDuplicates member.congruenceMembers &&
+      member.congruenceMembers.all (fun name =>
+        contract.members.any (fun candidate =>
+          candidate.relationName == name && candidate.project)) &&
+      sameAttrSet member.keyAttributes
+        ((contract.members.filter (fun candidate =>
+          member.congruenceMembers.contains candidate.relationName)).map
+            (fun candidate => candidate.valueAttribute))
+
+def verticalCongruenceCheck (contract : VerticalFamilyContract) : Bool :=
+  contract.members.all (verticalSelectedCongruenceCheck contract)
+
+/-- Optional PK-only marker metadata stays outside the projected value join. -/
+def verticalMarkerCheck (contract : VerticalFamilyContract) : Bool :=
+  match contract.markerRelation, contract.markerPredicate with
+  | none, none => contract.markerAttributes.isEmpty
+  | some relation, some predicate =>
+      !relation.isEmpty && !predicate.isEmpty &&
+        sameAttrSet contract.markerAttributes contract.keyAttributes
+  | _, _ => false
+
+/-- Generic manifest check for PK-only boundaries and member-specific PK-plus-one rows. -/
+def verticalFamilyWellFormedCheck (contract : VerticalFamilyContract) : Bool :=
+  !contract.keyAttributes.isEmpty &&
+    noDuplicates contract.keyAttributes &&
+    sameAttrSet contract.anchorAttributes contract.keyAttributes &&
+    sameAttrSet contract.sealAttributes contract.keyAttributes &&
+    sameAttrSet contract.semanticAttributes
+      (contract.keyAttributes ++
+        contract.members.flatMap (fun member =>
+          member.attributes.map (verticalProjectedAttribute member))) &&
+    noDuplicates (contract.members.map (fun member => member.relationName)) &&
+    noDuplicates (contract.members.map (fun member => member.valueAttribute)) &&
+    noDuplicates ((contract.members.filter (fun member => member.project)).map
+      (fun member => member.projectionAttribute)) &&
+    contract.members.all (fun member =>
+      !member.keyAttributes.isEmpty &&
+        noDuplicates member.keyAttributes &&
+        sameAttrSet member.attributes
+          (member.keyAttributes ++ [member.valueAttribute]) &&
+        member.declaredKeys.head? == some member.keyAttributes &&
+        member.declaredFDs.any (fun fd =>
+          sameAttrSet fd.determinant member.keyAttributes &&
+            member.valueAttribute ∈ fd.dependent)) &&
+    verticalCongruenceCheck contract &&
+    verticalMarkerCheck contract &&
+    verticalOptionalPresenceCheck contract &&
+    verticalFamilyViewProjectionCheck contract
+
+/-- Each ordered join attaches a relation on its complete determinant key. -/
+def verticalFamilyLosslessJoinCheck (contract : VerticalFamilyContract) : Bool :=
+  verticalFamilyWellFormedCheck contract &&
+    verticalOrderedJoinCheck contract contract.members []
+
+/-- Base-member FDs and the projected view FDs have exactly the declared F⁺ closures. -/
+def verticalFamilyDependencyPreservationCheck
+    (contract : VerticalFamilyContract) : Bool :=
+  verticalFDClosureEquivalenceCheck contract &&
+    verticalProjectedFDClosureEquivalenceCheck contract
+
+def VerticalFamilyWellFormed (contract : VerticalFamilyContract) : Prop :=
+  verticalFamilyWellFormedCheck contract = true
+
+theorem verticalFamilyWellFormedCheck_sound
+    (contract : VerticalFamilyContract)
+    (checked : verticalFamilyWellFormedCheck contract = true) :
+    VerticalFamilyWellFormed contract :=
+  checked
+
+def VerticalFamilyViewProjection (contract : VerticalFamilyContract) : Prop :=
+  verticalFamilyViewProjectionCheck contract = true
+
+theorem verticalFamilyViewProjectionCheck_sound
+    (contract : VerticalFamilyContract)
+    (checked : verticalFamilyViewProjectionCheck contract = true) :
+    VerticalFamilyViewProjection contract :=
+  checked
+
+def VerticalFamilyLossless (contract : VerticalFamilyContract) : Prop :=
+  verticalFamilyLosslessJoinCheck contract = true
+
+theorem verticalFamilyLosslessJoinCheck_sound
+    (contract : VerticalFamilyContract)
+    (checked : verticalFamilyLosslessJoinCheck contract = true) :
+    VerticalFamilyLossless contract :=
+  checked
+
+def VerticalFamilyDependencyPreserving
+    (contract : VerticalFamilyContract) : Prop :=
+  verticalFamilyDependencyPreservationCheck contract = true
+
+theorem verticalFamilyDependencyPreservationCheck_sound
+    (contract : VerticalFamilyContract)
+    (checked : verticalFamilyDependencyPreservationCheck contract = true) :
+    VerticalFamilyDependencyPreserving contract :=
+  checked
+
+/-! ## Batch0B derived receipt arithmetic -/
+
+/-- Largest portable signed 63-bit value admitted by both physical backends. -/
+def portableInt63Max : Nat := 9223372036854775807
+
+def derivedCommittedGeneration (startGeneration : Nat) : Nat :=
+  startGeneration + 1
+
+def derivedNextProcessedCount
+    (startProcessedCount rowCount : Nat) : Nat :=
+  startProcessedCount + rowCount
+
+def derivedTerminal (rowCount : Nat) : Bool :=
+  rowCount == 0
+
+inductive DerivedCheckpointState where
+  | open
+  | complete
+deriving DecidableEq, Repr
+
+def derivedNextState (rowCount : Nat) : DerivedCheckpointState :=
+  if rowCount = 0 then .complete else .open
+
+/-- Successor projection is injective, so committed generation is a key too. -/
+theorem derived_committed_generation_injective
+    {left right : Nat}
+    (equal : derivedCommittedGeneration left =
+      derivedCommittedGeneration right) :
+    left = right := by
+  simp [derivedCommittedGeneration] at equal
+  omega
+
+/-- A successor remains inside int63 whenever its stored predecessor is below it. -/
+theorem derived_committed_generation_int63_bounded
+    {startGeneration : Nat}
+    (within : startGeneration < portableInt63Max) :
+    derivedCommittedGeneration startGeneration ≤ portableInt63Max := by
+  simp [derivedCommittedGeneration]
+  omega
+
+/-- The stored addends uniquely determine the derived processed-count poststate. -/
+theorem derived_next_processed_count_exact
+    (startProcessedCount rowCount : Nat) :
+    derivedNextProcessedCount startProcessedCount rowCount =
+      startProcessedCount + rowCount := by
+  rfl
+
+/-- Any admitted sum at most int63 remains portable after view projection. -/
+theorem derived_next_processed_count_int63_bounded
+    {startProcessedCount rowCount : Nat}
+    (within : startProcessedCount + rowCount ≤ portableInt63Max) :
+    derivedNextProcessedCount startProcessedCount rowCount ≤
+      portableInt63Max := by
+  exact within
+
+/-- Either addend is recovered from the other addend and their exact sum. -/
+theorem derived_processed_count_addends_recoverable
+    {startProcessedCount rowCount nextProcessedCount : Nat}
+    (exactSum : nextProcessedCount =
+      derivedNextProcessedCount startProcessedCount rowCount) :
+    nextProcessedCount - startProcessedCount = rowCount ∧
+      nextProcessedCount - rowCount = startProcessedCount := by
+  simp [derivedNextProcessedCount] at exactSum
+  omega
+
+/-- Terminal and COMPLETE are two projections of the same zero-row predicate. -/
+theorem derived_terminal_iff_complete (rowCount : Nat) :
+    derivedTerminal rowCount = true ↔
+      derivedNextState rowCount = .complete := by
+  simp [derivedTerminal, derivedNextState]
+
+/-- A nonterminal state deliberately does not determine a positive row count. -/
+theorem nonterminal_does_not_determine_row_count :
+    derivedTerminal 1 = false ∧
+      derivedTerminal 2 = false ∧
+      (1 : Nat) ≠ 2 := by
+  native_decide
+
+/-- Analysis retries execute the stage query with the sealed stored limit only. -/
+def analysisReplayPageLimit (_retryCallerLimit storedPageLimit : Nat) : Nat :=
+  storedPageLimit
+
+def AnalysisPageLimitAdmitted (pageLimit : Nat) : Prop :=
+  0 < pageLimit ∧ pageLimit ≤ 128
+
+theorem analysis_replay_uses_stored_page_limit
+    (retryCallerLimit storedPageLimit : Nat) :
+    analysisReplayPageLimit retryCallerLimit storedPageLimit = storedPageLimit := by
+  rfl
+
+theorem analysis_page_limit_is_portable
+    {pageLimit : Nat}
+    (admitted : AnalysisPageLimitAdmitted pageLimit) :
+  pageLimit ≤ portableInt63Max := by
+  unfold AnalysisPageLimitAdmitted portableInt63Max at *
+  omega
+
+/-- The exclusion change marker is present exactly when old and new flags differ. -/
+def exclusionChangeMarker (oldExcluded newExcluded : Bool) : Bool :=
+  decide (oldExcluded ≠ newExcluded)
+
+theorem exclusion_change_marker_exact
+    (oldExcluded newExcluded : Bool) :
+    exclusionChangeMarker oldExcluded newExcluded = true ↔
+      oldExcluded ≠ newExcluded := by
+  simp [exclusionChangeMarker]
+
+/-! ## Sealed impacted-key provenance -/
+
+/--
+An abstract row set for one `(analysis_id, key)` family.  The provenance list
+is intentionally unbounded: the proofs below are semantic proofs, not a bounded
+page-model check.
+-/
+structure ImpactedKeyRows where
+  anchor : Bool
+  provenance : List Nat
+  witness : Option Nat
+  sealed : Bool
+deriving DecidableEq, Repr
+
+def ImpactedMinimumWitness (witness : Nat) (provenance : List Nat) : Prop :=
+  witness ∈ provenance ∧
+    ∀ gallery ∈ provenance, witness ≤ gallery
+
+def impactedKeyVisible (rows : ImpactedKeyRows) : Bool :=
+  rows.anchor && rows.witness.isSome && rows.sealed
+
+def impactedFirstInsert (gallery : Nat) : ImpactedKeyRows where
+  anchor := true
+  provenance := [gallery]
+  witness := some gallery
+  sealed := true
+
+/-- Appending provenance cannot mutate the anchor, witness, or seal. -/
+def impactedAppendProvenance
+    (rows : ImpactedKeyRows)
+    (gallery : Nat) : ImpactedKeyRows :=
+  { rows with provenance := rows.provenance ++ [gallery] }
+
+theorem impacted_first_insert_establishes_minimum_and_visibility
+    (gallery : Nat) :
+    ImpactedMinimumWitness gallery
+        (impactedFirstInsert gallery).provenance ∧
+      impactedKeyVisible (impactedFirstInsert gallery) = true := by
+  simp [ImpactedMinimumWitness, impactedFirstInsert, impactedKeyVisible]
+
+theorem impacted_minimum_witness_unique
+    {left right : Nat}
+    {provenance : List Nat}
+    (leftMinimum : ImpactedMinimumWitness left provenance)
+    (rightMinimum : ImpactedMinimumWitness right provenance) :
+    left = right := by
+  exact Nat.le_antisymm
+    (leftMinimum.2 right rightMinimum.1)
+    (rightMinimum.2 left leftMinimum.1)
+
+theorem impacted_append_greater_preserves_minimum_and_visibility
+    (rows : ImpactedKeyRows)
+    (witness gallery : Nat)
+    (minimum : ImpactedMinimumWitness witness rows.provenance)
+    (greater : witness < gallery)
+    (visible : impactedKeyVisible rows = true) :
+    ImpactedMinimumWitness witness
+        (impactedAppendProvenance rows gallery).provenance ∧
+      impactedKeyVisible (impactedAppendProvenance rows gallery) = true := by
+  constructor
+  · rcases minimum with ⟨present, least⟩
+    constructor
+    · simp [impactedAppendProvenance, present]
+    · intro observed observedMem
+      simp [impactedAppendProvenance] at observedMem
+      rcases observedMem with observedMem | rfl
+      · exact least observed observedMem
+      · exact Nat.le_of_lt greater
+  · simpa [impactedAppendProvenance, impactedKeyVisible] using visible
+
+/-- Exact replay compares every physical component and therefore is identity. -/
+def ImpactedExactReplay
+    (stored replayed : ImpactedKeyRows) : Prop :=
+  replayed.anchor = stored.anchor ∧
+    replayed.provenance = stored.provenance ∧
+    replayed.witness = stored.witness ∧
+    replayed.sealed = stored.sealed
+
+theorem impacted_exact_replay_is_identity
+    (stored replayed : ImpactedKeyRows)
+    (exact : ImpactedExactReplay stored replayed) :
+    replayed = stored := by
+  cases stored
+  cases replayed
+  simp_all [ImpactedExactReplay]
+
+def impactedRemoveSeal (rows : ImpactedKeyRows) : ImpactedKeyRows :=
+  { rows with sealed := false }
+
+def impactedRemoveWitness (rows : ImpactedKeyRows) : ImpactedKeyRows :=
+  { rows with witness := none }
+
+def impactedRemoveProvenance (rows : ImpactedKeyRows) : ImpactedKeyRows :=
+  { rows with provenance := [] }
+
+def impactedRemoveAnchor (rows : ImpactedKeyRows) : ImpactedKeyRows :=
+  { rows with anchor := false }
+
+def ImpactedNoRows (rows : ImpactedKeyRows) : Prop :=
+  rows.anchor = false ∧
+    rows.provenance = [] ∧
+    rows.witness = none ∧
+    rows.sealed = false
+
+/--
+The required seal → witness → provenance → anchor cleanup order leaves no
+visible key and no child row dangling after its parent is removed.
+-/
+theorem impacted_ordered_cleanup_has_no_dangling_rows
+    (rows : ImpactedKeyRows) :
+    let sealRemoved := impactedRemoveSeal rows
+    let witnessRemoved := impactedRemoveWitness sealRemoved
+    let provenanceRemoved := impactedRemoveProvenance witnessRemoved
+    let anchorRemoved := impactedRemoveAnchor provenanceRemoved
+    sealRemoved.sealed = false ∧
+      witnessRemoved.sealed = false ∧
+      witnessRemoved.witness = none ∧
+      provenanceRemoved.sealed = false ∧
+      provenanceRemoved.witness = none ∧
+      provenanceRemoved.provenance = [] ∧
+      ImpactedNoRows anchorRemoved := by
+  simp [impactedRemoveSeal, impactedRemoveWitness,
+    impactedRemoveProvenance, impactedRemoveAnchor, ImpactedNoRows]
+
+/-! ## GID candidate membership and exact winner selection -/
+
+/--
+The five atomic comparison facts used by the GID winner evaluator.  `Nat`
+models each already-domain-checked unsigned scalar or binary-order rank; the
+SQL/Python refinement proves that these are exactly preference, title scalar
+count, download time, scope key, and locator digest in that order.
+-/
+structure GidWinnerCandidate where
+  galleryId : Nat
+  preferNotAlreadyUploaded : Nat
+  titleScalarCount : Nat
+  downloadTime : Nat
+  scopeKeyRank : Nat
+  locatorRank : Nat
+deriving DecidableEq, Repr
+
+def gidWinnerOrderKey
+    (candidate : GidWinnerCandidate) :
+    Nat × Nat × Nat × Nat × Nat :=
+  (candidate.preferNotAlreadyUploaded,
+    candidate.titleScalarCount,
+    candidate.downloadTime,
+    candidate.scopeKeyRank,
+    candidate.locatorRank)
+
+/--
+A selected winner is a member and dominates every member of its group under
+the exact five-atom ordering relation supplied by the runtime refinement.
+-/
+def GidWinnerExact
+    (candidates : List GidWinnerCandidate)
+    (dominates : GidWinnerCandidate → GidWinnerCandidate → Prop)
+    (winner : GidWinnerCandidate) : Prop :=
+  winner ∈ candidates ∧
+    ∀ candidate ∈ candidates,
+      dominates candidate winner
+
+theorem gid_winner_exact_is_member
+    (candidates : List GidWinnerCandidate)
+    (dominates : GidWinnerCandidate → GidWinnerCandidate → Prop)
+    (winner : GidWinnerCandidate)
+    (exact : GidWinnerExact candidates dominates winner) :
+    winner ∈ candidates :=
+  exact.1
+
+theorem gid_winner_exact_dominates_every_candidate
+    (candidates : List GidWinnerCandidate)
+    (dominates : GidWinnerCandidate → GidWinnerCandidate → Prop)
+    (winner candidate : GidWinnerCandidate)
+    (exact : GidWinnerExact candidates dominates winner)
+    (member : candidate ∈ candidates) :
+    dominates candidate winner :=
+  exact.2 candidate member
+
+/--
+If stable gallery identity makes the full five-atom key injective within the
+group, two exact selections necessarily name the same gallery.
+-/
+theorem gid_winner_exact_gallery_unique
+    (candidates : List GidWinnerCandidate)
+    (dominates : GidWinnerCandidate → GidWinnerCandidate → Prop)
+    (left right : GidWinnerCandidate)
+    (leftExact : GidWinnerExact candidates dominates left)
+    (rightExact : GidWinnerExact candidates dominates right)
+    (stableIdentity :
+      ∀ first ∈ candidates, ∀ second ∈ candidates,
+        dominates first second → dominates second first →
+          first.galleryId = second.galleryId) :
+    left.galleryId = right.galleryId := by
+  have rightLeLeft := leftExact.2 right rightExact.1
+  have leftLeRight := rightExact.2 left leftExact.1
+  exact stableIdentity left leftExact.1 right rightExact.1
+    leftLeRight rightLeLeft
+
+/-- A gallery's immutable pinned metadata supplies at most one GID. -/
+def GidCandidateCurrentGroup
+    (metadataGid : Nat → Nat)
+    (galleryId gid : Nat) : Prop :=
+  metadataGid galleryId = gid
+
+theorem gid_candidate_current_gid_functional
+    (metadataGid : Nat → Nat)
+    (galleryId leftGid rightGid : Nat)
+    (left : GidCandidateCurrentGroup metadataGid galleryId leftGid)
+    (right : GidCandidateCurrentGroup metadataGid galleryId rightGid) :
+    leftGid = rightGid :=
+  left.symm.trans right
 
 /-!
 Relation-specific declarations and proofs follow.  Every theorem name retains
@@ -1420,6 +1998,30 @@ theorem reachable_retention_root_is_never_cleanup_eligible
   intro eligible
   exact eligible reachable
 
+inductive PreparedArtifactCleanupState where
+  | pending
+  | prepared
+  | committed
+deriving DecidableEq
+
+def PreparedArtifactBlocksCandidateCleanup :
+    PreparedArtifactCleanupState → Bool
+  | .pending => true
+  | .prepared => true
+  | .committed => false
+
+theorem pending_prepared_artifact_blocks_candidate_cleanup :
+    PreparedArtifactBlocksCandidateCleanup .pending = true := by
+  native_decide
+
+theorem prepared_prepared_artifact_blocks_candidate_cleanup :
+    PreparedArtifactBlocksCandidateCleanup .prepared = true := by
+  native_decide
+
+theorem committed_prepared_artifact_does_not_block_candidate_cleanup :
+    PreparedArtifactBlocksCandidateCleanup .committed = false := by
+  native_decide
+
 structure CleanupPhaseOrder where
   childOrder : Nat
   parentOrder : Nat
@@ -1572,7 +2174,7 @@ theorem schema_epoch_control_is_epoch_owned_not_absent :
   native_decide
 
 /- BEGIN GENERATED OPERATIONAL CONTRACTS -/
-def operationalManifestSha256 : String := "2671dae9e3f5ca8e43c0df5fef4dd5642b05f254843aed69e918844f8c01718c"
+def operationalManifestSha256 : String := "8e41394513bdac1daba704c95c356f4e89bec6ce58568767ac000916d879fde4"
 
 /-! This section is mechanically generated from operational.toml. -/
 
@@ -4350,13 +4952,6 @@ theorem operational_activation_closure_reached_fixed_point :
   closureFixedPointCheck_sound operational_activation_contract
     operational_activation_closure_fixed_check
 
-theorem operational_activation_bcnf_check :
-    bcnfCheck operational_activation_contract = true := by
-  native_decide
-
-theorem operational_activation_bcnf : BCNF operational_activation_contract :=
-  bcnfCheck_sound operational_activation_contract operational_activation_bcnf_check
-
 def operational_event_contract : RelationContract where
   name := "operational_event"
   attributes := ["event_id", "preparation_id", "sequence_no", "event_type", "event_sha256", "created_at"]
@@ -5182,7 +5777,8 @@ theorem manifest_relation_count :
     manifestContracts.length = 76 := by
   native_decide
 
-theorem all_manifest_relations_bcnf :
+set_option maxRecDepth 10000 in
+theorem all_manifest_base_relations_bcnf :
     BCNF schema_epoch_control_contract ∧
     BCNF download_generation_contract ∧
     BCNF download_coordination_head_contract ∧
@@ -5242,7 +5838,6 @@ theorem all_manifest_relations_bcnf :
     BCNF operational_preparation_batch_receipt_contract ∧
     BCNF operational_preparation_effect_seal_contract ∧
     BCNF publication_candidate_preparation_contract ∧
-    BCNF operational_activation_contract ∧
     BCNF operational_event_contract ∧
     BCNF operational_removed_gid_event_contract ∧
     BCNF operational_deletion_consumption_event_contract ∧
@@ -5318,7 +5913,6 @@ theorem all_manifest_relations_bcnf :
     operational_preparation_batch_receipt_bcnf,
     operational_preparation_effect_seal_bcnf,
     publication_candidate_preparation_bcnf,
-    operational_activation_bcnf,
     operational_event_bcnf,
     operational_removed_gid_event_bcnf,
     operational_deletion_consumption_event_bcnf,
@@ -5336,6 +5930,7 @@ theorem all_manifest_relations_bcnf :
     cleanup_batch_receipt_bcnf,
     cleanup_completion_bcnf⟩
 
+set_option maxRecDepth 10000 in
 theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes schema_epoch_control_contract ∧
     KeysDetermineAllAttributes download_generation_contract ∧

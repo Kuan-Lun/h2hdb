@@ -5,6 +5,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from vnext_catalog_registry_fixtures import seed_manifest_policy
 
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.sqlite_connector import SQLiteConnector
@@ -45,12 +46,7 @@ def _generated_database(path: Path) -> SQLiteConnector:
             connector.execute(sql)
     for seed in payload["bootstrap_seeds"]:
         connector.execute(seed["sql"], seed["parameters"])
-    connector.execute(
-        "INSERT INTO catalog_manifest_policies "
-        "(manifest_policy_id, manifest_algorithm_version, file_order_version) "
-        "VALUES (%s, %s, %s)",
-        (1, 1, 1),
-    )
+    seed_manifest_policy(connector)
     return connector
 
 
@@ -116,7 +112,7 @@ def _working_build(
 ) -> tuple[GateLease, IngestTurn, bytes, CanonicalValueUploadPlan]:
     gate, turn = _authorities(connector)
     build_id = b"b" * 16
-    root_command = SourceRootBuildCommand(("Volumes", "資料"), build_id, 20)
+    root_command = SourceRootBuildCommand(("Volumes", "資料"), build_id)
     root_plan = root_command.prepare_root_upload()
     _put_plan(connector, gate, turn, root_plan, now=20)
     with connector.transaction():
@@ -203,7 +199,7 @@ def test_locator_handoff_derives_identity_allocator_and_response_loss_replay(
             "operational_gallery_observation_allocators WHERE gallery_id = 1"
         ) == (1,)
         assert connector.fetch_one(
-            "SELECT next_id FROM operational_identity_allocators " "WHERE stream = %s",
+            "SELECT next_id FROM operational_identity_allocators WHERE stream = %s",
             ("GALLERY",),
         ) == (2,)
         assert (
@@ -228,7 +224,7 @@ def test_locator_handoff_derives_identity_allocator_and_response_loss_replay(
         )
         assert replay.replayed and replay.gallery_id == result.gallery_id
         assert connector.fetch_one(
-            "SELECT next_id FROM operational_identity_allocators " "WHERE stream = %s",
+            "SELECT next_id FROM operational_identity_allocators WHERE stream = %s",
             ("GALLERY",),
         ) == (2,)
     finally:
@@ -296,7 +292,7 @@ def test_stale_fence_and_immutable_locator_conflict_are_zero_write(
             )
         assert connector.fetch_all("SELECT 1 FROM catalog_gallery_identities") == []
         assert connector.fetch_one(
-            "SELECT next_id FROM operational_identity_allocators " "WHERE stream = %s",
+            "SELECT next_id FROM operational_identity_allocators WHERE stream = %s",
             ("GALLERY",),
         ) == (1,)
 
@@ -317,7 +313,7 @@ def test_stale_fence_and_immutable_locator_conflict_are_zero_write(
             )
         assert connector.fetch_all("SELECT 1 FROM catalog_gallery_identities") == []
         assert connector.fetch_one(
-            "SELECT next_id FROM operational_identity_allocators " "WHERE stream = %s",
+            "SELECT next_id FROM operational_identity_allocators WHERE stream = %s",
             ("GALLERY",),
         ) == (1,)
     finally:
@@ -330,7 +326,10 @@ def test_stale_fence_and_immutable_locator_conflict_are_zero_write(
     ("method_name", "fragment"),
     (
         ("execute", "INSERT INTO catalog_source_locator_identity"),
-        ("execute", "INSERT INTO catalog_gallery_identities"),
+        ("execute", "INSERT INTO catalog_gallery_identity_anchors"),
+        ("execute", "INSERT INTO catalog_gallery_identity_coordinates"),
+        ("execute", "INSERT INTO catalog_gallery_identity_gallery_keys"),
+        ("execute", "INSERT INTO catalog_gallery_identity_seals"),
         ("execute", "INSERT INTO operational_gallery_observation_allocators"),
         ("execute_affected", "DELETE FROM operational_canonical_value_uploads"),
     ),
@@ -375,7 +374,7 @@ def test_handoff_rolls_back_each_major_statement_fault(
             == []
         )
         assert connector.fetch_one(
-            "SELECT next_id FROM operational_identity_allocators " "WHERE stream = %s",
+            "SELECT next_id FROM operational_identity_allocators WHERE stream = %s",
             ("GALLERY",),
         ) == (1,)
         assert connector.fetch_one(

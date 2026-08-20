@@ -1,16 +1,22 @@
 # Multi-repository deployment
 
 `h2hdb` is a shared core library and schema administrator, not a resident
-service. Long-running behavior belongs to sibling processes such as ingest,
-OPDS, downloader, and Komga integrations. Those processes share one core-owned
-database and call the public vNext facades; they do not query `catalog_*` or
-operational tables directly.
+service. Long-running behavior belongs to sibling integrations. Komga and OPDS
+already consume the epoch-2 catalog facade. The current ingest and downloader
+packages still target the retired pre-0.23 API and are deliberately excluded
+from an epoch-2 deployment until their orchestration adapters are ported. No
+sibling may query `catalog_*` or operational tables directly.
 
 ## Database ownership
 
-There is one epoch-2/version-1 database. Its 125 catalog BCNF relations and 76
-operational BCNF relations are generated for both SQLite and MariaDB from the
-same logical manifests.
+There is one epoch-2/version-1 database. Its 361 catalog BCNF base relations,
+82 intentional catalog views, 75 operational BCNF base relations, and one
+operational activation view are generated
+for both SQLite and MariaDB from the same logical manifests.
+The catalog graph has 53 sealed vertical families, 28 checked decompositions,
+361 narrow bases with zero width debt, and an exact 320-relation physical
+authority closure (260 mutation relations plus 60 read-only views). Each
+backend receives exactly 4,645 typed bootstrap rows.
 
 Ingest and coordination workers receive read-write credentials. Catalog-serving
 consumers use read-only credentials and `VNextCatalogFacade`. For SQLite, mount
@@ -58,6 +64,11 @@ python -m h2hdb ready --config core-reader.json
 `migrate`, `check`, and `ready` are the only core CLI operations. Despite its
 name, `migrate` constructs or resumes the single manifest-bound greenfield
 epoch; it does not execute numbered historical migrations.
+
+The core wheel contains neither `H2HDB` nor `MigrationRunner`, and it contains
+no numbered-migration module or legacy hand-written schema repositories. Do not
+work around that boundary by pinning an epoch-2 deployment to a mixed set of
+core versions.
 
 ## Consumer boundaries
 
@@ -139,4 +150,6 @@ installs with:
 
 The script does not create or consume `uv.lock`. Its smoke test supplements,
 but does not replace, schema/Lean checks, strict coverage evidence, or live
-MariaDB integration tests.
+MariaDB integration tests. Until their vNext orchestration ports exist, the
+smoke intentionally excludes `h2hdb-ingest` and `h2hdb-downloader`; that
+exclusion is a release limitation, not compatibility evidence.

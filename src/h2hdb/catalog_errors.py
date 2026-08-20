@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-__all__ = ["CatalogRevisionNotFoundError"]
+__all__ = ["CatalogIdentifierError", "CatalogRevisionNotFoundError"]
+
+
+class CatalogIdentifierError(RuntimeError):
+    """A public catalog identifier is not in its exact canonical grammar."""
 
 
 class CatalogRevisionNotFoundError(LookupError):

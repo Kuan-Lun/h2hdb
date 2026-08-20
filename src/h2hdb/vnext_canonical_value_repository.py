@@ -16,6 +16,7 @@ __all__ = [
     "CanonicalValueAllocation",
     "CanonicalValueCollisionError",
     "CanonicalValueNotReadyError",
+    "CanonicalValuePartialFamilyError",
     "CanonicalValuePreparationReceipt",
     "CanonicalValueReadReceipt",
     "CanonicalValueRepository",
@@ -29,6 +30,22 @@ from dataclasses import dataclass, field
 from tempfile import TemporaryFile
 from typing import Any, BinaryIO
 
+from .vnext_canonical_value_family import (
+    CanonicalValueAllocation,
+    CanonicalValueCollisionError,
+    CanonicalValueNotReadyError,
+    CanonicalValuePageFamily,
+    CanonicalValuePartialFamilyError,
+    CanonicalValueReadReceipt,
+    ensure_allocation_family,
+    ensure_canonical_value_identity,
+    ensure_exact_page_parent_edges,
+    ensure_page_family,
+    load_allocation_family,
+    load_page_family,
+    load_sealed_value_identity,
+    validate_exact_page_parent_edges,
+)
 from .vnext_domains import (
     INT63_MAX,
     require_ascii_bytes,
@@ -61,33 +78,6 @@ from .vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 _STREAM_READ_BYTES = 64 * 1024
 _DESCRIPTOR_BYTES = 40
 _PLAN_CONSTRUCTOR_TOKEN = object()
-
-
-class CanonicalValueCollisionError(RuntimeError):
-    """An immutable digest, page, position, or consumer tuple disagrees."""
-
-
-class CanonicalValueNotReadyError(RuntimeError):
-    """Required upload, page-tree, gate, or ingest authority is absent."""
-
-
-@dataclass(frozen=True, slots=True)
-class CanonicalValueAllocation:
-    value_sha256: bytes
-    digest_domain: bytes
-    byte_count: int
-    allocated_at: int
-
-    def __post_init__(self) -> None:
-        require_digest32(self.value_sha256, field="value_sha256")
-        require_ascii_bytes(
-            self.digest_domain,
-            field="digest_domain",
-            minimum=1,
-            maximum=64,
-        )
-        require_int63(self.byte_count, field="byte_count")
-        require_int63(self.allocated_at, field="allocated_at")
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,25 +133,6 @@ class PreparedCanonicalPage:
         )
         if canonical_value_page_digest(self.page_bytes) != self.page_sha256:
             raise ValueError("page_sha256 does not match page_bytes")
-
-
-@dataclass(frozen=True, slots=True)
-class CanonicalValueReadReceipt:
-    value_sha256: bytes
-    digest_domain: bytes
-    byte_count: int
-    root_page_sha256: bytes
-
-    def __post_init__(self) -> None:
-        require_digest32(self.value_sha256, field="value_sha256")
-        require_ascii_bytes(
-            self.digest_domain,
-            field="digest_domain",
-            minimum=1,
-            maximum=64,
-        )
-        require_int63(self.byte_count, field="byte_count")
-        require_digest32(self.root_page_sha256, field="root_page_sha256")
 
 
 class CanonicalValueUploadPlan:
@@ -527,31 +498,13 @@ class CanonicalValueRepository:
                 "non-root canonical upload requires a durable build generation"
             )
 
-        existing = connector.fetch_one(
-            "SELECT digest_domain, byte_count, allocated_at "
-            "FROM catalog_canonical_value_allocations WHERE value_sha256 = %s",
-            (exact_plan.value_sha256,),
+        allocation = ensure_allocation_family(
+            connector,
+            value_sha256=exact_plan.value_sha256,
+            digest_domain=exact_plan.digest_domain,
+            byte_count=exact_plan.byte_count,
+            allocated_at=timestamp,
         )
-        if existing:
-            _require_exact(
-                "canonical allocation",
-                existing[:2],
-                (exact_plan.digest_domain, exact_plan.byte_count),
-            )
-            allocated_at = require_int63(existing[2], field="allocated_at")
-        else:
-            connector.execute(
-                "INSERT INTO catalog_canonical_value_allocations "
-                "(value_sha256, digest_domain, byte_count, allocated_at) "
-                "VALUES (%s, %s, %s, %s)",
-                (
-                    exact_plan.value_sha256,
-                    exact_plan.digest_domain,
-                    exact_plan.byte_count,
-                    timestamp,
-                ),
-            )
-            allocated_at = timestamp
 
         claim = connector.fetch_one(
             "SELECT generation, value_sha256 "
@@ -571,12 +524,7 @@ class CanonicalValueRepository:
                 "(generation, value_sha256) VALUES (%s, %s)",
                 (generation, exact_plan.value_sha256),
             )
-        return CanonicalValueAllocation(
-            exact_plan.value_sha256,
-            exact_plan.digest_domain,
-            exact_plan.byte_count,
-            allocated_at,
-        )
+        return allocation
 
     @staticmethod
     def put_page(
@@ -598,16 +546,15 @@ class CanonicalValueRepository:
         _validate_page_shape(page, exact_plan.byte_count)
         connector = work.connector
         _lock_claim(work, generation, exact_plan.value_sha256)
-        allocation = work.lock_row(
-            LockRank.HEAD,
-            encode_lock_key("canonical-allocation", exact_plan.value_sha256),
-            "SELECT digest_domain, byte_count FROM "
-            "catalog_canonical_value_allocations WHERE value_sha256 = %s",
-            (exact_plan.value_sha256,),
+        allocation = load_allocation_family(
+            connector,
+            value_sha256=exact_plan.value_sha256,
         )
+        if allocation is None:
+            raise CanonicalValueNotReadyError("canonical allocation is not sealed")
         _require_exact(
             "canonical allocation",
-            allocation,
+            (allocation.digest_domain, allocation.byte_count),
             (exact_plan.digest_domain, exact_plan.byte_count),
         )
 
@@ -620,96 +567,12 @@ class CanonicalValueRepository:
                 byte_count=exact_plan.byte_count,
             )
 
-        existing_page = connector.fetch_one(
-            "SELECT value_sha256, page_bytes FROM catalog_canonical_value_pages "
-            "WHERE page_sha256 = %s",
-            (exact_page.page_sha256,),
+        family = CanonicalValuePageFamily.from_payload(
+            page_sha256=exact_page.page_sha256,
+            page_bytes=exact_page.page_bytes,
         )
-        if existing_page:
-            _require_exact(
-                "canonical page digest",
-                existing_page,
-                (exact_plan.value_sha256, exact_page.page_bytes),
-            )
-        else:
-            connector.execute(
-                "INSERT INTO catalog_canonical_value_pages "
-                "(page_sha256, value_sha256, page_bytes) VALUES (%s, %s, %s)",
-                (
-                    exact_page.page_sha256,
-                    exact_plan.value_sha256,
-                    exact_page.page_bytes,
-                ),
-            )
-
-        descriptor_tuple = (
-            exact_page.page_sha256,
-            exact_plan.value_sha256,
-            page.level,
-            page.page_position,
-            page.subtree_byte_count,
-        )
-        existing_descriptor = connector.fetch_one(
-            "SELECT page_sha256, value_sha256, level, page_position, "
-            "subtree_item_count FROM catalog_canonical_value_page_descriptors "
-            "WHERE page_sha256 = %s",
-            (exact_page.page_sha256,),
-        )
-        by_position = connector.fetch_one(
-            "SELECT page_sha256, value_sha256, level, page_position, "
-            "subtree_item_count FROM catalog_canonical_value_page_descriptors "
-            "WHERE value_sha256 = %s AND level = %s AND page_position = %s",
-            (exact_plan.value_sha256, page.level, page.page_position),
-        )
-        if existing_descriptor:
-            _require_exact(
-                "canonical page descriptor", existing_descriptor, descriptor_tuple
-            )
-        elif by_position:
-            _require_exact("canonical page position", by_position, descriptor_tuple)
-        else:
-            connector.execute(
-                "INSERT INTO catalog_canonical_value_page_descriptors "
-                "(page_sha256, value_sha256, level, page_position, "
-                "subtree_item_count) VALUES (%s, %s, %s, %s, %s)",
-                descriptor_tuple,
-            )
-
-        if page.node_kind is GalleryObservationNodeKind.BRANCH:
-            for position, entry in enumerate(page.entries):
-                assert isinstance(entry, CanonicalValueBranchEntry)
-                edge = connector.fetch_one(
-                    "SELECT child_sha256, parent_sha256, position "
-                    "FROM catalog_canonical_value_page_parents "
-                    "WHERE child_sha256 = %s",
-                    (entry.child_page_sha256,),
-                )
-                edge_by_position = connector.fetch_one(
-                    "SELECT child_sha256, parent_sha256, position "
-                    "FROM catalog_canonical_value_page_parents "
-                    "WHERE parent_sha256 = %s AND position = %s",
-                    (exact_page.page_sha256, position),
-                )
-                expected_edge = (
-                    entry.child_page_sha256,
-                    exact_page.page_sha256,
-                    position,
-                )
-                if edge:
-                    _require_exact("canonical parent edge", edge, expected_edge)
-                elif edge_by_position:
-                    _require_exact(
-                        "canonical parent position",
-                        edge_by_position,
-                        expected_edge,
-                    )
-                else:
-                    connector.execute(
-                        "INSERT INTO catalog_canonical_value_page_parents "
-                        "(child_sha256, parent_sha256, position) "
-                        "VALUES (%s, %s, %s)",
-                        expected_edge,
-                    )
+        receipt = ensure_page_family(connector, page=family)
+        ensure_exact_page_parent_edges(connector, receipt=receipt)
         return exact_page.page_sha256
 
     @staticmethod
@@ -728,16 +591,15 @@ class CanonicalValueRepository:
         root_sha256 = tree_receipt.root_page_sha256
         connector = work.connector
         _lock_claim(work, generation, exact_plan.value_sha256)
-        allocation = work.lock_row(
-            LockRank.HEAD,
-            encode_lock_key("canonical-allocation", exact_plan.value_sha256),
-            "SELECT digest_domain, byte_count FROM "
-            "catalog_canonical_value_allocations WHERE value_sha256 = %s",
-            (exact_plan.value_sha256,),
+        allocation = load_allocation_family(
+            connector,
+            value_sha256=exact_plan.value_sha256,
         )
+        if allocation is None:
+            raise CanonicalValueNotReadyError("canonical allocation is not sealed")
         _require_exact(
             "canonical allocation",
-            allocation,
+            (allocation.digest_domain, allocation.byte_count),
             (exact_plan.digest_domain, exact_plan.byte_count),
         )
         _require_exact(
@@ -754,26 +616,18 @@ class CanonicalValueRepository:
             ),
         )
 
-        root_row = connector.fetch_one(
-            "SELECT p.value_sha256, p.page_bytes, d.level, d.page_position, "
-            "d.subtree_item_count FROM catalog_canonical_value_pages p "
-            "JOIN catalog_canonical_value_page_descriptors d "
-            "ON d.page_sha256 = p.page_sha256 WHERE p.page_sha256 = %s",
-            (root_sha256,),
-        )
-        if len(root_row) != 5:
+        root_family = load_page_family(connector, page_sha256=root_sha256)
+        if root_family is None:
             raise CanonicalValueNotReadyError("canonical root page is not complete")
-        page = decode_canonical_value_page(root_row[1])
-        if canonical_value_page_digest(root_row[1]) != root_sha256:
-            raise CanonicalValueCollisionError("canonical root digest disagrees")
+        page = decode_canonical_value_page(root_family.page_bytes)
         _validate_page_shape(page, exact_plan.byte_count)
         _require_exact(
             "canonical root descriptor",
             (
-                root_row[0],
-                root_row[2],
-                root_row[3],
-                root_row[4],
+                root_family.coordinate.value_sha256,
+                root_family.coordinate.level,
+                root_family.coordinate.page_position,
+                root_family.subtree_item_count,
                 page.level,
                 page.page_position,
                 page.subtree_byte_count,
@@ -790,6 +644,7 @@ class CanonicalValueRepository:
         )
         if page.owner_value_sha256 != exact_plan.value_sha256:
             raise CanonicalValueCollisionError("canonical root owner disagrees")
+        validate_exact_page_parent_edges(connector, page=root_family)
         if connector.fetch_one(
             "SELECT parent_sha256 FROM catalog_canonical_value_page_parents "
             "WHERE child_sha256 = %s",
@@ -797,27 +652,11 @@ class CanonicalValueRepository:
         ):
             raise CanonicalValueCollisionError("canonical root has a parent")
 
-        identity = connector.fetch_one(
-            "SELECT value_sha256, root_page_sha256 "
-            "FROM catalog_canonical_value_identities WHERE value_sha256 = %s",
-            (exact_plan.value_sha256,),
+        ensure_canonical_value_identity(
+            connector,
+            value_sha256=exact_plan.value_sha256,
+            root_page_sha256=root_sha256,
         )
-        reverse = connector.fetch_one(
-            "SELECT value_sha256, root_page_sha256 "
-            "FROM catalog_canonical_value_identities WHERE root_page_sha256 = %s",
-            (root_sha256,),
-        )
-        expected = (exact_plan.value_sha256, root_sha256)
-        if identity:
-            _require_exact("canonical identity", identity, expected)
-        elif reverse:
-            _require_exact("canonical root identity", reverse, expected)
-        else:
-            connector.execute(
-                "INSERT INTO catalog_canonical_value_identities "
-                "(value_sha256, root_page_sha256) VALUES (%s, %s)",
-                expected,
-            )
         # Deliberately retain operational_canonical_value_uploads.  Only the
         # first durable external consumer may remove this generation claim.
         return exact_plan.value_sha256
@@ -838,20 +677,15 @@ class CanonicalValueRepository:
         """
 
         value = require_digest32(value_sha256, field="value_sha256")
-        row = work.connector.fetch_one(
-            "SELECT a.digest_domain, a.byte_count, i.root_page_sha256 "
-            "FROM catalog_canonical_value_identities i "
-            "JOIN catalog_canonical_value_allocations a "
-            "ON a.value_sha256 = i.value_sha256 WHERE i.value_sha256 = %s",
-            (value,),
+        identity = load_sealed_value_identity(
+            work.connector,
+            value_sha256=value,
         )
-        if len(row) != 3:
+        if identity is None:
             raise CanonicalValueNotReadyError("canonical identity is not sealed")
-        domain = require_ascii_bytes(
-            row[0], field="digest_domain", minimum=1, maximum=64
-        )
-        byte_count = require_int63(row[1], field="byte_count")
-        root = require_digest32(row[2], field="root_page_sha256")
+        domain = identity.digest_domain
+        byte_count = identity.byte_count
+        root = identity.root_page_sha256
         root_level = _expected_root_level(byte_count)
         consumed = 0
 
@@ -1051,24 +885,21 @@ def _validate_branch_children(
     for position, entry in enumerate(page.entries):
         if not isinstance(entry, CanonicalValueBranchEntry):
             raise CanonicalValueCollisionError("branch entry has the wrong type")
-        row = connector.fetch_one(
-            "SELECT p.value_sha256, p.page_bytes, d.level, d.page_position, "
-            "d.subtree_item_count FROM catalog_canonical_value_pages p "
-            "JOIN catalog_canonical_value_page_descriptors d "
-            "ON d.page_sha256 = p.page_sha256 WHERE p.page_sha256 = %s",
-            (entry.child_page_sha256,),
+        family = load_page_family(
+            connector,
+            page_sha256=entry.child_page_sha256,
         )
-        if len(row) != 5:
+        if family is None:
             raise CanonicalValueNotReadyError("canonical branch child is incomplete")
-        child = decode_canonical_value_page(row[1])
+        child = decode_canonical_value_page(family.page_bytes)
         _validate_page_shape(child, byte_count)
         _require_exact(
             "canonical branch child",
             (
-                row[0],
-                row[2],
-                row[3],
-                row[4],
+                family.coordinate.value_sha256,
+                family.coordinate.level,
+                family.coordinate.page_position,
+                family.subtree_item_count,
                 child.owner_value_sha256,
             ),
             (
@@ -1079,8 +910,7 @@ def _validate_branch_children(
                 page.owner_value_sha256,
             ),
         )
-        if canonical_value_page_digest(row[1]) != entry.child_page_sha256:
-            raise CanonicalValueCollisionError("canonical child digest disagrees")
+        validate_exact_page_parent_edges(connector, page=family)
         total += entry.child_subtree_byte_count
         if total > INT63_MAX:
             raise CanonicalValueCollisionError("canonical branch count overflows int63")
@@ -1124,25 +954,20 @@ def _iter_tree_payload(
     expected_byte_offset: int,
     total_byte_count: int,
 ) -> Iterator[bytes]:
-    row = work.connector.fetch_one(
-        "SELECT p.value_sha256, p.page_bytes, d.level, d.page_position, "
-        "d.subtree_item_count FROM catalog_canonical_value_pages p "
-        "JOIN catalog_canonical_value_page_descriptors d "
-        "ON d.page_sha256 = p.page_sha256 WHERE p.page_sha256 = %s",
-        (page_sha256,),
+    family = load_page_family(
+        work.connector,
+        page_sha256=page_sha256,
     )
-    if len(row) != 5:
+    if family is None:
         raise CanonicalValueNotReadyError("canonical page is incomplete")
-    if canonical_value_page_digest(row[1]) != page_sha256:
-        raise CanonicalValueCollisionError("stored canonical page digest disagrees")
-    page = decode_canonical_value_page(row[1])
+    page = decode_canonical_value_page(family.page_bytes)
     _require_exact(
         "canonical streamed page",
         (
-            row[0],
-            row[2],
-            row[3],
-            row[4],
+            family.coordinate.value_sha256,
+            family.coordinate.level,
+            family.coordinate.page_position,
+            family.subtree_item_count,
             page.owner_value_sha256,
         ),
         (
@@ -1154,6 +979,7 @@ def _iter_tree_payload(
         ),
     )
     _validate_page_shape(page, total_byte_count)
+    validate_exact_page_parent_edges(work.connector, page=family)
     if expected_level == 0:
         if page.entries:
             entry = page.entries[0]
@@ -1171,17 +997,6 @@ def _iter_tree_payload(
     for position, entry in enumerate(page.entries):
         if not isinstance(entry, CanonicalValueBranchEntry):
             raise CanonicalValueCollisionError("branch entry has the wrong type")
-        edge = work.connector.fetch_one(
-            "SELECT child_sha256, parent_sha256, position "
-            "FROM catalog_canonical_value_page_parents "
-            "WHERE parent_sha256 = %s AND position = %s",
-            (page_sha256, position),
-        )
-        _require_exact(
-            "canonical streamed parent edge",
-            edge,
-            (entry.child_page_sha256, page_sha256, position),
-        )
         child_position = expected_position * CANONICAL_VALUE_BRANCH_CAPACITY + position
         yield from _iter_tree_payload(
             work,

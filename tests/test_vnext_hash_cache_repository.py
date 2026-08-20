@@ -5,6 +5,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from vnext_catalog_registry_fixtures import seed_manifest_policy
 
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.sqlite_connector import SQLiteConnector
@@ -39,11 +40,7 @@ def _database(path: Path) -> SQLiteConnector:
             connector.execute(sql)
     for seed in payload["bootstrap_seeds"]:
         connector.execute(seed["sql"], seed["parameters"])
-    connector.execute(
-        "INSERT INTO catalog_manifest_policies "
-        "(manifest_policy_id, manifest_algorithm_version, file_order_version) "
-        "VALUES (1, 1, 1)"
-    )
+    seed_manifest_policy(connector)
     return connector
 
 
@@ -111,7 +108,7 @@ def _ready_build(
     gate: GateLease,
     turn: IngestTurn,
 ) -> None:
-    command = SourceRootBuildCommand(("source",), b"b" * 16, 20)
+    command = SourceRootBuildCommand(("source",), b"b" * 16)
     root = command.prepare_root_upload()
     try:
         _put(connector, gate, turn, root, start=20)

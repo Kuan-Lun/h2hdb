@@ -2,8 +2,9 @@
 
 `h2hdb` is the database and coordination core for the H2HDB multi-repository
 system. It owns the SQLite/MariaDB schema, bounded transactional workflows, and
-backend-neutral application facades used by ingest, download, Komga, and OPDS
-consumers.
+backend-neutral application facades. Komga and OPDS use the current catalog
+facade; ingest and downloader require separate epoch-2 orchestration ports
+before they can move to this breaking release.
 
 It deliberately does **not** scan files, parse `galleryinfo.txt`, manipulate
 images, choose filesystem paths, serve HTTP, serialize OPDS documents, or
@@ -14,14 +15,25 @@ sibling packages.
 
 The current schema is a clean epoch-2 design:
 
-- 125 catalog data-plane relations, each checked as BCNF.
-- 25 declared decompositions, each checked as lossless and
+- 361 catalog data-plane base relations checked as BCNF, plus 82 generated
+  logical views for read-oriented projections. Fifty-three generic sealed vertical
+  families keep every new base at its semantic key plus at most one value.
+- 28 declared decompositions, each checked as lossless and
   dependency-preserving.
-- 76 operational control-plane relations, each checked as BCNF. This count
-  includes the epoch-control relation; the generated CREATE-only provider owns
-  the other 75.
+- 75 operational control-plane base relations checked as BCNF, plus one
+  derived activation view. The base count includes the epoch-control relation;
+  the generated CREATE-only provider owns the other 74 bases and the view.
 - One generated physical schema for SQLite and MariaDB, with backend-specific
   SQL rendered from the same closed-world manifests.
+- A separate physical-width gate requires each `catalog_*` base table to have
+  its semantic primary key plus at most one atomic non-key value. It currently
+  reports all 361 bases compliant with no width debt;
+  logical views are excluded from that policy.
+- The closed catalog physical-domain authority contains exactly 320 relations:
+  260 mutation relations and 60 read-only views. The complete publication graph
+  is inside that closure, including permanent finalization replay state.
+- The generated provider installs exactly 4,645 typed bootstrap rows per
+  backend, including all 17 fixed 256-shard cleanup ranges.
 
 The logical sources of truth are
 [`verification/schema/catalog.toml`](verification/schema/catalog.toml) and
@@ -32,8 +44,16 @@ manifests, Lean schema proofs, and the wheel-resident runtime provider. Generate
 SQL is not a second schema-authoring surface.
 
 This is a greenfield cutover. There is no v1-v7 upgrade or adoption path, no
-compatibility view, and no dual write. A previous or foreign database must be
-replaced with an empty database and rebuilt from source data.
+legacy-epoch compatibility layer, and no dual write. Read-only logical views
+inside epoch 2 are deliberate read models. A previous or foreign database must
+be replaced with an empty database and rebuilt from source data.
+
+The numbered migration runner, monolithic `H2HDB` facade, and their hand-written
+legacy repositories are not shipped. In particular, the old
+`catalog_build_discoveries` relation is not part of the package or generated
+schema. Production SQL relation names are checked against the two physical
+manifests in both source and built-wheel verification, so a second hand-written
+`catalog_*` or `operational_*` schema cannot silently bypass the manifest audit.
 
 ## Schema epoch
 
@@ -146,8 +166,9 @@ Choose the operation from database state:
 | Frequent readiness probe | Run the O(1) read-only `ready` check |
 | Previous, foreign, or drifted schema | Create a new empty database and rebuild |
 
-The default generated provider must resolve every required runtime validator
-and recurring writer binding before it opens or mutates a database. `check`
+The wheel-resident generated provider must resolve every required runtime
+validator and recurring writer binding before it opens or mutates a database;
+the public administration API does not accept a substitute provider. `check`
 holds a read transaction while validating the complete `READY` schema;
 `ready` validates only the exact epoch/version/manifest marker.
 
@@ -221,6 +242,7 @@ The schema workflow and implementation checks are:
 uv run --no-sync python scripts/verify-formal.py coverage --validate-only
 uv run --no-sync python scripts/verify-formal.py schema
 uv run --no-sync python scripts/verify-formal.py lean
+uv run --no-sync python scripts/verify-schema-surface.py
 uv run --no-sync black --check src tests scripts
 uv run --no-sync ruff check src tests scripts
 uv run --no-sync mypy src tests scripts
@@ -250,8 +272,9 @@ uv run --no-sync python scripts/build-and-verify-distributions.py \
   --output-directory /path/to/empty/output-directory
 ```
 
-It builds in a fresh temporary directory, verifies the wheel, and confirms that
-the installed CLI exposes only `migrate`, `check`, and `ready`.
+It builds in a fresh temporary directory, verifies the wheel's closed schema
+surface and removed-module boundary, and confirms that the installed CLI
+exposes only `migrate`, `check`, and `ready`.
 
 ### Local release gate
 

@@ -4,13 +4,10 @@ import hashlib
 import inspect
 import random
 from dataclasses import fields
-from typing import cast
 
 import pytest
 
 from h2hdb.vnext_identity import (
-    ANALYSIS_ALREADY_UPLOADED_MARKER,
-    ANALYSIS_CANDIDATE_CODEC_VERSION,
     ANALYSIS_STATE_COMPONENTS,
     ARTIFACT_COMPONENT_CODEC_VERSION,
     ARTIFACT_COMPONENT_KINDS,
@@ -31,7 +28,6 @@ from h2hdb.vnext_identity import (
     SOURCE_LOCATOR_CODEC_VERSION,
     SOURCE_PROVIDERS,
     SOURCE_SNAPSHOT_MANIFEST_CODEC_VERSION,
-    AnalysisCandidateKind,
     AnalysisTitleScalarReceipt,
     ArtifactMemberEntryKind,
     ArtifactMemberPlanEntry,
@@ -71,9 +67,6 @@ from h2hdb.vnext_identity import (
     SourceSnapshotPolicy,
     StrictUtf8ScalarCounter,
     analysis_candidate_has_already_uploaded,
-    analysis_candidate_total_order_key,
-    analysis_content_candidate_digest,
-    analysis_gid_candidate_digest,
     artifact_archive_member_name,
     artifact_effective_content_digest,
     artifact_effective_content_digest_ordered,
@@ -102,22 +95,23 @@ from h2hdb.vnext_identity import (
     catalog_summary_digest,
     catalog_summary_digest_parts,
     count_analysis_title_scalars,
-    decode_analysis_candidate_priority,
+    decode_artifact_id,
     decode_artifact_locator,
     decode_artifact_member_plan,
+    decode_artifact_name,
     decode_artifact_protection_token,
     decode_canonical_value_page,
     decode_filesystem_stat_fingerprint,
     decode_gallery_observation_descriptor,
     decode_gallery_observation_metadata,
     decode_gallery_observation_page,
+    decode_publication_id,
     decode_source_relative_locator,
     decode_source_root,
     digest_from_hex,
     digest_to_hex,
     effective_content_digest,
     effective_content_digest_ordered,
-    encode_analysis_candidate_priority,
     encode_artifact_effective_content,
     encode_artifact_locator,
     encode_artifact_member_plan,
@@ -165,7 +159,6 @@ from h2hdb.vnext_identity import (
     source_scope_key,
     source_snapshot_manifest_digest,
     source_snapshot_manifest_digest_ordered,
-    validate_analysis_candidate_priority,
     validate_artifact_component_kind,
     validate_canonical_value_identity,
     validate_canonical_value_tree,
@@ -434,97 +427,6 @@ def test_ordered_effective_content_streams_fail_closed_on_order_or_count_drift()
         artifact_effective_content_digest_ordered(2, iter((low,)))
 
 
-def test_analysis_candidate_priority_and_audit_frames_match_goldens() -> None:
-    analysis_id = bytes(range(16))
-    content_sha256 = bytes.fromhex("11" * 32)
-    scope_key = bytes.fromhex("22" * 32)
-    locator_sha256 = bytes.fromhex("33" * 32)
-    title_utf8 = "A😀é".encode()
-    content_priority = encode_analysis_candidate_priority(
-        AnalysisCandidateKind.CONTENT_OWNER,
-        tag_values_utf8=[b"ALREADY UPLOADED"],
-        title_scalar_receipt=count_analysis_title_scalars((title_utf8,)),
-        download_time=100,
-        gid=7,
-    )
-    gid_priority = encode_analysis_candidate_priority(
-        AnalysisCandidateKind.GID_WINNER,
-        tag_values_utf8=[b"new"],
-        title_scalar_receipt=count_analysis_title_scalars((title_utf8,)),
-        download_time=100,
-    )
-
-    assert ANALYSIS_CANDIDATE_CODEC_VERSION == 1
-    assert ANALYSIS_ALREADY_UPLOADED_MARKER == b"already uploaded"
-    assert content_priority.hex() == (
-        "68326864622d766e6578742d616e616c797369732d63616e6469646174652d"
-        "7072696f726974790000000001000000000000000000030000000000000064"
-        "0000000000000007"
-    )
-    assert gid_priority.hex() == (
-        "68326864622d766e6578742d616e616c797369732d63616e6469646174652d"
-        "7072696f726974790000000001010100000000000000030000000000000064"
-    )
-    content_digest = analysis_content_candidate_digest(
-        analysis_id,
-        content_sha256,
-        content_priority,
-        scope_key,
-        locator_sha256,
-    )
-    gid_digest = analysis_gid_candidate_digest(
-        analysis_id,
-        7,
-        gid_priority,
-        scope_key,
-        locator_sha256,
-    )
-    assert content_digest.hex() == (
-        "670fa33d3fe85e01000b7a89177e112093ae4a863a07a6ad8884b453a248296f"
-    )
-    assert gid_digest.hex() == (
-        "2cde6d9e35c6def1d9c38f37edf147068d4dc873c4be3a5474f011acbfac7895"
-    )
-    assert (
-        content_digest
-        == hashlib.sha256(
-            b"h2hdb-vnext-analysis-candidate-audit\0"
-            + (1).to_bytes(4, "big")
-            + bytes((0,))
-            + analysis_id
-            + content_sha256
-            + content_priority
-            + scope_key
-            + locator_sha256
-        ).digest()
-    )
-    assert (
-        gid_digest
-        == hashlib.sha256(
-            b"h2hdb-vnext-analysis-candidate-audit\0"
-            + (1).to_bytes(4, "big")
-            + bytes((1,))
-            + analysis_id
-            + (7).to_bytes(8, "big")
-            + gid_priority
-            + scope_key
-            + locator_sha256
-        ).digest()
-    )
-
-    assert decode_analysis_candidate_priority(content_priority) == (
-        validate_analysis_candidate_priority(
-            content_priority,
-            AnalysisCandidateKind.CONTENT_OWNER,
-            tag_values_utf8=[b"Already Uploaded"],
-            title_scalar_receipt=count_analysis_title_scalars((title_utf8,)),
-            download_time=100,
-            gid=7,
-        )
-    )
-    assert decode_analysis_candidate_priority(content_priority).title_scalar_length == 3
-
-
 def test_analysis_title_scalar_counter_streams_strict_utf8_with_fixed_receipt() -> None:
     title = "A😀é".encode()
     receipt = count_analysis_title_scalars(
@@ -538,97 +440,11 @@ def test_analysis_title_scalar_counter_streams_strict_utf8_with_fixed_receipt() 
         counter.finalize()
 
 
-def test_analysis_candidate_comparator_is_ascii_stable_and_lexicographic() -> None:
+def test_analysis_uploaded_marker_is_ascii_stable() -> None:
     assert analysis_candidate_has_already_uploaded([b"aLrEaDy UpLoAdEd"])
     assert not analysis_candidate_has_already_uploaded(["ＡLREADY UPLOADED".encode()])
-    kind = AnalysisCandidateKind.CONTENT_OWNER
-
-    def priority(
-        *, tags: tuple[bytes, ...] = (), title: str = "a", time: int = 1, gid: int = 1
-    ) -> bytes:
-        return encode_analysis_candidate_priority(
-            kind,
-            tag_values_utf8=tags,
-            title_scalar_receipt=count_analysis_title_scalars((title.encode(),)),
-            download_time=time,
-            gid=gid,
-        )
-
-    assert priority() > priority(tags=(b"already uploaded",))
-    assert priority(title="ab") > priority(title="a")
-    assert priority(time=2) > priority(time=1)
-    assert priority(gid=2) > priority(gid=1)
-    equal_priority = priority()
-    low_location = analysis_candidate_total_order_key(
-        equal_priority, kind, bytes(32), bytes(32)
-    )
-    high_scope = analysis_candidate_total_order_key(
-        equal_priority, kind, bytes([1]) * 32, bytes(32)
-    )
-    high_locator = analysis_candidate_total_order_key(
-        equal_priority, kind, bytes(32), bytes([1]) * 32
-    )
-    assert max(low_location, high_scope, high_locator) == high_scope
-
-
-def test_analysis_candidate_codecs_reject_mutated_or_ambiguous_inputs() -> None:
-    priority = encode_analysis_candidate_priority(
-        AnalysisCandidateKind.CONTENT_OWNER,
-        tag_values_utf8=(),
-        title_scalar_receipt=count_analysis_title_scalars((b"title",)),
-        download_time=1,
-        gid=2,
-    )
-    prefix_size = len(b"h2hdb-vnext-analysis-candidate-priority\0")
-    mutations = (
-        bytes([priority[0] ^ 1]) + priority[1:],
-        priority[:prefix_size] + (2).to_bytes(4, "big") + priority[prefix_size + 4 :],
-        priority[: prefix_size + 4] + bytes((9,)) + priority[prefix_size + 5 :],
-        priority[: prefix_size + 5] + bytes((2,)) + priority[prefix_size + 6 :],
-        priority + b"\0",
-        priority[:-1],
-    )
-    for mutation in mutations:
-        with pytest.raises((ByteDomainError, IntegerDomainError)):
-            decode_analysis_candidate_priority(mutation)
-
     with pytest.raises(ByteDomainError, match="exact UTF-8"):
         analysis_candidate_has_already_uploaded([b"\xff"])
-    with pytest.raises(ByteDomainError, match="strict UTF-8"):
-        count_analysis_title_scalars((b"\xff",))
-    with pytest.raises(ByteDomainError, match="AnalysisTitleScalarReceipt"):
-        encode_analysis_candidate_priority(
-            AnalysisCandidateKind.GID_WINNER,
-            tag_values_utf8=(),
-            title_scalar_receipt=cast(AnalysisTitleScalarReceipt, b"title"),
-            download_time=1,
-        )
-    with pytest.raises(ByteDomainError, match="must not contain gid"):
-        encode_analysis_candidate_priority(
-            AnalysisCandidateKind.GID_WINNER,
-            tag_values_utf8=(),
-            title_scalar_receipt=count_analysis_title_scalars((b"title",)),
-            download_time=1,
-            gid=2,
-        )
-    with pytest.raises(DigestMismatchError, match="snapshot facts"):
-        validate_analysis_candidate_priority(
-            priority,
-            AnalysisCandidateKind.CONTENT_OWNER,
-            tag_values_utf8=(),
-            title_scalar_receipt=count_analysis_title_scalars((b"different title",)),
-            download_time=1,
-            gid=2,
-        )
-    with pytest.raises(ByteDomainError, match="does not match relation"):
-        analysis_candidate_total_order_key(
-            priority,
-            AnalysisCandidateKind.GID_WINNER,
-            bytes(32),
-            bytes(32),
-        )
-    with pytest.raises(ByteDomainError, match="does not match audit tuple"):
-        analysis_gid_candidate_digest(bytes(16), 2, priority, bytes(32), bytes(32))
 
 
 def test_artifact_component_codecs_match_independent_hardcoded_goldens() -> None:
@@ -729,6 +545,8 @@ def test_artifact_producer_fingerprint_matches_independent_golden() -> None:
 def test_artifact_names_and_archive_members_are_fully_derived() -> None:
     assert artifact_name(7).hex() == "6832682d372e63627a"
     assert artifact_name((1 << 63) - 1) == b"h2h-9223372036854775807.cbz"
+    assert decode_artifact_name(b"h2h-7.cbz") == 7
+    assert decode_artifact_name(artifact_name((1 << 63) - 1)) == (1 << 63) - 1
     metadata_name = artifact_archive_member_name(
         0,
         ArtifactSourceRole.METADATA,
@@ -1795,6 +1613,8 @@ def test_generated_publication_and_artifact_identifiers_are_exact() -> None:
     encoded_artifact = artifact_id(gid, artifact_digest)
 
     assert encoded_publication == f"urn:h2h:gallery:{gid}".encode()
+    assert decode_publication_id(encoded_publication) == gid
+    assert decode_publication_id(publication_id(1)) == 1
     assert binary_publication_key.hex() == (
         "ef9a3bbaa67483f863e6aa50c1c8f2b97969a6acf1b21d6ea77df181e3bb0fd2"
     )
@@ -1810,8 +1630,205 @@ def test_generated_publication_and_artifact_identifiers_are_exact() -> None:
     assert encoded_artifact == (
         f"urn:h2h:artifact:cbz:{gid}:sha256:{'ab' * 32}".encode()
     )
+    assert decode_artifact_id(encoded_artifact) == (gid, artifact_digest)
+    assert decode_artifact_id(artifact_id(1, bytes(32))) == (1, bytes(32))
     assert len(encoded_publication) <= 64
     assert len(encoded_artifact) <= 128
+
+
+@pytest.mark.parametrize(
+    "gid_ascii",
+    (
+        b"",
+        b"01",
+        b"+1",
+        b" 1",
+        b"1 ",
+        "\N{FULLWIDTH DIGIT ONE}".encode(),
+        "\N{ARABIC-INDIC DIGIT ONE}".encode(),
+    ),
+)
+def test_artifact_id_decoder_rejects_noncanonical_gid_text(
+    gid_ascii: bytes,
+) -> None:
+    encoded = b"urn:h2h:artifact:cbz:" + gid_ascii + b":sha256:" + b"ab" * 32
+
+    with pytest.raises(ByteDomainError, match="gid|leading zero"):
+        decode_artifact_id(encoded)
+
+
+@pytest.mark.parametrize("gid_ascii", (b"0", b"9223372036854775808"))
+def test_artifact_id_decoder_rejects_gid_outside_positive_int63(
+    gid_ascii: bytes,
+) -> None:
+    encoded = b"urn:h2h:artifact:cbz:" + gid_ascii + b":sha256:" + b"ab" * 32
+
+    with pytest.raises(IntegerDomainError, match="artifact_id gid"):
+        decode_artifact_id(encoded)
+
+
+@pytest.mark.parametrize(
+    "digest_ascii",
+    (
+        b"ab" * 31,
+        b"ab" * 32 + b"0",
+        b"AB" * 32,
+        b"ag" * 32,
+        b"ab" * 32 + b"junk",
+        "\N{FULLWIDTH DIGIT ZERO}".encode() + b"0" * 61,
+    ),
+)
+def test_artifact_id_decoder_rejects_noncanonical_digest_text(
+    digest_ascii: bytes,
+) -> None:
+    encoded = b"urn:h2h:artifact:cbz:1:sha256:" + digest_ascii
+
+    with pytest.raises(DigestFormatError, match="64 lowercase hex"):
+        decode_artifact_id(encoded)
+
+
+@pytest.mark.parametrize(
+    "encoded",
+    (
+        b"",
+        b"URN:h2h:artifact:cbz:1:sha256:" + b"ab" * 32,
+        b"urn:h2h:artifact:zip:1:sha256:" + b"ab" * 32,
+        b"urn:h2h:artifact:cbz:1:" + b"ab" * 32,
+        b"urn:h2h:artifact:cbz:1sha256:" + b"ab" * 32,
+    ),
+)
+def test_artifact_id_decoder_rejects_wrong_registered_structure(
+    encoded: bytes,
+) -> None:
+    with pytest.raises(ByteDomainError, match="prefix|separator"):
+        decode_artifact_id(encoded)
+
+
+def test_artifact_id_decoder_requires_immutable_bytes_and_bounded_input() -> None:
+    with pytest.raises(ByteDomainError, match="immutable bytes"):
+        decode_artifact_id(bytearray(b"artifact"))  # type: ignore[arg-type]
+    with pytest.raises(ByteDomainError, match="exceeds 128 bytes"):
+        decode_artifact_id(b"urn:h2h:artifact:cbz:" + b"1" * 129)
+
+
+def test_publication_id_and_artifact_name_decoders_round_trip_decimal_boundaries() -> (
+    None
+):
+    gids = [1, (1 << 31) - 1, 1 << 31, (1 << 32) - 1, 1 << 32]
+    for power in range(1, 19):
+        gids.extend((10**power - 1, 10**power))
+    gids.append((1 << 63) - 1)
+
+    for gid in dict.fromkeys(gids):
+        encoded_publication = publication_id(gid)
+        encoded_name = artifact_name(gid)
+        assert decode_publication_id(encoded_publication) == gid
+        assert decode_artifact_name(encoded_name) == gid
+        assert publication_id(decode_publication_id(encoded_publication)) == (
+            encoded_publication
+        )
+        assert artifact_name(decode_artifact_name(encoded_name)) == encoded_name
+
+    assert len(publication_id((1 << 63) - 1)) == len(b"urn:h2h:gallery:") + 19
+    assert len(artifact_name((1 << 63) - 1)) == len(b"h2h-") + 19 + len(b".cbz")
+
+
+@pytest.mark.parametrize(
+    "gid_ascii",
+    (
+        b"",
+        b"00",
+        b"01",
+        b"+1",
+        b"-1",
+        b" 1",
+        b"1 ",
+        b"\t1",
+        b"1\n",
+        b"1.0",
+        b"1_0",
+        b"\xff",
+        "\N{FULLWIDTH DIGIT ONE}".encode(),
+        "\N{ARABIC-INDIC DIGIT ONE}".encode(),
+    ),
+)
+def test_publication_id_and_artifact_name_decoders_reject_noncanonical_gid_text(
+    gid_ascii: bytes,
+) -> None:
+    with pytest.raises(ByteDomainError, match="gid|leading zero"):
+        decode_publication_id(b"urn:h2h:gallery:" + gid_ascii)
+    with pytest.raises(ByteDomainError, match="gid|leading zero"):
+        decode_artifact_name(b"h2h-" + gid_ascii + b".cbz")
+
+
+@pytest.mark.parametrize("gid_ascii", (b"0", b"9223372036854775808"))
+def test_publication_id_and_artifact_name_decoders_reject_gid_outside_int63(
+    gid_ascii: bytes,
+) -> None:
+    with pytest.raises(IntegerDomainError, match="publication_id gid"):
+        decode_publication_id(b"urn:h2h:gallery:" + gid_ascii)
+    with pytest.raises(IntegerDomainError, match="artifact_name gid"):
+        decode_artifact_name(b"h2h-" + gid_ascii + b".cbz")
+
+
+@pytest.mark.parametrize(
+    "encoded",
+    (
+        b"",
+        b"URN:h2h:gallery:1",
+        b"urn:h2h:galleries:1",
+        b"urn:h2h:gallery-id:1",
+        b"xurn:h2h:gallery:1",
+    ),
+)
+def test_publication_id_decoder_rejects_wrong_registered_prefix(
+    encoded: bytes,
+) -> None:
+    with pytest.raises(ByteDomainError, match="prefix"):
+        decode_publication_id(encoded)
+
+
+@pytest.mark.parametrize(
+    "encoded",
+    (
+        b"h2h-1",
+        b"h2h-1.CBZ",
+        b"h2h-1.cbz.extra",
+        b"h2h-1.cbz\x00",
+    ),
+)
+def test_artifact_name_decoder_rejects_wrong_registered_suffix(
+    encoded: bytes,
+) -> None:
+    with pytest.raises(ByteDomainError, match="suffix"):
+        decode_artifact_name(encoded)
+
+
+@pytest.mark.parametrize(
+    "encoded",
+    (
+        b"",
+        b"H2H-1.cbz",
+        b"artifact-1.cbz",
+        b"xh2h-1.cbz",
+    ),
+)
+def test_artifact_name_decoder_rejects_wrong_registered_prefix(
+    encoded: bytes,
+) -> None:
+    with pytest.raises(ByteDomainError, match="prefix"):
+        decode_artifact_name(encoded)
+
+
+def test_publication_id_and_artifact_name_decoders_require_bounded_bytes() -> None:
+    with pytest.raises(ByteDomainError, match="immutable bytes"):
+        decode_publication_id(bytearray(b"urn:h2h:gallery:1"))  # type: ignore[arg-type]
+    with pytest.raises(ByteDomainError, match="immutable bytes"):
+        decode_artifact_name(memoryview(b"h2h-1.cbz"))  # type: ignore[arg-type]
+    with pytest.raises(ByteDomainError, match="exceeds 64 bytes"):
+        decode_publication_id(b"urn:h2h:gallery:" + b"1" * 49)
+    with pytest.raises(ByteDomainError, match="exceeds 27 bytes"):
+        decode_artifact_name(b"h2h-" + b"1" * 20 + b".cbz")
 
 
 @pytest.mark.parametrize("value", ["", "bad/domain", "bad\x00domain", "é"])

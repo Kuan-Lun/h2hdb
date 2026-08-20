@@ -5,7 +5,7 @@ predicates.  Runtime dispatch therefore stays closed-world: every supported
 target and phase below is bound to literal SQL owned by this module.  Database
 text is never interpolated into a statement.
 
-All fifteen provider-seeded target kinds are implemented here.  The large
+All seventeen provider-seeded target kinds are implemented here.  The large
 child-first targets use source-owned, immutable statement specifications; the
 database registry is checked for exact equality but is never treated as SQL or
 as an authorization predicate.
@@ -74,6 +74,8 @@ class CleanupTargetKind(StrEnum):
     FILE_NAME_IDENTITY = "FILE_NAME_IDENTITY"
     PUBLICATION_IDENTITY = "PUBLICATION_IDENTITY"
     GALLERY_IDENTITY = "GALLERY_IDENTITY"
+    SOURCE_GALLERY_NAME_GID = "SOURCE_GALLERY_NAME_GID"
+    GALLERY_UPLOAD_TIME = "GALLERY_UPLOAD_TIME"
     CANONICAL_VALUE_UPLOAD = "CANONICAL_VALUE_UPLOAD"
     HASH_CACHE_OBSERVATION = "HASH_CACHE_OBSERVATION"
 
@@ -433,7 +435,7 @@ class VNextCleanupRepository:
         terminal = row_count == 0
 
         work.connector.execute(
-            f"DELETE FROM {_RECEIPT_TABLE} " "WHERE cleanup_id = %s AND phase = %s",
+            f"DELETE FROM {_RECEIPT_TABLE} WHERE cleanup_id = %s AND phase = %s",
             (requested.cleanup_id, checkpoint.phase),
         )
         work.connector.execute(
@@ -1169,14 +1171,15 @@ def _select_content_blobs(
         WHERE b.file_sha256 >= %s
           AND (%s = 0 OR b.file_sha256 > %s)
           AND (%s = 1 OR b.file_sha256 < %s)
-          AND NOT EXISTS (SELECT 1 FROM catalog_gallery_observation_files x WHERE x.file_sha256 = b.file_sha256)
+          AND NOT EXISTS (SELECT 1 FROM catalog_gallery_observation_file_file_sha256s x WHERE x.file_sha256 = b.file_sha256)
           AND NOT EXISTS (SELECT 1 FROM catalog_gallery_observation_file_hash_occurrences x WHERE x.file_sha256 = b.file_sha256)
-          AND NOT EXISTS (SELECT 1 FROM catalog_analysis_file_hash_artist_contributions x WHERE x.file_sha256 = b.file_sha256)
-          AND NOT EXISTS (SELECT 1 FROM catalog_analysis_file_hash_gallery_artist_stats x WHERE x.file_sha256 = b.file_sha256)
-          AND NOT EXISTS (SELECT 1 FROM catalog_analysis_file_hash_decision x WHERE x.file_sha256 = b.file_sha256)
           AND NOT EXISTS (SELECT 1 FROM catalog_analysis_changed_file_hashes x WHERE x.file_sha256 = b.file_sha256)
-          AND NOT EXISTS (SELECT 1 FROM catalog_analysis_exclusion_deltas x WHERE x.file_sha256 = b.file_sha256)
-          AND NOT EXISTS (SELECT 1 FROM catalog_analysis_file_hash_decision_shadow x WHERE x.file_sha256 = b.file_sha256)
+          AND NOT EXISTS (SELECT 1 FROM catalog_analysis_exclusion_delta_anchors x WHERE x.file_sha256 = b.file_sha256)
+          AND NOT EXISTS (SELECT 1 FROM catalog_a_file_decision_shadow_anchors x WHERE x.file_sha256 = b.file_sha256)
+          AND NOT EXISTS (SELECT 1 FROM catalog_a_file_decision_shadow_occurrences x WHERE x.file_sha256 = b.file_sha256)
+          AND NOT EXISTS (SELECT 1 FROM catalog_a_file_decision_shadow_artists x WHERE x.file_sha256 = b.file_sha256)
+          AND NOT EXISTS (SELECT 1 FROM catalog_a_file_decision_shadow_gallery_artist_max x WHERE x.file_sha256 = b.file_sha256)
+          AND NOT EXISTS (SELECT 1 FROM catalog_a_file_decision_shadow_seals x WHERE x.file_sha256 = b.file_sha256)
           AND NOT EXISTS (SELECT 1 FROM catalog_analysis_file_hash_decision_tombstone x WHERE x.file_sha256 = b.file_sha256)
           AND NOT EXISTS (SELECT 1 FROM operational_file_hash_caches x WHERE x.file_sha256 = b.file_sha256)
         ORDER BY b.file_sha256
@@ -1200,14 +1203,15 @@ def _select_content_blobs(
             SELECT b.file_sha256
             FROM catalog_content_blobs AS b
             WHERE b.file_sha256 = %s
-              AND NOT EXISTS (SELECT 1 FROM catalog_gallery_observation_files x WHERE x.file_sha256 = b.file_sha256)
+              AND NOT EXISTS (SELECT 1 FROM catalog_gallery_observation_file_file_sha256s x WHERE x.file_sha256 = b.file_sha256)
               AND NOT EXISTS (SELECT 1 FROM catalog_gallery_observation_file_hash_occurrences x WHERE x.file_sha256 = b.file_sha256)
-              AND NOT EXISTS (SELECT 1 FROM catalog_analysis_file_hash_artist_contributions x WHERE x.file_sha256 = b.file_sha256)
-              AND NOT EXISTS (SELECT 1 FROM catalog_analysis_file_hash_gallery_artist_stats x WHERE x.file_sha256 = b.file_sha256)
-              AND NOT EXISTS (SELECT 1 FROM catalog_analysis_file_hash_decision x WHERE x.file_sha256 = b.file_sha256)
               AND NOT EXISTS (SELECT 1 FROM catalog_analysis_changed_file_hashes x WHERE x.file_sha256 = b.file_sha256)
-              AND NOT EXISTS (SELECT 1 FROM catalog_analysis_exclusion_deltas x WHERE x.file_sha256 = b.file_sha256)
-              AND NOT EXISTS (SELECT 1 FROM catalog_analysis_file_hash_decision_shadow x WHERE x.file_sha256 = b.file_sha256)
+              AND NOT EXISTS (SELECT 1 FROM catalog_analysis_exclusion_delta_anchors x WHERE x.file_sha256 = b.file_sha256)
+              AND NOT EXISTS (SELECT 1 FROM catalog_a_file_decision_shadow_anchors x WHERE x.file_sha256 = b.file_sha256)
+              AND NOT EXISTS (SELECT 1 FROM catalog_a_file_decision_shadow_occurrences x WHERE x.file_sha256 = b.file_sha256)
+              AND NOT EXISTS (SELECT 1 FROM catalog_a_file_decision_shadow_artists x WHERE x.file_sha256 = b.file_sha256)
+              AND NOT EXISTS (SELECT 1 FROM catalog_a_file_decision_shadow_gallery_artist_max x WHERE x.file_sha256 = b.file_sha256)
+              AND NOT EXISTS (SELECT 1 FROM catalog_a_file_decision_shadow_seals x WHERE x.file_sha256 = b.file_sha256)
               AND NOT EXISTS (SELECT 1 FROM catalog_analysis_file_hash_decision_tombstone x WHERE x.file_sha256 = b.file_sha256)
               AND NOT EXISTS (SELECT 1 FROM operational_file_hash_caches x WHERE x.file_sha256 = b.file_sha256)
             """,
@@ -1232,11 +1236,11 @@ def _select_file_name_identities(
     rows = work.connector.fetch_all(
         """
         SELECT n.file_key
-        FROM catalog_file_name_identities AS n
+        FROM catalog_file_name_identity_anchors AS n
         WHERE n.file_key >= %s
           AND (%s = 0 OR n.file_key > %s)
           AND (%s = 1 OR n.file_key < %s)
-          AND NOT EXISTS (SELECT 1 FROM catalog_gallery_observation_files x WHERE x.file_key = n.file_key)
+          AND NOT EXISTS (SELECT 1 FROM catalog_gallery_observation_file_anchors x WHERE x.file_key = n.file_key)
         ORDER BY n.file_key
         LIMIT %s
         """,
@@ -1255,9 +1259,9 @@ def _select_file_name_identities(
             LockRank.CHILD,
             encode_lock_key("cleanup-file-name", key),
             """
-            SELECT n.file_key FROM catalog_file_name_identities AS n
+            SELECT n.file_key FROM catalog_file_name_identity_anchors AS n
             WHERE n.file_key = %s
-              AND NOT EXISTS (SELECT 1 FROM catalog_gallery_observation_files x WHERE x.file_key = n.file_key)
+              AND NOT EXISTS (SELECT 1 FROM catalog_gallery_observation_file_anchors x WHERE x.file_key = n.file_key)
             """,
             (key,),
         )
@@ -1265,14 +1269,22 @@ def _select_file_name_identities(
             raise CleanupRetentionBlockedError(
                 "file-name identity gained a retention root"
             )
-        if (
-            work.connector.execute_affected(
-                "DELETE FROM catalog_file_name_identities WHERE file_key = %s",
-                (key,),
-            )
-            != 1
+        for table in (
+            "catalog_file_name_identity_seals",
+            "catalog_file_name_identity_file_roles",
+            "catalog_file_name_identity_name_bytes",
+            "catalog_file_name_identity_anchors",
         ):
-            raise CleanupUnavailableError("file-name identity changed during cleanup")
+            if (
+                work.connector.execute_affected(
+                    f"DELETE FROM {table} WHERE file_key = %s",
+                    (key,),
+                )
+                != 1
+            ):
+                raise CleanupUnavailableError(
+                    "file-name identity changed during compound cleanup"
+                )
     return _Mutation(keys[-1] if keys else cursor, keys)
 
 
@@ -1287,8 +1299,12 @@ def _select_publication_identities(
         WHERE p.publication_key >= %s
           AND (%s = 0 OR p.publication_key > %s)
           AND (%s = 1 OR p.publication_key < %s)
-          AND NOT EXISTS (SELECT 1 FROM catalog_publications x WHERE x.publication_key = p.publication_key)
-          AND NOT EXISTS (SELECT 1 FROM catalog_artifact_identity x WHERE x.publication_key = p.publication_key)
+          AND NOT EXISTS (
+              SELECT 1 FROM catalog_publication_anchors x
+              WHERE x.publication_key = p.publication_key)
+          AND NOT EXISTS (
+              SELECT 1 FROM catalog_publication_selections x
+              WHERE x.publication_key = p.publication_key)
         ORDER BY p.publication_key
         LIMIT %s
         """,
@@ -1309,8 +1325,12 @@ def _select_publication_identities(
             """
             SELECT p.publication_key FROM catalog_publication_identities AS p
             WHERE p.publication_key = %s
-              AND NOT EXISTS (SELECT 1 FROM catalog_publications x WHERE x.publication_key = p.publication_key)
-              AND NOT EXISTS (SELECT 1 FROM catalog_artifact_identity x WHERE x.publication_key = p.publication_key)
+              AND NOT EXISTS (
+                  SELECT 1 FROM catalog_publication_anchors x
+                  WHERE x.publication_key = p.publication_key)
+              AND NOT EXISTS (
+                  SELECT 1 FROM catalog_publication_selections x
+                  WHERE x.publication_key = p.publication_key)
             """,
             (key,),
         )
@@ -1329,26 +1349,6 @@ def _select_publication_identities(
     return _Mutation(keys[-1] if keys else cursor, keys)
 
 
-def _artifact_cursor(cursor: bytes) -> tuple[bytes, bytes, int]:
-    if not cursor:
-        return bytes(32), b"", 1
-    value = require_bounded_bytes(
-        cursor, field="artifact cleanup cursor", minimum=34, maximum=162
-    )
-    size = int.from_bytes(value[32:34], "big")
-    if size < 1 or size > 128 or len(value) != 34 + size:
-        raise CleanupCorruptionError("artifact cleanup cursor is malformed")
-    return value[:32], value[34:], 0
-
-
-def _artifact_key(artifact_sha256: bytes, artifact_id: bytes) -> bytes:
-    digest = require_digest32(artifact_sha256, field="artifact cleanup digest")
-    identity = require_bounded_bytes(
-        artifact_id, field="artifact cleanup identity", minimum=1, maximum=128
-    )
-    return digest + len(identity).to_bytes(2, "big") + identity
-
-
 def _select_artifact_locations(
     work: VNextUnitOfWork, cycle: CleanupCycle, cursor: bytes
 ) -> _Mutation:
@@ -1361,15 +1361,10 @@ def _select_artifact_locations(
           AND (%s = 0 OR location.artifact_sha256 > %s)
           AND (%s = 1 OR location.artifact_sha256 < %s)
           AND NOT EXISTS (
-              SELECT 1 FROM catalog_artifact_delta_old d
-              WHERE d.artifact_sha256 = location.artifact_sha256)
-          AND NOT EXISTS (
-              SELECT 1 FROM catalog_prepared_artifacts p
+              SELECT 1 FROM catalog_prepared_artifact_sha256s p
               WHERE p.artifact_sha256 = location.artifact_sha256)
           AND NOT EXISTS (
-              SELECT 1 FROM catalog_artifacts a
-              JOIN catalog_artifact_identity retained
-                ON retained.artifact_id = a.artifact_id
+              SELECT 1 FROM catalog_artifact_sha256s retained
               WHERE retained.artifact_sha256 = location.artifact_sha256)
         ORDER BY location.artifact_sha256
         LIMIT %s
@@ -1395,15 +1390,10 @@ def _select_artifact_locations(
             FROM catalog_artifact_location AS location
             WHERE location.artifact_sha256 = %s
               AND NOT EXISTS (
-                  SELECT 1 FROM catalog_artifact_delta_old d
-                  WHERE d.artifact_sha256 = location.artifact_sha256)
-              AND NOT EXISTS (
-                  SELECT 1 FROM catalog_prepared_artifacts p
+                  SELECT 1 FROM catalog_prepared_artifact_sha256s p
                   WHERE p.artifact_sha256 = location.artifact_sha256)
               AND NOT EXISTS (
-                  SELECT 1 FROM catalog_artifacts a
-                  JOIN catalog_artifact_identity retained
-                    ON retained.artifact_id = a.artifact_id
+                  SELECT 1 FROM catalog_artifact_sha256s retained
                   WHERE retained.artifact_sha256 = location.artifact_sha256)
             """,
             (digest,),
@@ -1421,95 +1411,6 @@ def _select_artifact_locations(
     return _Mutation(keys[-1] if keys else cursor, keys)
 
 
-def _select_artifact_identities(
-    work: VNextUnitOfWork, cycle: CleanupCycle, cursor: bytes
-) -> _Mutation:
-    digest_cursor, identity_cursor, first = _artifact_cursor(cursor)
-    lower = bytes((cycle.shard_no,)) + bytes(31)
-    upper = b"" if cycle.shard_no == 255 else bytes((cycle.shard_no + 1,)) + bytes(31)
-    no_upper = 1 if cycle.shard_no == 255 else 0
-    rows = work.connector.fetch_all(
-        """
-        SELECT identity.artifact_sha256, identity.artifact_id
-        FROM catalog_artifact_identity AS identity
-        WHERE identity.artifact_sha256 >= %s
-          AND (%s = 1 OR identity.artifact_sha256 < %s)
-          AND (%s = 1 OR identity.artifact_sha256 > %s
-               OR (identity.artifact_sha256 = %s AND identity.artifact_id > %s))
-          AND NOT EXISTS (
-              SELECT 1 FROM catalog_artifact_location l
-              WHERE l.artifact_sha256 = identity.artifact_sha256)
-          AND NOT EXISTS (
-              SELECT 1 FROM catalog_artifact_delta_old d
-              WHERE d.artifact_sha256 = identity.artifact_sha256)
-          AND NOT EXISTS (
-              SELECT 1 FROM catalog_prepared_artifacts p
-              WHERE p.artifact_sha256 = identity.artifact_sha256)
-          AND NOT EXISTS (
-              SELECT 1 FROM catalog_artifacts a
-              WHERE a.artifact_id = identity.artifact_id)
-        ORDER BY identity.artifact_sha256, identity.artifact_id
-        LIMIT %s
-        """,
-        (
-            lower,
-            no_upper,
-            upper,
-            first,
-            digest_cursor,
-            digest_cursor,
-            identity_cursor,
-            cycle.max_rows_per_transaction,
-        ),
-    )
-    pairs = tuple(
-        (
-            require_digest32(row[0], field="artifact blob digest"),
-            require_bounded_bytes(
-                row[1], field="artifact identity", minimum=1, maximum=128
-            ),
-        )
-        for row in rows
-    )
-    keys = tuple(_artifact_key(digest, identity) for digest, identity in pairs)
-    for digest, identity in pairs:
-        locked = work.lock_row(
-            LockRank.CHILD,
-            encode_lock_key(
-                "cleanup-artifact-identity", _artifact_key(digest, identity)
-            ),
-            """
-            SELECT identity.artifact_sha256, identity.artifact_id
-            FROM catalog_artifact_identity AS identity
-            WHERE identity.artifact_sha256 = %s AND identity.artifact_id = %s
-              AND NOT EXISTS (
-                  SELECT 1 FROM catalog_artifact_location l
-                  WHERE l.artifact_sha256 = identity.artifact_sha256)
-              AND NOT EXISTS (
-                  SELECT 1 FROM catalog_artifact_delta_old d
-                  WHERE d.artifact_sha256 = identity.artifact_sha256)
-              AND NOT EXISTS (
-                  SELECT 1 FROM catalog_prepared_artifacts p
-                  WHERE p.artifact_sha256 = identity.artifact_sha256)
-              AND NOT EXISTS (
-                  SELECT 1 FROM catalog_artifacts a
-                  WHERE a.artifact_id = identity.artifact_id)
-            """,
-            (digest, identity),
-        )
-        if locked != (digest, identity):
-            raise CleanupRetentionBlockedError("artifact identity became retained")
-        if (
-            work.connector.execute_affected(
-                "DELETE FROM catalog_artifact_identity WHERE artifact_id = %s",
-                (identity,),
-            )
-            != 1
-        ):
-            raise CleanupUnavailableError("artifact identity changed during cleanup")
-    return _Mutation(keys[-1] if keys else cursor, keys)
-
-
 def _select_artifact_blobs(
     work: VNextUnitOfWork, cycle: CleanupCycle, cursor: bytes
 ) -> _Mutation:
@@ -1522,14 +1423,14 @@ def _select_artifact_blobs(
           AND (%s = 0 OR blob.artifact_sha256 > %s)
           AND (%s = 1 OR blob.artifact_sha256 < %s)
           AND NOT EXISTS (
-              SELECT 1 FROM catalog_artifact_identity i
-              WHERE i.artifact_sha256 = blob.artifact_sha256)
+              SELECT 1 FROM catalog_artifact_location location
+              WHERE location.artifact_sha256 = blob.artifact_sha256)
           AND NOT EXISTS (
-              SELECT 1 FROM catalog_artifact_delta_old d
-              WHERE d.artifact_sha256 = blob.artifact_sha256)
-          AND NOT EXISTS (
-              SELECT 1 FROM catalog_prepared_artifacts p
+              SELECT 1 FROM catalog_prepared_artifact_sha256s p
               WHERE p.artifact_sha256 = blob.artifact_sha256)
+          AND NOT EXISTS (
+              SELECT 1 FROM catalog_artifact_sha256s retained
+              WHERE retained.artifact_sha256 = blob.artifact_sha256)
         ORDER BY blob.artifact_sha256
         LIMIT %s
         """,
@@ -1551,14 +1452,14 @@ def _select_artifact_blobs(
             SELECT blob.artifact_sha256 FROM catalog_artifact_blobs AS blob
             WHERE blob.artifact_sha256 = %s
               AND NOT EXISTS (
-                  SELECT 1 FROM catalog_artifact_identity i
-                  WHERE i.artifact_sha256 = blob.artifact_sha256)
+                  SELECT 1 FROM catalog_artifact_location location
+                  WHERE location.artifact_sha256 = blob.artifact_sha256)
               AND NOT EXISTS (
-                  SELECT 1 FROM catalog_artifact_delta_old d
-                  WHERE d.artifact_sha256 = blob.artifact_sha256)
-              AND NOT EXISTS (
-                  SELECT 1 FROM catalog_prepared_artifacts p
+                  SELECT 1 FROM catalog_prepared_artifact_sha256s p
                   WHERE p.artifact_sha256 = blob.artifact_sha256)
+              AND NOT EXISTS (
+                  SELECT 1 FROM catalog_artifact_sha256s retained
+                  WHERE retained.artifact_sha256 = blob.artifact_sha256)
             """,
             (key,),
         )
@@ -1751,6 +1652,18 @@ class _StaticDeleteSpec:
     primary_key: tuple[str, ...]
     delete_sql: tuple[str, ...]
     extra_predicate: str = "1 = 1"
+    delete_parameter_indexes: tuple[tuple[int, ...], ...] | None = None
+    delete_allowed_affected: tuple[frozenset[int], ...] | None = None
+
+    def __post_init__(self) -> None:
+        for metadata in (
+            self.delete_parameter_indexes,
+            self.delete_allowed_affected,
+        ):
+            if metadata is not None and len(metadata) != len(self.delete_sql):
+                raise RuntimeError(
+                    "cleanup compound-delete metadata must cover every statement"
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1762,6 +1675,7 @@ class _StaticTargetPlan:
     eligibility: str
     phases: dict[str, tuple[_StaticDeleteSpec, ...]]
     uses_cutoff: bool = False
+    variable_width_shard: bool = False
 
 
 def _identifier(value: str) -> str:
@@ -1787,6 +1701,8 @@ def _owned_spec(
     *,
     extra_predicate: str = "1 = 1",
     delete_sql: tuple[str, ...] | None = None,
+    delete_parameter_indexes: tuple[tuple[int, ...], ...] | None = None,
+    delete_allowed_affected: tuple[frozenset[int], ...] | None = None,
 ) -> _StaticDeleteSpec:
     if owner_key is None:
         owner_key = root_key
@@ -1808,6 +1724,8 @@ def _owned_spec(
             else delete_sql
         ),
         extra_predicate=extra_predicate,
+        delete_parameter_indexes=delete_parameter_indexes,
+        delete_allowed_affected=delete_allowed_affected,
     )
 
 
@@ -1818,6 +1736,8 @@ def _indirect_spec(
     *,
     extra_predicate: str = "1 = 1",
     delete_sql: tuple[str, ...] | None = None,
+    delete_parameter_indexes: tuple[tuple[int, ...], ...] | None = None,
+    delete_allowed_affected: tuple[frozenset[int], ...] | None = None,
 ) -> _StaticDeleteSpec:
     safe_table = _identifier(table)
     return _StaticDeleteSpec(
@@ -1830,6 +1750,8 @@ def _indirect_spec(
             else delete_sql
         ),
         extra_predicate=extra_predicate,
+        delete_parameter_indexes=delete_parameter_indexes,
+        delete_allowed_affected=delete_allowed_affected,
     )
 
 
@@ -1966,10 +1888,14 @@ def _static_shard_parameters(
 ) -> tuple[object, ...]:
     if plan.shard_width is None:
         return (cycle.shard_no,)
-    lower = bytes((cycle.shard_no,)) + bytes(plan.shard_width - 1)
+    lower = bytes((cycle.shard_no,))
+    if not plan.variable_width_shard:
+        lower += bytes(plan.shard_width - 1)
     if cycle.shard_no == 255:
         return (lower, 1, b"")
-    upper = bytes((cycle.shard_no + 1,)) + bytes(plan.shard_width - 1)
+    upper = bytes((cycle.shard_no + 1,))
+    if not plan.variable_width_shard:
+        upper += bytes(plan.shard_width - 1)
     return (lower, 0, upper)
 
 
@@ -2045,8 +1971,22 @@ def _run_static_phase(
                     raise CleanupRetentionBlockedError(
                         f"{plan.kind.value} gained a retention root"
                     )
-                for statement in spec.delete_sql:
-                    if work.connector.execute_affected(statement, primary) != 1:
+                for statement_index, statement in enumerate(spec.delete_sql):
+                    indexes = spec.delete_parameter_indexes
+                    statement_parameters = (
+                        primary
+                        if indexes is None
+                        else tuple(primary[index] for index in indexes[statement_index])
+                    )
+                    affected = work.connector.execute_affected(
+                        statement,
+                        statement_parameters,
+                    )
+                    allowed = spec.delete_allowed_affected
+                    expected = (
+                        frozenset((1,)) if allowed is None else allowed[statement_index]
+                    )
+                    if affected not in expected:
                         raise CleanupUnavailableError(
                             f"{plan.kind.value} cleanup row changed"
                         )
@@ -2068,8 +2008,12 @@ def _static_mutator(kind: CleanupTargetKind, phase: str) -> _Mutator:
 
 
 _SOURCE_BUILD_ELIGIBILITY = """
-NOT EXISTS (
-    SELECT 1 FROM catalog_analysis_runs x WHERE x.build_id = r.build_id)
+EXISTS (
+    SELECT 1 FROM catalog_source_build_states terminal
+    WHERE terminal.build_id = r.build_id
+      AND terminal.state IN ('SEALED', 'ABANDONED'))
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_analysis_run_build_ids x WHERE x.build_id = r.build_id)
 AND NOT EXISTS (
     SELECT 1 FROM operational_source_working_builds x
     WHERE x.build_id = r.build_id)
@@ -2102,24 +2046,31 @@ AND NOT EXISTS (
 """
 
 _ANALYSIS_RUN_ELIGIBILITY = """
-NOT EXISTS (
-    SELECT 1 FROM catalog_publication_candidates x
+EXISTS (
+    SELECT 1 FROM catalog_analysis_run_states terminal
+    WHERE terminal.analysis_id = r.analysis_id
+      AND terminal.state IN ('COMPLETE', 'ABANDONED'))
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_analysis_run_build_ids build
+    JOIN operational_source_working_builds working
+      ON working.build_id = build.build_id
+    WHERE build.analysis_id = r.analysis_id)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_publication_candidate_analysis_ids x
     WHERE x.analysis_id = r.analysis_id)
 AND NOT EXISTS (
     SELECT 1 FROM catalog_analysis_baselines x
     WHERE x.base_analysis_id = r.analysis_id)
 AND NOT EXISTS (
-    SELECT 1 FROM catalog_analysis_state_anchors x
-    WHERE x.anchor_analysis_id = r.analysis_id
-      AND x.analysis_id <> r.analysis_id)
-AND NOT EXISTS (
     SELECT 1 FROM catalog_analysis_state_ancestry x
     WHERE x.ancestor_analysis_id = r.analysis_id
       AND x.analysis_id <> r.analysis_id)
 AND NOT EXISTS (
-    SELECT 1 FROM catalog_source_heads h
+    SELECT 1 FROM catalog_publication_commit_head_receipts h
+    JOIN catalog_publication_commit_source_revisions committed
+      ON committed.receipt_id = h.receipt_id
     JOIN catalog_source_revision_provenance p
-      ON p.source_revision = h.source_revision
+      ON p.source_revision = committed.source_revision
     WHERE p.analysis_id = r.analysis_id)
 """
 
@@ -2128,34 +2079,91 @@ NOT EXISTS (
     SELECT 1 FROM operational_catalog_working_candidates x
     WHERE x.candidate_id = r.candidate_id)
 AND NOT EXISTS (
-    SELECT 1 FROM catalog_publication_receipts x
-    WHERE x.reserved_revision = r.reserved_revision
-      AND x.state <> 'FINALIZED')
+    SELECT 1 FROM catalog_prepared_artifact_states protected
+    WHERE protected.candidate_id = r.candidate_id
+      AND protected.state IN ('PENDING', 'PREPARED'))
 AND NOT EXISTS (
-    SELECT 1 FROM catalog_publication_receipts x
-    JOIN catalog_publication_heads h ON h.revision = x.revision
-    WHERE x.reserved_revision = r.reserved_revision)
+    SELECT 1 FROM catalog_publication_commit_candidates committed
+    WHERE committed.candidate_id = r.candidate_id
+      AND (
+        NOT EXISTS (
+            SELECT 1 FROM catalog_publication_commit_finalizations finalized
+            WHERE finalized.receipt_id = committed.receipt_id)
+        OR EXISTS (
+            SELECT 1 FROM catalog_publication_commit_head_receipts head
+            WHERE head.receipt_id = committed.receipt_id)))
 """
 
 
 def _analysis_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
-    root = "catalog_analysis_runs"
+    root = "catalog_analysis_run_anchors"
     key = ("analysis_id",)
 
     def direct(table: str, pk: tuple[str, ...]) -> _StaticDeleteSpec:
         return _owned_spec(table, pk, root, key)
 
     return {
-        "AR_BATCH": (
-            direct("catalog_source_revision_provenance", ("source_revision",)),
+        "AR_BATCH_SEAL": (
             direct(
-                "catalog_analysis_batch_receipts",
-                ("analysis_id", "stage", "batch_key"),
+                "catalog_analysis_batch_receipt_seals",
+                ("analysis_id", "stage", "start_generation"),
             ),
         ),
-        "AR_SEALS": (
+        "AR_BATCH_VALUES": (
             direct(
-                "catalog_analysis_state_component_seals",
+                "catalog_analysis_batch_receipt_coordinates",
+                ("analysis_id", "stage", "batch_key"),
+            ),
+            direct(
+                "catalog_analysis_batch_receipt_committed_ats",
+                ("analysis_id", "stage", "start_generation"),
+            ),
+            direct(
+                "catalog_analysis_batch_receipt_row_counts",
+                ("analysis_id", "stage", "start_generation"),
+            ),
+            direct(
+                "catalog_analysis_batch_receipt_next_cursors",
+                ("analysis_id", "stage", "start_generation"),
+            ),
+            direct(
+                "catalog_analysis_batch_receipt_start_processed_counts",
+                ("analysis_id", "stage", "start_generation"),
+            ),
+            direct(
+                "catalog_analysis_batch_receipt_page_limits",
+                ("analysis_id", "stage", "start_generation"),
+            ),
+            direct(
+                "catalog_analysis_batch_receipt_start_cursors",
+                ("analysis_id", "stage", "start_generation"),
+            ),
+        ),
+        "AR_BATCH_ANCHOR": (
+            direct(
+                "catalog_analysis_batch_receipt_anchors",
+                ("analysis_id", "stage", "start_generation"),
+            ),
+        ),
+        "AR_COMPONENT_SEAL": (
+            direct(
+                "catalog_analysis_state_component_completion_seals",
+                ("analysis_id", "state_component"),
+            ),
+        ),
+        "AR_COMPONENT_VALUES": (
+            direct(
+                "catalog_analysis_state_component_row_counts",
+                ("analysis_id", "state_component"),
+            ),
+            direct(
+                "catalog_analysis_state_component_sealed_ats",
+                ("analysis_id", "state_component"),
+            ),
+        ),
+        "AR_COMPONENT_ANCHOR": (
+            direct(
+                "catalog_analysis_state_component_anchors",
                 ("analysis_id", "state_component"),
             ),
         ),
@@ -2163,24 +2171,29 @@ def _analysis_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
             direct(table, pk)
             for table, pk in (
                 (
-                    "catalog_analysis_file_hash_decision_shadow",
+                    "catalog_a_file_decision_shadow_seals",
                     ("analysis_id", "file_sha256"),
                 ),
+                (
+                    "catalog_a_content_candidate_shadow_seals",
+                    ("analysis_id", "gallery_id"),
+                ),
+                (
+                    "catalog_a_content_owner_shadow_seals",
+                    ("analysis_id", "content_sha256"),
+                ),
+                (
+                    "catalog_a_impacted_content_seals",
+                    ("analysis_id", "content_sha256"),
+                ),
+                ("catalog_a_impacted_gid_seals", ("analysis_id", "gid")),
                 (
                     "catalog_analysis_file_hash_decision_tombstone",
                     ("analysis_id", "file_sha256"),
                 ),
                 (
-                    "catalog_analysis_content_owner_candidate_shadows",
-                    ("analysis_id", "gallery_id"),
-                ),
-                (
                     "catalog_analysis_content_owner_candidate_tombstones",
                     ("analysis_id", "gallery_id"),
-                ),
-                (
-                    "catalog_analysis_content_owner_shadows",
-                    ("analysis_id", "content_sha256"),
                 ),
                 (
                     "catalog_analysis_content_owner_tombstones",
@@ -2194,49 +2207,128 @@ def _analysis_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                     "catalog_analysis_gid_candidate_tombstones",
                     ("analysis_id", "gallery_id"),
                 ),
-                ("catalog_analysis_gid_winner_shadows", ("analysis_id", "gid")),
+                (
+                    "catalog_analysis_gid_winner_selections",
+                    ("analysis_id", "winner_gallery_id"),
+                ),
                 ("catalog_analysis_gid_winner_tombstones", ("analysis_id", "gid")),
+                (
+                    "catalog_a_file_decision_shadow_occurrences",
+                    ("analysis_id", "file_sha256"),
+                ),
+                (
+                    "catalog_a_file_decision_shadow_artists",
+                    ("analysis_id", "file_sha256"),
+                ),
+                (
+                    "catalog_a_file_decision_shadow_gallery_artist_max",
+                    ("analysis_id", "file_sha256"),
+                ),
+                (
+                    "catalog_a_content_candidate_shadow_contents",
+                    ("analysis_id", "gallery_id"),
+                ),
+                (
+                    "catalog_a_content_candidate_shadow_not_uploaded",
+                    ("analysis_id", "gallery_id"),
+                ),
+                (
+                    "catalog_a_content_candidate_shadow_title_counts",
+                    ("analysis_id", "gallery_id"),
+                ),
+                (
+                    "catalog_a_content_candidate_shadow_download_times",
+                    ("analysis_id", "gallery_id"),
+                ),
+                (
+                    "catalog_a_content_owner_shadow_galleries",
+                    ("analysis_id", "content_sha256"),
+                ),
+                (
+                    "catalog_a_impacted_content_witnesses",
+                    ("analysis_id", "content_sha256"),
+                ),
+                (
+                    "catalog_a_impacted_gid_witnesses",
+                    ("analysis_id", "gid"),
+                ),
+                (
+                    "catalog_a_impacted_content_provenance",
+                    ("analysis_id", "gallery_id", "content_sha256"),
+                ),
+                (
+                    "catalog_a_impacted_gid_provenance",
+                    ("analysis_id", "gallery_id", "gid"),
+                ),
+                (
+                    "catalog_a_file_decision_shadow_anchors",
+                    ("analysis_id", "file_sha256"),
+                ),
+                (
+                    "catalog_a_content_candidate_shadow_anchors",
+                    ("analysis_id", "gallery_id"),
+                ),
+                (
+                    "catalog_a_content_owner_shadow_anchors",
+                    ("analysis_id", "content_sha256"),
+                ),
+                (
+                    "catalog_a_impacted_content_anchors",
+                    ("analysis_id", "content_sha256"),
+                ),
+                ("catalog_a_impacted_gid_anchors", ("analysis_id", "gid")),
             )
         ),
         "AR_EVIDENCE": tuple(
             direct(table, pk)
             for table, pk in (
                 (
-                    "catalog_analysis_file_hash_artist_contributions",
-                    ("analysis_id", "file_sha256", "artist_tag_id", "gallery_id"),
+                    "catalog_analysis_exclusion_delta_changes",
+                    ("analysis_id", "file_sha256"),
                 ),
                 (
-                    "catalog_analysis_file_hash_artist_stats",
-                    ("analysis_id", "file_sha256", "artist_tag_id"),
+                    "catalog_analysis_exclusion_delta_seals",
+                    ("analysis_id", "file_sha256"),
                 ),
-                (
-                    "catalog_analysis_file_hash_gallery_artist_stats",
-                    ("analysis_id", "file_sha256", "gallery_id"),
-                ),
-                ("catalog_analysis_file_hash_decision", ("analysis_id", "file_sha256")),
                 ("catalog_analysis_changed_galleries", ("analysis_id", "gallery_id")),
                 (
                     "catalog_analysis_changed_file_hashes",
                     ("analysis_id", "file_sha256"),
                 ),
-                ("catalog_analysis_exclusion_deltas", ("analysis_id", "file_sha256")),
                 ("catalog_analysis_impacted_galleries", ("analysis_id", "gallery_id")),
-                (
-                    "catalog_analysis_impacted_content",
-                    ("analysis_id", "content_sha256"),
-                ),
-                ("catalog_analysis_impacted_gid", ("analysis_id", "gid")),
-                (
-                    "catalog_analysis_content_owner_candidates",
-                    ("analysis_id", "gallery_id"),
-                ),
-                ("catalog_analysis_content_owners", ("analysis_id", "content_sha256")),
-                ("catalog_analysis_gid_candidates", ("analysis_id", "gallery_id")),
-                ("catalog_analysis_gid_winners", ("analysis_id", "gid")),
             )
         ),
-        "AR_CHECKPOINT": (
-            direct("catalog_analysis_checkpoints", ("analysis_id", "stage")),
+        "AR_EXCLUSION_VALUES": (
+            direct(
+                "catalog_analysis_exclusion_delta_old_excluded_flags",
+                ("analysis_id", "file_sha256"),
+            ),
+            direct(
+                "catalog_analysis_exclusion_delta_new_excluded_flags",
+                ("analysis_id", "file_sha256"),
+            ),
+        ),
+        "AR_EXCLUSION_ANCHOR": (
+            direct(
+                "catalog_analysis_exclusion_delta_anchors",
+                ("analysis_id", "file_sha256"),
+            ),
+        ),
+        "AR_CHECKPOINT_SEAL": (
+            direct("catalog_analysis_checkpoint_seals", ("analysis_id", "stage")),
+        ),
+        "AR_CHECKPOINT_VALUES": (
+            direct("catalog_analysis_checkpoint_updated_ats", ("analysis_id", "stage")),
+            direct("catalog_analysis_checkpoint_states", ("analysis_id", "stage")),
+            direct(
+                "catalog_analysis_checkpoint_processed_counts",
+                ("analysis_id", "stage"),
+            ),
+            direct("catalog_analysis_checkpoint_cursors", ("analysis_id", "stage")),
+            direct("catalog_analysis_checkpoint_generations", ("analysis_id", "stage")),
+        ),
+        "AR_CHECKPOINT_ANCHOR": (
+            direct("catalog_analysis_checkpoint_anchors", ("analysis_id", "stage")),
         ),
         "AR_ANCESTRY": (
             direct(
@@ -2244,56 +2336,200 @@ def _analysis_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                 ("analysis_id", "ancestor_depth"),
             ),
         ),
-        "AR_LINKS": (
-            direct("catalog_analysis_state_anchors", ("analysis_id",)),
-            direct("catalog_analysis_baselines", ("analysis_id",)),
+        "AR_BASELINE": (direct("catalog_analysis_baselines", ("analysis_id",)),),
+        "AR_BINDINGS": (
+            direct("catalog_source_revision_provenance", ("source_revision",)),
             direct("catalog_analysis_snapshot_manifest", ("analysis_id",)),
         ),
-        "AR_ROOT": (direct(root, key),),
+        # The terminal state is part of cleanup eligibility, so the descriptor,
+        # run values, and anchor must leave in one final compound mutation.  An
+        # empty phase preserves the provider's closed 19-phase protocol without
+        # making the terminal row unreachable between transactions.
+        "AR_DESCRIPTOR": (),
+        "AR_RUN_VALUES": (),
+        "AR_ROOT": (
+            _owned_spec(
+                root,
+                key,
+                root,
+                key,
+                delete_sql=(
+                    "DELETE FROM catalog_analysis_run_completed_ats "
+                    "WHERE analysis_id = %s",
+                    "DELETE FROM catalog_analysis_run_descriptor_seals "
+                    "WHERE analysis_id = %s",
+                    "DELETE FROM catalog_analysis_run_identities "
+                    "WHERE analysis_id = %s",
+                    "DELETE FROM catalog_analysis_run_started_ats "
+                    "WHERE analysis_id = %s",
+                    "DELETE FROM catalog_analysis_run_input_manifest_sha256s "
+                    "WHERE analysis_id = %s",
+                    "DELETE FROM catalog_analysis_run_policy_ids "
+                    "WHERE analysis_id = %s",
+                    "DELETE FROM catalog_analysis_run_build_ids "
+                    "WHERE analysis_id = %s",
+                    "DELETE FROM catalog_analysis_run_states " "WHERE analysis_id = %s",
+                    "DELETE FROM catalog_analysis_run_anchors "
+                    "WHERE analysis_id = %s",
+                ),
+                delete_allowed_affected=(
+                    frozenset((0, 1)),
+                    frozenset((1,)),
+                    frozenset((1,)),
+                    frozenset((1,)),
+                    frozenset((1,)),
+                    frozenset((1,)),
+                    frozenset((1,)),
+                    frozenset((1,)),
+                    frozenset((1,)),
+                ),
+            ),
+        ),
     }
 
 
 def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
-    root = "catalog_publication_candidates"
+    root = "catalog_publication_candidate_anchors"
     key = ("candidate_id",)
 
     def direct(table: str, pk: tuple[str, ...]) -> _StaticDeleteSpec:
         return _owned_spec(table, pk, root, key)
 
+    prepared_source = (
+        "catalog_prepared_artifact_anchors AS c "
+        "JOIN catalog_publication_candidate_anchors AS r "
+        "ON r.candidate_id = c.candidate_id"
+    )
+    prepared_key = ("candidate_id", "publication_key")
+    prepared_seal = _indirect_spec(
+        "catalog_prepared_artifact_seals",
+        prepared_key,
+        prepared_source,
+    )
+    prepared_values = _indirect_spec(
+        "catalog_prepared_artifact_states",
+        prepared_key,
+        prepared_source,
+        delete_sql=(
+            "DELETE FROM catalog_prepared_artifact_states "
+            "WHERE candidate_id = %s AND publication_key = %s",
+            "DELETE FROM catalog_prepared_artifact_protection_tokens "
+            "WHERE candidate_id = %s AND publication_key = %s",
+            "DELETE FROM catalog_prepared_artifact_storage_generations "
+            "WHERE candidate_id = %s AND publication_key = %s",
+            "DELETE FROM catalog_prepared_artifact_storage_codec_versions "
+            "WHERE candidate_id = %s AND publication_key = %s",
+            "DELETE FROM catalog_prepared_artifact_sha256s "
+            "WHERE candidate_id = %s AND publication_key = %s",
+        ),
+    )
+
     return {
-        "PC_DELTAS": (
+        "PC_SEALS": (
             direct("operational_publication_candidate_preparations", ("candidate_id",)),
-            direct("catalog_publication_candidate_projection_seal", ("candidate_id",)),
-            direct("catalog_artifact_delta_new", ("candidate_id", "publication_key")),
-            direct("catalog_artifact_delta_old", ("candidate_id", "publication_key")),
+            direct(
+                "catalog_publication_candidate_projection_seals",
+                ("candidate_id",),
+            ),
+            direct(
+                "catalog_publication_batch_receipt_seals",
+                ("candidate_id", "stage", "start_generation"),
+            ),
+            prepared_seal,
             direct("catalog_artifact_operations", ("candidate_id", "publication_key")),
-            direct("catalog_prepared_artifacts", ("candidate_id", "publication_key")),
+        ),
+        "PC_PREPARED_VALUES": (prepared_values,),
+        "PC_PREPARED_ANCHOR": (
+            direct("catalog_prepared_artifact_anchors", prepared_key),
         ),
         "PC_INPUT": (
-            direct("catalog_candidate_artifact_inputs", ("artifact_input_id",)),
-        ),
-        "PC_SELECTION": (
-            direct("catalog_publication_selections", ("candidate_id", "gallery_id")),
-        ),
-        "PC_BATCH": (
             direct(
-                "catalog_publication_batch_receipts",
-                ("candidate_id", "stage", "batch_key"),
+                "catalog_candidate_artifact_inputs",
+                ("candidate_id", "publication_key"),
             ),
         ),
-        "PC_CHECKPOINT": (
-            direct("catalog_publication_checkpoints", ("candidate_id", "stage")),
+        "PC_BATCH_VALUES": (
+            direct(
+                "catalog_publication_batch_receipt_coordinates",
+                ("candidate_id", "stage", "batch_key"),
+            ),
+            direct(
+                "catalog_publication_batch_receipt_committed_ats",
+                ("candidate_id", "stage", "start_generation"),
+            ),
+            direct(
+                "catalog_publication_batch_receipt_row_counts",
+                ("candidate_id", "stage", "start_generation"),
+            ),
+            direct(
+                "catalog_publication_batch_receipt_next_cursors",
+                ("candidate_id", "stage", "start_generation"),
+            ),
+            direct(
+                "catalog_publication_batch_receipt_start_processed_counts",
+                ("candidate_id", "stage", "start_generation"),
+            ),
+            direct(
+                "catalog_publication_batch_receipt_start_cursors",
+                ("candidate_id", "stage", "start_generation"),
+            ),
+        ),
+        "PC_BATCH_ANCHOR": (
+            direct(
+                "catalog_publication_batch_receipt_anchors",
+                ("candidate_id", "stage", "start_generation"),
+            ),
+        ),
+        "PC_CHECKPOINT_SEAL": (
+            direct("catalog_publication_checkpoint_seals", ("candidate_id", "stage")),
+            direct("catalog_publication_selections", ("candidate_id", "gallery_id")),
+        ),
+        "PC_CHECKPOINT_VALUES": (
+            direct(
+                "catalog_publication_checkpoint_updated_ats",
+                ("candidate_id", "stage"),
+            ),
+            direct("catalog_publication_checkpoint_states", ("candidate_id", "stage")),
+            direct(
+                "catalog_publication_checkpoint_processed_counts",
+                ("candidate_id", "stage"),
+            ),
+            direct("catalog_publication_checkpoint_cursors", ("candidate_id", "stage")),
+            direct(
+                "catalog_publication_checkpoint_generations",
+                ("candidate_id", "stage"),
+            ),
+        ),
+        "PC_CHECKPOINT_ANCHOR": (
+            direct("catalog_publication_checkpoint_anchors", ("candidate_id", "stage")),
         ),
         "PC_BASES": (
-            direct("catalog_publication_candidate_base_catalog", ("candidate_id",)),
-            direct("catalog_publication_candidate_base_sources", ("candidate_id",)),
+            direct(
+                "catalog_publication_candidate_base_publication_commits",
+                ("candidate_id",),
+            ),
         ),
-        "PC_ROOT": (direct(root, key),),
+        "PC_ROOT": (
+            direct(
+                "catalog_publication_candidate_definition_seals",
+                key,
+            ),
+            direct("catalog_publication_candidate_created_ats", key),
+            direct("catalog_publication_candidate_artifacts_required", key),
+            direct(
+                "catalog_publication_candidate_display_title_policy_ids",
+                key,
+            ),
+            direct("catalog_publication_candidate_artifact_policy_ids", key),
+            direct("catalog_publication_candidate_reserved_revisions", key),
+            direct("catalog_publication_candidate_analysis_ids", key),
+            direct(root, key),
+        ),
     }
 
 
 def _source_build_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
-    root = "catalog_source_builds"
+    root = "catalog_source_build_anchors"
     key = ("build_id",)
 
     def direct(table: str, pk: tuple[str, ...]) -> _StaticDeleteSpec:
@@ -2305,7 +2541,7 @@ def _source_build_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         "operational_canonical_value_uploads AS c "
         "JOIN operational_source_build_generations AS m "
         "ON m.generation = c.generation "
-        "JOIN catalog_source_builds AS r ON r.build_id = m.build_id",
+        "JOIN catalog_source_build_anchors AS r ON r.build_id = m.build_id",
     )
     return {
         "SB_CANONICAL_UPLOAD": (
@@ -2322,19 +2558,62 @@ def _source_build_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         "SB_GALLERY": (
             direct("operational_source_build_discovery_checkpoints", ("build_id",)),
             direct("operational_source_build_assembly_checkpoints", ("build_id",)),
-            direct("catalog_build_manifests", ("build_id",)),
+            direct("catalog_build_manifest_seals", ("build_id",)),
+            direct("catalog_build_manifest_manifest_sha256s", ("build_id",)),
+            direct("catalog_build_manifest_file_counts", ("build_id",)),
+            direct("catalog_build_manifest_byte_counts", ("build_id",)),
+            direct("catalog_build_manifest_anchors", ("build_id",)),
             direct("catalog_source_build_galleries", ("build_id", "gallery_id")),
         ),
+        "SB_DISCOVERY_SEAL": (
+            direct("catalog_source_build_discovery_seals", ("build_id",)),
+        ),
+        "SB_DISCOVERY_VALUES": (
+            direct("catalog_source_build_discovery_scan_attempts", ("build_id",)),
+            direct("catalog_source_build_discovery_gallery_counts", ("build_id",)),
+            direct(
+                "catalog_source_build_discovery_tree_observation_sha256s",
+                ("build_id",),
+            ),
+            direct("catalog_source_build_discovery_completed_ats", ("build_id",)),
+        ),
+        "SB_DISCOVERY_ANCHOR": (
+            direct("catalog_source_build_discovery_anchors", ("build_id",)),
+        ),
         "SB_SATELLITES": (
-            direct("catalog_source_build_discoveries", ("build_id",)),
             direct("catalog_source_build_expected_gallery", ("build_id", "position")),
-            direct("catalog_source_build_base_source", ("build_id",)),
+            direct("catalog_source_build_base_publication_commits", ("build_id",)),
             direct("catalog_source_build_channel", ("build_id",)),
         ),
         "SB_GENERATION": (
             direct("operational_source_build_generations", ("generation",)),
         ),
-        "SB_ROOT": (direct(root, key),),
+        "SB_ROOT": (
+            _owned_spec(
+                root,
+                key,
+                root,
+                key,
+                delete_sql=(
+                    "DELETE FROM catalog_source_build_sealed_ats WHERE build_id = %s",
+                    "DELETE FROM catalog_source_build_descriptor_seals WHERE build_id = %s",
+                    "DELETE FROM catalog_source_build_states WHERE build_id = %s",
+                    "DELETE FROM catalog_source_build_created_ats WHERE build_id = %s",
+                    "DELETE FROM catalog_source_build_manifest_policy_ids WHERE build_id = %s",
+                    "DELETE FROM catalog_source_build_scope_keys WHERE build_id = %s",
+                    "DELETE FROM catalog_source_build_anchors WHERE build_id = %s",
+                ),
+                delete_allowed_affected=(
+                    frozenset((0, 1)),
+                    frozenset((1,)),
+                    frozenset((1,)),
+                    frozenset((1,)),
+                    frozenset((1,)),
+                    frozenset((1,)),
+                    frozenset((1,)),
+                ),
+            ),
+        ),
     }
 
 
@@ -2665,6 +2944,22 @@ def _gallery_observation_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
             direct(table, pk)
             for table, pk in (
                 (
+                    "catalog_gallery_manifest_seals",
+                    ("gallery_id", "observation_id", "manifest_policy_id"),
+                ),
+                (
+                    "catalog_gallery_manifest_manifest_sha256s",
+                    ("gallery_id", "observation_id", "manifest_policy_id"),
+                ),
+                (
+                    "catalog_gallery_manifest_computed_ats",
+                    ("gallery_id", "observation_id", "manifest_policy_id"),
+                ),
+                (
+                    "catalog_gallery_manifest_anchors",
+                    ("gallery_id", "observation_id", "manifest_policy_id"),
+                ),
+                (
                     "catalog_gallery_observation_file_hash_occurrences",
                     ("gallery_id", "observation_id", "file_sha256"),
                 ),
@@ -2673,25 +2968,98 @@ def _gallery_observation_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                     ("gallery_id", "observation_id", "artist_tag_id"),
                 ),
                 (
-                    "catalog_gallery_manifests",
-                    ("gallery_id", "observation_id", "manifest_policy_id"),
-                ),
-                ("catalog_gallery_observation_stat", ("gallery_id", "observation_id")),
-                (
                     "catalog_gallery_observation_tags",
                     ("gallery_id", "observation_id", "position"),
                 ),
-                (
-                    "catalog_gallery_observation_file_filesystem",
-                    ("gallery_id", "observation_id", "file_key"),
-                ),
             )
         ),
-        "GO_FILES": (
+        "GO_FILESYSTEM_SEAL": (
             direct(
-                "catalog_gallery_observation_files",
-                ("gallery_id", "observation_id", "file_no"),
+                "catalog_gallery_observation_file_filesystem_seals",
+                ("gallery_id", "observation_id", "file_key"),
             ),
+        ),
+        "GO_FILESYSTEM_VALUES": tuple(
+            direct(table, ("gallery_id", "observation_id", "file_key"))
+            for table in (
+                "catalog_gallery_observation_file_filesystem_devices",
+                "catalog_gallery_observation_file_filesystem_inodes",
+                "catalog_gallery_observation_file_filesystem_modified_nses",
+                "catalog_gallery_observation_file_filesystem_changed_nses",
+            )
+        ),
+        "GO_FILESYSTEM_ANCHOR": (
+            direct(
+                "catalog_gallery_observation_file_filesystem_anchors",
+                ("gallery_id", "observation_id", "file_key"),
+            ),
+        ),
+        "GO_FILES": (
+            _owned_spec(
+                "catalog_gallery_observation_file_anchors",
+                ("gallery_id", "observation_id", "file_key"),
+                root,
+                key,
+                delete_sql=(
+                    "DELETE FROM catalog_gallery_observation_file_seals "
+                    "WHERE gallery_id = %s AND observation_id = %s "
+                    "AND file_key = %s",
+                    "DELETE FROM catalog_gallery_observation_file_file_sha256s "
+                    "WHERE gallery_id = %s AND observation_id = %s "
+                    "AND file_key = %s",
+                    "DELETE FROM catalog_gallery_observation_file_file_nos "
+                    "WHERE gallery_id = %s AND observation_id = %s "
+                    "AND file_key = %s",
+                    "DELETE FROM catalog_gallery_observation_file_anchors "
+                    "WHERE gallery_id = %s AND observation_id = %s "
+                    "AND file_key = %s",
+                ),
+            ),
+        ),
+        "GO_METADATA_SEAL": (
+            direct(
+                "catalog_gallery_observation_metadata_seals",
+                ("gallery_id", "observation_id"),
+            ),
+        ),
+        "GO_METADATA_VALUES": (
+            direct(
+                "catalog_gallery_observation_download_times",
+                ("gallery_id", "observation_id"),
+            ),
+            direct(
+                "catalog_gallery_observation_modified_times",
+                ("gallery_id", "observation_id"),
+            ),
+        ),
+        "GO_OBSERVATION_FACT_SEALS": tuple(
+            direct(table, ("gallery_id", "observation_id"))
+            for table in (
+                "catalog_gallery_observation_directory_seals",
+                "catalog_gallery_observation_stat_seals",
+                "catalog_gallery_observation_scan_seals",
+            )
+        ),
+        "GO_OBSERVATION_FACT_VALUES": tuple(
+            direct(table, ("gallery_id", "observation_id"))
+            for table in (
+                "catalog_gallery_observation_directory_entry_counts",
+                "catalog_gallery_observation_directory_observation_sha256s",
+                "catalog_gallery_observation_stat_file_counts",
+                "catalog_gallery_observation_stat_byte_counts",
+                "catalog_gallery_observation_scan_observation_sha256s",
+                "catalog_gallery_observation_scan_observation_versions",
+                "catalog_gallery_observation_scan_source_file_counts",
+            )
+        ),
+        "GO_OBSERVATION_FACT_ANCHORS": tuple(
+            direct(table, ("gallery_id", "observation_id"))
+            for table in (
+                "catalog_gallery_observation_metadata_anchors",
+                "catalog_gallery_observation_directory_anchors",
+                "catalog_gallery_observation_stat_anchors",
+                "catalog_gallery_observation_scan_anchors",
+            )
         ),
         "GO_DESCRIPTOR": tuple(
             direct(table, pk)
@@ -2705,11 +3073,6 @@ def _gallery_observation_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                     "catalog_gallery_observation_allocation_pages",
                     ("gallery_id", "observation_id", "page_sha256"),
                 ),
-                (
-                    "catalog_gallery_observation_metadata",
-                    ("gallery_id", "observation_id"),
-                ),
-                ("catalog_gallery_observation_scans", ("gallery_id", "observation_id")),
                 (
                     "catalog_gallery_observation_discovery_fingerprints",
                     ("gallery_id", "observation_id"),
@@ -2726,10 +3089,6 @@ def _gallery_observation_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                     "catalog_gallery_observation_page_counts",
                     ("gallery_id", "observation_id"),
                 ),
-                (
-                    "catalog_gallery_observation_directories",
-                    ("gallery_id", "observation_id"),
-                ),
             )
         ),
         "GO_ROOT": (direct(root, key),),
@@ -2742,13 +3101,13 @@ NOT EXISTS (
     WHERE bound.preparation_id = r.preparation_id)
 AND (
     (r.state = 'COMPLETE' AND EXISTS (
-        SELECT 1 FROM operational_operational_activations active
-        WHERE active.preparation_id = r.preparation_id))
+        SELECT 1 FROM catalog_publication_commit_operational_preparations committed
+        WHERE committed.preparation_id = r.preparation_id))
     OR
     (r.state = 'ABANDONED'
      AND NOT EXISTS (
-        SELECT 1 FROM operational_operational_activations active
-        WHERE active.preparation_id = r.preparation_id)
+        SELECT 1 FROM catalog_publication_commit_operational_preparations committed
+        WHERE committed.preparation_id = r.preparation_id)
      AND NOT EXISTS (
         SELECT 1 FROM operational_operational_event_ack_heads head
         WHERE head.preparation_id = r.preparation_id)
@@ -2852,7 +3211,7 @@ AND NOT EXISTS (
 
 
 def _gallery_page_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
-    root = "catalog_gallery_observation_pages"
+    root = "catalog_gallery_observation_page_descriptor_anchors"
     key = ("page_sha256",)
     return {
         "GOP_OUTGOING_CHILD": (
@@ -2866,7 +3225,25 @@ def _gallery_page_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         ),
         "GOP_BOUNDS": (
             _owned_spec(
-                "catalog_gallery_observation_page_key_bounds",
+                "catalog_gallery_observation_page_key_bounds_seals",
+                ("page_sha256",),
+                root,
+                key,
+            ),
+            _owned_spec(
+                "catalog_gallery_observation_page_key_bounds_first_keys",
+                ("page_sha256",),
+                root,
+                key,
+            ),
+            _owned_spec(
+                "catalog_gallery_observation_page_key_bounds_last_keys",
+                ("page_sha256",),
+                root,
+                key,
+            ),
+            _owned_spec(
+                "catalog_gallery_observation_page_key_bounds_anchors",
                 ("page_sha256",),
                 root,
                 key,
@@ -2874,7 +3251,31 @@ def _gallery_page_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         ),
         "GOP_DESCRIPTOR": (
             _owned_spec(
-                "catalog_gallery_observation_page_descriptors",
+                "catalog_gallery_observation_page_descriptor_seals",
+                ("page_sha256",),
+                root,
+                key,
+            ),
+            _owned_spec(
+                "catalog_gallery_observation_page_descriptor_components",
+                ("page_sha256",),
+                root,
+                key,
+            ),
+            _owned_spec(
+                "catalog_gallery_observation_page_descriptor_levels",
+                ("page_sha256",),
+                root,
+                key,
+            ),
+            _owned_spec(
+                "catalog_gallery_observation_page_descriptor_subtree_item_counts",
+                ("page_sha256",),
+                root,
+                key,
+            ),
+            _owned_spec(
+                "catalog_gallery_observation_pages",
                 ("page_sha256",),
                 root,
                 key,
@@ -2889,35 +3290,43 @@ NOT EXISTS (SELECT 1 FROM catalog_gallery_observation_allocations x
             WHERE x.gallery_id = r.gallery_id)
 AND NOT EXISTS (SELECT 1 FROM catalog_source_build_expected_gallery x
                 WHERE x.gallery_id = r.gallery_id)
-AND NOT EXISTS (SELECT 1 FROM catalog_analysis_file_hash_artist_contributions x
-                WHERE x.gallery_id = r.gallery_id)
-AND NOT EXISTS (SELECT 1 FROM catalog_analysis_file_hash_gallery_artist_stats x
-                WHERE x.gallery_id = r.gallery_id)
 AND NOT EXISTS (SELECT 1 FROM catalog_analysis_changed_galleries x
                 WHERE x.gallery_id = r.gallery_id)
 AND NOT EXISTS (SELECT 1 FROM catalog_analysis_impacted_galleries x
                 WHERE x.gallery_id = r.gallery_id)
-AND NOT EXISTS (SELECT 1 FROM catalog_analysis_content_owner_candidates x
+AND NOT EXISTS (SELECT 1 FROM catalog_a_content_candidate_shadow_anchors x
                 WHERE x.gallery_id = r.gallery_id)
-AND NOT EXISTS (SELECT 1 FROM catalog_analysis_content_owners x
-                WHERE x.owner_gallery_id = r.gallery_id)
-AND NOT EXISTS (SELECT 1 FROM catalog_analysis_gid_candidates x
+AND NOT EXISTS (SELECT 1 FROM catalog_a_content_candidate_shadow_contents x
                 WHERE x.gallery_id = r.gallery_id)
-AND NOT EXISTS (SELECT 1 FROM catalog_analysis_gid_winners x
-                WHERE x.winner_gallery_id = r.gallery_id)
-AND NOT EXISTS (SELECT 1 FROM catalog_analysis_content_owner_candidate_shadows x
+AND NOT EXISTS (SELECT 1 FROM catalog_a_content_candidate_shadow_not_uploaded x
+                WHERE x.gallery_id = r.gallery_id)
+AND NOT EXISTS (SELECT 1 FROM catalog_a_content_candidate_shadow_title_counts x
+                WHERE x.gallery_id = r.gallery_id)
+AND NOT EXISTS (SELECT 1 FROM catalog_a_content_candidate_shadow_download_times x
+                WHERE x.gallery_id = r.gallery_id)
+AND NOT EXISTS (SELECT 1 FROM catalog_a_content_candidate_shadow_seals x
                 WHERE x.gallery_id = r.gallery_id)
 AND NOT EXISTS (SELECT 1 FROM catalog_analysis_content_owner_candidate_tombstones x
                 WHERE x.gallery_id = r.gallery_id)
-AND NOT EXISTS (SELECT 1 FROM catalog_analysis_content_owner_shadows x
+AND NOT EXISTS (SELECT 1 FROM catalog_a_content_owner_shadow_galleries x
                 WHERE x.owner_gallery_id = r.gallery_id)
+AND NOT EXISTS (SELECT 1 FROM catalog_a_impacted_content_provenance x
+                WHERE x.gallery_id = r.gallery_id)
+AND NOT EXISTS (SELECT 1 FROM catalog_a_impacted_content_witnesses x
+                WHERE x.witness_gallery_id = r.gallery_id)
+AND NOT EXISTS (SELECT 1 FROM catalog_a_impacted_gid_provenance x
+                WHERE x.gallery_id = r.gallery_id)
+AND NOT EXISTS (SELECT 1 FROM catalog_a_impacted_gid_witnesses x
+                WHERE x.witness_gallery_id = r.gallery_id)
 AND NOT EXISTS (SELECT 1 FROM catalog_analysis_gid_candidate_shadows x
                 WHERE x.gallery_id = r.gallery_id)
 AND NOT EXISTS (SELECT 1 FROM catalog_analysis_gid_candidate_tombstones x
                 WHERE x.gallery_id = r.gallery_id)
-AND NOT EXISTS (SELECT 1 FROM catalog_analysis_gid_winner_shadows x
+AND NOT EXISTS (SELECT 1 FROM catalog_analysis_gid_winner_selections x
                 WHERE x.winner_gallery_id = r.gallery_id)
 AND NOT EXISTS (SELECT 1 FROM catalog_publication_selections x
+                WHERE x.gallery_id = r.gallery_id)
+AND NOT EXISTS (SELECT 1 FROM catalog_gallery_observation_metadata_seals x
                 WHERE x.gallery_id = r.gallery_id)
 AND NOT EXISTS (SELECT 1 FROM operational_gallery_redownload_states x
                 WHERE x.gallery_id = r.gallery_id)
@@ -2925,7 +3334,7 @@ AND NOT EXISTS (SELECT 1 FROM operational_gallery_redownload_states x
 
 
 def _gallery_identity_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
-    root = "catalog_gallery_identities"
+    root = "catalog_gallery_identity_anchors"
     key = ("gallery_id",)
     return {
         "GI_OBSERVATION_ALLOCATOR": (
@@ -2936,8 +3345,58 @@ def _gallery_identity_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                 key,
             ),
         ),
-        "GI_ROOT": (_owned_spec(root, key, root, key),),
+        "GI_SOURCE_NAME_ACCESS": (
+            _owned_spec(
+                "catalog_gallery_source_name_accesses",
+                ("gallery_id",),
+                root,
+                key,
+            ),
+        ),
+        "GI_ROOT": (
+            _owned_spec(
+                root,
+                key,
+                root,
+                key,
+                delete_sql=(
+                    "DELETE FROM catalog_gallery_identity_seals WHERE gallery_id = %s",
+                    "DELETE FROM catalog_gallery_identity_gallery_keys "
+                    "WHERE gallery_id = %s",
+                    "DELETE FROM catalog_gallery_identity_coordinates "
+                    "WHERE gallery_id = %s",
+                    "DELETE FROM catalog_gallery_identity_anchors "
+                    "WHERE gallery_id = %s",
+                ),
+            ),
+        ),
     }
+
+
+_SOURCE_GALLERY_NAME_GID_ELIGIBILITY = """
+NOT EXISTS (SELECT 1 FROM catalog_gallery_source_name_accesses x
+            WHERE x.source_gallery_name = r.source_gallery_name)
+"""
+
+
+def _source_gallery_name_gid_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
+    root = "catalog_source_gallery_name_gids"
+    key = ("source_gallery_name",)
+    return {"SNG_ROOT": (_owned_spec(root, key, root, key),)}
+
+
+_GALLERY_UPLOAD_TIME_ELIGIBILITY = """
+NOT EXISTS (SELECT 1 FROM catalog_source_gallery_name_gids x
+            WHERE x.gid = r.gid)
+AND NOT EXISTS (SELECT 1 FROM catalog_publication_identities x
+                WHERE x.gid = r.gid)
+"""
+
+
+def _gallery_upload_time_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
+    root = "catalog_gallery_upload_times"
+    key = ("gid",)
+    return {"GUT_ROOT": (_owned_spec(root, key, root, key),)}
 
 
 _CANONICAL_UPLOAD_ELIGIBILITY = """
@@ -2957,9 +3416,11 @@ AND NOT EXISTS (
     SELECT 1 FROM operational_ingest_generation_handoffs handoff
     WHERE handoff.generation = r.generation)
 AND EXISTS (
-    SELECT 1 FROM catalog_canonical_value_allocations allocation
+    SELECT 1 FROM catalog_canonical_value_allocation_seals allocation
+    JOIN catalog_canonical_value_allocation_digest_domains domain
+      ON domain.value_sha256 = allocation.value_sha256
     WHERE allocation.value_sha256 = r.value_sha256
-      AND (allocation.digest_domain = X'736F757263655F726F6F745F7631' OR EXISTS (
+      AND (domain.digest_domain = X'736F757263655F726F6F745F7631' OR EXISTS (
           SELECT 1 FROM operational_source_build_generations mapped
           WHERE mapped.generation = r.generation)))
 """
@@ -2977,84 +3438,93 @@ NOT EXISTS (SELECT 1 FROM operational_canonical_value_uploads x
 AND NOT EXISTS (SELECT 1 FROM operational_hash_cache_observations x
                 WHERE x.source_identity_sha256 = r.value_sha256
                    OR x.fingerprint_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_source_scopes x
-                WHERE x.source_root_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_source_builds x
-                WHERE x.scope_key = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_gallery_identities x
-                WHERE x.scope_key = r.value_sha256
-                   OR x.locator_sha256 = r.value_sha256)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_source_scope_source_root_sha256s scope_root
+    JOIN catalog_source_build_scope_keys build
+      ON build.scope_key = scope_root.scope_key
+    WHERE scope_root.source_root_sha256 = r.value_sha256)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_source_scope_source_root_sha256s scope_root
+    JOIN catalog_gallery_identity_coordinates gallery
+      ON gallery.scope_key = scope_root.scope_key
+    WHERE scope_root.source_root_sha256 = r.value_sha256)
+AND NOT EXISTS (SELECT 1 FROM catalog_gallery_identity_coordinates x
+                WHERE x.locator_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_gallery_observations x
                 WHERE x.observation_identity_sha256 = r.value_sha256)
 AND NOT EXISTS (
     SELECT 1 FROM catalog_gallery_observation_tags x
-    JOIN catalog_tag_terms term ON term.tag_id = x.tag_id
+    JOIN catalog_tag_term_identities term ON term.tag_id = x.tag_id
     WHERE term.tag_value_sha256 = r.value_sha256)
 AND NOT EXISTS (
     SELECT 1 FROM catalog_gallery_observation_artists x
-    JOIN catalog_tag_terms term ON term.tag_id = x.artist_tag_id
-    WHERE term.tag_value_sha256 = r.value_sha256)
-AND NOT EXISTS (
-    SELECT 1 FROM catalog_analysis_file_hash_artist_contributions x
-    JOIN catalog_tag_terms term ON term.tag_id = x.artist_tag_id
-    WHERE term.tag_value_sha256 = r.value_sha256)
-AND NOT EXISTS (
-    SELECT 1 FROM catalog_analysis_file_hash_artist_stats x
-    JOIN catalog_tag_terms term ON term.tag_id = x.artist_tag_id
+    JOIN catalog_tag_term_identities term ON term.tag_id = x.artist_tag_id
     WHERE term.tag_value_sha256 = r.value_sha256)
 AND NOT EXISTS (
     SELECT 1 FROM catalog_subjects x
-    JOIN catalog_tag_terms term ON term.tag_id = x.tag_id
+    JOIN catalog_tag_term_identities term ON term.tag_id = x.tag_id
     WHERE term.tag_value_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_source_revisions x
-                WHERE x.snapshot_manifest_sha256 = r.value_sha256)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_source_revision_descriptor_seals sealed
+    JOIN catalog_source_revision_snapshot_manifests manifest
+      ON manifest.source_revision = sealed.source_revision
+    WHERE manifest.snapshot_manifest_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_analysis_snapshot_manifest x
                 WHERE x.snapshot_manifest_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_analysis_impacted_content x
+AND NOT EXISTS (SELECT 1 FROM catalog_a_impacted_content_anchors x
                 WHERE x.content_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_analysis_content_owner_candidates x
+AND NOT EXISTS (SELECT 1 FROM catalog_a_impacted_content_provenance x
                 WHERE x.content_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_analysis_content_owners x
+AND NOT EXISTS (SELECT 1 FROM catalog_a_impacted_content_witnesses x
                 WHERE x.content_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_analysis_content_owner_candidate_shadows x
+AND NOT EXISTS (SELECT 1 FROM catalog_a_impacted_content_seals x
                 WHERE x.content_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_analysis_content_owner_shadows x
+AND NOT EXISTS (SELECT 1 FROM catalog_a_content_candidate_shadow_contents x
+                WHERE x.content_sha256 = r.value_sha256)
+AND NOT EXISTS (SELECT 1 FROM catalog_a_content_owner_shadow_anchors x
+                WHERE x.content_sha256 = r.value_sha256)
+AND NOT EXISTS (SELECT 1 FROM catalog_a_content_owner_shadow_galleries x
+                WHERE x.content_sha256 = r.value_sha256)
+AND NOT EXISTS (SELECT 1 FROM catalog_a_content_owner_shadow_seals x
                 WHERE x.content_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_analysis_content_owner_tombstones x
                 WHERE x.content_sha256 = r.value_sha256)
 AND NOT EXISTS (
-    SELECT 1 FROM catalog_publication_candidates x
+    SELECT 1 FROM catalog_publication_candidate_artifact_policy_ids x
     JOIN catalog_artifact_policies policy
       ON policy.artifact_policy_id = x.artifact_policy_id
     WHERE policy.policy_component_sha256 = r.value_sha256)
 AND NOT EXISTS (
-    SELECT 1 FROM catalog_publication_receipts x
+    SELECT 1 FROM catalog_publication_commit_artifact_policies committed
     JOIN catalog_artifact_policies policy
-      ON policy.artifact_policy_id = x.artifact_policy_id
+      ON policy.artifact_policy_id = committed.artifact_policy_id
     WHERE policy.policy_component_sha256 = r.value_sha256)
-AND NOT EXISTS (
-    SELECT 1 FROM catalog_artifact_semantic_input semantic
-    WHERE semantic.source_manifest_component_sha256 = r.value_sha256
-       OR semantic.member_plan_component_sha256 = r.value_sha256
-       OR semantic.effective_content_component_sha256 = r.value_sha256
-       OR semantic.selected_component_sha256 = r.value_sha256
-       OR semantic.owner_component_sha256 = r.value_sha256
-       OR semantic.policy_component_sha256 = r.value_sha256)
+AND NOT EXISTS (SELECT 1 FROM catalog_artifact_semantic_source_manifest_sha256s x
+                WHERE x.source_manifest_component_sha256 = r.value_sha256)
+AND NOT EXISTS (SELECT 1 FROM catalog_artifact_semantic_member_plan_sha256s x
+                WHERE x.member_plan_component_sha256 = r.value_sha256)
+AND NOT EXISTS (SELECT 1 FROM catalog_artifact_semantic_effective_content_sha256s x
+                WHERE x.effective_content_component_sha256 = r.value_sha256)
+AND NOT EXISTS (SELECT 1 FROM catalog_artifact_semantic_selected_sha256s x
+                WHERE x.selected_component_sha256 = r.value_sha256)
+AND NOT EXISTS (SELECT 1 FROM catalog_artifact_semantic_owner_sha256s x
+                WHERE x.owner_component_sha256 = r.value_sha256)
+AND NOT EXISTS (SELECT 1 FROM catalog_artifact_semantic_policy_sha256s x
+                WHERE x.policy_component_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_candidate_artifact_inputs x
                 WHERE x.artifact_semantics_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_artifact_delta_old x
-                WHERE x.artifact_semantics_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_artifacts x
+AND NOT EXISTS (SELECT 1 FROM catalog_artifact_semantics_sha256s x
                 WHERE x.artifact_semantics_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_publication_contents x
                 WHERE x.content_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_contributors x
+AND NOT EXISTS (SELECT 1 FROM catalog_contributor_name_sha256s x
                 WHERE x.contributor_name_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_contributor_sort_as x
-                WHERE x.sort_as_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_publications x
-                WHERE x.summary_sha256 = r.value_sha256
-                   OR x.language_sha256 = r.value_sha256)
+AND NOT EXISTS (SELECT 1 FROM catalog_publication_summary_sha256s x
+                WHERE x.summary_sha256 = r.value_sha256)
+AND NOT EXISTS (SELECT 1 FROM catalog_publication_language_sha256s x
+                WHERE x.language_sha256 = r.value_sha256)
+AND NOT EXISTS (SELECT 1 FROM catalog_publication_title_source_title_sha256s x
+                WHERE x.source_title_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_artifact_location x
                 WHERE x.artifact_locator_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_display_title_choices x
@@ -3067,69 +3537,165 @@ AND NOT EXISTS (SELECT 1 FROM catalog_title_sorts x
 
 
 def _canonical_value_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
-    root = "catalog_canonical_value_allocations"
+    root = "catalog_canonical_value_allocation_anchors"
     key = ("value_sha256",)
-    source_scope = _indirect_spec(
-        "catalog_source_scopes",
-        ("scope_key",),
-        "catalog_source_scopes AS c "
-        "JOIN catalog_canonical_value_allocations AS r "
-        "ON r.value_sha256 = c.scope_key",
+    source_scope = (
+        _indirect_spec(
+            "catalog_source_scope_anchors",
+            ("scope_key",),
+            "catalog_source_scope_anchors AS c "
+            "JOIN catalog_source_scope_source_root_sha256s AS scope_root "
+            "ON scope_root.scope_key = c.scope_key "
+            "JOIN catalog_canonical_value_allocation_anchors AS r "
+            "ON r.value_sha256 = scope_root.source_root_sha256",
+            delete_sql=(
+                "DELETE FROM catalog_source_scope_seals WHERE scope_key = %s",
+                "DELETE FROM catalog_source_scope_identities WHERE scope_key = %s",
+                "DELETE FROM catalog_source_scope_identity_policy_versions "
+                "WHERE scope_key = %s",
+                "DELETE FROM catalog_source_scope_source_providers "
+                "WHERE scope_key = %s",
+                "DELETE FROM catalog_source_scope_source_root_sha256s "
+                "WHERE scope_key = %s",
+                "DELETE FROM catalog_source_scope_anchors WHERE scope_key = %s",
+            ),
+        ),
     )
     locator = _indirect_spec(
         "catalog_source_locator_identity",
         ("locator_sha256",),
         "catalog_source_locator_identity AS c "
-        "JOIN catalog_canonical_value_allocations AS r "
+        "JOIN catalog_canonical_value_allocation_anchors AS r "
         "ON r.value_sha256 = c.locator_sha256",
     )
     tag = _indirect_spec(
-        "catalog_tag_terms",
+        "catalog_tag_term_anchors",
         ("tag_id",),
-        "catalog_tag_terms AS c "
-        "JOIN catalog_canonical_value_allocations AS r "
-        "ON r.value_sha256 = c.tag_value_sha256",
+        "catalog_tag_term_anchors AS c "
+        "JOIN catalog_tag_term_identities AS identity "
+        "ON identity.tag_id = c.tag_id "
+        "JOIN catalog_canonical_value_allocation_anchors AS r "
+        "ON r.value_sha256 = identity.tag_value_sha256",
+        delete_sql=(
+            "DELETE FROM catalog_tag_term_seals WHERE tag_id = %s",
+            "DELETE FROM catalog_tag_term_identities WHERE tag_id = %s",
+            "DELETE FROM catalog_tag_term_anchors WHERE tag_id = %s",
+        ),
     )
     snapshot = _indirect_spec(
-        "catalog_source_snapshot_manifest_identity",
+        "catalog_source_snapshot_manifest_identity_anchors",
         ("snapshot_manifest_sha256",),
-        "catalog_source_snapshot_manifest_identity AS c "
-        "JOIN catalog_canonical_value_allocations AS r "
+        "catalog_source_snapshot_manifest_identity_anchors AS c "
+        "JOIN catalog_canonical_value_allocation_anchors AS r "
         "ON r.value_sha256 = c.snapshot_manifest_sha256",
+        delete_sql=(
+            "DELETE FROM catalog_source_snapshot_manifest_identity_seals "
+            "WHERE snapshot_manifest_sha256 = %s",
+            "DELETE FROM catalog_source_snapshot_manifest_identity_gallery_counts "
+            "WHERE snapshot_manifest_sha256 = %s",
+            "DELETE FROM catalog_source_snapshot_manifest_identity_file_counts "
+            "WHERE snapshot_manifest_sha256 = %s",
+            "DELETE FROM catalog_source_snapshot_manifest_identity_byte_counts "
+            "WHERE snapshot_manifest_sha256 = %s",
+            "DELETE FROM catalog_source_snapshot_manifest_identity_anchors "
+            "WHERE snapshot_manifest_sha256 = %s",
+        ),
     )
     policy = _indirect_spec(
         "catalog_artifact_policies",
         ("artifact_policy_id",),
         "catalog_artifact_policies AS c "
-        "JOIN catalog_canonical_value_allocations AS r "
+        "JOIN catalog_canonical_value_allocation_anchors AS r "
         "ON r.value_sha256 = c.policy_component_sha256",
     )
     semantic = _indirect_spec(
-        "catalog_artifact_semantic_input",
+        "catalog_artifact_semantic_input_anchors",
         ("artifact_semantics_sha256",),
-        "catalog_artifact_semantic_input AS c "
-        "JOIN catalog_canonical_value_allocations AS r "
+        "catalog_artifact_semantic_input_anchors AS c "
+        "JOIN catalog_canonical_value_allocation_anchors AS r "
         "ON r.value_sha256 = c.artifact_semantics_sha256",
+        delete_sql=(
+            "DELETE FROM catalog_artifact_semantic_input_seals "
+            "WHERE artifact_semantics_sha256 = %s",
+            "DELETE FROM catalog_artifact_semantic_input_identities "
+            "WHERE artifact_semantics_sha256 = %s",
+            "DELETE FROM catalog_artifact_semantic_source_manifest_sha256s "
+            "WHERE artifact_semantics_sha256 = %s",
+            "DELETE FROM catalog_artifact_semantic_member_plan_sha256s "
+            "WHERE artifact_semantics_sha256 = %s",
+            "DELETE FROM catalog_artifact_semantic_effective_content_sha256s "
+            "WHERE artifact_semantics_sha256 = %s",
+            "DELETE FROM catalog_artifact_semantic_selected_sha256s "
+            "WHERE artifact_semantics_sha256 = %s",
+            "DELETE FROM catalog_artifact_semantic_owner_sha256s "
+            "WHERE artifact_semantics_sha256 = %s",
+            "DELETE FROM catalog_artifact_semantic_policy_sha256s "
+            "WHERE artifact_semantics_sha256 = %s",
+            "DELETE FROM catalog_artifact_semantic_input_anchors "
+            "WHERE artifact_semantics_sha256 = %s",
+        ),
     )
-    policy_semantics = _indirect_spec(
-        "catalog_artifact_policy_semantics",
-        ("policy_component_sha256",),
-        "catalog_artifact_policy_semantics AS c "
-        "JOIN catalog_canonical_value_allocations AS r "
-        "ON r.value_sha256 = c.policy_component_sha256",
+    policy_semantics = tuple(
+        _indirect_spec(
+            table,
+            ("policy_component_sha256",),
+            f"{table} AS c "
+            "JOIN catalog_canonical_value_allocation_anchors AS r "
+            "ON r.value_sha256 = c.policy_component_sha256",
+        )
+        for table in (
+            "catalog_artifact_policy_semantics_seals",
+            "catalog_artifact_policy_semantics_identities",
+            "catalog_artifact_policy_semantics_producer_fingerprint_sha256s",
+            "catalog_artifact_policy_semantics_max_image_short_sides",
+            "catalog_artifact_policy_semantics_artifact_algorithm_versions",
+            "catalog_artifact_policy_semantics_anchors",
+        )
     )
     parent = _indirect_spec(
         "catalog_canonical_value_page_parents",
-        ("child_sha256",),
+        ("parent_sha256", "position"),
         "catalog_canonical_value_page_parents AS c "
-        "JOIN catalog_canonical_value_page_descriptors AS owned "
+        "JOIN catalog_canonical_value_page_coordinates AS owned "
         "ON owned.page_sha256 = c.child_sha256 "
-        "JOIN catalog_canonical_value_allocations AS r "
+        "JOIN catalog_canonical_value_allocation_anchors AS r "
         "ON r.value_sha256 = owned.value_sha256",
     )
+    page_seal = _indirect_spec(
+        "catalog_canonical_value_page_seals",
+        ("page_sha256",),
+        "catalog_canonical_value_page_seals AS c "
+        "JOIN catalog_canonical_value_page_coordinates AS owned "
+        "ON owned.page_sha256 = c.page_sha256 "
+        "JOIN catalog_canonical_value_allocation_anchors AS r "
+        "ON r.value_sha256 = owned.value_sha256",
+    )
+    page_family = _indirect_spec(
+        "catalog_canonical_value_page_coordinates",
+        ("value_sha256", "level", "page_position", "page_sha256"),
+        "catalog_canonical_value_page_coordinates AS c "
+        "JOIN catalog_canonical_value_allocation_anchors AS r "
+        "ON r.value_sha256 = c.value_sha256",
+        delete_sql=(
+            "DELETE FROM catalog_canonical_value_page_coordinates "
+            "WHERE value_sha256 = %s AND level = %s AND page_position = %s "
+            "AND page_sha256 = %s",
+            "DELETE FROM catalog_canonical_value_page_payloads WHERE page_sha256 = %s",
+            "DELETE FROM catalog_canonical_value_page_subtree_item_counts "
+            "WHERE page_sha256 = %s",
+            "DELETE FROM catalog_canonical_value_page_anchors WHERE page_sha256 = %s",
+        ),
+        delete_parameter_indexes=((0, 1, 2, 3), (3,), (3,), (3,)),
+        delete_allowed_affected=(
+            frozenset((1,)),
+            frozenset((0, 1)),
+            frozenset((0, 1)),
+            frozenset((0, 1)),
+        ),
+    )
     return {
-        "CV_DICTIONARY": (source_scope, locator, tag, snapshot, policy, semantic),
-        "CV_SEMANTIC_LINK": (policy_semantics,),
+        "CV_DICTIONARY": (*source_scope, locator, tag, snapshot, policy, semantic),
+        "CV_SEMANTIC_LINK": policy_semantics,
         "CV_IDENTITY": (
             _owned_spec(
                 "catalog_canonical_value_identities",
@@ -3140,21 +3706,33 @@ def _canonical_value_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         ),
         "CV_PARENT_DESCRIPTOR": (
             parent,
-            _owned_spec(
-                "catalog_canonical_value_page_descriptors",
-                ("page_sha256",),
-                root,
-                key,
-                ("value_sha256",),
-            ),
+            page_seal,
         ),
         "CV_PAGE": (
+            page_family,
             _owned_spec(
-                "catalog_canonical_value_pages",
-                ("page_sha256",),
+                "catalog_canonical_value_allocation_seals",
+                ("value_sha256",),
                 root,
                 key,
+            ),
+            _owned_spec(
+                "catalog_canonical_value_allocation_allocated_ats",
                 ("value_sha256",),
+                root,
+                key,
+            ),
+            _owned_spec(
+                "catalog_canonical_value_allocation_byte_counts",
+                ("value_sha256",),
+                root,
+                key,
+            ),
+            _owned_spec(
+                "catalog_canonical_value_allocation_digest_domains",
+                ("value_sha256",),
+                root,
+                key,
             ),
         ),
         "CV_ROOT": (_owned_spec(root, key, root, key),),
@@ -3235,6 +3813,23 @@ _STATIC_PLANS: dict[CleanupTargetKind, _StaticTargetPlan] = {
         _GALLERY_IDENTITY_ELIGIBILITY,
         _gallery_identity_phases(),
     ),
+    CleanupTargetKind.SOURCE_GALLERY_NAME_GID: _StaticTargetPlan(
+        CleanupTargetKind.SOURCE_GALLERY_NAME_GID,
+        ("source_gallery_name",),
+        "source_gallery_name",
+        255,
+        _SOURCE_GALLERY_NAME_GID_ELIGIBILITY,
+        _source_gallery_name_gid_phases(),
+        variable_width_shard=True,
+    ),
+    CleanupTargetKind.GALLERY_UPLOAD_TIME: _StaticTargetPlan(
+        CleanupTargetKind.GALLERY_UPLOAD_TIME,
+        ("gid",),
+        "gid",
+        None,
+        _GALLERY_UPLOAD_TIME_ELIGIBILITY,
+        _gallery_upload_time_phases(),
+    ),
     CleanupTargetKind.CANONICAL_VALUE_UPLOAD: _StaticTargetPlan(
         CleanupTargetKind.CANONICAL_VALUE_UPLOAD,
         ("generation", "value_sha256"),
@@ -3271,10 +3866,9 @@ _STRATEGIES: dict[CleanupTargetKind, _Strategy] = {
         CleanupTargetKind.GALLERY_OBSERVATION_STAGING
     ),
     CleanupTargetKind.ARTIFACT_BLOB: _Strategy(
-        ("AB_LOCATIONS", "AB_IDENTITIES", "AB_ROOT"),
+        ("AB_LOCATIONS", "AB_ROOT"),
         (
             _select_artifact_locations,
-            _select_artifact_identities,
             _select_artifact_blobs,
         ),
     ),
@@ -3293,6 +3887,12 @@ _STRATEGIES: dict[CleanupTargetKind, _Strategy] = {
     ),
     CleanupTargetKind.GALLERY_IDENTITY: _static_strategy(
         CleanupTargetKind.GALLERY_IDENTITY
+    ),
+    CleanupTargetKind.SOURCE_GALLERY_NAME_GID: _static_strategy(
+        CleanupTargetKind.SOURCE_GALLERY_NAME_GID
+    ),
+    CleanupTargetKind.GALLERY_UPLOAD_TIME: _static_strategy(
+        CleanupTargetKind.GALLERY_UPLOAD_TIME
     ),
     CleanupTargetKind.CANONICAL_VALUE_UPLOAD: _static_strategy(
         CleanupTargetKind.CANONICAL_VALUE_UPLOAD

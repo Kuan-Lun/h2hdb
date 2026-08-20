@@ -1585,7 +1585,6 @@ class CatalogSourceFilePage:
 class CatalogContributor:
     name: str
     role: str
-    sort_as: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

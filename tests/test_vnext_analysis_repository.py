@@ -2,20 +2,51 @@ from __future__ import annotations
 
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
+from vnext_analysis_fixtures import (
+    complete_analysis_run,
+    seed_analysis_component,
+    seed_content_owner_candidate_shadow,
+    seed_content_owner_shadow,
+    set_analysis_component_sealed_at,
+)
+from vnext_canonical_value_fixtures import seed_canonical_value
+from vnext_catalog_identity_fixtures import (
+    seed_file_name_identity,
+    seed_gallery_identity,
+    seed_gallery_observation_file,
+    seed_tag_term,
+)
+from vnext_gallery_page_fixtures import (
+    seed_gallery_page_bounds,
+    seed_gallery_page_descriptor,
+)
+from vnext_manifest_fixtures import (
+    seed_build_manifest,
+    seed_snapshot_manifest,
+    seed_source_build,
+)
+from vnext_publication_fixtures import seed_publication_finalization_checkpoint
 
 import h2hdb.vnext_analysis_repository as analysis_module
+from h2hdb import vnext_identity as identity
 from h2hdb._generated_vnext_schema import ARTIFACT
+from h2hdb.sql_connector import SQLConnector
 from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.vnext_analysis_family import (
+    AnalysisFamilyCollisionError,
+    require_exact_analysis_state_components,
+)
 from h2hdb.vnext_analysis_repository import (
     ANALYSIS_COMPONENTS,
     AnalysisCorruptionError,
     AnalysisNotReadyError,
     AnalysisRepository,
 )
+from h2hdb.vnext_canonical_value_family import CanonicalValueReadReceipt
 from h2hdb.vnext_canonical_value_repository import (
     CanonicalValueRepository,
     CanonicalValueUploadPlan,
@@ -29,13 +60,328 @@ from h2hdb.vnext_identity import (
 )
 from h2hdb.vnext_ingest_fence_repository import (
     IngestFenceRepository,
+    IngestFenceUnavailableError,
     IngestTurn,
 )
 from h2hdb.vnext_maintenance_gate_repository import (
     GateLease,
     MaintenanceGateRepository,
 )
-from h2hdb.vnext_transaction import VNextUnitOfWork
+from h2hdb.vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
+
+_EMPTY_EVENT_CHAIN = sha256(b"h2hdb-operational-event-chain-v1\0").digest()
+_PRODUCER_FIELDS = (
+    b"analysis-test-writer",
+    b"cpython-test-abi",
+    b"pillow-test-build",
+    b"libjpeg-test-build",
+    b"zlib-test-build",
+)
+_PRODUCER_FINGERPRINT = identity.artifact_producer_fingerprint_sha256(*_PRODUCER_FIELDS)
+_PRODUCER_EQUIVALENCE_CLASS = identity.artifact_producer_equivalence_class(
+    _PRODUCER_FINGERPRINT
+)
+
+
+def test_already_uploaded_marker_rejects_cross_domain_canonical_value(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "analysis-marker-domain.sqlite3")
+    try:
+        value = b"v" * 32
+        receipt = CanonicalValueReadReceipt(
+            value,
+            b"effective_content_v1",
+            0,
+            b"r" * 32,
+        )
+        with (
+            patch.object(connector, "fetch_all", return_value=[(value,)]),
+            patch.object(
+                CanonicalValueRepository,
+                "stream_and_validate",
+                return_value=receipt,
+            ),
+            pytest.raises(AnalysisCorruptionError, match="wrong digest domain"),
+        ):
+            analysis_module._gallery_has_already_uploaded_marker(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                1,
+                1,
+            )
+    finally:
+        connector.close()
+
+
+class _ContentComparatorConnector:
+    def __init__(self, rows: list[tuple[Any, ...]]) -> None:
+        self.rows = rows
+        self.page_limits: list[int] = []
+
+    def fetch_all(
+        self,
+        _sql: str,
+        parameters: tuple[Any, ...],
+    ) -> list[tuple[Any, ...]]:
+        last_gallery = int(parameters[-2])
+        limit = int(parameters[-1])
+        self.page_limits.append(limit)
+        return [row for row in self.rows if int(row[1]) > last_gallery][:limit]
+
+
+def _content_comparator_authority() -> analysis_module._RunAuthority:
+    return analysis_module._RunAuthority(
+        b"a" * 16,
+        b"b" * 16,
+        analysis_module._Policy(1, 1, 1, 1, 1, 1),
+        None,
+        0,
+    )
+
+
+def _stub_work(connector: object) -> VNextUnitOfWork:
+    return VNextUnitOfWork(cast(SQLConnector, connector), backend="sqlite")
+
+
+@pytest.mark.parametrize("deciding_index", range(6))
+def test_content_comparator_uses_each_atom_in_exact_lexicographic_order(
+    deciding_index: int,
+) -> None:
+    content = b"c" * 32
+    lower: list[int | bytes] = [0, 0, 0, 1, b"s" * 32, b"l" * 32]
+    higher = list(lower)
+    deciding_atom = lower[deciding_index]
+    if deciding_index < 4:
+        assert isinstance(deciding_atom, int)
+        higher[deciding_index] = deciding_atom + 1
+    else:
+        assert isinstance(deciding_atom, bytes)
+        higher[deciding_index] = bytes((deciding_atom[0] + 1,)) * 32
+    rows = [
+        (content, 1, lower[0], lower[1], lower[2], *lower[3:]),
+        (content, 2, higher[0], higher[1], higher[2], *higher[3:]),
+    ]
+    connector = _ContentComparatorConnector(rows)
+    owner = analysis_module._evaluate_content_owner(
+        _stub_work(connector),
+        _content_comparator_authority(),
+        content,
+    )
+    assert owner is not None and owner.owner_gallery_id == 2
+
+
+def test_content_comparator_crosses_the_128_row_page_boundary() -> None:
+    content = b"c" * 32
+    rows = [
+        (
+            content,
+            gallery,
+            0,
+            0,
+            0,
+            1,
+            b"s" * 32,
+            b"z" * 32 if gallery == 129 else b"l" * 32,
+        )
+        for gallery in range(1, 130)
+    ]
+    connector = _ContentComparatorConnector(rows)
+    owner = analysis_module._evaluate_content_owner(
+        _stub_work(connector),
+        _content_comparator_authority(),
+        content,
+    )
+    assert owner is not None and owner.owner_gallery_id == 129
+    assert connector.page_limits == [128, 128]
+
+
+class _GidComparatorConnector:
+    def __init__(self, rows: list[tuple[Any, ...]]) -> None:
+        self.rows = rows
+        self.page_limits: list[int] = []
+
+    def fetch_all(
+        self,
+        sql: str,
+        parameters: tuple[Any, ...],
+    ) -> list[tuple[Any, ...]]:
+        assert "catalog_analysis_gid_candidate_resolved" in sql
+        assert "catalog_analysis_content_owner_candidate_resolved" in sql
+        assert "catalog_gallery_identity_coordinates" in sql
+        last_gallery = int(parameters[-2])
+        limit = int(parameters[-1])
+        self.page_limits.append(limit)
+        return [row for row in self.rows if int(row[0]) > last_gallery][:limit]
+
+
+@pytest.mark.parametrize("deciding_index", range(5))
+def test_gid_winner_comparator_uses_each_atom_in_exact_lexicographic_order(
+    deciding_index: int,
+) -> None:
+    lower: list[int | bytes] = [0, 0, 0, b"s" * 32, b"l" * 32]
+    higher = list(lower)
+    deciding_atom = lower[deciding_index]
+    if deciding_index < 3:
+        assert isinstance(deciding_atom, int)
+        higher[deciding_index] = deciding_atom + 1
+    else:
+        assert isinstance(deciding_atom, bytes)
+        higher[deciding_index] = bytes((deciding_atom[0] + 1,)) * 32
+    connector = _GidComparatorConnector(
+        [
+            (1, *lower),
+            (2, *higher),
+        ]
+    )
+    winner = analysis_module._evaluate_gid_winner(
+        _stub_work(connector),
+        _content_comparator_authority(),
+        10_001,
+    )
+    assert winner == analysis_module._GidWinner(10_001, 2)
+    assert connector.page_limits == [128]
+
+
+def test_gid_winner_comparator_crosses_the_128_row_page_boundary() -> None:
+    connector = _GidComparatorConnector(
+        [
+            (
+                gallery_id,
+                0,
+                0,
+                0,
+                b"s" * 32,
+                b"z" * 32 if gallery_id == 129 else b"l" * 32,
+            )
+            for gallery_id in range(1, 130)
+        ]
+    )
+    winner = analysis_module._evaluate_gid_winner(
+        _stub_work(connector),
+        _content_comparator_authority(),
+        10_001,
+    )
+    assert winner == analysis_module._GidWinner(10_001, 129)
+    assert connector.page_limits == [128, 128]
+
+
+class _SnapshotWinnerConnector:
+    def __init__(self, rows: list[tuple[int, int, bytes]]) -> None:
+        self.rows = rows
+        self.queries: list[str] = []
+
+    def fetch_all(
+        self,
+        sql: str,
+        parameters: tuple[Any, ...],
+    ) -> list[tuple[Any, ...]]:
+        self.queries.append(sql)
+        assert "catalog_analysis_gid_winner_resolved" in sql
+        assert "catalog_analysis_gid_candidate_resolved" in sql
+        assert "catalog_source_build_galleries" in sql
+        assert "catalog_gallery_observation_metadata" in sql
+        previous = int(parameters[-2])
+        limit = int(parameters[-1])
+        return [row for row in self.rows if row[0] > previous][:limit]
+
+
+@pytest.mark.parametrize("row_count, expected_queries", [(1, 1), (127, 1), (128, 2)])
+def test_snapshot_winners_use_bounded_set_joins_without_per_winner_queries(
+    row_count: int,
+    expected_queries: int,
+) -> None:
+    connector = _SnapshotWinnerConnector(
+        [(gid, gid, bytes(((gid % 251) + 1,)) * 32) for gid in range(1, row_count + 1)]
+    )
+    winners = list(
+        analysis_module._iter_snapshot_winners(
+            _stub_work(connector),
+            _content_comparator_authority(),
+        )
+    )
+    assert len(winners) == row_count
+    assert len(connector.queries) == expected_queries
+
+
+class _GidKeyspaceConnector:
+    def __init__(self, failures: tuple[bool, bool, bool]) -> None:
+        self.failures = iter(failures)
+
+    def fetch_one(
+        self,
+        sql: str,
+        _parameters: tuple[Any, ...],
+    ) -> tuple[int, ...]:
+        assert "catalog_analysis_gid_winner" in sql
+        return (1,) if next(self.failures) else ()
+
+
+@pytest.mark.parametrize(
+    "failures",
+    [
+        (True, False, False),
+        (False, True, False),
+        (False, False, True),
+    ],
+)
+def test_gid_winner_terminal_keyspace_rejects_orphans_duplicates_and_noncandidates(
+    failures: tuple[bool, bool, bool],
+) -> None:
+    connector = _GidKeyspaceConnector(failures)
+    with pytest.raises(AnalysisCorruptionError, match="complete candidate-backed"):
+        analysis_module._require_complete_gid_winner_keyspace(
+            _stub_work(connector),
+            b"a" * 16,
+        )
+
+
+@pytest.mark.parametrize(
+    "table, materialize",
+    [
+        (
+            "catalog_analysis_gid_candidate_shadows",
+            lambda work: analysis_module._insert_gid_candidate_shadow(
+                work,
+                b"a" * 16,
+                analysis_module._GidCandidate(7),
+            ),
+        ),
+        (
+            "catalog_analysis_gid_winner_selections",
+            lambda work: analysis_module._insert_gid_winner_selection(
+                work,
+                b"a" * 16,
+                analysis_module._GidWinner(9, 7),
+            ),
+        ),
+    ],
+)
+def test_gid_narrow_materialization_response_loss_rolls_back_statement(
+    tmp_path: Path,
+    table: str,
+    materialize: Any,
+) -> None:
+    connector = _generated_database(tmp_path / f"{table}.sqlite3")
+    try:
+        connector.execute("PRAGMA foreign_keys = OFF")
+        original_execute = connector.execute
+
+        def execute_then_fail(sql: str, data: tuple[Any, ...] = ()) -> None:
+            original_execute(sql, data)
+            if sql.startswith(f"INSERT INTO {table} "):
+                raise RuntimeError("injected response loss")
+
+        with pytest.raises(RuntimeError, match="response loss"):
+            with connector.transaction():
+                with patch.object(
+                    connector,
+                    "execute",
+                    side_effect=execute_then_fail,
+                ):
+                    materialize(VNextUnitOfWork(connector, backend="sqlite"))
+        assert connector.fetch_one(f"SELECT COUNT(*) FROM {table}") == (0,)
+    finally:
+        connector.close()
 
 
 def _generated_database(path: Path) -> SQLiteConnector:
@@ -81,50 +427,222 @@ def _canonical_identity(
 ) -> None:
     page_bytes = b"test-page\0" + serial.to_bytes(8, "big") + value_sha256
     page_sha256 = sha256(page_bytes).digest()
+    seed_canonical_value(
+        connector,
+        value_sha256=value_sha256,
+        digest_domain=domain,
+        page_sha256=page_sha256,
+        page_bytes=page_bytes,
+        subtree_item_count=1,
+        allocated_at=1,
+    )
+
+
+def _insert_sealed_identity_family(
+    connector: SQLiteConnector,
+    *,
+    prefix: str,
+    key_column: str,
+    key: object,
+    facts: tuple[tuple[str, str, object], ...],
+) -> None:
     connector.execute(
-        "INSERT INTO catalog_canonical_value_allocations "
-        "(value_sha256, digest_domain, byte_count, allocated_at) "
-        "VALUES (%s, %s, %s, %s)",
-        (value_sha256, domain, 1, 1),
+        f"INSERT INTO {prefix}_anchors ({key_column}) VALUES (%s)",
+        (key,),
+    )
+    for table, column, value in facts:
+        connector.execute(
+            f"INSERT INTO {table} ({key_column}, {column}) VALUES (%s, %s)",
+            (key, value),
+        )
+    fact_columns = tuple(column for _table, column, _value in facts)
+    connector.execute(
+        f"INSERT INTO {prefix}_identities "
+        f"({', '.join((*fact_columns, key_column))}) "
+        f"VALUES ({', '.join('%s' for _column in (*fact_columns, key_column))})",
+        (*tuple(value for _table, _column, value in facts), key),
     )
     connector.execute(
-        "INSERT INTO catalog_canonical_value_pages "
-        "(page_sha256, value_sha256, page_bytes) VALUES (%s, %s, %s)",
-        (page_sha256, value_sha256, page_bytes),
-    )
-    connector.execute(
-        "INSERT INTO catalog_canonical_value_page_descriptors "
-        "(page_sha256, value_sha256, level, page_position, subtree_item_count) "
-        "VALUES (%s, %s, 0, 0, 1)",
-        (page_sha256, value_sha256),
-    )
-    connector.execute(
-        "INSERT INTO catalog_canonical_value_identities "
-        "(value_sha256, root_page_sha256) VALUES (%s, %s)",
-        (value_sha256, page_sha256),
+        f"INSERT INTO {prefix}_seals ({key_column}) VALUES (%s)",
+        (key,),
     )
 
 
 def _seed_root(connector: SQLiteConnector) -> bytes:
     root = b"r" * 32
     _canonical_identity(connector, root, domain=b"source_root_v1", serial=1)
-    scope = b"s" * 32
-    connector.execute(
-        "INSERT INTO catalog_source_scopes "
-        "(scope_key, source_provider, source_root_sha256, identity_policy_version) "
-        "VALUES (%s, %s, %s, 1)",
-        (scope, b"filesystem", root),
+    scope = identity.source_scope_key("filesystem", root, 1)
+    _insert_sealed_identity_family(
+        connector,
+        prefix="catalog_source_scope",
+        key_column="scope_key",
+        key=scope,
+        facts=(
+            (
+                "catalog_source_scope_source_providers",
+                "source_provider",
+                b"filesystem",
+            ),
+            (
+                "catalog_source_scope_source_root_sha256s",
+                "source_root_sha256",
+                root,
+            ),
+            (
+                "catalog_source_scope_identity_policy_versions",
+                "identity_policy_version",
+                1,
+            ),
+        ),
+    )
+    _insert_sealed_identity_family(
+        connector,
+        prefix="catalog_manifest_policy",
+        key_column="manifest_policy_id",
+        key=1,
+        facts=(
+            (
+                "catalog_manifest_policy_manifest_algorithm_versions",
+                "manifest_algorithm_version",
+                1,
+            ),
+            ("catalog_manifest_policy_file_order_versions", "file_order_version", 1),
+        ),
+    )
+    _insert_sealed_identity_family(
+        connector,
+        prefix="catalog_analysis_policy",
+        key_column="policy_id",
+        key=1,
+        facts=(
+            ("catalog_analysis_policy_algorithm_versions", "algorithm_version", 1),
+            (
+                "catalog_analysis_policy_spam_artist_thresholds",
+                "spam_artist_threshold",
+                1,
+            ),
+            (
+                "catalog_analysis_policy_spam_occurrence_thresholds",
+                "spam_occurrence_threshold",
+                3,
+            ),
+            (
+                "catalog_analysis_policy_content_owner_rule_versions",
+                "content_owner_rule_version",
+                1,
+            ),
+            (
+                "catalog_analysis_policy_gid_winner_rule_versions",
+                "gid_winner_rule_version",
+                1,
+            ),
+        ),
+    )
+    policy_component = identity.artifact_policy_digest(
+        1,
+        2048,
+        _PRODUCER_FINGERPRINT,
+    )
+    _canonical_identity(
+        connector,
+        policy_component,
+        domain=b"artifact_policy_v2",
+        serial=4,
     )
     connector.execute(
-        "INSERT INTO catalog_manifest_policies "
-        "(manifest_policy_id, manifest_algorithm_version, file_order_version) "
-        "VALUES (1, 1, 1)"
+        "INSERT INTO catalog_artifact_producer_fingerprint_anchors "
+        "(producer_fingerprint_sha256) VALUES (%s)",
+        (_PRODUCER_FINGERPRINT,),
     )
     connector.execute(
-        "INSERT INTO catalog_analysis_policies "
-        "(policy_id, algorithm_version, spam_artist_threshold, "
-        "spam_occurrence_threshold, content_owner_rule_version, "
-        "gid_winner_rule_version) VALUES (1, 1, 1, 3, 1, 1)"
+        "INSERT INTO catalog_artifact_producer_fingerprint_algorithm_versions "
+        "(producer_fingerprint_sha256, artifact_algorithm_version) VALUES (%s, 1)",
+        (_PRODUCER_FINGERPRINT,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_artifact_producer_fingerprint_equivalence_classes "
+        "(producer_fingerprint_sha256, producer_equivalence_class) VALUES (%s, %s)",
+        (_PRODUCER_FINGERPRINT, _PRODUCER_EQUIVALENCE_CLASS),
+    )
+    connector.execute(
+        "INSERT INTO catalog_artifact_producer_fingerprint_identities "
+        "(writer_id, python_abi, pillow_build, libjpeg_build, zlib_build, "
+        "producer_fingerprint_sha256) VALUES (%s, %s, %s, %s, %s, %s)",
+        (*_PRODUCER_FIELDS, _PRODUCER_FINGERPRINT),
+    )
+    connector.execute(
+        "INSERT INTO catalog_artifact_producer_fingerprint_seals "
+        "(producer_fingerprint_sha256) VALUES (%s)",
+        (_PRODUCER_FINGERPRINT,),
+    )
+    _insert_sealed_identity_family(
+        connector,
+        prefix="catalog_artifact_policy_semantics",
+        key_column="policy_component_sha256",
+        key=policy_component,
+        facts=(
+            (
+                "catalog_artifact_policy_semantics_artifact_algorithm_versions",
+                "artifact_algorithm_version",
+                1,
+            ),
+            (
+                "catalog_artifact_policy_semantics_max_image_short_sides",
+                "max_image_short_side",
+                2048,
+            ),
+            (
+                "catalog_artifact_policy_semantics_producer_fingerprint_sha256s",
+                "producer_fingerprint_sha256",
+                _PRODUCER_FINGERPRINT,
+            ),
+        ),
+    )
+    connector.execute(
+        "INSERT INTO catalog_artifact_policies "
+        "(artifact_policy_id, policy_component_sha256) VALUES (1, %s)",
+        (policy_component,),
+    )
+    _insert_sealed_identity_family(
+        connector,
+        prefix="catalog_title_sort_policy",
+        key_column="title_sort_policy_id",
+        key=1,
+        facts=(
+            (
+                "catalog_title_sort_policy_algorithm_versions",
+                "title_sort_algorithm_version",
+                1,
+            ),
+            (
+                "catalog_title_sort_policy_unicode_data_versions",
+                "unicode_data_version",
+                b"14.0.0",
+            ),
+        ),
+    )
+    _insert_sealed_identity_family(
+        connector,
+        prefix="catalog_display_title_policy",
+        key_column="display_title_policy_id",
+        key=1,
+        facts=(
+            (
+                "catalog_display_title_policy_algorithm_versions",
+                "display_title_algorithm_version",
+                1,
+            ),
+            (
+                "catalog_display_title_policy_title_sort_policy_ids",
+                "title_sort_policy_id",
+                1,
+            ),
+        ),
+    )
+    connector.execute(
+        "INSERT INTO operational_operational_policys "
+        "(operational_policy_id, operational_schema_version, "
+        "algorithm_version, max_batch_rows) VALUES (1, 1, 1, 128)"
     )
     for tag_id in (1, 2, 3):
         value = bytes((100 + tag_id,)) * 32
@@ -134,10 +652,11 @@ def _seed_root(connector: SQLiteConnector) -> bytes:
             domain=b"tag_value_utf8_v1",
             serial=10 + tag_id,
         )
-        connector.execute(
-            "INSERT INTO catalog_tag_terms "
-            "(tag_id, namespace, tag_value_sha256) VALUES (%s, %s, %s)",
-            (tag_id, b"artist", value),
+        seed_tag_term(
+            connector,
+            tag_id=tag_id,
+            namespace=b"artist",
+            tag_value_sha256=value,
         )
     return scope
 
@@ -151,38 +670,184 @@ def _seed_build(
     gallery_count: int,
     file_count: int = 0,
     byte_count: int = 0,
-    base_source: tuple[int, int] | None = None,
+    base_receipt: bytes | None = None,
 ) -> None:
-    connector.execute(
-        "INSERT INTO catalog_source_builds "
-        "(build_id, scope_key, manifest_policy_id, state, created_at, sealed_at) "
-        "VALUES (%s, %s, 1, 'SEALED', 20, 21)",
-        (build_id, scope),
+    seed_source_build(
+        connector,
+        build_id=build_id,
+        scope_key=scope,
+        state="SEALED",
+        created_at=20,
+        sealed_at=21,
     )
     connector.execute(
-        "INSERT INTO catalog_source_build_channel (build_id, channel) "
-        "VALUES (%s, %s)",
+        "INSERT INTO catalog_source_build_channel (build_id, channel) VALUES (%s, %s)",
         (build_id, b"default"),
     )
-    if base_source is not None:
+    if base_receipt is not None:
         connector.execute(
-            "INSERT INTO catalog_source_build_base_source "
-            "(build_id, base_source_revision, base_source_generation) "
-            "VALUES (%s, %s, %s)",
-            (build_id, *base_source),
+            "INSERT INTO catalog_source_build_base_publication_commits "
+            "(build_id, base_receipt_id) VALUES (%s, %s)",
+            (build_id, base_receipt),
+        )
+    seed_build_manifest(
+        connector,
+        build_id=build_id,
+        manifest_sha256=bytes((manifest_byte,)) * 32,
+        gallery_count=gallery_count,
+        file_count=file_count,
+        byte_count=byte_count,
+        computed_at=21,
+    )
+
+
+def _seed_published_commit(
+    connector: SQLiteConnector,
+    *,
+    build_id: bytes,
+    snapshot_manifest_sha256: bytes,
+    generation: int,
+    committed_at: int,
+    analysis_id: bytes | None = None,
+) -> bytes:
+    receipt_id = bytes((64 + generation,)) * 16
+    candidate_id = bytes((80 + generation,)) * 16
+    preparation_id = bytes((96 + generation,)) * 16
+    source_revision = generation
+    revision = generation
+
+    connector.execute(
+        "INSERT INTO catalog_source_revision_anchors (source_revision) VALUES (%s)",
+        (source_revision,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_source_revision_channels "
+        "(source_revision, channel) VALUES (%s, %s)",
+        (source_revision, b"default"),
+    )
+    connector.execute(
+        "INSERT INTO catalog_source_revision_snapshot_manifests "
+        "(source_revision, snapshot_manifest_sha256) VALUES (%s, %s)",
+        (source_revision, snapshot_manifest_sha256),
+    )
+    connector.execute(
+        "INSERT INTO catalog_source_revision_descriptor_seals "
+        "(source_revision) VALUES (%s)",
+        (source_revision,),
+    )
+    if analysis_id is not None:
+        connector.execute(
+            "INSERT INTO catalog_source_revision_provenance "
+            "(source_revision, analysis_id) VALUES (%s, %s)",
+            (source_revision, analysis_id),
         )
     connector.execute(
-        "INSERT INTO catalog_build_manifests "
-        "(build_id, manifest_sha256, gallery_count, file_count, byte_count, computed_at) "
-        "VALUES (%s, %s, %s, %s, %s, 21)",
-        (
-            build_id,
-            bytes((manifest_byte,)) * 32,
-            gallery_count,
-            file_count,
-            byte_count,
-        ),
+        "INSERT INTO catalog_revision_anchors (revision) VALUES (%s)",
+        (revision,),
     )
+    connector.execute(
+        "INSERT INTO catalog_revision_publication_counts "
+        "(revision, publication_count) VALUES (%s, 0)",
+        (revision,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_revision_descriptor_seals (revision) VALUES (%s)",
+        (revision,),
+    )
+    connector.execute(
+        "INSERT INTO operational_operational_event_streams "
+        "(preparation_id, created_at) VALUES (%s, %s)",
+        (preparation_id, committed_at - 1),
+    )
+    connector.execute(
+        "INSERT INTO operational_operational_preparations "
+        "(preparation_id, build_id, deletion_request_generation, "
+        "operational_policy_id, state, prepared_at, completed_at) "
+        "VALUES (%s, %s, 0, 1, 'COMPLETE', %s, %s)",
+        (preparation_id, build_id, committed_at - 1, committed_at),
+    )
+    connector.execute(
+        "INSERT INTO operational_operational_preparation_effect_seals "
+        "(preparation_id, event_count, final_chain_sha256, sealed_at) "
+        "VALUES (%s, 0, %s, %s)",
+        (preparation_id, _EMPTY_EVENT_CHAIN, committed_at),
+    )
+    connector.execute(
+        "INSERT INTO catalog_publication_generation_nodes (generation) VALUES (%s)",
+        (generation,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_publication_generation_successors "
+        "(successor_generation, predecessor_generation) VALUES (%s, %s)",
+        (generation, generation - 1),
+    )
+    connector.execute(
+        "INSERT INTO catalog_publication_commit_anchors (receipt_id) VALUES (%s)",
+        (receipt_id,),
+    )
+    members = (
+        ("catalog_publication_commit_candidates", "candidate_id", candidate_id),
+        ("catalog_publication_commit_catalog_revisions", "revision", revision),
+        (
+            "catalog_publication_commit_source_revisions",
+            "source_revision",
+            source_revision,
+        ),
+        ("catalog_publication_commit_generations", "generation", generation),
+        (
+            "catalog_publication_commit_operational_preparations",
+            "preparation_id",
+            preparation_id,
+        ),
+        (
+            "catalog_publication_commit_operational_policies",
+            "operational_policy_id",
+            1,
+        ),
+        ("catalog_publication_commit_artifact_policies", "artifact_policy_id", 1),
+        (
+            "catalog_publication_commit_display_title_policies",
+            "display_title_policy_id",
+            1,
+        ),
+        ("catalog_publication_commit_new_galleries", "new_galleries", 0),
+        ("catalog_publication_commit_changed_galleries", "changed_galleries", 0),
+        ("catalog_publication_commit_removed_galleries", "removed_galleries", 0),
+        ("catalog_publication_commit_duplicate_losers", "duplicate_losers", 0),
+        ("catalog_publication_commit_committed_ats", "committed_at", committed_at),
+    )
+    for table, column, value in members:
+        connector.execute(
+            f"INSERT INTO {table} (receipt_id, {column}) VALUES (%s, %s)",
+            (receipt_id, value),
+        )
+    seed_publication_finalization_checkpoint(
+        connector,
+        receipt_id=receipt_id,
+        updated_at=committed_at,
+    )
+    connector.execute(
+        "INSERT INTO catalog_publication_commit_seals (receipt_id) VALUES (%s)",
+        (receipt_id,),
+    )
+    existing_head = connector.fetch_one(
+        "SELECT receipt_id FROM catalog_publication_commit_head_receipts "
+        "WHERE channel = %s",
+        (b"default",),
+    )
+    if existing_head:
+        connector.execute(
+            "UPDATE catalog_publication_commit_head_receipts "
+            "SET receipt_id = %s WHERE channel = %s",
+            (receipt_id, b"default"),
+        )
+    else:
+        connector.execute(
+            "INSERT INTO catalog_publication_commit_head_receipts "
+            "(channel, receipt_id) VALUES (%s, %s)",
+            (b"default", receipt_id),
+        )
+    return receipt_id
 
 
 def _seed_gallery(
@@ -212,16 +877,12 @@ def _seed_gallery(
             "(locator_sha256, source_gallery_name) VALUES (%s, %s)",
             (locator, f"gallery-{gallery_id}".encode()),
         )
-        connector.execute(
-            "INSERT INTO catalog_gallery_identities "
-            "(gallery_id, gallery_key, scope_key, locator_sha256) "
-            "VALUES (%s, %s, %s, %s)",
-            (
-                gallery_id,
-                sha256(b"gallery" + gallery_id.to_bytes(8, "big")).digest(),
-                scope,
-                locator,
-            ),
+        seed_gallery_identity(
+            connector,
+            gallery_id=gallery_id,
+            gallery_key=identity.gallery_key(scope, locator),
+            scope_key=scope,
+            locator_sha256=locator,
         )
     if not connector.fetch_one(
         "SELECT 1 FROM catalog_source_build_expected_gallery "
@@ -310,6 +971,76 @@ def _map_working_build(
         )
 
 
+def _insert_scan_fact(
+    connector: SQLiteConnector,
+    *,
+    gallery_id: int,
+    observation_id: int,
+    scan_observation_sha256: bytes,
+    scan_observation_version: int,
+    source_file_count: int,
+) -> None:
+    key = (gallery_id, observation_id)
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_scan_anchors "
+        "(gallery_id, observation_id) VALUES (%s, %s)",
+        key,
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_scan_observation_sha256s "
+        "(gallery_id, observation_id, scan_observation_sha256) "
+        "VALUES (%s, %s, %s)",
+        (*key, scan_observation_sha256),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_scan_observation_versions "
+        "(gallery_id, observation_id, scan_observation_version) "
+        "VALUES (%s, %s, %s)",
+        (*key, scan_observation_version),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_scan_source_file_counts "
+        "(gallery_id, observation_id, source_file_count) VALUES (%s, %s, %s)",
+        (*key, source_file_count),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_scan_seals "
+        "(gallery_id, observation_id) VALUES (%s, %s)",
+        key,
+    )
+
+
+def _insert_stat_fact(
+    connector: SQLiteConnector,
+    *,
+    gallery_id: int,
+    observation_id: int,
+    file_count: int,
+    byte_count: int,
+) -> None:
+    key = (gallery_id, observation_id)
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_stat_anchors "
+        "(gallery_id, observation_id) VALUES (%s, %s)",
+        key,
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_stat_file_counts "
+        "(gallery_id, observation_id, file_count) VALUES (%s, %s, %s)",
+        (*key, file_count),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_stat_byte_counts "
+        "(gallery_id, observation_id, byte_count) VALUES (%s, %s, %s)",
+        (*key, byte_count),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_stat_seals "
+        "(gallery_id, observation_id) VALUES (%s, %s)",
+        key,
+    )
+
+
 def _seed_preparation_facts(
     connector: SQLiteConnector,
     *,
@@ -332,24 +1063,18 @@ def _seed_preparation_facts(
         1,
     )
     tree = build_gallery_observation_metadata_tree(metadata)
+    bounds_by_page: dict[bytes, tuple[bytes, bytes]] = {}
     for encoded in tree.pages:
         page = decode_gallery_observation_page(encoded.page_bytes)
-        connector.execute(
-            "INSERT INTO catalog_gallery_observation_pages "
-            "(page_sha256, page_bytes) VALUES (%s, %s)",
-            (encoded.page_sha256, encoded.page_bytes),
+        seed_gallery_page_descriptor(
+            connector,
+            page_sha256=encoded.page_sha256,
+            page_bytes=encoded.page_bytes,
+            component=b"METADATA",
+            level=page.level,
+            subtree_item_count=page.subtree_item_count,
         )
-        connector.execute(
-            "INSERT INTO catalog_gallery_observation_page_descriptors "
-            "(page_sha256, component, level, subtree_item_count) "
-            "VALUES (%s, %s, %s, %s)",
-            (
-                encoded.page_sha256,
-                b"METADATA",
-                page.level,
-                page.subtree_item_count,
-            ),
-        )
+        child_bounds: dict[bytes, tuple[bytes, bytes]] = {}
         if page.node_kind is GalleryObservationNodeKind.BRANCH:
             for position, entry in enumerate(page.entries):
                 assert isinstance(entry, GalleryObservationBranchEntry)
@@ -358,52 +1083,98 @@ def _seed_preparation_facts(
                     "(parent_sha256, position, child_sha256) VALUES (%s, %s, %s)",
                     (encoded.page_sha256, position, entry.child_sha256),
                 )
+                child_bounds[entry.child_sha256] = bounds_by_page[entry.child_sha256]
+        bounds = identity.gallery_observation_page_key_bounds(
+            page,
+            child_bounds=child_bounds or None,
+        )
+        assert bounds is not None
+        seed_gallery_page_bounds(
+            connector,
+            page_sha256=encoded.page_sha256,
+            first_key=bounds[0],
+            last_key=bounds[1],
+        )
+        bounds_by_page[encoded.page_sha256] = bounds
     connector.execute(
         "INSERT INTO catalog_gallery_observation_tree_roots "
         "(gallery_id, observation_id, root_page_sha256) VALUES (%s, %s, %s)",
         (gallery_id, observation_id, tree.root_page_sha256),
     )
+    source_gallery_name = connector.fetch_one(
+        "SELECT locator.source_gallery_name "
+        "FROM catalog_gallery_identities AS identity "
+        "JOIN catalog_source_locator_identity AS locator "
+        "ON locator.locator_sha256 = identity.locator_sha256 "
+        "WHERE identity.gallery_id = %s",
+        (gallery_id,),
+    )[0]
     connector.execute(
-        "INSERT INTO catalog_gallery_observation_metadata "
-        "(gallery_id, observation_id, gid, upload_time, download_time, modified_time) "
-        "VALUES (%s, %s, %s, %s, %s, %s)",
-        (
-            gallery_id,
-            observation_id,
-            metadata.gid,
-            metadata.upload_time,
-            metadata.download_time,
-            metadata.modified_time,
-        ),
+        "INSERT INTO catalog_gallery_upload_times (gid, upload_time) VALUES (%s, %s)",
+        (metadata.gid, metadata.upload_time),
     )
     connector.execute(
-        "INSERT INTO catalog_gallery_observation_scans "
-        "(gallery_id, observation_id, scan_observation_sha256, "
-        "scan_observation_version, source_file_count) VALUES (%s, %s, %s, 1, 1)",
-        (
-            gallery_id,
-            observation_id,
-            sha256(b"scan" + gallery_id.to_bytes(8, "big")).digest(),
-        ),
+        "INSERT INTO catalog_source_gallery_name_gids (source_gallery_name, gid) "
+        "VALUES (%s, %s)",
+        (source_gallery_name, metadata.gid),
     )
     connector.execute(
-        "INSERT INTO catalog_gallery_observation_stat "
-        "(gallery_id, observation_id, file_count, byte_count) "
-        "VALUES (%s, %s, 1, 1)",
+        "INSERT INTO catalog_gallery_source_name_accesses "
+        "(gallery_id, source_gallery_name) VALUES (%s, %s)",
+        (gallery_id, source_gallery_name),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_metadata_anchors "
+        "(gallery_id, observation_id) VALUES (%s, %s)",
         (gallery_id, observation_id),
     )
-    name = f"content-{gallery_id}.jpg".encode("ascii")
-    file_key = sha256(b"file-key\0" + name).digest()
     connector.execute(
-        "INSERT INTO catalog_file_name_identities (file_key, name_bytes, file_role) "
-        "VALUES (%s, %s, %s)",
-        (file_key, name, b"CONTENT"),
+        "INSERT INTO catalog_gallery_observation_download_times "
+        "(gallery_id, observation_id, download_time) VALUES (%s, %s, %s)",
+        (gallery_id, observation_id, metadata.download_time),
     )
     connector.execute(
-        "INSERT INTO catalog_gallery_observation_files "
-        "(gallery_id, observation_id, file_no, file_key, file_sha256) "
-        "VALUES (%s, %s, 1, %s, %s)",
-        (gallery_id, observation_id, file_key, file_sha256),
+        "INSERT INTO catalog_gallery_observation_modified_times "
+        "(gallery_id, observation_id, modified_time) VALUES (%s, %s, %s)",
+        (gallery_id, observation_id, metadata.modified_time),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_metadata_seals "
+        "(gallery_id, observation_id) VALUES (%s, %s)",
+        (gallery_id, observation_id),
+    )
+    _insert_scan_fact(
+        connector,
+        gallery_id=gallery_id,
+        observation_id=observation_id,
+        scan_observation_sha256=sha256(
+            b"scan" + gallery_id.to_bytes(8, "big")
+        ).digest(),
+        scan_observation_version=1,
+        source_file_count=1,
+    )
+    _insert_stat_fact(
+        connector,
+        gallery_id=gallery_id,
+        observation_id=observation_id,
+        file_count=1,
+        byte_count=1,
+    )
+    name = f"content-{gallery_id}.jpg".encode("ascii")
+    file_key = identity.file_key(name)
+    seed_file_name_identity(
+        connector,
+        file_key=file_key,
+        name_bytes=name,
+        file_role=b"CONTENT",
+    )
+    seed_gallery_observation_file(
+        connector,
+        gallery_id=gallery_id,
+        observation_id=observation_id,
+        file_no=0,
+        file_key=file_key,
+        file_sha256=file_sha256,
     )
 
 
@@ -517,16 +1288,28 @@ def _run_prepared_gallery_stage(
         assert not first.terminal and first.state == "OPEN"
         if replay_first:
             with connector.transaction():
-                replay = method(
-                    VNextUnitOfWork(connector, backend="sqlite"),
-                    gate_lease=gate,
-                    ingest_turn=turn,
-                    analysis_id=analysis_id,
-                    batch_key=first_key,
-                    max_rows=128,
-                    preparations=(),
-                    now=start_now + 21,
-                )
+                with (
+                    patch.object(
+                        connector,
+                        "execute",
+                        side_effect=AssertionError("batch replay attempted DML"),
+                    ),
+                    patch.object(
+                        connector,
+                        "execute_affected",
+                        side_effect=AssertionError("batch replay attempted DML"),
+                    ),
+                ):
+                    replay = method(
+                        VNextUnitOfWork(connector, backend="sqlite"),
+                        gate_lease=gate,
+                        ingest_turn=turn,
+                        analysis_id=analysis_id,
+                        batch_key=first_key,
+                        max_rows=0,
+                        preparations=preparations,
+                        now=start_now + 21,
+                    )
             assert replay.replayed
             assert (
                 replay.start_generation,
@@ -564,6 +1347,58 @@ def _run_prepared_gallery_stage(
             )
         assert terminal.terminal and terminal.state == "COMPLETE"
         assert terminal.row_count == 0
+        if replay_first and method in {
+            AnalysisRepository.validate_content_owner_candidate_batch,
+            AnalysisRepository.validate_gid_candidate_batch,
+        }:
+            replay_authority = _issue_preparation_authority(
+                connector,
+                gate,
+                turn,
+                analysis_id,
+                now=start_now + 23,
+            )
+            replay_preparations = tuple(
+                AnalysisRepository.prepare_gallery(
+                    connector,
+                    backend="sqlite",
+                    authority=replay_authority,
+                    gallery_id=gallery_id,
+                )
+                for gallery_id in gallery_ids
+            )
+            try:
+                with connector.transaction():
+                    with (
+                        patch.object(
+                            connector,
+                            "execute",
+                            side_effect=AssertionError(
+                                "old prepared replay attempted DML"
+                            ),
+                        ),
+                        patch.object(
+                            connector,
+                            "execute_affected",
+                            side_effect=AssertionError(
+                                "old prepared replay attempted DML"
+                            ),
+                        ),
+                    ):
+                        old_replay = method(
+                            VNextUnitOfWork(connector, backend="sqlite"),
+                            gate_lease=gate,
+                            ingest_turn=turn,
+                            analysis_id=analysis_id,
+                            batch_key=first_key,
+                            max_rows=0,
+                            preparations=replay_preparations,
+                            now=start_now + 24,
+                        )
+                assert old_replay.replayed and not old_replay.component_sealed
+            finally:
+                for preparation in replay_preparations:
+                    preparation.close()
         return first, terminal
     finally:
         for preparation in preparations:
@@ -782,7 +1617,7 @@ def _begin(
             ingest_turn=turn,
             build_id=build_id,
             policy_id=1,
-            analysis_attempt_id=analysis_id,
+            proposed_analysis_id=analysis_id,
             now=now,
         )
 
@@ -797,8 +1632,10 @@ def _run_stage(
     prefix: bytes,
     max_rows: int = 1,
     start_now: int = 100,
+    replay_each: bool = False,
 ) -> list[Any]:
     results = []
+    first_result = None
     for index in range(1000):
         with connector.transaction():
             result = method(
@@ -811,7 +1648,98 @@ def _run_stage(
                 now=start_now + index,
             )
         results.append(result)
+        if first_result is None:
+            first_result = result
+        if replay_each:
+            with connector.transaction():
+                with (
+                    patch.object(
+                        connector,
+                        "execute",
+                        side_effect=AssertionError("batch replay attempted DML"),
+                    ),
+                    patch.object(
+                        connector,
+                        "execute_affected",
+                        side_effect=AssertionError("batch replay attempted DML"),
+                    ),
+                ):
+                    replay = method(
+                        VNextUnitOfWork(connector, backend="sqlite"),
+                        gate_lease=gate,
+                        ingest_turn=turn,
+                        analysis_id=analysis_id,
+                        batch_key=prefix + index.to_bytes(4, "big"),
+                        max_rows=0,
+                        now=start_now + index,
+                    )
+            assert replay.replayed
+            assert (
+                replay.start_generation,
+                replay.start_cursor,
+                replay.start_processed_count,
+                replay.page_limit,
+                replay.next_cursor,
+                replay.next_processed_count,
+                replay.next_state,
+                replay.row_count,
+                replay.terminal,
+                replay.committed_generation,
+                replay.committed_at,
+                replay.component_sealed,
+            ) == (
+                result.start_generation,
+                result.start_cursor,
+                result.start_processed_count,
+                result.page_limit,
+                result.next_cursor,
+                result.next_processed_count,
+                result.next_state,
+                result.row_count,
+                result.terminal,
+                result.committed_generation,
+                result.committed_at,
+                result.component_sealed,
+            )
         if result.state == "COMPLETE":
+            if (
+                replay_each
+                and first_result is not None
+                and not first_result.terminal
+                and method
+                in {
+                    AnalysisRepository.validate_file_hash_decision_batch,
+                    AnalysisRepository.validate_content_owner_batch,
+                    AnalysisRepository.validate_gid_winner_batch,
+                }
+            ):
+                with connector.transaction():
+                    with (
+                        patch.object(
+                            connector,
+                            "execute",
+                            side_effect=AssertionError(
+                                "old batch replay attempted DML"
+                            ),
+                        ),
+                        patch.object(
+                            connector,
+                            "execute_affected",
+                            side_effect=AssertionError(
+                                "old batch replay attempted DML"
+                            ),
+                        ),
+                    ):
+                        old_replay = method(
+                            VNextUnitOfWork(connector, backend="sqlite"),
+                            gate_lease=gate,
+                            ingest_turn=turn,
+                            analysis_id=analysis_id,
+                            batch_key=prefix + (0).to_bytes(4, "big"),
+                            max_rows=0,
+                            now=start_now + index,
+                        )
+                assert old_replay.replayed and not old_replay.component_sealed
             return results
     raise AssertionError("analysis stage did not converge")
 
@@ -824,6 +1752,7 @@ def _run_file_slice(
     *,
     max_rows: int = 1,
     start_now: int = 100,
+    replay_each: bool = False,
 ) -> None:
     _run_stage(
         connector,
@@ -834,6 +1763,7 @@ def _run_file_slice(
         prefix=b"gallery",
         max_rows=max_rows,
         start_now=start_now,
+        replay_each=replay_each,
     )
     _run_stage(
         connector,
@@ -844,6 +1774,7 @@ def _run_file_slice(
         prefix=b"hash",
         max_rows=max_rows,
         start_now=start_now + 100,
+        replay_each=replay_each,
     )
     _run_stage(
         connector,
@@ -854,6 +1785,7 @@ def _run_file_slice(
         prefix=b"decision",
         max_rows=max_rows,
         start_now=start_now + 200,
+        replay_each=replay_each,
     )
     results = _run_stage(
         connector,
@@ -864,6 +1796,7 @@ def _run_file_slice(
         prefix=b"validate",
         max_rows=max_rows,
         start_now=start_now + 300,
+        replay_each=replay_each,
     )
     assert results[-1].component_sealed
 
@@ -950,6 +1883,275 @@ def _independent_file_oracle(
     return result
 
 
+def test_abandon_is_atomic_replayable_and_preserves_generation_mapping(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "analysis-abandon.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        with connector.transaction():
+            scope, build, _first, _second = _seed_initial_snapshot(connector)
+        run = _begin(
+            connector,
+            gate,
+            turn,
+            build_id=build,
+            analysis_id=b"X" * 16,
+            now=30,
+        )
+        for failing_sql in (
+            "UPDATE catalog_analysis_run_states",
+            "DELETE FROM operational_source_working_builds",
+        ):
+            original = connector.execute_affected
+
+            def fail_statement(
+                sql: str,
+                parameters: tuple[object, ...] = (),
+                *,
+                marker: str = failing_sql,
+            ) -> int:
+                if sql.startswith(marker):
+                    raise RuntimeError("injected abandon statement fault")
+                return original(sql, parameters)
+
+            with pytest.raises(RuntimeError, match="abandon statement fault"):
+                with connector.transaction():
+                    with patch.object(
+                        connector,
+                        "execute_affected",
+                        side_effect=fail_statement,
+                    ):
+                        AnalysisRepository.abandon(
+                            VNextUnitOfWork(connector, backend="sqlite"),
+                            gate_lease=gate,
+                            ingest_turn=turn,
+                            analysis_id=run.analysis_id,
+                            now=40,
+                        )
+            assert connector.fetch_one(
+                "SELECT state FROM catalog_analysis_run_states "
+                "WHERE analysis_id = %s",
+                (run.analysis_id,),
+            ) == ("OPEN",)
+            assert connector.fetch_one(
+                "SELECT build_id FROM operational_source_working_builds "
+                "WHERE slot = %s",
+                (1,),
+            ) == (build,)
+
+        with connector.transaction():
+            abandoned = AnalysisRepository.abandon(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                ingest_turn=turn,
+                analysis_id=run.analysis_id,
+                now=41,
+            )
+        assert abandoned.state == "ABANDONED" and not abandoned.replayed
+        assert (
+            connector.fetch_one(
+                "SELECT build_id FROM operational_source_working_builds WHERE slot = %s",
+                (1,),
+            )
+            == ()
+        )
+        assert connector.fetch_one(
+            "SELECT build_id FROM operational_source_build_generations "
+            "WHERE generation = %s",
+            (turn.generation,),
+        ) == (build,)
+        with connector.transaction():
+            with (
+                patch.object(
+                    connector,
+                    "execute",
+                    side_effect=AssertionError("abandon replay attempted DML"),
+                ),
+                patch.object(
+                    connector,
+                    "execute_affected",
+                    side_effect=AssertionError("abandon replay attempted DML"),
+                ),
+            ):
+                replay = AnalysisRepository.abandon(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    analysis_id=run.analysis_id,
+                    now=42,
+                )
+        assert replay.state == "ABANDONED" and replay.replayed
+
+        with connector.transaction():
+            replacement = b"Z" * 16
+            _seed_build(
+                connector,
+                build_id=replacement,
+                scope=scope,
+                manifest_byte=77,
+                gallery_count=0,
+            )
+            connector.execute(
+                "INSERT INTO operational_source_working_builds "
+                "(slot, build_id, assigned_at) VALUES (%s, %s, %s)",
+                (1, replacement, 43),
+            )
+        with pytest.raises(AnalysisCorruptionError, match="retained"):
+            with connector.transaction():
+                AnalysisRepository.abandon(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    analysis_id=run.analysis_id,
+                    now=44,
+                )
+    finally:
+        connector.close()
+
+
+def test_abandon_rejects_complete_and_stale_ingest_authority(tmp_path: Path) -> None:
+    connector = _generated_database(tmp_path / "analysis-abandon-reject.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        with connector.transaction():
+            _scope, build, _first, _second = _seed_initial_snapshot(connector)
+        run = _begin(
+            connector,
+            gate,
+            turn,
+            build_id=build,
+            analysis_id=b"Y" * 16,
+            now=30,
+        )
+        stale_turn = IngestTurn(
+            turn.generation,
+            b"s" * 16,
+            turn.lease_expires_at,
+        )
+        with pytest.raises(IngestFenceUnavailableError, match="stale"):
+            with connector.transaction():
+                AnalysisRepository.abandon(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    ingest_turn=stale_turn,
+                    analysis_id=run.analysis_id,
+                    now=31,
+                )
+        started_at = connector.fetch_one(
+            "SELECT started_at FROM catalog_analysis_run_started_ats "
+            "WHERE analysis_id = %s",
+            (run.analysis_id,),
+        )[0]
+        with connector.transaction():
+            complete_analysis_run(
+                connector,
+                analysis_id=run.analysis_id,
+                completed_at=int(started_at) + 1,
+            )
+        with pytest.raises(AnalysisNotReadyError, match="COMPLETE"):
+            with connector.transaction():
+                AnalysisRepository.abandon(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    analysis_id=run.analysis_id,
+                    now=32,
+                )
+        assert connector.fetch_one(
+            "SELECT build_id FROM operational_source_working_builds WHERE slot = %s",
+            (1,),
+        ) == (build,)
+    finally:
+        connector.close()
+
+
+def test_component_terminal_receipt_requires_stage_specific_cursor_codec(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "analysis-component-codec.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        with connector.transaction():
+            _scope, build, _first, _second = _seed_initial_snapshot(connector)
+        run = _begin(
+            connector,
+            gate,
+            turn,
+            build_id=build,
+            analysis_id=b"K" * 16,
+            now=30,
+        )
+        sealed_at = (
+            int(
+                connector.fetch_one(
+                    "SELECT started_at FROM catalog_analysis_run_started_ats "
+                    "WHERE analysis_id = %s",
+                    (run.analysis_id,),
+                )[0]
+            )
+            + 1
+        )
+        with connector.transaction():
+            for component in ANALYSIS_COMPONENTS:
+                seed_analysis_component(
+                    connector,
+                    analysis_id=run.analysis_id,
+                    state_component=component,
+                    row_count=2 if component == b"file_hash_decision" else 0,
+                    sealed_at=sealed_at,
+                    terminal_receipt=True,
+                )
+
+        stage = b"validate_file_hash_decision"
+
+        def set_terminal_cursor(cursor: bytes) -> None:
+            generation = connector.fetch_one(
+                "SELECT start_generation FROM catalog_analysis_batch_receipts "
+                "WHERE analysis_id = %s AND stage = %s AND row_count = %s",
+                (run.analysis_id, stage, 0),
+            )[0]
+            for table, column in (
+                ("catalog_analysis_batch_receipt_start_cursors", "start_cursor"),
+                ("catalog_analysis_batch_receipt_next_cursors", "next_cursor"),
+            ):
+                connector.execute(
+                    f"UPDATE {table} SET {column} = %s "
+                    "WHERE analysis_id = %s AND stage = %s "
+                    "AND start_generation = %s",
+                    (cursor, run.analysis_id, stage, generation),
+                )
+            connector.execute(
+                "UPDATE catalog_analysis_checkpoint_cursors SET cursor = %s "
+                "WHERE analysis_id = %s AND stage = %s",
+                (cursor, run.analysis_id, stage),
+            )
+
+        nonzero_key = b"\x01D\x01" + b"k" * 32 + (2).to_bytes(8, "big")
+        with connector.transaction():
+            set_terminal_cursor(nonzero_key)
+            require_exact_analysis_state_components(
+                connector,
+                analysis_id=run.analysis_id,
+                state_components=ANALYSIS_COMPONENTS,
+            )
+
+        for corrupt in (
+            b"\x01G\x01" + (1).to_bytes(8, "big") + (2).to_bytes(8, "big"),
+            nonzero_key[:-1],
+        ):
+            with pytest.raises(AnalysisFamilyCollisionError):
+                with connector.transaction():
+                    set_terminal_cursor(corrupt)
+                    require_exact_analysis_state_components(
+                        connector,
+                        analysis_id=run.analysis_id,
+                        state_components=ANALYSIS_COMPONENTS,
+                    )
+    finally:
+        connector.close()
+
+
 def test_depth_zero_file_overlay_matches_independent_full_oracle_and_fails_closed(
     tmp_path: Path,
 ) -> None:
@@ -969,14 +2171,31 @@ def test_depth_zero_file_overlay_matches_independent_full_oracle_and_fails_close
         assert run.overlay_depth == 0
         assert run.anchor_analysis_id == run.analysis_id
         assert run.baseline_analysis_id is None
-        replay = _begin(
-            connector,
-            gate,
-            turn,
-            build_id=build,
-            analysis_id=b"Z" * 16,
-            now=31,
-        )
+        with (
+            patch.object(
+                analysis_module,
+                "database_unix_microseconds",
+                side_effect=AssertionError("natural replay requested DB time"),
+            ),
+            patch.object(
+                connector,
+                "execute",
+                side_effect=AssertionError("natural replay attempted DML"),
+            ),
+            patch.object(
+                connector,
+                "execute_affected",
+                side_effect=AssertionError("natural replay attempted DML"),
+            ),
+        ):
+            replay = _begin(
+                connector,
+                gate,
+                turn,
+                build_id=build,
+                analysis_id=b"Z" * 16,
+                now=31,
+            )
         assert replay.analysis_id == run.analysis_id
         assert replay.input_manifest_sha256 == run.input_manifest_sha256
         assert replay.replayed
@@ -1099,21 +2318,22 @@ def test_every_batch_crash_rolls_back_receipt_checkpoint_and_seal_then_replays(
                 )
             assert replay.replayed
             assert replay == type(replay)(
-                committed.analysis_id,
-                committed.stage,
-                committed.batch_key,
-                committed.start_generation,
-                committed.start_cursor,
-                committed.start_processed_count,
-                committed.next_cursor,
-                committed.next_processed_count,
-                committed.next_state,
-                committed.row_count,
-                committed.terminal,
-                committed.committed_generation,
-                committed.committed_at,
-                True,
-                committed.component_sealed,
+                analysis_id=committed.analysis_id,
+                stage=committed.stage,
+                batch_key=committed.batch_key,
+                start_generation=committed.start_generation,
+                start_cursor=committed.start_cursor,
+                start_processed_count=committed.start_processed_count,
+                page_limit=committed.page_limit,
+                next_cursor=committed.next_cursor,
+                next_processed_count=committed.next_processed_count,
+                next_state=committed.next_state,
+                row_count=committed.row_count,
+                terminal=committed.terminal,
+                committed_generation=committed.committed_generation,
+                committed_at=committed.committed_at,
+                replayed=True,
+                component_sealed=committed.component_sealed,
             )
             assert (
                 connector.fetch_one(
@@ -1144,6 +2364,153 @@ def test_every_batch_crash_rolls_back_receipt_checkpoint_and_seal_then_replays(
         connector.close()
 
 
+def test_vertical_receipt_and_checkpoint_every_statement_fault_rolls_back(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "analysis-vertical-fault.sqlite3")
+    receipt_tables = (
+        "catalog_analysis_batch_receipt_anchors",
+        "catalog_analysis_batch_receipt_coordinates",
+        "catalog_analysis_batch_receipt_start_cursors",
+        "catalog_analysis_batch_receipt_start_processed_counts",
+        "catalog_analysis_batch_receipt_next_cursors",
+        "catalog_analysis_batch_receipt_row_counts",
+        "catalog_analysis_batch_receipt_committed_ats",
+        "catalog_analysis_batch_receipt_seals",
+    )
+    checkpoint_tables = (
+        "catalog_analysis_checkpoint_states",
+        "catalog_analysis_checkpoint_updated_ats",
+        "catalog_analysis_checkpoint_generations",
+    )
+    mutation_tables = receipt_tables + checkpoint_tables
+    try:
+        gate, turn = _authorities(connector)
+        with connector.transaction():
+            _scope, build, _first, _second = _seed_initial_snapshot(connector)
+        run = _begin(
+            connector,
+            gate,
+            turn,
+            build_id=build,
+            analysis_id=b"J" * 16,
+            now=30,
+        )
+        with connector.transaction():
+            first = AnalysisRepository.process_changed_gallery_batch(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                ingest_turn=turn,
+                analysis_id=run.analysis_id,
+                batch_key=b"vertical-first",
+                max_rows=128,
+                now=100,
+            )
+        assert not first.terminal
+        checkpoint_key = (run.analysis_id, b"changed_gallery")
+        before_checkpoint = connector.fetch_one(
+            "SELECT generation, cursor, processed_count, state, updated_at "
+            "FROM catalog_analysis_checkpoints "
+            "WHERE analysis_id = %s AND stage = %s",
+            checkpoint_key,
+        )
+        before_counts = {
+            table: connector.fetch_one(
+                f"SELECT COUNT(*) FROM {table} WHERE analysis_id = %s AND stage = %s",
+                checkpoint_key,
+            )[0]
+            for table in receipt_tables
+        }
+        original_execute = connector.execute
+        original_execute_affected = connector.execute_affected
+
+        for failure_at in range(1, 12):
+            mutation_number = 0
+
+            def maybe_fail(query: str, data: tuple[Any, ...] = ()) -> None:
+                nonlocal mutation_number
+                if any(table in query for table in mutation_tables):
+                    mutation_number += 1
+                    if mutation_number == failure_at:
+                        raise RuntimeError(f"analysis vertical mutation {failure_at}")
+                original_execute(query, data)
+
+            def maybe_fail_affected(
+                query: str,
+                data: tuple[Any, ...] = (),
+            ) -> int:
+                nonlocal mutation_number
+                if any(table in query for table in mutation_tables):
+                    mutation_number += 1
+                    if mutation_number == failure_at:
+                        raise RuntimeError(f"analysis vertical mutation {failure_at}")
+                return original_execute_affected(query, data)
+
+            with pytest.raises(
+                RuntimeError,
+                match=f"analysis vertical mutation {failure_at}",
+            ):
+                with connector.transaction():
+                    with (
+                        patch.object(connector, "execute", side_effect=maybe_fail),
+                        patch.object(
+                            connector,
+                            "execute_affected",
+                            side_effect=maybe_fail_affected,
+                        ),
+                    ):
+                        AnalysisRepository.process_changed_gallery_batch(
+                            VNextUnitOfWork(connector, backend="sqlite"),
+                            gate_lease=gate,
+                            ingest_turn=turn,
+                            analysis_id=run.analysis_id,
+                            batch_key=b"vertical-terminal",
+                            max_rows=128,
+                            now=200,
+                        )
+            assert mutation_number == failure_at
+            assert (
+                connector.fetch_one(
+                    "SELECT generation, cursor, processed_count, state, updated_at "
+                    "FROM catalog_analysis_checkpoints "
+                    "WHERE analysis_id = %s AND stage = %s",
+                    checkpoint_key,
+                )
+                == before_checkpoint
+            )
+            for table, count in before_counts.items():
+                assert connector.fetch_one(
+                    f"SELECT COUNT(*) FROM {table} "
+                    "WHERE analysis_id = %s AND stage = %s",
+                    checkpoint_key,
+                ) == (count,)
+
+        with connector.transaction():
+            terminal = AnalysisRepository.process_changed_gallery_batch(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                ingest_turn=turn,
+                analysis_id=run.analysis_id,
+                batch_key=b"vertical-terminal",
+                max_rows=128,
+                now=200,
+            )
+        assert terminal.terminal and terminal.state == "COMPLETE"
+        with connector.transaction():
+            replay = AnalysisRepository.process_changed_gallery_batch(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                ingest_turn=turn,
+                analysis_id=run.analysis_id,
+                batch_key=b"vertical-terminal",
+                max_rows=128,
+                now=300,
+            )
+        assert replay.replayed
+    finally:
+        connector.close()
+
+
 def _complete_baseline_for_incremental(
     connector: SQLiteConnector,
     gate: GateLease,
@@ -1152,12 +2519,20 @@ def _complete_baseline_for_incremental(
 ) -> None:
     snapshot = b"m" * 32
     with connector.transaction():
+        started_at = connector.fetch_one(
+            "SELECT started_at FROM catalog_analysis_run_started_ats "
+            "WHERE analysis_id = %s",
+            (analysis_id,),
+        )[0]
+        seal_time = int(started_at) + 1
         for component in sorted(ANALYSIS_COMPONENTS - {b"file_hash_decision"}):
-            connector.execute(
-                "INSERT INTO catalog_analysis_state_component_seals "
-                "(analysis_id, state_component, row_count, sealed_at) "
-                "VALUES (%s, %s, 0, 500)",
-                (analysis_id, component),
+            seed_analysis_component(
+                connector,
+                analysis_id=analysis_id,
+                state_component=component,
+                row_count=0,
+                sealed_at=seal_time,
+                terminal_receipt=True,
             )
         _canonical_identity(
             connector,
@@ -1165,21 +2540,22 @@ def _complete_baseline_for_incremental(
             domain=b"source_snapshot_manifest_v1",
             serial=900,
         )
-        connector.execute(
-            "INSERT INTO catalog_source_snapshot_manifest_identity "
-            "(snapshot_manifest_sha256, gallery_count, file_count, byte_count) "
-            "VALUES (%s, 2, 0, 0)",
-            (snapshot,),
+        seed_snapshot_manifest(
+            connector,
+            snapshot_manifest_sha256=snapshot,
+            gallery_count=2,
+            file_count=0,
+            byte_count=0,
         )
         connector.execute(
             "INSERT INTO catalog_analysis_snapshot_manifest "
             "(analysis_id, snapshot_manifest_sha256) VALUES (%s, %s)",
             (analysis_id, snapshot),
         )
-        connector.execute(
-            "UPDATE catalog_analysis_runs SET state = 'COMPLETE', completed_at = 501 "
-            "WHERE analysis_id = %s",
-            (analysis_id,),
+        complete_analysis_run(
+            connector,
+            analysis_id=analysis_id,
+            completed_at=seal_time + 1,
         )
 
 
@@ -1203,22 +2579,13 @@ def _prepare_incremental(
 
     snapshot = b"m" * 32
     with connector.transaction():
-        connector.execute(
-            "INSERT INTO catalog_source_revisions "
-            "(source_revision, channel, snapshot_manifest_sha256, published_at) "
-            "VALUES (1, %s, %s, 510)",
-            (b"default", snapshot),
-        )
-        connector.execute(
-            "INSERT INTO catalog_source_revision_provenance "
-            "(source_revision, analysis_id) VALUES (1, %s)",
-            (baseline.analysis_id,),
-        )
-        connector.execute(
-            "INSERT INTO catalog_source_heads "
-            "(channel, source_revision, generation, advanced_at) "
-            "VALUES (%s, 1, 1, 510)",
-            (b"default",),
+        base_receipt = _seed_published_commit(
+            connector,
+            build_id=first_build,
+            snapshot_manifest_sha256=snapshot,
+            generation=1,
+            committed_at=510,
+            analysis_id=baseline.analysis_id,
         )
         IngestFenceRepository.complete(
             VNextUnitOfWork(connector, backend="sqlite"),
@@ -1242,7 +2609,7 @@ def _prepare_incremental(
             scope=scope,
             manifest_byte=2,
             gallery_count=2,
-            base_source=(1, 1),
+            base_receipt=base_receipt,
         )
         connector.execute(
             "INSERT INTO catalog_source_build_expected_gallery "
@@ -1394,7 +2761,7 @@ def test_independent_seal_rejects_omitted_extra_or_corrupt_overlay(
         with connector.transaction():
             if corruption == "omitted":
                 connector.execute(
-                    "DELETE FROM catalog_analysis_file_hash_decision_shadow "
+                    "DELETE FROM catalog_a_file_decision_shadow_seals "
                     "WHERE analysis_id = %s AND file_sha256 = %s",
                     (run.analysis_id, first),
                 )
@@ -1412,12 +2779,12 @@ def test_independent_seal_rejects_omitted_extra_or_corrupt_overlay(
                 )
             else:
                 connector.execute(
-                    "UPDATE catalog_analysis_file_hash_decision_shadow "
+                    "UPDATE catalog_a_file_decision_shadow_occurrences "
                     "SET occurrence_count = occurrence_count + 1 "
                     "WHERE analysis_id = %s AND file_sha256 = %s",
                     (run.analysis_id, first),
                 )
-        with pytest.raises(AnalysisCorruptionError, match="full evaluator"):
+        with pytest.raises(AnalysisCorruptionError, match="partial|full evaluator"):
             with connector.transaction():
                 AnalysisRepository.validate_file_hash_decision_batch(
                     VNextUnitOfWork(connector, backend="sqlite"),
@@ -1447,9 +2814,12 @@ def test_stale_source_baseline_is_rejected_before_analysis_write(
             connector, gate, first_turn
         )
         with connector.transaction():
-            connector.execute(
-                "UPDATE catalog_source_heads SET generation = 2 WHERE channel = %s",
-                (b"default",),
+            _seed_published_commit(
+                connector,
+                build_id=build,
+                snapshot_manifest_sha256=b"m" * 32,
+                generation=2,
+                committed_at=529,
             )
         with pytest.raises(AnalysisNotReadyError, match="stale"):
             _begin(
@@ -1547,16 +2917,96 @@ def test_large_snapshot_batch_is_hard_capped_and_resume_is_keyset_bounded(
         assert terminal.row_count == 0
         assert terminal.cumulative_row_count == 130
         assert terminal.state == "COMPLETE" and terminal.terminal
-        with pytest.raises(ValueError, match="must not exceed"):
+        with connector.transaction():
+            clamped = AnalysisRepository.process_changed_file_hash_batch(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                ingest_turn=turn,
+                analysis_id=run.analysis_id,
+                batch_key=b"too-large",
+                max_rows=129,
+                now=43,
+            )
+        assert clamped.page_limit == 128
+        assert clamped.row_count <= clamped.page_limit
+        with connector.transaction():
+            with (
+                patch.object(
+                    connector,
+                    "execute",
+                    side_effect=AssertionError("batch replay attempted DML"),
+                ),
+                patch.object(
+                    connector,
+                    "execute_affected",
+                    side_effect=AssertionError("batch replay attempted DML"),
+                ),
+            ):
+                clamped_replay = AnalysisRepository.process_changed_file_hash_batch(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    analysis_id=run.analysis_id,
+                    batch_key=b"too-large",
+                    max_rows=0,
+                    now=44,
+                )
+        assert clamped_replay.replayed
+        assert clamped_replay.page_limit == clamped.page_limit == 128
+        assert clamped_replay.row_count == clamped.row_count
+        with pytest.raises(AnalysisCorruptionError, match="stored-limit evaluator"):
             with connector.transaction():
+                connector.execute(
+                    "UPDATE catalog_analysis_batch_receipt_page_limits "
+                    "SET page_limit = %s WHERE analysis_id = %s AND stage = %s "
+                    "AND start_generation = %s",
+                    (
+                        1,
+                        run.analysis_id,
+                        b"changed_file_hash",
+                        clamped.start_generation,
+                    ),
+                )
                 AnalysisRepository.process_changed_file_hash_batch(
                     VNextUnitOfWork(connector, backend="sqlite"),
                     gate_lease=gate,
                     ingest_turn=turn,
                     analysis_id=run.analysis_id,
                     batch_key=b"too-large",
-                    max_rows=129,
-                    now=43,
+                    max_rows=7,
+                    now=45,
+                )
+        first_hash = connector.fetch_one(
+            "SELECT file_sha256 FROM catalog_analysis_changed_file_hashes "
+            "WHERE analysis_id = %s ORDER BY file_sha256 LIMIT 1",
+            (run.analysis_id,),
+        )[0]
+        with pytest.raises(AnalysisCorruptionError, match="materialization"):
+            with connector.transaction():
+                connector.execute(
+                    "DELETE FROM catalog_analysis_changed_file_hashes "
+                    "WHERE analysis_id = %s AND file_sha256 = %s",
+                    (run.analysis_id, first_hash),
+                )
+                AnalysisRepository.process_changed_file_hash_batch(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    analysis_id=run.analysis_id,
+                    batch_key=b"too-large",
+                    max_rows=7,
+                    now=45,
+                )
+        with pytest.raises(ValueError, match="max_rows"):
+            with connector.transaction():
+                AnalysisRepository.process_changed_file_hash_batch(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    analysis_id=run.analysis_id,
+                    batch_key=b"fresh-zero",
+                    max_rows=0,
+                    now=45,
                 )
     finally:
         connector.close()
@@ -1614,6 +3064,7 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
             run.analysis_id,
             max_rows=128,
             start_now=100,
+            replay_each=True,
         )
         _run_stage(
             connector,
@@ -1624,6 +3075,7 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
             prefix=b"all-impact-gallery",
             max_rows=128,
             start_now=500,
+            replay_each=True,
         )
         _run_prepared_gallery_stage(
             connector,
@@ -1635,6 +3087,7 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
             prefix=b"all-impact-content",
             start_now=600,
             upload_content=True,
+            replay_first=True,
         )
         _run_prepared_gallery_stage(
             connector,
@@ -1656,6 +3109,7 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
             gallery_ids=(1,),
             prefix=b"all-validate-content-candidate",
             start_now=800,
+            replay_first=True,
         )
         _run_stage(
             connector,
@@ -1666,6 +3120,7 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
             prefix=b"all-content-owner",
             max_rows=128,
             start_now=900,
+            replay_each=True,
         )
         _run_stage(
             connector,
@@ -1676,6 +3131,7 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
             prefix=b"all-validate-content-owner",
             max_rows=128,
             start_now=1_000,
+            replay_each=True,
         )
         _run_stage(
             connector,
@@ -1686,6 +3142,7 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
             prefix=b"all-impact-gid",
             max_rows=128,
             start_now=1_100,
+            replay_each=True,
         )
         _run_prepared_gallery_stage(
             connector,
@@ -1696,6 +3153,7 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
             gallery_ids=(1,),
             prefix=b"all-gid-candidate",
             start_now=1_200,
+            replay_first=True,
         )
         _run_prepared_gallery_stage(
             connector,
@@ -1706,6 +3164,7 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
             gallery_ids=(1,),
             prefix=b"all-validate-gid-candidate",
             start_now=1_300,
+            replay_first=True,
         )
         _run_stage(
             connector,
@@ -1716,6 +3175,7 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
             prefix=b"all-gid-winner",
             max_rows=128,
             start_now=1_400,
+            replay_each=True,
         )
         final_validation = _run_stage(
             connector,
@@ -1726,6 +3186,7 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
             prefix=b"all-validate-gid-winner",
             max_rows=128,
             start_now=1_500,
+            replay_each=True,
         )
         assert final_validation[-1].component_sealed
         assert connector.fetch_all(
@@ -1740,6 +3201,16 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
             (b"gid_candidate", 1),
             (b"gid_winner", 1),
         ]
+        assert connector.fetch_all(
+            "SELECT file_no FROM catalog_gallery_observation_file_file_nos "
+            "WHERE gallery_id = 1 AND observation_id = 1 ORDER BY file_no"
+        ) == [(0,)]
+        assert connector.fetch_one(
+            "SELECT content_sha256 "
+            "FROM catalog_analysis_content_owner_candidate_resolved "
+            "WHERE analysis_id = %s AND gallery_id = 1",
+            (run.analysis_id,),
+        ) == (identity.effective_content_digest((file_sha256,)),)
 
         snapshot_authority = _issue_preparation_authority(
             connector,
@@ -1768,6 +3239,11 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
                 preparation=snapshot_preparation,
                 now=1_620,
             )
+        persisted_completed_at = connector.fetch_one(
+            "SELECT completed_at FROM catalog_analysis_run_completed_ats "
+            "WHERE analysis_id = %s",
+            (run.analysis_id,),
+        )[0]
         snapshot_preparation.close()
         snapshot_preparation = None
         replay_authority = _issue_preparation_authority(
@@ -1782,7 +3258,19 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
             backend="sqlite",
             authority=replay_authority,
         )
-        with connector.transaction():
+        with (
+            patch.object(
+                connector,
+                "execute",
+                side_effect=AssertionError("write"),
+            ),
+            patch.object(
+                connector,
+                "execute_affected",
+                side_effect=AssertionError("write"),
+            ),
+            connector.transaction(),
+        ):
             replayed_handoff = AnalysisRepository.handoff_snapshot_manifest(
                 VNextUnitOfWork(connector, backend="sqlite"),
                 gate_lease=gate,
@@ -1791,16 +3279,195 @@ def test_depth_zero_all_five_components_snapshot_handoff_and_replay(
                 now=1_622,
             )
         assert replayed_handoff == first_handoff
-        assert connector.fetch_one(
+        connector.execute(
+            "UPDATE catalog_source_snapshot_manifest_identity_file_counts "
+            "SET file_count = 2 WHERE snapshot_manifest_sha256 = %s",
+            (first_handoff,),
+        )
+        corrupt_authority = _issue_preparation_authority(
+            connector,
+            gate,
+            turn,
+            run.analysis_id,
+            now=1_623,
+        )
+        corrupt_preparation = AnalysisRepository.prepare_snapshot_manifest(
+            connector,
+            backend="sqlite",
+            authority=corrupt_authority,
+        )
+        try:
+            with (
+                patch.object(
+                    connector,
+                    "execute",
+                    side_effect=AssertionError("write"),
+                ),
+                patch.object(
+                    connector,
+                    "execute_affected",
+                    side_effect=AssertionError("write"),
+                ),
+                connector.transaction(),
+                pytest.raises(AnalysisCorruptionError, match="sealed count family"),
+            ):
+                AnalysisRepository.handoff_snapshot_manifest(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    preparation=corrupt_preparation,
+                    now=1_624,
+                )
+        finally:
+            corrupt_preparation.close()
+        connector.execute(
+            "UPDATE catalog_source_snapshot_manifest_identity_file_counts "
+            "SET file_count = 1 WHERE snapshot_manifest_sha256 = %s",
+            (first_handoff,),
+        )
+        root_page_sha256 = connector.fetch_one(
+            "SELECT root_page_sha256 FROM catalog_canonical_value_identities "
+            "WHERE value_sha256 = %s",
+            (first_handoff,),
+        )[0]
+        original_page_bytes = connector.fetch_one(
+            "SELECT page_bytes FROM catalog_canonical_value_page_payloads "
+            "WHERE page_sha256 = %s",
+            (root_page_sha256,),
+        )[0]
+        connector.execute(
+            "UPDATE catalog_canonical_value_page_payloads SET page_bytes = %s "
+            "WHERE page_sha256 = %s",
+            (b"corrupt-snapshot-canonical-page", root_page_sha256),
+        )
+        payload_authority = _issue_preparation_authority(
+            connector,
+            gate,
+            turn,
+            run.analysis_id,
+            now=1_625,
+        )
+        payload_preparation = AnalysisRepository.prepare_snapshot_manifest(
+            connector,
+            backend="sqlite",
+            authority=payload_authority,
+        )
+        try:
+            with (
+                patch.object(
+                    connector,
+                    "execute",
+                    side_effect=AssertionError("write"),
+                ),
+                patch.object(
+                    connector,
+                    "execute_affected",
+                    side_effect=AssertionError("write"),
+                ),
+                connector.transaction(),
+                pytest.raises(AnalysisCorruptionError, match="canonical payload"),
+            ):
+                AnalysisRepository.handoff_snapshot_manifest(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    preparation=payload_preparation,
+                    now=1_626,
+                )
+        finally:
+            payload_preparation.close()
+            connector.execute(
+                "UPDATE catalog_canonical_value_page_payloads SET page_bytes = %s "
+                "WHERE page_sha256 = %s",
+                (original_page_bytes, root_page_sha256),
+            )
+        component = b"gid_winner"
+        original_component_time = connector.fetch_one(
+            "SELECT sealed_at FROM catalog_analysis_state_component_sealed_ats "
+            "WHERE analysis_id = %s AND state_component = %s",
+            (run.analysis_id, component),
+        )[0]
+        set_analysis_component_sealed_at(
+            connector,
+            analysis_id=run.analysis_id,
+            state_component=component,
+            sealed_at=persisted_completed_at + 1,
+        )
+        time_authority = _issue_preparation_authority(
+            connector,
+            gate,
+            turn,
+            run.analysis_id,
+            now=1_627,
+        )
+        time_preparation = AnalysisRepository.prepare_snapshot_manifest(
+            connector,
+            backend="sqlite",
+            authority=time_authority,
+        )
+        try:
+            with (
+                patch.object(
+                    connector,
+                    "execute",
+                    side_effect=AssertionError("write"),
+                ),
+                patch.object(
+                    connector,
+                    "execute_affected",
+                    side_effect=AssertionError("write"),
+                ),
+                connector.transaction(),
+                pytest.raises(
+                    AnalysisCorruptionError,
+                    match="completed analysis snapshot replay",
+                ),
+            ):
+                AnalysisRepository.handoff_snapshot_manifest(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    preparation=time_preparation,
+                    now=1_628,
+                )
+        finally:
+            time_preparation.close()
+            set_analysis_component_sealed_at(
+                connector,
+                analysis_id=run.analysis_id,
+                state_component=component,
+                sealed_at=original_component_time,
+            )
+        state_and_time = connector.fetch_one(
             "SELECT state, completed_at FROM catalog_analysis_runs "
             "WHERE analysis_id = %s",
             (run.analysis_id,),
-        ) == ("COMPLETE", 1_620)
+        )
+        assert state_and_time == ("COMPLETE", persisted_completed_at)
+        started_at = connector.fetch_one(
+            "SELECT started_at FROM catalog_analysis_run_started_ats "
+            "WHERE analysis_id = %s",
+            (run.analysis_id,),
+        )[0]
+        maximum_component_time = connector.fetch_one(
+            "SELECT MAX(sealed_at) FROM catalog_analysis_state_component_sealed_ats "
+            "WHERE analysis_id = %s",
+            (run.analysis_id,),
+        )[0]
+        assert persisted_completed_at >= started_at
+        assert persisted_completed_at >= maximum_component_time
+        assert persisted_completed_at != 1_620
         assert connector.fetch_one(
             "SELECT snapshot_manifest_sha256 "
             "FROM catalog_analysis_snapshot_manifest WHERE analysis_id = %s",
             (run.analysis_id,),
         ) == (first_handoff,)
+        assert connector.fetch_one(
+            "SELECT gallery_count, file_count, byte_count "
+            "FROM catalog_source_snapshot_manifest_identity "
+            "WHERE snapshot_manifest_sha256 = %s",
+            (first_handoff,),
+        ) == (1, 1, 1)
     finally:
         if snapshot_preparation is not None:
             snapshot_preparation.close()
@@ -1875,22 +3542,13 @@ def test_depth_one_removed_gallery_materializes_all_downstream_tombstones(
             now=1_700,
         )
         with connector.transaction():
-            connector.execute(
-                "INSERT INTO catalog_source_revisions "
-                "(source_revision, channel, snapshot_manifest_sha256, published_at) "
-                "VALUES (1, %s, %s, 1710)",
-                (b"default", baseline_snapshot),
-            )
-            connector.execute(
-                "INSERT INTO catalog_source_revision_provenance "
-                "(source_revision, analysis_id) VALUES (1, %s)",
-                (baseline.analysis_id,),
-            )
-            connector.execute(
-                "INSERT INTO catalog_source_heads "
-                "(channel, source_revision, generation, advanced_at) "
-                "VALUES (%s, 1, 1, 1710)",
-                (b"default",),
+            base_receipt = _seed_published_commit(
+                connector,
+                build_id=baseline_build,
+                snapshot_manifest_sha256=baseline_snapshot,
+                generation=1,
+                committed_at=1_710,
+                analysis_id=baseline.analysis_id,
             )
             IngestFenceRepository.complete(
                 VNextUnitOfWork(connector, backend="sqlite"),
@@ -1912,7 +3570,7 @@ def test_depth_one_removed_gallery_materializes_all_downstream_tombstones(
                 scope=scope,
                 manifest_byte=5,
                 gallery_count=0,
-                base_source=(1, 1),
+                base_receipt=base_receipt,
             )
             _map_working_build(
                 connector,
@@ -2214,12 +3872,20 @@ def test_high_cardinality_spools_never_run_inside_mutation_transactions(
         assert content_batch.row_count == 1 and not content_batch.terminal
 
         with connector.transaction():
+            started_at = connector.fetch_one(
+                "SELECT started_at FROM catalog_analysis_run_started_ats "
+                "WHERE analysis_id = %s",
+                (run.analysis_id,),
+            )[0]
+            seal_time = int(started_at) + 1
             for component in sorted(ANALYSIS_COMPONENTS - {b"file_hash_decision"}):
-                connector.execute(
-                    "INSERT INTO catalog_analysis_state_component_seals "
-                    "(analysis_id, state_component, row_count, sealed_at) "
-                    "VALUES (%s, %s, 0, 700)",
-                    (run.analysis_id, component),
+                seed_analysis_component(
+                    connector,
+                    analysis_id=run.analysis_id,
+                    state_component=component,
+                    row_count=0,
+                    sealed_at=seal_time,
+                    terminal_receipt=True,
                 )
             snapshot_authority = AnalysisRepository.issue_preparation_authority(
                 VNextUnitOfWork(connector, backend="sqlite"),
@@ -2309,6 +3975,788 @@ def test_high_cardinality_spools_never_run_inside_mutation_transactions(
         connector.close()
 
 
+def test_analysis_policy_loader_reads_five_facts_once_through_the_seal(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "analysis-policy-shape.sqlite3")
+    try:
+        with connector.transaction():
+            _seed_root(connector)
+        original_fetch_one = connector.fetch_one
+        queries: list[str] = []
+
+        def recording_fetch_one(
+            query: str,
+            data: tuple[Any, ...] = (),
+        ) -> tuple[Any, ...]:
+            queries.append(query)
+            return original_fetch_one(query, data)
+
+        with patch.object(connector, "fetch_one", side_effect=recording_fetch_one):
+            policy = analysis_module._load_policy(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                1,
+            )
+        assert policy == analysis_module._Policy(1, 1, 1, 3, 1, 1)
+        policy_queries = [
+            query for query in queries if "catalog_analysis_policy_seals" in query
+        ]
+        assert len(policy_queries) == 1
+        query = policy_queries[0]
+        for table in (
+            "catalog_analysis_policy_algorithm_versions",
+            "catalog_analysis_policy_spam_artist_thresholds",
+            "catalog_analysis_policy_spam_occurrence_thresholds",
+            "catalog_analysis_policy_content_owner_rule_versions",
+            "catalog_analysis_policy_gid_winner_rule_versions",
+            "catalog_analysis_policy_identities",
+        ):
+            assert table in query
+        assert "catalog_analysis_policies" not in query
+        assert "FOR UPDATE" not in query.upper()
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize(
+    "member_table",
+    (
+        "catalog_analysis_policy_algorithm_versions",
+        "catalog_analysis_policy_spam_artist_thresholds",
+        "catalog_analysis_policy_spam_occurrence_thresholds",
+        "catalog_analysis_policy_content_owner_rule_versions",
+        "catalog_analysis_policy_gid_winner_rule_versions",
+        "catalog_analysis_policy_identities",
+    ),
+)
+def test_analysis_policy_loader_fails_closed_for_every_missing_member(
+    tmp_path: Path,
+    member_table: str,
+) -> None:
+    connector = _generated_database(
+        tmp_path / f"analysis-policy-partial-{member_table}.sqlite3"
+    )
+    try:
+        with connector.transaction():
+            _seed_root(connector)
+        connector.execute("PRAGMA foreign_keys = OFF")
+        connector.execute(f"DELETE FROM {member_table} WHERE policy_id = %s", (1,))
+        connector.execute("PRAGMA foreign_keys = ON")
+        with (
+            patch.object(connector, "execute", wraps=connector.execute) as execute,
+            pytest.raises(AnalysisNotReadyError, match="missing or incomplete"),
+        ):
+            analysis_module._load_policy(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                1,
+            )
+        execute.assert_not_called()
+    finally:
+        connector.close()
+
+
+def test_analysis_policy_loader_rejects_fact_identity_incongruence(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "analysis-policy-incongruent.sqlite3")
+    try:
+        with connector.transaction():
+            _seed_root(connector)
+        connector.execute("PRAGMA foreign_keys = OFF")
+        connector.execute(
+            "UPDATE catalog_analysis_policy_algorithm_versions "
+            "SET algorithm_version = %s WHERE policy_id = %s",
+            (2, 1),
+        )
+        connector.execute("PRAGMA foreign_keys = ON")
+        with pytest.raises(AnalysisNotReadyError, match="missing or incomplete"):
+            analysis_module._load_policy(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                1,
+            )
+    finally:
+        connector.close()
+
+
+def _counted_batch_call(
+    connector: SQLiteConnector,
+    callback: Any,
+    *,
+    zero_dml: bool = False,
+) -> tuple[int, list[str], list[str]]:
+    with (
+        patch.object(connector, "fetch_one", wraps=connector.fetch_one) as fetch_one,
+        patch.object(connector, "fetch_all", wraps=connector.fetch_all) as fetch_all,
+        patch.object(
+            connector,
+            "execute_affected",
+            wraps=connector.execute_affected,
+        ) as execute_affected,
+    ):
+        if zero_dml:
+            with (
+                patch.object(
+                    connector,
+                    "execute",
+                    side_effect=AssertionError("batch replay attempted DML"),
+                ),
+                patch.object(
+                    connector,
+                    "execute_affected",
+                    side_effect=AssertionError("batch replay attempted DML"),
+                ),
+            ):
+                callback()
+        else:
+            callback()
+    queries = [
+        call.args[0] for call in (*fetch_one.call_args_list, *fetch_all.call_args_list)
+    ]
+    affected = [call.args[0] for call in execute_affected.call_args_list]
+    return fetch_one.call_count + fetch_all.call_count, queries, affected
+
+
+def _seed_minimal_gid_metadata(
+    connector: SQLiteConnector,
+    *,
+    gallery_id: int,
+    observation_id: int,
+) -> int:
+    gid = 20_000 + gallery_id
+    source_name = f"batch-gallery-{gallery_id}".encode("ascii")
+    connector.execute(
+        "INSERT INTO catalog_gallery_upload_times (gid, upload_time) VALUES (%s, %s)",
+        (gid, 1),
+    )
+    connector.execute(
+        "INSERT INTO catalog_source_gallery_name_gids (source_gallery_name, gid) "
+        "VALUES (%s, %s)",
+        (source_name, gid),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_source_name_accesses "
+        "(gallery_id, source_gallery_name) VALUES (%s, %s)",
+        (gallery_id, source_name),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_metadata_anchors "
+        "(gallery_id, observation_id) VALUES (%s, %s)",
+        (gallery_id, observation_id),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_download_times "
+        "(gallery_id, observation_id, download_time) VALUES (%s, %s, 1)",
+        (gallery_id, observation_id),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_modified_times "
+        "(gallery_id, observation_id, modified_time) VALUES (%s, %s, 1)",
+        (gallery_id, observation_id),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_metadata_seals "
+        "(gallery_id, observation_id) VALUES (%s, %s)",
+        (gallery_id, observation_id),
+    )
+    return gid
+
+
+def _impact_batch_select_profile(
+    path: Path,
+    page_rows: int,
+    *,
+    verify_terminal_orphans: bool,
+    restore_claim: bool = True,
+    distinct_contents: bool = True,
+) -> dict[str, tuple[int, list[str], list[str]]]:
+    connector = _generated_database(path)
+    plans: tuple[CanonicalValueUploadPlan, ...] = ()
+    try:
+        gate, turn = _authorities(connector)
+        build = b"Q" * 16
+        analysis_id = b"Y" * 16
+        total = page_rows + 1
+        with connector.transaction():
+            scope = _seed_root(connector)
+            _seed_build(
+                connector,
+                build_id=build,
+                scope=scope,
+                manifest_byte=21,
+                gallery_count=total,
+            )
+            _map_working_build(connector, build_id=build, generation=1)
+        run = _begin(
+            connector,
+            gate,
+            turn,
+            build_id=build,
+            analysis_id=analysis_id,
+            now=30,
+        )
+        connector.execute("PRAGMA foreign_keys = OFF")
+        with connector.transaction():
+            for gallery_id in range(1, total + 1):
+                connector.execute(
+                    "INSERT INTO catalog_source_build_galleries "
+                    "(build_id, gallery_id, observation_id) VALUES (%s, %s, %s)",
+                    (build, gallery_id, gallery_id),
+                )
+                connector.execute(
+                    "INSERT INTO catalog_analysis_changed_galleries "
+                    "(analysis_id, gallery_id, change_kind) VALUES (%s, %s, 'ADDED')",
+                    (run.analysis_id, gallery_id),
+                )
+            seed_analysis_component(
+                connector,
+                analysis_id=run.analysis_id,
+                state_component=b"file_hash_decision",
+                row_count=0,
+                sealed_at=31,
+                terminal_receipt=True,
+            )
+        _run_stage(
+            connector,
+            gate,
+            turn,
+            AnalysisRepository.process_impacted_gallery_batch,
+            analysis_id=run.analysis_id,
+            prefix=b"count-impact-gallery",
+            max_rows=128,
+            start_now=100,
+        )
+        receipt = _issue_preparation_authority(
+            connector,
+            gate,
+            turn,
+            run.analysis_id,
+            now=200,
+        )
+        if distinct_contents:
+            plans = tuple(
+                CanonicalValueUploadPlan.from_parts(
+                    "effective_content_v1",
+                    (b"effective-content-" + gallery_id.to_bytes(8, "big"),),
+                )
+                for gallery_id in range(1, total + 1)
+            )
+        else:
+            shared_plan = CanonicalValueUploadPlan.from_parts(
+                "effective_content_v1",
+                (b"one shared effective-content payload",),
+            )
+            plans = (shared_plan,) * total
+        for offset, upload_plan in enumerate(dict.fromkeys(plans)):
+            _put_canonical_plan(
+                connector,
+                gate,
+                turn,
+                upload_plan,
+                now=210 + offset * 3,
+            )
+        preparations = tuple(
+            analysis_module.AnalysisGalleryPreparation(
+                run.analysis_id,
+                build,
+                gallery_id,
+                gallery_id,
+                20_000 + gallery_id,
+                plans[gallery_id - 1].value_sha256,
+                0,
+                1,
+                1,
+                plans[gallery_id - 1],
+                receipt,
+                analysis_module._PREPARATION_TOKEN,
+            )
+            for gallery_id in range(1, total + 1)
+        )
+        with connector.transaction():
+            first_content = AnalysisRepository.process_impacted_content_batch(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                ingest_turn=turn,
+                analysis_id=run.analysis_id,
+                batch_key=b"count-content-first",
+                max_rows=1,
+                preparations=preparations[:1],
+                now=1_000,
+            )
+        assert first_content.row_count == 1
+        if restore_claim and not distinct_contents:
+            connector.execute(
+                "INSERT INTO operational_canonical_value_uploads "
+                "(generation, value_sha256) VALUES (%s, %s)",
+                (receipt.generation, plans[0].value_sha256),
+            )
+
+        def fresh_content() -> None:
+            with connector.transaction():
+                result = AnalysisRepository.process_impacted_content_batch(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    analysis_id=run.analysis_id,
+                    batch_key=b"count-content-page",
+                    max_rows=128,
+                    preparations=preparations[1:],
+                    now=1_001,
+                )
+            assert result.row_count == page_rows and not result.replayed
+
+        profile: dict[str, tuple[int, list[str], list[str]]] = {}
+        profile["content_fresh"] = _counted_batch_call(connector, fresh_content)
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM operational_canonical_value_uploads "
+            "WHERE generation = %s",
+            (receipt.generation,),
+        ) == (0,)
+
+        def replay_content() -> None:
+            with connector.transaction():
+                replay = AnalysisRepository.process_impacted_content_batch(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    analysis_id=run.analysis_id,
+                    batch_key=b"count-content-page",
+                    max_rows=1,
+                    preparations=preparations[1:],
+                    now=1_002,
+                )
+            assert replay.replayed and replay.row_count == page_rows
+
+        profile["content_replay"] = _counted_batch_call(
+            connector,
+            replay_content,
+            zero_dml=True,
+        )
+        if verify_terminal_orphans:
+
+            def fresh_content_terminal() -> None:
+                with connector.transaction():
+                    terminal = AnalysisRepository.process_impacted_content_batch(
+                        VNextUnitOfWork(connector, backend="sqlite"),
+                        gate_lease=gate,
+                        ingest_turn=turn,
+                        analysis_id=run.analysis_id,
+                        batch_key=b"count-content-terminal",
+                        max_rows=128,
+                        preparations=(),
+                        now=1_003,
+                    )
+                assert terminal.terminal and not terminal.replayed
+
+            profile["content_terminal"] = _counted_batch_call(
+                connector,
+                fresh_content_terminal,
+            )
+
+            def replay_content_terminal() -> None:
+                with connector.transaction():
+                    terminal = AnalysisRepository.process_impacted_content_batch(
+                        VNextUnitOfWork(connector, backend="sqlite"),
+                        gate_lease=gate,
+                        ingest_turn=turn,
+                        analysis_id=run.analysis_id,
+                        batch_key=b"count-content-terminal",
+                        max_rows=1,
+                        preparations=(),
+                        now=1_004,
+                    )
+                assert terminal.terminal and terminal.replayed
+
+            profile["content_terminal_replay"] = _counted_batch_call(
+                connector,
+                replay_content_terminal,
+                zero_dml=True,
+            )
+            connector.execute(
+                "INSERT INTO catalog_a_impacted_content_anchors "
+                "(analysis_id, content_sha256) VALUES (%s, %s)",
+                (run.analysis_id, b"o" * 32),
+            )
+            with (
+                connector.transaction(),
+                patch.object(
+                    connector,
+                    "execute",
+                    side_effect=AssertionError("terminal replay attempted DML"),
+                ),
+                patch.object(
+                    connector,
+                    "execute_affected",
+                    side_effect=AssertionError("terminal replay attempted DML"),
+                ),
+                pytest.raises(AnalysisCorruptionError, match="terminal keyspace"),
+            ):
+                AnalysisRepository.process_impacted_content_batch(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    analysis_id=run.analysis_id,
+                    batch_key=b"count-content-terminal",
+                    max_rows=1,
+                    preparations=(),
+                    now=1_005,
+                )
+            missing_plan = CanonicalValueUploadPlan.from_parts(
+                "effective_content_v1",
+                (b"sealed identity whose live claim is deliberately absent",),
+            )
+            try:
+                _put_canonical_plan(connector, gate, turn, missing_plan, now=1_006)
+                connector.execute(
+                    "DELETE FROM operational_canonical_value_uploads "
+                    "WHERE generation = %s AND value_sha256 = %s",
+                    (receipt.generation, missing_plan.value_sha256),
+                )
+                missing_preparation = analysis_module.AnalysisGalleryPreparation(
+                    run.analysis_id,
+                    build,
+                    1,
+                    1,
+                    20_001,
+                    missing_plan.value_sha256,
+                    0,
+                    1,
+                    1,
+                    missing_plan,
+                    receipt,
+                    analysis_module._PREPARATION_TOKEN,
+                )
+                with (
+                    connector.transaction(),
+                    pytest.raises(
+                        AnalysisNotReadyError,
+                        match="live-generation upload claim",
+                    ),
+                ):
+                    analysis_module._consume_effective_content_claims(
+                        VNextUnitOfWork(connector, backend="sqlite"),
+                        analysis_module._RunAuthority(
+                            run.analysis_id,
+                            build,
+                            analysis_module._Policy(1, 1, 1, 1, 1, 1),
+                            None,
+                            0,
+                        ),
+                        (missing_preparation,),
+                        preexisting_contents=frozenset(),
+                    )
+            finally:
+                missing_plan.close()
+
+        with connector.transaction():
+            for gallery_id in range(1, total + 1):
+                _seed_minimal_gid_metadata(
+                    connector,
+                    gallery_id=gallery_id,
+                    observation_id=gallery_id,
+                )
+                seed_content_owner_shadow(
+                    connector,
+                    analysis_id=run.analysis_id,
+                    content_sha256=sha256(
+                        b"owner" + gallery_id.to_bytes(8, "big")
+                    ).digest(),
+                    owner_gallery_id=gallery_id,
+                )
+            seed_analysis_component(
+                connector,
+                analysis_id=run.analysis_id,
+                state_component=b"content_owner",
+                row_count=total,
+                sealed_at=32,
+                terminal_receipt=True,
+            )
+        with connector.transaction():
+            first_gid = AnalysisRepository.process_impacted_gid_batch(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                ingest_turn=turn,
+                analysis_id=run.analysis_id,
+                batch_key=b"count-gid-first",
+                max_rows=1,
+                now=1_200,
+            )
+        assert first_gid.row_count == 1
+
+        def fresh_gid() -> None:
+            with connector.transaction():
+                result = AnalysisRepository.process_impacted_gid_batch(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    analysis_id=run.analysis_id,
+                    batch_key=b"count-gid-page",
+                    max_rows=128,
+                    now=1_201,
+                )
+            assert result.row_count == page_rows and not result.replayed
+
+        profile["gid_fresh"] = _counted_batch_call(connector, fresh_gid)
+
+        def replay_gid() -> None:
+            with connector.transaction():
+                replay = AnalysisRepository.process_impacted_gid_batch(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    analysis_id=run.analysis_id,
+                    batch_key=b"count-gid-page",
+                    max_rows=1,
+                    now=1_202,
+                )
+            assert replay.replayed and replay.row_count == page_rows
+
+        profile["gid_replay"] = _counted_batch_call(
+            connector,
+            replay_gid,
+            zero_dml=True,
+        )
+        if verify_terminal_orphans:
+
+            def fresh_gid_terminal() -> None:
+                with connector.transaction():
+                    terminal = AnalysisRepository.process_impacted_gid_batch(
+                        VNextUnitOfWork(connector, backend="sqlite"),
+                        gate_lease=gate,
+                        ingest_turn=turn,
+                        analysis_id=run.analysis_id,
+                        batch_key=b"count-gid-terminal",
+                        max_rows=128,
+                        now=1_203,
+                    )
+                assert terminal.terminal and not terminal.replayed
+
+            profile["gid_terminal"] = _counted_batch_call(
+                connector,
+                fresh_gid_terminal,
+            )
+
+            def replay_gid_terminal() -> None:
+                with connector.transaction():
+                    terminal = AnalysisRepository.process_impacted_gid_batch(
+                        VNextUnitOfWork(connector, backend="sqlite"),
+                        gate_lease=gate,
+                        ingest_turn=turn,
+                        analysis_id=run.analysis_id,
+                        batch_key=b"count-gid-terminal",
+                        max_rows=1,
+                        now=1_204,
+                    )
+                assert terminal.terminal and terminal.replayed
+
+            profile["gid_terminal_replay"] = _counted_batch_call(
+                connector,
+                replay_gid_terminal,
+                zero_dml=True,
+            )
+            connector.execute(
+                "INSERT INTO catalog_a_impacted_gid_anchors (analysis_id, gid) "
+                "VALUES (%s, %s)",
+                (run.analysis_id, 99_999),
+            )
+            with (
+                connector.transaction(),
+                patch.object(
+                    connector,
+                    "execute",
+                    side_effect=AssertionError("terminal replay attempted DML"),
+                ),
+                patch.object(
+                    connector,
+                    "execute_affected",
+                    side_effect=AssertionError("terminal replay attempted DML"),
+                ),
+                pytest.raises(AnalysisCorruptionError, match="terminal keyspace"),
+            ):
+                AnalysisRepository.process_impacted_gid_batch(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    analysis_id=run.analysis_id,
+                    batch_key=b"count-gid-terminal",
+                    max_rows=1,
+                    now=1_205,
+                )
+        return profile
+    finally:
+        for plan in dict.fromkeys(plans):
+            plan.close()
+        connector.close()
+
+
+def test_impacted_stage_select_counts_are_constant_for_one_and_128_rows(
+    tmp_path: Path,
+) -> None:
+    one = _impact_batch_select_profile(
+        tmp_path / "analysis-impact-count-1.sqlite3",
+        1,
+        verify_terminal_orphans=True,
+    )
+    many = _impact_batch_select_profile(
+        tmp_path / "analysis-impact-count-128.sqlite3",
+        128,
+        verify_terminal_orphans=False,
+    )
+    preexisting_without_claim = _impact_batch_select_profile(
+        tmp_path / "analysis-impact-preexisting-no-claim.sqlite3",
+        1,
+        verify_terminal_orphans=False,
+        restore_claim=False,
+        distinct_contents=False,
+    )
+    for stage in ("content_fresh", "content_replay", "gid_fresh", "gid_replay"):
+        assert one[stage][0] == many[stage][0], stage
+    content_fresh_queries = many["content_fresh"][1]
+    assert (
+        sum("WITH proposed(gallery_id)" in query for query in content_fresh_queries)
+        == 1
+    )
+    allocation_queries = [
+        query
+        for query in content_fresh_queries
+        if "FROM catalog_canonical_value_allocation_anchors" in query
+    ]
+    assert len(allocation_queries) == 1
+    assert allocation_queries[0].count("%s") == 128
+    claim_queries = [
+        query
+        for query in content_fresh_queries
+        if "FROM operational_canonical_value_uploads" in query
+    ]
+    assert len(claim_queries) == 1
+    assert claim_queries[0].count("%s") == 129
+    assert (
+        sum("WITH proposed(key_value)" in query for query in content_fresh_queries) == 1
+    )
+    content_deletes = [
+        query
+        for query in many["content_fresh"][2]
+        if query.startswith("DELETE FROM operational_canonical_value_uploads")
+    ]
+    assert len(content_deletes) == 1 and " IN (" in content_deletes[0]
+    assert content_deletes[0].count("%s") == 129
+    assert not any(
+        query.startswith("DELETE FROM operational_canonical_value_uploads")
+        for query in preexisting_without_claim["content_fresh"][2]
+    )
+    content_replay_queries = many["content_replay"][1]
+    assert (
+        sum("WITH proposed(gallery_id)" in query for query in content_replay_queries)
+        == 1
+    )
+    assert not any(
+        "catalog_canonical_value_allocation_anchors" in query
+        or "operational_canonical_value_uploads" in query
+        for query in content_replay_queries
+    )
+    for stage in ("gid_fresh", "gid_replay"):
+        queries = many[stage][1]
+        assert sum("WITH proposed(gallery_id)" in query for query in queries) == 1
+    for stage in (
+        "content_terminal",
+        "content_terminal_replay",
+        "gid_terminal",
+        "gid_terminal_replay",
+    ):
+        queries = one[stage][1]
+        assert sum(" AS violations LIMIT 1" in query for query in queries) == 1
+        assert (
+            sum(
+                "_provenance AS provenance" in query and "LIMIT %s" in query
+                for query in queries
+            )
+            == 1
+        )
+
+
+def test_depth_zero_impact_loaders_do_not_join_real_zero_identifier_rows(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "analysis-zero-id-isolation.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        zero = bytes(16)
+        current_build = b"C" * 16
+        with connector.transaction():
+            scope = _seed_root(connector)
+            _seed_build(
+                connector,
+                build_id=zero,
+                scope=scope,
+                manifest_byte=22,
+                gallery_count=1,
+            )
+            _seed_build(
+                connector,
+                build_id=current_build,
+                scope=scope,
+                manifest_byte=23,
+                gallery_count=0,
+            )
+            _map_working_build(connector, build_id=zero, generation=1)
+        zero_run = _begin(
+            connector,
+            gate,
+            turn,
+            build_id=zero,
+            analysis_id=zero,
+            now=30,
+        )
+        connector.execute("PRAGMA foreign_keys = OFF")
+        with connector.transaction():
+            connector.execute(
+                "INSERT INTO catalog_source_build_galleries "
+                "(build_id, gallery_id, observation_id) VALUES (%s, 1, 1)",
+                (zero,),
+            )
+            _seed_minimal_gid_metadata(
+                connector,
+                gallery_id=1,
+                observation_id=1,
+            )
+            seed_content_owner_candidate_shadow(
+                connector,
+                analysis_id=zero_run.analysis_id,
+                gallery_id=1,
+                content_sha256=b"z" * 32,
+                prefer_not_already_uploaded=0,
+                title_scalar_count=1,
+                download_time=1,
+            )
+            connector.execute(
+                "INSERT INTO catalog_analysis_gid_candidate_shadows "
+                "(analysis_id, gallery_id) VALUES (%s, 1)",
+                (zero_run.analysis_id,),
+            )
+        authority = analysis_module._RunAuthority(
+            b"N" * 16,
+            current_build,
+            analysis_module._Policy(1, 1, 1, 1, 1, 1),
+            None,
+            0,
+        )
+        content_page = analysis_module._load_content_impact_page(
+            VNextUnitOfWork(connector, backend="sqlite"),
+            authority,
+            (1,),
+        )
+        gid_page = analysis_module._load_gid_impact_page(
+            VNextUnitOfWork(connector, backend="sqlite"),
+            authority,
+            (1,),
+        )
+        assert content_page.current_observations == {1: None}
+        assert content_page.old_candidates == {1: None}
+        assert gid_page.old_gids == {1: None}
+        assert gid_page.current_gids == {1: None}
+    finally:
+        connector.close()
+
+
 def test_mariadb_checkpoint_lock_and_cas_keep_server_placeholders_and_row_lock() -> (
     None
 ):
@@ -2317,20 +4765,37 @@ def test_mariadb_checkpoint_lock_and_cas_keep_server_placeholders_and_row_lock()
     class RecordingConnector:
         def __init__(self) -> None:
             self.lock_query = ""
-            self.cas_query = ""
-            self.receipt_query = ""
+            self.batch_lock_query = ""
+            self.cas_queries: list[str] = []
+            self.insert_queries: list[str] = []
+            self.insert_parameters: list[tuple[Any, ...]] = []
 
         def fetch_one(self, query: str, data: tuple[Any, ...] = ()) -> tuple[Any, ...]:
             if "catalog_analysis_stages" in query:
                 return (b"01", b"analysis_gallery_v1")
-            self.lock_query = query
-            return (1, b"\x01G\x00" + bytes(8), 0, "OPEN", 1)
+            if "catalog_analysis_checkpoint_generations" in query:
+                self.lock_query = query
+                return (1,)
+            if "catalog_analysis_checkpoint_seals" in query:
+                return (b"\x01G\x00" + bytes(8), 0, "OPEN", 1)
+            if "TIMESTAMPDIFF" in query:
+                return (2,)
+            return ()
+
+        def fetch_all(
+            self,
+            query: str,
+            data: tuple[Any, ...] = (),
+        ) -> list[tuple[Any, ...]]:
+            self.batch_lock_query = query
+            return [(1, b"a" * 32), (1, b"b" * 32)]
 
         def execute(self, query: str, data: tuple[Any, ...] = ()) -> None:
-            self.receipt_query = query
+            self.insert_queries.append(query)
+            self.insert_parameters.append(data)
 
         def execute_affected(self, query: str, data: tuple[Any, ...] = ()) -> int:
-            self.cas_query = query
+            self.cas_queries.append(query)
             return 1
 
     connector: Any = RecordingConnector()
@@ -2339,6 +4804,7 @@ def test_mariadb_checkpoint_lock_and_cas_keep_server_placeholders_and_row_lock()
         work,
         b"A" * 16,
         b"changed_gallery",
+        page_limit=128,
     )
     assert connector.lock_query.endswith(" FOR UPDATE")
     assert "%s" in connector.lock_query and "?" not in connector.lock_query
@@ -2360,13 +4826,34 @@ def test_mariadb_checkpoint_lock_and_cas_keep_server_placeholders_and_row_lock()
         terminal=True,
         now=2,
     )
-    assert "start_generation" in connector.receipt_query
-    assert "next_processed_count" in connector.receipt_query
-    assert "next_state" in connector.receipt_query
-    assert "terminal" in connector.receipt_query
-    assert "AND generation = %s" in connector.cas_query
-    assert "AND cursor = %s" in connector.cas_query
-    assert "AND processed_count = %s" in connector.cas_query
-    assert "AND state = %s" in connector.cas_query
-    assert "AND updated_at = %s" in connector.cas_query
-    assert "?" not in connector.cas_query
+    assert len(connector.insert_queries) == 9
+    assert "catalog_analysis_batch_receipt_anchors" in connector.insert_queries[0]
+    assert "catalog_analysis_batch_receipt_coordinates" in connector.insert_queries[1]
+    assert "catalog_analysis_batch_receipt_page_limits" in connector.insert_queries[4]
+    assert connector.insert_parameters[4][-1] == 128
+    assert "catalog_analysis_batch_receipt_seals" in connector.insert_queries[-1]
+    assert all("%s" in query and "?" not in query for query in connector.insert_queries)
+    assert "catalog_analysis_checkpoint_states" in connector.cas_queries[0]
+    assert "catalog_analysis_checkpoint_updated_ats" in connector.cas_queries[1]
+    assert "catalog_analysis_checkpoint_generations" in connector.cas_queries[-1]
+    assert "AND generation = %s" in connector.cas_queries[-1]
+    assert all("?" not in query for query in connector.cas_queries)
+    claims = work.lock_rows(
+        LockRank.CHECKPOINT,
+        tuple(
+            sorted(
+                (
+                    encode_lock_key("analysis-content-upload", 1, b"a" * 32),
+                    encode_lock_key("analysis-content-upload", 1, b"b" * 32),
+                )
+            )
+        ),
+        "SELECT generation, value_sha256 "
+        "FROM operational_canonical_value_uploads "
+        "WHERE generation = %s AND value_sha256 IN (%s, %s) "
+        "ORDER BY value_sha256",
+        (1, b"a" * 32, b"b" * 32),
+    )
+    assert claims == [(1, b"a" * 32), (1, b"b" * 32)]
+    assert connector.batch_lock_query.endswith(" FOR UPDATE")
+    assert "%s" in connector.batch_lock_query and "?" not in connector.batch_lock_query

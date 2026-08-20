@@ -23,7 +23,6 @@ __all__ = [
     "ARTIFACT_LOCATOR_MAXIMUM_BYTES",
     "ANALYSIS_STATE_COMPONENTS",
     "ANALYSIS_ALREADY_UPLOADED_MARKER",
-    "ANALYSIS_CANDIDATE_CODEC_VERSION",
     "EFFECTIVE_CONTENT_ENCODING_VERSION",
     "GALLERY_KEY_ALGORITHM_VERSION",
     "PUBLICATION_KEY_ALGORITHM_VERSION",
@@ -67,8 +66,6 @@ __all__ = [
     "ArtifactProtectionToken",
     "ArtifactSourceRole",
     "ArtifactTransformKind",
-    "AnalysisCandidateKind",
-    "AnalysisCandidatePriorityReceipt",
     "AnalysisTitleScalarReceipt",
     "StrictUtf8ScalarCounter",
     "GalleryObservationComponent",
@@ -107,6 +104,7 @@ __all__ = [
     "artifact_effective_content_digest_ordered",
     "artifact_owner_digest",
     "artifact_policy_digest",
+    "artifact_producer_equivalence_class",
     "artifact_producer_fingerprint_sha256",
     "artifact_storage_receipt_id",
     "artifact_name",
@@ -118,9 +116,6 @@ __all__ = [
     "artifact_locator_components",
     "analysis_candidate_has_already_uploaded",
     "count_analysis_title_scalars",
-    "analysis_candidate_total_order_key",
-    "analysis_content_candidate_digest",
-    "analysis_gid_candidate_digest",
     "catalog_summary_digest",
     "catalog_summary_digest_parts",
     "catalog_language_digest",
@@ -136,9 +131,10 @@ __all__ = [
     "validate_canonical_value_tree",
     "decode_source_relative_locator",
     "validate_source_relative_locator_parts",
+    "decode_artifact_id",
+    "decode_artifact_name",
     "decode_artifact_locator",
     "decode_artifact_protection_token",
-    "decode_analysis_candidate_priority",
     "iter_decode_artifact_locator",
     "decode_source_root",
     "validate_source_root_parts",
@@ -181,7 +177,6 @@ __all__ = [
     "encode_artifact_selected",
     "encode_artifact_semantics",
     "encode_artifact_source_manifest",
-    "encode_analysis_candidate_priority",
     "encode_zip_comment",
     "encode_effective_content",
     "iter_effective_content_payload_ordered",
@@ -197,10 +192,10 @@ __all__ = [
     "gallery_key",
     "gallery_key_hex",
     "publication_id",
+    "decode_publication_id",
     "publication_key",
     "publication_key_hex",
     "validate_artifact_component_kind",
-    "validate_analysis_candidate_priority",
     "validate_canonical_value_identity",
     "validate_file_name",
     "validate_gallery_name",
@@ -244,7 +239,6 @@ CANONICAL_VALUE_CHUNK_BYTES = 32768
 CANONICAL_VALUE_BRANCH_CAPACITY = 256
 FILESYSTEM_STAT_FINGERPRINT_BYTES = 40
 EFFECTIVE_CONTENT_ENCODING_VERSION = 1
-ANALYSIS_CANDIDATE_CODEC_VERSION = 1
 ARTIFACT_MEMBER_PLAN_VERSION = 1
 ARTIFACT_COMPONENT_CODEC_VERSION = 1
 ARTIFACT_POLICY_CODEC_VERSION = 2
@@ -305,8 +299,6 @@ METADATA_FILE_NAME = b"galleryinfo.txt"
 ANALYSIS_ALREADY_UPLOADED_MARKER = b"already uploaded"
 
 _EFFECTIVE_CONTENT_PREFIX = b"h2hdb-vnext-effective-content\0"
-_ANALYSIS_CANDIDATE_PRIORITY_PREFIX = b"h2hdb-vnext-analysis-candidate-priority\0"
-_ANALYSIS_CANDIDATE_AUDIT_PREFIX = b"h2hdb-vnext-analysis-candidate-audit\0"
 _ARTIFACT_MEMBER_PLAN_PREFIX = b"h2hdb-vnext-artifact-member-plan\0"
 _SOURCE_SNAPSHOT_MANIFEST_PREFIX = b"h2hdb-vnext-source-snapshot-manifest\0"
 _ARTIFACT_SOURCE_MANIFEST_PREFIX = b"h2hdb-vnext-artifact-source-manifest\0"
@@ -315,9 +307,17 @@ _ARTIFACT_SELECTED_PREFIX = b"h2hdb-vnext-artifact-selected\0"
 _ARTIFACT_OWNER_PREFIX = b"h2hdb-vnext-artifact-owner\0"
 _ARTIFACT_POLICY_PREFIX = b"h2hdb-vnext-artifact-policy\0"
 _ARTIFACT_PRODUCER_FINGERPRINT_PREFIX = b"h2hdb-vnext-artifact-producer\0"
+_ARTIFACT_PRODUCER_EQUIVALENCE_PREFIX = (
+    b"h2hdb-vnext-artifact-producer-exact-equivalence-v1\0"
+)
 _ARTIFACT_STORAGE_RECEIPT_PREFIX = b"h2hdb-vnext-artifact-storage-receipt\0"
 _ARTIFACT_PROTECTION_PREFIX = b"h2hdb-vnext-artifact-protection\0"
 _ARTIFACT_SEMANTICS_PREFIX = b"h2hdb-vnext-artifact-semantics\0"
+_PUBLICATION_ID_PREFIX = b"urn:h2h:gallery:"
+_ARTIFACT_ID_PREFIX = b"urn:h2h:artifact:cbz:"
+_ARTIFACT_ID_DIGEST_SEPARATOR = b":sha256:"
+_ARTIFACT_NAME_PREFIX = b"h2h-"
+_ARTIFACT_NAME_SUFFIX = b".cbz"
 _ZIP_COMMENT_PREFIX = b"H2HDB-ZIP-COMMENT\0"
 _GALLERY_OBSERVATION_PAGE_PREFIX = b"h2hdb-vnext-gallery-observation-page\0"
 _CANONICAL_VALUE_PAGE_PREFIX = b"h2hdb-vnext-canonical-value-page\0"
@@ -372,13 +372,6 @@ class ArtifactTransformKind(IntEnum):
     JPEG_NORMALIZE = 2
 
 
-class AnalysisCandidateKind(IntEnum):
-    """Closed v1 analysis-candidate comparator registry."""
-
-    CONTENT_OWNER = 0
-    GID_WINNER = 1
-
-
 class GalleryObservationComponent(IntEnum):
     """Closed gallery-observation page component registry."""
 
@@ -430,17 +423,6 @@ class DigestMismatchError(VNextIdentityError):
 
 class CanonicalIdentityCollisionError(VNextIdentityError):
     """One digest key was observed with a different canonical input."""
-
-
-@dataclass(frozen=True, slots=True)
-class AnalysisCandidatePriorityReceipt:
-    """Decoded canonical facts from one fixed v1 comparator prefix."""
-
-    candidate_kind: AnalysisCandidateKind
-    prefer_not_already_uploaded: bool
-    title_scalar_length: int
-    download_time: int
-    gid: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -2006,244 +1988,6 @@ def analysis_candidate_has_already_uploaded(
     return matched
 
 
-def encode_analysis_candidate_priority(
-    candidate_kind: AnalysisCandidateKind,
-    *,
-    tag_values_utf8: Iterable[bytes],
-    title_scalar_receipt: AnalysisTitleScalarReceipt,
-    download_time: int,
-    gid: int | None = None,
-    encoding_version: int = ANALYSIS_CANDIDATE_CODEC_VERSION,
-) -> bytes:
-    """Encode the fixed v1 nonunique comparator prefix.
-
-    The lexicographically greatest encoded prefix wins. Stable uniqueness is
-    supplied separately by exact ``scope_key`` and ``locator_sha256`` bytes;
-    neither is admitted to this frame.
-    """
-
-    version = _require_registered_version(
-        encoding_version,
-        registered=ANALYSIS_CANDIDATE_CODEC_VERSION,
-        field_name="analysis candidate encoding_version",
-    )
-    if type(candidate_kind) is not AnalysisCandidateKind:
-        raise ByteDomainError("candidate_kind must be AnalysisCandidateKind")
-    if type(title_scalar_receipt) is not AnalysisTitleScalarReceipt:
-        raise ByteDomainError("title_scalar_receipt must be AnalysisTitleScalarReceipt")
-    title_scalar_length = title_scalar_receipt.scalar_count
-    observed_download_time = _require_int63(download_time, field_name="download_time")
-    prefer_not_uploaded = not analysis_candidate_has_already_uploaded(tag_values_utf8)
-
-    payload = bytearray(_ANALYSIS_CANDIDATE_PRIORITY_PREFIX)
-    payload.extend(version.to_bytes(4, "big"))
-    payload.append(int(candidate_kind))
-    payload.append(int(prefer_not_uploaded))
-    payload.extend(title_scalar_length.to_bytes(8, "big"))
-    payload.extend(observed_download_time.to_bytes(8, "big"))
-    if candidate_kind is AnalysisCandidateKind.CONTENT_OWNER:
-        if gid is None:
-            raise IntegerDomainError("gid must be a positive signed-int63 integer")
-        payload.extend(
-            _require_positive_int63(gid, field_name="gid").to_bytes(8, "big")
-        )
-    elif gid is not None:
-        raise ByteDomainError("GID_WINNER priority_key must not contain gid")
-    return bytes(payload)
-
-
-def decode_analysis_candidate_priority(
-    priority_key: bytes,
-    *,
-    encoding_version: int = ANALYSIS_CANDIDATE_CODEC_VERSION,
-) -> AnalysisCandidatePriorityReceipt:
-    """Decode and reject every noncanonical or extended priority frame."""
-
-    payload = _require_bytes(priority_key, field_name="priority_key")
-    prefix_size = len(_ANALYSIS_CANDIDATE_PRIORITY_PREFIX)
-    common_size = prefix_size + 4 + 1 + 1 + 8 + 8
-    if len(payload) < common_size:
-        raise ByteDomainError("analysis candidate priority_key is truncated")
-    if payload[:prefix_size] != _ANALYSIS_CANDIDATE_PRIORITY_PREFIX:
-        raise ByteDomainError("analysis candidate priority_key has the wrong prefix")
-    expected_version = _require_registered_version(
-        encoding_version,
-        registered=ANALYSIS_CANDIDATE_CODEC_VERSION,
-        field_name="analysis candidate encoding_version",
-    )
-    observed_version = int.from_bytes(payload[prefix_size : prefix_size + 4], "big")
-    if observed_version != expected_version:
-        raise IntegerDomainError(
-            f"analysis candidate encoding_version {observed_version} is not registered"
-        )
-    try:
-        candidate_kind = AnalysisCandidateKind(payload[prefix_size + 4])
-    except ValueError as error:
-        raise ByteDomainError(
-            "analysis candidate priority_key has unknown kind"
-        ) from error
-    expected_size = common_size + (
-        8 if candidate_kind is AnalysisCandidateKind.CONTENT_OWNER else 0
-    )
-    if len(payload) != expected_size:
-        raise ByteDomainError(
-            "analysis candidate priority_key has trailing or missing bytes"
-        )
-    preference = payload[prefix_size + 5]
-    if preference not in (0, 1):
-        raise ByteDomainError("prefer_not_already_uploaded must be exactly zero or one")
-    scalar_offset = prefix_size + 6
-    title_scalar_length = int.from_bytes(
-        payload[scalar_offset : scalar_offset + 8], "big"
-    )
-    download_time = int.from_bytes(
-        payload[scalar_offset + 8 : scalar_offset + 16], "big"
-    )
-    _require_int63(title_scalar_length, field_name="title Unicode scalar length")
-    _require_int63(download_time, field_name="download_time")
-    gid = None
-    if candidate_kind is AnalysisCandidateKind.CONTENT_OWNER:
-        gid = _require_positive_int63(
-            int.from_bytes(payload[scalar_offset + 16 : expected_size], "big"),
-            field_name="gid",
-        )
-    return AnalysisCandidatePriorityReceipt(
-        candidate_kind=candidate_kind,
-        prefer_not_already_uploaded=bool(preference),
-        title_scalar_length=title_scalar_length,
-        download_time=download_time,
-        gid=gid,
-    )
-
-
-def validate_analysis_candidate_priority(
-    priority_key: bytes,
-    candidate_kind: AnalysisCandidateKind,
-    *,
-    tag_values_utf8: Iterable[bytes],
-    title_scalar_receipt: AnalysisTitleScalarReceipt,
-    download_time: int,
-    gid: int | None = None,
-    encoding_version: int = ANALYSIS_CANDIDATE_CODEC_VERSION,
-) -> AnalysisCandidatePriorityReceipt:
-    """Recompute and byte-compare one stored comparator prefix."""
-
-    receipt = decode_analysis_candidate_priority(
-        priority_key, encoding_version=encoding_version
-    )
-    expected = encode_analysis_candidate_priority(
-        candidate_kind,
-        tag_values_utf8=tag_values_utf8,
-        title_scalar_receipt=title_scalar_receipt,
-        download_time=download_time,
-        gid=gid,
-        encoding_version=encoding_version,
-    )
-    if priority_key != expected:
-        raise DigestMismatchError(
-            "priority_key does not match the exact candidate snapshot facts"
-        )
-    return receipt
-
-
-def analysis_candidate_total_order_key(
-    priority_key: bytes,
-    candidate_kind: AnalysisCandidateKind,
-    scope_key: bytes,
-    locator_sha256: bytes,
-) -> tuple[bytes, bytes, bytes]:
-    """Return the unsigned-byte tuple whose lexicographic maximum wins."""
-
-    receipt = decode_analysis_candidate_priority(priority_key)
-    if type(candidate_kind) is not AnalysisCandidateKind:
-        raise ByteDomainError("candidate_kind must be AnalysisCandidateKind")
-    if receipt.candidate_kind is not candidate_kind:
-        raise ByteDomainError("priority_key candidate kind does not match relation")
-    return (
-        priority_key,
-        _require_digest(scope_key, field_name="scope_key"),
-        _require_digest(locator_sha256, field_name="locator_sha256"),
-    )
-
-
-def analysis_content_candidate_digest(
-    analysis_id: bytes,
-    content_sha256: bytes,
-    priority_key: bytes,
-    scope_key: bytes,
-    locator_sha256: bytes,
-    *,
-    encoding_version: int = ANALYSIS_CANDIDATE_CODEC_VERSION,
-) -> bytes:
-    """Hash the exact audit tuple for one content-owner candidate."""
-
-    return _analysis_candidate_digest(
-        AnalysisCandidateKind.CONTENT_OWNER,
-        analysis_id,
-        _require_digest(content_sha256, field_name="content_sha256"),
-        priority_key,
-        scope_key,
-        locator_sha256,
-        encoding_version=encoding_version,
-    )
-
-
-def analysis_gid_candidate_digest(
-    analysis_id: bytes,
-    gid: int,
-    priority_key: bytes,
-    scope_key: bytes,
-    locator_sha256: bytes,
-    *,
-    encoding_version: int = ANALYSIS_CANDIDATE_CODEC_VERSION,
-) -> bytes:
-    """Hash the exact audit tuple for one GID-winner candidate."""
-
-    gid_bytes = _require_positive_int63(gid, field_name="gid").to_bytes(8, "big")
-    return _analysis_candidate_digest(
-        AnalysisCandidateKind.GID_WINNER,
-        analysis_id,
-        gid_bytes,
-        priority_key,
-        scope_key,
-        locator_sha256,
-        encoding_version=encoding_version,
-    )
-
-
-def _analysis_candidate_digest(
-    candidate_kind: AnalysisCandidateKind,
-    analysis_id: bytes,
-    group_key: bytes,
-    priority_key: bytes,
-    scope_key: bytes,
-    locator_sha256: bytes,
-    *,
-    encoding_version: int,
-) -> bytes:
-    version = _require_registered_version(
-        encoding_version,
-        registered=ANALYSIS_CANDIDATE_CODEC_VERSION,
-        field_name="analysis candidate encoding_version",
-    )
-    receipt = decode_analysis_candidate_priority(priority_key, encoding_version=version)
-    if receipt.candidate_kind is not candidate_kind:
-        raise ByteDomainError("priority_key candidate kind does not match audit tuple")
-    payload = b"".join(
-        (
-            _ANALYSIS_CANDIDATE_AUDIT_PREFIX,
-            version.to_bytes(4, "big"),
-            bytes((int(candidate_kind),)),
-            _require_fixed_bytes(analysis_id, length=16, field_name="analysis_id"),
-            group_key,
-            priority_key,
-            _require_digest(scope_key, field_name="scope_key"),
-            _require_digest(locator_sha256, field_name="locator_sha256"),
-        )
-    )
-    return sha256(payload).digest()
-
-
 def encode_artifact_source_manifest(
     observation_identity_sha256: bytes,
     manifest_algorithm_version: int,
@@ -2410,7 +2154,7 @@ def encode_artifact_selected(
     *,
     codec_version: int = ARTIFACT_COMPONENT_CODEC_VERSION,
 ) -> bytes:
-    """Encode selected occurrence identity without non-injective item audits."""
+    """Encode selected occurrence identity without using item-audit digests as authority."""
 
     version = _require_registered_version(
         codec_version,
@@ -2616,6 +2360,23 @@ def artifact_producer_fingerprint_sha256(
             codec_version=codec_version,
         )
     ).digest()
+
+
+def artifact_producer_equivalence_class(
+    producer_fingerprint_sha256: bytes,
+) -> bytes:
+    """Return the repository-certified exact producer equivalence class.
+
+    vNext does not accept a caller's claim that two distinct producer builds
+    emit identical bytes.  Until an independently certified equivalence
+    protocol exists, every complete producer fingerprint is its own class.
+    """
+
+    fingerprint = _require_digest(
+        producer_fingerprint_sha256,
+        field_name="producer_fingerprint_sha256",
+    )
+    return _ARTIFACT_PRODUCER_EQUIVALENCE_PREFIX + fingerprint
 
 
 def encode_artifact_semantics(
@@ -4726,7 +4487,35 @@ def artifact_name(gid: int) -> bytes:
     """Derive the sole artifact leaf name for one positive GID."""
 
     validated_gid = _require_positive_int63(gid, field_name="gid")
-    return b"h2h-" + str(validated_gid).encode("ascii") + b".cbz"
+    return (
+        _ARTIFACT_NAME_PREFIX
+        + str(validated_gid).encode("ascii")
+        + _ARTIFACT_NAME_SUFFIX
+    )
+
+
+def decode_artifact_name(value: bytes) -> int:
+    """Decode one exact canonical artifact leaf name into its positive GID."""
+
+    encoded = _require_bytes(value, field_name="artifact_name")
+    maximum_bytes = (
+        len(_ARTIFACT_NAME_PREFIX) + len(str(_INT63_MAX)) + len(_ARTIFACT_NAME_SUFFIX)
+    )
+    if len(encoded) > maximum_bytes:
+        raise ByteDomainError(f"artifact_name exceeds {maximum_bytes} bytes")
+    if not encoded.startswith(_ARTIFACT_NAME_PREFIX):
+        raise ByteDomainError("artifact_name has the wrong registered prefix")
+    if not encoded.endswith(_ARTIFACT_NAME_SUFFIX):
+        raise ByteDomainError("artifact_name has the wrong registered suffix")
+
+    gid_ascii = encoded[len(_ARTIFACT_NAME_PREFIX) : -len(_ARTIFACT_NAME_SUFFIX)]
+    gid = _decode_canonical_positive_int63_ascii(
+        gid_ascii,
+        field_name="artifact_name gid",
+    )
+    if artifact_name(gid) != encoded:  # defensive canonicality closure
+        raise ByteDomainError("artifact_name is not in canonical encoded form")
+    return gid
 
 
 def artifact_archive_member_name(
@@ -4843,13 +4632,31 @@ def validate_artifact_component_kind(value: str) -> bytes:
 
 
 def publication_id(gid: int) -> bytes:
-    """Construct ``urn:h2h:gallery:<uint64 gid>`` at the binary boundary."""
+    """Construct the gallery URN for one positive signed-int63 GID."""
 
     validated_gid = _require_positive_int63(gid, field_name="gid")
-    encoded = f"urn:h2h:gallery:{validated_gid}".encode("ascii")
+    encoded = _PUBLICATION_ID_PREFIX + str(validated_gid).encode("ascii")
     if len(encoded) > 64:  # protects the contract if the prefix changes
         raise ByteDomainError("publication_id exceeds 64 bytes")
     return encoded
+
+
+def decode_publication_id(value: bytes) -> int:
+    """Decode one exact canonical gallery URN into its positive GID."""
+
+    encoded = _require_bytes(value, field_name="publication_id")
+    if len(encoded) > 64:
+        raise ByteDomainError("publication_id exceeds 64 bytes")
+    if not encoded.startswith(_PUBLICATION_ID_PREFIX):
+        raise ByteDomainError("publication_id has the wrong registered prefix")
+
+    gid = _decode_canonical_positive_int63_ascii(
+        encoded[len(_PUBLICATION_ID_PREFIX) :],
+        field_name="publication_id gid",
+    )
+    if publication_id(gid) != encoded:  # defensive canonicality closure
+        raise ByteDomainError("publication_id is not in canonical encoded form")
+    return gid
 
 
 def publication_key(
@@ -4886,12 +4693,58 @@ def artifact_id(gid: int, artifact_sha256: bytes) -> bytes:
 
     validated_gid = _require_positive_int63(gid, field_name="gid")
     validated_digest = _require_digest(artifact_sha256, field_name="artifact_sha256")
-    encoded = (
-        f"urn:h2h:artifact:cbz:{validated_gid}:sha256:{validated_digest.hex()}"
-    ).encode("ascii")
+    encoded = b"".join(
+        (
+            _ARTIFACT_ID_PREFIX,
+            str(validated_gid).encode("ascii"),
+            _ARTIFACT_ID_DIGEST_SEPARATOR,
+            validated_digest.hex().encode("ascii"),
+        )
+    )
     if len(encoded) > 128:  # protects the contract if the prefix changes
         raise ByteDomainError("artifact_id exceeds 128 bytes")
     return encoded
+
+
+def decode_artifact_id(value: bytes) -> tuple[int, bytes]:
+    """Decode one exact canonical CBZ artifact URN into its binary authority.
+
+    The GID grammar is deliberately narrower than Python's integer parser: it
+    is one or more ASCII decimal digits, has no leading zero, and lies in the
+    positive signed-int63 domain.  The digest is exactly 64 lowercase ASCII
+    hexadecimal characters.  No whitespace, sign, Unicode digit, suffix, or
+    other alternate spelling is accepted.
+    """
+
+    encoded = _require_bytes(value, field_name="artifact_id")
+    if len(encoded) > 128:
+        raise ByteDomainError("artifact_id exceeds 128 bytes")
+    if not encoded.startswith(_ARTIFACT_ID_PREFIX):
+        raise ByteDomainError("artifact_id has the wrong registered prefix")
+
+    remainder = encoded[len(_ARTIFACT_ID_PREFIX) :]
+    gid_ascii, separator, digest_ascii = remainder.partition(
+        _ARTIFACT_ID_DIGEST_SEPARATOR
+    )
+    if separator != _ARTIFACT_ID_DIGEST_SEPARATOR:
+        raise ByteDomainError("artifact_id is missing the sha256 separator")
+    if not gid_ascii or any(not 48 <= character <= 57 for character in gid_ascii):
+        raise ByteDomainError("artifact_id gid must be canonical ASCII decimal digits")
+    if len(gid_ascii) > 1 and gid_ascii[0] == ord("0"):
+        raise ByteDomainError("artifact_id gid must not contain a leading zero")
+
+    gid = _require_positive_int63(int(gid_ascii), field_name="artifact_id gid")
+    try:
+        digest_hex = digest_ascii.decode("ascii")
+    except UnicodeDecodeError as error:
+        raise DigestFormatError(
+            "artifact_id digest must be exactly 64 lowercase hex characters"
+        ) from error
+    digest = digest_from_hex(digest_hex)
+
+    if artifact_id(gid, digest) != encoded:  # defensive canonicality closure
+        raise ByteDomainError("artifact_id is not in canonical encoded form")
+    return gid, digest
 
 
 def digest_to_hex(digest: bytes) -> str:
@@ -4942,8 +4795,8 @@ def verify_canonical_value_conflict(
 
     Call this after an insert encounters the digest key already present.  The
     proposed digest is recomputed locally.  A row under another key is a lookup
-    or storage mismatch; the same key with different framed input is the
-    explicit collision-free-model violation.
+    or storage mismatch; the same key with different framed input is an
+    explicit stored-identity digest collision and must be rejected.
     """
 
     validated_existing_digest = _require_digest(
@@ -5890,6 +5743,18 @@ def _require_positive_int63(value: int, *, field_name: str) -> int:
             f"{field_name} must be an integer in [1, {_INT63_MAX}]"
         )
     return value
+
+
+def _decode_canonical_positive_int63_ascii(
+    value: bytes,
+    *,
+    field_name: str,
+) -> int:
+    if not value or any(character < 48 or character > 57 for character in value):
+        raise ByteDomainError(f"{field_name} must be canonical ASCII decimal digits")
+    if len(value) > 1 and value[0] == ord("0"):
+        raise ByteDomainError(f"{field_name} must not contain a leading zero")
+    return _require_positive_int63(int(value), field_name=field_name)
 
 
 def _require_int64(value: int, *, field_name: str) -> int:

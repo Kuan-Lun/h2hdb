@@ -6,10 +6,29 @@ from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
+from vnext_canonical_value_fixtures import (
+    seed_canonical_allocation,
+    seed_canonical_page,
+)
+from vnext_catalog_identity_fixtures import (
+    seed_file_name_identity,
+    seed_gallery_identity,
+    seed_gallery_observation_file,
+    seed_tag_term,
+)
+from vnext_catalog_registry_fixtures import (
+    seed_manifest_policy,
+    seed_source_scope,
+)
+from vnext_manifest_fixtures import seed_source_build
 
 import h2hdb.vnext_gallery_staging_repository as staging_module
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.vnext_allocator_repository import (
+    IdentityStream,
+    VNextAllocatorRepository,
+)
 from h2hdb.vnext_domains import INT63_MAX
 from h2hdb.vnext_gallery_identity_repository import GalleryIdentityHandoff
 from h2hdb.vnext_gallery_staging_repository import (
@@ -39,7 +58,9 @@ from h2hdb.vnext_identity import (
     GalleryObservationDirectoryFileType,
     GalleryObservationFileEntry,
     GalleryObservationMetadata,
+    GalleryObservationMetadataDecoder,
     GalleryObservationNodeKind,
+    artifact_source_manifest_digest,
     build_canonical_value_tree,
     build_gallery_observation_tree,
     canonical_value_digest,
@@ -58,8 +79,10 @@ from h2hdb.vnext_ingest_fence_repository import (
 )
 from h2hdb.vnext_maintenance_gate_repository import (
     GateLease,
+    GateMode,
     MaintenanceGateRepository,
 )
+from h2hdb.vnext_manifest_family import ensure_gallery_manifest_family
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
 
@@ -85,30 +108,23 @@ def _seed_canonical_identity(
 ) -> bytes:
     value_sha256 = canonical_value_digest(digest_domain, payload)
     tree = build_canonical_value_tree(value_sha256, len(payload), (payload,))
-    connector.execute(
-        "INSERT INTO catalog_canonical_value_allocations "
-        "(value_sha256, digest_domain, byte_count, allocated_at) "
-        "VALUES (%s, %s, %s, %s)",
-        (value_sha256, digest_domain.encode("ascii"), len(payload), now),
+    seed_canonical_allocation(
+        connector,
+        value_sha256=value_sha256,
+        digest_domain=digest_domain.encode("ascii"),
+        byte_count=len(payload),
+        allocated_at=now,
     )
     for encoded in tree.pages:
         page = decode_canonical_value_page(encoded.page_bytes)
-        connector.execute(
-            "INSERT INTO catalog_canonical_value_pages "
-            "(page_sha256, value_sha256, page_bytes) VALUES (%s, %s, %s)",
-            (encoded.page_sha256, value_sha256, encoded.page_bytes),
-        )
-        connector.execute(
-            "INSERT INTO catalog_canonical_value_page_descriptors "
-            "(page_sha256, value_sha256, level, page_position, "
-            "subtree_item_count) VALUES (%s, %s, %s, %s, %s)",
-            (
-                encoded.page_sha256,
-                value_sha256,
-                page.level,
-                page.page_position,
-                page.subtree_byte_count,
-            ),
+        seed_canonical_page(
+            connector,
+            page_sha256=encoded.page_sha256,
+            value_sha256=value_sha256,
+            page_bytes=encoded.page_bytes,
+            level=page.level,
+            page_position=page.page_position,
+            subtree_item_count=page.subtree_byte_count,
         )
         if page.node_kind is GalleryObservationNodeKind.BRANCH:
             for position, entry in enumerate(page.entries):
@@ -165,24 +181,17 @@ def _seed_working_gallery(
         payload=b"gallery",
         now=12,
     )
-    scope = sha256(b"test scope").digest()
-    connector.execute(
-        "INSERT INTO catalog_manifest_policies "
-        "(manifest_policy_id, manifest_algorithm_version, file_order_version) "
-        "VALUES (%s, %s, %s)",
-        (1, 1, 1),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_scopes "
-        "(scope_key, source_provider, source_root_sha256, identity_policy_version) "
-        "VALUES (%s, %s, %s, %s)",
-        (scope, b"filesystem", root, 1),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_builds "
-        "(build_id, scope_key, manifest_policy_id, state, created_at, sealed_at) "
-        "VALUES (%s, %s, %s, %s, %s, NULL)",
-        (build_id, scope, 1, "OPEN", 12),
+    seed_manifest_policy(connector)
+    scope = seed_source_scope(
+        connector,
+        source_root_sha256=root,
+    ).scope_key
+    seed_source_build(
+        connector,
+        build_id=build_id,
+        scope_key=scope,
+        state="OPEN",
+        created_at=12,
     )
     connector.execute(
         "INSERT INTO operational_source_build_generations "
@@ -199,11 +208,12 @@ def _seed_working_gallery(
         "(locator_sha256, source_gallery_name) VALUES (%s, %s)",
         (locator, b"gallery"),
     )
-    connector.execute(
-        "INSERT INTO catalog_gallery_identities "
-        "(gallery_id, gallery_key, scope_key, locator_sha256) "
-        "VALUES (%s, %s, %s, %s)",
-        (1, gallery_key(scope, locator), scope, locator),
+    seed_gallery_identity(
+        connector,
+        gallery_id=1,
+        gallery_key=gallery_key(scope, locator),
+        scope_key=scope,
+        locator_sha256=locator,
     )
     connector.execute(
         "INSERT INTO operational_gallery_observation_allocators "
@@ -387,6 +397,205 @@ def _request_snapshot(connector: SQLiteConnector) -> tuple[object, ...]:
     )
 
 
+_VERTICAL_FAMILY_TABLES = {
+    "directory": (
+        "catalog_gallery_observation_directory_anchors",
+        "catalog_gallery_observation_directory_entry_counts",
+        "catalog_gallery_observation_directory_observation_sha256s",
+        "catalog_gallery_observation_directory_seals",
+    ),
+    "stat": (
+        "catalog_gallery_observation_stat_anchors",
+        "catalog_gallery_observation_stat_file_counts",
+        "catalog_gallery_observation_stat_byte_counts",
+        "catalog_gallery_observation_stat_seals",
+    ),
+    "scan": (
+        "catalog_gallery_observation_scan_anchors",
+        "catalog_gallery_observation_scan_observation_sha256s",
+        "catalog_gallery_observation_scan_observation_versions",
+        "catalog_gallery_observation_scan_source_file_counts",
+        "catalog_gallery_observation_scan_seals",
+    ),
+    "filesystem": (
+        "catalog_gallery_observation_file_filesystem_anchors",
+        "catalog_gallery_observation_file_filesystem_devices",
+        "catalog_gallery_observation_file_filesystem_inodes",
+        "catalog_gallery_observation_file_filesystem_modified_nses",
+        "catalog_gallery_observation_file_filesystem_changed_nses",
+        "catalog_gallery_observation_file_filesystem_seals",
+    ),
+}
+
+_PAGE_FAMILY_TABLES = (
+    "catalog_gallery_observation_page_descriptor_anchors",
+    "catalog_gallery_observation_pages",
+    "catalog_gallery_observation_page_descriptor_components",
+    "catalog_gallery_observation_page_descriptor_levels",
+    "catalog_gallery_observation_page_descriptor_subtree_item_counts",
+    "catalog_gallery_observation_page_descriptor_seals",
+    "catalog_gallery_observation_page_key_bounds_anchors",
+    "catalog_gallery_observation_page_key_bounds_first_keys",
+    "catalog_gallery_observation_page_key_bounds_last_keys",
+    "catalog_gallery_observation_page_key_bounds_seals",
+)
+
+
+def _page_family_snapshot(
+    connector: SQLiteConnector,
+) -> tuple[list[tuple[Any, ...]], ...]:
+    return tuple(
+        connector.fetch_all(f"SELECT * FROM {table}") for table in _PAGE_FAMILY_TABLES
+    )
+
+
+def _seed_vertical_family_parents(
+    connector: SQLiteConnector,
+) -> GalleryStagingHandle:
+    gate, turn = _authorities(connector)
+    build_id, gallery_id = _seed_working_gallery(connector, turn)
+    handle = _begin(connector, gate, turn, build_id, gallery_id, now=20)
+    observation_identity = _seed_canonical_identity(
+        connector,
+        digest_domain="gallery_observation_v1",
+        payload=b"vertical-family-observation",
+        now=21,
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observations "
+        "(gallery_id, observation_id, observation_identity_sha256) "
+        "VALUES (%s, %s, %s)",
+        (gallery_id, handle.observation_id, observation_identity),
+    )
+    seed_file_name_identity(
+        connector,
+        file_key=b"k" * 32,
+        name_bytes=b"file.bin",
+        file_role=b"CONTENT",
+    )
+    connector.execute(
+        "INSERT INTO catalog_content_blobs (file_sha256, size_bytes) VALUES (%s, 9)",
+        (b"f" * 32,),
+    )
+    seed_gallery_observation_file(
+        connector,
+        gallery_id=gallery_id,
+        observation_id=handle.observation_id,
+        file_no=0,
+        file_key=b"k" * 32,
+        file_sha256=b"f" * 32,
+    )
+    return handle
+
+
+def _persist_vertical_family(
+    connector: Any,
+    handle: GalleryStagingHandle,
+    family: str,
+) -> None:
+    if family == "directory":
+        staging_module._persist_directory_fact(
+            connector,
+            gallery_id=handle.gallery_id,
+            observation_id=handle.observation_id,
+            directory_entry_count=3,
+            directory_observation_sha256=b"d" * 32,
+        )
+    elif family == "stat":
+        staging_module._persist_stat_fact(
+            connector,
+            gallery_id=handle.gallery_id,
+            observation_id=handle.observation_id,
+            file_count=3,
+            byte_count=9,
+        )
+    elif family == "scan":
+        roots = {
+            component: (bytes((int(component) + 1,)) * 32, int(component) + 3)
+            for component in GalleryObservationComponent
+        }
+        staging_module._persist_scan_fact(
+            connector,
+            handle,
+            roots,
+            scan_observation_version=2,
+            source_file_count=3,
+        )
+    elif family == "filesystem":
+        staging_module._persist_file_filesystem_fact(
+            connector,
+            gallery_id=handle.gallery_id,
+            observation_id=handle.observation_id,
+            file_key=b"k" * 32,
+            device=b"\x01" * 8,
+            inode=b"\x02" * 8,
+            modified_ns=b"\x03" * 8,
+            changed_ns=b"\x04" * 8,
+        )
+    else:  # pragma: no cover - the test matrix is closed above.
+        raise AssertionError(family)
+
+
+def _vertical_family_snapshot(
+    connector: SQLiteConnector,
+    family: str,
+) -> tuple[list[tuple[Any, ...]], ...]:
+    queries: tuple[str, ...]
+    if family == "directory":
+        queries = (
+            "SELECT * FROM catalog_gallery_observation_directory_anchors",
+            "SELECT * FROM catalog_gallery_observation_directory_entry_counts",
+            "SELECT * FROM catalog_gallery_observation_directory_observation_sha256s",
+            "SELECT * FROM catalog_gallery_observation_directory_seals",
+        )
+    elif family == "stat":
+        queries = (
+            "SELECT * FROM catalog_gallery_observation_stat_anchors",
+            "SELECT * FROM catalog_gallery_observation_stat_file_counts",
+            "SELECT * FROM catalog_gallery_observation_stat_byte_counts",
+            "SELECT * FROM catalog_gallery_observation_stat_seals",
+        )
+    elif family == "scan":
+        queries = (
+            "SELECT * FROM catalog_gallery_observation_scan_anchors",
+            "SELECT * FROM catalog_gallery_observation_scan_observation_sha256s",
+            "SELECT * FROM catalog_gallery_observation_scan_observation_versions",
+            "SELECT * FROM catalog_gallery_observation_scan_source_file_counts",
+            "SELECT * FROM catalog_gallery_observation_scan_seals",
+        )
+    elif family == "filesystem":
+        queries = (
+            "SELECT * FROM catalog_gallery_observation_file_filesystem_anchors",
+            "SELECT * FROM catalog_gallery_observation_file_filesystem_devices",
+            "SELECT * FROM catalog_gallery_observation_file_filesystem_inodes",
+            "SELECT * FROM catalog_gallery_observation_file_filesystem_modified_nses",
+            "SELECT * FROM catalog_gallery_observation_file_filesystem_changed_nses",
+            "SELECT * FROM catalog_gallery_observation_file_filesystem_seals",
+        )
+    else:  # pragma: no cover - the test matrix is closed above.
+        raise AssertionError(family)
+    return tuple(connector.fetch_all(query) for query in queries)
+
+
+def _vertical_family_view(
+    connector: SQLiteConnector,
+    family: str,
+) -> list[tuple[Any, ...]]:
+    if family == "directory":
+        return connector.fetch_all(
+            "SELECT * FROM catalog_gallery_observation_directories"
+        )
+    if family == "stat":
+        return connector.fetch_all("SELECT * FROM catalog_gallery_observation_stat")
+    if family == "scan":
+        return connector.fetch_all("SELECT * FROM catalog_gallery_observation_scans")
+    if family == "filesystem":
+        return connector.fetch_all(
+            "SELECT * FROM catalog_gallery_observation_file_filesystem"
+        )
+    raise AssertionError(family)  # pragma: no cover - closed test matrix.
+
+
 def test_file_content_receipt_is_stream_derived_and_not_forgeable() -> None:
     receipt = FileContentReceipt.from_parts((b"abc", b"", b"def"))
     assert receipt.size_bytes == 6
@@ -399,6 +608,295 @@ def test_file_content_receipt_is_stream_derived_and_not_forgeable() -> None:
         FileContentReceipt(sha256(b"abcdef").digest(), 6, object())
     with pytest.raises(TypeError, match="FileContentReceipt"):
         FileObservation(b"x", object(), 1, 1, 1, 1)  # type: ignore[arg-type]
+
+
+def test_file_response_loss_replay_rejects_normalized_leaf_corruption_zero_write(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "file-replay-leaf-corruption.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        build_id, gallery_id = _seed_working_gallery(connector, turn)
+        handle = _begin(connector, gate, turn, build_id, gallery_id, now=20)
+        command = FileBatchCommand(
+            (_file_observation(0),),
+            True,
+            BatchAttempt(b"f" * 16, None),
+        )
+        committed = _put_files(connector, gate, turn, handle, command, now=21)
+        assert connector.fetch_one(
+            "SELECT file_no FROM catalog_gallery_observation_file_file_nos "
+            "WHERE gallery_id = %s AND observation_id = %s",
+            (handle.gallery_id, handle.observation_id),
+        ) == (0,)
+        assert _put_files(connector, gate, turn, handle, command, now=22).replayed
+
+        connector.execute(
+            "UPDATE catalog_gallery_observation_file_file_nos SET file_no = 1 "
+            "WHERE gallery_id = %s AND observation_id = %s",
+            (handle.gallery_id, handle.observation_id),
+        )
+        before = _request_snapshot(connector)
+        with (
+            patch.object(connector, "execute", side_effect=AssertionError("write")),
+            patch.object(
+                connector,
+                "execute_affected",
+                side_effect=AssertionError("write"),
+            ),
+            pytest.raises(GalleryStagingConflictError, match="normalized observation"),
+        ):
+            _put_files(connector, gate, turn, handle, command, now=23)
+        assert _request_snapshot(connector) == before
+        assert committed.cursor == 1
+    finally:
+        connector.close()
+
+
+def test_tag_response_loss_replay_validates_exact_canonical_payload_zero_write(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "tag-replay-payload-corruption.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        build_id, gallery_id = _seed_working_gallery(connector, turn)
+        handle = _begin(connector, gate, turn, build_id, gallery_id, now=20)
+        source = TagObservation("artist", "Alice")
+        command = TagBatchCommand(
+            (source,),
+            True,
+            BatchAttempt(b"t" * 16, None),
+        )
+        _put_tags(connector, gate, turn, handle, command, now=21)
+        assert _put_tags(connector, gate, turn, handle, command, now=22).replayed
+        root = connector.fetch_one(
+            "SELECT root_page_sha256 FROM catalog_canonical_value_identities "
+            "WHERE value_sha256 = %s",
+            (source._value_sha256,),
+        )[0]
+        connector.execute(
+            "UPDATE catalog_canonical_value_page_payloads SET page_bytes = %s "
+            "WHERE page_sha256 = %s",
+            (b"corrupt-canonical-page", root),
+        )
+        before = _request_snapshot(connector)
+        with (
+            patch.object(connector, "execute", side_effect=AssertionError("write")),
+            patch.object(
+                connector,
+                "execute_affected",
+                side_effect=AssertionError("write"),
+            ),
+            pytest.raises(GalleryStagingConflictError),
+        ):
+            _put_tags(connector, gate, turn, handle, command, now=23)
+        assert _request_snapshot(connector) == before
+        assert connector.fetch_one(
+            "SELECT page_bytes FROM catalog_canonical_value_page_payloads "
+            "WHERE page_sha256 = %s",
+            (root,),
+        ) == (b"corrupt-canonical-page",)
+    finally:
+        connector.close()
+
+
+def test_tag_allocator_lock_rereads_natural_identity_before_insert(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "tag-allocator-reread.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        build_id, gallery_id = _seed_working_gallery(connector, turn)
+        handle = _begin(connector, gate, turn, build_id, gallery_id, now=20)
+        source = TagObservation("artist", "Alice")
+
+        def install_concurrent_term(
+            work: VNextUnitOfWork,
+            stream: Any,
+            *,
+            updated_at: int,
+        ) -> int:
+            assert stream is IdentityStream.TAG
+            assert updated_at == 21
+            seed_tag_term(
+                work.connector,
+                tag_id=7,
+                namespace=source._namespace_bytes,
+                tag_value_sha256=source._value_sha256,
+            )
+            return 1
+
+        with patch.object(
+            VNextAllocatorRepository,
+            "allocate_identity",
+            side_effect=install_concurrent_term,
+        ):
+            receipt = _put_tags(
+                connector,
+                gate,
+                turn,
+                handle,
+                TagBatchCommand(
+                    (source,),
+                    True,
+                    BatchAttempt(b"t" * 16, None),
+                ),
+                now=21,
+            )
+        assert receipt.cursor == 1
+        assert connector.fetch_one(
+            "SELECT tag_id FROM catalog_gallery_observation_tags "
+            "WHERE gallery_id = %s AND observation_id = %s AND position = 0",
+            (handle.gallery_id, handle.observation_id),
+        ) == (7,)
+        assert connector.fetch_all(
+            "SELECT tag_id FROM catalog_tag_term_anchors ORDER BY tag_id"
+        ) == [(7,)]
+    finally:
+        connector.close()
+
+
+def test_file_and_tag_identity_families_are_fault_atomic_seal_last_and_replay_exact(
+    tmp_path: Path,
+) -> None:
+    file_tables = (
+        "catalog_file_name_identity_anchors",
+        "catalog_file_name_identity_name_bytes",
+        "catalog_file_name_identity_file_roles",
+        "catalog_file_name_identity_seals",
+        "catalog_gallery_observation_file_anchors",
+        "catalog_gallery_observation_file_file_nos",
+        "catalog_gallery_observation_file_file_sha256s",
+        "catalog_gallery_observation_file_seals",
+    )
+    connector = _generated_database(tmp_path / "file-family-faults.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        build_id, gallery_id = _seed_working_gallery(connector, turn)
+        handle = _begin(connector, gate, turn, build_id, gallery_id, now=20)
+        file_command = FileBatchCommand(
+            (_file_observation(0),),
+            True,
+            BatchAttempt(b"f" * 16, None),
+        )
+        baseline = _request_snapshot(connector)
+        for target in file_tables:
+            original_execute = connector.execute
+            triggered = False
+
+            def fail_target(
+                sql: str,
+                data: tuple[Any, ...] = (),
+                *,
+                failed_table: str = target,
+            ) -> None:
+                nonlocal triggered
+                if not triggered and sql.lstrip().startswith(
+                    f"INSERT INTO {failed_table}"
+                ):
+                    triggered = True
+                    raise RuntimeError(f"injected {failed_table}")
+                original_execute(sql, data)
+
+            with (
+                patch.object(connector, "execute", side_effect=fail_target),
+                pytest.raises(RuntimeError, match="injected catalog_"),
+            ):
+                _put_files(connector, gate, turn, handle, file_command, now=21)
+            assert triggered
+            assert _request_snapshot(connector) == baseline
+            assert all(
+                connector.fetch_one(f"SELECT COUNT(*) FROM {table}") == (0,)
+                for table in file_tables
+            )
+        committed = _put_files(connector, gate, turn, handle, file_command, now=21)
+        assert committed.cursor == 1
+        assert all(
+            connector.fetch_one(f"SELECT COUNT(*) FROM {table}") == (1,)
+            for table in file_tables
+        )
+        with (
+            patch.object(connector, "execute", side_effect=AssertionError("write")),
+            patch.object(
+                connector,
+                "execute_affected",
+                side_effect=AssertionError("write"),
+            ),
+        ):
+            assert _put_files(
+                connector, gate, turn, handle, file_command, now=22
+            ).replayed
+    finally:
+        connector.close()
+
+    tag_tables = (
+        "catalog_tag_term_anchors",
+        "catalog_tag_term_identities",
+        "catalog_tag_term_seals",
+    )
+    connector = _generated_database(tmp_path / "tag-family-faults.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        build_id, gallery_id = _seed_working_gallery(connector, turn)
+        handle = _begin(connector, gate, turn, build_id, gallery_id, now=20)
+        tag_command = TagBatchCommand(
+            (TagObservation("artist", "Alice"),),
+            True,
+            BatchAttempt(b"t" * 16, None),
+        )
+        baseline = _request_snapshot(connector)
+        for target in tag_tables:
+            original_execute = connector.execute
+            triggered = False
+
+            def fail_target(
+                sql: str,
+                data: tuple[Any, ...] = (),
+                *,
+                failed_table: str = target,
+            ) -> None:
+                nonlocal triggered
+                if not triggered and sql.lstrip().startswith(
+                    f"INSERT INTO {failed_table}"
+                ):
+                    triggered = True
+                    raise RuntimeError(f"injected {failed_table}")
+                original_execute(sql, data)
+
+            with (
+                patch.object(connector, "execute", side_effect=fail_target),
+                pytest.raises(RuntimeError, match="injected catalog_"),
+            ):
+                _put_tags(connector, gate, turn, handle, tag_command, now=21)
+            assert triggered
+            assert _request_snapshot(connector) == baseline
+            assert all(
+                connector.fetch_one(f"SELECT COUNT(*) FROM {table}") == (0,)
+                for table in tag_tables
+            )
+            assert (
+                connector.fetch_all("SELECT 1 FROM catalog_gallery_observation_tags")
+                == []
+            )
+        committed = _put_tags(connector, gate, turn, handle, tag_command, now=21)
+        assert committed.cursor == 1
+        assert all(
+            connector.fetch_one(f"SELECT COUNT(*) FROM {table}") == (1,)
+            for table in tag_tables
+        )
+        with (
+            patch.object(connector, "execute", side_effect=AssertionError("write")),
+            patch.object(
+                connector,
+                "execute_affected",
+                side_effect=AssertionError("write"),
+            ),
+        ):
+            assert _put_tags(
+                connector, gate, turn, handle, tag_command, now=22
+            ).replayed
+    finally:
+        connector.close()
 
 
 def test_equal_content_digest_with_different_stream_size_conflicts_atomically(
@@ -688,6 +1186,797 @@ def test_mariadb_staging_authority_locks_use_for_update_in_global_order() -> Non
     assert all(query.endswith(" FOR UPDATE") for query in locked)
     assert sum("request_owners" in query for query in locked) == 2
     assert sum("request_predecessors" in query for query in locked) == 1
+
+
+def test_mariadb_gallery_manifest_policy_is_plain_read_and_writer_is_seal_last() -> (
+    None
+):
+    observation_identity = b"o" * 32
+
+    class RecordingConnector:
+        def __init__(self) -> None:
+            self.fetches: list[str] = []
+            self.writes: list[str] = []
+
+        def fetch_one(
+            self,
+            query: str,
+            data: tuple[Any, ...] = (),
+        ) -> tuple[Any, ...]:
+            del data
+            self.fetches.append(query)
+            if "FROM catalog_gallery_observations" in query:
+                return (observation_identity,)
+            if "FROM catalog_manifest_policy_seals" in query:
+                return (1, 1)
+            if query.startswith("WITH family_keys(gallery_id"):
+                return ()
+            if "UTC_TIMESTAMP(6)" in query:
+                return (123_000_000,)
+            raise AssertionError(query)
+
+        def execute(self, query: str, data: tuple[Any, ...] = ()) -> None:
+            del data
+            self.writes.append(query)
+
+    connector = RecordingConnector()
+    result = ensure_gallery_manifest_family(
+        VNextUnitOfWork(connector, backend="mariadb"),  # type: ignore[arg-type]
+        gallery_id=1,
+        observation_id=2,
+        manifest_policy_id=1,
+    )
+    assert result.manifest_sha256 == artifact_source_manifest_digest(
+        observation_identity,
+        1,
+        1,
+    )
+    observation_query = next(
+        query for query in connector.fetches if "catalog_gallery_observations" in query
+    )
+    policy_query = next(
+        query for query in connector.fetches if "catalog_manifest_policy_seals" in query
+    )
+    assert observation_query.endswith(" FOR UPDATE")
+    assert "FOR UPDATE" not in policy_query
+    assert any("UTC_TIMESTAMP(6)" in query for query in connector.fetches)
+    assert "catalog_gallery_manifest_seals" in connector.writes[-1]
+
+
+def test_mariadb_gallery_page_family_sql_is_static_and_seal_last() -> None:
+    class _MariaPageFake:
+        def __init__(self) -> None:
+            self.queries: list[tuple[str, tuple[Any, ...]]] = []
+            self.executions: list[tuple[str, tuple[Any, ...]]] = []
+
+        def fetch_one(
+            self,
+            query: str,
+            data: tuple[Any, ...] = (),
+        ) -> tuple[Any, ...]:
+            self.queries.append((query, data))
+            if "page_descriptor_anchors" in query and "requested" in query:
+                return (None, None, None, None, None, None)
+            if "page_key_bounds_anchors" in query and "requested" in query:
+                return (None, None, None, None)
+            if "gallery_observation_allocation_pages" in query:
+                return ()
+            raise AssertionError(query)
+
+        def fetch_all(
+            self,
+            query: str,
+            data: tuple[Any, ...] = (),
+        ) -> list[tuple[Any, ...]]:
+            self.queries.append((query, data))
+            if "gallery_observation_page_children" in query:
+                return []
+            raise AssertionError(query)
+
+        def execute(self, query: str, data: tuple[Any, ...] = ()) -> None:
+            self.executions.append((query, data))
+
+    connector = _MariaPageFake()
+    prepared = staging_module._prepare_leaf(
+        GalleryObservationComponent.FILE,
+        0,
+        (_file_observation(0),),
+    )
+    handle = GalleryStagingHandle(b"s" * 16, b"b" * 16, 1, 1, 1, 0)
+    staging_module._persist_observation_page(connector, handle, prepared)
+    inserted_tables = tuple(
+        table
+        for query, _data in connector.executions
+        for table in (
+            *_PAGE_FAMILY_TABLES,
+            "catalog_gallery_observation_allocation_pages",
+        )
+        if query.lstrip().startswith(f"INSERT INTO {table}")
+    )
+    assert inserted_tables == (
+        *_PAGE_FAMILY_TABLES,
+        "catalog_gallery_observation_allocation_pages",
+    )
+    assert all("%s" in query and "?" not in query for query, _ in connector.queries)
+    assert all("%s" in query and "?" not in query for query, _ in connector.executions)
+    assert not any("FOR UPDATE" in query for query, _ in connector.queries)
+
+
+def test_mariadb_metadata_shared_fact_writes_are_serialized_by_ingest_head() -> None:
+    class _MariaIngestFenceFake:
+        def __init__(self) -> None:
+            self.queries: list[tuple[str, tuple[Any, ...]]] = []
+
+        def fetch_one(
+            self,
+            query: str,
+            data: tuple[Any, ...] = (),
+        ) -> tuple[Any, ...]:
+            self.queries.append((query, data))
+            if "operational_ingest_coordination_heads" in query:
+                return (1, 0, "INGESTING", 1)
+            if "operational_ingest_generations" in query:
+                return (1, None)
+            if "operational_ingest_generation_owners" in query:
+                return (b"i" * 16,)
+            if "operational_ingest_generation_leases" in query:
+                return (100,)
+            raise AssertionError(query)
+
+    gate = GateLease(b"g" * 16, 1, GateMode.SHARED, (0,), 100)
+    turn = IngestTurn(1, b"i" * 16, 100)
+    connector = _MariaIngestFenceFake()
+    with patch.object(
+        MaintenanceGateRepository,
+        "lock_and_require_live",
+        return_value=gate,
+    ) as gate_lock:
+        generation = staging_module._authorize_outer(
+            VNextUnitOfWork(cast(Any, connector), backend="mariadb"),
+            gate,
+            turn,
+            now=2,
+        )
+
+    assert generation == 1
+    gate_lock.assert_called_once()
+    assert len(connector.queries) == 4
+    assert "operational_ingest_coordination_heads" in connector.queries[0][0]
+    assert all(query.endswith(" FOR UPDATE") for query, _data in connector.queries)
+
+
+def _metadata_vertical_snapshot(connector: SQLiteConnector) -> tuple[object, ...]:
+    return (
+        connector.fetch_all(
+            "SELECT gid, upload_time FROM catalog_gallery_upload_times ORDER BY gid"
+        ),
+        connector.fetch_all(
+            "SELECT source_gallery_name, gid FROM catalog_source_gallery_name_gids "
+            "ORDER BY source_gallery_name"
+        ),
+        connector.fetch_all(
+            "SELECT gallery_id, source_gallery_name "
+            "FROM catalog_gallery_source_name_accesses ORDER BY gallery_id"
+        ),
+        connector.fetch_all(
+            "SELECT gallery_id, observation_id "
+            "FROM catalog_gallery_observation_metadata_anchors "
+            "ORDER BY gallery_id, observation_id"
+        ),
+        connector.fetch_all(
+            "SELECT gallery_id, observation_id, download_time "
+            "FROM catalog_gallery_observation_download_times "
+            "ORDER BY gallery_id, observation_id"
+        ),
+        connector.fetch_all(
+            "SELECT gallery_id, observation_id, modified_time "
+            "FROM catalog_gallery_observation_modified_times "
+            "ORDER BY gallery_id, observation_id"
+        ),
+        connector.fetch_all(
+            "SELECT gallery_id, observation_id "
+            "FROM catalog_gallery_observation_metadata_seals "
+            "ORDER BY gallery_id, observation_id"
+        ),
+    )
+
+
+def test_metadata_vertical_writer_derives_narrow_facts_and_replays(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "metadata-vertical.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        build_id, gallery_id = _seed_working_gallery(connector, turn)
+        handle = _begin(connector, gate, turn, build_id, gallery_id, now=20)
+        metadata = GalleryObservationMetadata(
+            12_345,
+            "title",
+            "comment",
+            "uploader",
+            100,
+            101,
+            102,
+            1,
+            0,
+            None,
+        )
+        command = MetadataBatchCommand(
+            encode_gallery_observation_metadata(metadata),
+            True,
+            BatchAttempt(b"m" * 16, None),
+        )
+
+        committed = _put_metadata(
+            connector,
+            gate,
+            turn,
+            handle,
+            command,
+            now=21,
+        )
+        assert committed.state == "COMPLETE"
+        expected = (
+            [(12_345, 100)],
+            [(b"gallery", 12_345)],
+            [(gallery_id, b"gallery")],
+            [(gallery_id, handle.observation_id)],
+            [(gallery_id, handle.observation_id, 101)],
+            [(gallery_id, handle.observation_id, 102)],
+            [(gallery_id, handle.observation_id)],
+        )
+        assert _metadata_vertical_snapshot(connector) == expected
+        assert connector.fetch_one(
+            "SELECT gallery_id, observation_id, gid, upload_time, download_time, "
+            "modified_time FROM catalog_gallery_observation_metadata"
+        ) == (gallery_id, handle.observation_id, 12_345, 100, 101, 102)
+
+        before = (_request_snapshot(connector), _metadata_vertical_snapshot(connector))
+        replayed = _put_metadata(
+            connector,
+            gate,
+            turn,
+            handle,
+            command,
+            now=22,
+        )
+        assert replayed.replayed
+        assert (
+            _request_snapshot(connector),
+            _metadata_vertical_snapshot(connector),
+        ) == before
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize(
+    "failed_table",
+    (
+        "catalog_gallery_upload_times",
+        "catalog_source_gallery_name_gids",
+        "catalog_gallery_source_name_accesses",
+        "catalog_gallery_observation_metadata_anchors",
+        "catalog_gallery_observation_download_times",
+        "catalog_gallery_observation_modified_times",
+        "catalog_gallery_observation_metadata_digests",
+        "catalog_gallery_observation_page_counts",
+        "catalog_gallery_observation_metadata_seals",
+    ),
+)
+def test_metadata_vertical_insert_fault_rolls_back_every_fact(
+    tmp_path: Path,
+    failed_table: str,
+) -> None:
+    connector = _generated_database(
+        tmp_path / f"metadata-vertical-fault-{failed_table}.sqlite3"
+    )
+    try:
+        gate, turn = _authorities(connector)
+        build_id, gallery_id = _seed_working_gallery(connector, turn)
+        handle = _begin(connector, gate, turn, build_id, gallery_id, now=20)
+        command = MetadataBatchCommand(
+            encode_gallery_observation_metadata(
+                GalleryObservationMetadata(7, "", "", "", 10, 11, 12, 1, 0, 3)
+            ),
+            True,
+            BatchAttempt(b"f" * 16, None),
+        )
+        before = _request_snapshot(connector)
+        original_execute = connector.execute
+
+        def fail_one_fact(sql: str, data: tuple[Any, ...] = ()) -> None:
+            if sql.lstrip().startswith(f"INSERT INTO {failed_table}"):
+                raise RuntimeError("injected metadata-fact fault")
+            original_execute(sql, data)
+
+        with (
+            patch.object(connector, "execute", side_effect=fail_one_fact),
+            pytest.raises(RuntimeError, match="metadata-fact fault"),
+        ):
+            _put_metadata(connector, gate, turn, handle, command, now=21)
+        assert _request_snapshot(connector) == before
+        assert _metadata_vertical_snapshot(connector) == (
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+        )
+        assert (
+            connector.fetch_all(
+                "SELECT 1 FROM catalog_gallery_observation_metadata_digests"
+            )
+            == []
+        )
+        assert (
+            connector.fetch_all("SELECT 1 FROM catalog_gallery_observation_page_counts")
+            == []
+        )
+
+        committed = _put_metadata(connector, gate, turn, handle, command, now=22)
+        assert committed.state == "COMPLETE"
+        assert connector.fetch_one(
+            "SELECT gid, upload_time, download_time, modified_time "
+            "FROM catalog_gallery_observation_metadata"
+        ) == (7, 10, 11, 12)
+    finally:
+        connector.close()
+
+
+def test_gallery_page_families_are_seal_last_fault_atomic_and_replay_exact(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "gallery-page-vertical.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        build_id, gallery_id = _seed_working_gallery(connector, turn)
+        handle = _begin(connector, gate, turn, build_id, gallery_id, now=20)
+        command = FileBatchCommand(
+            (_file_observation(0),),
+            True,
+            BatchAttempt(b"p" * 16, None),
+        )
+        empty: tuple[list[tuple[Any, ...]], ...] = tuple(
+            [] for _table in _PAGE_FAMILY_TABLES
+        )
+        before_request = _request_snapshot(connector)
+        assert _page_family_snapshot(connector) == empty
+
+        for failed_table in _PAGE_FAMILY_TABLES:
+            original_execute = connector.execute
+            triggered = False
+
+            def fail_one_insert(
+                sql: str,
+                data: tuple[Any, ...] = (),
+                *,
+                target: str = failed_table,
+            ) -> None:
+                nonlocal triggered
+                if not triggered and sql.lstrip().startswith(f"INSERT INTO {target}"):
+                    triggered = True
+                    raise RuntimeError("injected gallery-page family fault")
+                original_execute(sql, data)
+
+            with (
+                patch.object(connector, "execute", side_effect=fail_one_insert),
+                pytest.raises(RuntimeError, match="gallery-page family fault"),
+            ):
+                _put_files(connector, gate, turn, handle, command, now=21)
+            assert triggered, failed_table
+            assert _request_snapshot(connector) == before_request
+            assert _page_family_snapshot(connector) == empty
+
+        inserted: list[str] = []
+        original_execute = connector.execute
+
+        def record_insert(sql: str, data: tuple[Any, ...] = ()) -> None:
+            inserted.append(sql)
+            original_execute(sql, data)
+
+        with patch.object(connector, "execute", side_effect=record_insert):
+            receipt = _put_files(connector, gate, turn, handle, command, now=22)
+        inserted_tables = tuple(
+            table
+            for sql in inserted
+            for table in _PAGE_FAMILY_TABLES
+            if sql.lstrip().startswith(f"INSERT INTO {table}")
+        )
+        assert inserted_tables == _PAGE_FAMILY_TABLES
+        assert receipt.root_page_sha256 is not None
+        committed = _page_family_snapshot(connector)
+        assert all(rows for rows in committed)
+
+        replay_inserts: list[str] = []
+        original_execute = connector.execute
+
+        def record_replay(sql: str, data: tuple[Any, ...] = ()) -> None:
+            if sql.lstrip().startswith("INSERT"):
+                replay_inserts.append(sql)
+            original_execute(sql, data)
+
+        with patch.object(connector, "execute", side_effect=record_replay):
+            replayed = _put_files(connector, gate, turn, handle, command, now=23)
+        assert replayed.replayed
+        assert _page_family_snapshot(connector) == committed
+        assert replay_inserts == []
+
+        for seal_table, message in (
+            (
+                "catalog_gallery_observation_page_key_bounds_seals",
+                "bounds family is partial",
+            ),
+            (
+                "catalog_gallery_observation_page_descriptor_seals",
+                "page family is partial",
+            ),
+        ):
+            connector.execute("PRAGMA foreign_keys = OFF")
+            try:
+                connector.execute(
+                    f"DELETE FROM {seal_table} WHERE page_sha256 = %s",
+                    (receipt.root_page_sha256,),
+                )
+            finally:
+                connector.execute("PRAGMA foreign_keys = ON")
+            corrupt_pages = _page_family_snapshot(connector)
+            corrupt_request = _request_snapshot(connector)
+            with pytest.raises(GalleryStagingConflictError, match=message):
+                _put_files(connector, gate, turn, handle, command, now=24)
+            assert _page_family_snapshot(connector) == corrupt_pages
+            assert _request_snapshot(connector) == corrupt_request
+            connector.execute(
+                f"INSERT INTO {seal_table} (page_sha256) VALUES (%s)",
+                (receipt.root_page_sha256,),
+            )
+    finally:
+        connector.close()
+
+
+def test_metadata_vertical_corruption_mismatch_has_zero_partial_writes(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "metadata-vertical-conflict.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        build_id, gallery_id = _seed_working_gallery(connector, turn)
+        handle = _begin(connector, gate, turn, build_id, gallery_id, now=20)
+        connector.execute(
+            "INSERT INTO catalog_gallery_observation_metadata_anchors "
+            "(gallery_id, observation_id) VALUES (%s, %s)",
+            (gallery_id, handle.observation_id),
+        )
+        connector.execute(
+            "INSERT INTO catalog_gallery_observation_modified_times "
+            "(gallery_id, observation_id, modified_time) VALUES (%s, %s, %s)",
+            (gallery_id, handle.observation_id, 999),
+        )
+        before = _request_snapshot(connector)
+        command = MetadataBatchCommand(
+            encode_gallery_observation_metadata(
+                GalleryObservationMetadata(8, "", "", "", 20, 21, 22, 1, 0, None)
+            ),
+            True,
+            BatchAttempt(b"c" * 16, None),
+        )
+
+        with pytest.raises(
+            GalleryStagingConflictError,
+            match="gallery observation modified time differs",
+        ):
+            _put_metadata(connector, gate, turn, handle, command, now=21)
+        assert _request_snapshot(connector) == before
+        assert _metadata_vertical_snapshot(connector) == (
+            [],
+            [],
+            [],
+            [(gallery_id, handle.observation_id)],
+            [],
+            [(gallery_id, handle.observation_id, 999)],
+            [],
+        )
+        assert (
+            connector.fetch_all("SELECT 1 FROM catalog_gallery_observation_metadata")
+            == []
+        )
+    finally:
+        connector.close()
+
+
+def test_metadata_vertical_mariadb_sql_shape_uses_server_derived_name() -> None:
+    class _MariaMetadataRecorder:
+        def __init__(self) -> None:
+            self.queries: list[tuple[str, tuple[Any, ...]]] = []
+            self.executions: list[tuple[str, tuple[Any, ...]]] = []
+
+        def fetch_one(
+            self,
+            query: str,
+            data: tuple[Any, ...] = (),
+        ) -> tuple[Any, ...]:
+            self.queries.append((query, data))
+            if "FROM catalog_gallery_identity_seals AS seal" in query:
+                return (b"l" * 32, b"server-gallery")
+            return ()
+
+        def fetch_all(
+            self,
+            query: str,
+            data: tuple[Any, ...] = (),
+        ) -> list[tuple[Any, ...]]:
+            self.queries.append((query, data))
+            if "FROM catalog_gallery_observation_tree_roots" in query:
+                return [(b"r" * 32, 1)]
+            raise AssertionError(query)
+
+        def execute(self, query: str, data: tuple[Any, ...] = ()) -> None:
+            self.executions.append((query, data))
+
+    decoder = GalleryObservationMetadataDecoder()
+    decoder.feed(
+        encode_gallery_observation_metadata(
+            GalleryObservationMetadata(77, "", "", "", 100, 101, 102, 1, 0, None)
+        )
+    )
+    recorder = _MariaMetadataRecorder()
+    staging_module._persist_metadata_facts(
+        cast(Any, recorder),
+        GalleryStagingHandle(b"s" * 16, b"b" * 16, 1, 1, 1, 0),
+        decoder.state,
+        b"r" * 32,
+    )
+
+    derived_query, derived_data = recorder.queries[0]
+    assert "JOIN catalog_gallery_identity_coordinates AS coordinate" in derived_query
+    assert "JOIN catalog_gallery_identity_gallery_keys AS gallery_key" in derived_query
+    assert "JOIN catalog_source_locator_identity AS locator" in derived_query
+    assert "seal.gallery_id = %s" in derived_query
+    assert derived_data == (1,)
+    ordered_tables = (
+        "catalog_gallery_upload_times",
+        "catalog_source_gallery_name_gids",
+        "catalog_gallery_source_name_accesses",
+        "catalog_gallery_observation_metadata_anchors",
+        "catalog_gallery_observation_download_times",
+        "catalog_gallery_observation_modified_times",
+        "catalog_gallery_observation_metadata_seals",
+    )
+    pilot_executions = tuple(
+        (query, data)
+        for query, data in recorder.executions
+        if any(
+            query.lstrip().startswith(f"INSERT INTO {table}")
+            for table in ordered_tables
+        )
+    )
+    assert len(pilot_executions) == len(ordered_tables)
+    for (query, _data), table in zip(pilot_executions, ordered_tables, strict=True):
+        assert query.lstrip().startswith(f"INSERT INTO {table}")
+        assert "%s" in query and "?" not in query
+    assert pilot_executions[1][1] == (b"server-gallery", 77)
+    assert pilot_executions[2][1] == (1, b"server-gallery")
+    assert recorder.executions[-1] == pilot_executions[-1]
+
+
+def test_four_vertical_family_writers_fault_replay_and_seal_visibility(
+    tmp_path: Path,
+) -> None:
+    assert sum(len(tables) for tables in _VERTICAL_FAMILY_TABLES.values()) == 19
+    for family, tables in _VERTICAL_FAMILY_TABLES.items():
+        connector = _generated_database(tmp_path / f"{family}-vertical-fault.sqlite3")
+        try:
+            handle = _seed_vertical_family_parents(connector)
+            empty: tuple[list[tuple[Any, ...]], ...] = tuple([] for _table in tables)
+            assert _vertical_family_snapshot(connector, family) == empty
+            assert _vertical_family_view(connector, family) == []
+
+            for failed_table in tables:
+                original_execute = connector.execute
+                triggered = False
+
+                def fail_one_insert(
+                    sql: str,
+                    data: tuple[Any, ...] = (),
+                    *,
+                    target: str = failed_table,
+                ) -> None:
+                    nonlocal triggered
+                    if not triggered and sql.lstrip().startswith(
+                        f"INSERT INTO {target}"
+                    ):
+                        triggered = True
+                        raise RuntimeError(f"injected {target} fault")
+                    original_execute(sql, data)
+
+                with (
+                    patch.object(connector, "execute", side_effect=fail_one_insert),
+                    pytest.raises(RuntimeError, match="injected catalog_"),
+                ):
+                    with connector.transaction():
+                        _persist_vertical_family(connector, handle, family)
+                assert triggered, failed_table
+                assert _vertical_family_snapshot(connector, family) == empty
+                assert _vertical_family_view(connector, family) == []
+
+            executed: list[str] = []
+            original_execute = connector.execute
+
+            def record_execute(sql: str, data: tuple[Any, ...] = ()) -> None:
+                executed.append(sql)
+                original_execute(sql, data)
+
+            with patch.object(connector, "execute", side_effect=record_execute):
+                with connector.transaction():
+                    _persist_vertical_family(connector, handle, family)
+            inserted_tables = tuple(
+                table
+                for sql in executed
+                for table in tables
+                if sql.lstrip().startswith(f"INSERT INTO {table}")
+            )
+            assert inserted_tables == tables
+            assert inserted_tables[-1].endswith("_seals")
+            committed = _vertical_family_snapshot(connector, family)
+            assert all(rows for rows in committed)
+            assert len(_vertical_family_view(connector, family)) == 1
+
+            replayed_sql: list[str] = []
+            original_execute = connector.execute
+
+            def record_replay(sql: str, data: tuple[Any, ...] = ()) -> None:
+                replayed_sql.append(sql)
+                original_execute(sql, data)
+
+            with patch.object(connector, "execute", side_effect=record_replay):
+                with connector.transaction():
+                    _persist_vertical_family(connector, handle, family)
+            assert _vertical_family_snapshot(connector, family) == committed
+            assert not any(
+                sql.lstrip().startswith("INSERT INTO catalog_gallery_observation_")
+                for sql in replayed_sql
+            )
+
+            key = (handle.gallery_id, handle.observation_id)
+            if family == "directory":
+                connector.execute(
+                    "DELETE FROM catalog_gallery_observation_directory_seals "
+                    "WHERE gallery_id = %s AND observation_id = %s",
+                    key,
+                )
+            elif family == "stat":
+                connector.execute(
+                    "DELETE FROM catalog_gallery_observation_stat_seals "
+                    "WHERE gallery_id = %s AND observation_id = %s",
+                    key,
+                )
+            elif family == "scan":
+                connector.execute(
+                    "DELETE FROM catalog_gallery_observation_scan_seals "
+                    "WHERE gallery_id = %s AND observation_id = %s",
+                    key,
+                )
+            else:
+                connector.execute(
+                    "DELETE FROM catalog_gallery_observation_file_filesystem_seals "
+                    "WHERE gallery_id = %s AND observation_id = %s AND file_key = %s",
+                    (*key, b"k" * 32),
+                )
+            assert _vertical_family_view(connector, family) == []
+        finally:
+            connector.close()
+
+
+@pytest.mark.parametrize("family", tuple(_VERTICAL_FAMILY_TABLES))
+def test_four_vertical_family_corruption_is_zero_partial(
+    tmp_path: Path,
+    family: str,
+) -> None:
+    connector = _generated_database(tmp_path / f"{family}-vertical-corrupt.sqlite3")
+    try:
+        handle = _seed_vertical_family_parents(connector)
+        key = (handle.gallery_id, handle.observation_id)
+        if family == "directory":
+            connector.execute(
+                "INSERT INTO catalog_gallery_observation_directory_anchors "
+                "(gallery_id, observation_id) VALUES (%s, %s)",
+                key,
+            )
+            connector.execute(
+                "INSERT INTO catalog_gallery_observation_directory_observation_sha256s "
+                "(gallery_id, observation_id, directory_observation_sha256) "
+                "VALUES (%s, %s, %s)",
+                (*key, b"x" * 32),
+            )
+        elif family == "stat":
+            connector.execute(
+                "INSERT INTO catalog_gallery_observation_stat_anchors "
+                "(gallery_id, observation_id) VALUES (%s, %s)",
+                key,
+            )
+            connector.execute(
+                "INSERT INTO catalog_gallery_observation_stat_byte_counts "
+                "(gallery_id, observation_id, byte_count) VALUES (%s, %s, 999)",
+                key,
+            )
+        elif family == "scan":
+            connector.execute(
+                "INSERT INTO catalog_gallery_observation_scan_anchors "
+                "(gallery_id, observation_id) VALUES (%s, %s)",
+                key,
+            )
+            connector.execute(
+                "INSERT INTO catalog_gallery_observation_scan_source_file_counts "
+                "(gallery_id, observation_id, source_file_count) "
+                "VALUES (%s, %s, 999)",
+                key,
+            )
+        else:
+            connector.execute(
+                "INSERT INTO catalog_gallery_observation_file_filesystem_anchors "
+                "(gallery_id, observation_id, file_key) VALUES (%s, %s, %s)",
+                (*key, b"k" * 32),
+            )
+            connector.execute(
+                "INSERT INTO catalog_gallery_observation_file_filesystem_changed_nses "
+                "(gallery_id, observation_id, file_key, changed_ns) "
+                "VALUES (%s, %s, %s, %s)",
+                (*key, b"k" * 32, b"x" * 8),
+            )
+        before = _vertical_family_snapshot(connector, family)
+
+        with pytest.raises(GalleryStagingConflictError, match="differs"):
+            with connector.transaction():
+                _persist_vertical_family(connector, handle, family)
+        assert _vertical_family_snapshot(connector, family) == before
+        assert _vertical_family_view(connector, family) == []
+    finally:
+        connector.close()
+
+
+def test_four_vertical_family_mariadb_sql_is_static_and_seal_last() -> None:
+    class _MariaVerticalRecorder:
+        def __init__(self) -> None:
+            self.queries: list[tuple[str, tuple[Any, ...]]] = []
+            self.executions: list[tuple[str, tuple[Any, ...]]] = []
+
+        def fetch_one(
+            self,
+            query: str,
+            data: tuple[Any, ...] = (),
+        ) -> tuple[Any, ...]:
+            self.queries.append((query, data))
+            return ()
+
+        def execute(self, query: str, data: tuple[Any, ...] = ()) -> None:
+            self.executions.append((query, data))
+
+    recorder = _MariaVerticalRecorder()
+    handle = GalleryStagingHandle(b"s" * 16, b"b" * 16, 1, 1, 1, 0)
+    for family in _VERTICAL_FAMILY_TABLES:
+        _persist_vertical_family(recorder, handle, family)
+
+    ordered_tables = tuple(
+        table for tables in _VERTICAL_FAMILY_TABLES.values() for table in tables
+    )
+    insertions = tuple(
+        (query, data)
+        for query, data in recorder.executions
+        if query.lstrip().startswith("INSERT INTO catalog_gallery_observation_")
+    )
+    assert len(insertions) == len(ordered_tables) == 19
+    for (query, _data), table in zip(insertions, ordered_tables, strict=True):
+        assert query.lstrip().startswith(f"INSERT INTO {table}")
+        assert "%s" in query and "?" not in query
+    offset = 0
+    for tables in _VERTICAL_FAMILY_TABLES.values():
+        assert (
+            insertions[offset + len(tables) - 1][0]
+            .lstrip()
+            .startswith(f"INSERT INTO {tables[-1]}")
+        )
+        offset += len(tables)
 
 
 def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
@@ -1106,6 +2395,11 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
         assert not any(
             "COUNT(" in sql.upper() or "SUM(" in sql.upper() for sql in seal_sql
         )
+        assert not any(
+            "SELECT" in sql.upper()
+            and "FROM CATALOG_GALLERY_OBSERVATION_FILE_ANCHORS" in sql.upper()
+            for sql in seal_sql
+        )
         assert connector.fetch_one(
             "SELECT file_count, byte_count FROM catalog_gallery_observation_stat "
             "WHERE gallery_id = %s AND observation_id = %s",
@@ -1116,7 +2410,32 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
             "WHERE build_id = %s AND gallery_id = 1",
             (build_id,),
         ) == (1,)
-        with connector.transaction():
+        expected_manifest = artifact_source_manifest_digest(
+            sealed.observation_identity_sha256,
+            1,
+            1,
+        )
+        manifest = connector.fetch_one(
+            "SELECT manifest_sha256, computed_at FROM catalog_gallery_manifests "
+            "WHERE gallery_id = %s AND observation_id = %s "
+            "AND manifest_policy_id = 1",
+            (gallery_id, sealed.observation_id),
+        )
+        assert manifest[0] == expected_manifest
+        assert manifest[1] != 61
+        with (
+            patch.object(connector, "execute", side_effect=AssertionError("write")),
+            patch.object(
+                connector,
+                "execute_affected",
+                side_effect=AssertionError("write"),
+            ),
+            patch(
+                "h2hdb.vnext_manifest_family.database_unix_microseconds",
+                side_effect=AssertionError("clock"),
+            ),
+            connector.transaction(),
+        ):
             replayed_seal = GalleryObservationStagingRepository.seal(
                 VNextUnitOfWork(connector, backend="sqlite"),
                 gate_lease=gate,
@@ -1132,6 +2451,35 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
             sealed.state,
             True,
         )
+        connector.execute(
+            "UPDATE catalog_gallery_manifest_manifest_sha256s "
+            "SET manifest_sha256 = %s WHERE gallery_id = %s "
+            "AND observation_id = %s AND manifest_policy_id = 1",
+            (b"x" * 32, gallery_id, sealed.observation_id),
+        )
+        with (
+            patch.object(connector, "execute", side_effect=AssertionError("write")),
+            patch.object(
+                connector,
+                "execute_affected",
+                side_effect=AssertionError("write"),
+            ),
+            connector.transaction(),
+            pytest.raises(GalleryStagingConflictError, match="exact sealed"),
+        ):
+            GalleryObservationStagingRepository.seal(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                ingest_turn=turn,
+                handle=handle,
+                now=63,
+            )
+        connector.execute(
+            "UPDATE catalog_gallery_manifest_manifest_sha256s "
+            "SET manifest_sha256 = %s WHERE gallery_id = %s "
+            "AND observation_id = %s AND manifest_policy_id = 1",
+            (expected_manifest, gallery_id, sealed.observation_id),
+        )
         after_seal = _request_snapshot(connector)
         with pytest.raises(GalleryStagingNotReadyError, match="only OPEN"):
             _put_files(
@@ -1144,9 +2492,44 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
                     True,
                     BatchAttempt(b"z" * 16, b"b" * 16),
                 ),
-                now=63,
+                now=64,
             )
         assert _request_snapshot(connector) == after_seal
+
+        # Assembly may seal the source build after the gallery response was
+        # lost.  The exact terminal receipt remains replayable and read-only;
+        # only fresh staging work is fenced to an OPEN build.
+        connector.execute(
+            "INSERT INTO catalog_source_build_sealed_ats (build_id, sealed_at) "
+            "VALUES (%s, %s)",
+            (build_id, 100),
+        )
+        connector.execute(
+            "UPDATE catalog_source_build_states SET state = %s " "WHERE build_id = %s",
+            ("SEALED", build_id),
+        )
+        with (
+            patch.object(connector, "execute", side_effect=AssertionError("write")),
+            patch.object(
+                connector,
+                "execute_affected",
+                side_effect=AssertionError("write"),
+            ),
+            patch(
+                "h2hdb.vnext_manifest_family.database_unix_microseconds",
+                side_effect=AssertionError("clock"),
+            ),
+            connector.transaction(),
+        ):
+            sealed_build_replay = GalleryObservationStagingRepository.seal(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                ingest_turn=turn,
+                handle=handle,
+                now=65,
+            )
+        assert sealed_build_replay.replayed
+        assert sealed_build_replay == replayed_seal
     finally:
         connector.close()
 
@@ -1347,15 +2730,21 @@ def test_identical_observation_on_a_later_build_reuses_canonical_identity(
             )
         second_build = b"c" * 16
         scope_key, manifest_policy_id = connector.fetch_one(
-            "SELECT scope_key, manifest_policy_id FROM catalog_source_builds "
-            "WHERE build_id = %s",
+            "SELECT scope.scope_key, policy.manifest_policy_id "
+            "FROM catalog_source_build_descriptor_seals seal "
+            "JOIN catalog_source_build_scope_keys scope "
+            "ON scope.build_id = seal.build_id "
+            "JOIN catalog_source_build_manifest_policy_ids policy "
+            "ON policy.build_id = seal.build_id WHERE seal.build_id = %s",
             (first_build,),
         )
-        connector.execute(
-            "INSERT INTO catalog_source_builds "
-            "(build_id, scope_key, manifest_policy_id, state, created_at, sealed_at) "
-            "VALUES (%s, %s, %s, %s, %s, NULL)",
-            (second_build, scope_key, manifest_policy_id, "OPEN", 100_013),
+        seed_source_build(
+            connector,
+            build_id=second_build,
+            scope_key=scope_key,
+            manifest_policy_id=manifest_policy_id,
+            state="OPEN",
+            created_at=100_013,
         )
         connector.execute(
             "INSERT INTO operational_source_build_generations "
@@ -1379,7 +2768,7 @@ def test_identical_observation_on_a_later_build_reuses_canonical_identity(
             now=100_020,
         )
         connector.execute(
-            "UPDATE catalog_gallery_observation_stat SET byte_count = 1 "
+            "UPDATE catalog_gallery_observation_stat_byte_counts SET byte_count = 1 "
             "WHERE gallery_id = %s AND observation_id = %s",
             (gallery_id, first_seal.observation_id),
         )
@@ -1391,21 +2780,20 @@ def test_identical_observation_on_a_later_build_reuses_canonical_identity(
             (second_handle.staging_id,),
         ) == ("OPEN",)
         connector.execute(
-            "UPDATE catalog_gallery_observation_stat SET byte_count = 0 "
+            "UPDATE catalog_gallery_observation_stat_byte_counts SET byte_count = 0 "
             "WHERE gallery_id = %s AND observation_id = %s",
             (gallery_id, first_seal.observation_id),
         )
         connector.execute(
-            "DELETE FROM catalog_gallery_observation_stat "
+            "DELETE FROM catalog_gallery_observation_stat_seals "
             "WHERE gallery_id = %s AND observation_id = %s",
             (gallery_id, first_seal.observation_id),
         )
         with pytest.raises(GalleryStagingConflictError, match="stat"):
             seal_observation(second_turn, second_handle, now=100_027)
         connector.execute(
-            "INSERT INTO catalog_gallery_observation_stat "
-            "(gallery_id, observation_id, file_count, byte_count) "
-            "VALUES (%s, %s, 0, 0)",
+            "INSERT INTO catalog_gallery_observation_stat_seals "
+            "(gallery_id, observation_id) VALUES (%s, %s)",
             (gallery_id, first_seal.observation_id),
         )
         reused = seal_observation(second_turn, second_handle, now=100_028)

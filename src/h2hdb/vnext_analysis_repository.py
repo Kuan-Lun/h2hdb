@@ -37,6 +37,44 @@ from hashlib import sha256
 from typing import Any
 
 from .sql_connector import SQLConnector
+from .vnext_analysis_family import (
+    AnalysisExclusionDeltaFamily,
+    AnalysisFamilyCollisionError,
+    cas_analysis_run_state,
+    ensure_analysis_run_family,
+    ensure_analysis_state_component_family,
+    insert_analysis_exclusion_delta_family,
+    insert_analysis_run_completed_at,
+    load_analysis_exclusion_delta_families,
+    load_analysis_run_family,
+    load_analysis_run_family_by_identity,
+    load_analysis_state_component_families,
+    load_analysis_state_component_family,
+)
+from .vnext_analysis_overlay_family import (
+    AnalysisContentOwnerCandidateShadowFamily,
+    AnalysisContentOwnerShadowFamily,
+    AnalysisFileHashDecisionShadowFamily,
+    apply_analysis_impacted_content_provenance_page,
+    apply_analysis_impacted_gid_provenance_page,
+    ensure_analysis_content_owner_candidate_shadow_family,
+    ensure_analysis_content_owner_shadow_family,
+    ensure_analysis_file_hash_decision_shadow_family,
+    load_analysis_content_owner_candidate_shadow_family,
+    load_analysis_content_owner_shadow_family,
+    load_analysis_file_hash_decision_shadow_family,
+    prepare_analysis_impacted_content_provenance_page,
+    prepare_analysis_impacted_gid_provenance_page,
+    require_complete_analysis_impacted_content_keyspace,
+    require_complete_analysis_impacted_gid_keyspace,
+    require_exact_analysis_impacted_content_provenance_page,
+    require_exact_analysis_impacted_gid_provenance_page,
+)
+from .vnext_canonical_value_family import (
+    CanonicalValueCollisionError,
+    CanonicalValueNotReadyError,
+    load_sealed_value_identities,
+)
 from .vnext_canonical_value_repository import (
     CanonicalValueRepository,
     CanonicalValueUploadPlan,
@@ -44,6 +82,7 @@ from .vnext_canonical_value_repository import (
 from .vnext_domains import (
     INT63_MAX,
     require_ascii_bytes,
+    require_bool_byte,
     require_bounded_bytes,
     require_digest32,
     require_int63,
@@ -53,7 +92,6 @@ from .vnext_domains import (
 )
 from .vnext_identity import (
     ANALYSIS_ALREADY_UPLOADED_MARKER,
-    AnalysisCandidateKind,
     AnalysisTitleScalarReceipt,
     GalleryObservationBranchEntry,
     GalleryObservationComponent,
@@ -66,25 +104,27 @@ from .vnext_identity import (
     SourceSnapshotGallery,
     SourceSnapshotGidWinner,
     SourceSnapshotPolicy,
-    analysis_candidate_total_order_key,
-    analysis_content_candidate_digest,
-    analysis_gid_candidate_digest,
     count_analysis_title_scalars,
-    decode_analysis_candidate_priority,
     decode_gallery_observation_page,
     effective_content_digest_ordered,
-    encode_analysis_candidate_priority,
     gallery_observation_page_digest,
     iter_effective_content_payload_ordered,
     iter_source_snapshot_manifest_payload_rows_ordered,
     source_snapshot_manifest_digest_ordered,
-    validate_analysis_candidate_priority,
 )
 from .vnext_ingest_fence_repository import IngestFenceRepository, IngestTurn
 from .vnext_maintenance_gate_repository import (
     GateLease,
     GateMode,
     MaintenanceGateRepository,
+)
+from .vnext_manifest_family import (
+    ManifestFamilyCollisionError,
+    database_unix_microseconds,
+    ensure_snapshot_manifest_family,
+    load_build_manifest_family,
+    load_snapshot_manifest_family,
+    load_source_build_family,
 )
 from .vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 
@@ -144,6 +184,22 @@ _CURSOR_DIGEST = b"D"
 _CURSOR_GID = b"I"
 _CHECKPOINT_OPEN = "OPEN"
 _CHECKPOINT_COMPLETE = "COMPLETE"
+_CHECKPOINT_ANCHOR_TABLE = "catalog_analysis_checkpoint_anchors"
+_CHECKPOINT_GENERATION_TABLE = "catalog_analysis_checkpoint_generations"
+_CHECKPOINT_CURSOR_TABLE = "catalog_analysis_checkpoint_cursors"
+_CHECKPOINT_PROCESSED_COUNT_TABLE = "catalog_analysis_checkpoint_processed_counts"
+_CHECKPOINT_STATE_TABLE = "catalog_analysis_checkpoint_states"
+_CHECKPOINT_UPDATED_AT_TABLE = "catalog_analysis_checkpoint_updated_ats"
+_CHECKPOINT_SEAL_TABLE = "catalog_analysis_checkpoint_seals"
+_RECEIPT_ANCHOR_TABLE = "catalog_analysis_batch_receipt_anchors"
+_RECEIPT_COORDINATE_TABLE = "catalog_analysis_batch_receipt_coordinates"
+_RECEIPT_START_CURSOR_TABLE = "catalog_analysis_batch_receipt_start_cursors"
+_RECEIPT_START_COUNT_TABLE = "catalog_analysis_batch_receipt_start_processed_counts"
+_RECEIPT_PAGE_LIMIT_TABLE = "catalog_analysis_batch_receipt_page_limits"
+_RECEIPT_NEXT_CURSOR_TABLE = "catalog_analysis_batch_receipt_next_cursors"
+_RECEIPT_ROW_COUNT_TABLE = "catalog_analysis_batch_receipt_row_counts"
+_RECEIPT_COMMITTED_AT_TABLE = "catalog_analysis_batch_receipt_committed_ats"
+_RECEIPT_SEAL_TABLE = "catalog_analysis_batch_receipt_seals"
 _EFFECTIVE_CONTENT_DOMAIN = b"effective_content_v1"
 _SNAPSHOT_DOMAIN = b"source_snapshot_manifest_v1"
 _METADATA_PREFIX = b"h2hdb-vnext-gallery-observation-metadata\0"
@@ -256,6 +312,7 @@ class AnalysisBatchResult:
     start_generation: int
     start_cursor: bytes
     start_processed_count: int
+    page_limit: int
     next_cursor: bytes
     next_processed_count: int
     next_state: str
@@ -304,6 +361,12 @@ class AnalysisBatchResult:
             ("committed_at", self.committed_at),
         ):
             require_int63(value, field=f"analysis batch {label}")
+        limit = require_positive_int63(
+            self.page_limit,
+            field="analysis batch page_limit",
+        )
+        if limit > _MAX_BATCH_ROWS:
+            raise ValueError("analysis batch page_limit exceeds the server cap")
         if self.next_state not in {_CHECKPOINT_OPEN, _CHECKPOINT_COMPLETE}:
             raise ValueError("analysis checkpoint state is not registered")
         if (
@@ -365,12 +428,25 @@ class _RunAuthority:
 
 
 @dataclass(frozen=True, slots=True)
+class _ContentImpactPage:
+    current_observations: dict[int, int | None]
+    old_candidates: dict[int, _ContentCandidate | None]
+
+
+@dataclass(frozen=True, slots=True)
+class _GidImpactPage:
+    old_gids: dict[int, int | None]
+    current_gids: dict[int, int | None]
+
+
+@dataclass(frozen=True, slots=True)
 class _Checkpoint:
     generation: int
     cursor: bytes
     processed_count: int
     state: str
     updated_at: int
+    page_limit: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -378,15 +454,13 @@ class _Decision:
     occurrence_count: int
     artist_count: int
     maximum_gallery_artist_count: int
-    evidence_sha256: bytes
 
     @property
-    def row(self) -> tuple[int, int, int, bytes]:
+    def row(self) -> tuple[int, int, int]:
         return (
             self.occurrence_count,
             self.artist_count,
             self.maximum_gallery_artist_count,
-            self.evidence_sha256,
         )
 
 
@@ -394,27 +468,31 @@ class _Decision:
 class _ContentCandidate:
     content_sha256: bytes
     gallery_id: int
-    priority_key: bytes
-    candidate_sha256: bytes
+    prefer_not_already_uploaded: int
+    title_scalar_count: int
+    download_time: int
 
     def __post_init__(self) -> None:
         require_digest32(self.content_sha256, field="candidate content_sha256")
         require_positive_int63(self.gallery_id, field="candidate gallery_id")
-        require_bounded_bytes(
-            self.priority_key,
-            field="candidate priority_key",
-            minimum=1,
-            maximum=128,
+        require_bool_byte(
+            self.prefer_not_already_uploaded,
+            field="candidate prefer_not_already_uploaded",
         )
-        require_digest32(self.candidate_sha256, field="candidate_sha256")
+        require_int63(
+            self.title_scalar_count,
+            field="candidate title_scalar_count",
+        )
+        require_int63(self.download_time, field="candidate download_time")
 
     @property
-    def row(self) -> tuple[bytes, int, bytes, bytes]:
+    def row(self) -> tuple[bytes, int, int, int, int]:
         return (
             self.content_sha256,
             self.gallery_id,
-            self.priority_key,
-            self.candidate_sha256,
+            self.prefer_not_already_uploaded,
+            self.title_scalar_count,
+            self.download_time,
         )
 
 
@@ -422,55 +500,40 @@ class _ContentCandidate:
 class _ContentOwner:
     content_sha256: bytes
     owner_gallery_id: int
-    decision_sha256: bytes
 
     def __post_init__(self) -> None:
         require_digest32(self.content_sha256, field="owner content_sha256")
         require_positive_int63(self.owner_gallery_id, field="owner gallery_id")
-        require_digest32(self.decision_sha256, field="owner decision_sha256")
 
     @property
-    def row(self) -> tuple[bytes, int, bytes]:
-        return (self.content_sha256, self.owner_gallery_id, self.decision_sha256)
+    def row(self) -> tuple[bytes, int]:
+        return (self.content_sha256, self.owner_gallery_id)
 
 
 @dataclass(frozen=True, slots=True)
 class _GidCandidate:
     gallery_id: int
-    gid: int
-    priority_key: bytes
-    candidate_sha256: bytes
 
     def __post_init__(self) -> None:
         require_positive_int63(self.gallery_id, field="GID candidate gallery_id")
-        require_positive_int63(self.gid, field="GID candidate gid")
-        require_bounded_bytes(
-            self.priority_key,
-            field="GID candidate priority_key",
-            minimum=1,
-            maximum=128,
-        )
-        require_digest32(self.candidate_sha256, field="GID candidate_sha256")
 
     @property
-    def row(self) -> tuple[int, int, bytes, bytes]:
-        return (self.gallery_id, self.gid, self.priority_key, self.candidate_sha256)
+    def row(self) -> tuple[int]:
+        return (self.gallery_id,)
 
 
 @dataclass(frozen=True, slots=True)
 class _GidWinner:
     gid: int
     winner_gallery_id: int
-    decision_sha256: bytes
 
     def __post_init__(self) -> None:
         require_positive_int63(self.gid, field="winner gid")
         require_positive_int63(self.winner_gallery_id, field="winner gallery_id")
-        require_digest32(self.decision_sha256, field="winner decision_sha256")
 
     @property
-    def row(self) -> tuple[int, int, bytes]:
-        return (self.gid, self.winner_gallery_id, self.decision_sha256)
+    def row(self) -> tuple[int, int]:
+        return (self.gid, self.winner_gallery_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -523,10 +586,9 @@ class AnalysisGalleryPreparation:
     observation_id: int
     gid: int
     content_sha256: bytes | None
-    content_priority_key: bytes | None
-    content_candidate_sha256: bytes | None
-    gid_priority_key: bytes
-    gid_candidate_sha256: bytes
+    content_prefer_not_already_uploaded: int | None
+    content_title_scalar_count: int | None
+    content_download_time: int | None
     content_upload_plan: CanonicalValueUploadPlan | None
     authority: AnalysisPreparationAuthority
     _capability: object
@@ -550,20 +612,11 @@ class AnalysisGalleryPreparation:
             field="preparation observation_id",
         )
         require_positive_int63(self.gid, field="preparation gid")
-        require_bounded_bytes(
-            self.gid_priority_key,
-            field="preparation GID priority_key",
-            minimum=1,
-            maximum=128,
-        )
-        require_digest32(
-            self.gid_candidate_sha256,
-            field="preparation GID candidate_sha256",
-        )
         content_fields = (
             self.content_sha256,
-            self.content_priority_key,
-            self.content_candidate_sha256,
+            self.content_prefer_not_already_uploaded,
+            self.content_title_scalar_count,
+            self.content_download_time,
             self.content_upload_plan,
         )
         if self.content_sha256 is None:
@@ -574,19 +627,23 @@ class AnalysisGalleryPreparation:
                 self.content_sha256,
                 field="preparation content_sha256",
             )
-            if self.content_priority_key is None:
-                raise ValueError("content candidate priority is missing")
-            require_bounded_bytes(
-                self.content_priority_key,
-                field="preparation content priority_key",
-                minimum=1,
-                maximum=128,
+            if self.content_prefer_not_already_uploaded is None:
+                raise ValueError("content candidate preference is missing")
+            require_bool_byte(
+                self.content_prefer_not_already_uploaded,
+                field="preparation content prefer_not_already_uploaded",
             )
-            if self.content_candidate_sha256 is None:
-                raise ValueError("content candidate audit digest is missing")
-            require_digest32(
-                self.content_candidate_sha256,
-                field="preparation content candidate_sha256",
+            if self.content_title_scalar_count is None:
+                raise ValueError("content candidate title scalar count is missing")
+            require_int63(
+                self.content_title_scalar_count,
+                field="preparation content title_scalar_count",
+            )
+            if self.content_download_time is None:
+                raise ValueError("content candidate download time is missing")
+            require_int63(
+                self.content_download_time,
+                field="preparation content download_time",
             )
             if self.content_upload_plan is None:
                 raise ValueError("content candidate upload plan is missing")
@@ -712,7 +769,7 @@ class AnalysisRepository:
         ingest_turn: IngestTurn,
         build_id: bytes,
         policy_id: int,
-        analysis_attempt_id: bytes,
+        proposed_analysis_id: bytes,
         now: int,
     ) -> AnalysisRun:
         """Create or resume the one semantic run for ``(build_id, policy_id)``.
@@ -724,8 +781,8 @@ class AnalysisRepository:
         build = require_uuid16(build_id, field="analysis build_id")
         policy_key = require_positive_int63(policy_id, field="analysis policy_id")
         attempt = require_uuid16(
-            analysis_attempt_id,
-            field="analysis attempt_id",
+            proposed_analysis_id,
+            field="proposed analysis_id",
         )
         timestamp = require_int63(now, field="analysis begin now")
         generation = _authorize(work, gate_lease, ingest_turn, now=timestamp)
@@ -734,7 +791,7 @@ class AnalysisRepository:
         working = work.lock_row(
             LockRank.WORKING_ROOT,
             encode_lock_key("analysis-working-build", 1),
-            "SELECT build_id FROM operational_source_working_builds " "WHERE slot = %s",
+            "SELECT build_id FROM operational_source_working_builds WHERE slot = %s",
             (1,),
         )
         if working != (build,):
@@ -743,27 +800,27 @@ class AnalysisRepository:
             )
         _require_generation_mapping(work, generation=generation, build_id=build)
 
-        source_row = work.connector.fetch_one(
-            "SELECT state, sealed_at FROM catalog_source_builds WHERE build_id = %s",
-            (build,),
-        )
-        if len(source_row) != 2 or source_row[0] != "SEALED" or source_row[1] is None:
+        try:
+            source_row = load_source_build_family(work.connector, build_id=build)
+            manifest_row = load_build_manifest_family(work.connector, build_id=build)
+        except ManifestFamilyCollisionError as error:
+            raise AnalysisCorruptionError(str(error)) from error
+        if source_row is None or source_row.state != "SEALED":
             raise AnalysisNotReadyError(
                 "analysis requires an exactly SEALED source build"
             )
-        require_int63(source_row[1], field="source build sealed_at")
-
-        manifest_row = work.connector.fetch_one(
-            "SELECT manifest_sha256, gallery_count, file_count, byte_count "
-            "FROM catalog_build_manifests WHERE build_id = %s",
-            (build,),
+        source_sealed_at = require_int63(
+            source_row.sealed_at,
+            field="source build sealed_at",
         )
-        if len(manifest_row) != 4:
+
+        if manifest_row is None:
             raise AnalysisNotReadyError("sealed build has no exact build_manifest")
-        manifest = require_digest32(manifest_row[0], field="build manifest_sha256")
-        manifest_counts = tuple(
-            require_int63(value, field=f"build manifest count {index}")
-            for index, value in enumerate(manifest_row[1:])
+        manifest = manifest_row.manifest_sha256
+        manifest_counts = (
+            manifest_row.gallery_count,
+            manifest_row.file_count,
+            manifest_row.byte_count,
         )
         policy = _load_policy(work, policy_key)
         input_digest = _analysis_input_digest(manifest, manifest_counts, policy)
@@ -771,21 +828,63 @@ class AnalysisRepository:
         baseline = _derive_baseline(work, build_id=build)
         layout = _derive_layout(work, baseline=baseline, policy=policy)
 
-        existing = work.connector.fetch_one(
-            "SELECT analysis_id, input_manifest_sha256, state "
-            "FROM catalog_analysis_runs WHERE build_id = %s AND policy_id = %s",
-            (build, policy_key),
-        )
-        if existing:
-            existing_id = require_uuid16(existing[0], field="existing analysis_id")
-            if (
-                require_digest32(existing[1], field="existing input_manifest_sha256")
-                != input_digest
-            ):
+        try:
+            existing_family = load_analysis_run_family_by_identity(
+                work.connector,
+                build_id=build,
+                policy_id=policy_key,
+            )
+        except AnalysisFamilyCollisionError as error:
+            raise AnalysisCorruptionError(str(error)) from error
+        if existing_family is not None:
+            if existing_family.input_manifest_sha256 != input_digest:
                 raise AnalysisCorruptionError(
                     "analysis natural-key replay changed its server-derived input"
                 )
-            state = _require_run_state(existing[2])
+            existing_id = existing_family.analysis_id
+            persisted = _load_layout(work, existing_id)
+            expected_anchor = existing_id if layout[0] is None else layout[0]
+            expected_ancestry = tuple(
+                existing_id if ancestor is None else ancestor for ancestor in layout[2]
+            )
+            expected = (baseline, expected_anchor, layout[1], expected_ancestry)
+            if persisted != expected:
+                raise AnalysisCorruptionError(
+                    "analysis natural-key replay changed its baseline or ancestry"
+                )
+            return AnalysisRun(
+                existing_id,
+                build,
+                policy_key,
+                input_digest,
+                baseline,
+                expected_anchor,
+                layout[1],
+                existing_family.state,
+                True,
+            )
+
+        started_at = database_unix_microseconds(work)
+        if started_at < source_sealed_at:
+            raise AnalysisNotReadyError(
+                "database analysis start time precedes source build sealing"
+            )
+        try:
+            family, created = ensure_analysis_run_family(
+                work.connector,
+                analysis_id=attempt,
+                build_id=build,
+                policy_id=policy_key,
+                input_manifest_sha256=input_digest,
+                started_at=started_at,
+            )
+        except AnalysisFamilyCollisionError as error:
+            raise AnalysisCorruptionError(str(error)) from error
+        if not created:
+            # The working-root lock serializes normal begin calls; retaining this
+            # branch makes a backend uniqueness race fail closed yet replayable.
+            existing_id = family.analysis_id
+            state = family.state
             persisted = _load_layout(work, existing_id)
             expected_anchor = existing_id if layout[0] is None else layout[0]
             expected_ancestry = tuple(
@@ -808,12 +907,6 @@ class AnalysisRepository:
                 True,
             )
 
-        work.connector.execute(
-            "INSERT INTO catalog_analysis_runs "
-            "(analysis_id, build_id, policy_id, input_manifest_sha256, state, "
-            "started_at, completed_at) VALUES (%s, %s, %s, %s, %s, %s, NULL)",
-            (attempt, build, policy_key, input_digest, "OPEN", timestamp),
-        )
         if baseline is not None:
             work.connector.execute(
                 "INSERT INTO catalog_analysis_baselines "
@@ -827,11 +920,6 @@ class AnalysisRepository:
         materialized_ancestry = tuple(
             attempt if ancestor is None else ancestor for ancestor in ancestry
         )
-        work.connector.execute(
-            "INSERT INTO catalog_analysis_state_anchors "
-            "(analysis_id, anchor_analysis_id, overlay_depth) VALUES (%s, %s, %s)",
-            (attempt, anchor_id, overlay_depth),
-        )
         for depth, ancestor in enumerate(materialized_ancestry):
             work.connector.execute(
                 "INSERT INTO catalog_analysis_state_ancestry "
@@ -841,17 +929,12 @@ class AnalysisRepository:
             )
         for stage in _STAGES:
             kind, live = _stage_cursor_spec(stage)
-            work.connector.execute(
-                "INSERT INTO catalog_analysis_checkpoints "
-                "(analysis_id, stage, generation, cursor, processed_count, "
-                "state, updated_at) VALUES (%s, %s, 1, %s, 0, %s, %s)",
-                (
-                    attempt,
-                    stage,
-                    _encode_cursor(kind, None, live_count=0 if live else None),
-                    _CHECKPOINT_OPEN,
-                    timestamp,
-                ),
+            _initialize_checkpoint(
+                work,
+                analysis_id=attempt,
+                stage=stage,
+                cursor=_encode_cursor(kind, None, live_count=0 if live else None),
+                updated_at=started_at,
             )
         return AnalysisRun(
             attempt,
@@ -862,6 +945,109 @@ class AnalysisRepository:
             anchor_id,
             overlay_depth,
             "OPEN",
+            False,
+        )
+
+    @staticmethod
+    def abandon(
+        work: VNextUnitOfWork,
+        *,
+        gate_lease: GateLease,
+        ingest_turn: IngestTurn,
+        analysis_id: bytes,
+        now: int,
+    ) -> AnalysisRun:
+        """Fence OPEN to ABANDONED and release its exact working root atomically."""
+
+        analysis = require_uuid16(analysis_id, field="analysis_id")
+        timestamp = require_int63(now, field="analysis abandon now")
+        generation = _authorize(work, gate_lease, ingest_turn, now=timestamp)
+        state_row = work.lock_row(
+            LockRank.WORKING_ROOT,
+            encode_lock_key("analysis-run", analysis),
+            "SELECT state FROM catalog_analysis_run_states WHERE analysis_id = %s",
+            (analysis,),
+        )
+        if len(state_row) != 1:
+            raise AnalysisNotReadyError("analysis run is missing")
+        try:
+            family = load_analysis_run_family(
+                work.connector,
+                analysis_id=analysis,
+            )
+        except AnalysisFamilyCollisionError as error:
+            raise AnalysisCorruptionError(str(error)) from error
+        if family is None or family.state != _require_run_state(state_row[0]):
+            raise AnalysisCorruptionError(
+                "analysis run family changed during abandonment lock"
+            )
+        _require_generation_mapping(
+            work,
+            generation=generation,
+            build_id=family.build_id,
+        )
+        working = work.lock_row(
+            LockRank.WORKING_ROOT,
+            encode_lock_key("analysis-working-build", 1),
+            "SELECT build_id FROM operational_source_working_builds WHERE slot = %s",
+            (1,),
+        )
+        binding = work.connector.fetch_one(
+            "SELECT snapshot_manifest_sha256 "
+            "FROM catalog_analysis_snapshot_manifest WHERE analysis_id = %s",
+            (analysis,),
+        )
+        if family.state == "ABANDONED":
+            if working or binding or family.completed_at is not None:
+                raise AnalysisCorruptionError(
+                    "ABANDONED analysis retained terminal-incompatible state"
+                )
+            baseline, anchor, depth, _ancestry = _load_layout(work, analysis)
+            return AnalysisRun(
+                analysis,
+                family.build_id,
+                family.policy_id,
+                family.input_manifest_sha256,
+                baseline,
+                anchor,
+                depth,
+                "ABANDONED",
+                True,
+            )
+        if family.state != "OPEN":
+            raise AnalysisNotReadyError(
+                f"analysis run cannot be abandoned from {family.state}"
+            )
+        if working != (family.build_id,) or binding or family.completed_at is not None:
+            raise AnalysisNotReadyError(
+                "analysis abandonment lost its exact unbound working root"
+            )
+        cas_analysis_run_state(
+            work,
+            analysis_id=analysis,
+            previous="OPEN",
+            successor="ABANDONED",
+            authority="analysis abandonment",
+        )
+        deleted = work.connector.execute_affected(
+            "DELETE FROM operational_source_working_builds "
+            "WHERE slot = %s AND build_id = %s",
+            (1, family.build_id),
+        )
+        if deleted != 1:
+            raise AnalysisCorruptionError(
+                "analysis working root changed during abandonment"
+            )
+        baseline, anchor, depth, _ancestry = _load_layout(work, analysis)
+        return AnalysisRun(
+            analysis,
+            family.build_id,
+            family.policy_id,
+            family.input_manifest_sha256,
+            baseline,
+            anchor,
+            depth,
+            "ABANDONED",
             False,
         )
 
@@ -887,6 +1073,7 @@ class AnalysisRepository:
             now=now,
         )
         if replay is not None:
+            _validate_batch_replay(work, authority, replay)
             return replay
         assert checkpoint is not None
         last, _live_count = _decode_cursor(
@@ -898,9 +1085,9 @@ class AnalysisRepository:
             work,
             authority,
             after=None if last is None else int.from_bytes(last, "big"),
-            limit=max_rows + 1,
+            limit=checkpoint.page_limit + 1,
         )
-        selected = rows[:max_rows]
+        selected = rows[: checkpoint.page_limit]
         for gallery_id, change_kind in selected:
             gallery = require_positive_int63(gallery_id, field="changed gallery_id")
             if change_kind not in {"ADDED", "REMOVED", "REPLACED"}:
@@ -951,6 +1138,7 @@ class AnalysisRepository:
             now=now,
         )
         if replay is not None:
+            _validate_batch_replay(work, authority, replay)
             return replay
         assert checkpoint is not None
         _require_stage_complete(work, authority.analysis_id, _STAGE_CHANGED_GALLERY)
@@ -963,9 +1151,9 @@ class AnalysisRepository:
             work,
             authority,
             after=last,
-            limit=max_rows + 1,
+            limit=checkpoint.page_limit + 1,
         )
-        selected = rows[:max_rows]
+        selected = rows[: checkpoint.page_limit]
         for row in selected:
             digest = require_digest32(row[0], field="changed file_sha256")
             work.connector.execute(
@@ -1012,6 +1200,7 @@ class AnalysisRepository:
             now=now,
         )
         if replay is not None:
+            _validate_batch_replay(work, authority, replay)
             return replay
         assert checkpoint is not None
         _require_stage_complete(work, authority.analysis_id, _STAGE_CHANGED_FILE_HASH)
@@ -1024,9 +1213,9 @@ class AnalysisRepository:
             work,
             authority,
             after=last,
-            limit=max_rows + 1,
+            limit=checkpoint.page_limit + 1,
         )
-        selected = rows[:max_rows]
+        selected = rows[: checkpoint.page_limit]
         for row in selected:
             digest = require_digest32(row[0], field="decision file_sha256")
             _materialize_decision(work, authority, digest)
@@ -1077,18 +1266,15 @@ class AnalysisRepository:
             now=now,
         )
         if replay is not None:
+            _validate_batch_replay(work, authority, replay)
             return replay
         assert checkpoint is not None
         _require_stage_complete(work, authority.analysis_id, _STAGE_FILE_HASH_DECISION)
-        existing_seal = work.connector.fetch_one(
-            "SELECT row_count FROM catalog_analysis_state_component_seals "
-            "WHERE analysis_id = %s AND state_component = %s",
-            (authority.analysis_id, _COMPONENT_FILE_HASH),
+        _require_unsealed_component(
+            work,
+            authority.analysis_id,
+            _COMPONENT_FILE_HASH,
         )
-        if existing_seal:
-            raise AnalysisCorruptionError(
-                "file-hash seal exists while its validation checkpoint is OPEN"
-            )
 
         last, live_count = _decode_cursor(
             _CURSOR_DIGEST,
@@ -1099,9 +1285,9 @@ class AnalysisRepository:
             work,
             authority,
             after=last,
-            limit=max_rows + 1,
+            limit=checkpoint.page_limit + 1,
         )
-        selected = rows[:max_rows]
+        selected = rows[: checkpoint.page_limit]
         for row in selected:
             digest = require_digest32(row[0], field="validation file_sha256")
             target = _evaluate_file_decision(work, authority, digest)
@@ -1173,12 +1359,16 @@ class AnalysisRepository:
         )
         if not terminal:
             return result
-        work.connector.execute(
-            "INSERT INTO catalog_analysis_state_component_seals "
-            "(analysis_id, state_component, row_count, sealed_at) "
-            "VALUES (%s, %s, %s, %s)",
-            (authority.analysis_id, _COMPONENT_FILE_HASH, live_count, now),
-        )
+        try:
+            ensure_analysis_state_component_family(
+                work.connector,
+                analysis_id=authority.analysis_id,
+                state_component=_COMPONENT_FILE_HASH,
+                row_count=live_count,
+                sealed_at=result.committed_at,
+            )
+        except AnalysisFamilyCollisionError as error:
+            raise AnalysisCorruptionError(str(error)) from error
         return AnalysisBatchResult(
             result.analysis_id,
             result.stage,
@@ -1186,6 +1376,7 @@ class AnalysisRepository:
             result.start_generation,
             result.start_cursor,
             result.start_processed_count,
+            result.page_limit,
             result.next_cursor,
             result.next_processed_count,
             result.next_state,
@@ -1216,12 +1407,14 @@ class AnalysisRepository:
             now=require_int63(now, field="preparation authority now"),
             allow_complete=True,
         )
-        row = work.connector.fetch_one(
-            "SELECT input_manifest_sha256 FROM catalog_analysis_runs "
-            "WHERE analysis_id = %s",
-            (authority.analysis_id,),
-        )
-        if len(row) != 1:
+        try:
+            run_family = load_analysis_run_family(
+                work.connector,
+                analysis_id=authority.analysis_id,
+            )
+        except AnalysisFamilyCollisionError as error:
+            raise AnalysisCorruptionError(str(error)) from error
+        if run_family is None:
             raise AnalysisCorruptionError("preparation authority lost its run")
         seals = _component_seal_receipts(work, authority.analysis_id)
         return AnalysisPreparationAuthority(
@@ -1232,7 +1425,7 @@ class AnalysisRepository:
                 field="preparation authority generation",
             ),
             authority.policy.policy_id,
-            require_digest32(row[0], field="analysis input_manifest_sha256"),
+            run_family.input_manifest_sha256,
             seals,
             _PREPARATION_TOKEN,
         )
@@ -1291,6 +1484,7 @@ class AnalysisRepository:
             now=now,
         )
         if replay is not None:
+            _validate_batch_replay(work, authority, replay)
             return replay
         assert checkpoint is not None
         _require_component_sealed(work, authority.analysis_id, _COMPONENT_FILE_HASH)
@@ -1303,9 +1497,9 @@ class AnalysisRepository:
             work,
             authority,
             after=None if last is None else int.from_bytes(last, "big"),
-            limit=max_rows + 1,
+            limit=checkpoint.page_limit + 1,
         )
-        selected = rows[:max_rows]
+        selected = rows[: checkpoint.page_limit]
         for (gallery_id,) in selected:
             gallery = require_positive_int63(
                 gallery_id,
@@ -1366,6 +1560,12 @@ class AnalysisRepository:
             now=now,
         )
         if replay is not None:
+            _validate_batch_replay(
+                work,
+                authority,
+                replay,
+                preparations=preparations,
+            )
             return replay
         assert checkpoint is not None
         _require_stage_complete(work, authority.analysis_id, _STAGE_IMPACTED_GALLERY)
@@ -1378,46 +1578,75 @@ class AnalysisRepository:
             work,
             authority.analysis_id,
             after=None if last is None else int.from_bytes(last, "big"),
-            limit=max_rows + 1,
+            limit=checkpoint.page_limit + 1,
         )
-        selected = rows[:max_rows]
+        selected = rows[: checkpoint.page_limit]
+        gallery_ids = tuple(
+            require_positive_int63(
+                row[0],
+                field="impacted content gallery_id",
+            )
+            for row in selected
+        )
+        impact_page = _load_content_impact_page(work, authority, gallery_ids)
         exact_preparations = _require_transition_preparations(
             work,
             authority,
             selected,
             preparations,
+            memberships=impact_page.current_observations,
         )
-        for (raw_gallery_id,), preparation in zip(
-            selected,
+        provenance: list[tuple[int, bytes]] = []
+        for gallery_id, preparation in zip(
+            gallery_ids,
             exact_preparations,
             strict=True,
         ):
-            gallery_id = require_positive_int63(
-                raw_gallery_id,
-                field="impacted content gallery_id",
-            )
-            old = _resolved_content_candidate(
-                work,
-                authority.baseline_analysis_id,
-                gallery_id,
-            )
-            if old is not None:
-                _insert_impacted_content(
-                    work,
-                    authority.analysis_id,
-                    old.content_sha256,
+            old = impact_page.old_candidates[gallery_id]
+            contents = {
+                value
+                for value in (
+                    None if old is None else old.content_sha256,
+                    None if preparation is None else preparation.content_sha256,
                 )
-            if preparation is not None and preparation.content_sha256 is not None:
-                _consume_effective_content_claim(
+                if value is not None
+            }
+            provenance.extend(
+                (gallery_id, content_sha256) for content_sha256 in sorted(contents)
+            )
+        try:
+            if selected:
+                provenance_receipt = prepare_analysis_impacted_content_provenance_page(
+                    work.connector,
+                    analysis_id=authority.analysis_id,
+                    entries=tuple(provenance),
+                )
+                _consume_effective_content_claims(
                     work,
                     authority,
-                    preparation,
+                    exact_preparations,
+                    preexisting_contents=provenance_receipt.existing_keys,
                 )
-                _insert_impacted_content(
-                    work,
-                    authority.analysis_id,
-                    preparation.content_sha256,
+                apply_analysis_impacted_content_provenance_page(
+                    work.connector,
+                    provenance_receipt,
                 )
+            else:
+                require_exact_analysis_impacted_content_provenance_page(
+                    work.connector,
+                    analysis_id=authority.analysis_id,
+                    after_gallery_id=(
+                        None if last is None else int.from_bytes(last, "big")
+                    ),
+                    through_gallery_id=None,
+                    expected=(),
+                )
+                require_complete_analysis_impacted_content_keyspace(
+                    work.connector,
+                    analysis_id=authority.analysis_id,
+                )
+        except AnalysisFamilyCollisionError as error:
+            raise AnalysisCorruptionError(str(error)) from error
         next_key = (
             last
             if not selected
@@ -1461,6 +1690,12 @@ class AnalysisRepository:
             now=now,
         )
         if replay is not None:
+            _validate_batch_replay(
+                work,
+                authority,
+                replay,
+                preparations=preparations,
+            )
             return replay
         assert checkpoint is not None
         _require_stage_complete(work, authority.analysis_id, _STAGE_IMPACTED_CONTENT)
@@ -1473,9 +1708,9 @@ class AnalysisRepository:
             work,
             authority.analysis_id,
             after=None if last is None else int.from_bytes(last, "big"),
-            limit=max_rows + 1,
+            limit=checkpoint.page_limit + 1,
         )
-        selected = rows[:max_rows]
+        selected = rows[: checkpoint.page_limit]
         exact_preparations = _require_transition_preparations(
             work,
             authority,
@@ -1551,6 +1786,12 @@ class AnalysisRepository:
             now=now,
         )
         if replay is not None:
+            _validate_batch_replay(
+                work,
+                authority,
+                replay,
+                preparations=preparations,
+            )
             return replay
         assert checkpoint is not None
         _require_stage_complete(work, authority.analysis_id, _STAGE_CONTENT_CANDIDATE)
@@ -1568,9 +1809,9 @@ class AnalysisRepository:
             work,
             authority,
             after=None if last is None else int.from_bytes(last, "big"),
-            limit=max_rows + 1,
+            limit=checkpoint.page_limit + 1,
         )
-        selected = rows[:max_rows]
+        selected = rows[: checkpoint.page_limit]
         exact_preparations = _require_validation_preparations(
             work,
             authority,
@@ -1669,6 +1910,7 @@ class AnalysisRepository:
             now=now,
         )
         if replay is not None:
+            _validate_batch_replay(work, authority, replay)
             return replay
         assert checkpoint is not None
         _require_component_sealed(
@@ -1685,9 +1927,9 @@ class AnalysisRepository:
             work,
             authority.analysis_id,
             after=last,
-            limit=max_rows + 1,
+            limit=checkpoint.page_limit + 1,
         )
-        selected = rows[:max_rows]
+        selected = rows[: checkpoint.page_limit]
         for (raw_content,) in selected:
             content = require_digest32(raw_content, field="content owner work key")
             target = _evaluate_content_owner(work, authority, content)
@@ -1736,6 +1978,7 @@ class AnalysisRepository:
             now=now,
         )
         if replay is not None:
+            _validate_batch_replay(work, authority, replay)
             return replay
         assert checkpoint is not None
         _require_stage_complete(work, authority.analysis_id, _STAGE_CONTENT_OWNER)
@@ -1753,9 +1996,9 @@ class AnalysisRepository:
             work,
             authority,
             after=last,
-            limit=max_rows + 1,
+            limit=checkpoint.page_limit + 1,
         )
-        selected = rows[:max_rows]
+        selected = rows[: checkpoint.page_limit]
         for (raw_content,) in selected:
             content = require_digest32(
                 raw_content,
@@ -1837,6 +2080,7 @@ class AnalysisRepository:
             now=now,
         )
         if replay is not None:
+            _validate_batch_replay(work, authority, replay)
             return replay
         assert checkpoint is not None
         _require_component_sealed(
@@ -1853,24 +2097,50 @@ class AnalysisRepository:
             work,
             authority.analysis_id,
             after=None if last is None else int.from_bytes(last, "big"),
-            limit=max_rows + 1,
+            limit=checkpoint.page_limit + 1,
         )
-        selected = rows[:max_rows]
-        for (raw_gallery_id,) in selected:
-            gallery_id = require_positive_int63(
-                raw_gallery_id,
+        selected = rows[: checkpoint.page_limit]
+        gallery_ids = tuple(
+            require_positive_int63(
+                row[0],
                 field="impacted GID gallery_id",
             )
-            old = _resolved_gid_candidate(
-                work,
-                authority.baseline_analysis_id,
-                gallery_id,
-            )
-            if old is not None:
-                _insert_impacted_gid(work, authority.analysis_id, old.gid)
-            new_gid = _eligible_gallery_gid(work, authority, gallery_id)
-            if new_gid is not None:
-                _insert_impacted_gid(work, authority.analysis_id, new_gid)
+            for row in selected
+        )
+        impact_page = _load_gid_impact_page(work, authority, gallery_ids)
+        provenance: list[tuple[int, int]] = []
+        for gallery_id in gallery_ids:
+            old_gid = impact_page.old_gids[gallery_id]
+            new_gid = impact_page.current_gids[gallery_id]
+            gids = {gid for gid in (old_gid, new_gid) if gid is not None}
+            provenance.extend((gallery_id, gid) for gid in sorted(gids))
+        try:
+            if selected:
+                provenance_receipt = prepare_analysis_impacted_gid_provenance_page(
+                    work.connector,
+                    analysis_id=authority.analysis_id,
+                    entries=tuple(provenance),
+                )
+                apply_analysis_impacted_gid_provenance_page(
+                    work.connector,
+                    provenance_receipt,
+                )
+            else:
+                require_exact_analysis_impacted_gid_provenance_page(
+                    work.connector,
+                    analysis_id=authority.analysis_id,
+                    after_gallery_id=(
+                        None if last is None else int.from_bytes(last, "big")
+                    ),
+                    through_gallery_id=None,
+                    expected=(),
+                )
+                require_complete_analysis_impacted_gid_keyspace(
+                    work.connector,
+                    analysis_id=authority.analysis_id,
+                )
+        except AnalysisFamilyCollisionError as error:
+            raise AnalysisCorruptionError(str(error)) from error
         next_key = (
             last
             if not selected
@@ -1914,6 +2184,12 @@ class AnalysisRepository:
             now=now,
         )
         if replay is not None:
+            _validate_batch_replay(
+                work,
+                authority,
+                replay,
+                preparations=preparations,
+            )
             return replay
         assert checkpoint is not None
         _require_stage_complete(work, authority.analysis_id, _STAGE_IMPACTED_GID)
@@ -1926,9 +2202,9 @@ class AnalysisRepository:
             work,
             authority.analysis_id,
             after=None if last is None else int.from_bytes(last, "big"),
-            limit=max_rows + 1,
+            limit=checkpoint.page_limit + 1,
         )
-        selected = rows[:max_rows]
+        selected = rows[: checkpoint.page_limit]
         exact_preparations = _require_transition_preparations(
             work,
             authority,
@@ -2002,6 +2278,12 @@ class AnalysisRepository:
             now=now,
         )
         if replay is not None:
+            _validate_batch_replay(
+                work,
+                authority,
+                replay,
+                preparations=preparations,
+            )
             return replay
         assert checkpoint is not None
         _require_stage_complete(work, authority.analysis_id, _STAGE_GID_CANDIDATE)
@@ -2019,9 +2301,9 @@ class AnalysisRepository:
             work,
             authority,
             after=None if last is None else int.from_bytes(last, "big"),
-            limit=max_rows + 1,
+            limit=checkpoint.page_limit + 1,
         )
-        selected = rows[:max_rows]
+        selected = rows[: checkpoint.page_limit]
         exact_preparations = _require_validation_preparations(
             work,
             authority,
@@ -2124,6 +2406,7 @@ class AnalysisRepository:
             now=now,
         )
         if replay is not None:
+            _validate_batch_replay(work, authority, replay)
             return replay
         assert checkpoint is not None
         _require_component_sealed(
@@ -2140,9 +2423,9 @@ class AnalysisRepository:
             work,
             authority.analysis_id,
             after=None if last is None else int.from_bytes(last, "big"),
-            limit=max_rows + 1,
+            limit=checkpoint.page_limit + 1,
         )
-        selected = rows[:max_rows]
+        selected = rows[: checkpoint.page_limit]
         for (raw_gid,) in selected:
             gid = require_positive_int63(raw_gid, field="GID winner work key")
             target = _evaluate_gid_winner(work, authority, gid)
@@ -2152,6 +2435,8 @@ class AnalysisRepository:
                 gid,
             )
             _materialize_gid_winner(work, authority, gid, target, parent)
+        if not selected:
+            _require_complete_gid_winner_keyspace(work, authority.analysis_id)
         next_key = (
             last
             if not selected
@@ -2194,6 +2479,7 @@ class AnalysisRepository:
             now=now,
         )
         if replay is not None:
+            _validate_batch_replay(work, authority, replay)
             return replay
         assert checkpoint is not None
         _require_stage_complete(work, authority.analysis_id, _STAGE_GID_WINNER)
@@ -2211,9 +2497,9 @@ class AnalysisRepository:
             work,
             authority,
             after=None if last is None else int.from_bytes(last, "big"),
-            limit=max_rows + 1,
+            limit=checkpoint.page_limit + 1,
         )
-        selected = rows[:max_rows]
+        selected = rows[: checkpoint.page_limit]
         for (raw_gid,) in selected:
             gid = require_positive_int63(raw_gid, field="GID winner validation key")
             target = _evaluate_gid_winner(work, authority, gid)
@@ -2248,6 +2534,8 @@ class AnalysisRepository:
                     1,
                     field="validated GID winner live row count",
                 )
+        if not selected:
+            _require_complete_gid_winner_keyspace(work, authority.analysis_id)
         return _finish_component_validation(
             work,
             authority=authority,
@@ -2295,7 +2583,7 @@ class AnalysisRepository:
             )
             _require_exact_component_seals(work, run.analysis_id)
             state = work.connector.fetch_one(
-                "SELECT state FROM catalog_analysis_runs WHERE analysis_id = %s",
+                "SELECT state FROM catalog_analysis_run_states WHERE analysis_id = %s",
                 (run.analysis_id,),
             )
             binding = work.connector.fetch_one(
@@ -2342,13 +2630,13 @@ class AnalysisRepository:
         if preparation._capability is not _PREPARATION_TOKEN:
             raise TypeError("snapshot preparation is not repository-issued")
 
-        timestamp = require_int63(now, field="snapshot handoff now")
+        authorization_time = require_int63(now, field="snapshot handoff now")
         authority = _authorize_analysis(
             work,
             gate_lease=gate_lease,
             ingest_turn=ingest_turn,
             analysis_id=preparation.analysis_id,
-            now=timestamp,
+            now=authorization_time,
             allow_complete=True,
         )
         if (
@@ -2364,11 +2652,16 @@ class AnalysisRepository:
             preparation.authority,
         )
         _require_exact_component_seals(work, authority.analysis_id)
-        state_row = work.connector.fetch_one(
-            "SELECT state, completed_at FROM catalog_analysis_runs "
-            "WHERE analysis_id = %s",
-            (authority.analysis_id,),
-        )
+        try:
+            run_family = load_analysis_run_family(
+                work.connector,
+                analysis_id=authority.analysis_id,
+            )
+        except AnalysisFamilyCollisionError as error:
+            raise AnalysisCorruptionError(str(error)) from error
+        if run_family is None:
+            raise AnalysisCorruptionError("snapshot handoff lost its analysis run")
+        state_row = (run_family.state, run_family.completed_at)
         binding = work.connector.fetch_one(
             "SELECT snapshot_manifest_sha256 FROM catalog_analysis_snapshot_manifest "
             "WHERE analysis_id = %s",
@@ -2379,9 +2672,22 @@ class AnalysisRepository:
             ingest_turn.generation,
             field="snapshot handoff generation",
         )
+        expected_counts = (
+            preparation.gallery_count,
+            preparation.file_count,
+            preparation.byte_count,
+        )
+        component_seals = _component_seal_receipts(work, authority.analysis_id)
         if state_row and state_row[0] == "COMPLETE":
             completed_at = require_int63(state_row[1], field="analysis completed_at")
-            if completed_at < 0 or binding != (value,):
+            if (
+                completed_at < run_family.started_at
+                or any(
+                    completed_at < sealed_at
+                    for _component, _row_count, sealed_at in component_seals
+                )
+                or binding != (value,)
+            ):
                 raise AnalysisCorruptionError(
                     "completed analysis snapshot replay differs from its binding"
                 )
@@ -2394,30 +2700,45 @@ class AnalysisRepository:
                 raise AnalysisCorruptionError(
                     "completed snapshot replay retained its upload claim"
                 )
+            _require_snapshot_canonical_identity(
+                work,
+                preparation,
+                missing_is_corruption=True,
+            )
+            try:
+                identity = load_snapshot_manifest_family(
+                    work.connector,
+                    snapshot_manifest_sha256=value,
+                )
+            except ManifestFamilyCollisionError as error:
+                raise AnalysisCorruptionError(str(error)) from error
+            if (
+                identity is None
+                or (
+                    identity.gallery_count,
+                    identity.file_count,
+                    identity.byte_count,
+                )
+                != expected_counts
+            ):
+                raise AnalysisCorruptionError(
+                    "completed snapshot replay differs from its sealed count family"
+                )
             return value
         if state_row != ("OPEN", None) or binding:
             raise AnalysisCorruptionError(
                 "snapshot binding and analysis state are not atomic"
             )
 
-        allocation = work.connector.fetch_one(
-            "SELECT a.digest_domain, a.byte_count, i.root_page_sha256 "
-            "FROM catalog_canonical_value_allocations AS a "
-            "JOIN catalog_canonical_value_identities AS i "
-            "ON i.value_sha256 = a.value_sha256 WHERE a.value_sha256 = %s",
-            (value,),
-        )
-        if len(allocation) != 3:
-            raise AnalysisNotReadyError("snapshot canonical identity is not sealed")
-        if (
-            allocation[0] != _SNAPSHOT_DOMAIN
-            or require_int63(allocation[1], field="snapshot canonical byte_count")
-            != preparation.payload_byte_count
-            or require_digest32(allocation[2], field="snapshot root_page_sha256")
-            != preparation.upload_plan.root_page_sha256
+        _require_snapshot_canonical_identity(work, preparation)
+
+        timestamp = database_unix_microseconds(work)
+        if timestamp < run_family.started_at or any(
+            timestamp < sealed_at
+            for _component, _row_count, sealed_at in component_seals
         ):
-            raise AnalysisCorruptionError(
-                "snapshot canonical identity differs from the typed preparation"
+            raise AnalysisNotReadyError(
+                "database completion time precedes analysis or component sealing"
             )
 
         claim = work.lock_row(
@@ -2432,29 +2753,16 @@ class AnalysisRepository:
             raise AnalysisNotReadyError(
                 "snapshot handoff requires the exact live-generation upload claim"
             )
-        identity = work.connector.fetch_one(
-            "SELECT gallery_count, file_count, byte_count "
-            "FROM catalog_source_snapshot_manifest_identity "
-            "WHERE snapshot_manifest_sha256 = %s",
-            (value,),
-        )
-        expected_counts = (
-            preparation.gallery_count,
-            preparation.file_count,
-            preparation.byte_count,
-        )
-        if identity:
-            if identity != expected_counts:
-                raise AnalysisCorruptionError(
-                    "snapshot manifest identity has conflicting aggregate counts"
-                )
-        else:
-            work.connector.execute(
-                "INSERT INTO catalog_source_snapshot_manifest_identity "
-                "(snapshot_manifest_sha256, gallery_count, file_count, byte_count) "
-                "VALUES (%s, %s, %s, %s)",
-                (value, *expected_counts),
+        try:
+            ensure_snapshot_manifest_family(
+                work.connector,
+                snapshot_manifest_sha256=value,
+                gallery_count=preparation.gallery_count,
+                file_count=preparation.file_count,
+                byte_count=preparation.byte_count,
             )
+        except ManifestFamilyCollisionError as error:
+            raise AnalysisCorruptionError(str(error)) from error
         work.connector.execute(
             "INSERT INTO catalog_analysis_snapshot_manifest "
             "(analysis_id, snapshot_manifest_sha256) VALUES (%s, %s)",
@@ -2469,10 +2777,16 @@ class AnalysisRepository:
             raise AnalysisCorruptionError(
                 "snapshot upload claim changed during consumer handoff"
             )
-        work.compare_and_swap(
-            "UPDATE catalog_analysis_runs SET state = %s, completed_at = %s "
-            "WHERE analysis_id = %s AND state = %s AND completed_at IS NULL",
-            ("COMPLETE", timestamp, authority.analysis_id, "OPEN"),
+        insert_analysis_run_completed_at(
+            work.connector,
+            analysis_id=authority.analysis_id,
+            completed_at=timestamp,
+        )
+        cas_analysis_run_state(
+            work,
+            analysis_id=authority.analysis_id,
+            previous="OPEN",
+            successor="COMPLETE",
             authority="analysis snapshot completion",
         )
         return value
@@ -2497,16 +2811,20 @@ class AnalysisRepository:
             allow_complete=True,
         )
         _require_exact_component_seals(work, authority.analysis_id)
-        row = work.connector.fetch_one(
-            "SELECT run.state, run.completed_at, output.snapshot_manifest_sha256 "
-            "FROM catalog_analysis_runs AS run "
-            "JOIN catalog_analysis_snapshot_manifest AS output "
-            "ON output.analysis_id = run.analysis_id WHERE run.analysis_id = %s",
+        try:
+            family = load_analysis_run_family(
+                work.connector,
+                analysis_id=authority.analysis_id,
+            )
+        except AnalysisFamilyCollisionError as error:
+            raise AnalysisCorruptionError(str(error)) from error
+        binding = work.connector.fetch_one(
+            "SELECT snapshot_manifest_sha256 "
+            "FROM catalog_analysis_snapshot_manifest WHERE analysis_id = %s",
             (authority.analysis_id,),
         )
-        if len(row) == 3 and row[0] == "COMPLETE":
-            require_int63(row[1], field="analysis completed_at")
-            require_digest32(row[2], field="analysis snapshot_manifest_sha256")
+        if family is not None and family.state == "COMPLETE" and len(binding) == 1:
+            require_digest32(binding[0], field="analysis snapshot_manifest_sha256")
             return
         raise AnalysisUnsupportedError(
             "analysis completion requires atomic canonical snapshot handoff"
@@ -2538,20 +2856,30 @@ def _authorize_analysis(
 ) -> _RunAuthority:
     analysis = require_uuid16(analysis_id, field="analysis_id")
     generation = _authorize(work, gate_lease, ingest_turn, now=now)
-    row = work.lock_row(
+    state_row = work.lock_row(
         LockRank.WORKING_ROOT,
         encode_lock_key("analysis-run", analysis),
-        "SELECT build_id, policy_id, state FROM catalog_analysis_runs "
-        "WHERE analysis_id = %s",
+        "SELECT state FROM catalog_analysis_run_states " "WHERE analysis_id = %s",
         (analysis,),
     )
-    if len(row) != 3:
+    if len(state_row) != 1:
         raise AnalysisNotReadyError("analysis run is missing")
-    build = require_uuid16(row[0], field="analysis build_id")
-    policy_id = require_positive_int63(row[1], field="analysis policy_id")
-    state = _require_run_state(row[2])
+    try:
+        family = load_analysis_run_family(
+            work.connector,
+            analysis_id=analysis,
+        )
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+    if family is None:
+        raise AnalysisCorruptionError("analysis run descriptor family is missing")
+    state = _require_run_state(state_row[0])
+    if family.state != state:
+        raise AnalysisCorruptionError("analysis run state changed during its lock")
     if state != "OPEN" and not (allow_complete and state == "COMPLETE"):
         raise AnalysisNotReadyError(f"analysis run is not writable: {state}")
+    build = family.build_id
+    policy_id = family.policy_id
     _require_generation_mapping(work, generation=generation, build_id=build)
     working = work.connector.fetch_one(
         "SELECT build_id FROM operational_source_working_builds WHERE slot = %s",
@@ -2569,14 +2897,7 @@ def _authorize_analysis(
         if not baseline_row
         else require_uuid16(baseline_row[0], field="analysis baseline_analysis_id")
     )
-    anchor_row = work.connector.fetch_one(
-        "SELECT overlay_depth FROM catalog_analysis_state_anchors "
-        "WHERE analysis_id = %s",
-        (analysis,),
-    )
-    if len(anchor_row) != 1:
-        raise AnalysisCorruptionError("analysis state anchor is missing")
-    depth = require_int63(anchor_row[0], field="analysis overlay_depth")
+    _persisted_baseline, _anchor, depth, _ancestry = _load_layout(work, analysis)
     if depth > _MAX_OVERLAY_DEPTH:
         raise AnalysisCorruptionError("analysis overlay depth exceeds 16")
     return _RunAuthority(
@@ -2603,14 +2924,34 @@ def _require_generation_mapping(
 
 def _load_policy(work: VNextUnitOfWork, policy_id: int) -> _Policy:
     row = work.connector.fetch_one(
-        "SELECT algorithm_version, spam_artist_threshold, "
-        "spam_occurrence_threshold, content_owner_rule_version, "
-        "gid_winner_rule_version FROM catalog_analysis_policies "
-        "WHERE policy_id = %s",
+        "SELECT algorithm.algorithm_version, artist.spam_artist_threshold, "
+        "occurrence.spam_occurrence_threshold, "
+        "owner.content_owner_rule_version, winner.gid_winner_rule_version "
+        "FROM catalog_analysis_policy_seals AS seal "
+        "JOIN catalog_analysis_policy_algorithm_versions AS algorithm "
+        "ON algorithm.policy_id = seal.policy_id "
+        "JOIN catalog_analysis_policy_spam_artist_thresholds AS artist "
+        "ON artist.policy_id = seal.policy_id "
+        "JOIN catalog_analysis_policy_spam_occurrence_thresholds AS occurrence "
+        "ON occurrence.policy_id = seal.policy_id "
+        "JOIN catalog_analysis_policy_content_owner_rule_versions AS owner "
+        "ON owner.policy_id = seal.policy_id "
+        "JOIN catalog_analysis_policy_gid_winner_rule_versions AS winner "
+        "ON winner.policy_id = seal.policy_id "
+        "JOIN catalog_analysis_policy_identities AS identity "
+        "ON identity.policy_id = seal.policy_id "
+        "AND identity.algorithm_version = algorithm.algorithm_version "
+        "AND identity.spam_artist_threshold = artist.spam_artist_threshold "
+        "AND identity.spam_occurrence_threshold = "
+        "occurrence.spam_occurrence_threshold "
+        "AND identity.content_owner_rule_version = "
+        "owner.content_owner_rule_version "
+        "AND identity.gid_winner_rule_version = winner.gid_winner_rule_version "
+        "WHERE seal.policy_id = %s",
         (policy_id,),
     )
     if len(row) != 5:
-        raise AnalysisNotReadyError("analysis policy is missing")
+        raise AnalysisNotReadyError("analysis policy is missing or incomplete")
     return _Policy(
         require_positive_int63(policy_id, field="analysis policy_id"),
         require_uint32(row[0], field="analysis algorithm_version"),
@@ -2649,18 +2990,15 @@ def _prepare_gallery(
     preparation_authority: AnalysisPreparationAuthority,
 ) -> AnalysisGalleryPreparation:
     row = work.connector.fetch_one(
-        "SELECT member.observation_id, metadata.gid, metadata.download_time, "
-        "identity.scope_key, identity.locator_sha256 "
+        "SELECT member.observation_id, metadata.gid, metadata.download_time "
         "FROM catalog_source_build_galleries AS member "
         "JOIN catalog_gallery_observation_metadata AS metadata "
         "ON metadata.gallery_id = member.gallery_id "
         "AND metadata.observation_id = member.observation_id "
-        "JOIN catalog_gallery_identities AS identity "
-        "ON identity.gallery_id = member.gallery_id "
         "WHERE member.build_id = %s AND member.gallery_id = %s",
         (run.build_id, gallery_id),
     )
-    if len(row) != 5:
+    if len(row) != 3:
         raise AnalysisNotReadyError(
             "gallery preparation requires exact sealed membership and metadata"
         )
@@ -2673,8 +3011,6 @@ def _prepare_gallery(
         row[2],
         field="preparation download_time",
     )
-    scope_key = require_digest32(row[3], field="preparation scope_key")
-    locator = require_digest32(row[4], field="preparation locator_sha256")
     metadata_gid, download_time, title_scalar_receipt = _metadata_comparator_facts(
         work,
         gallery_id,
@@ -2689,8 +3025,9 @@ def _prepare_gallery(
         gallery_id,
         observation_id,
     )
-    content_priority: bytes | None = None
-    content_candidate: bytes | None = None
+    content_prefer_not_already_uploaded: int | None = None
+    content_title_scalar_count: int | None = None
+    content_download_time: int | None = None
     content_plan: CanonicalValueUploadPlan | None = None
     content_sha256: bytes | None = None
     content_count = sum(
@@ -2730,34 +3067,9 @@ def _prepare_gallery(
                 "effective-content upload plan differs from the registered codec"
             )
         content_sha256 = content_plan.value_sha256
-        content_priority = _encode_streamed_candidate_priority(
-            AnalysisCandidateKind.CONTENT_OWNER,
-            marker_present=marker,
-            title_scalar_receipt=title_scalar_receipt,
-            download_time=download_time,
-            gid=persisted_gid,
-        )
-        content_candidate = analysis_content_candidate_digest(
-            run.analysis_id,
-            content_sha256,
-            content_priority,
-            scope_key,
-            locator,
-        )
-    gid_priority = _encode_streamed_candidate_priority(
-        AnalysisCandidateKind.GID_WINNER,
-        marker_present=marker,
-        title_scalar_receipt=title_scalar_receipt,
-        download_time=download_time,
-        gid=None,
-    )
-    gid_candidate = analysis_gid_candidate_digest(
-        run.analysis_id,
-        persisted_gid,
-        gid_priority,
-        scope_key,
-        locator,
-    )
+        content_prefer_not_already_uploaded = int(not marker)
+        content_title_scalar_count = title_scalar_receipt.scalar_count
+        content_download_time = download_time
     return AnalysisGalleryPreparation(
         run.analysis_id,
         run.build_id,
@@ -2765,10 +3077,9 @@ def _prepare_gallery(
         observation_id,
         persisted_gid,
         content_sha256,
-        content_priority,
-        content_candidate,
-        gid_priority,
-        gid_candidate,
+        content_prefer_not_already_uploaded,
+        content_title_scalar_count,
+        content_download_time,
         content_plan,
         preparation_authority,
         _PREPARATION_TOKEN,
@@ -2794,8 +3105,8 @@ def _iter_effective_content_digests(
             )
         else:
             predicate = (
-                " AND (source.file_sha256 > %s OR "
-                "(source.file_sha256 = %s AND source.file_no > %s))"
+                " AND (source_sha.file_sha256 > %s OR "
+                "(source_sha.file_sha256 = %s AND source_no.file_no > %s))"
             )
             parameters = (
                 gallery_id,
@@ -2807,21 +3118,31 @@ def _iter_effective_content_digests(
                 _MAX_BATCH_ROWS,
             )
         rows = work.connector.fetch_all(
-            "SELECT source.file_sha256, source.file_no "
-            "FROM catalog_gallery_observation_files AS source "
-            "JOIN catalog_file_name_identities AS name "
-            "ON name.file_key = source.file_key "
-            "WHERE source.gallery_id = %s AND source.observation_id = %s "
-            "AND name.file_role = %s"
+            "SELECT source_sha.file_sha256, source_no.file_no "
+            "FROM catalog_gallery_observation_file_seals AS source_seal "
+            "JOIN catalog_gallery_observation_file_file_nos AS source_no "
+            "ON source_no.gallery_id = source_seal.gallery_id "
+            "AND source_no.observation_id = source_seal.observation_id "
+            "AND source_no.file_key = source_seal.file_key "
+            "JOIN catalog_gallery_observation_file_file_sha256s AS source_sha "
+            "ON source_sha.gallery_id = source_seal.gallery_id "
+            "AND source_sha.observation_id = source_seal.observation_id "
+            "AND source_sha.file_key = source_seal.file_key "
+            "JOIN catalog_file_name_identity_seals AS name_seal "
+            "ON name_seal.file_key = source_seal.file_key "
+            "JOIN catalog_file_name_identity_file_roles AS name "
+            "ON name.file_key = name_seal.file_key "
+            "WHERE source_seal.gallery_id = %s "
+            "AND source_seal.observation_id = %s AND name.file_role = %s"
             + predicate
-            + " ORDER BY source.file_sha256, source.file_no LIMIT %s",
+            + " ORDER BY source_sha.file_sha256, source_no.file_no LIMIT %s",
             parameters,
         )
         if not rows:
             return
         for raw_digest, raw_file_no in rows:
             digest = require_digest32(raw_digest, field="effective file_sha256")
-            file_no = require_positive_int63(raw_file_no, field="effective file_no")
+            file_no = require_int63(raw_file_no, field="effective file_no")
             decision = _resolved_decision(work, authority.analysis_id, digest)
             if decision is None:
                 raise AnalysisCorruptionError(
@@ -2919,8 +3240,10 @@ def _iter_metadata_chunks(
     roots = work.connector.fetch_all(
         "SELECT root.root_page_sha256 "
         "FROM catalog_gallery_observation_tree_roots AS root "
-        "JOIN catalog_gallery_observation_page_descriptors AS descriptor "
-        "ON descriptor.page_sha256 = root.root_page_sha256 "
+        "JOIN catalog_gallery_observation_page_descriptor_seals AS seal "
+        "ON seal.page_sha256 = root.root_page_sha256 "
+        "JOIN catalog_gallery_observation_page_descriptor_components AS descriptor "
+        "ON descriptor.page_sha256 = seal.page_sha256 "
         "WHERE root.gallery_id = %s AND root.observation_id = %s "
         "AND descriptor.component = %s LIMIT 2",
         (gallery_id, observation_id, b"METADATA"),
@@ -2933,12 +3256,18 @@ def _iter_metadata_chunks(
     def visit(page_sha256: bytes, expected_level: int | None) -> Iterator[bytes]:
         nonlocal expected_offset
         row = work.connector.fetch_one(
-            "SELECT page.page_bytes, descriptor.component, descriptor.level, "
-            "descriptor.subtree_item_count "
-            "FROM catalog_gallery_observation_pages AS page "
-            "JOIN catalog_gallery_observation_page_descriptors AS descriptor "
-            "ON descriptor.page_sha256 = page.page_sha256 "
-            "WHERE page.page_sha256 = %s",
+            "SELECT page.page_bytes, descriptor.component, level.level, "
+            "count.subtree_item_count "
+            "FROM catalog_gallery_observation_page_descriptor_seals AS seal "
+            "JOIN catalog_gallery_observation_pages AS page "
+            "ON page.page_sha256 = seal.page_sha256 "
+            "JOIN catalog_gallery_observation_page_descriptor_components "
+            "AS descriptor ON descriptor.page_sha256 = seal.page_sha256 "
+            "JOIN catalog_gallery_observation_page_descriptor_levels AS level "
+            "ON level.page_sha256 = seal.page_sha256 "
+            "JOIN catalog_gallery_observation_page_descriptor_subtree_item_counts "
+            "AS count ON count.page_sha256 = seal.page_sha256 "
+            "WHERE seal.page_sha256 = %s",
             (page_sha256,),
         )
         if len(row) != 4:
@@ -3011,7 +3340,10 @@ def _gallery_has_already_uploaded_marker(
     rows = work.connector.fetch_all(
         "SELECT term.tag_value_sha256 "
         "FROM catalog_gallery_observation_tags AS observed "
-        "JOIN catalog_tag_terms AS term ON term.tag_id = observed.tag_id "
+        "JOIN catalog_tag_term_seals AS term_seal "
+        "ON term_seal.tag_id = observed.tag_id "
+        "JOIN catalog_tag_term_identities AS term "
+        "ON term.tag_id = term_seal.tag_id "
         "WHERE observed.gallery_id = %s AND observed.observation_id = %s "
         "ORDER BY observed.position",
         (gallery_id, observation_id),
@@ -3037,6 +3369,10 @@ def _gallery_has_already_uploaded_marker(
             value_sha256=value,
             consume_provisional=consume,
         )
+        if receipt.digest_domain != b"tag_value_utf8_v1":
+            raise AnalysisCorruptionError(
+                "tag canonical stream has the wrong digest domain"
+            )
         if receipt.byte_count != position:
             raise AnalysisCorruptionError("tag canonical stream count changed")
         if matched and position == len(ANALYSIS_ALREADY_UPLOADED_MARKER):
@@ -3044,44 +3380,83 @@ def _gallery_has_already_uploaded_marker(
     return False
 
 
-def _encode_streamed_candidate_priority(
-    candidate_kind: AnalysisCandidateKind,
+def _require_snapshot_canonical_identity(
+    work: VNextUnitOfWork,
+    preparation: AnalysisSnapshotPreparation,
     *,
-    marker_present: bool,
-    title_scalar_receipt: AnalysisTitleScalarReceipt,
-    download_time: int,
-    gid: int | None,
-) -> bytes:
-    """Emit and independently validate the fixed streamed-title codec."""
+    missing_is_corruption: bool = False,
+) -> None:
+    expected_parts = iter(
+        part for part in preparation.upload_plan.iter_payload_parts() if part
+    )
+    expected_chunk = b""
+    expected_offset = 0
 
-    if not isinstance(title_scalar_receipt, AnalysisTitleScalarReceipt):
-        raise TypeError("title_scalar_receipt must be AnalysisTitleScalarReceipt")
-    observed_download = require_int63(download_time, field="download_time")
-    marker_values = [ANALYSIS_ALREADY_UPLOADED_MARKER] if marker_present else []
-    priority = encode_analysis_candidate_priority(
-        candidate_kind,
-        tag_values_utf8=marker_values,
-        title_scalar_receipt=title_scalar_receipt,
-        download_time=observed_download,
-        gid=gid,
-    )
-    receipt = validate_analysis_candidate_priority(
-        priority,
-        candidate_kind,
-        tag_values_utf8=marker_values,
-        title_scalar_receipt=title_scalar_receipt,
-        download_time=observed_download,
-        gid=gid,
-    )
+    def compare_chunk(actual_chunk: bytes) -> None:
+        nonlocal expected_chunk, expected_offset
+        actual_offset = 0
+        while actual_offset < len(actual_chunk):
+            if expected_offset == len(expected_chunk):
+                try:
+                    expected_chunk = next(expected_parts)
+                except StopIteration as error:
+                    raise AnalysisCorruptionError(
+                        "snapshot canonical payload exceeds its exact preparation"
+                    ) from error
+                expected_offset = 0
+            compared = min(
+                len(actual_chunk) - actual_offset,
+                len(expected_chunk) - expected_offset,
+            )
+            if (
+                actual_chunk[actual_offset : actual_offset + compared]
+                != expected_chunk[expected_offset : expected_offset + compared]
+            ):
+                raise AnalysisCorruptionError(
+                    "snapshot canonical payload differs byte-for-byte"
+                )
+            actual_offset += compared
+            expected_offset += compared
+
+    try:
+        receipt = CanonicalValueRepository.stream_and_validate(
+            work,
+            value_sha256=preparation.upload_plan.value_sha256,
+            consume_provisional=compare_chunk,
+        )
+    except CanonicalValueNotReadyError as error:
+        if not missing_is_corruption:
+            raise AnalysisNotReadyError(
+                "snapshot canonical identity is not sealed"
+            ) from error
+        raise AnalysisCorruptionError(
+            "completed snapshot canonical payload is missing"
+        ) from error
+    except CanonicalValueCollisionError as error:
+        raise AnalysisCorruptionError(
+            "snapshot canonical payload is partial or corrupt"
+        ) from error
+    if expected_offset != len(expected_chunk) or next(expected_parts, None) is not None:
+        raise AnalysisCorruptionError(
+            "snapshot canonical payload ends before its exact preparation"
+        )
     if (
-        receipt.candidate_kind is not candidate_kind
-        or receipt.prefer_not_already_uploaded is marker_present
-        or receipt.title_scalar_length != title_scalar_receipt.scalar_count
-        or receipt.download_time != observed_download
-        or receipt.gid != gid
+        receipt.value_sha256 != preparation.upload_plan.value_sha256
+        or receipt.digest_domain != _SNAPSHOT_DOMAIN
+        or receipt.byte_count != preparation.payload_byte_count
     ):
-        raise AnalysisCorruptionError("streamed comparator fixed receipt is incoherent")
-    return priority
+        raise AnalysisCorruptionError(
+            "snapshot canonical identity differs from the typed preparation"
+        )
+
+
+def _require_source_build_sealed(connector: SQLConnector, build_id: bytes) -> None:
+    try:
+        build = load_source_build_family(connector, build_id=build_id)
+    except ManifestFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+    if build is None or build.state != "SEALED":
+        raise AnalysisNotReadyError("preparation build is no longer SEALED")
 
 
 def _prepare_snapshot_manifest(
@@ -3089,17 +3464,19 @@ def _prepare_snapshot_manifest(
     run: _RunAuthority,
     preparation_authority: AnalysisPreparationAuthority,
 ) -> AnalysisSnapshotPreparation:
-    manifest = work.connector.fetch_one(
-        "SELECT gallery_count, file_count, byte_count "
-        "FROM catalog_build_manifests WHERE build_id = %s",
-        (run.build_id,),
-    )
-    if len(manifest) != 3:
+    try:
+        manifest = load_build_manifest_family(
+            work.connector,
+            build_id=run.build_id,
+        )
+    except ManifestFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+    if manifest is None:
         raise AnalysisNotReadyError("snapshot preparation lost the build manifest")
     counts = SourceSnapshotCounts(
-        require_int63(manifest[0], field="snapshot gallery_count"),
-        require_int63(manifest[1], field="snapshot file_count"),
-        require_int63(manifest[2], field="snapshot byte_count"),
+        manifest.gallery_count,
+        manifest.file_count,
+        manifest.byte_count,
     )
     policy = SourceSnapshotPolicy(
         run.policy.algorithm_version,
@@ -3230,19 +3607,24 @@ def _iter_snapshot_galleries(
         rows = work.connector.fetch_all(
             "SELECT identity.gallery_key, observation.observation_identity_sha256, "
             "member.gallery_id, member.observation_id, metadata.gid, "
-            "scan.source_file_count "
+            "scan_count.source_file_count "
             "FROM catalog_source_build_galleries AS member "
-            "JOIN catalog_gallery_identities AS identity "
-            "ON identity.gallery_id = member.gallery_id "
+            "JOIN catalog_gallery_identity_seals AS identity_seal "
+            "ON identity_seal.gallery_id = member.gallery_id "
+            "JOIN catalog_gallery_identity_gallery_keys AS identity "
+            "ON identity.gallery_id = identity_seal.gallery_id "
             "JOIN catalog_gallery_observations AS observation "
             "ON observation.gallery_id = member.gallery_id "
             "AND observation.observation_id = member.observation_id "
             "JOIN catalog_gallery_observation_metadata AS metadata "
             "ON metadata.gallery_id = member.gallery_id "
             "AND metadata.observation_id = member.observation_id "
-            "JOIN catalog_gallery_observation_scans AS scan "
-            "ON scan.gallery_id = member.gallery_id "
-            "AND scan.observation_id = member.observation_id "
+            "JOIN catalog_gallery_observation_scan_seals AS scan_seal "
+            "ON scan_seal.gallery_id = member.gallery_id "
+            "AND scan_seal.observation_id = member.observation_id "
+            "JOIN catalog_gallery_observation_scan_source_file_counts AS scan_count "
+            "ON scan_count.gallery_id = scan_seal.gallery_id "
+            "AND scan_count.observation_id = scan_seal.observation_id "
             "WHERE member.build_id = %s"
             + predicate
             + " ORDER BY identity.gallery_key LIMIT %s",
@@ -3298,26 +3680,39 @@ def _gallery_file_counts(
     gallery_id: int,
     observation_id: int,
 ) -> tuple[int, int]:
-    last_file_no = 0
+    last_file_no = -1
     file_count = 0
     byte_count = 0
     while True:
         rows = work.connector.fetch_all(
-            "SELECT source.file_no, blob.size_bytes "
-            "FROM catalog_gallery_observation_files AS source "
+            "SELECT source_no.file_no, blob.size_bytes "
+            "FROM catalog_gallery_observation_file_seals AS source_seal "
+            "JOIN catalog_gallery_observation_file_file_nos AS source_no "
+            "ON source_no.gallery_id = source_seal.gallery_id "
+            "AND source_no.observation_id = source_seal.observation_id "
+            "AND source_no.file_key = source_seal.file_key "
+            "JOIN catalog_gallery_observation_file_file_sha256s AS source_sha "
+            "ON source_sha.gallery_id = source_seal.gallery_id "
+            "AND source_sha.observation_id = source_seal.observation_id "
+            "AND source_sha.file_key = source_seal.file_key "
             "JOIN catalog_content_blobs AS blob "
-            "ON blob.file_sha256 = source.file_sha256 "
-            "WHERE source.gallery_id = %s AND source.observation_id = %s "
-            "AND source.file_no > %s ORDER BY source.file_no LIMIT %s",
+            "ON blob.file_sha256 = source_sha.file_sha256 "
+            "WHERE source_seal.gallery_id = %s "
+            "AND source_seal.observation_id = %s "
+            "AND source_no.file_no > %s ORDER BY source_no.file_no LIMIT %s",
             (gallery_id, observation_id, last_file_no, _MAX_BATCH_ROWS),
         )
         if not rows:
             return file_count, byte_count
         for raw_file_no, raw_size in rows:
-            last_file_no = require_positive_int63(
+            last_file_no = require_int63(
                 raw_file_no,
                 field="snapshot gallery file_no",
             )
+            if last_file_no != file_count:
+                raise AnalysisCorruptionError(
+                    "snapshot gallery FILE ordinals are not zero-based contiguous"
+                )
             size = require_int63(raw_size, field="snapshot gallery file size")
             file_count = _sum_int63(
                 file_count,
@@ -3346,7 +3741,7 @@ def _iter_snapshot_decisions(
         parameters.append(_MAX_BATCH_ROWS)
         rows = work.connector.fetch_all(
             "SELECT file_sha256, occurrence_count, artist_count, "
-            "maximum_gallery_artist_count, evidence_sha256 "
+            "maximum_gallery_artist_count "
             "FROM catalog_analysis_file_hash_decision_resolved "
             "WHERE analysis_id = %s" + predicate + " ORDER BY file_sha256 LIMIT %s",
             tuple(parameters),
@@ -3385,8 +3780,10 @@ def _iter_snapshot_owners(
             "SELECT owner.content_sha256, owner.owner_gallery_id, "
             "identity.gallery_key "
             "FROM catalog_analysis_content_owner_resolved AS owner "
-            "JOIN catalog_gallery_identities AS identity "
-            "ON identity.gallery_id = owner.owner_gallery_id "
+            "JOIN catalog_gallery_identity_seals AS identity_seal "
+            "ON identity_seal.gallery_id = owner.owner_gallery_id "
+            "JOIN catalog_gallery_identity_gallery_keys AS identity "
+            "ON identity.gallery_id = identity_seal.gallery_id "
             "WHERE owner.analysis_id = %s"
             + predicate
             + " ORDER BY owner.content_sha256 LIMIT %s",
@@ -3432,17 +3829,34 @@ def _iter_snapshot_winners(
         rows = work.connector.fetch_all(
             "SELECT winner.gid, winner.winner_gallery_id, identity.gallery_key "
             "FROM catalog_analysis_gid_winner_resolved AS winner "
-            "JOIN catalog_gallery_identities AS identity "
-            "ON identity.gallery_id = winner.winner_gallery_id "
+            "JOIN catalog_analysis_gid_candidate_resolved AS candidate "
+            "ON candidate.analysis_id = winner.analysis_id "
+            "AND candidate.gallery_id = winner.winner_gallery_id "
+            "JOIN catalog_source_build_galleries AS member "
+            "ON member.build_id = %s "
+            "AND member.gallery_id = winner.winner_gallery_id "
+            "JOIN catalog_gallery_observation_metadata AS metadata "
+            "ON metadata.gallery_id = member.gallery_id "
+            "AND metadata.observation_id = member.observation_id "
+            "AND metadata.gid = winner.gid "
+            "JOIN catalog_gallery_identity_seals AS identity_seal "
+            "ON identity_seal.gallery_id = winner.winner_gallery_id "
+            "JOIN catalog_gallery_identity_gallery_keys AS identity "
+            "ON identity.gallery_id = identity_seal.gallery_id "
             "WHERE winner.analysis_id = %s AND winner.gid > %s "
             "ORDER BY winner.gid LIMIT %s",
-            (authority.analysis_id, previous, _MAX_BATCH_ROWS),
+            (
+                authority.build_id,
+                authority.analysis_id,
+                previous,
+                _MAX_BATCH_ROWS,
+            ),
         )
         if not rows:
             return
         for raw_gid, raw_gallery_id, raw_gallery_key in rows:
             gid = require_positive_int63(raw_gid, field="snapshot winner gid")
-            gallery_id = require_positive_int63(
+            require_positive_int63(
                 raw_gallery_id,
                 field="snapshot winner gallery_id",
             )
@@ -3450,19 +3864,6 @@ def _iter_snapshot_winners(
                 raw_gallery_key,
                 field="snapshot winner gallery_key",
             )
-            member = work.connector.fetch_one(
-                "SELECT candidate.gid "
-                "FROM catalog_source_build_galleries AS source "
-                "JOIN catalog_analysis_gid_candidate_resolved AS candidate "
-                "ON candidate.analysis_id = %s "
-                "AND candidate.gallery_id = source.gallery_id "
-                "WHERE source.build_id = %s AND source.gallery_id = %s",
-                (authority.analysis_id, authority.build_id, gallery_id),
-            )
-            if member != (gid,):
-                raise AnalysisCorruptionError(
-                    "snapshot GID winner is not a member of its exact GID group"
-                )
             yield SourceSnapshotGidWinner(gid, gallery_key)
             previous = gid
         if len(rows) < _MAX_BATCH_ROWS:
@@ -3477,8 +3878,10 @@ def _derive_baseline(work: VNextUnitOfWork, *, build_id: bytes) -> bytes | None:
     )
     if not base:
         return None
-    if len(base) != 2:
-        raise AnalysisCorruptionError("source build baseline has an invalid shape")
+    if len(base) != 2 or base[1] is None:
+        raise AnalysisCorruptionError(
+            "source build baseline lacks its immutable generation mapping"
+        )
     revision = require_positive_int63(base[0], field="base source revision")
     generation = require_positive_int63(base[1], field="base source generation")
     channel = work.connector.fetch_one(
@@ -3488,11 +3891,17 @@ def _derive_baseline(work: VNextUnitOfWork, *, build_id: bytes) -> bytes | None:
     if len(channel) != 1:
         raise AnalysisNotReadyError("source build channel is missing")
     head = work.connector.fetch_one(
-        "SELECT source_revision, generation FROM catalog_source_heads "
-        "WHERE channel = %s",
+        "SELECT registry.channel, head.source_revision, head.generation, "
+        "head.advanced_at FROM catalog_channel_registry AS registry "
+        "LEFT JOIN catalog_source_heads AS head ON head.channel = registry.channel "
+        "WHERE registry.channel = %s",
         (channel[0],),
     )
-    if head != (revision, generation):
+    if len(head) != 4 or head[0] != channel[0]:
+        raise AnalysisCorruptionError("source head channel registry row is malformed")
+    if any(value is None for value in head[1:]):
+        raise AnalysisCorruptionError("source head vertical family is incomplete")
+    if head[1:3] != (revision, generation):
         raise AnalysisNotReadyError(
             "source build baseline is stale against its channel head"
         )
@@ -3504,11 +3913,14 @@ def _derive_baseline(work: VNextUnitOfWork, *, build_id: bytes) -> bytes | None:
     if len(provenance) != 1:
         raise AnalysisNotReadyError("active source baseline has no analysis provenance")
     baseline = require_uuid16(provenance[0], field="baseline analysis_id")
-    row = work.connector.fetch_one(
-        "SELECT state FROM catalog_analysis_runs WHERE analysis_id = %s",
-        (baseline,),
-    )
-    if row != ("COMPLETE",):
+    try:
+        baseline_run = load_analysis_run_family(
+            work.connector,
+            analysis_id=baseline,
+        )
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+    if baseline_run is None or baseline_run.state != "COMPLETE":
         raise AnalysisNotReadyError("baseline analysis is not COMPLETE")
     _require_exact_component_seals(work, baseline)
     return baseline
@@ -3522,46 +3934,20 @@ def _derive_layout(
 ) -> tuple[bytes | None, int, tuple[bytes | None, ...]]:
     if baseline is None:
         return None, 0, (None,)
-    row = work.connector.fetch_one(
-        "SELECT run.policy_id, anchor.anchor_analysis_id, anchor.overlay_depth "
-        "FROM catalog_analysis_runs AS run "
-        "JOIN catalog_analysis_state_anchors AS anchor "
-        "ON anchor.analysis_id = run.analysis_id WHERE run.analysis_id = %s",
-        (baseline,),
-    )
-    if len(row) != 3:
-        raise AnalysisCorruptionError("baseline analysis anchor is missing")
-    parent_policy = require_positive_int63(row[0], field="baseline policy_id")
-    parent_anchor = require_uuid16(row[1], field="baseline anchor_analysis_id")
-    parent_depth = require_int63(row[2], field="baseline overlay_depth")
-    if parent_depth > _MAX_OVERLAY_DEPTH:
-        raise AnalysisCorruptionError("baseline overlay depth exceeds 16")
-    ancestry_rows = work.connector.fetch_all(
-        "SELECT ancestor_depth, ancestor_analysis_id "
-        "FROM catalog_analysis_state_ancestry WHERE analysis_id = %s "
-        "ORDER BY ancestor_depth LIMIT 18",
-        (baseline,),
-    )
-    parent_ancestry = tuple(
-        require_uuid16(item[1], field="baseline ancestor_analysis_id")
-        for item in ancestry_rows
-    )
-    if (
-        len(parent_ancestry) != parent_depth + 1
-        or not parent_ancestry
-        or parent_ancestry[0] != baseline
-        or parent_ancestry[-1] != parent_anchor
-        or len(set(parent_ancestry)) != len(parent_ancestry)
-    ):
-        raise AnalysisCorruptionError(
-            "baseline ancestry is not an exact acyclic suffix"
+    try:
+        parent_run = load_analysis_run_family(
+            work.connector,
+            analysis_id=baseline,
         )
-    for expected_depth, row_value in enumerate(ancestry_rows):
-        if (
-            require_int63(row_value[0], field="baseline ancestor_depth")
-            != expected_depth
-        ):
-            raise AnalysisCorruptionError("baseline ancestry depths are not contiguous")
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+    if parent_run is None:
+        raise AnalysisCorruptionError("baseline analysis run is missing")
+    _parent_baseline, parent_anchor, parent_depth, parent_ancestry = _load_layout(
+        work,
+        baseline,
+    )
+    parent_policy = parent_run.policy_id
     _validate_ancestry_suffixes(
         work,
         ancestry=parent_ancestry,
@@ -3589,13 +3975,6 @@ def _load_layout(
         if not baseline_row
         else require_uuid16(baseline_row[0], field="persisted baseline_analysis_id")
     )
-    anchor = work.connector.fetch_one(
-        "SELECT anchor_analysis_id, overlay_depth "
-        "FROM catalog_analysis_state_anchors WHERE analysis_id = %s",
-        (analysis_id,),
-    )
-    if len(anchor) != 2:
-        raise AnalysisCorruptionError("persisted analysis anchor is missing")
     ancestry_rows = work.connector.fetch_all(
         "SELECT ancestor_depth, ancestor_analysis_id "
         "FROM catalog_analysis_state_ancestry WHERE analysis_id = %s "
@@ -3606,6 +3985,15 @@ def _load_layout(
         require_uuid16(row[1], field="persisted ancestor_analysis_id")
         for row in ancestry_rows
     )
+    if (
+        not ancestry
+        or len(ancestry) > _MAX_OVERLAY_DEPTH + 1
+        or ancestry[0] != analysis_id
+        or len(set(ancestry)) != len(ancestry)
+    ):
+        raise AnalysisCorruptionError(
+            "persisted analysis ancestry has no exact acyclic endpoint"
+        )
     for expected_depth, row_value in enumerate(ancestry_rows):
         if (
             require_int63(row_value[0], field="persisted ancestor_depth")
@@ -3616,26 +4004,31 @@ def _load_layout(
             )
     return (
         baseline,
-        require_uuid16(anchor[0], field="persisted anchor_analysis_id"),
-        require_int63(anchor[1], field="persisted overlay_depth"),
+        ancestry[-1],
+        len(ancestry) - 1,
         ancestry,
     )
 
 
 def _require_exact_component_seals(work: VNextUnitOfWork, analysis_id: bytes) -> None:
-    rows = work.connector.fetch_all(
-        "SELECT state_component FROM catalog_analysis_state_component_seals "
-        "WHERE analysis_id = %s ORDER BY state_component LIMIT 6",
-        (analysis_id,),
-    )
-    actual = {
-        require_bounded_bytes(row[0], field="baseline component", minimum=1, maximum=64)
-        for row in rows
-    }
-    if len(rows) != 5 or actual != ANALYSIS_COMPONENTS:
+    receipts = _component_seal_receipts(work, analysis_id)
+    actual = {component for component, _row_count, _sealed_at in receipts}
+    if len(receipts) != 5 or actual != ANALYSIS_COMPONENTS:
         raise AnalysisNotReadyError(
             "baseline analysis is not sealed in all five components"
         )
+    stage_by_component = {
+        _COMPONENT_FILE_HASH: _STAGE_VALIDATE_FILE_HASH,
+        _COMPONENT_CONTENT_CANDIDATE: _STAGE_VALIDATE_CONTENT_CANDIDATE,
+        _COMPONENT_CONTENT_OWNER: _STAGE_VALIDATE_CONTENT_OWNER,
+        _COMPONENT_GID_CANDIDATE: _STAGE_VALIDATE_GID_CANDIDATE,
+        _COMPONENT_GID_WINNER: _STAGE_VALIDATE_GID_WINNER,
+    }
+    for component in actual:
+        if not _component_is_sealed(work, analysis_id, stage_by_component[component]):
+            raise AnalysisCorruptionError(
+                f"component {component!r} lost its terminal receipt"
+            )
 
 
 def _validate_ancestry_suffixes(
@@ -3649,47 +4042,29 @@ def _validate_ancestry_suffixes(
 
     for offset, ancestor in enumerate(ancestry):
         suffix = ancestry[offset:]
-        row = work.connector.fetch_one(
-            "SELECT run.policy_id, run.state, anchor.anchor_analysis_id, "
-            "anchor.overlay_depth FROM catalog_analysis_runs AS run "
-            "JOIN catalog_analysis_state_anchors AS anchor "
-            "ON anchor.analysis_id = run.analysis_id WHERE run.analysis_id = %s",
-            (ancestor,),
-        )
-        if len(row) != 4:
+        try:
+            run = load_analysis_run_family(
+                work.connector,
+                analysis_id=ancestor,
+            )
+        except AnalysisFamilyCollisionError as error:
+            raise AnalysisCorruptionError(str(error)) from error
+        if run is None:
             raise AnalysisCorruptionError("inherited analysis anchor is missing")
+        _baseline, derived_anchor, derived_depth, materialized = _load_layout(
+            work,
+            ancestor,
+        )
         if (
-            require_positive_int63(row[0], field="ancestor policy_id") != policy_id
-            or row[1] != "COMPLETE"
-            or require_uuid16(row[2], field="ancestor anchor_analysis_id")
-            != anchor_analysis_id
-            or require_int63(row[3], field="ancestor overlay_depth") != len(suffix) - 1
+            run.policy_id != policy_id
+            or run.state != "COMPLETE"
+            or derived_anchor != anchor_analysis_id
+            or derived_depth != len(suffix) - 1
         ):
             raise AnalysisCorruptionError(
                 "inherited analysis does not match the complete policy suffix"
             )
-        suffix_rows = work.connector.fetch_all(
-            "SELECT ancestor_depth, ancestor_analysis_id "
-            "FROM catalog_analysis_state_ancestry WHERE analysis_id = %s "
-            "ORDER BY ancestor_depth LIMIT 18",
-            (ancestor,),
-        )
-        materialized: list[bytes] = []
-        for expected_depth, suffix_row in enumerate(suffix_rows):
-            if (
-                require_int63(suffix_row[0], field="ancestor suffix depth")
-                != expected_depth
-            ):
-                raise AnalysisCorruptionError(
-                    "inherited analysis suffix depths are not contiguous"
-                )
-            materialized.append(
-                require_uuid16(
-                    suffix_row[1],
-                    field="ancestor suffix analysis_id",
-                )
-            )
-        if tuple(materialized) != suffix:
+        if materialized != suffix:
             raise AnalysisCorruptionError(
                 "inherited analysis ancestry is not the complete parent suffix"
             )
@@ -3705,6 +4080,81 @@ def _validate_ancestry_suffixes(
         _require_exact_component_seals(work, ancestor)
 
 
+def _initialize_checkpoint(
+    work: VNextUnitOfWork,
+    *,
+    analysis_id: bytes,
+    stage: bytes,
+    cursor: bytes,
+    updated_at: int,
+) -> None:
+    key = (analysis_id, stage)
+    work.connector.execute(
+        f"INSERT INTO {_CHECKPOINT_ANCHOR_TABLE} (analysis_id, stage) VALUES (%s, %s)",
+        key,
+    )
+    work.connector.execute(
+        f"INSERT INTO {_CHECKPOINT_GENERATION_TABLE} "
+        "(analysis_id, stage, generation) VALUES (%s, %s, %s)",
+        (*key, 1),
+    )
+    work.connector.execute(
+        f"INSERT INTO {_CHECKPOINT_CURSOR_TABLE} "
+        "(analysis_id, stage, cursor) VALUES (%s, %s, %s)",
+        (*key, cursor),
+    )
+    work.connector.execute(
+        f"INSERT INTO {_CHECKPOINT_PROCESSED_COUNT_TABLE} "
+        "(analysis_id, stage, processed_count) VALUES (%s, %s, %s)",
+        (*key, 0),
+    )
+    work.connector.execute(
+        f"INSERT INTO {_CHECKPOINT_STATE_TABLE} "
+        "(analysis_id, stage, state) VALUES (%s, %s, %s)",
+        (*key, _CHECKPOINT_OPEN),
+    )
+    work.connector.execute(
+        f"INSERT INTO {_CHECKPOINT_UPDATED_AT_TABLE} "
+        "(analysis_id, stage, updated_at) VALUES (%s, %s, %s)",
+        (*key, updated_at),
+    )
+    work.connector.execute(
+        f"INSERT INTO {_CHECKPOINT_SEAL_TABLE} (analysis_id, stage) VALUES (%s, %s)",
+        key,
+    )
+
+
+def _receipt_family_exists(
+    work: VNextUnitOfWork,
+    *,
+    analysis_id: bytes,
+    stage: bytes,
+    start_generation: int,
+) -> bool:
+    key = (analysis_id, stage, start_generation)
+    tables = (
+        _RECEIPT_ANCHOR_TABLE,
+        _RECEIPT_COORDINATE_TABLE,
+        _RECEIPT_START_CURSOR_TABLE,
+        _RECEIPT_START_COUNT_TABLE,
+        _RECEIPT_PAGE_LIMIT_TABLE,
+        _RECEIPT_NEXT_CURSOR_TABLE,
+        _RECEIPT_ROW_COUNT_TABLE,
+        _RECEIPT_COMMITTED_AT_TABLE,
+        _RECEIPT_SEAL_TABLE,
+    )
+    selects = tuple(
+        f"SELECT 1 AS present FROM {table} "
+        "WHERE analysis_id = %s AND stage = %s AND start_generation = %s"
+        for table in tables
+    )
+    row = work.connector.fetch_one(
+        "SELECT present FROM (" + " UNION ALL ".join(selects) + ") existing LIMIT 1",
+        key * len(tables),
+    )
+    return bool(row)
+
+
 def _prepare_batch(
     work: VNextUnitOfWork,
     *,
@@ -3716,43 +4166,56 @@ def _prepare_batch(
     max_rows: int,
     now: int,
 ) -> tuple[_RunAuthority, _Checkpoint | None, AnalysisBatchResult | None]:
-    timestamp = require_int63(now, field="analysis batch now")
+    authorization_time = require_int63(now, field="analysis batch now")
     key = require_bounded_bytes(
         batch_key,
         field="analysis batch_key",
         minimum=1,
         maximum=512,
     )
-    limit = require_positive_int63(max_rows, field="analysis max_rows")
-    if limit > _MAX_BATCH_ROWS:
-        raise ValueError(f"analysis max_rows must not exceed {_MAX_BATCH_ROWS}")
     authority = _authorize_analysis(
         work,
         gate_lease=gate_lease,
         ingest_turn=ingest_turn,
         analysis_id=analysis_id,
-        now=timestamp,
+        now=authorization_time,
     )
-    checkpoint = _lock_checkpoint(work, authority.analysis_id, stage)
-    receipt = work.connector.fetch_one(
-        "SELECT start_generation, start_cursor, start_processed_count, "
-        "next_cursor, next_processed_count, next_state, row_count, terminal, "
-        "committed_generation, committed_at "
-        "FROM catalog_analysis_batch_receipts "
+    coordinate = work.connector.fetch_one(
+        f"SELECT start_generation FROM {_RECEIPT_COORDINATE_TABLE} "
         "WHERE analysis_id = %s AND stage = %s AND batch_key = %s",
         (authority.analysis_id, stage, key),
     )
-    if receipt:
+    if coordinate:
+        if len(coordinate) != 1:
+            raise AnalysisCorruptionError("analysis batch coordinate is malformed")
+        start_generation = require_positive_int63(
+            coordinate[0], field="analysis receipt coordinate start_generation"
+        )
+        receipt = work.connector.fetch_one(
+            "SELECT start_generation, start_cursor, start_processed_count, "
+            "page_limit, next_cursor, next_processed_count, next_state, row_count, terminal, "
+            "committed_generation, committed_at "
+            "FROM catalog_analysis_batch_receipts "
+            "WHERE analysis_id = %s AND stage = %s AND start_generation = %s",
+            (authority.analysis_id, stage, start_generation),
+        )
+        if not receipt:
+            raise AnalysisCorruptionError(
+                "analysis batch coordinate has no complete sealed receipt"
+            )
         stored = _batch_result_from_receipt(
             authority.analysis_id,
             stage,
             key,
             receipt,
             replayed=True,
-            component_sealed=_component_is_sealed(
-                work,
-                authority.analysis_id,
-                stage,
+            component_sealed=(
+                receipt[8] == 1
+                and _component_is_sealed(
+                    work,
+                    authority.analysis_id,
+                    stage,
+                )
             ),
         )
         return (
@@ -3760,15 +4223,35 @@ def _prepare_batch(
             None,
             stored,
         )
+    limit = min(
+        require_positive_int63(max_rows, field="analysis max_rows"),
+        _MAX_BATCH_ROWS,
+    )
+    checkpoint = _lock_checkpoint(
+        work,
+        authority.analysis_id,
+        stage,
+        page_limit=limit,
+    )
+    if _receipt_family_exists(
+        work,
+        analysis_id=authority.analysis_id,
+        stage=stage,
+        start_generation=checkpoint.generation,
+    ):
+        raise AnalysisCorruptionError(
+            "analysis checkpoint generation has a partial or conflicting receipt"
+        )
     if checkpoint.state == _CHECKPOINT_COMPLETE:
         raise AnalysisNotReadyError(
             "analysis stage is complete under a different terminal batch_key"
         )
     if checkpoint.state != _CHECKPOINT_OPEN:
         raise AnalysisCorruptionError("analysis checkpoint has an unknown state")
-    if timestamp < checkpoint.updated_at:
+    database_time = database_unix_microseconds(work)
+    if database_time < checkpoint.updated_at:
         raise AnalysisNotReadyError(
-            "analysis batch timestamp precedes its durable checkpoint"
+            "database batch time precedes its durable checkpoint"
         )
     return authority, checkpoint, None
 
@@ -3777,23 +4260,47 @@ def _lock_checkpoint(
     work: VNextUnitOfWork,
     analysis_id: bytes,
     stage: bytes,
+    *,
+    page_limit: int,
 ) -> _Checkpoint:
     kind, live = _require_registered_stage(work, stage)
-    row = work.lock_row(
+    generation_row = work.lock_row(
         LockRank.CHECKPOINT,
         encode_lock_key("analysis-checkpoint", analysis_id, stage),
-        "SELECT generation, cursor, processed_count, state, updated_at "
-        "FROM catalog_analysis_checkpoints WHERE analysis_id = %s AND stage = %s",
+        f"SELECT generation FROM {_CHECKPOINT_GENERATION_TABLE} "
+        "WHERE analysis_id = %s AND stage = %s",
         (analysis_id, stage),
     )
-    if len(row) != 5 or not isinstance(row[3], str):
+    if len(generation_row) != 1:
         raise AnalysisCorruptionError("analysis checkpoint is missing or malformed")
+    generation = require_positive_int63(
+        generation_row[0], field="analysis checkpoint generation"
+    )
+    row = work.connector.fetch_one(
+        f"SELECT cursor.cursor, count.processed_count, state.state, "
+        f"updated.updated_at FROM {_CHECKPOINT_SEAL_TABLE} AS seal "
+        f"JOIN {_CHECKPOINT_CURSOR_TABLE} AS cursor "
+        "ON cursor.analysis_id = seal.analysis_id AND cursor.stage = seal.stage "
+        f"JOIN {_CHECKPOINT_PROCESSED_COUNT_TABLE} AS count "
+        "ON count.analysis_id = seal.analysis_id AND count.stage = seal.stage "
+        f"JOIN {_CHECKPOINT_STATE_TABLE} AS state "
+        "ON state.analysis_id = seal.analysis_id AND state.stage = seal.stage "
+        f"JOIN {_CHECKPOINT_UPDATED_AT_TABLE} AS updated "
+        "ON updated.analysis_id = seal.analysis_id AND updated.stage = seal.stage "
+        "WHERE seal.analysis_id = %s AND seal.stage = %s",
+        (analysis_id, stage),
+    )
+    if len(row) != 4 or not isinstance(row[2], str):
+        raise AnalysisCorruptionError(
+            "analysis checkpoint is not a complete sealed family"
+        )
     checkpoint = _Checkpoint(
-        require_positive_int63(row[0], field="analysis checkpoint generation"),
-        require_bounded_bytes(row[1], field="analysis checkpoint cursor", maximum=2048),
-        require_int63(row[2], field="analysis checkpoint processed_count"),
-        row[3],
-        require_int63(row[4], field="analysis checkpoint updated_at"),
+        generation,
+        require_bounded_bytes(row[0], field="analysis checkpoint cursor", maximum=2048),
+        require_int63(row[1], field="analysis checkpoint processed_count"),
+        row[2],
+        require_int63(row[3], field="analysis checkpoint updated_at"),
+        require_positive_int63(page_limit, field="analysis page_limit"),
     )
     _decode_cursor(kind, checkpoint.cursor, live=live)
     return checkpoint
@@ -3832,56 +4339,96 @@ def _commit_batch(
         field="analysis checkpoint processed_count",
     )
     next_state = _CHECKPOINT_COMPLETE if terminal else _CHECKPOINT_OPEN
-    timestamp = require_int63(now, field="analysis batch committed_at")
+    require_int63(now, field="analysis batch authorization time")
+    timestamp = database_unix_microseconds(work)
+    if timestamp < checkpoint.updated_at:
+        raise AnalysisNotReadyError(
+            "database batch time precedes its durable checkpoint"
+        )
     key = require_bounded_bytes(
         batch_key,
         field="analysis batch_key",
         minimum=1,
         maximum=512,
     )
+    receipt_coordinate = (authority.analysis_id, stage, checkpoint.generation)
     work.connector.execute(
-        "INSERT INTO catalog_analysis_batch_receipts "
-        "(analysis_id, stage, batch_key, start_generation, start_cursor, "
-        "start_processed_count, next_cursor, next_processed_count, next_state, "
-        "row_count, terminal, committed_generation, committed_at) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        f"INSERT INTO {_RECEIPT_ANCHOR_TABLE} "
+        "(analysis_id, stage, start_generation) VALUES (%s, %s, %s)",
+        receipt_coordinate,
+    )
+    work.connector.execute(
+        f"INSERT INTO {_RECEIPT_COORDINATE_TABLE} "
+        "(analysis_id, stage, batch_key, start_generation) "
+        "VALUES (%s, %s, %s, %s)",
+        (authority.analysis_id, stage, key, checkpoint.generation),
+    )
+    receipt_facts = (
+        (_RECEIPT_START_CURSOR_TABLE, "start_cursor", checkpoint.cursor),
         (
-            authority.analysis_id,
-            stage,
-            key,
-            checkpoint.generation,
-            checkpoint.cursor,
+            _RECEIPT_START_COUNT_TABLE,
+            "start_processed_count",
             checkpoint.processed_count,
+        ),
+        (_RECEIPT_PAGE_LIMIT_TABLE, "page_limit", checkpoint.page_limit),
+        (_RECEIPT_NEXT_CURSOR_TABLE, "next_cursor", cursor),
+        (_RECEIPT_ROW_COUNT_TABLE, "row_count", rows),
+        (_RECEIPT_COMMITTED_AT_TABLE, "committed_at", timestamp),
+    )
+    for table, column, value in receipt_facts:
+        work.connector.execute(
+            f"INSERT INTO {table} "
+            f"(analysis_id, stage, start_generation, {column}) "
+            "VALUES (%s, %s, %s, %s)",
+            (*receipt_coordinate, value),
+        )
+    work.connector.execute(
+        f"INSERT INTO {_RECEIPT_SEAL_TABLE} "
+        "(analysis_id, stage, start_generation) VALUES (%s, %s, %s)",
+        receipt_coordinate,
+    )
+
+    checkpoint_key = (authority.analysis_id, stage)
+    updates = (
+        (
+            _CHECKPOINT_CURSOR_TABLE,
+            "cursor",
+            checkpoint.cursor,
             cursor,
+        ),
+        (
+            _CHECKPOINT_PROCESSED_COUNT_TABLE,
+            "processed_count",
+            checkpoint.processed_count,
             next_processed_count,
+        ),
+        (
+            _CHECKPOINT_STATE_TABLE,
+            "state",
+            checkpoint.state,
             next_state,
-            rows,
-            int(terminal),
-            next_generation,
+        ),
+        (
+            _CHECKPOINT_UPDATED_AT_TABLE,
+            "updated_at",
+            checkpoint.updated_at,
             timestamp,
         ),
     )
+    for table, column, previous, successor in updates:
+        if previous == successor:
+            continue
+        work.compare_and_swap(
+            f"UPDATE {table} SET {column} = %s "
+            f"WHERE analysis_id = %s AND stage = %s AND {column} = %s",
+            (successor, *checkpoint_key, previous),
+            authority=f"analysis checkpoint {stage!r} {column}",
+        )
     work.compare_and_swap(
-        "UPDATE catalog_analysis_checkpoints SET generation = %s, cursor = %s, "
-        "processed_count = %s, state = %s, updated_at = %s "
-        "WHERE analysis_id = %s AND stage = %s AND generation = %s "
-        "AND cursor = %s AND processed_count = %s AND state = %s "
-        "AND updated_at = %s",
-        (
-            next_generation,
-            cursor,
-            next_processed_count,
-            next_state,
-            timestamp,
-            authority.analysis_id,
-            stage,
-            checkpoint.generation,
-            checkpoint.cursor,
-            checkpoint.processed_count,
-            checkpoint.state,
-            checkpoint.updated_at,
-        ),
-        authority=f"analysis checkpoint {stage!r}",
+        f"UPDATE {_CHECKPOINT_GENERATION_TABLE} SET generation = %s "
+        "WHERE analysis_id = %s AND stage = %s AND generation = %s",
+        (next_generation, *checkpoint_key, checkpoint.generation),
+        authority=f"analysis checkpoint {stage!r} generation",
     )
     return AnalysisBatchResult(
         authority.analysis_id,
@@ -3890,6 +4437,7 @@ def _commit_batch(
         checkpoint.generation,
         checkpoint.cursor,
         checkpoint.processed_count,
+        checkpoint.page_limit,
         cursor,
         next_processed_count,
         next_state,
@@ -3910,9 +4458,9 @@ def _batch_result_from_receipt(
     replayed: bool,
     component_sealed: bool,
 ) -> AnalysisBatchResult:
-    if len(row) != 10:
+    if len(row) != 11:
         raise AnalysisCorruptionError("analysis batch receipt is malformed")
-    terminal_value = require_int63(row[7], field="analysis receipt terminal")
+    terminal_value = require_int63(row[8], field="analysis receipt terminal")
     if terminal_value not in {0, 1}:
         raise AnalysisCorruptionError(
             "analysis batch receipt terminal flag is not boolean"
@@ -3935,23 +4483,27 @@ def _batch_result_from_receipt(
                 row[2],
                 field="analysis receipt start_processed_count",
             ),
-            require_bounded_bytes(
+            require_positive_int63(
                 row[3],
+                field="analysis receipt page_limit",
+            ),
+            require_bounded_bytes(
+                row[4],
                 field="analysis receipt next_cursor",
                 maximum=2048,
             ),
             require_int63(
-                row[4],
+                row[5],
                 field="analysis receipt next_processed_count",
             ),
-            _require_checkpoint_state(row[5]),
-            require_int63(row[6], field="analysis receipt row_count"),
+            _require_checkpoint_state(row[6]),
+            require_int63(row[7], field="analysis receipt row_count"),
             bool(terminal_value),
             require_positive_int63(
-                row[8],
+                row[9],
                 field="analysis receipt committed_generation",
             ),
-            require_int63(row[9], field="analysis receipt committed_at"),
+            require_int63(row[10], field="analysis receipt committed_at"),
             replayed,
             component_sealed,
         )
@@ -3963,6 +4515,791 @@ def _batch_result_from_receipt(
             "analysis batch receipt has invalid domain values"
         ) from error
     return result
+
+
+def _validate_batch_replay(
+    work: VNextUnitOfWork,
+    authority: _RunAuthority,
+    replay: AnalysisBatchResult,
+    *,
+    preparations: Sequence[AnalysisGalleryPreparation | None] = (),
+) -> None:
+    """Rederive one committed page with its stored bound before replaying it."""
+
+    if not replay.replayed or replay.analysis_id != authority.analysis_id:
+        raise AnalysisCorruptionError("analysis replay lost its durable authority")
+    kind, live = _stage_cursor_spec(replay.stage)
+    last, live_count = _decode_cursor(kind, replay.start_cursor, live=live)
+    rows = _replay_page_rows(
+        work,
+        authority,
+        stage=replay.stage,
+        after=last,
+        limit=replay.page_limit + 1,
+    )
+    selected = rows[: replay.page_limit]
+    _require_replay_keyed_page_exact(
+        work,
+        authority.analysis_id,
+        stage=replay.stage,
+        after=last,
+        selected=selected,
+        limit=replay.page_limit + 1,
+    )
+    exact_preparations: tuple[AnalysisGalleryPreparation | None, ...] = ()
+    content_impact_page: _ContentImpactPage | None = None
+    gid_impact_page: _GidImpactPage | None = None
+    if replay.stage == _STAGE_IMPACTED_CONTENT:
+        gallery_ids = tuple(
+            require_positive_int63(row[0], field="replayed impacted-content gallery_id")
+            for row in selected
+        )
+        content_impact_page = _load_content_impact_page(
+            work,
+            authority,
+            gallery_ids,
+        )
+        exact_preparations = _require_validation_preparations(
+            work,
+            authority,
+            selected,
+            preparations,
+            memberships=content_impact_page.current_observations,
+        )
+    elif replay.stage in {
+        _STAGE_CONTENT_CANDIDATE,
+        _STAGE_VALIDATE_CONTENT_CANDIDATE,
+        _STAGE_GID_CANDIDATE,
+        _STAGE_VALIDATE_GID_CANDIDATE,
+    }:
+        exact_preparations = _require_validation_preparations(
+            work,
+            authority,
+            selected,
+            preparations,
+        )
+    elif replay.stage == _STAGE_IMPACTED_GID:
+        gallery_ids = tuple(
+            require_positive_int63(row[0], field="replayed impacted-GID gallery_id")
+            for row in selected
+        )
+        gid_impact_page = _load_gid_impact_page(work, authority, gallery_ids)
+    elif preparations:
+        raise AnalysisNotReadyError(
+            "analysis replay received preparations for a scalar stage"
+        )
+    live_count = _require_replay_page_materialized(
+        work,
+        authority,
+        stage=replay.stage,
+        after=last,
+        selected=selected,
+        preparations=exact_preparations,
+        live_count=live_count,
+        content_impact_page=content_impact_page,
+        gid_impact_page=gid_impact_page,
+    )
+
+    next_key = last
+    if selected:
+        raw_key = selected[-1][0]
+        if kind == _CURSOR_DIGEST:
+            next_key = require_digest32(raw_key, field="replayed digest cursor")
+        else:
+            next_key = require_positive_int63(
+                raw_key,
+                field="replayed integer cursor",
+            ).to_bytes(8, "big")
+    expected_terminal = not selected
+    expected_cursor = _encode_cursor(
+        kind,
+        next_key,
+        live_count=live_count if live else None,
+    )
+    expected_state = _CHECKPOINT_COMPLETE if expected_terminal else _CHECKPOINT_OPEN
+    if (
+        replay.next_cursor != expected_cursor
+        or replay.row_count != len(selected)
+        or replay.terminal is not expected_terminal
+        or replay.next_state != expected_state
+        or replay.next_processed_count != replay.start_processed_count + len(selected)
+    ):
+        raise AnalysisCorruptionError(
+            "analysis batch receipt differs from its stored-limit evaluator"
+        )
+    if live and expected_terminal and not replay.component_sealed:
+        raise AnalysisCorruptionError(
+            "terminal validation receipt lacks its exact component seal"
+        )
+
+
+def _replay_page_rows(
+    work: VNextUnitOfWork,
+    authority: _RunAuthority,
+    *,
+    stage: bytes,
+    after: bytes | None,
+    limit: int,
+) -> list[tuple[Any, ...]]:
+    integer_after = None if after is None else int.from_bytes(after, "big")
+    if stage == _STAGE_CHANGED_GALLERY:
+        return _changed_gallery_rows(
+            work,
+            authority,
+            after=integer_after,
+            limit=limit,
+        )
+    if stage == _STAGE_CHANGED_FILE_HASH:
+        return _changed_file_hash_rows(work, authority, after=after, limit=limit)
+    if stage == _STAGE_FILE_HASH_DECISION:
+        return _decision_work_rows(work, authority, after=after, limit=limit)
+    if stage == _STAGE_VALIDATE_FILE_HASH:
+        return _validation_key_rows(work, authority, after=after, limit=limit)
+    if stage == _STAGE_IMPACTED_GALLERY:
+        return _impacted_gallery_rows(
+            work,
+            authority,
+            after=integer_after,
+            limit=limit,
+        )
+    if stage in {
+        _STAGE_IMPACTED_CONTENT,
+        _STAGE_CONTENT_CANDIDATE,
+        _STAGE_IMPACTED_GID,
+        _STAGE_GID_CANDIDATE,
+    }:
+        return _workset_gallery_rows(
+            work,
+            authority.analysis_id,
+            after=integer_after,
+            limit=limit,
+        )
+    if stage == _STAGE_VALIDATE_CONTENT_CANDIDATE:
+        return _content_candidate_validation_keys(
+            work,
+            authority,
+            after=integer_after,
+            limit=limit,
+        )
+    if stage == _STAGE_CONTENT_OWNER:
+        return _workset_content_rows(
+            work,
+            authority.analysis_id,
+            after=after,
+            limit=limit,
+        )
+    if stage == _STAGE_VALIDATE_CONTENT_OWNER:
+        return _content_owner_validation_keys(
+            work,
+            authority,
+            after=after,
+            limit=limit,
+        )
+    if stage == _STAGE_VALIDATE_GID_CANDIDATE:
+        return _gid_candidate_validation_keys(
+            work,
+            authority,
+            after=integer_after,
+            limit=limit,
+        )
+    if stage == _STAGE_GID_WINNER:
+        return _workset_gid_rows(
+            work,
+            authority.analysis_id,
+            after=integer_after,
+            limit=limit,
+        )
+    if stage == _STAGE_VALIDATE_GID_WINNER:
+        return _gid_winner_validation_keys(
+            work,
+            authority,
+            after=integer_after,
+            limit=limit,
+        )
+    raise AnalysisCorruptionError("analysis receipt names an unregistered stage")
+
+
+def _require_replay_keyed_page_exact(
+    work: VNextUnitOfWork,
+    analysis_id: bytes,
+    *,
+    stage: bytes,
+    after: bytes | None,
+    selected: Sequence[tuple[Any, ...]],
+    limit: int,
+) -> None:
+    if stage == _STAGE_CHANGED_GALLERY:
+        boundary = 0 if after is None else int.from_bytes(after, "big")
+        if selected:
+            end = require_positive_int63(
+                selected[-1][0],
+                field="replayed changed-gallery end",
+            )
+            rows = work.connector.fetch_all(
+                "SELECT gallery_id, change_kind "
+                "FROM catalog_analysis_changed_galleries "
+                "WHERE analysis_id = %s AND gallery_id > %s AND gallery_id <= %s "
+                "ORDER BY gallery_id LIMIT %s",
+                (analysis_id, boundary, end, limit),
+            )
+        else:
+            rows = work.connector.fetch_all(
+                "SELECT gallery_id, change_kind "
+                "FROM catalog_analysis_changed_galleries "
+                "WHERE analysis_id = %s AND gallery_id > %s "
+                "ORDER BY gallery_id LIMIT %s",
+                (analysis_id, boundary, limit),
+            )
+        if rows != list(selected):
+            raise AnalysisCorruptionError(
+                "changed-gallery materialization differs from its exact page"
+            )
+        return
+    if stage not in {_STAGE_CHANGED_FILE_HASH, _STAGE_IMPACTED_GALLERY}:
+        return
+    if stage == _STAGE_CHANGED_FILE_HASH:
+        table = "catalog_analysis_changed_file_hashes"
+        column = "file_sha256"
+        parameters: list[Any] = [analysis_id]
+        predicates = ["analysis_id = %s"]
+        if after is not None:
+            predicates.append("file_sha256 > %s")
+            parameters.append(require_digest32(after, field="replayed hash start"))
+        if selected:
+            predicates.append("file_sha256 <= %s")
+            parameters.append(
+                require_digest32(selected[-1][0], field="replayed hash end")
+            )
+    else:
+        table = "catalog_analysis_impacted_galleries"
+        column = "gallery_id"
+        boundary = 0 if after is None else int.from_bytes(after, "big")
+        parameters = [analysis_id, boundary]
+        predicates = ["analysis_id = %s", "gallery_id > %s"]
+        if selected:
+            predicates.append("gallery_id <= %s")
+            parameters.append(
+                require_positive_int63(
+                    selected[-1][0],
+                    field="replayed impacted-gallery end",
+                )
+            )
+    parameters.append(limit)
+    rows = work.connector.fetch_all(
+        f"SELECT {column} FROM {table} WHERE "
+        + " AND ".join(predicates)
+        + f" ORDER BY {column} LIMIT %s",
+        tuple(parameters),
+    )
+    if rows != list(selected):
+        raise AnalysisCorruptionError(
+            "analysis keyed materialization differs from its exact page"
+        )
+
+
+def _require_replay_page_materialized(
+    work: VNextUnitOfWork,
+    authority: _RunAuthority,
+    *,
+    stage: bytes,
+    after: bytes | None,
+    selected: Sequence[tuple[Any, ...]],
+    preparations: Sequence[AnalysisGalleryPreparation | None],
+    live_count: int,
+    content_impact_page: _ContentImpactPage | None = None,
+    gid_impact_page: _GidImpactPage | None = None,
+) -> int:
+    if stage == _STAGE_CHANGED_GALLERY:
+        for raw_gallery, change_kind in selected:
+            gallery = require_positive_int63(
+                raw_gallery,
+                field="replayed changed gallery_id",
+            )
+            if work.connector.fetch_one(
+                "SELECT change_kind FROM catalog_analysis_changed_galleries "
+                "WHERE analysis_id = %s AND gallery_id = %s",
+                (authority.analysis_id, gallery),
+            ) != (change_kind,):
+                raise AnalysisCorruptionError(
+                    "changed-gallery page differs from its materialization"
+                )
+        return live_count
+    if stage == _STAGE_CHANGED_FILE_HASH:
+        _require_replay_key_rows(
+            work,
+            authority.analysis_id,
+            selected,
+            table="catalog_analysis_changed_file_hashes",
+            key_column="file_sha256",
+            digest=True,
+        )
+        return live_count
+    if stage in {_STAGE_FILE_HASH_DECISION, _STAGE_VALIDATE_FILE_HASH}:
+        deltas = None
+        if stage == _STAGE_FILE_HASH_DECISION:
+            digests = tuple(
+                require_digest32(row[0], field="replayed decision file_sha256")
+                for row in selected
+            )
+            try:
+                families = load_analysis_exclusion_delta_families(
+                    work.connector,
+                    analysis_id=authority.analysis_id,
+                    file_sha256s=digests,
+                )
+            except AnalysisFamilyCollisionError as error:
+                raise AnalysisCorruptionError(str(error)) from error
+            deltas = {family.file_sha256: family for family in families}
+            if set(deltas) != set(digests):
+                raise AnalysisCorruptionError(
+                    "file-decision page lacks its exact exclusion-delta set"
+                )
+        for row in selected:
+            digest = require_digest32(row[0], field="replayed decision file_sha256")
+            decision = _require_replay_file_decision(
+                work,
+                authority,
+                digest,
+                require_delta=stage == _STAGE_FILE_HASH_DECISION,
+                delta=None if deltas is None else deltas[digest],
+            )
+            if stage == _STAGE_VALIDATE_FILE_HASH and decision is not None:
+                live_count = _sum_int63(
+                    live_count,
+                    1,
+                    field="replayed file-decision live row count",
+                )
+        return live_count
+    if stage == _STAGE_IMPACTED_GALLERY:
+        _require_replay_key_rows(
+            work,
+            authority.analysis_id,
+            selected,
+            table="catalog_analysis_impacted_galleries",
+            key_column="gallery_id",
+            digest=False,
+        )
+        return live_count
+    if stage == _STAGE_IMPACTED_CONTENT:
+        if content_impact_page is None:
+            raise AnalysisCorruptionError("content replay lost page authority")
+        _require_replay_impacted_content(
+            work,
+            authority,
+            after=after,
+            selected=selected,
+            preparations=preparations,
+            impact_page=content_impact_page,
+        )
+        return live_count
+    if stage in {
+        _STAGE_CONTENT_CANDIDATE,
+        _STAGE_VALIDATE_CONTENT_CANDIDATE,
+    }:
+        for row, preparation in zip(selected, preparations, strict=True):
+            gallery_id = require_positive_int63(
+                row[0],
+                field="replayed content candidate gallery_id",
+            )
+            content_candidate = _require_replay_content_candidate(
+                work,
+                authority,
+                gallery_id,
+                preparation,
+            )
+            if (
+                stage == _STAGE_VALIDATE_CONTENT_CANDIDATE
+                and content_candidate is not None
+            ):
+                live_count = _sum_int63(
+                    live_count,
+                    1,
+                    field="replayed content-candidate live row count",
+                )
+        return live_count
+    if stage in {_STAGE_CONTENT_OWNER, _STAGE_VALIDATE_CONTENT_OWNER}:
+        for row in selected:
+            content = require_digest32(row[0], field="replayed content-owner key")
+            owner = _require_replay_content_owner(
+                work,
+                authority,
+                content,
+            )
+            if stage == _STAGE_VALIDATE_CONTENT_OWNER and owner is not None:
+                live_count = _sum_int63(
+                    live_count,
+                    1,
+                    field="replayed content-owner live row count",
+                )
+        return live_count
+    if stage == _STAGE_IMPACTED_GID:
+        if gid_impact_page is None:
+            raise AnalysisCorruptionError("GID replay lost page authority")
+        _require_replay_impacted_gid(
+            work,
+            authority,
+            after=after,
+            selected=selected,
+            impact_page=gid_impact_page,
+        )
+        return live_count
+    if stage in {_STAGE_GID_CANDIDATE, _STAGE_VALIDATE_GID_CANDIDATE}:
+        for row, preparation in zip(selected, preparations, strict=True):
+            gallery_id = require_positive_int63(
+                row[0],
+                field="replayed GID candidate gallery_id",
+            )
+            gid_candidate = _require_replay_gid_candidate(
+                work,
+                authority,
+                gallery_id,
+                preparation,
+            )
+            if stage == _STAGE_VALIDATE_GID_CANDIDATE and gid_candidate is not None:
+                live_count = _sum_int63(
+                    live_count,
+                    1,
+                    field="replayed GID-candidate live row count",
+                )
+        return live_count
+    if stage in {_STAGE_GID_WINNER, _STAGE_VALIDATE_GID_WINNER}:
+        for row in selected:
+            gid = require_positive_int63(row[0], field="replayed GID winner key")
+            winner = _require_replay_gid_winner(
+                work,
+                authority,
+                gid,
+            )
+            if stage == _STAGE_VALIDATE_GID_WINNER and winner is not None:
+                live_count = _sum_int63(
+                    live_count,
+                    1,
+                    field="replayed GID-winner live row count",
+                )
+        if not selected:
+            _require_complete_gid_winner_keyspace(work, authority.analysis_id)
+        return live_count
+    raise AnalysisCorruptionError("analysis replay stage is not registered")
+
+
+def _require_replay_key_rows(
+    work: VNextUnitOfWork,
+    analysis_id: bytes,
+    selected: Sequence[tuple[Any, ...]],
+    *,
+    table: str,
+    key_column: str,
+    digest: bool,
+) -> None:
+    registered = {
+        ("catalog_analysis_changed_file_hashes", "file_sha256", True),
+        ("catalog_analysis_impacted_galleries", "gallery_id", False),
+    }
+    if (table, key_column, digest) not in registered:
+        raise ValueError("unregistered replay materialization")
+    for row in selected:
+        key: bytes | int = (
+            require_digest32(row[0], field="replayed materialized digest")
+            if digest
+            else require_positive_int63(row[0], field="replayed materialized integer")
+        )
+        if not work.connector.fetch_one(
+            f"SELECT 1 FROM {table} " f"WHERE analysis_id = %s AND {key_column} = %s",
+            (analysis_id, key),
+        ):
+            raise AnalysisCorruptionError(
+                "analysis page is missing a derived materialization"
+            )
+
+
+def _require_replay_file_decision(
+    work: VNextUnitOfWork,
+    authority: _RunAuthority,
+    digest: bytes,
+    *,
+    require_delta: bool,
+    delta: AnalysisExclusionDeltaFamily | None,
+) -> _Decision | None:
+    target = _evaluate_file_decision(work, authority, digest)
+    parent = _resolved_decision(work, authority.baseline_analysis_id, digest)
+    if require_delta:
+        parent_policy = (
+            authority.policy
+            if authority.baseline_analysis_id is None
+            else _analysis_policy(work, authority.baseline_analysis_id)
+        )
+        expected_delta = (
+            _excluded(parent, parent_policy),
+            _excluded(target, authority.policy),
+        )
+        if delta is None or (delta.old_excluded, delta.new_excluded) != expected_delta:
+            raise AnalysisCorruptionError(
+                "file-decision exclusion delta differs from its evaluator"
+            )
+    shadow = _shadow_decision(work, authority.analysis_id, digest)
+    tombstone = bool(
+        work.connector.fetch_one(
+            "SELECT 1 FROM catalog_analysis_file_hash_decision_tombstone "
+            "WHERE analysis_id = %s AND file_sha256 = %s",
+            (authority.analysis_id, digest),
+        )
+    )
+    _require_overlay_exact(
+        label="file decision",
+        overlay_depth=authority.overlay_depth,
+        target=target,
+        parent=parent,
+        shadow=shadow,
+        tombstone=tombstone,
+    )
+    if _resolved_decision(work, authority.analysis_id, digest) != target:
+        raise AnalysisCorruptionError(
+            "resolved file decision differs from its evaluator"
+        )
+    return target
+
+
+def _require_replay_impacted_content(
+    work: VNextUnitOfWork,
+    authority: _RunAuthority,
+    *,
+    after: bytes | None,
+    selected: Sequence[tuple[Any, ...]],
+    preparations: Sequence[AnalysisGalleryPreparation | None],
+    impact_page: _ContentImpactPage,
+) -> None:
+    expected_rows: list[tuple[int, bytes]] = []
+    for row, preparation in zip(selected, preparations, strict=True):
+        gallery_id = require_positive_int63(
+            row[0],
+            field="replayed impacted-content gallery_id",
+        )
+        old = impact_page.old_candidates[gallery_id]
+        gallery_contents = {
+            value
+            for value in (
+                None if old is None else old.content_sha256,
+                None if preparation is None else preparation.content_sha256,
+            )
+            if value is not None
+        }
+        expected_rows.extend(
+            (gallery_id, content) for content in sorted(gallery_contents)
+        )
+    boundary = None if after is None else int.from_bytes(after, "big")
+    through = (
+        None
+        if not selected
+        else require_positive_int63(
+            selected[-1][0],
+            field="replayed impacted-content through gallery_id",
+        )
+    )
+    try:
+        require_exact_analysis_impacted_content_provenance_page(
+            work.connector,
+            analysis_id=authority.analysis_id,
+            after_gallery_id=boundary,
+            through_gallery_id=through,
+            expected=tuple(expected_rows),
+        )
+        if not selected:
+            require_complete_analysis_impacted_content_keyspace(
+                work.connector,
+                analysis_id=authority.analysis_id,
+            )
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+
+
+def _require_replay_content_candidate(
+    work: VNextUnitOfWork,
+    authority: _RunAuthority,
+    gallery_id: int,
+    preparation: AnalysisGalleryPreparation | None,
+) -> _ContentCandidate | None:
+    target = (
+        None
+        if preparation is None
+        else _content_candidate_from_preparation(preparation)
+    )
+    parent = _resolved_content_candidate(
+        work,
+        authority.baseline_analysis_id,
+        gallery_id,
+    )
+    shadow = _shadow_content_candidate(work, authority.analysis_id, gallery_id)
+    tombstone = _has_key(
+        work,
+        "catalog_analysis_content_owner_candidate_tombstones",
+        "gallery_id",
+        authority.analysis_id,
+        gallery_id,
+    )
+    _require_overlay_exact(
+        label="content candidate",
+        overlay_depth=authority.overlay_depth,
+        target=target,
+        parent=parent,
+        shadow=shadow,
+        tombstone=tombstone,
+    )
+    if _resolved_content_candidate(work, authority.analysis_id, gallery_id) != target:
+        raise AnalysisCorruptionError(
+            "resolved content candidate differs from its evaluator"
+        )
+    return target
+
+
+def _require_replay_content_owner(
+    work: VNextUnitOfWork,
+    authority: _RunAuthority,
+    content: bytes,
+) -> _ContentOwner | None:
+    target = _evaluate_content_owner(work, authority, content)
+    parent = _resolved_content_owner(
+        work,
+        authority.baseline_analysis_id,
+        content,
+    )
+    shadow = _shadow_content_owner(work, authority.analysis_id, content)
+    tombstone = _has_key(
+        work,
+        "catalog_analysis_content_owner_tombstones",
+        "content_sha256",
+        authority.analysis_id,
+        content,
+    )
+    _require_overlay_exact(
+        label="content owner",
+        overlay_depth=authority.overlay_depth,
+        target=target,
+        parent=parent,
+        shadow=shadow,
+        tombstone=tombstone,
+    )
+    if _resolved_content_owner(work, authority.analysis_id, content) != target:
+        raise AnalysisCorruptionError(
+            "resolved content owner differs from its evaluator"
+        )
+    return target
+
+
+def _require_replay_impacted_gid(
+    work: VNextUnitOfWork,
+    authority: _RunAuthority,
+    *,
+    after: bytes | None,
+    selected: Sequence[tuple[Any, ...]],
+    impact_page: _GidImpactPage,
+) -> None:
+    expected_rows: list[tuple[int, int]] = []
+    for row in selected:
+        gallery_id = require_positive_int63(
+            row[0],
+            field="replayed impacted-GID gallery_id",
+        )
+        old_gid = impact_page.old_gids[gallery_id]
+        expected = {
+            value
+            for value in (
+                old_gid,
+                impact_page.current_gids[gallery_id],
+            )
+            if value is not None
+        }
+        expected_rows.extend((gallery_id, gid) for gid in sorted(expected))
+    boundary = None if after is None else int.from_bytes(after, "big")
+    through = (
+        None
+        if not selected
+        else require_positive_int63(
+            selected[-1][0],
+            field="replayed impacted-GID through gallery_id",
+        )
+    )
+    try:
+        require_exact_analysis_impacted_gid_provenance_page(
+            work.connector,
+            analysis_id=authority.analysis_id,
+            after_gallery_id=boundary,
+            through_gallery_id=through,
+            expected=tuple(expected_rows),
+        )
+        if not selected:
+            require_complete_analysis_impacted_gid_keyspace(
+                work.connector,
+                analysis_id=authority.analysis_id,
+            )
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+
+
+def _require_replay_gid_candidate(
+    work: VNextUnitOfWork,
+    authority: _RunAuthority,
+    gallery_id: int,
+    preparation: AnalysisGalleryPreparation | None,
+) -> _GidCandidate | None:
+    target = (
+        None
+        if preparation is None
+        else _gid_candidate_from_preparation(work, authority, preparation)
+    )
+    parent = _resolved_gid_candidate(
+        work,
+        authority.baseline_analysis_id,
+        gallery_id,
+    )
+    shadow = _shadow_gid_candidate(work, authority.analysis_id, gallery_id)
+    tombstone = _has_key(
+        work,
+        "catalog_analysis_gid_candidate_tombstones",
+        "gallery_id",
+        authority.analysis_id,
+        gallery_id,
+    )
+    _require_overlay_exact(
+        label="GID candidate",
+        overlay_depth=authority.overlay_depth,
+        target=target,
+        parent=parent,
+        shadow=shadow,
+        tombstone=tombstone,
+    )
+    if _resolved_gid_candidate(work, authority.analysis_id, gallery_id) != target:
+        raise AnalysisCorruptionError(
+            "resolved GID candidate differs from its evaluator"
+        )
+    return target
+
+
+def _require_replay_gid_winner(
+    work: VNextUnitOfWork,
+    authority: _RunAuthority,
+    gid: int,
+) -> _GidWinner | None:
+    target = _evaluate_gid_winner(work, authority, gid)
+    parent = _resolved_gid_winner(work, authority.baseline_analysis_id, gid)
+    shadow = _shadow_gid_winner(work, authority.analysis_id, gid)
+    tombstone = _has_key(
+        work,
+        "catalog_analysis_gid_winner_tombstones",
+        "gid",
+        authority.analysis_id,
+        gid,
+    )
+    _require_overlay_exact(
+        label="GID winner",
+        overlay_depth=authority.overlay_depth,
+        target=target,
+        parent=parent,
+        shadow=shadow,
+        tombstone=tombstone,
+    )
+    if _resolved_gid_winner(work, authority.analysis_id, gid) != target:
+        raise AnalysisCorruptionError("resolved GID winner differs from its evaluator")
+    return target
 
 
 def _require_stage_complete(
@@ -3986,16 +5323,18 @@ def _require_component_sealed(
     analysis_id: bytes,
     component: bytes,
 ) -> None:
-    row = work.connector.fetch_one(
-        "SELECT row_count FROM catalog_analysis_state_component_seals "
-        "WHERE analysis_id = %s AND state_component = %s",
-        (analysis_id, component),
-    )
-    if len(row) != 1:
+    try:
+        family = load_analysis_state_component_family(
+            work.connector,
+            analysis_id=analysis_id,
+            state_component=component,
+        )
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+    if family is None:
         raise AnalysisNotReadyError(
             f"analysis component {component!r} is not independently sealed"
         )
-    require_int63(row[0], field=f"component {component!r} row_count")
 
 
 def _require_unsealed_component(
@@ -4003,11 +5342,15 @@ def _require_unsealed_component(
     analysis_id: bytes,
     component: bytes,
 ) -> None:
-    if work.connector.fetch_one(
-        "SELECT 1 FROM catalog_analysis_state_component_seals "
-        "WHERE analysis_id = %s AND state_component = %s",
-        (analysis_id, component),
-    ):
+    try:
+        family = load_analysis_state_component_family(
+            work.connector,
+            analysis_id=analysis_id,
+            state_component=component,
+        )
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+    if family is not None:
         raise AnalysisCorruptionError(
             f"component {component!r} seal exists while validation is OPEN"
         )
@@ -4041,12 +5384,16 @@ def _finish_component_validation(
     )
     if not terminal:
         return result
-    work.connector.execute(
-        "INSERT INTO catalog_analysis_state_component_seals "
-        "(analysis_id, state_component, row_count, sealed_at) "
-        "VALUES (%s, %s, %s, %s)",
-        (authority.analysis_id, component, live_count, now),
-    )
+    try:
+        ensure_analysis_state_component_family(
+            work.connector,
+            analysis_id=authority.analysis_id,
+            state_component=component,
+            row_count=live_count,
+            sealed_at=result.committed_at,
+        )
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
     return AnalysisBatchResult(
         result.analysis_id,
         result.stage,
@@ -4054,6 +5401,7 @@ def _finish_component_validation(
         result.start_generation,
         result.start_cursor,
         result.start_processed_count,
+        result.page_limit,
         result.next_cursor,
         result.next_processed_count,
         result.next_state,
@@ -4117,7 +5465,7 @@ def _has_key(
         raise ValueError("unregistered overlay tombstone lookup")
     return bool(
         work.connector.fetch_one(
-            f"SELECT 1 FROM {table} " f"WHERE analysis_id = %s AND {key_column} = %s",
+            f"SELECT 1 FROM {table} WHERE analysis_id = %s AND {key_column} = %s",
             (analysis_id, key),
         )
     )
@@ -4174,11 +5522,64 @@ def _workset_gid_rows(
     )
 
 
+def _proposed_gallery_cte(gallery_ids: Sequence[int]) -> tuple[str, tuple[int, ...]]:
+    galleries = tuple(
+        require_positive_int63(gallery, field="proposed gallery_id")
+        for gallery in gallery_ids
+    )
+    if (
+        not galleries
+        or len(galleries) > _MAX_BATCH_ROWS
+        or len(set(galleries)) != len(galleries)
+    ):
+        raise ValueError("proposed galleries must be one nonempty bounded set")
+    if tuple(sorted(galleries)) != galleries:
+        raise ValueError("proposed galleries are not strictly ordered")
+    sql = " UNION ALL ".join(
+        "SELECT %s AS gallery_id" if index == 0 else "SELECT %s"
+        for index, _gallery in enumerate(galleries)
+    )
+    return sql, galleries
+
+
+def _current_memberships_for_page(
+    work: VNextUnitOfWork,
+    authority: _RunAuthority,
+    gallery_ids: Sequence[int],
+) -> dict[int, int | None]:
+    if not gallery_ids:
+        return {}
+    proposed, parameters = _proposed_gallery_cte(gallery_ids)
+    rows = work.connector.fetch_all(
+        "WITH proposed(gallery_id) AS ("
+        + proposed
+        + ") SELECT proposed.gallery_id, member.observation_id "
+        "FROM proposed LEFT JOIN catalog_source_build_galleries AS member "
+        "ON member.build_id = %s AND member.gallery_id = proposed.gallery_id "
+        "ORDER BY proposed.gallery_id LIMIT 129",
+        (*parameters, authority.build_id),
+    )
+    if len(rows) != len(parameters):
+        raise AnalysisCorruptionError("current membership page changed shape")
+    result: dict[int, int | None] = {}
+    for expected, row in zip(parameters, rows, strict=True):
+        if len(row) != 2 or row[0] != expected:
+            raise AnalysisCorruptionError("current membership page changed order")
+        result[expected] = (
+            None
+            if row[1] is None
+            else require_positive_int63(row[1], field="current observation_id")
+        )
+    return result
+
+
 def _require_transition_preparations(
     work: VNextUnitOfWork,
     authority: _RunAuthority,
     selected: Sequence[tuple[Any, ...]],
     preparations: Sequence[AnalysisGalleryPreparation | None],
+    *,
+    memberships: dict[int, int | None] | None = None,
 ) -> tuple[AnalysisGalleryPreparation | None, ...]:
     """Require one live plan, or exact ``None``, for each current/removed key."""
 
@@ -4187,6 +5588,7 @@ def _require_transition_preparations(
         authority,
         selected,
         preparations,
+        memberships=memberships,
     )
 
 
@@ -4195,23 +5597,29 @@ def _require_validation_preparations(
     authority: _RunAuthority,
     selected: Sequence[tuple[Any, ...]],
     preparations: Sequence[AnalysisGalleryPreparation | None],
+    *,
+    memberships: dict[int, int | None] | None = None,
 ) -> tuple[AnalysisGalleryPreparation | None, ...]:
     exact = tuple(preparations)
     if len(exact) != len(selected):
         raise AnalysisNotReadyError(
             "validation preparations do not cover the exact server keyset"
         )
-    for row, preparation in zip(selected, exact, strict=True):
-        gallery_id = require_positive_int63(
-            row[0],
-            field="validation selected gallery_id",
-        )
-        current = work.connector.fetch_one(
-            "SELECT observation_id FROM catalog_source_build_galleries "
-            "WHERE build_id = %s AND gallery_id = %s",
-            (authority.build_id, gallery_id),
-        )
-        if not current:
+    gallery_ids = tuple(
+        require_positive_int63(row[0], field="validation selected gallery_id")
+        for row in selected
+    )
+    exact_memberships = (
+        _current_memberships_for_page(work, authority, gallery_ids)
+        if memberships is None
+        else memberships
+    )
+    if set(exact_memberships) != set(gallery_ids):
+        raise AnalysisCorruptionError("current membership page differs from keyset")
+    shared_receipt: AnalysisPreparationAuthority | None = None
+    for gallery_id, preparation in zip(gallery_ids, exact, strict=True):
+        observation_id = exact_memberships[gallery_id]
+        if observation_id is None:
             if preparation is not None:
                 raise AnalysisNotReadyError(
                     "removed gallery received a live preparation"
@@ -4224,17 +5632,24 @@ def _require_validation_preparations(
         preparation.__post_init__()
         if (
             preparation.gallery_id != gallery_id
-            or preparation.observation_id
-            != require_positive_int63(current[0], field="current observation_id")
+            or preparation.observation_id != observation_id
         ):
             raise AnalysisNotReadyError(
                 "validation preparation differs from current membership"
             )
         _validate_preparation_authority(
-            work=work,
+            work=None,
             run=authority,
             preparation=preparation,
         )
+        if shared_receipt is None:
+            shared_receipt = preparation.authority
+        elif preparation.authority != shared_receipt:
+            raise AnalysisNotReadyError(
+                "validation preparations carry different authority receipts"
+            )
+    if shared_receipt is not None:
+        _validate_authority_receipt(work, authority, shared_receipt)
     return exact
 
 
@@ -4242,24 +5657,17 @@ def _component_seal_receipts(
     work: VNextUnitOfWork,
     analysis_id: bytes,
 ) -> tuple[tuple[bytes, int, int], ...]:
-    rows = work.connector.fetch_all(
-        "SELECT state_component, row_count, sealed_at "
-        "FROM catalog_analysis_state_component_seals "
-        "WHERE analysis_id = %s ORDER BY state_component LIMIT 6",
-        (analysis_id,),
-    )
-    return tuple(
-        (
-            require_bounded_bytes(
-                row[0],
-                field="component seal state_component",
-                minimum=1,
-                maximum=64,
-            ),
-            require_int63(row[1], field="component seal row_count"),
-            require_int63(row[2], field="component seal sealed_at"),
+    try:
+        families = load_analysis_state_component_families(
+            work.connector,
+            analysis_id=analysis_id,
+            limit=6,
         )
-        for row in rows
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+    return tuple(
+        (family.state_component, family.row_count, family.sealed_at)
+        for family in families
     )
 
 
@@ -4271,18 +5679,29 @@ def _load_preparation_authority(
 ) -> _RunAuthority:
     if receipt._capability is not _PREPARATION_TOKEN:
         raise TypeError("preparation authority is not repository-issued")
-    row = work.connector.fetch_one(
-        "SELECT build_id, policy_id, input_manifest_sha256, state "
-        "FROM catalog_analysis_runs WHERE analysis_id = %s",
-        (receipt.analysis_id,),
-    )
+    try:
+        family = load_analysis_run_family(
+            work.connector,
+            analysis_id=receipt.analysis_id,
+        )
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
     expected_prefix = (
         receipt.build_id,
         receipt.policy_id,
         receipt.input_manifest_sha256,
     )
     allowed_states = {"OPEN", "COMPLETE"} if allow_complete else {"OPEN"}
-    if len(row) != 4 or row[:3] != expected_prefix or row[3] not in allowed_states:
+    if (
+        family is None
+        or (
+            family.build_id,
+            family.policy_id,
+            family.input_manifest_sha256,
+        )
+        != expected_prefix
+        or family.state not in allowed_states
+    ):
         raise AnalysisNotReadyError(
             "preparation authority differs from the immutable writable run"
         )
@@ -4299,11 +5718,7 @@ def _load_preparation_authority(
     )
     if working != (receipt.build_id,):
         raise AnalysisNotReadyError("preparation build lost the working slot")
-    if work.connector.fetch_one(
-        "SELECT state FROM catalog_source_builds WHERE build_id = %s",
-        (receipt.build_id,),
-    ) != ("SEALED",):
-        raise AnalysisNotReadyError("preparation build is no longer SEALED")
+    _require_source_build_sealed(work.connector, receipt.build_id)
     if _component_seal_receipts(work, receipt.analysis_id) != receipt.component_seals:
         raise AnalysisNotReadyError("preparation component seal set changed")
     baseline_row = work.connector.fetch_one(
@@ -4316,14 +5731,10 @@ def _load_preparation_authority(
         if not baseline_row
         else require_uuid16(baseline_row[0], field="preparation baseline")
     )
-    anchor = work.connector.fetch_one(
-        "SELECT overlay_depth FROM catalog_analysis_state_anchors "
-        "WHERE analysis_id = %s",
-        (receipt.analysis_id,),
+    _persisted_baseline, _anchor, depth, _ancestry = _load_layout(
+        work,
+        receipt.analysis_id,
     )
-    if len(anchor) != 1:
-        raise AnalysisCorruptionError("preparation analysis anchor is missing")
-    depth = require_int63(anchor[0], field="preparation overlay_depth")
     if depth > _MAX_OVERLAY_DEPTH:
         raise AnalysisCorruptionError("preparation overlay depth exceeds 16")
     return _RunAuthority(
@@ -4368,132 +5779,131 @@ def _validate_authority_receipt(
     current_generation = _generation_for_build(work, run.build_id)
     if current_generation != receipt.generation:
         raise AnalysisNotReadyError("preparation generation is stale")
-    input_row = work.connector.fetch_one(
-        "SELECT input_manifest_sha256 FROM catalog_analysis_runs "
-        "WHERE analysis_id = %s",
-        (run.analysis_id,),
-    )
-    if input_row != (receipt.input_manifest_sha256,):
+    try:
+        family = load_analysis_run_family(
+            work.connector,
+            analysis_id=run.analysis_id,
+        )
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+    if family is None or family.input_manifest_sha256 != receipt.input_manifest_sha256:
         raise AnalysisCorruptionError("preparation input manifest changed")
-    if work.connector.fetch_one(
-        "SELECT state FROM catalog_source_builds WHERE build_id = %s",
-        (run.build_id,),
-    ) != ("SEALED",):
-        raise AnalysisNotReadyError("preparation build is no longer SEALED")
+    _require_source_build_sealed(work.connector, run.build_id)
     if _component_seal_receipts(work, run.analysis_id) != receipt.component_seals:
         raise AnalysisNotReadyError("preparation component seal receipt changed")
 
 
-def _insert_impacted_content(
-    work: VNextUnitOfWork,
-    analysis_id: bytes,
-    content_sha256: bytes,
-) -> None:
-    content = require_digest32(content_sha256, field="impacted content_sha256")
-    existing = work.connector.fetch_one(
-        "SELECT analysis_id, content_sha256 FROM catalog_analysis_impacted_content "
-        "WHERE analysis_id = %s AND content_sha256 = %s",
-        (analysis_id, content),
-    )
-    if existing:
-        if existing != (analysis_id, content):
-            raise AnalysisCorruptionError("impacted content natural key changed")
-        return
-    work.connector.execute(
-        "INSERT INTO catalog_analysis_impacted_content "
-        "(analysis_id, content_sha256) VALUES (%s, %s)",
-        (analysis_id, content),
-    )
-
-
-def _insert_impacted_gid(
-    work: VNextUnitOfWork,
-    analysis_id: bytes,
-    gid: int,
-) -> None:
-    exact_gid = require_positive_int63(gid, field="impacted gid")
-    existing = work.connector.fetch_one(
-        "SELECT analysis_id, gid FROM catalog_analysis_impacted_gid "
-        "WHERE analysis_id = %s AND gid = %s",
-        (analysis_id, exact_gid),
-    )
-    if existing:
-        if existing != (analysis_id, exact_gid):
-            raise AnalysisCorruptionError("impacted GID natural key changed")
-        return
-    work.connector.execute(
-        "INSERT INTO catalog_analysis_impacted_gid "
-        "(analysis_id, gid) VALUES (%s, %s)",
-        (analysis_id, exact_gid),
-    )
-
-
-def _consume_effective_content_claim(
+def _consume_effective_content_claims(
     work: VNextUnitOfWork,
     authority: _RunAuthority,
-    preparation: AnalysisGalleryPreparation,
+    preparations: Sequence[AnalysisGalleryPreparation | None],
+    *,
+    preexisting_contents: frozenset[bytes],
 ) -> None:
-    plan = preparation.content_upload_plan
-    content = preparation.content_sha256
-    if plan is None or content is None:
-        raise AnalysisCorruptionError("content claim handoff has no canonical plan")
-    if plan.digest_domain != _EFFECTIVE_CONTENT_DOMAIN or plan.value_sha256 != content:
-        raise AnalysisCorruptionError("content plan differs from preparation")
-    membership = work.connector.fetch_one(
-        "SELECT observation_id FROM catalog_source_build_galleries "
-        "WHERE build_id = %s AND gallery_id = %s",
-        (authority.build_id, preparation.gallery_id),
-    )
-    if membership != (preparation.observation_id,):
-        raise AnalysisNotReadyError("prepared gallery membership changed")
-    allocation = work.connector.fetch_one(
-        "SELECT a.digest_domain, a.byte_count, i.root_page_sha256 "
-        "FROM catalog_canonical_value_allocations AS a "
-        "JOIN catalog_canonical_value_identities AS i "
-        "ON i.value_sha256 = a.value_sha256 WHERE a.value_sha256 = %s",
-        (content,),
-    )
-    if len(allocation) != 3:
-        raise AnalysisNotReadyError(
-            "effective-content canonical identity is not sealed"
+    plans: dict[bytes, CanonicalValueUploadPlan] = {}
+    generation: int | None = None
+    for preparation in preparations:
+        if preparation is None or preparation.content_sha256 is None:
+            continue
+        plan = preparation.content_upload_plan
+        content = preparation.content_sha256
+        if plan is None:
+            raise AnalysisCorruptionError("content claim handoff has no canonical plan")
+        if (
+            plan.digest_domain != _EFFECTIVE_CONTENT_DOMAIN
+            or plan.value_sha256 != content
+        ):
+            raise AnalysisCorruptionError("content plan differs from preparation")
+        if generation is None:
+            generation = preparation.authority.generation
+        elif generation != preparation.authority.generation:
+            raise AnalysisNotReadyError(
+                "content claim handoff spans multiple live generations"
+            )
+        previous = plans.get(content)
+        if previous is not None and (
+            previous.digest_domain,
+            previous.byte_count,
+            previous.root_page_sha256,
+        ) != (plan.digest_domain, plan.byte_count, plan.root_page_sha256):
+            raise AnalysisCorruptionError(
+                "duplicate content preparations disagree on canonical identity"
+            )
+        plans[content] = plan
+    if not plans:
+        return
+    if generation is None:
+        raise AnalysisCorruptionError("content claim handoff lost its generation")
+    contents = tuple(sorted(plans))
+    try:
+        allocations = load_sealed_value_identities(
+            work.connector,
+            value_sha256s=contents,
         )
-    if (
-        allocation[0] != _EFFECTIVE_CONTENT_DOMAIN
-        or require_int63(allocation[1], field="effective-content byte_count")
-        != plan.byte_count
-        or require_digest32(allocation[2], field="effective-content root")
-        != plan.root_page_sha256
-    ):
+    except CanonicalValueCollisionError as error:
         raise AnalysisCorruptionError(
-            "effective-content canonical identity differs from preparation"
+            "effective-content canonical identity is partial or corrupt"
+        ) from error
+    if set(allocations) != set(contents):
+        raise AnalysisNotReadyError(
+            "effective-content canonical identity set is not exactly sealed"
         )
-    generation = _generation_for_build(work, authority.build_id)
-    claim = work.lock_row(
+    for content in contents:
+        allocation = allocations[content]
+        plan = plans[content]
+        if (
+            allocation.digest_domain != _EFFECTIVE_CONTENT_DOMAIN
+            or allocation.byte_count != plan.byte_count
+            or allocation.root_page_sha256 != plan.root_page_sha256
+        ):
+            raise AnalysisCorruptionError(
+                "effective-content canonical identity differs from preparation"
+            )
+    placeholders = ", ".join("%s" for _content in contents)
+    lock_keys = tuple(
+        sorted(
+            encode_lock_key("analysis-content-upload", generation, content)
+            for content in contents
+        )
+    )
+    claims = work.lock_rows(
         LockRank.CHECKPOINT,
-        encode_lock_key("analysis-content-upload", generation, content),
+        lock_keys,
         "SELECT generation, value_sha256 "
         "FROM operational_canonical_value_uploads "
-        "WHERE generation = %s AND value_sha256 = %s",
-        (generation, content),
+        f"WHERE generation = %s AND value_sha256 IN ({placeholders}) "
+        "ORDER BY value_sha256",
+        (generation, *contents),
     )
-    if not claim:
-        if work.connector.fetch_one(
-            "SELECT 1 FROM catalog_analysis_impacted_content "
-            "WHERE analysis_id = %s AND content_sha256 = %s",
-            (authority.analysis_id, content),
+    claimed: set[bytes] = set()
+    previous_claim: bytes | None = None
+    for claim in claims:
+        if len(claim) != 2 or claim[0] != generation:
+            raise AnalysisCorruptionError("effective-content upload claim changed")
+        content = require_digest32(claim[1], field="content upload claim digest")
+        if content not in plans or (
+            previous_claim is not None and content <= previous_claim
         ):
-            return
+            raise AnalysisCorruptionError(
+                "effective-content upload claim set changed shape"
+            )
+        claimed.add(content)
+        previous_claim = content
+    missing = set(contents) - claimed
+    if not missing.issubset(preexisting_contents):
         raise AnalysisNotReadyError(
             "effective-content handoff requires its live-generation upload claim"
         )
-    if claim != (generation, content):
-        raise AnalysisCorruptionError("effective-content upload claim changed")
+    if not claimed:
+        return
+    claimed_contents = tuple(sorted(claimed))
+    delete_placeholders = ", ".join("%s" for _content in claimed_contents)
     deleted = work.connector.execute_affected(
         "DELETE FROM operational_canonical_value_uploads "
-        "WHERE generation = %s AND value_sha256 = %s",
-        (generation, content),
+        f"WHERE generation = %s AND value_sha256 IN ({delete_placeholders})",
+        (generation, *claimed_contents),
     )
-    if deleted != 1:
+    if deleted != len(claimed_contents):
         raise AnalysisCorruptionError(
             "effective-content upload claim changed during handoff"
         )
@@ -4510,27 +5920,219 @@ def _generation_for_build(work: VNextUnitOfWork, build_id: bytes) -> int:
     return require_positive_int63(row[0], field="analysis build generation")
 
 
+def _read_analysis_authority(
+    work: VNextUnitOfWork,
+    analysis_id: bytes,
+) -> _RunAuthority:
+    """Load immutable analysis/build authority without requiring live ownership."""
+
+    analysis = require_uuid16(analysis_id, field="historical analysis_id")
+    try:
+        family = load_analysis_run_family(work.connector, analysis_id=analysis)
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+    if family is None or family.state != "COMPLETE":
+        raise AnalysisCorruptionError("historical analysis is not exactly COMPLETE")
+    baseline, _anchor, depth, _ancestry = _load_layout(work, analysis)
+    return _RunAuthority(
+        analysis,
+        family.build_id,
+        _load_policy(work, family.policy_id),
+        baseline,
+        depth,
+    )
+
+
+def _load_content_impact_page(
+    work: VNextUnitOfWork,
+    authority: _RunAuthority,
+    gallery_ids: Sequence[int],
+) -> _ContentImpactPage:
+    """Load current membership and baseline content authority in one page read."""
+
+    galleries = tuple(gallery_ids)
+    if not galleries:
+        return _ContentImpactPage({}, {})
+    baseline = (
+        None
+        if authority.baseline_analysis_id is None
+        else _read_analysis_authority(work, authority.baseline_analysis_id)
+    )
+    baseline_build_id = None if baseline is None else baseline.build_id
+    baseline_analysis_id = None if baseline is None else baseline.analysis_id
+    proposed, parameters = _proposed_gallery_cte(galleries)
+    rows = work.connector.fetch_all(
+        "WITH proposed(gallery_id) AS ("
+        + proposed
+        + ") SELECT proposed.gallery_id, current_member.observation_id, "
+        "baseline_member.observation_id, baseline_metadata.gid, "
+        "baseline_metadata.download_time, candidate.content_sha256, "
+        "candidate.prefer_not_already_uploaded, candidate.title_scalar_count, "
+        "candidate.download_time "
+        "FROM proposed LEFT JOIN catalog_source_build_galleries AS current_member "
+        "ON current_member.build_id = %s "
+        "AND current_member.gallery_id = proposed.gallery_id "
+        "LEFT JOIN catalog_source_build_galleries AS baseline_member "
+        "ON baseline_member.build_id = %s "
+        "AND baseline_member.gallery_id = proposed.gallery_id "
+        "LEFT JOIN catalog_gallery_observation_metadata AS baseline_metadata "
+        "ON baseline_metadata.gallery_id = baseline_member.gallery_id "
+        "AND baseline_metadata.observation_id = baseline_member.observation_id "
+        "LEFT JOIN catalog_analysis_content_owner_candidate_resolved AS candidate "
+        "ON candidate.analysis_id = %s "
+        "AND candidate.gallery_id = proposed.gallery_id "
+        "ORDER BY proposed.gallery_id LIMIT 129",
+        (
+            *parameters,
+            authority.build_id,
+            baseline_build_id,
+            baseline_analysis_id,
+        ),
+    )
+    if len(rows) != len(galleries):
+        raise AnalysisCorruptionError("content impact authority page changed shape")
+    current: dict[int, int | None] = {}
+    old: dict[int, _ContentCandidate | None] = {}
+    for gallery, row in zip(galleries, rows, strict=True):
+        if len(row) != 9 or row[0] != gallery:
+            raise AnalysisCorruptionError("content impact authority page changed order")
+        current[gallery] = (
+            None
+            if row[1] is None
+            else require_positive_int63(row[1], field="current observation_id")
+        )
+        if row[5] is None:
+            if any(value is not None for value in row[6:]):
+                raise AnalysisCorruptionError("baseline content row is partial")
+            old[gallery] = None
+            continue
+        if any(value is None for value in row[2:5]):
+            raise AnalysisCorruptionError(
+                "baseline content candidate lacks baseline build membership"
+            )
+        candidate = _content_candidate_from_row(
+            (row[5], gallery, row[6], row[7], row[8]),
+            field="baseline impacted content candidate",
+        )
+        if candidate is None or candidate.download_time != require_int63(
+            row[4], field="baseline metadata download_time"
+        ):
+            raise AnalysisCorruptionError(
+                "baseline content candidate differs from baseline build metadata"
+            )
+        require_positive_int63(row[2], field="baseline observation_id")
+        require_positive_int63(row[3], field="baseline metadata gid")
+        old[gallery] = candidate
+    return _ContentImpactPage(current, old)
+
+
+def _load_gid_impact_page(
+    work: VNextUnitOfWork,
+    authority: _RunAuthority,
+    gallery_ids: Sequence[int],
+) -> _GidImpactPage:
+    """Load baseline/current eligible GIDs from their pinned builds once."""
+
+    galleries = tuple(gallery_ids)
+    if not galleries:
+        return _GidImpactPage({}, {})
+    baseline = (
+        None
+        if authority.baseline_analysis_id is None
+        else _read_analysis_authority(work, authority.baseline_analysis_id)
+    )
+    baseline_build_id = None if baseline is None else baseline.build_id
+    baseline_analysis_id = None if baseline is None else baseline.analysis_id
+    proposed, parameters = _proposed_gallery_cte(galleries)
+    rows = work.connector.fetch_all(
+        "WITH proposed(gallery_id) AS ("
+        + proposed
+        + ") SELECT proposed.gallery_id, baseline_member.observation_id, "
+        "baseline_metadata.gid, candidate.gallery_id, owner.content_sha256, "
+        "current_member.observation_id, current_metadata.gid FROM proposed "
+        "LEFT JOIN catalog_source_build_galleries AS baseline_member "
+        "ON baseline_member.build_id = %s "
+        "AND baseline_member.gallery_id = proposed.gallery_id "
+        "LEFT JOIN catalog_gallery_observation_metadata AS baseline_metadata "
+        "ON baseline_metadata.gallery_id = baseline_member.gallery_id "
+        "AND baseline_metadata.observation_id = baseline_member.observation_id "
+        "LEFT JOIN catalog_analysis_gid_candidate_resolved AS candidate "
+        "ON candidate.analysis_id = %s "
+        "AND candidate.gallery_id = proposed.gallery_id "
+        "LEFT JOIN catalog_analysis_content_owner_resolved AS owner "
+        "ON owner.analysis_id = %s "
+        "AND owner.owner_gallery_id = proposed.gallery_id "
+        "LEFT JOIN catalog_source_build_galleries AS current_member "
+        "ON current_member.build_id = %s "
+        "AND current_member.gallery_id = proposed.gallery_id "
+        "LEFT JOIN catalog_gallery_observation_metadata AS current_metadata "
+        "ON current_metadata.gallery_id = current_member.gallery_id "
+        "AND current_metadata.observation_id = current_member.observation_id "
+        "ORDER BY proposed.gallery_id LIMIT 129",
+        (
+            *parameters,
+            baseline_build_id,
+            baseline_analysis_id,
+            authority.analysis_id,
+            authority.build_id,
+        ),
+    )
+    if len(rows) != len(galleries):
+        raise AnalysisCorruptionError("GID impact authority page changed shape")
+    old: dict[int, int | None] = {}
+    current: dict[int, int | None] = {}
+    for gallery, row in zip(galleries, rows, strict=True):
+        if len(row) != 7 or row[0] != gallery:
+            raise AnalysisCorruptionError("GID impact authority page changed order")
+        if row[3] is None:
+            old[gallery] = None
+        else:
+            if row[1] is None or row[2] is None:
+                raise AnalysisCorruptionError(
+                    "baseline GID candidate lacks baseline build membership"
+                )
+            require_positive_int63(row[1], field="baseline observation_id")
+            derived_gid = require_positive_int63(row[2], field="baseline metadata gid")
+            if (
+                require_positive_int63(row[3], field="baseline candidate gallery_id")
+                != gallery
+            ):
+                raise AnalysisCorruptionError(
+                    "baseline GID candidate membership changed gallery"
+                )
+            old[gallery] = derived_gid
+        if row[4] is None:
+            current[gallery] = None
+        else:
+            require_digest32(row[4], field="current owner content_sha256")
+            if row[5] is None or row[6] is None:
+                raise AnalysisCorruptionError(
+                    "current content owner lacks pinned-build metadata"
+                )
+            require_positive_int63(row[5], field="current observation_id")
+            current[gallery] = require_positive_int63(
+                row[6], field="current metadata gid"
+            )
+    return _GidImpactPage(old, current)
+
+
 def _content_candidate_from_preparation(
     preparation: AnalysisGalleryPreparation,
 ) -> _ContentCandidate | None:
     if preparation.content_sha256 is None:
         return None
     if (
-        preparation.content_priority_key is None
-        or preparation.content_candidate_sha256 is None
+        preparation.content_prefer_not_already_uploaded is None
+        or preparation.content_title_scalar_count is None
+        or preparation.content_download_time is None
     ):
         raise AnalysisCorruptionError("content preparation is internally incomplete")
-    receipt = decode_analysis_candidate_priority(preparation.content_priority_key)
-    if (
-        receipt.candidate_kind is not AnalysisCandidateKind.CONTENT_OWNER
-        or receipt.gid != preparation.gid
-    ):
-        raise AnalysisCorruptionError("content preparation priority kind changed")
     return _ContentCandidate(
         preparation.content_sha256,
         preparation.gallery_id,
-        preparation.content_priority_key,
-        preparation.content_candidate_sha256,
+        preparation.content_prefer_not_already_uploaded,
+        preparation.content_title_scalar_count,
+        preparation.content_download_time,
     )
 
 
@@ -4546,13 +6148,6 @@ def _materialize_content_candidate(
         raise AnalysisCorruptionError("target content candidate changed gallery key")
     if parent is not None and parent.gallery_id != gallery:
         raise AnalysisCorruptionError("parent content candidate changed gallery key")
-    if target is not None:
-        work.connector.execute(
-            "INSERT INTO catalog_analysis_content_owner_candidates "
-            "(analysis_id, content_sha256, gallery_id, priority_key, "
-            "candidate_sha256) VALUES (%s, %s, %s, %s, %s)",
-            (authority.analysis_id, *target.row),
-        )
     if authority.overlay_depth == 0:
         if target is not None:
             _insert_content_candidate_shadow(work, authority.analysis_id, target)
@@ -4571,12 +6166,20 @@ def _insert_content_candidate_shadow(
     analysis_id: bytes,
     candidate: _ContentCandidate,
 ) -> None:
-    work.connector.execute(
-        "INSERT INTO catalog_analysis_content_owner_candidate_shadows "
-        "(analysis_id, content_sha256, gallery_id, priority_key, "
-        "candidate_sha256) VALUES (%s, %s, %s, %s, %s)",
-        (analysis_id, *candidate.row),
-    )
+    try:
+        ensure_analysis_content_owner_candidate_shadow_family(
+            work.connector,
+            AnalysisContentOwnerCandidateShadowFamily(
+                analysis_id,
+                candidate.gallery_id,
+                candidate.content_sha256,
+                candidate.prefer_not_already_uploaded,
+                candidate.title_scalar_count,
+                candidate.download_time,
+            ),
+        )
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
 
 
 def _resolved_content_candidate(
@@ -4587,7 +6190,8 @@ def _resolved_content_candidate(
     if analysis_id is None:
         return None
     row = work.connector.fetch_one(
-        "SELECT content_sha256, gallery_id, priority_key, candidate_sha256 "
+        "SELECT content_sha256, gallery_id, prefer_not_already_uploaded, "
+        "title_scalar_count, download_time "
         "FROM catalog_analysis_content_owner_candidate_resolved "
         "WHERE analysis_id = %s AND gallery_id = %s",
         (analysis_id, gallery_id),
@@ -4600,13 +6204,23 @@ def _shadow_content_candidate(
     analysis_id: bytes,
     gallery_id: int,
 ) -> _ContentCandidate | None:
-    row = work.connector.fetch_one(
-        "SELECT content_sha256, gallery_id, priority_key, candidate_sha256 "
-        "FROM catalog_analysis_content_owner_candidate_shadows "
-        "WHERE analysis_id = %s AND gallery_id = %s",
-        (analysis_id, gallery_id),
+    try:
+        family = load_analysis_content_owner_candidate_shadow_family(
+            work.connector,
+            analysis_id=analysis_id,
+            gallery_id=gallery_id,
+        )
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+    if family is None:
+        return None
+    return _ContentCandidate(
+        family.content_sha256,
+        family.gallery_id,
+        family.prefer_not_already_uploaded,
+        family.title_scalar_count,
+        family.download_time,
     )
-    return _content_candidate_from_row(row, field="shadow content candidate")
 
 
 def _content_candidate_from_row(
@@ -4616,23 +6230,18 @@ def _content_candidate_from_row(
 ) -> _ContentCandidate | None:
     if not row:
         return None
-    if len(row) != 4:
+    if len(row) != 5:
         raise AnalysisCorruptionError(f"{field} has an invalid shape")
-    candidate = _ContentCandidate(
+    return _ContentCandidate(
         require_digest32(row[0], field=f"{field} content_sha256"),
         require_positive_int63(row[1], field=f"{field} gallery_id"),
-        require_bounded_bytes(
+        require_bool_byte(
             row[2],
-            field=f"{field} priority_key",
-            minimum=1,
-            maximum=128,
+            field=f"{field} prefer_not_already_uploaded",
         ),
-        require_digest32(row[3], field=f"{field} candidate_sha256"),
+        require_int63(row[3], field=f"{field} title_scalar_count"),
+        require_int63(row[4], field=f"{field} download_time"),
     )
-    receipt = decode_analysis_candidate_priority(candidate.priority_key)
-    if receipt.candidate_kind is not AnalysisCandidateKind.CONTENT_OWNER:
-        raise AnalysisCorruptionError(f"{field} priority has the wrong kind")
-    return candidate
 
 
 def _content_candidate_validation_keys(
@@ -4642,16 +6251,26 @@ def _content_candidate_validation_keys(
     after: int | None,
     limit: int,
 ) -> list[tuple[Any, ...]]:
+    shadow_tables = (
+        "catalog_a_content_candidate_shadow_anchors",
+        "catalog_a_content_candidate_shadow_contents",
+        "catalog_a_content_candidate_shadow_not_uploaded",
+        "catalog_a_content_candidate_shadow_title_counts",
+        "catalog_a_content_candidate_shadow_download_times",
+        "catalog_a_content_candidate_shadow_seals",
+    )
     subqueries = [
         "SELECT gallery_id FROM catalog_source_build_galleries WHERE build_id = %s",
-        "SELECT gallery_id FROM catalog_analysis_content_owner_candidate_shadows "
-        "WHERE analysis_id = %s",
+        *(
+            f"SELECT gallery_id FROM {table} WHERE analysis_id = %s"
+            for table in shadow_tables
+        ),
         "SELECT gallery_id FROM catalog_analysis_content_owner_candidate_tombstones "
         "WHERE analysis_id = %s",
     ]
     parameters: list[Any] = [
         authority.build_id,
-        authority.analysis_id,
+        *(authority.analysis_id for _table in shadow_tables),
         authority.analysis_id,
     ]
     if authority.baseline_analysis_id is not None:
@@ -4678,33 +6297,52 @@ def _evaluate_content_owner(
 ) -> _ContentOwner | None:
     content = require_digest32(content_sha256, field="owner content_sha256")
     last_gallery = 0
-    winner: tuple[tuple[bytes, bytes, bytes], _ContentCandidate] | None = None
+    winner: tuple[tuple[int, int, int, int, bytes, bytes], _ContentCandidate] | None = (
+        None
+    )
     while True:
         rows = work.connector.fetch_all(
             "SELECT candidate.content_sha256, candidate.gallery_id, "
-            "candidate.priority_key, candidate.candidate_sha256, "
-            "identity.scope_key, identity.locator_sha256 "
+            "candidate.prefer_not_already_uploaded, "
+            "candidate.title_scalar_count, candidate.download_time, "
+            "metadata.gid, identity.scope_key, identity.locator_sha256 "
             "FROM catalog_analysis_content_owner_candidate_resolved AS candidate "
-            "JOIN catalog_gallery_identities AS identity "
-            "ON identity.gallery_id = candidate.gallery_id "
+            "JOIN catalog_source_build_galleries AS member "
+            "ON member.build_id = %s AND member.gallery_id = candidate.gallery_id "
+            "JOIN catalog_gallery_observation_metadata AS metadata "
+            "ON metadata.gallery_id = member.gallery_id "
+            "AND metadata.observation_id = member.observation_id "
+            "JOIN catalog_gallery_identity_seals AS identity_seal "
+            "ON identity_seal.gallery_id = candidate.gallery_id "
+            "JOIN catalog_gallery_identity_coordinates AS identity "
+            "ON identity.gallery_id = identity_seal.gallery_id "
             "WHERE candidate.analysis_id = %s AND candidate.content_sha256 = %s "
             "AND candidate.gallery_id > %s ORDER BY candidate.gallery_id LIMIT %s",
-            (authority.analysis_id, content, last_gallery, _MAX_BATCH_ROWS),
+            (
+                authority.build_id,
+                authority.analysis_id,
+                content,
+                last_gallery,
+                _MAX_BATCH_ROWS,
+            ),
         )
         if not rows:
             break
         for row in rows:
             candidate = _content_candidate_from_row(
-                row[:4],
+                row[:5],
                 field="owner candidate",
             )
             if candidate is None:
                 raise AnalysisCorruptionError("owner candidate row disappeared")
-            scope = require_digest32(row[4], field="owner candidate scope_key")
-            locator = require_digest32(row[5], field="owner candidate locator")
-            order = analysis_candidate_total_order_key(
-                candidate.priority_key,
-                AnalysisCandidateKind.CONTENT_OWNER,
+            gid = require_positive_int63(row[5], field="owner candidate gid")
+            scope = require_digest32(row[6], field="owner candidate scope_key")
+            locator = require_digest32(row[7], field="owner candidate locator")
+            order = (
+                candidate.prefer_not_already_uploaded,
+                candidate.title_scalar_count,
+                candidate.download_time,
+                gid,
                 scope,
                 locator,
             )
@@ -4716,14 +6354,7 @@ def _evaluate_content_owner(
     if winner is None:
         return None
     selected = winner[1]
-    decision = sha256(
-        b"h2hdb-vnext-content-owner-decision\0"
-        + authority.analysis_id
-        + content
-        + selected.gallery_id.to_bytes(8, "big")
-        + selected.candidate_sha256
-    ).digest()
-    return _ContentOwner(content, selected.gallery_id, decision)
+    return _ContentOwner(content, selected.gallery_id)
 
 
 def _materialize_content_owner(
@@ -4737,12 +6368,6 @@ def _materialize_content_owner(
     if target is not None:
         if target.content_sha256 != content:
             raise AnalysisCorruptionError("target owner changed content key")
-        work.connector.execute(
-            "INSERT INTO catalog_analysis_content_owners "
-            "(analysis_id, content_sha256, owner_gallery_id, decision_sha256) "
-            "VALUES (%s, %s, %s, %s)",
-            (authority.analysis_id, *target.row),
-        )
     if authority.overlay_depth == 0:
         if target is not None:
             _insert_content_owner_shadow(work, authority.analysis_id, target)
@@ -4761,12 +6386,17 @@ def _insert_content_owner_shadow(
     analysis_id: bytes,
     owner: _ContentOwner,
 ) -> None:
-    work.connector.execute(
-        "INSERT INTO catalog_analysis_content_owner_shadows "
-        "(analysis_id, content_sha256, owner_gallery_id, decision_sha256) "
-        "VALUES (%s, %s, %s, %s)",
-        (analysis_id, *owner.row),
-    )
+    try:
+        ensure_analysis_content_owner_shadow_family(
+            work.connector,
+            AnalysisContentOwnerShadowFamily(
+                analysis_id,
+                owner.content_sha256,
+                owner.owner_gallery_id,
+            ),
+        )
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
 
 
 def _resolved_content_owner(
@@ -4777,7 +6407,7 @@ def _resolved_content_owner(
     if analysis_id is None:
         return None
     row = work.connector.fetch_one(
-        "SELECT content_sha256, owner_gallery_id, decision_sha256 "
+        "SELECT content_sha256, owner_gallery_id "
         "FROM catalog_analysis_content_owner_resolved "
         "WHERE analysis_id = %s AND content_sha256 = %s",
         (analysis_id, content_sha256),
@@ -4790,13 +6420,17 @@ def _shadow_content_owner(
     analysis_id: bytes,
     content_sha256: bytes,
 ) -> _ContentOwner | None:
-    row = work.connector.fetch_one(
-        "SELECT content_sha256, owner_gallery_id, decision_sha256 "
-        "FROM catalog_analysis_content_owner_shadows "
-        "WHERE analysis_id = %s AND content_sha256 = %s",
-        (analysis_id, content_sha256),
-    )
-    return _content_owner_from_row(row, field="shadow content owner")
+    try:
+        family = load_analysis_content_owner_shadow_family(
+            work.connector,
+            analysis_id=analysis_id,
+            content_sha256=content_sha256,
+        )
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+    if family is None:
+        return None
+    return _ContentOwner(family.content_sha256, family.owner_gallery_id)
 
 
 def _content_owner_from_row(
@@ -4806,12 +6440,11 @@ def _content_owner_from_row(
 ) -> _ContentOwner | None:
     if not row:
         return None
-    if len(row) != 3:
+    if len(row) != 2:
         raise AnalysisCorruptionError(f"{field} has an invalid shape")
     return _ContentOwner(
         require_digest32(row[0], field=f"{field} content_sha256"),
         require_positive_int63(row[1], field=f"{field} owner_gallery_id"),
-        require_digest32(row[2], field=f"{field} decision_sha256"),
     )
 
 
@@ -4822,18 +6455,25 @@ def _content_owner_validation_keys(
     after: bytes | None,
     limit: int,
 ) -> list[tuple[Any, ...]]:
+    shadow_tables = (
+        "catalog_a_content_owner_shadow_anchors",
+        "catalog_a_content_owner_shadow_galleries",
+        "catalog_a_content_owner_shadow_seals",
+    )
     subqueries = [
         "SELECT content_sha256 FROM "
         "catalog_analysis_content_owner_candidate_resolved "
         "WHERE analysis_id = %s",
-        "SELECT content_sha256 FROM catalog_analysis_content_owner_shadows "
-        "WHERE analysis_id = %s",
+        *(
+            f"SELECT content_sha256 FROM {table} WHERE analysis_id = %s"
+            for table in shadow_tables
+        ),
         "SELECT content_sha256 FROM catalog_analysis_content_owner_tombstones "
         "WHERE analysis_id = %s",
     ]
     parameters: list[Any] = [
         authority.analysis_id,
-        authority.analysis_id,
+        *(authority.analysis_id for _table in shadow_tables),
         authority.analysis_id,
     ]
     if authority.baseline_analysis_id is not None:
@@ -4901,18 +6541,7 @@ def _gid_candidate_from_preparation(
         return None
     if preparation.gid != gid:
         raise AnalysisCorruptionError("GID preparation changed metadata group")
-    receipt = decode_analysis_candidate_priority(preparation.gid_priority_key)
-    if (
-        receipt.candidate_kind is not AnalysisCandidateKind.GID_WINNER
-        or receipt.gid is not None
-    ):
-        raise AnalysisCorruptionError("GID preparation priority kind changed")
-    return _GidCandidate(
-        gallery_id,
-        gid,
-        preparation.gid_priority_key,
-        preparation.gid_candidate_sha256,
-    )
+    return _GidCandidate(gallery_id)
 
 
 def _materialize_gid_candidate(
@@ -4923,15 +6552,8 @@ def _materialize_gid_candidate(
     parent: _GidCandidate | None,
 ) -> None:
     gallery = require_positive_int63(gallery_id, field="GID candidate gallery")
-    if target is not None:
-        if target.gallery_id != gallery:
-            raise AnalysisCorruptionError("target GID candidate changed gallery key")
-        work.connector.execute(
-            "INSERT INTO catalog_analysis_gid_candidates "
-            "(analysis_id, gallery_id, gid, priority_key, candidate_sha256) "
-            "VALUES (%s, %s, %s, %s, %s)",
-            (authority.analysis_id, *target.row),
-        )
+    if target is not None and target.gallery_id != gallery:
+        raise AnalysisCorruptionError("target GID candidate changed gallery key")
     if authority.overlay_depth == 0:
         if target is not None:
             _insert_gid_candidate_shadow(work, authority.analysis_id, target)
@@ -4952,8 +6574,7 @@ def _insert_gid_candidate_shadow(
 ) -> None:
     work.connector.execute(
         "INSERT INTO catalog_analysis_gid_candidate_shadows "
-        "(analysis_id, gallery_id, gid, priority_key, candidate_sha256) "
-        "VALUES (%s, %s, %s, %s, %s)",
+        "(analysis_id, gallery_id) VALUES (%s, %s)",
         (analysis_id, *candidate.row),
     )
 
@@ -4966,7 +6587,7 @@ def _resolved_gid_candidate(
     if analysis_id is None:
         return None
     row = work.connector.fetch_one(
-        "SELECT gallery_id, gid, priority_key, candidate_sha256 "
+        "SELECT gallery_id "
         "FROM catalog_analysis_gid_candidate_resolved "
         "WHERE analysis_id = %s AND gallery_id = %s",
         (analysis_id, gallery_id),
@@ -4980,7 +6601,7 @@ def _shadow_gid_candidate(
     gallery_id: int,
 ) -> _GidCandidate | None:
     row = work.connector.fetch_one(
-        "SELECT gallery_id, gid, priority_key, candidate_sha256 "
+        "SELECT gallery_id "
         "FROM catalog_analysis_gid_candidate_shadows "
         "WHERE analysis_id = %s AND gallery_id = %s",
         (analysis_id, gallery_id),
@@ -4995,23 +6616,9 @@ def _gid_candidate_from_row(
 ) -> _GidCandidate | None:
     if not row:
         return None
-    if len(row) != 4:
+    if len(row) != 1:
         raise AnalysisCorruptionError(f"{field} has an invalid shape")
-    candidate = _GidCandidate(
-        require_positive_int63(row[0], field=f"{field} gallery_id"),
-        require_positive_int63(row[1], field=f"{field} gid"),
-        require_bounded_bytes(
-            row[2],
-            field=f"{field} priority_key",
-            minimum=1,
-            maximum=128,
-        ),
-        require_digest32(row[3], field=f"{field} candidate_sha256"),
-    )
-    receipt = decode_analysis_candidate_priority(candidate.priority_key)
-    if receipt.candidate_kind is not AnalysisCandidateKind.GID_WINNER:
-        raise AnalysisCorruptionError(f"{field} priority has the wrong kind")
-    return candidate
+    return _GidCandidate(require_positive_int63(row[0], field=f"{field} gallery_id"))
 
 
 def _gid_candidate_validation_keys(
@@ -5058,49 +6665,59 @@ def _evaluate_gid_winner(
 ) -> _GidWinner | None:
     exact_gid = require_positive_int63(gid, field="winner gid")
     last_gallery = 0
-    winner: tuple[tuple[bytes, bytes, bytes], _GidCandidate] | None = None
+    winner: tuple[tuple[int, int, int, bytes, bytes], int] | None = None
     while True:
         rows = work.connector.fetch_all(
-            "SELECT candidate.gallery_id, candidate.gid, candidate.priority_key, "
-            "candidate.candidate_sha256, identity.scope_key, "
-            "identity.locator_sha256 "
+            "SELECT candidate.gallery_id, content.prefer_not_already_uploaded, "
+            "content.title_scalar_count, content.download_time, "
+            "identity.scope_key, identity.locator_sha256 "
             "FROM catalog_analysis_gid_candidate_resolved AS candidate "
-            "JOIN catalog_gallery_identities AS identity "
-            "ON identity.gallery_id = candidate.gallery_id "
-            "WHERE candidate.analysis_id = %s AND candidate.gid = %s "
+            "JOIN catalog_analysis_content_owner_candidate_resolved AS content "
+            "ON content.analysis_id = candidate.analysis_id "
+            "AND content.gallery_id = candidate.gallery_id "
+            "JOIN catalog_source_build_galleries AS member "
+            "ON member.build_id = %s AND member.gallery_id = candidate.gallery_id "
+            "JOIN catalog_gallery_observation_metadata AS metadata "
+            "ON metadata.gallery_id = member.gallery_id "
+            "AND metadata.observation_id = member.observation_id "
+            "AND metadata.gid = %s "
+            "JOIN catalog_gallery_identity_seals AS identity_seal "
+            "ON identity_seal.gallery_id = candidate.gallery_id "
+            "JOIN catalog_gallery_identity_coordinates AS identity "
+            "ON identity.gallery_id = identity_seal.gallery_id "
+            "WHERE candidate.analysis_id = %s "
             "AND candidate.gallery_id > %s ORDER BY candidate.gallery_id LIMIT %s",
-            (authority.analysis_id, exact_gid, last_gallery, _MAX_BATCH_ROWS),
+            (
+                authority.build_id,
+                exact_gid,
+                authority.analysis_id,
+                last_gallery,
+                _MAX_BATCH_ROWS,
+            ),
         )
         if not rows:
             break
         for row in rows:
-            candidate = _gid_candidate_from_row(row[:4], field="winner candidate")
-            if candidate is None:
-                raise AnalysisCorruptionError("winner candidate row disappeared")
-            scope = require_digest32(row[4], field="winner candidate scope_key")
-            locator = require_digest32(row[5], field="winner candidate locator")
-            order = analysis_candidate_total_order_key(
-                candidate.priority_key,
-                AnalysisCandidateKind.GID_WINNER,
-                scope,
-                locator,
+            gallery_id = require_positive_int63(
+                row[0], field="winner candidate gallery_id"
+            )
+            order = (
+                require_bool_byte(
+                    row[1], field="winner candidate prefer_not_already_uploaded"
+                ),
+                require_int63(row[2], field="winner candidate title_scalar_count"),
+                require_int63(row[3], field="winner candidate download_time"),
+                require_digest32(row[4], field="winner candidate scope_key"),
+                require_digest32(row[5], field="winner candidate locator"),
             )
             if winner is None or order > winner[0]:
-                winner = (order, candidate)
-            last_gallery = candidate.gallery_id
+                winner = (order, gallery_id)
+            last_gallery = gallery_id
         if len(rows) < _MAX_BATCH_ROWS:
             break
     if winner is None:
         return None
-    selected = winner[1]
-    decision = sha256(
-        b"h2hdb-vnext-gid-winner-decision\0"
-        + authority.analysis_id
-        + exact_gid.to_bytes(8, "big")
-        + selected.gallery_id.to_bytes(8, "big")
-        + selected.candidate_sha256
-    ).digest()
-    return _GidWinner(exact_gid, selected.gallery_id, decision)
+    return _GidWinner(exact_gid, winner[1])
 
 
 def _materialize_gid_winner(
@@ -5111,18 +6728,11 @@ def _materialize_gid_winner(
     parent: _GidWinner | None,
 ) -> None:
     exact_gid = require_positive_int63(gid, field="winner materialization gid")
-    if target is not None:
-        if target.gid != exact_gid:
-            raise AnalysisCorruptionError("target GID winner changed group key")
-        work.connector.execute(
-            "INSERT INTO catalog_analysis_gid_winners "
-            "(analysis_id, gid, winner_gallery_id, decision_sha256) "
-            "VALUES (%s, %s, %s, %s)",
-            (authority.analysis_id, *target.row),
-        )
+    if target is not None and target.gid != exact_gid:
+        raise AnalysisCorruptionError("target GID winner changed group key")
     if authority.overlay_depth == 0:
         if target is not None:
-            _insert_gid_winner_shadow(work, authority.analysis_id, target)
+            _insert_gid_winner_selection(work, authority.analysis_id, target)
     elif target is None and parent is not None:
         work.connector.execute(
             "INSERT INTO catalog_analysis_gid_winner_tombstones "
@@ -5130,19 +6740,18 @@ def _materialize_gid_winner(
             (authority.analysis_id, exact_gid),
         )
     elif target is not None and target != parent:
-        _insert_gid_winner_shadow(work, authority.analysis_id, target)
+        _insert_gid_winner_selection(work, authority.analysis_id, target)
 
 
-def _insert_gid_winner_shadow(
+def _insert_gid_winner_selection(
     work: VNextUnitOfWork,
     analysis_id: bytes,
     winner: _GidWinner,
 ) -> None:
     work.connector.execute(
-        "INSERT INTO catalog_analysis_gid_winner_shadows "
-        "(analysis_id, gid, winner_gallery_id, decision_sha256) "
-        "VALUES (%s, %s, %s, %s)",
-        (analysis_id, *winner.row),
+        "INSERT INTO catalog_analysis_gid_winner_selections "
+        "(analysis_id, winner_gallery_id) VALUES (%s, %s)",
+        (analysis_id, winner.winner_gallery_id),
     )
 
 
@@ -5154,7 +6763,7 @@ def _resolved_gid_winner(
     if analysis_id is None:
         return None
     row = work.connector.fetch_one(
-        "SELECT gid, winner_gallery_id, decision_sha256 "
+        "SELECT gid, winner_gallery_id "
         "FROM catalog_analysis_gid_winner_resolved "
         "WHERE analysis_id = %s AND gid = %s",
         (analysis_id, gid),
@@ -5168,7 +6777,7 @@ def _shadow_gid_winner(
     gid: int,
 ) -> _GidWinner | None:
     row = work.connector.fetch_one(
-        "SELECT gid, winner_gallery_id, decision_sha256 "
+        "SELECT gid, winner_gallery_id "
         "FROM catalog_analysis_gid_winner_shadows "
         "WHERE analysis_id = %s AND gid = %s",
         (analysis_id, gid),
@@ -5183,12 +6792,11 @@ def _gid_winner_from_row(
 ) -> _GidWinner | None:
     if not row:
         return None
-    if len(row) != 3:
+    if len(row) != 2:
         raise AnalysisCorruptionError(f"{field} has an invalid shape")
     return _GidWinner(
         require_positive_int63(row[0], field=f"{field} gid"),
         require_positive_int63(row[1], field=f"{field} winner_gallery_id"),
-        require_digest32(row[2], field=f"{field} decision_sha256"),
     )
 
 
@@ -5200,11 +6808,9 @@ def _gid_winner_validation_keys(
     limit: int,
 ) -> list[tuple[Any, ...]]:
     subqueries = [
-        "SELECT gid FROM catalog_analysis_gid_candidate_resolved "
-        "WHERE analysis_id = %s",
-        "SELECT gid FROM catalog_analysis_gid_winner_shadows " "WHERE analysis_id = %s",
-        "SELECT gid FROM catalog_analysis_gid_winner_tombstones "
-        "WHERE analysis_id = %s",
+        "SELECT gid FROM catalog_analysis_impacted_gid " "WHERE analysis_id = %s",
+        "SELECT gid FROM catalog_analysis_gid_winner_shadows WHERE analysis_id = %s",
+        "SELECT gid FROM catalog_analysis_gid_winner_tombstones WHERE analysis_id = %s",
     ]
     parameters: list[Any] = [
         authority.analysis_id,
@@ -5225,6 +6831,38 @@ def _gid_winner_validation_keys(
         + ") AS keys WHERE keys.gid > %s ORDER BY keys.gid LIMIT %s",
         tuple(parameters),
     )
+
+
+def _require_complete_gid_winner_keyspace(
+    work: VNextUnitOfWork,
+    analysis_id: bytes,
+) -> None:
+    exact_analysis = require_uuid16(analysis_id, field="GID winner analysis_id")
+    orphan = work.connector.fetch_one(
+        "SELECT 1 FROM catalog_analysis_gid_winner_selections AS selected "
+        "LEFT JOIN catalog_analysis_gid_winner_shadows AS shadow "
+        "ON shadow.analysis_id = selected.analysis_id "
+        "AND shadow.winner_gallery_id = selected.winner_gallery_id "
+        "WHERE selected.analysis_id = %s AND shadow.analysis_id IS NULL LIMIT 1",
+        (exact_analysis,),
+    )
+    duplicate = work.connector.fetch_one(
+        "SELECT 1 FROM catalog_analysis_gid_winner_shadows "
+        "WHERE analysis_id = %s GROUP BY gid HAVING COUNT(*) <> 1 LIMIT 1",
+        (exact_analysis,),
+    )
+    noncandidate = work.connector.fetch_one(
+        "SELECT 1 FROM catalog_analysis_gid_winner_shadows AS shadow "
+        "LEFT JOIN catalog_analysis_gid_candidate_resolved AS candidate "
+        "ON candidate.analysis_id = shadow.analysis_id "
+        "AND candidate.gallery_id = shadow.winner_gallery_id "
+        "WHERE shadow.analysis_id = %s AND candidate.analysis_id IS NULL LIMIT 1",
+        (exact_analysis,),
+    )
+    if orphan or duplicate or noncandidate:
+        raise AnalysisCorruptionError(
+            "GID winner selections do not form one complete candidate-backed keyset"
+        )
 
 
 def _changed_gallery_rows(
@@ -5343,14 +6981,13 @@ def _impacted_gallery_rows(
     for build_id in build_ids:
         subqueries.append(
             "SELECT member.gallery_id AS gallery_id "
-            "FROM catalog_analysis_exclusion_deltas AS delta "
+            "FROM catalog_analysis_exclusion_delta_changes AS delta "
             "JOIN catalog_gallery_observation_file_hash_occurrences AS occurrence "
             "ON occurrence.file_sha256 = delta.file_sha256 "
             "JOIN catalog_source_build_galleries AS member "
             "ON member.gallery_id = occurrence.gallery_id "
             "AND member.observation_id = occurrence.observation_id "
-            "WHERE delta.analysis_id = %s AND delta.old_excluded <> delta.new_excluded "
-            "AND member.build_id = %s"
+            "WHERE delta.analysis_id = %s AND member.build_id = %s"
         )
         parameters.extend((authority.analysis_id, build_id))
     parameters.extend((boundary, limit))
@@ -5406,14 +7043,6 @@ def _materialize_decision(
 ) -> None:
     target = _evaluate_file_decision(work, authority, file_sha256)
     parent = _resolved_decision(work, authority.baseline_analysis_id, file_sha256)
-    if target is not None:
-        work.connector.execute(
-            "INSERT INTO catalog_analysis_file_hash_decision "
-            "(analysis_id, file_sha256, occurrence_count, artist_count, "
-            "maximum_gallery_artist_count, evidence_sha256) "
-            "VALUES (%s, %s, %s, %s, %s, %s)",
-            (authority.analysis_id, file_sha256, *target.row),
-        )
     parent_policy = (
         authority.policy
         if authority.baseline_analysis_id is None
@@ -5421,11 +7050,12 @@ def _materialize_decision(
     )
     old_excluded = _excluded(parent, parent_policy)
     new_excluded = _excluded(target, authority.policy)
-    work.connector.execute(
-        "INSERT INTO catalog_analysis_exclusion_deltas "
-        "(analysis_id, file_sha256, old_excluded, new_excluded) "
-        "VALUES (%s, %s, %s, %s)",
-        (authority.analysis_id, file_sha256, old_excluded, new_excluded),
+    insert_analysis_exclusion_delta_family(
+        work.connector,
+        analysis_id=authority.analysis_id,
+        file_sha256=file_sha256,
+        old_excluded=old_excluded,
+        new_excluded=new_excluded,
     )
     if authority.overlay_depth == 0:
         if target is not None:
@@ -5446,13 +7076,19 @@ def _insert_shadow(
     file_sha256: bytes,
     decision: _Decision,
 ) -> None:
-    work.connector.execute(
-        "INSERT INTO catalog_analysis_file_hash_decision_shadow "
-        "(analysis_id, file_sha256, occurrence_count, artist_count, "
-        "maximum_gallery_artist_count, evidence_sha256) "
-        "VALUES (%s, %s, %s, %s, %s, %s)",
-        (analysis_id, file_sha256, *decision.row),
-    )
+    try:
+        ensure_analysis_file_hash_decision_shadow_family(
+            work.connector,
+            AnalysisFileHashDecisionShadowFamily(
+                analysis_id,
+                file_sha256,
+                decision.occurrence_count,
+                decision.artist_count,
+                decision.maximum_gallery_artist_count,
+            ),
+        )
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
 
 
 def _evaluate_file_decision(
@@ -5507,14 +7143,7 @@ def _evaluate_file_decision(
         0 if maximum_row[0] is None else maximum_row[0],
         field="decision maximum_gallery_artist_count",
     )
-    evidence = sha256(
-        b"h2hdb-vnext-file-hash-evidence\0"
-        + digest
-        + occurrence_count.to_bytes(8, "big")
-        + artist_count.to_bytes(8, "big")
-        + maximum.to_bytes(8, "big")
-    ).digest()
-    return _Decision(occurrence_count, artist_count, maximum, evidence)
+    return _Decision(occurrence_count, artist_count, maximum)
 
 
 def _excluded(decision: _Decision | None, policy: _Policy) -> int:
@@ -5529,16 +7158,16 @@ def _excluded(decision: _Decision | None, policy: _Policy) -> int:
 
 
 def _analysis_policy(work: VNextUnitOfWork, analysis_id: bytes) -> _Policy:
-    row = work.connector.fetch_one(
-        "SELECT policy_id FROM catalog_analysis_runs WHERE analysis_id = %s",
-        (analysis_id,),
-    )
-    if len(row) != 1:
+    try:
+        family = load_analysis_run_family(
+            work.connector,
+            analysis_id=analysis_id,
+        )
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+    if family is None:
         raise AnalysisCorruptionError("analysis policy lookup lost its run")
-    return _load_policy(
-        work,
-        require_positive_int63(row[0], field="baseline analysis policy_id"),
-    )
+    return _load_policy(work, family.policy_id)
 
 
 def _resolved_decision(
@@ -5549,8 +7178,8 @@ def _resolved_decision(
     if analysis_id is None:
         return None
     row = work.connector.fetch_one(
-        "SELECT occurrence_count, artist_count, maximum_gallery_artist_count, "
-        "evidence_sha256 FROM catalog_analysis_file_hash_decision_resolved "
+        "SELECT occurrence_count, artist_count, maximum_gallery_artist_count "
+        "FROM catalog_analysis_file_hash_decision_resolved "
         "WHERE analysis_id = %s AND file_sha256 = %s",
         (analysis_id, file_sha256),
     )
@@ -5562,25 +7191,32 @@ def _shadow_decision(
     analysis_id: bytes,
     file_sha256: bytes,
 ) -> _Decision | None:
-    row = work.connector.fetch_one(
-        "SELECT occurrence_count, artist_count, maximum_gallery_artist_count, "
-        "evidence_sha256 FROM catalog_analysis_file_hash_decision_shadow "
-        "WHERE analysis_id = %s AND file_sha256 = %s",
-        (analysis_id, file_sha256),
+    try:
+        family = load_analysis_file_hash_decision_shadow_family(
+            work.connector,
+            analysis_id=analysis_id,
+            file_sha256=file_sha256,
+        )
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+    if family is None:
+        return None
+    return _Decision(
+        family.occurrence_count,
+        family.artist_count,
+        family.maximum_gallery_artist_count,
     )
-    return _decision_from_row(row, field="shadow file decision")
 
 
 def _decision_from_row(row: tuple[Any, ...], *, field: str) -> _Decision | None:
     if not row:
         return None
-    if len(row) != 4:
+    if len(row) != 3:
         raise AnalysisCorruptionError(f"{field} has an invalid shape")
     return _Decision(
         require_positive_int63(row[0], field=f"{field} occurrence_count"),
         require_int63(row[1], field=f"{field} artist_count"),
         require_int63(row[2], field=f"{field} maximum_gallery_artist_count"),
-        require_digest32(row[3], field=f"{field} evidence_sha256"),
     )
 
 
@@ -5591,6 +7227,13 @@ def _validation_key_rows(
     after: bytes | None,
     limit: int,
 ) -> list[tuple[Any, ...]]:
+    shadow_tables = (
+        "catalog_a_file_decision_shadow_anchors",
+        "catalog_a_file_decision_shadow_occurrences",
+        "catalog_a_file_decision_shadow_artists",
+        "catalog_a_file_decision_shadow_gallery_artist_max",
+        "catalog_a_file_decision_shadow_seals",
+    )
     subqueries = [
         "SELECT occurrence.file_sha256 AS file_sha256 "
         "FROM catalog_source_build_galleries AS member "
@@ -5598,14 +7241,16 @@ def _validation_key_rows(
         "ON occurrence.gallery_id = member.gallery_id "
         "AND occurrence.observation_id = member.observation_id "
         "WHERE member.build_id = %s",
-        "SELECT file_sha256 FROM catalog_analysis_file_hash_decision_shadow "
-        "WHERE analysis_id = %s",
+        *(
+            f"SELECT file_sha256 FROM {table} WHERE analysis_id = %s"
+            for table in shadow_tables
+        ),
         "SELECT file_sha256 FROM catalog_analysis_file_hash_decision_tombstone "
         "WHERE analysis_id = %s",
     ]
     parameters: list[Any] = [
         authority.build_id,
-        authority.analysis_id,
+        *(authority.analysis_id for _table in shadow_tables),
         authority.analysis_id,
     ]
     if authority.baseline_analysis_id is not None:
@@ -5629,13 +7274,16 @@ def _validation_key_rows(
 
 
 def _baseline_build_id(work: VNextUnitOfWork, baseline_analysis_id: bytes) -> bytes:
-    row = work.connector.fetch_one(
-        "SELECT build_id FROM catalog_analysis_runs WHERE analysis_id = %s",
-        (baseline_analysis_id,),
-    )
-    if len(row) != 1:
+    try:
+        family = load_analysis_run_family(
+            work.connector,
+            analysis_id=baseline_analysis_id,
+        )
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+    if family is None:
         raise AnalysisCorruptionError("baseline analysis build is missing")
-    return require_uuid16(row[0], field="baseline build_id")
+    return family.build_id
 
 
 def _component_is_sealed(
@@ -5652,13 +7300,81 @@ def _component_is_sealed(
     }.get(stage)
     if component is None:
         return False
-    return bool(
-        work.connector.fetch_one(
-            "SELECT 1 FROM catalog_analysis_state_component_seals "
-            "WHERE analysis_id = %s AND state_component = %s",
-            (analysis_id, component),
+    try:
+        family = load_analysis_state_component_family(
+            work.connector,
+            analysis_id=analysis_id,
+            state_component=component,
         )
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+    if family is None:
+        return False
+    rows = work.connector.fetch_all(
+        "SELECT start_cursor, start_processed_count, page_limit, next_cursor, "
+        "next_processed_count, next_state, row_count, terminal, committed_at "
+        "FROM catalog_analysis_batch_receipts "
+        "WHERE analysis_id = %s AND stage = %s AND row_count = %s "
+        "ORDER BY start_generation DESC LIMIT 2",
+        (analysis_id, stage, 0),
     )
+    if len(rows) != 1 or len(rows[0]) != 9:
+        raise AnalysisCorruptionError(
+            f"component {component!r} has no unique terminal receipt"
+        )
+    receipt = rows[0]
+    try:
+        page_limit = require_positive_int63(
+            receipt[2],
+            field="terminal receipt page_limit",
+        )
+        start_count = require_int63(
+            receipt[1],
+            field="terminal receipt start_processed_count",
+        )
+        next_count = require_int63(
+            receipt[4],
+            field="terminal receipt next_processed_count",
+        )
+        terminal = require_int63(receipt[7], field="terminal receipt terminal")
+        committed_at = require_int63(
+            receipt[8],
+            field="terminal receipt committed_at",
+        )
+        kind, live = _stage_cursor_spec(stage)
+        _last, live_count = _decode_cursor(kind, receipt[3], live=live)
+    except (TypeError, ValueError) as error:
+        raise AnalysisCorruptionError(
+            f"component {component!r} terminal receipt is malformed"
+        ) from error
+    if (
+        page_limit > _MAX_BATCH_ROWS
+        or receipt[0] != receipt[3]
+        or start_count != next_count
+        or receipt[5] != _CHECKPOINT_COMPLETE
+        or receipt[6] != 0
+        or terminal != 1
+        or live_count != family.row_count
+        or committed_at != family.sealed_at
+    ):
+        raise AnalysisCorruptionError(
+            f"component {component!r} differs from its terminal receipt"
+        )
+    checkpoint = work.connector.fetch_one(
+        "SELECT cursor, processed_count, state, updated_at "
+        "FROM catalog_analysis_checkpoints WHERE analysis_id = %s AND stage = %s",
+        (analysis_id, stage),
+    )
+    if checkpoint != (
+        receipt[3],
+        next_count,
+        _CHECKPOINT_COMPLETE,
+        committed_at,
+    ):
+        raise AnalysisCorruptionError(
+            f"component {component!r} terminal checkpoint differs from its receipt"
+        )
+    return True
 
 
 def _require_exact_stage_registry(work: VNextUnitOfWork) -> None:

@@ -1,14 +1,30 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+from vnext_canonical_value_fixtures import seed_canonical_value
+from vnext_catalog_identity_fixtures import seed_gallery_identity
+from vnext_catalog_registry_fixtures import (
+    seed_artifact_policy_semantics,
+    seed_artifact_producer_fingerprint,
+    seed_display_title_policy,
+    seed_source_scope,
+    seed_title_sort_policy,
+)
+from vnext_manifest_fixtures import seed_snapshot_manifest
+from vnext_publication_fixtures import (
+    seed_catalog_publication,
+    seed_catalog_publication_title,
+    seed_publication_commit,
+    seed_publication_identity,
+)
 
 from h2hdb import (
     VNextCatalogFacade,
@@ -25,24 +41,21 @@ from h2hdb.config_loader import (
 from h2hdb.domain import CatalogPage, CatalogRevision
 from h2hdb.ports import CatalogReader
 from h2hdb.repository import RepositoryContext
-from h2hdb.schema_epoch import (
-    SchemaCreateStatement,
-    SchemaEpochDefinition,
-    SchemaObject,
-    SchemaObjectKind,
-    SchemaSeedStatement,
-    SchemaSemanticValidationPhase,
-    SchemaSlice,
-)
+from h2hdb.schema_epoch import SchemaEpochAdmissionError, SchemaEpochDefinition
 from h2hdb.sql_connector import DatabaseReadOnlyError, SQLConnector
 from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.vnext_artifact_family import (
+    ArtifactSemanticInputFamily,
+    CatalogArtifactFamily,
+    ensure_artifact_semantic_input_family,
+    ensure_catalog_artifact_family,
+)
 from h2hdb.vnext_identity import (
     CanonicalValueChunk,
     CanonicalValuePage,
     GalleryObservationNodeKind,
     artifact_id,
     artifact_locator_components,
-    artifact_name,
     artifact_policy_digest,
     artifact_producer_fingerprint_sha256,
     artifact_semantics_digest,
@@ -56,7 +69,6 @@ from h2hdb.vnext_identity import (
     gallery_key,
     publication_id,
     publication_key,
-    source_scope_key,
 )
 from h2hdb.vnext_queue_repository import VNextDownloadRequest, VNextQueueRepository
 from h2hdb.vnext_schema_provider import VNextSchemaProviderUnavailableError
@@ -67,105 +79,6 @@ if TYPE_CHECKING:
     _queue_request: VNextDownloadRequest = VNextDownloadQueueFacade(
         CoreConfig()
     ).request_download(1)
-
-
-_ADMIN_PROBE = SchemaObject(SchemaObjectKind.TABLE, "vnext_facade_admin_probe")
-_ADMIN_DDL = SchemaCreateStatement(
-    "create:vnext_facade_admin_probe",
-    """
-    CREATE TABLE IF NOT EXISTS vnext_facade_admin_probe (
-        probe_id INTEGER NOT NULL PRIMARY KEY CHECK (probe_id = 1),
-        payload BLOB NOT NULL CHECK (typeof(payload) = 'blob')
-    )
-    """,
-    _ADMIN_PROBE,
-)
-_ADMIN_SEED = SchemaSeedStatement(
-    "seed:vnext_facade_admin_probe",
-    "vnext_facade_admin_probe",
-    """
-    INSERT INTO vnext_facade_admin_probe (probe_id, payload)
-    VALUES (%s, %s)
-    ON CONFLICT(probe_id) DO NOTHING
-    """,
-    (1, b"facade"),
-)
-
-
-def _admin_definition() -> SchemaEpochDefinition:
-    return SchemaEpochDefinition(
-        epoch=2,
-        schema_version=1,
-        ddl_manifest_sha256="11" * 32,
-        seed_manifest_sha256="22" * 32,
-        obligation_manifest_sha256="33" * 32,
-        expected_objects=frozenset({_ADMIN_PROBE}),
-        slices=(SchemaSlice("facade-admin", (_ADMIN_DDL,)),),
-        bootstrap_seeds=(_ADMIN_SEED,),
-        activation_semantic_obligation_ids=("facade-admin-integrity",),
-        ready_semantic_obligation_ids=("facade-admin-integrity",),
-    )
-
-
-@dataclass
-class _AdminProvider:
-    definition: SchemaEpochDefinition
-
-    def validate_slice(
-        self,
-        connector: SQLConnector,
-        schema_slice: SchemaSlice,
-    ) -> None:
-        assert schema_slice.slice_id == "facade-admin"
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM sqlite_master WHERE name = %s",
-            (_ADMIN_PROBE.name,),
-        ) == (1,)
-
-    def validate_global(self, connector: SQLConnector) -> None:
-        assert connector.fetch_one(
-            "SELECT probe_id, payload FROM vnext_facade_admin_probe"
-        ) == (1, b"facade")
-
-    def validate_bootstrap_seeds(self, connector: SQLConnector) -> Sequence[str]:
-        self.validate_global(connector)
-        return (_ADMIN_SEED.seed_id,)
-
-    def validate_semantics(
-        self,
-        connector: SQLConnector,
-        phase: SchemaSemanticValidationPhase,
-    ) -> Sequence[str]:
-        del phase
-        self.validate_global(connector)
-        return ("facade-admin-integrity",)
-
-
-@dataclass
-class _ReadinessOnlyProvider:
-    definition: SchemaEpochDefinition
-
-    def validate_slice(
-        self, connector: SQLConnector, schema_slice: SchemaSlice
-    ) -> None:
-        del connector, schema_slice
-        raise AssertionError("readiness must not validate a schema slice")
-
-    def validate_global(self, connector: SQLConnector) -> None:
-        del connector
-        raise AssertionError("readiness must not perform global validation")
-
-    def validate_bootstrap_seeds(self, connector: SQLConnector) -> Sequence[str]:
-        del connector
-        raise AssertionError("readiness must not validate bootstrap seeds")
-
-    def validate_semantics(
-        self,
-        connector: SQLConnector,
-        phase: SchemaSemanticValidationPhase,
-    ) -> Sequence[str]:
-        del connector, phase
-        raise AssertionError("readiness must not validate semantics")
 
 
 def _config(
@@ -204,17 +117,16 @@ def test_database_admin_facade_initializes_retries_and_fully_checks_fresh_epoch(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "admin-facade.sqlite3"
-    provider = _AdminProvider(_admin_definition())
     facade = VNextDatabaseAdminFacade(_config(path))
 
-    initialized = facade.initialize(provider)
-    retried = facade.initialize(provider)
-    checked = facade.check(provider)
+    initialized = facade.initialize()
+    retried = facade.initialize()
+    checked = facade.check()
 
     assert initialized.state == "READY"
     assert initialized.transitioned_to_ready
     assert not initialized.resumed_build
-    assert initialized.bootstrap_seed_ids == (_ADMIN_SEED.seed_id,)
+    assert initialized.bootstrap_seed_ids
     assert retried.state == "READY"
     assert retried.resumed_build
     assert not retried.transitioned_to_ready
@@ -226,10 +138,9 @@ def test_database_admin_facade_fully_checks_through_read_only_config(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "admin-read-only-check.sqlite3"
-    provider = _AdminProvider(_admin_definition())
-    VNextDatabaseAdminFacade(_config(path)).initialize(provider)
+    VNextDatabaseAdminFacade(_config(path)).initialize()
 
-    checked = VNextDatabaseAdminFacade(_config(path, read_only=True)).check(provider)
+    checked = VNextDatabaseAdminFacade(_config(path, read_only=True)).check()
 
     assert checked.state == "READY"
     assert checked.resumed_build
@@ -240,22 +151,18 @@ def test_public_open_database_fully_checks_epoch_before_returning_catalog_facade
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "public-open.sqlite3"
-    provider = _AdminProvider(_admin_definition())
-    VNextDatabaseAdminFacade(_config(path)).initialize(provider)
+    VNextDatabaseAdminFacade(_config(path)).initialize()
 
-    reader = open_database(_config(path, read_only=True), provider=provider)
+    reader = open_database(_config(path, read_only=True))
 
     assert isinstance(reader, VNextCatalogFacade)
     assert isinstance(reader, CatalogReader)
 
     with SQLiteConnector(str(path)) as connector:
-        connector.execute(
-            "UPDATE vnext_facade_admin_probe SET payload = %s WHERE probe_id = 1",
-            (b"drifted",),
-        )
+        connector.execute("CREATE TABLE unexpected_schema_drift (id INTEGER)")
 
-    with pytest.raises(AssertionError):
-        open_database(_config(path, read_only=True), provider=provider)
+    with pytest.raises(SchemaEpochAdmissionError, match="outside this epoch manifest"):
+        open_database(_config(path, read_only=True))
 
 
 def test_database_admin_facade_readiness_is_read_only_and_constant_work(
@@ -263,8 +170,7 @@ def test_database_admin_facade_readiness_is_read_only_and_constant_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = tmp_path / "admin-readiness.sqlite3"
-    definition = _admin_definition()
-    VNextDatabaseAdminFacade(_config(path)).initialize(_AdminProvider(definition))
+    initialized = VNextDatabaseAdminFacade(_config(path)).initialize()
     statements: list[str] = []
 
     class CountingReadOnlySQLiteConnector(SQLiteConnector):
@@ -298,12 +204,10 @@ def test_database_admin_facade_readiness_is_read_only_and_constant_work(
         classmethod(lambda cls, value: context),
     )
 
-    readiness = VNextDatabaseAdminFacade(config).check_readiness(
-        _ReadinessOnlyProvider(definition)
-    )
+    readiness = VNextDatabaseAdminFacade(config).check_readiness()
 
     assert readiness.state == "READY"
-    assert readiness.manifest_sha256 == definition.manifest_sha256
+    assert readiness.manifest_sha256 == initialized.manifest_sha256
     assert len(statements) == 2
     assert "sqlite_master" in statements[0]
     assert "FROM h2hdb_schema_epoch" in statements[1]
@@ -367,29 +271,95 @@ def _canonical(connector: SQLiteConnector, domain: str, payload: bytes) -> bytes
     )
     page_bytes = encode_canonical_value_page(page)
     page_sha256 = canonical_value_page_digest(page_bytes)
-    connector.execute(
-        "INSERT INTO catalog_canonical_value_allocations "
-        "(value_sha256, digest_domain, byte_count, allocated_at) "
-        "VALUES (%s, %s, %s, 1)",
-        (value_sha256, domain.encode("ascii"), len(payload)),
-    )
-    connector.execute(
-        "INSERT INTO catalog_canonical_value_pages "
-        "(page_sha256, value_sha256, page_bytes) VALUES (%s, %s, %s)",
-        (page_sha256, value_sha256, page_bytes),
-    )
-    connector.execute(
-        "INSERT INTO catalog_canonical_value_page_descriptors "
-        "(page_sha256, value_sha256, level, page_position, subtree_item_count) "
-        "VALUES (%s, %s, 0, 0, %s)",
-        (page_sha256, value_sha256, len(payload)),
-    )
-    connector.execute(
-        "INSERT INTO catalog_canonical_value_identities "
-        "(value_sha256, root_page_sha256) VALUES (%s, %s)",
-        (value_sha256, page_sha256),
+    seed_canonical_value(
+        connector,
+        value_sha256=value_sha256,
+        digest_domain=domain.encode("ascii"),
+        page_sha256=page_sha256,
+        page_bytes=page_bytes,
+        subtree_item_count=len(payload),
+        allocated_at=1,
     )
     return value_sha256
+
+
+def _publication_commit_fixture(
+    connector: SQLiteConnector,
+    *,
+    snapshot_manifest_sha256: bytes,
+) -> None:
+    """Install the sealed physical commit graph consumed by the reader."""
+
+    receipt_id = b"r" * 16
+    connector.execute("PRAGMA foreign_keys = OFF")
+    try:
+        statements: tuple[tuple[str, tuple[object, ...]], ...] = (
+            (
+                "INSERT INTO catalog_source_revision_anchors "
+                "(source_revision) VALUES (%s)",
+                (1,),
+            ),
+            (
+                "INSERT INTO catalog_source_revision_channels "
+                "(source_revision, channel) VALUES (%s, %s)",
+                (1, b"default"),
+            ),
+            (
+                "INSERT INTO catalog_source_revision_snapshot_manifests "
+                "(source_revision, snapshot_manifest_sha256) VALUES (%s, %s)",
+                (1, snapshot_manifest_sha256),
+            ),
+            (
+                "INSERT INTO catalog_source_revision_descriptor_seals "
+                "(source_revision) VALUES (%s)",
+                (1,),
+            ),
+            (
+                "INSERT INTO catalog_revision_anchors (revision) VALUES (%s)",
+                (1,),
+            ),
+            (
+                "INSERT INTO catalog_revision_publication_counts "
+                "(revision, publication_count) VALUES (%s, %s)",
+                (1, 1),
+            ),
+            (
+                "INSERT INTO catalog_revision_descriptor_seals (revision) VALUES (%s)",
+                (1,),
+            ),
+            (
+                "INSERT INTO catalog_publication_generation_nodes "
+                "(generation) VALUES (%s)",
+                (1,),
+            ),
+            (
+                "INSERT INTO catalog_publication_generation_successors "
+                "(successor_generation, predecessor_generation) VALUES (%s, %s)",
+                (1, 0),
+            ),
+        )
+        for query, parameters in statements:
+            connector.execute(query, parameters)
+        seed_publication_commit(
+            connector,
+            receipt_id=receipt_id,
+            candidate_id=b"c" * 16,
+            revision=1,
+            source_revision=1,
+            generation=1,
+            preparation_id=b"p" * 16,
+            operational_policy_id=1,
+            artifact_policy_id=1,
+            display_title_policy_id=1,
+            new_galleries=1,
+            changed_galleries=0,
+            removed_galleries=0,
+            duplicate_losers=0,
+            committed_at=1_000_000,
+            channel=b"default",
+        )
+    finally:
+        connector.execute("PRAGMA foreign_keys = ON")
 
 
 def _catalog_fixture(connector: SQLiteConnector) -> dict[str, object]:
@@ -398,13 +368,10 @@ def _catalog_fixture(connector: SQLiteConnector) -> dict[str, object]:
         "source_root_v1",
         b"\x00\x00\x00\x01\x00\x00\x00\x00",
     )
-    scope_key = source_scope_key("filesystem", source_root, 1)
-    connector.execute(
-        "INSERT INTO catalog_source_scopes "
-        "(scope_key, source_provider, source_root_sha256, identity_policy_version) "
-        "VALUES (%s, %s, %s, 1)",
-        (scope_key, b"filesystem", source_root),
-    )
+    scope_key = seed_source_scope(
+        connector,
+        source_root_sha256=source_root,
+    ).scope_key
     locator = _canonical(
         connector,
         "source_relative_locator_v1",
@@ -416,11 +383,12 @@ def _catalog_fixture(connector: SQLiteConnector) -> dict[str, object]:
         (locator, b"gallery-one"),
     )
     gallery_key_value = gallery_key(scope_key, locator)
-    connector.execute(
-        "INSERT INTO catalog_gallery_identities "
-        "(gallery_id, gallery_key, scope_key, locator_sha256) "
-        "VALUES (1, %s, %s, %s)",
-        (gallery_key_value, scope_key, locator),
+    seed_gallery_identity(
+        connector,
+        gallery_id=1,
+        gallery_key=gallery_key_value,
+        scope_key=scope_key,
+        locator_sha256=locator,
     )
 
     source_title = _canonical(connector, "source_title_utf8_v1", b"Source")
@@ -428,17 +396,8 @@ def _catalog_fixture(connector: SQLiteConnector) -> dict[str, object]:
     sort_title = _canonical(connector, "title_sort_utf8_v1", b"display")
     summary = _canonical(connector, "catalog_summary_utf8_v1", b"Summary")
     language = _canonical(connector, "catalog_language_utf8_v1", b"en")
-    connector.execute(
-        "INSERT INTO catalog_title_sort_policy "
-        "(title_sort_policy_id, title_sort_algorithm_version, "
-        "unicode_data_version) VALUES (1, 1, %s)",
-        (b"15.0.0",),
-    )
-    connector.execute(
-        "INSERT INTO catalog_display_title_policies "
-        "(display_title_policy_id, display_title_algorithm_version, "
-        "title_sort_policy_id) VALUES (1, 1, 1)"
-    )
+    seed_title_sort_policy(connector, unicode_data_version=b"15.0.0")
+    seed_display_title_policy(connector)
     connector.execute(
         "INSERT INTO catalog_display_title_choices "
         "(display_title_policy_id, source_title_sha256, source_gallery_name, "
@@ -455,66 +414,75 @@ def _catalog_fixture(connector: SQLiteConnector) -> dict[str, object]:
     gid = 123
     publication_key_value = publication_key(gid)
     connector.execute(
-        "INSERT INTO catalog_publication_identities "
-        "(publication_key, publication_id, gid, artifact_name) "
-        "VALUES (%s, %s, %s, %s)",
-        (
-            publication_key_value,
-            publication_id(gid),
-            gid,
-            artifact_name(gid),
-        ),
+        "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
+        "VALUES (%s, %s)",
+        (gid, 2_000_000),
     )
-    connector.execute(
-        "INSERT INTO catalog_revisions (revision, publication_count, published_at) "
-        "VALUES (1, 1, 1000000)"
+    assert seed_publication_identity(connector, gid=gid).publication_key == (
+        publication_key_value
     )
-    connector.execute(
-        "INSERT INTO catalog_publications "
-        "(revision, gallery_id, publication_key, summary_sha256, language_sha256, "
-        "published_at, modified_at, item_sha256) "
-        "VALUES (1, 1, %s, %s, %s, 2000000, 3000000, %s)",
-        (publication_key_value, summary, language, b"i" * 32),
+    snapshot_manifest = _canonical(
+        connector,
+        "source_snapshot_manifest_v1",
+        b"facade-source-snapshot",
+    )
+    seed_snapshot_manifest(
+        connector,
+        snapshot_manifest_sha256=snapshot_manifest,
+        gallery_count=1,
+        file_count=1,
+        byte_count=1,
+    )
+    _publication_commit_fixture(
+        connector,
+        snapshot_manifest_sha256=snapshot_manifest,
+    )
+    seed_catalog_publication(
+        connector,
+        revision=1,
+        publication_key=publication_key_value,
+        gallery_id=1,
+        summary_sha256=summary,
+        language_sha256=language,
+        modified_at=3_000_000,
     )
     connector.execute(
         "INSERT INTO catalog_publication_order "
         "(revision, position, publication_key) VALUES (1, 0, %s)",
         (publication_key_value,),
     )
-    connector.execute(
-        "INSERT INTO catalog_publication_titles "
-        "(revision, publication_key, display_title_policy_id, "
-        "source_title_sha256, source_gallery_name) VALUES (1, %s, 1, %s, %s)",
-        (publication_key_value, source_title, b"gallery-one"),
+    seed_catalog_publication_title(
+        connector,
+        revision=1,
+        publication_key=publication_key_value,
+        source_title_sha256=source_title,
+        source_gallery_name=b"gallery-one",
     )
-    connector.execute(
-        "INSERT INTO catalog_publication_heads "
-        "(channel, revision, generation, advanced_at) VALUES (%s, 1, 1, 4000000)",
-        (b"default",),
-    )
-
     producer_tuple = (b"writer", b"python", b"pillow", b"jpeg", b"zlib")
     producer = artifact_producer_fingerprint_sha256(*producer_tuple)
-    connector.execute(
-        "INSERT INTO catalog_artifact_producer_fingerprints "
-        "(producer_fingerprint_sha256, artifact_algorithm_version, "
-        "producer_equivalence_class, writer_id, python_abi, pillow_build, "
-        "libjpeg_build, zlib_build) VALUES (%s, 1, %s, %s, %s, %s, %s, %s)",
-        (producer, b"facade", *producer_tuple),
+    producer_record = seed_artifact_producer_fingerprint(
+        connector,
+        artifact_algorithm_version=1,
+        writer_id=producer_tuple[0],
+        python_abi=producer_tuple[1],
+        pillow_build=producer_tuple[2],
+        libjpeg_build=producer_tuple[3],
+        zlib_build=producer_tuple[4],
     )
+    assert producer_record.producer_fingerprint_sha256 == producer
     policy = _canonical(
         connector,
         "artifact_policy_v2",
         encode_artifact_policy(1, 1600, producer),
     )
     assert policy == artifact_policy_digest(1, 1600, producer)
-    connector.execute(
-        "INSERT INTO catalog_artifact_policy_semantics "
-        "(policy_component_sha256, artifact_algorithm_version, "
-        "max_image_short_side, producer_fingerprint_sha256) "
-        "VALUES (%s, 1, 1600, %s)",
-        (policy, producer),
+    semantics_record = seed_artifact_policy_semantics(
+        connector,
+        artifact_algorithm_version=1,
+        max_image_short_side=1600,
+        producer_fingerprint_sha256=producer,
     )
+    assert semantics_record.policy_component_sha256 == policy
     component_specs = (
         ("artifact_source_manifest_v1", b"source"),
         ("artifact_member_plan_v1", b"members"),
@@ -547,13 +515,17 @@ def _catalog_fixture(connector: SQLiteConnector) -> dict[str, object]:
         owner,
         policy,
     )
-    connector.execute(
-        "INSERT INTO catalog_artifact_semantic_input "
-        "(artifact_semantics_sha256, source_manifest_component_sha256, "
-        "member_plan_component_sha256, effective_content_component_sha256, "
-        "selected_component_sha256, owner_component_sha256, "
-        "policy_component_sha256) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-        (semantics, *components, policy),
+    ensure_artifact_semantic_input_family(
+        connector,
+        ArtifactSemanticInputFamily(
+            artifact_semantics_sha256=semantics,
+            source_manifest_component_sha256=source_manifest,
+            member_plan_component_sha256=member_plan,
+            effective_content_component_sha256=effective_content,
+            selected_component_sha256=selected,
+            owner_component_sha256=owner,
+            policy_component_sha256=policy,
+        ),
     )
     artifact_bytes = b"facade-artifact"
     artifact_sha256 = sha256(artifact_bytes).digest()
@@ -569,20 +541,18 @@ def _catalog_fixture(connector: SQLiteConnector) -> dict[str, object]:
         (artifact_sha256, len(artifact_bytes)),
     )
     connector.execute(
-        "INSERT INTO catalog_artifact_identity "
-        "(artifact_id, publication_key, artifact_sha256) VALUES (%s, %s, %s)",
-        (artifact_identifier, publication_key_value, artifact_sha256),
-    )
-    connector.execute(
         "INSERT INTO catalog_artifact_location "
         "(artifact_sha256, artifact_locator_sha256) VALUES (%s, %s)",
         (artifact_sha256, artifact_locator),
     )
-    connector.execute(
-        "INSERT INTO catalog_artifacts "
-        "(revision, artifact_id, artifact_semantics_sha256, modified_at) "
-        "VALUES (1, %s, %s, 3000000)",
-        (artifact_identifier, semantics),
+    ensure_catalog_artifact_family(
+        connector,
+        CatalogArtifactFamily(
+            1,
+            publication_key_value,
+            artifact_sha256,
+            semantics,
+        ),
     )
     return {
         "artifact_id": artifact_identifier.decode("ascii"),
@@ -611,7 +581,7 @@ def test_catalog_facade_reads_every_public_shape_from_read_only_generated_sqlite
         revision=revision,
     )
     by_name = facade.get_publications_by_artifact_names(
-        ["h2h-123.cbz", "missing.cbz", "h2h-123.cbz"],
+        ["h2h-123.cbz", "h2h-999.cbz", "h2h-123.cbz"],
         revision=revision,
     )
     artifact = facade.get_artifact(
@@ -801,7 +771,7 @@ def test_facades_preserve_mariadb_read_snapshot_and_for_update_shapes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = _config(Path("unused"), backend="mariadb")
-    catalog_recorder = _MariaRecorder([(7,), (7, 0, 1_000_000)])
+    catalog_recorder = _MariaRecorder([(7, 0, 1_000_000, 1)])
     monkeypatch.setattr(
         RepositoryContext,
         "from_config",
@@ -817,6 +787,8 @@ def test_facades_preserve_mariadb_read_snapshot_and_for_update_shapes(
         "close",
     ]
     assert all(" FOR UPDATE" not in query for query, _data in catalog_recorder.selects)
+    assert len(catalog_recorder.selects) == 1
+    assert "catalog_publication_commit_head_receipts" in catalog_recorder.selects[0][0]
     assert not any(
         "maintenance" in query.casefold() for query, _data in catalog_recorder.selects
     )
@@ -866,7 +838,18 @@ def test_facade_public_surface_does_not_expose_database_infrastructure(
         if not callable(member):
             continue
         parameters = inspect.signature(member).parameters
-        assert not {"connector", "context", "repository", "work"} & parameters.keys()
+        assert (
+            not {
+                "connector",
+                "context",
+                "provider",
+                "repository",
+                "work",
+            }
+            & parameters.keys()
+        )
+
+    assert "provider" not in inspect.signature(open_database).parameters
 
     with pytest.raises(TypeError, match="CoreConfig"):
         facade_type(object())  # type: ignore[arg-type]

@@ -5,11 +5,37 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from vnext_canonical_value_fixtures import seed_canonical_value
+from vnext_catalog_identity_fixtures import seed_gallery_identity, seed_tag_term
+from vnext_catalog_registry_fixtures import (
+    seed_artifact_policy_semantics,
+    seed_artifact_producer_fingerprint,
+    seed_display_title_policy,
+    seed_source_scope,
+    seed_title_sort_policy,
+)
+from vnext_manifest_fixtures import seed_snapshot_manifest
+from vnext_publication_fixtures import (
+    clone_catalog_publication_families,
+    seed_catalog_contributor,
+    seed_catalog_publication,
+    seed_catalog_publication_title,
+    seed_publication_commit,
+    seed_publication_identity,
+)
 
+import h2hdb.vnext_identity as identity
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.catalog_errors import CatalogRevisionNotFoundError
 from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.vnext_artifact_family import (
+    ArtifactSemanticInputFamily,
+    CatalogArtifactFamily,
+    ensure_artifact_semantic_input_family,
+    ensure_catalog_artifact_family,
+)
 from h2hdb.vnext_catalog_reader_repository import (
+    VNextCatalogIdentifierError,
     VNextCatalogReaderRepository,
     VNextCatalogReadError,
 )
@@ -19,7 +45,6 @@ from h2hdb.vnext_identity import (
     GalleryObservationNodeKind,
     artifact_id,
     artifact_locator_components,
-    artifact_name,
     artifact_policy_digest,
     artifact_producer_fingerprint_sha256,
     artifact_semantics_digest,
@@ -32,7 +57,6 @@ from h2hdb.vnext_identity import (
     encode_effective_content,
     encode_source_relative_locator,
     gallery_key,
-    publication_id,
     publication_key,
     source_relative_locator_digest,
     source_scope_key,
@@ -71,40 +95,103 @@ def _canonical(
     )
     page_bytes = encode_canonical_value_page(page)
     page_sha256 = canonical_value_page_digest(page_bytes)
-    connector.execute(
-        "INSERT INTO catalog_canonical_value_allocations "
-        "(value_sha256, digest_domain, byte_count, allocated_at) "
-        "VALUES (%s, %s, %s, %s)",
-        (value, domain.encode("ascii"), len(payload), allocated_at),
-    )
-    connector.execute(
-        "INSERT INTO catalog_canonical_value_pages "
-        "(page_sha256, value_sha256, page_bytes) VALUES (%s, %s, %s)",
-        (page_sha256, value, page_bytes),
-    )
-    connector.execute(
-        "INSERT INTO catalog_canonical_value_page_descriptors "
-        "(page_sha256, value_sha256, level, page_position, subtree_item_count) "
-        "VALUES (%s, %s, 0, 0, %s)",
-        (page_sha256, value, len(payload)),
-    )
-    connector.execute(
-        "INSERT INTO catalog_canonical_value_identities "
-        "(value_sha256, root_page_sha256) VALUES (%s, %s)",
-        (value, page_sha256),
+    seed_canonical_value(
+        connector,
+        value_sha256=value,
+        digest_domain=domain.encode("ascii"),
+        page_sha256=page_sha256,
+        page_bytes=page_bytes,
+        subtree_item_count=len(payload),
+        allocated_at=allocated_at,
     )
     return value
+
+
+def _publication_commit(
+    connector: SQLiteConnector,
+    *,
+    snapshot_manifest_sha256: bytes,
+    revision: int = 1,
+    source_revision: int = 1,
+    generation: int = 1,
+    publication_count: int = 1,
+    committed_at: int = 1000000,
+    receipt_id: bytes = b"r" * 16,
+    candidate_id: bytes = b"c" * 16,
+    preparation_id: bytes = b"p" * 16,
+) -> None:
+    connector.execute("PRAGMA foreign_keys = OFF")
+    connector.execute(
+        "INSERT INTO catalog_source_revision_anchors (source_revision) VALUES (%s)",
+        (source_revision,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_source_revision_channels "
+        "(source_revision, channel) VALUES (%s, %s)",
+        (source_revision, b"default"),
+    )
+    connector.execute(
+        "INSERT INTO catalog_source_revision_snapshot_manifests "
+        "(source_revision, snapshot_manifest_sha256) VALUES (%s, %s)",
+        (source_revision, snapshot_manifest_sha256),
+    )
+    connector.execute(
+        "INSERT INTO catalog_source_revision_descriptor_seals "
+        "(source_revision) VALUES (%s)",
+        (source_revision,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_revision_anchors (revision) VALUES (%s)",
+        (revision,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_revision_publication_counts "
+        "(revision, publication_count) VALUES (%s, %s)",
+        (revision, publication_count),
+    )
+    connector.execute(
+        "INSERT INTO catalog_revision_descriptor_seals (revision) VALUES (%s)",
+        (revision,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_publication_generation_nodes (generation) VALUES (%s)",
+        (generation,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_publication_generation_successors "
+        "(successor_generation, predecessor_generation) VALUES (%s, %s)",
+        (generation, generation - 1),
+    )
+    seed_publication_commit(
+        connector,
+        receipt_id=receipt_id,
+        candidate_id=candidate_id,
+        revision=revision,
+        source_revision=source_revision,
+        generation=generation,
+        preparation_id=preparation_id,
+        operational_policy_id=1,
+        artifact_policy_id=1,
+        display_title_policy_id=1,
+        new_galleries=publication_count,
+        changed_galleries=0,
+        removed_galleries=0,
+        duplicate_losers=0,
+        committed_at=committed_at,
+        channel=None,
+    )
+    connector.execute(
+        "INSERT OR REPLACE INTO catalog_publication_commit_head_receipts "
+        "(channel, receipt_id) VALUES (%s, %s)",
+        (b"default", receipt_id),
+    )
+    connector.execute("PRAGMA foreign_keys = ON")
 
 
 def _published_fixture(connector: SQLiteConnector) -> dict[str, bytes]:
     root = _canonical(connector, "source_root_v1", b"\x00\x00\x00\x01\x00\x00\x00\x00")
     scope = source_scope_key("filesystem", root, 1)
-    connector.execute(
-        "INSERT INTO catalog_source_scopes "
-        "(scope_key, source_provider, source_root_sha256, identity_policy_version) "
-        "VALUES (%s, %s, %s, 1)",
-        (scope, b"filesystem", root),
-    )
+    assert seed_source_scope(connector, source_root_sha256=root).scope_key == scope
     locator_payload = encode_source_relative_locator(("gallery-one",))
     locator = _canonical(connector, "source_relative_locator_v1", locator_payload)
     assert locator == source_relative_locator_digest(
@@ -116,11 +203,24 @@ def _published_fixture(connector: SQLiteConnector) -> dict[str, bytes]:
         (locator, b"gallery-one"),
     )
     gallery = gallery_key(scope, locator)
-    connector.execute(
-        "INSERT INTO catalog_gallery_identities "
-        "(gallery_id, gallery_key, scope_key, locator_sha256) "
-        "VALUES (1, %s, %s, %s)",
-        (gallery, scope, locator),
+    seed_gallery_identity(
+        connector,
+        gallery_id=1,
+        gallery_key=gallery,
+        scope_key=scope,
+        locator_sha256=locator,
+    )
+    snapshot = _canonical(
+        connector,
+        "source_snapshot_manifest_v1",
+        b"reader-source-snapshot",
+    )
+    seed_snapshot_manifest(
+        connector,
+        snapshot_manifest_sha256=snapshot,
+        gallery_count=1,
+        file_count=1,
+        byte_count=1,
     )
 
     source_title = _canonical(connector, "source_title_utf8_v1", "原始標題".encode())
@@ -136,20 +236,10 @@ def _published_fixture(connector: SQLiteConnector) -> dict[str, bytes]:
         encode_effective_content((b"f" * 32,)),
     )
     contributor = _canonical(connector, "contributor_name_utf8_v1", "作者".encode())
-    contributor_sort = _canonical(connector, "contributor_sort_as_utf8_v1", b"author")
     tag_value = _canonical(connector, "tag_value_utf8_v1", "測試".encode())
 
-    connector.execute(
-        "INSERT INTO catalog_title_sort_policy "
-        "(title_sort_policy_id, title_sort_algorithm_version, unicode_data_version) "
-        "VALUES (1, 1, %s)",
-        (b"15.0.0",),
-    )
-    connector.execute(
-        "INSERT INTO catalog_display_title_policies "
-        "(display_title_policy_id, display_title_algorithm_version, "
-        "title_sort_policy_id) VALUES (1, 1, 1)"
-    )
+    seed_title_sort_policy(connector, unicode_data_version=b"15.0.0")
+    seed_display_title_policy(connector)
     connector.execute(
         "INSERT INTO catalog_display_title_choices "
         "(display_title_policy_id, source_title_sha256, source_gallery_name, "
@@ -166,66 +256,66 @@ def _published_fixture(connector: SQLiteConnector) -> dict[str, bytes]:
     gid = 123
     key = publication_key(gid)
     connector.execute(
-        "INSERT INTO catalog_publication_identities "
-        "(publication_key, publication_id, gid, artifact_name) "
-        "VALUES (%s, %s, %s, %s)",
-        (key, publication_id(gid), gid, artifact_name(gid)),
+        "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
+        "VALUES (%s, %s)",
+        (gid, 2000000),
     )
-    connector.execute(
-        "INSERT INTO catalog_revisions (revision, publication_count, published_at) "
-        "VALUES (1, 1, 1000000)"
+    assert seed_publication_identity(connector, gid=gid).publication_key == key
+    _publication_commit(
+        connector,
+        snapshot_manifest_sha256=snapshot,
     )
-    connector.execute(
-        "INSERT INTO catalog_publications "
-        "(revision, gallery_id, publication_key, summary_sha256, language_sha256, "
-        "published_at, modified_at, item_sha256) "
-        "VALUES (1, 1, %s, %s, %s, 2000000, 3000000, %s)",
-        (key, summary, language, b"i" * 32),
+    seed_catalog_publication(
+        connector,
+        revision=1,
+        publication_key=key,
+        gallery_id=1,
+        summary_sha256=summary,
+        language_sha256=language,
+        modified_at=3000000,
     )
     connector.execute(
         "INSERT INTO catalog_publication_order "
         "(revision, position, publication_key) VALUES (1, 0, %s)",
         (key,),
     )
-    connector.execute(
-        "INSERT INTO catalog_publication_titles "
-        "(revision, publication_key, display_title_policy_id, "
-        "source_title_sha256, source_gallery_name) VALUES (1, %s, 1, %s, %s)",
-        (key, source_title, b"gallery-one"),
+    seed_catalog_publication_title(
+        connector,
+        revision=1,
+        publication_key=key,
+        source_title_sha256=source_title,
+        source_gallery_name=b"gallery-one",
     )
     connector.execute(
         "INSERT INTO catalog_publication_contents "
         "(revision, publication_key, content_sha256) VALUES (1, %s, %s)",
         (key, content),
     )
-    connector.execute(
-        "INSERT INTO catalog_contributors "
-        "(revision, publication_key, position, contributor_name_sha256, role) "
-        "VALUES (1, %s, 0, %s, %s)",
-        (key, contributor, b"author"),
+    seed_catalog_contributor(
+        connector,
+        revision=1,
+        publication_key=key,
+        position=0,
+        contributor_name_sha256=contributor,
+        role=b"author",
     )
-    connector.execute(
-        "INSERT INTO catalog_contributor_sort_as "
-        "(revision, publication_key, position, sort_as_sha256) "
-        "VALUES (1, %s, 0, %s)",
-        (key, contributor_sort),
-    )
-    connector.execute(
-        "INSERT INTO catalog_tag_terms "
-        "(tag_id, namespace, tag_value_sha256) VALUES (1, %s, %s)",
-        (b"artist", tag_value),
+    seed_tag_term(
+        connector,
+        tag_id=1,
+        namespace=b"artist",
+        tag_value_sha256=tag_value,
     )
     connector.execute(
         "INSERT INTO catalog_subjects "
         "(revision, publication_key, position, tag_id) VALUES (1, %s, 0, 1)",
         (key,),
     )
-    connector.execute(
-        "INSERT INTO catalog_publication_heads "
-        "(channel, revision, generation, advanced_at) VALUES (%s, 1, 1, 4000000)",
-        (b"default",),
-    )
-    return {"publication_key": key, "summary": summary, "content": content}
+    return {
+        "publication_key": key,
+        "summary": summary,
+        "content": content,
+        "snapshot_manifest": snapshot,
+    }
 
 
 def _artifact_fixture(
@@ -242,23 +332,25 @@ def _artifact_fixture(
         b"zlib-test",
     )
     producer = artifact_producer_fingerprint_sha256(*producer_tuple)
-    connector.execute(
-        "INSERT INTO catalog_artifact_producer_fingerprints "
-        "(producer_fingerprint_sha256, artifact_algorithm_version, "
-        "producer_equivalence_class, writer_id, python_abi, pillow_build, "
-        "libjpeg_build, zlib_build) VALUES (%s, 1, %s, %s, %s, %s, %s, %s)",
-        (producer, b"reader-fixture", *producer_tuple),
+    registered = seed_artifact_producer_fingerprint(
+        connector,
+        artifact_algorithm_version=1,
+        writer_id=producer_tuple[0],
+        python_abi=producer_tuple[1],
+        pillow_build=producer_tuple[2],
+        libjpeg_build=producer_tuple[3],
+        zlib_build=producer_tuple[4],
     )
+    assert registered.producer_fingerprint_sha256 == producer
     policy_payload = encode_artifact_policy(1, 1600, producer)
     policy = _canonical(connector, "artifact_policy_v2", policy_payload)
     assert policy == artifact_policy_digest(1, 1600, producer)
-    connector.execute(
-        "INSERT INTO catalog_artifact_policy_semantics "
-        "(policy_component_sha256, artifact_algorithm_version, "
-        "max_image_short_side, producer_fingerprint_sha256) "
-        "VALUES (%s, 1, 1600, %s)",
-        (policy, producer),
+    registered_policy = seed_artifact_policy_semantics(
+        connector,
+        max_image_short_side=1600,
+        producer_fingerprint_sha256=producer,
     )
+    assert registered_policy.policy_component_sha256 == policy
 
     components = tuple(
         _canonical(connector, domain, payload)
@@ -298,14 +390,19 @@ def _artifact_fixture(
         owner,
         policy,
     )
-    connector.execute(
-        "INSERT INTO catalog_artifact_semantic_input "
-        "(artifact_semantics_sha256, source_manifest_component_sha256, "
-        "member_plan_component_sha256, effective_content_component_sha256, "
-        "selected_component_sha256, owner_component_sha256, "
-        "policy_component_sha256) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-        (semantics, *components, policy),
+    _, inserted = ensure_artifact_semantic_input_family(
+        connector,
+        ArtifactSemanticInputFamily(
+            artifact_semantics_sha256=semantics,
+            source_manifest_component_sha256=source_manifest,
+            member_plan_component_sha256=member_plan,
+            effective_content_component_sha256=effective_content,
+            selected_component_sha256=selected,
+            owner_component_sha256=owner,
+            policy_component_sha256=policy,
+        ),
     )
+    assert inserted
 
     artifact_bytes = b"reader-artifact"
     artifact_sha256 = sha256(artifact_bytes).digest()
@@ -322,21 +419,20 @@ def _artifact_fixture(
         (artifact_sha256, len(artifact_bytes)),
     )
     connector.execute(
-        "INSERT INTO catalog_artifact_identity "
-        "(artifact_id, publication_key, artifact_sha256) VALUES (%s, %s, %s)",
-        (identifier, publication_key_value, artifact_sha256),
-    )
-    connector.execute(
         "INSERT INTO catalog_artifact_location "
         "(artifact_sha256, artifact_locator_sha256) VALUES (%s, %s)",
         (artifact_sha256, locator),
     )
-    connector.execute(
-        "INSERT INTO catalog_artifacts "
-        "(revision, artifact_id, artifact_semantics_sha256, modified_at) "
-        "VALUES (1, %s, %s, 3000000)",
-        (identifier, semantics),
+    _, inserted = ensure_catalog_artifact_family(
+        connector,
+        CatalogArtifactFamily(
+            revision=1,
+            publication_key=publication_key_value,
+            artifact_sha256=artifact_sha256,
+            artifact_semantics_sha256=semantics,
+        ),
     )
+    assert inserted
     return {
         "artifact_id": identifier,
         "artifact_sha256": artifact_sha256,
@@ -377,7 +473,7 @@ def test_pinned_reader_hydrates_normalized_publication_and_canonical_values(
             )
             by_artifact_name = reader.get_publications_by_artifact_names(
                 connector,
-                ["h2h-123.cbz", "missing.cbz", "h2h-123.cbz"],
+                ["h2h-123.cbz", "h2h-999.cbz", "h2h-123.cbz"],
                 revision=revision,
             )
         assert revision.revision == 1
@@ -398,7 +494,6 @@ def test_pinned_reader_hydrates_normalized_publication_and_canonical_values(
         assert not publication.redownload_required
         assert publication.content_sha256 == values["content"].hex()
         assert publication.contributors[0].name == "作者"
-        assert publication.contributors[0].sort_as == "author"
         assert publication.subjects[0].scheme == "h2h:tag:artist"
         assert publication.subjects[0].name == "測試"
         assert artifact is not None
@@ -409,6 +504,263 @@ def test_pinned_reader_hydrates_normalized_publication_and_canonical_values(
             f"{artifact_values['artifact_sha256'].hex()}.cbz",
         )
         assert artifact.sha256 == artifact_values["artifact_sha256"].hex()
+    finally:
+        connector.close()
+
+
+def test_artifact_lookup_uses_only_the_strict_codec_and_exact_digest(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "reader-artifact-codec.sqlite3")
+    try:
+        values = _published_fixture(connector)
+        artifact_values = _artifact_fixture(
+            connector,
+            publication_key_value=values["publication_key"],
+        )
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        identifier = artifact_values["artifact_id"].decode("ascii")
+        malformed = (
+            identifier[:-64] + identifier[-64:].upper(),
+            identifier.replace(":123:sha256:", ":0123:sha256:"),
+            "urn:h2h:artifact:cbz:１２３:sha256:" + "0" * 64,
+        )
+        with connector.read_transaction():
+            for value in malformed:
+                with pytest.raises(
+                    VNextCatalogReadError,
+                    match="exact registered identity",
+                ):
+                    reader.get_artifact(connector, value, revision=1)
+            missing = reader.get_artifact(
+                connector,
+                artifact_id(123, b"x" * 32).decode("ascii"),
+                revision=1,
+            )
+        assert missing is None
+    finally:
+        connector.close()
+
+
+def test_strict_lookup_rejects_publication_key_collisions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connector = _database(tmp_path / "reader-public-collision.sqlite3")
+    try:
+        values = _published_fixture(connector)
+        artifact_values = _artifact_fixture(
+            connector,
+            publication_key_value=values["publication_key"],
+        )
+        original_publication_key = identity.publication_key
+
+        def colliding_publication_key(
+            gid: int,
+            *,
+            algorithm_version: int = identity.PUBLICATION_KEY_ALGORITHM_VERSION,
+        ) -> bytes:
+            if gid in {123, 999}:
+                return values["publication_key"]
+            return original_publication_key(
+                gid,
+                algorithm_version=algorithm_version,
+            )
+
+        monkeypatch.setattr(identity, "publication_key", colliding_publication_key)
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        colliding_artifact_id = artifact_id(
+            999,
+            artifact_values["artifact_sha256"],
+        ).decode("ascii")
+        with connector.read_transaction():
+            with pytest.raises(VNextCatalogReadError, match="collides"):
+                reader.get_publication(
+                    connector,
+                    "urn:h2h:gallery:999",
+                    revision=1,
+                )
+            with pytest.raises(VNextCatalogReadError, match="identity set"):
+                reader.get_publications_by_artifact_names(
+                    connector,
+                    ["h2h-999.cbz"],
+                    revision=1,
+                )
+            with pytest.raises(VNextCatalogReadError, match="collides"):
+                reader.get_artifact(
+                    connector,
+                    colliding_artifact_id,
+                    revision=1,
+                )
+    finally:
+        connector.close()
+
+
+def test_publication_and_artifact_name_lookups_reject_noncanonical_inputs_before_sql(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connector = _database(tmp_path / "reader-public-codecs.sqlite3")
+    reader = VNextCatalogReaderRepository(backend="sqlite")
+    queries: list[str] = []
+    original_fetch_one = SQLiteConnector.fetch_one
+    original_fetch_all = SQLiteConnector.fetch_all
+
+    def counted_fetch_one(
+        current: SQLiteConnector,
+        query: str,
+        data: tuple[Any, ...] = (),
+    ) -> tuple[Any, ...]:
+        queries.append(query)
+        return original_fetch_one(current, query, data)
+
+    def counted_fetch_all(
+        current: SQLiteConnector,
+        query: str,
+        data: tuple[Any, ...] = (),
+    ) -> list[tuple[Any, ...]]:
+        queries.append(query)
+        return original_fetch_all(current, query, data)
+
+    monkeypatch.setattr(SQLiteConnector, "fetch_one", counted_fetch_one)
+    monkeypatch.setattr(SQLiteConnector, "fetch_all", counted_fetch_all)
+    try:
+        for value in (
+            "urn:h2h:gallery:0",
+            "urn:h2h:gallery:0123",
+            "urn:h2h:gallery:１２３",
+            "urn:h2h:gallery:123 ",
+        ):
+            with pytest.raises(VNextCatalogIdentifierError):
+                reader.get_publication(connector, value)
+        for value in (
+            "missing.cbz",
+            "h2h-0.cbz",
+            "h2h-0123.cbz",
+            "h2h-１２３.cbz",
+            "h2h-123.CBZ",
+        ):
+            with pytest.raises(VNextCatalogIdentifierError):
+                reader.get_publications_by_artifact_names(connector, [value])
+        with pytest.raises(TypeError):
+            reader.get_publications_by_artifact_names(connector, "h2h-123.cbz")
+        with pytest.raises(ValueError, match="at most 128"):
+            reader.get_publications_by_artifact_names(
+                connector,
+                ["h2h-1.cbz"] * 129,
+            )
+        assert queries == []
+    finally:
+        connector.close()
+
+
+def test_artifact_name_lookup_uses_one_bounded_set_query_per_publication_family(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connector = _database(tmp_path / "reader-name-page.sqlite3")
+    try:
+        values = _published_fixture(connector)
+        _artifact_fixture(
+            connector,
+            publication_key_value=values["publication_key"],
+        )
+        queries: list[str] = []
+        original_fetch_all = SQLiteConnector.fetch_all
+
+        def counted_fetch_all(
+            current: SQLiteConnector,
+            query: str,
+            data: tuple[Any, ...] = (),
+        ) -> list[tuple[Any, ...]]:
+            queries.append(query)
+            return original_fetch_all(current, query, data)
+
+        monkeypatch.setattr(SQLiteConnector, "fetch_all", counted_fetch_all)
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        names = [f"h2h-{gid}.cbz" for gid in range(1, 129)]
+        with connector.read_transaction():
+            publications = reader.get_publications_by_artifact_names(
+                connector,
+                names,
+                revision=1,
+            )
+        assert tuple(publications) == ("h2h-123.cbz",)
+        assert (
+            sum(
+                "FROM catalog_publication_anchors AS anchor" in query
+                for query in queries
+            )
+            == 1
+        )
+        assert (
+            sum(
+                "FROM catalog_contributor_anchors AS a JOIN selected" in query
+                for query in queries
+            )
+            == 1
+        )
+        assert sum("FROM catalog_subjects AS s" in query for query in queries) == 1
+        assert (
+            sum("FROM catalog_artifact_anchors AS a" in query for query in queries) == 1
+        )
+    finally:
+        connector.close()
+
+
+def test_single_publication_lookup_rejects_partial_scalar_and_title_families(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "reader-partial-publication.sqlite3")
+    try:
+        values = _published_fixture(connector)
+        connector.execute("PRAGMA foreign_keys = OFF")
+        connector.execute(
+            "DELETE FROM catalog_publication_title_seals "
+            "WHERE revision = 1 AND publication_key = %s",
+            (values["publication_key"],),
+        )
+        connector.execute("PRAGMA foreign_keys = ON")
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        with (
+            connector.read_transaction(),
+            pytest.raises(VNextCatalogReadError, match="partial or noncongruent"),
+        ):
+            reader.get_publication(connector, "urn:h2h:gallery:123", revision=1)
+    finally:
+        connector.close()
+
+
+def test_artifact_reader_rejects_a_safe_but_noncanonical_locator(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "reader-artifact-locator.sqlite3")
+    try:
+        values = _published_fixture(connector)
+        artifact_values = _artifact_fixture(
+            connector,
+            publication_key_value=values["publication_key"],
+        )
+        wrong_locator = _canonical(
+            connector,
+            "artifact_locator_bytes_v1",
+            encode_artifact_locator(("safe", "wrong.cbz")),
+        )
+        connector.execute(
+            "UPDATE catalog_artifact_location SET artifact_locator_sha256 = %s "
+            "WHERE artifact_sha256 = %s",
+            (wrong_locator, artifact_values["artifact_sha256"]),
+        )
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        with (
+            connector.read_transaction(),
+            pytest.raises(VNextCatalogReadError, match="content-addressed identity"),
+        ):
+            reader.get_artifact(
+                connector,
+                artifact_values["artifact_id"].decode("ascii"),
+                revision=1,
+            )
     finally:
         connector.close()
 
@@ -433,8 +785,8 @@ def test_reader_rejects_missing_order_row_and_wrong_canonical_domain(
             (values["publication_key"],),
         )
         connector.execute(
-            "UPDATE catalog_canonical_value_allocations SET digest_domain = %s "
-            "WHERE value_sha256 = %s",
+            "UPDATE catalog_canonical_value_allocation_digest_domains "
+            "SET digest_domain = %s WHERE value_sha256 = %s",
             (b"source_title_utf8_v1", values["summary"]),
         )
         with (
@@ -463,6 +815,21 @@ def test_reader_uses_public_revision_not_found_error(tmp_path: Path) -> None:
         ):
             reader.get_catalog_revision(connector, 99)
         assert missing_historical.value.revision == 99
+
+        connector.execute("INSERT INTO catalog_revision_anchors (revision) VALUES (1)")
+        connector.execute(
+            "INSERT INTO catalog_revision_publication_counts "
+            "(revision, publication_count) VALUES (1, 0)"
+        )
+        connector.execute(
+            "INSERT INTO catalog_revision_descriptor_seals (revision) VALUES (1)"
+        )
+        with (
+            connector.read_transaction(),
+            pytest.raises(CatalogRevisionNotFoundError) as unpublished_descriptor,
+        ):
+            reader.get_catalog_revision(connector, 1)
+        assert unpublished_descriptor.value.revision == 1
     finally:
         connector.close()
 
@@ -496,37 +863,32 @@ def test_reader_pins_historical_revision_through_read_only_connection(
     database_path = tmp_path / "reader-history.sqlite3"
     connector = _database(database_path)
     try:
-        _published_fixture(connector)
-        connector.execute(
-            "INSERT INTO catalog_revisions "
-            "(revision, publication_count, published_at) VALUES (2, 1, 5000000)"
+        values = _published_fixture(connector)
+        _publication_commit(
+            connector,
+            snapshot_manifest_sha256=values["snapshot_manifest"],
+            revision=2,
+            source_revision=2,
+            generation=2,
+            publication_count=1,
+            committed_at=5000000,
+            receipt_id=b"s" * 16,
+            candidate_id=b"d" * 16,
+            preparation_id=b"q" * 16,
+        )
+        clone_catalog_publication_families(
+            connector,
+            source_revision=1,
+            target_revision=2,
         )
         for table, columns in (
-            (
-                "catalog_publications",
-                "gallery_id, publication_key, summary_sha256, language_sha256, "
-                "published_at, modified_at, item_sha256",
-            ),
             (
                 "catalog_publication_order",
                 "position, publication_key",
             ),
             (
-                "catalog_publication_titles",
-                "publication_key, display_title_policy_id, source_title_sha256, "
-                "source_gallery_name",
-            ),
-            (
                 "catalog_publication_contents",
                 "publication_key, content_sha256",
-            ),
-            (
-                "catalog_contributors",
-                "publication_key, position, contributor_name_sha256, role",
-            ),
-            (
-                "catalog_contributor_sort_as",
-                "publication_key, position, sort_as_sha256",
             ),
             (
                 "catalog_subjects",
@@ -537,11 +899,6 @@ def test_reader_pins_historical_revision_through_read_only_connection(
                 f"INSERT INTO {table} (revision, {columns}) "
                 f"SELECT 2, {columns} FROM {table} WHERE revision = 1"
             )
-        connector.execute(
-            "UPDATE catalog_publication_heads SET revision = 2, generation = 2, "
-            "advanced_at = 5000000 WHERE channel = %s",
-            (b"default",),
-        )
     finally:
         connector.close()
 

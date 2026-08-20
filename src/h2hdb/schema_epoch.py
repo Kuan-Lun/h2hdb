@@ -1,9 +1,7 @@
 """Greenfield schema-epoch orchestration.
 
-This module is deliberately independent from :mod:`h2hdb.migrations`.  It is
-the bootstrap mechanism for a future, generated vNext physical schema; merely
-importing it does not activate that schema or alter the currently supported
-database format.
+This module is the bootstrap mechanism for the sole generated epoch-2 physical
+schema. Merely importing it does not activate or alter a database.
 
 The runner owns only the epoch control relation and orchestration.  Physical
 DDL, structural validators, and runtime semantic obligations are supplied by

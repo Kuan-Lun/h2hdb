@@ -142,6 +142,18 @@ def runtime_obligation_records(
             catalog["analysis_candidate_contract"]["runtime_obligation"],
         ),
         (
+            "analysis_impacted_key_contract.append_rule",
+            catalog["analysis_impacted_key_contract"]["append_rule"],
+        ),
+        (
+            "analysis_impacted_key_contract.replay_rule",
+            catalog["analysis_impacted_key_contract"]["replay_rule"],
+        ),
+        (
+            "analysis_impacted_key_contract.cleanup_rule",
+            catalog["analysis_impacted_key_contract"]["cleanup_rule"],
+        ),
+        (
             "artifact_delta_contract.rebuild_rule",
             catalog["artifact_delta_contract"]["rebuild_rule"],
         ),
@@ -200,6 +212,21 @@ def runtime_obligation_records(
         (
             "publication_atomic_contract.finalization_rule",
             catalog["publication_atomic_contract"]["finalization_rule"],
+        ),
+        (
+            "publication_commit_contract.runtime_obligation",
+            catalog["publication_commit_contract"]["runtime_obligation"],
+        ),
+        (
+            "publication_commit_contract.ready_obligation",
+            catalog["publication_commit_contract"]["ready_obligation"],
+        ),
+        *(
+            (
+                f"batch_receipt_projection.{value['name']}.write_obligation",
+                value["write_obligation"],
+            )
+            for value in catalog.get("batch_receipt_projection", [])
         ),
         (
             "title_sort_contract.runtime_obligation",
@@ -350,9 +377,10 @@ NEW_ATTRIBUTE_SHAPES: dict[str, dict[str, Any]] = {
     "old_excluded": shape("INTEGER", "TINYINT UNSIGNED"),
     "owner_gallery_id": U64,
     "page_count": U32,
+    "page_limit": U64,
     "policy_id": U64,
     "position": U64,
-    "priority_key": shape("BLOB", "VARBINARY(512)"),
+    "prefer_not_already_uploaded": shape("INTEGER", "TINYINT UNSIGNED"),
     "published_at": UNIX_MICROSECONDS,
     "row_count": U64,
     "scan_observation_version": U32,
@@ -370,8 +398,10 @@ NEW_ATTRIBUTE_SHAPES: dict[str, dict[str, Any]] = {
         mariadb_collation="ascii_bin",
     ),
     "tag_id": U64,
+    "title_scalar_count": U64,
     "updated_at": UNIX_MICROSECONDS,
     "upload_time": UNIX_MICROSECONDS,
+    "witness_gallery_id": U64,
     "winner_gallery_id": U64,
     "digest_domain": shape("BLOB", "VARBINARY(64)"),
     "page_bytes": shape("BLOB", "MEDIUMBLOB"),
@@ -404,11 +434,10 @@ NEW_ATTRIBUTE_SHAPES: dict[str, dict[str, Any]] = {
     "libjpeg_build": shape("BLOB", "VARBINARY(128)"),
     "zlib_build": shape("BLOB", "VARBINARY(128)"),
     "storage_codec_version": U32,
+    "storage_generation": U64,
     "adapter_id": shape("BLOB", "VARBINARY(64)"),
     "locator_codec_version": U32,
     "protection_token_codec_version": U32,
-    "artifact_id": shape("BLOB", "VARBINARY(128)"),
-    "artifact_input_id": UUID_BYTES,
     "artifact_input_count": U64,
     "artifact_name": shape("BLOB", "VARBINARY(255)"),
     "artifact_policy_id": U64,
@@ -431,7 +460,6 @@ NEW_ATTRIBUTE_SHAPES: dict[str, dict[str, Any]] = {
     "delete_count": U64,
     "entry_order_version": U32,
     "finalized_at": shape("INTEGER", "BIGINT UNSIGNED", nullable=True),
-    "item_sha256": DIGEST_BYTES,
     "metadata_format_version": U32,
     "modified_at": UNIX_MICROSECONDS,
     "name": shape("BLOB", "LONGBLOB"),
@@ -444,19 +472,22 @@ NEW_ATTRIBUTE_SHAPES: dict[str, dict[str, Any]] = {
     "protection_token": shape("BLOB", "BINARY(184)"),
     "prepared_artifact_count": U64,
     "processed_count": U64,
-    "projection_sealed_at": UNIX_MICROSECONDS,
     "publication_count": U64,
     "publication_id": shape("BLOB", "VARBINARY(64)"),
     "publication_key": DIGEST_BYTES,
     "publication_sha256": DIGEST_BYTES,
     "receipt_id": UUID_BYTES,
+    "base_receipt_id": UUID_BYTES,
+    "preparation_id": UUID_BYTES,
+    "operational_policy_id": U64,
+    "successor_generation": U64,
+    "predecessor_generation": U64,
     "removed_galleries": U64,
     "rebuild_count": U64,
     "reserved_revision": U64,
     "resolved_analysis_id": UUID_BYTES,
     "revision": U64,
     "scheme": shape("BLOB", "LONGBLOB"),
-    "sort_as": shape("BLOB", "LONGBLOB"),
     "sort_title": shape("BLOB", "LONGBLOB"),
     "source_gallery_name": shape("BLOB", "VARBINARY(255)"),
     "source_title": shape("BLOB", "LONGBLOB"),
@@ -472,7 +503,9 @@ NEW_ATTRIBUTE_SHAPES: dict[str, dict[str, Any]] = {
     "stage": shape("BLOB", "VARBINARY(64)"),
     "stage_order": shape("BLOB", "BINARY(2)"),
     "state_component": shape("BLOB", "VARBINARY(64)"),
-    "terminal": shape("INTEGER", "TINYINT UNSIGNED"),
+    # MariaDB exposes CAST(... AS UNSIGNED) from a view as BIGINT UNSIGNED;
+    # unlike stored columns it has no CAST target for TINYINT UNSIGNED.
+    "terminal": shape("INTEGER", "BIGINT UNSIGNED"),
     "unchanged_count": U64,
     "file_role": shape("BLOB", "VARBINARY(8)"),
     "excluded_flag": shape("INTEGER", "TINYINT UNSIGNED"),
@@ -489,8 +522,9 @@ UUID_ATTRIBUTES = {
     "resolved_analysis_id",
     "build_id",
     "candidate_id",
-    "artifact_input_id",
     "receipt_id",
+    "base_receipt_id",
+    "preparation_id",
     "scan_attempt",
 }
 
@@ -511,139 +545,433 @@ def physical_table_name(relation_name: str) -> str:
 
 TABLE_NAMES = {
     "manifest_policy": "catalog_manifest_policies",
+    "manifest_policy_anchor": "catalog_manifest_policy_anchors",
+    "manifest_policy_manifest_algorithm_version": "catalog_manifest_policy_manifest_algorithm_versions",
+    "manifest_policy_file_order_version": "catalog_manifest_policy_file_order_versions",
+    "manifest_policy_identity": "catalog_manifest_policy_identities",
+    "manifest_policy_seal": "catalog_manifest_policy_seals",
     "source_build": "catalog_source_builds",
+    "source_build_anchor": "catalog_source_build_anchors",
+    "source_build_scope_key": "catalog_source_build_scope_keys",
+    "source_build_manifest_policy_id": "catalog_source_build_manifest_policy_ids",
+    "source_build_state": "catalog_source_build_states",
+    "source_build_created_at": "catalog_source_build_created_ats",
+    "source_build_descriptor_seal": "catalog_source_build_descriptor_seals",
+    "source_build_sealed_at": "catalog_source_build_sealed_ats",
+    "source_build_base_publication_commit": "catalog_source_build_base_publication_commits",
+    "source_build_base_source": "catalog_source_build_base_source",
     "source_scope": "catalog_source_scopes",
+    "source_scope_anchor": "catalog_source_scope_anchors",
+    "source_scope_source_provider": "catalog_source_scope_source_providers",
+    "source_scope_source_root_sha256": "catalog_source_scope_source_root_sha256s",
+    "source_scope_identity_policy_version": "catalog_source_scope_identity_policy_versions",
+    "source_scope_identity": "catalog_source_scope_identities",
+    "source_scope_seal": "catalog_source_scope_seals",
+    "source_build_discovery_anchor": "catalog_source_build_discovery_anchors",
+    "source_build_discovery_scan_attempt": "catalog_source_build_discovery_scan_attempts",
+    "source_build_discovery_gallery_count": "catalog_source_build_discovery_gallery_counts",
+    "source_build_discovery_tree_observation_sha256": "catalog_source_build_discovery_tree_observation_sha256s",
+    "source_build_discovery_completed_at": "catalog_source_build_discovery_completed_ats",
+    "source_build_discovery_seal": "catalog_source_build_discovery_seals",
     "source_build_discovery": "catalog_source_build_discoveries",
+    "gallery_identity_anchor": "catalog_gallery_identity_anchors",
+    "gallery_identity_coordinate": "catalog_gallery_identity_coordinates",
+    "gallery_identity_gallery_key": "catalog_gallery_identity_gallery_keys",
+    "gallery_identity_seal": "catalog_gallery_identity_seals",
     "gallery_identity": "catalog_gallery_identities",
     "gallery_observation": "catalog_gallery_observations",
-    "gallery_identifier": "catalog_gallery_identifiers",
     "gallery_observation_allocation": "catalog_gallery_observation_allocations",
     "gallery_observation_page": "catalog_gallery_observation_pages",
     "gallery_observation_allocation_page": "catalog_gallery_observation_allocation_pages",
+    "gallery_observation_page_descriptor_anchor": "catalog_gallery_observation_page_descriptor_anchors",
+    "gallery_observation_page_descriptor_component": "catalog_gallery_observation_page_descriptor_components",
+    "gallery_observation_page_descriptor_level": "catalog_gallery_observation_page_descriptor_levels",
+    "gallery_observation_page_descriptor_subtree_item_count": "catalog_gallery_observation_page_descriptor_subtree_item_counts",
+    "gallery_observation_page_descriptor_seal": "catalog_gallery_observation_page_descriptor_seals",
     "gallery_observation_page_descriptor": "catalog_gallery_observation_page_descriptors",
+    "gallery_observation_page_key_bounds_anchor": "catalog_gallery_observation_page_key_bounds_anchors",
+    "gallery_observation_page_key_bounds_first_key": "catalog_gallery_observation_page_key_bounds_first_keys",
+    "gallery_observation_page_key_bounds_last_key": "catalog_gallery_observation_page_key_bounds_last_keys",
+    "gallery_observation_page_key_bounds_seal": "catalog_gallery_observation_page_key_bounds_seals",
     "gallery_observation_page_key_bounds": "catalog_gallery_observation_page_key_bounds",
     "gallery_observation_page_child": "catalog_gallery_observation_page_children",
     "gallery_observation_tree_root": "catalog_gallery_observation_tree_roots",
+    "gallery_observation_metadata_anchor": "catalog_gallery_observation_metadata_anchors",
+    "gallery_upload_time": "catalog_gallery_upload_times",
+    "source_gallery_name_gid": "catalog_source_gallery_name_gids",
+    "gallery_source_name_access": "catalog_gallery_source_name_accesses",
+    "gallery_observation_download_time": "catalog_gallery_observation_download_times",
+    "gallery_observation_modified_time": "catalog_gallery_observation_modified_times",
+    "gallery_observation_metadata_seal": "catalog_gallery_observation_metadata_seals",
     "gallery_observation_metadata": "catalog_gallery_observation_metadata",
+    "gallery_observation_scan_anchor": "catalog_gallery_observation_scan_anchors",
+    "gallery_observation_scan_observation_sha256": "catalog_gallery_observation_scan_observation_sha256s",
+    "gallery_observation_scan_observation_version": "catalog_gallery_observation_scan_observation_versions",
+    "gallery_observation_scan_source_file_count": "catalog_gallery_observation_scan_source_file_counts",
+    "gallery_observation_scan_seal": "catalog_gallery_observation_scan_seals",
     "gallery_observation_scan": "catalog_gallery_observation_scans",
     "gallery_observation_discovery_fingerprint": "catalog_gallery_observation_discovery_fingerprints",
     "gallery_observation_metadata_digest": "catalog_gallery_observation_metadata_digests",
     "gallery_observation_raw_content": "catalog_gallery_observation_raw_content",
     "gallery_observation_page_count": "catalog_gallery_observation_page_counts",
+    "gallery_observation_directory_anchor": "catalog_gallery_observation_directory_anchors",
+    "gallery_observation_directory_entry_count": "catalog_gallery_observation_directory_entry_counts",
+    "gallery_observation_directory_observation_sha256": "catalog_gallery_observation_directory_observation_sha256s",
+    "gallery_observation_directory_seal": "catalog_gallery_observation_directory_seals",
     "gallery_observation_directory": "catalog_gallery_observation_directories",
+    "gallery_observation_stat_anchor": "catalog_gallery_observation_stat_anchors",
+    "gallery_observation_stat_file_count": "catalog_gallery_observation_stat_file_counts",
+    "gallery_observation_stat_byte_count": "catalog_gallery_observation_stat_byte_counts",
+    "gallery_observation_stat_seal": "catalog_gallery_observation_stat_seals",
+    "gallery_observation_stat": "catalog_gallery_observation_stat",
     "source_build_gallery": "catalog_source_build_galleries",
+    "file_name_identity_anchor": "catalog_file_name_identity_anchors",
+    "file_name_identity_name_bytes": "catalog_file_name_identity_name_bytes",
+    "file_name_identity_file_role": "catalog_file_name_identity_file_roles",
+    "file_name_identity_seal": "catalog_file_name_identity_seals",
     "file_name_identity": "catalog_file_name_identities",
     "content_blob": "catalog_content_blobs",
+    "gallery_observation_file_anchor": "catalog_gallery_observation_file_anchors",
+    "gallery_observation_file_file_no": "catalog_gallery_observation_file_file_nos",
+    "gallery_observation_file_file_sha256": "catalog_gallery_observation_file_file_sha256s",
+    "gallery_observation_file_seal": "catalog_gallery_observation_file_seals",
     "gallery_observation_file": "catalog_gallery_observation_files",
+    "gallery_observation_file_filesystem_anchor": "catalog_gallery_observation_file_filesystem_anchors",
+    "gallery_observation_file_filesystem_device": "catalog_gallery_observation_file_filesystem_devices",
+    "gallery_observation_file_filesystem_inode": "catalog_gallery_observation_file_filesystem_inodes",
+    "gallery_observation_file_filesystem_modified_ns": "catalog_gallery_observation_file_filesystem_modified_nses",
+    "gallery_observation_file_filesystem_changed_ns": "catalog_gallery_observation_file_filesystem_changed_nses",
+    "gallery_observation_file_filesystem_seal": "catalog_gallery_observation_file_filesystem_seals",
     "gallery_observation_file_filesystem": "catalog_gallery_observation_file_filesystem",
+    "tag_term_anchor": "catalog_tag_term_anchors",
+    "tag_term_identity": "catalog_tag_term_identities",
+    "tag_term_seal": "catalog_tag_term_seals",
     "tag_term": "catalog_tag_terms",
     "gallery_observation_tag": "catalog_gallery_observation_tags",
     "build_manifest": "catalog_build_manifests",
+    "build_manifest_anchor": "catalog_build_manifest_anchors",
+    "build_manifest_manifest_sha256": "catalog_build_manifest_manifest_sha256s",
+    "build_manifest_file_count": "catalog_build_manifest_file_counts",
+    "build_manifest_byte_count": "catalog_build_manifest_byte_counts",
+    "build_manifest_seal": "catalog_build_manifest_seals",
     "gallery_manifest": "catalog_gallery_manifests",
+    "gallery_manifest_anchor": "catalog_gallery_manifest_anchors",
+    "gallery_manifest_manifest_sha256": "catalog_gallery_manifest_manifest_sha256s",
+    "gallery_manifest_computed_at": "catalog_gallery_manifest_computed_ats",
+    "gallery_manifest_seal": "catalog_gallery_manifest_seals",
     "analysis_policy": "catalog_analysis_policies",
+    "analysis_policy_anchor": "catalog_analysis_policy_anchors",
+    "analysis_policy_algorithm_version": "catalog_analysis_policy_algorithm_versions",
+    "analysis_policy_spam_artist_threshold": "catalog_analysis_policy_spam_artist_thresholds",
+    "analysis_policy_spam_occurrence_threshold": "catalog_analysis_policy_spam_occurrence_thresholds",
+    "analysis_policy_content_owner_rule_version": "catalog_analysis_policy_content_owner_rule_versions",
+    "analysis_policy_gid_winner_rule_version": "catalog_analysis_policy_gid_winner_rule_versions",
+    "analysis_policy_identity": "catalog_analysis_policy_identities",
+    "analysis_policy_seal": "catalog_analysis_policy_seals",
     "analysis_run": "catalog_analysis_runs",
+    "analysis_run_anchor": "catalog_analysis_run_anchors",
+    "analysis_run_build_id": "catalog_analysis_run_build_ids",
+    "analysis_run_policy_id": "catalog_analysis_run_policy_ids",
+    "analysis_run_input_manifest_sha256": "catalog_analysis_run_input_manifest_sha256s",
+    "analysis_run_identity": "catalog_analysis_run_identities",
+    "analysis_run_started_at": "catalog_analysis_run_started_ats",
+    "analysis_run_state": "catalog_analysis_run_states",
+    "analysis_run_descriptor_seal": "catalog_analysis_run_descriptor_seals",
+    "analysis_run_completed_at": "catalog_analysis_run_completed_ats",
     "analysis_baseline": "catalog_analysis_baselines",
+    "analysis_stage_anchor": "catalog_analysis_stage_anchors",
+    "analysis_stage_order": "catalog_analysis_stage_orders",
+    "analysis_stage_cursor_codec": "catalog_analysis_stage_cursor_codecs",
+    "analysis_stage_seal": "catalog_analysis_stage_seals",
+    "source_snapshot_manifest_identity": "catalog_source_snapshot_manifest_identity",
+    "source_snapshot_manifest_identity_anchor": "catalog_source_snapshot_manifest_identity_anchors",
+    "source_snapshot_manifest_identity_gallery_count": "catalog_source_snapshot_manifest_identity_gallery_counts",
+    "source_snapshot_manifest_identity_file_count": "catalog_source_snapshot_manifest_identity_file_counts",
+    "source_snapshot_manifest_identity_byte_count": "catalog_source_snapshot_manifest_identity_byte_counts",
+    "source_snapshot_manifest_identity_seal": "catalog_source_snapshot_manifest_identity_seals",
     "source_revision": "catalog_source_revisions",
+    "source_revision_anchor": "catalog_source_revision_anchors",
+    "source_revision_channel": "catalog_source_revision_channels",
+    "source_revision_snapshot_manifest": "catalog_source_revision_snapshot_manifests",
+    "source_revision_descriptor_seal": "catalog_source_revision_descriptor_seals",
+    "source_revision_descriptor": "catalog_source_revision_descriptors",
+    "source_revision_generation": "catalog_source_revision_generations",
+    "source_head_revision": "catalog_source_head_revisions",
+    "source_head_advanced_at": "catalog_source_head_advanced_ats",
     "source_head": "catalog_source_heads",
     "gallery_observation_artist": "catalog_gallery_observation_artists",
     "gallery_observation_file_hash_occurrence": "catalog_gallery_observation_file_hash_occurrences",
-    "analysis_file_hash_artist_contribution": "catalog_analysis_file_hash_artist_contributions",
-    "analysis_file_hash_artist_stat": "catalog_analysis_file_hash_artist_stats",
-    "analysis_file_hash_gallery_artist_stat": "catalog_analysis_file_hash_gallery_artist_stats",
-    "analysis_file_hash_stat": "catalog_analysis_file_hash_stats",
-    "excluded_file_hash_evidence": "catalog_excluded_file_hash_evidence",
-    "excluded_file_hash": "catalog_excluded_file_hashes",
     "analysis_changed_gallery": "catalog_analysis_changed_galleries",
     "analysis_changed_file_hash": "catalog_analysis_changed_file_hashes",
     "analysis_exclusion_delta": "catalog_analysis_exclusion_deltas",
     "analysis_impacted_gallery": "catalog_analysis_impacted_galleries",
-    "analysis_content_owner_candidate": "catalog_analysis_content_owner_candidates",
-    "analysis_content_group_candidate": "catalog_analysis_content_group_candidates",
-    "analysis_content_owner": "catalog_analysis_content_owners",
-    "analysis_gid_candidate": "catalog_analysis_gid_candidates",
-    "analysis_gid_group_candidate": "catalog_analysis_gid_group_candidates",
-    "analysis_gid_winner": "catalog_analysis_gid_winners",
+    "analysis_impacted_content_anchor": "catalog_a_impacted_content_anchors",
+    "analysis_impacted_content_provenance": "catalog_a_impacted_content_provenance",
+    "analysis_impacted_content_witness": "catalog_a_impacted_content_witnesses",
+    "analysis_impacted_content_seal": "catalog_a_impacted_content_seals",
+    "analysis_impacted_content": "catalog_analysis_impacted_content",
+    "analysis_impacted_gid_anchor": "catalog_a_impacted_gid_anchors",
+    "analysis_impacted_gid_provenance": "catalog_a_impacted_gid_provenance",
+    "analysis_impacted_gid_witness": "catalog_a_impacted_gid_witnesses",
+    "analysis_impacted_gid_seal": "catalog_a_impacted_gid_seals",
+    "analysis_impacted_gid": "catalog_analysis_impacted_gid",
     "analysis_checkpoint": "catalog_analysis_checkpoints",
+    "analysis_checkpoint_anchor": "catalog_analysis_checkpoint_anchors",
+    "analysis_checkpoint_generation": "catalog_analysis_checkpoint_generations",
+    "analysis_checkpoint_cursor": "catalog_analysis_checkpoint_cursors",
+    "analysis_checkpoint_processed_count": "catalog_analysis_checkpoint_processed_counts",
+    "analysis_checkpoint_state": "catalog_analysis_checkpoint_states",
+    "analysis_checkpoint_updated_at": "catalog_analysis_checkpoint_updated_ats",
+    "analysis_checkpoint_seal": "catalog_analysis_checkpoint_seals",
     "analysis_batch_receipt": "catalog_analysis_batch_receipts",
+    "analysis_batch_receipt_anchor": "catalog_analysis_batch_receipt_anchors",
+    "analysis_batch_receipt_coordinate": "catalog_analysis_batch_receipt_coordinates",
+    "analysis_batch_receipt_start_cursor": "catalog_analysis_batch_receipt_start_cursors",
+    "analysis_batch_receipt_start_processed_count": "catalog_analysis_batch_receipt_start_processed_counts",
+    "analysis_batch_receipt_page_limit": "catalog_analysis_batch_receipt_page_limits",
+    "analysis_batch_receipt_next_cursor": "catalog_analysis_batch_receipt_next_cursors",
+    "analysis_batch_receipt_row_count": "catalog_analysis_batch_receipt_row_counts",
+    "analysis_batch_receipt_committed_at": "catalog_analysis_batch_receipt_committed_ats",
+    "analysis_batch_receipt_seal": "catalog_analysis_batch_receipt_seals",
+    "analysis_batch_receipt_stored": "catalog_analysis_batch_receipt_stored",
     "analysis_stage": "catalog_analysis_stages",
     "canonical_digest_policy": "catalog_canonical_digest_policies",
     "canonical_value_allocation": "catalog_canonical_value_allocations",
+    "canonical_value_allocation_anchor": "catalog_canonical_value_allocation_anchors",
+    "canonical_value_allocation_digest_domain": "catalog_canonical_value_allocation_digest_domains",
+    "canonical_value_allocation_byte_count": "catalog_canonical_value_allocation_byte_counts",
+    "canonical_value_allocation_allocated_at": "catalog_canonical_value_allocation_allocated_ats",
+    "canonical_value_allocation_seal": "catalog_canonical_value_allocation_seals",
     "canonical_value_page": "catalog_canonical_value_pages",
+    "canonical_value_page_anchor": "catalog_canonical_value_page_anchors",
+    "canonical_value_page_payload": "catalog_canonical_value_page_payloads",
+    "canonical_value_page_coordinate": "catalog_canonical_value_page_coordinates",
+    "canonical_value_page_subtree_item_count": "catalog_canonical_value_page_subtree_item_counts",
+    "canonical_value_page_seal": "catalog_canonical_value_page_seals",
     "canonical_value_page_descriptor": "catalog_canonical_value_page_descriptors",
     "canonical_value_page_parent": "catalog_canonical_value_page_parents",
     "canonical_value_identity": "catalog_canonical_value_identities",
     "analysis_state_anchor": "catalog_analysis_state_anchors",
     "analysis_state_ancestry": "catalog_analysis_state_ancestry",
-    "analysis_file_hash_artist_stat_shadow": "catalog_analysis_file_hash_artist_stat_shadows",
-    "analysis_file_hash_artist_stat_tombstone": "catalog_analysis_file_hash_artist_stat_tombstones",
-    "analysis_file_hash_artist_stat_resolved": "catalog_analysis_file_hash_artist_stat_resolved",
-    "analysis_file_hash_gallery_artist_stat_shadow": "catalog_analysis_file_hash_gallery_artist_stat_shadows",
-    "analysis_file_hash_gallery_artist_stat_tombstone": "catalog_analysis_file_hash_gallery_artist_stat_tombstones",
-    "analysis_file_hash_gallery_artist_stat_resolved": "catalog_analysis_file_hash_gallery_artist_stat_resolved",
-    "analysis_file_hash_stat_shadow": "catalog_analysis_file_hash_stat_shadows",
-    "analysis_file_hash_stat_tombstone": "catalog_analysis_file_hash_stat_tombstones",
-    "analysis_file_hash_stat_resolved": "catalog_analysis_file_hash_stat_resolved",
-    "analysis_excluded_file_hash_evidence_shadow": "catalog_analysis_excluded_file_hash_evidence_shadows",
-    "analysis_excluded_file_hash_evidence_tombstone": "catalog_analysis_excluded_file_hash_evidence_tombstones",
-    "analysis_excluded_file_hash_evidence_resolved": "catalog_analysis_excluded_file_hash_evidence_resolved",
-    "analysis_excluded_file_hash_shadow": "catalog_analysis_excluded_file_hash_shadows",
-    "analysis_excluded_file_hash_tombstone": "catalog_analysis_excluded_file_hash_tombstones",
-    "analysis_excluded_file_hash_resolved": "catalog_analysis_excluded_file_hash_resolved",
+    "analysis_file_hash_decision_shadow_anchor": "catalog_a_file_decision_shadow_anchors",
+    "analysis_file_hash_decision_shadow_occurrence_count": "catalog_a_file_decision_shadow_occurrences",
+    "analysis_file_hash_decision_shadow_artist_count": "catalog_a_file_decision_shadow_artists",
+    "analysis_file_hash_decision_shadow_maximum_gallery_artist_count": "catalog_a_file_decision_shadow_gallery_artist_max",
+    "analysis_file_hash_decision_shadow_seal": "catalog_a_file_decision_shadow_seals",
+    "analysis_content_owner_candidate_shadow_anchor": "catalog_a_content_candidate_shadow_anchors",
+    "analysis_content_owner_candidate_shadow_content_sha256": "catalog_a_content_candidate_shadow_contents",
+    "analysis_content_owner_candidate_shadow_prefer_not_already_uploaded": "catalog_a_content_candidate_shadow_not_uploaded",
+    "analysis_content_owner_candidate_shadow_title_scalar_count": "catalog_a_content_candidate_shadow_title_counts",
+    "analysis_content_owner_candidate_shadow_download_time": "catalog_a_content_candidate_shadow_download_times",
+    "analysis_content_owner_candidate_shadow_seal": "catalog_a_content_candidate_shadow_seals",
     "analysis_content_owner_candidate_shadow": "catalog_analysis_content_owner_candidate_shadows",
     "analysis_content_owner_candidate_tombstone": "catalog_analysis_content_owner_candidate_tombstones",
     "analysis_content_owner_candidate_resolved": "catalog_analysis_content_owner_candidate_resolved",
-    "analysis_content_group_candidate_shadow": "catalog_analysis_content_group_candidate_shadows",
-    "analysis_content_group_candidate_tombstone": "catalog_analysis_content_group_candidate_tombstones",
-    "analysis_content_group_candidate_resolved": "catalog_analysis_content_group_candidate_resolved",
+    "analysis_content_owner_shadow_anchor": "catalog_a_content_owner_shadow_anchors",
+    "analysis_content_owner_shadow_owner_gallery_id": "catalog_a_content_owner_shadow_galleries",
+    "analysis_content_owner_shadow_seal": "catalog_a_content_owner_shadow_seals",
     "analysis_content_owner_shadow": "catalog_analysis_content_owner_shadows",
     "analysis_content_owner_tombstone": "catalog_analysis_content_owner_tombstones",
     "analysis_content_owner_resolved": "catalog_analysis_content_owner_resolved",
     "analysis_gid_candidate_shadow": "catalog_analysis_gid_candidate_shadows",
     "analysis_gid_candidate_tombstone": "catalog_analysis_gid_candidate_tombstones",
     "analysis_gid_candidate_resolved": "catalog_analysis_gid_candidate_resolved",
-    "analysis_gid_group_candidate_shadow": "catalog_analysis_gid_group_candidate_shadows",
-    "analysis_gid_group_candidate_tombstone": "catalog_analysis_gid_group_candidate_tombstones",
-    "analysis_gid_group_candidate_resolved": "catalog_analysis_gid_group_candidate_resolved",
+    "analysis_gid_winner_selection": "catalog_analysis_gid_winner_selections",
     "analysis_gid_winner_shadow": "catalog_analysis_gid_winner_shadows",
     "analysis_gid_winner_tombstone": "catalog_analysis_gid_winner_tombstones",
     "analysis_gid_winner_resolved": "catalog_analysis_gid_winner_resolved",
+    "analysis_state_component_anchor": "catalog_analysis_state_component_anchors",
+    "analysis_state_component_row_count": "catalog_analysis_state_component_row_counts",
+    "analysis_state_component_sealed_at": "catalog_analysis_state_component_sealed_ats",
+    "analysis_state_component_completion_seal": "catalog_analysis_state_component_completion_seals",
     "analysis_state_component_seal": "catalog_analysis_state_component_seals",
+    "analysis_exclusion_delta_anchor": "catalog_analysis_exclusion_delta_anchors",
+    "analysis_exclusion_delta_old_excluded": "catalog_analysis_exclusion_delta_old_excluded_flags",
+    "analysis_exclusion_delta_new_excluded": "catalog_analysis_exclusion_delta_new_excluded_flags",
+    "analysis_exclusion_delta_change": "catalog_analysis_exclusion_delta_changes",
+    "analysis_exclusion_delta_seal": "catalog_analysis_exclusion_delta_seals",
     "publication_candidate": "catalog_publication_candidates",
+    "publication_candidate_anchor": "catalog_publication_candidate_anchors",
+    "publication_candidate_analysis_id": "catalog_publication_candidate_analysis_ids",
+    "publication_candidate_reserved_revision": "catalog_publication_candidate_reserved_revisions",
+    "publication_candidate_artifact_policy_id": "catalog_publication_candidate_artifact_policy_ids",
+    "publication_candidate_display_title_policy_id": "catalog_publication_candidate_display_title_policy_ids",
+    "publication_candidate_artifacts_required": "catalog_publication_candidate_artifacts_required",
+    "publication_candidate_created_at": "catalog_publication_candidate_created_ats",
+    "publication_candidate_definition_seal": "catalog_publication_candidate_definition_seals",
+    "publication_candidate_projection_seal": "catalog_publication_candidate_projection_seals",
+    "publication_candidate_projection": "catalog_publication_candidate_projections",
+    "publication_candidate_base_publication_commit": "catalog_publication_candidate_base_publication_commits",
+    "publication_candidate_base_catalog": "catalog_publication_candidate_base_catalog",
     "publication_candidate_base_source": "catalog_publication_candidate_base_sources",
     "publication_selection": "catalog_publication_selections",
     "publication_stage": "catalog_publication_stages",
+    "publication_stage_anchor": "catalog_publication_stage_anchors",
+    "publication_stage_order": "catalog_publication_stage_orders",
+    "publication_stage_cursor_codec": "catalog_publication_stage_cursor_codecs",
+    "publication_stage_seal": "catalog_publication_stage_seals",
     "publication_checkpoint": "catalog_publication_checkpoints",
+    "publication_checkpoint_anchor": "catalog_publication_checkpoint_anchors",
+    "publication_checkpoint_generation": "catalog_publication_checkpoint_generations",
+    "publication_checkpoint_cursor": "catalog_publication_checkpoint_cursors",
+    "publication_checkpoint_processed_count": "catalog_publication_checkpoint_processed_counts",
+    "publication_checkpoint_state": "catalog_publication_checkpoint_states",
+    "publication_checkpoint_updated_at": "catalog_publication_checkpoint_updated_ats",
+    "publication_checkpoint_seal": "catalog_publication_checkpoint_seals",
     "publication_batch_receipt": "catalog_publication_batch_receipts",
+    "publication_batch_receipt_anchor": "catalog_publication_batch_receipt_anchors",
+    "publication_batch_receipt_coordinate": "catalog_publication_batch_receipt_coordinates",
+    "publication_batch_receipt_start_cursor": "catalog_publication_batch_receipt_start_cursors",
+    "publication_batch_receipt_start_processed_count": "catalog_publication_batch_receipt_start_processed_counts",
+    "publication_batch_receipt_next_cursor": "catalog_publication_batch_receipt_next_cursors",
+    "publication_batch_receipt_row_count": "catalog_publication_batch_receipt_row_counts",
+    "publication_batch_receipt_committed_at": "catalog_publication_batch_receipt_committed_ats",
+    "publication_batch_receipt_seal": "catalog_publication_batch_receipt_seals",
+    "publication_batch_receipt_stored": "catalog_publication_batch_receipt_stored",
+    "publication_finalization_checkpoint_anchor": "catalog_publication_finalization_checkpoint_anchors",
+    "publication_finalization_checkpoint_generation": "catalog_publication_finalization_checkpoint_generations",
+    "publication_finalization_checkpoint_cursor": "catalog_publication_finalization_checkpoint_cursors",
+    "publication_finalization_checkpoint_processed_count": "catalog_publication_finalization_checkpoint_counts",
+    "publication_finalization_checkpoint_state": "catalog_publication_finalization_checkpoint_states",
+    "publication_finalization_checkpoint_updated_at": "catalog_publication_finalization_checkpoint_updated_ats",
+    "publication_finalization_checkpoint_seal": "catalog_publication_finalization_checkpoint_seals",
+    "publication_finalization_checkpoint": "catalog_publication_finalization_checkpoints",
+    "publication_finalization_batch_receipt_anchor": "catalog_publication_finalization_batch_anchors",
+    "publication_finalization_batch_receipt_coordinate": "catalog_publication_finalization_batch_coordinates",
+    "publication_finalization_batch_receipt_start_cursor": "catalog_publication_finalization_batch_start_cursors",
+    "publication_finalization_batch_receipt_start_processed_count": "catalog_publication_finalization_batch_start_counts",
+    "publication_finalization_batch_receipt_next_cursor": "catalog_publication_finalization_batch_next_cursors",
+    "publication_finalization_batch_receipt_row_count": "catalog_publication_finalization_batch_row_counts",
+    "publication_finalization_batch_receipt_committed_at": "catalog_publication_finalization_batch_committed_ats",
+    "publication_finalization_batch_receipt_seal": "catalog_publication_finalization_batch_seals",
+    "publication_finalization_batch_receipt_stored": "catalog_publication_finalization_batch_stored",
+    "publication_finalization_batch_receipt": "catalog_publication_finalization_batch_receipts",
     "artifact_policy": "catalog_artifact_policies",
     "artifact_zip_writer_policy": "catalog_artifact_zip_writer_policies",
+    "artifact_zip_writer_policy_anchor": "catalog_artifact_zip_writer_policy_anchors",
+    "artifact_zip_writer_policy_zip_codec_version": "catalog_artifact_zip_writer_policy_zip_codec_versions",
+    "artifact_zip_writer_policy_compression_method": "catalog_artifact_zip_writer_policy_compression_methods",
+    "artifact_zip_writer_policy_compression_level": "catalog_artifact_zip_writer_policy_compression_levels",
+    "artifact_zip_writer_policy_dos_date": "catalog_artifact_zip_writer_policy_dos_dates",
+    "artifact_zip_writer_policy_dos_time": "catalog_artifact_zip_writer_policy_dos_times",
+    "artifact_zip_writer_policy_unix_mode": "catalog_artifact_zip_writer_policy_unix_modes",
+    "artifact_zip_writer_policy_general_purpose_flags": "catalog_artifact_zip_writer_policy_general_purpose_flags",
+    "artifact_zip_writer_policy_create_system": "catalog_artifact_zip_writer_policy_create_systems",
+    "artifact_zip_writer_policy_archive_name_codec_version": "catalog_artifact_zip_writer_policy_archive_name_codec_versions",
+    "artifact_zip_writer_policy_artifact_name_codec_version": "catalog_artifact_zip_writer_policy_artifact_name_codec_versions",
+    "artifact_zip_writer_policy_identity": "catalog_artifact_zip_writer_policy_identities",
+    "artifact_zip_writer_policy_seal": "catalog_artifact_zip_writer_policy_seals",
+    "artifact_producer_fingerprint_anchor": "catalog_artifact_producer_fingerprint_anchors",
+    "artifact_producer_fingerprint_algorithm_version": "catalog_artifact_producer_fingerprint_algorithm_versions",
+    "artifact_producer_fingerprint_equivalence_class": "catalog_artifact_producer_fingerprint_equivalence_classes",
+    "artifact_producer_fingerprint_identity": "catalog_artifact_producer_fingerprint_identities",
+    "artifact_producer_fingerprint_seal": "catalog_artifact_producer_fingerprint_seals",
     "artifact_producer_fingerprint": "catalog_artifact_producer_fingerprints",
     "artifact_storage_codec": "catalog_artifact_storage_codecs",
+    "artifact_storage_codec_anchor": "catalog_artifact_storage_codec_anchors",
+    "artifact_storage_codec_adapter_id": "catalog_artifact_storage_codec_adapter_ids",
+    "artifact_storage_codec_locator_codec_version": "catalog_artifact_storage_codec_locator_codec_versions",
+    "artifact_storage_codec_protection_token_codec_version": "catalog_artifact_storage_codec_protection_token_codec_versions",
+    "artifact_storage_codec_seal": "catalog_artifact_storage_codec_seals",
+    "artifact_policy_semantics_anchor": "catalog_artifact_policy_semantics_anchors",
+    "artifact_policy_semantics_artifact_algorithm_version": "catalog_artifact_policy_semantics_artifact_algorithm_versions",
+    "artifact_policy_semantics_max_image_short_side": "catalog_artifact_policy_semantics_max_image_short_sides",
+    "artifact_policy_semantics_producer_fingerprint_sha256": "catalog_artifact_policy_semantics_producer_fingerprint_sha256s",
+    "artifact_policy_semantics_identity": "catalog_artifact_policy_semantics_identities",
+    "artifact_policy_semantics_seal": "catalog_artifact_policy_semantics_seals",
+    "artifact_semantic_input_anchor": "catalog_artifact_semantic_input_anchors",
+    "artifact_semantic_input_source_manifest_component_sha256": "catalog_artifact_semantic_source_manifest_sha256s",
+    "artifact_semantic_input_member_plan_component_sha256": "catalog_artifact_semantic_member_plan_sha256s",
+    "artifact_semantic_input_effective_content_component_sha256": "catalog_artifact_semantic_effective_content_sha256s",
+    "artifact_semantic_input_selected_component_sha256": "catalog_artifact_semantic_selected_sha256s",
+    "artifact_semantic_input_owner_component_sha256": "catalog_artifact_semantic_owner_sha256s",
+    "artifact_semantic_input_policy_component_sha256": "catalog_artifact_semantic_policy_sha256s",
+    "artifact_semantic_input_identity": "catalog_artifact_semantic_input_identities",
+    "artifact_semantic_input_seal": "catalog_artifact_semantic_input_seals",
+    "artifact_semantic_input": "catalog_artifact_semantic_input",
     "artifact_input": "catalog_candidate_artifact_inputs",
-    "artifact_input_component": "catalog_candidate_artifact_input_components",
     "artifact_delta_old": "catalog_artifact_delta_old",
     "artifact_delta_new": "catalog_artifact_delta_new",
     "artifact_operation": "catalog_artifact_operations",
     "artifact_blob": "catalog_artifact_blobs",
+    "prepared_artifact_anchor": "catalog_prepared_artifact_anchors",
+    "prepared_artifact_sha256": "catalog_prepared_artifact_sha256s",
+    "prepared_artifact_storage_codec_version": "catalog_prepared_artifact_storage_codec_versions",
+    "prepared_artifact_storage_generation": "catalog_prepared_artifact_storage_generations",
+    "prepared_artifact_protection_token": "catalog_prepared_artifact_protection_tokens",
+    "prepared_artifact_state": "catalog_prepared_artifact_states",
+    "prepared_artifact_seal": "catalog_prepared_artifact_seals",
     "prepared_artifact": "catalog_prepared_artifacts",
     "catalog_revision": "catalog_revisions",
+    "catalog_revision_anchor": "catalog_revision_anchors",
+    "catalog_revision_publication_count": "catalog_revision_publication_counts",
+    "catalog_revision_descriptor_seal": "catalog_revision_descriptor_seals",
+    "catalog_revision_descriptor": "catalog_revision_descriptors",
+    "catalog_revision_generation": "catalog_revision_generations",
+    "publication_generation_node": "catalog_publication_generation_nodes",
+    "publication_generation_successor": "catalog_publication_generation_successors",
     "publication_identity": "catalog_publication_identities",
-    "catalog_gallery_identity": "catalog_published_gallery_identities",
+    "title_sort_policy_anchor": "catalog_title_sort_policy_anchors",
+    "title_sort_policy_algorithm_version": "catalog_title_sort_policy_algorithm_versions",
+    "title_sort_policy_unicode_data_version": "catalog_title_sort_policy_unicode_data_versions",
+    "title_sort_policy_identity": "catalog_title_sort_policy_identities",
+    "title_sort_policy_seal": "catalog_title_sort_policy_seals",
+    "display_title_policy_anchor": "catalog_display_title_policy_anchors",
+    "display_title_policy_algorithm_version": "catalog_display_title_policy_algorithm_versions",
+    "display_title_policy_title_sort_policy_id": "catalog_display_title_policy_title_sort_policy_ids",
+    "display_title_policy_identity": "catalog_display_title_policy_identities",
+    "display_title_policy_seal": "catalog_display_title_policy_seals",
     "display_title_policy": "catalog_display_title_policies",
     "display_title_choice": "catalog_display_title_choices",
     "title_sort": "catalog_title_sorts",
     "catalog_publication": "catalog_publications",
+    "catalog_publication_anchor": "catalog_publication_anchors",
+    "catalog_publication_gallery_id": "catalog_publication_gallery_ids",
+    "catalog_publication_summary_sha256": "catalog_publication_summary_sha256s",
+    "catalog_publication_language_sha256": "catalog_publication_language_sha256s",
+    "catalog_publication_modified_at": "catalog_publication_modified_ats",
+    "catalog_publication_seal": "catalog_publication_seals",
     "catalog_publication_order": "catalog_publication_order",
     "catalog_publication_title": "catalog_publication_titles",
+    "catalog_publication_title_anchor": "catalog_publication_title_anchors",
+    "catalog_publication_title_source_title_sha256": "catalog_publication_title_source_title_sha256s",
+    "catalog_publication_title_source_gallery_name": "catalog_publication_title_source_gallery_names",
+    "catalog_publication_title_seal": "catalog_publication_title_seals",
     "catalog_publication_content": "catalog_publication_contents",
     "catalog_contributor": "catalog_contributors",
-    "catalog_contributor_sort_as": "catalog_contributor_sort_as",
+    "catalog_contributor_anchor": "catalog_contributor_anchors",
+    "catalog_contributor_name_sha256": "catalog_contributor_name_sha256s",
+    "catalog_contributor_role": "catalog_contributor_roles",
+    "catalog_contributor_identity": "catalog_contributor_identities",
+    "catalog_contributor_seal": "catalog_contributor_seals",
     "catalog_subject": "catalog_subjects",
-    "catalog_subject_scheme": "catalog_subject_schemes",
-    "catalog_subject_code": "catalog_subject_codes",
-    "catalog_artifact_input": "catalog_artifact_inputs",
-    "catalog_artifact_input_component": "catalog_artifact_input_components",
+    "catalog_artifact_anchor": "catalog_artifact_anchors",
+    "catalog_artifact_sha256": "catalog_artifact_sha256s",
+    "catalog_artifact_semantics_sha256": "catalog_artifact_semantics_sha256s",
+    "catalog_artifact_seal": "catalog_artifact_seals",
     "catalog_artifact": "catalog_artifacts",
     "publication_receipt": "catalog_publication_receipts",
+    "publication_commit_anchor": "catalog_publication_commit_anchors",
+    "publication_commit_candidate": "catalog_publication_commit_candidates",
+    "publication_commit_catalog_revision": "catalog_publication_commit_catalog_revisions",
+    "publication_commit_source_revision": "catalog_publication_commit_source_revisions",
+    "publication_commit_generation": "catalog_publication_commit_generations",
+    "publication_commit_operational_preparation": "catalog_publication_commit_operational_preparations",
+    "publication_commit_operational_policy": "catalog_publication_commit_operational_policies",
+    "publication_commit_artifact_policy": "catalog_publication_commit_artifact_policies",
+    "publication_commit_display_title_policy": "catalog_publication_commit_display_title_policies",
+    "publication_commit_new_galleries": "catalog_publication_commit_new_galleries",
+    "publication_commit_changed_galleries": "catalog_publication_commit_changed_galleries",
+    "publication_commit_removed_galleries": "catalog_publication_commit_removed_galleries",
+    "publication_commit_duplicate_losers": "catalog_publication_commit_duplicate_losers",
+    "publication_commit_committed_at": "catalog_publication_commit_committed_ats",
+    "publication_commit_seal": "catalog_publication_commit_seals",
+    "publication_commit": "catalog_publication_commits",
+    "publication_commit_finalization": "catalog_publication_commit_finalizations",
+    "publication_commit_head_receipt": "catalog_publication_commit_head_receipts",
+    "publication_commit_head": "catalog_publication_commit_heads",
+    "publication_head_revision": "catalog_publication_head_revisions",
+    "publication_head_advanced_at": "catalog_publication_head_advanced_ats",
     "publication_head": "catalog_publication_heads",
 }
 
@@ -683,20 +1011,17 @@ INDEXES: dict[str, list[tuple[str, list[str], bool]]] = {
     "gallery_observation_allocation_page": [
         ("ix_gallery_observation_allocation_page_digest", ["page_sha256"], False),
     ],
-    "source_build": [
+    "source_build_manifest_policy_id": [
         ("ix_source_build_policy", ["manifest_policy_id", "build_id"], False),
-        (
-            "ix_source_build_scope_state",
-            ["scope_key", "state", "created_at", "build_id"],
-            False,
-        ),
     ],
-    "gallery_observation_metadata": [
-        (
-            "ix_gallery_metadata_gid",
-            ["gid", "gallery_id", "observation_id"],
-            False,
-        )
+    "source_build_scope_key": [
+        ("ix_source_build_scope", ["scope_key", "build_id"], False),
+    ],
+    "source_build_state": [
+        ("ix_source_build_state", ["state", "build_id"], False),
+    ],
+    "source_build_created_at": [
+        ("ix_source_build_created", ["created_at", "build_id"], False),
     ],
     "source_build_gallery": [
         (
@@ -705,12 +1030,14 @@ INDEXES: dict[str, list[tuple[str, list[str], bool]]] = {
             False,
         )
     ],
-    "gallery_observation_file": [
+    "gallery_observation_file_file_sha256": [
         (
             "ix_gallery_file_hash",
-            ["file_sha256", "gallery_id", "observation_id", "file_no"],
+            ["file_sha256", "gallery_id", "observation_id", "file_key"],
             False,
         ),
+    ],
+    "gallery_observation_file_seal": [
         (
             "ix_gallery_file_name",
             ["file_key", "gallery_id", "observation_id"],
@@ -724,20 +1051,12 @@ INDEXES: dict[str, list[tuple[str, list[str], bool]]] = {
             False,
         )
     ],
-    "gallery_manifest": [
+    "gallery_manifest_seal": [
         (
             "ix_gallery_manifest_policy",
             ["manifest_policy_id", "gallery_id", "observation_id"],
             False,
         )
-    ],
-    "analysis_run": [
-        (
-            "ix_analysis_run_recovery",
-            ["state", "started_at", "analysis_id"],
-            False,
-        ),
-        ("ix_analysis_run_policy", ["policy_id", "analysis_id"], False),
     ],
     "analysis_baseline": [
         (
@@ -746,14 +1065,6 @@ INDEXES: dict[str, list[tuple[str, list[str], bool]]] = {
             False,
         )
     ],
-    "source_revision": [
-        (
-            "ix_source_revision_published",
-            ["published_at", "source_revision"],
-            False,
-        )
-    ],
-    "source_head": [("ix_source_head_revision", ["source_revision", "channel"], False)],
     "gallery_observation_artist": [
         (
             "ix_observation_artist_tag",
@@ -768,99 +1079,10 @@ INDEXES: dict[str, list[tuple[str, list[str], bool]]] = {
             False,
         )
     ],
-    "analysis_file_hash_artist_contribution": [
-        (
-            "ix_analysis_contribution_gallery",
-            ["analysis_id", "gallery_id", "file_sha256", "artist_tag_id"],
-            False,
-        )
-    ],
-    "analysis_file_hash_artist_stat": [
-        (
-            "ix_analysis_artist_stat_artist",
-            ["analysis_id", "artist_tag_id", "file_sha256"],
-            False,
-        )
-    ],
-    "analysis_file_hash_gallery_artist_stat": [
-        (
-            "ix_analysis_gallery_artist_stat_gallery",
-            ["analysis_id", "gallery_id", "file_sha256"],
-            False,
-        )
-    ],
     "analysis_changed_gallery": [
         (
             "ix_analysis_changed_gallery_kind",
             ["analysis_id", "change_kind", "gallery_id"],
-            False,
-        )
-    ],
-    "analysis_exclusion_delta": [
-        (
-            "ix_analysis_exclusion_delta_state",
-            ["analysis_id", "old_excluded", "new_excluded", "file_sha256"],
-            False,
-        )
-    ],
-    "analysis_content_owner_candidate": [
-        (
-            "ix_analysis_content_candidate_group",
-            [
-                "analysis_id",
-                "content_sha256",
-                "priority_key",
-                "gallery_id",
-            ],
-            False,
-        )
-    ],
-    "analysis_content_group_candidate": [
-        (
-            "ix_analysis_content_group_gallery",
-            ["analysis_id", "gallery_id", "content_sha256"],
-            False,
-        )
-    ],
-    "analysis_content_owner": [
-        (
-            "ix_analysis_content_owner_gallery",
-            ["analysis_id", "owner_gallery_id", "content_sha256"],
-            False,
-        )
-    ],
-    "analysis_gid_candidate": [
-        (
-            "ix_analysis_gid_candidate_order",
-            ["analysis_id", "gid", "priority_key", "gallery_id"],
-            False,
-        )
-    ],
-    "analysis_gid_group_candidate": [
-        (
-            "ix_analysis_gid_group_gallery",
-            ["analysis_id", "gallery_id", "gid"],
-            False,
-        )
-    ],
-    "analysis_gid_winner": [
-        (
-            "ix_analysis_gid_winner_gallery",
-            ["analysis_id", "winner_gallery_id", "gid"],
-            False,
-        )
-    ],
-    "analysis_checkpoint": [
-        (
-            "ix_analysis_checkpoint_recovery",
-            ["state", "updated_at", "analysis_id", "stage"],
-            False,
-        )
-    ],
-    "analysis_batch_receipt": [
-        (
-            "ix_analysis_batch_committed",
-            ["analysis_id", "stage", "committed_at", "batch_key"],
             False,
         )
     ],
@@ -871,53 +1093,24 @@ INDEXES: dict[str, list[tuple[str, list[str], bool]]] = {
             False,
         )
     ],
-    "analysis_content_owner_candidate_shadow": [
+    "analysis_impacted_content_provenance": [
+        (
+            "ix_a_impacted_content_key_gallery",
+            ["analysis_id", "content_sha256", "gallery_id"],
+            False,
+        )
+    ],
+    "analysis_impacted_gid_provenance": [
+        (
+            "ix_a_impacted_gid_key_gallery",
+            ["analysis_id", "gid", "gallery_id"],
+            False,
+        )
+    ],
+    "analysis_content_owner_candidate_shadow_content_sha256": [
         (
             "ix_a_content_candidate_group",
-            [
-                "analysis_id",
-                "content_sha256",
-                "priority_key",
-                "gallery_id",
-            ],
-            False,
-        )
-    ],
-    "analysis_content_owner_shadow": [
-        (
-            "ix_a_content_owner_gallery",
-            ["analysis_id", "owner_gallery_id", "content_sha256"],
-            False,
-        )
-    ],
-    "analysis_gid_candidate_shadow": [
-        (
-            "ix_a_gid_candidate_order",
-            ["analysis_id", "gid", "priority_key", "gallery_id"],
-            False,
-        )
-    ],
-    "analysis_gid_winner_shadow": [
-        ("ix_a_gid_winner_gallery", ["analysis_id", "winner_gallery_id", "gid"], False)
-    ],
-    "publication_candidate": [
-        (
-            "ix_pub_candidate_analysis_state",
-            ["analysis_id", "state", "candidate_id"],
-            False,
-        ),
-    ],
-    "publication_candidate_base_catalog": [
-        (
-            "ix_pub_candidate_base_catalog",
-            ["base_revision", "candidate_id"],
-            False,
-        )
-    ],
-    "publication_candidate_base_source": [
-        (
-            "ix_pub_candidate_base_source",
-            ["base_source_revision", "candidate_id"],
+            ["analysis_id", "content_sha256", "gallery_id"],
             False,
         )
     ],
@@ -928,21 +1121,7 @@ INDEXES: dict[str, list[tuple[str, list[str], bool]]] = {
             False,
         )
     ],
-    "publication_checkpoint": [
-        (
-            "ix_pub_checkpoint_state",
-            ["state", "updated_at", "candidate_id", "stage"],
-            False,
-        )
-    ],
     "artifact_input": [],
-    "artifact_delta_old": [
-        (
-            "ix_artifact_delta_old_blob",
-            ["artifact_sha256", "candidate_id", "publication_key"],
-            False,
-        ),
-    ],
     "artifact_operation": [
         (
             "ix_artifact_operation_kind",
@@ -950,53 +1129,43 @@ INDEXES: dict[str, list[tuple[str, list[str], bool]]] = {
             False,
         )
     ],
-    "prepared_artifact": [
+    "prepared_artifact_state": [
         (
             "ix_prepared_artifact_state",
             ["candidate_id", "state", "publication_key"],
             False,
         ),
+    ],
+    "prepared_artifact_sha256": [
         (
             "ix_prepared_artifact_blob",
             ["artifact_sha256", "candidate_id", "publication_key"],
             False,
         ),
     ],
+    "catalog_artifact_sha256": [
+        (
+            "ix_catalog_artifact_blob",
+            ["artifact_sha256", "revision", "publication_key"],
+            False,
+        ),
+    ],
+    "catalog_artifact_semantics_sha256": [
+        (
+            "ix_catalog_artifact_semantics",
+            ["artifact_semantics_sha256", "revision", "publication_key"],
+            False,
+        ),
+    ],
     "title_sort": [
         ("ix_title_sort_identity", ["sort_title_sha256", "title_sha256"], False)
     ],
-    "catalog_publication": [
+    "catalog_publication_modified_at": [
         (
             "ix_catalog_publication_modified",
             ["revision", "modified_at", "publication_key"],
             False,
         ),
-        ("ix_catalog_publication_identity", ["publication_key", "revision"], False),
-    ],
-    "catalog_publication_title": [
-        (
-            "ix_catalog_publication_title_value",
-            ["title_sha256", "revision", "publication_key"],
-            False,
-        ),
-        (
-            "ix_catalog_publication_title_choice",
-            [
-                "display_title_policy_id",
-                "source_title_sha256",
-                "source_gallery_name",
-                "revision",
-                "publication_key",
-            ],
-            False,
-        ),
-    ],
-    "catalog_artifact": [],
-    "publication_receipt": [
-        ("ix_publication_receipt_state", ["state", "committed_at", "receipt_id"], False)
-    ],
-    "publication_head": [
-        ("ix_publication_head_revision", ["revision", "channel"], False)
     ],
 }
 
@@ -1020,6 +1189,8 @@ def relation_checks(
         or value
         in {
             "generation",
+            "predecessor_generation",
+            "successor_generation",
             "position",
             "size_bytes",
             "row_count",
@@ -1056,6 +1227,7 @@ def relation_checks(
         or value
         in {
             "gallery_id",
+            "witness_gallery_id",
             "owner_gallery_id",
             "winner_gallery_id",
             "artist_tag_id",
@@ -1076,8 +1248,11 @@ def relation_checks(
             "source_revision",
             "revision",
             "generation",
+            "successor_generation",
         }
     }
+    if name == "publication_generation_node":
+        positive.discard("generation")
     integer_attrs = {
         attribute
         for attribute in attributes
@@ -1139,7 +1314,7 @@ def relation_checks(
         expression = "(ancestor_depth = 0 AND ancestor_analysis_id = analysis_id OR ancestor_depth BETWEEN 1 AND 16 AND ancestor_analysis_id <> analysis_id)"
         sqlite.append(expression)
         maria.append(expression)
-    if name == "analysis_state_component_seal":
+    if name.startswith("analysis_state_component_") and "state_component" in attributes:
         state_components = (
             "file_hash_decision",
             "content_owner_candidate",
@@ -1164,18 +1339,12 @@ def relation_checks(
     if "artifacts_required" in attributes:
         sqlite.append("artifacts_required IN (0, 1)")
         maria.append("artifacts_required IN (0, 1)")
-    if name == "source_build":
+    if name == "source_build_state":
         sqlite.append("state IN ('OPEN', 'SEALED', 'ABANDONED')")
         maria.append("state IN ('OPEN', 'SEALED', 'ABANDONED')")
-        state_rule = "(state = 'OPEN' AND sealed_at IS NULL OR state = 'SEALED' AND sealed_at IS NOT NULL OR state = 'ABANDONED' AND sealed_at IS NULL)"
-        sqlite.append(state_rule)
-        maria.append(state_rule)
-    elif name == "analysis_run":
+    elif name == "analysis_run_state":
         sqlite.append("state IN ('OPEN', 'COMPLETE', 'ABANDONED')")
         maria.append("state IN ('OPEN', 'COMPLETE', 'ABANDONED')")
-        state_rule = "(state = 'OPEN' AND completed_at IS NULL OR state = 'COMPLETE' AND completed_at IS NOT NULL OR state = 'ABANDONED' AND completed_at IS NULL)"
-        sqlite.append(state_rule)
-        maria.append(state_rule)
     if name in {"analysis_checkpoint", "publication_checkpoint"}:
         sqlite.append("state IN ('OPEN', 'COMPLETE')")
         maria.append("state IN ('OPEN', 'COMPLETE')")
@@ -1185,9 +1354,10 @@ def relation_checks(
         state_rule = "(state = 'OPEN' AND sealed_at IS NULL OR state IN ('SEALED', 'PUBLISHED') AND sealed_at IS NOT NULL OR state = 'ABANDONED' AND sealed_at IS NULL)"
         sqlite.append(state_rule)
         maria.append(state_rule)
-    elif name == "prepared_artifact":
-        sqlite.append("state IN ('PREPARED', 'COMMITTED')")
-        maria.append("state IN ('PREPARED', 'COMMITTED')")
+    elif name == "prepared_artifact_state":
+        sqlite.append("state IN ('PENDING', 'PREPARED', 'COMMITTED')")
+        maria.append("state IN ('PENDING', 'PREPARED', 'COMMITTED')")
+    elif name == "prepared_artifact_protection_token":
         sqlite.append(
             "typeof(protection_token) = 'blob' AND length(protection_token) = 184"
         )
@@ -1218,7 +1388,7 @@ def relation_checks(
         )
         sqlite.append(receipt_rule)
         maria.append(receipt_rule)
-    if name == "file_name_identity":
+    if name == "file_name_identity_file_role":
         sqlite.append("file_role IN (X'434F4E54454E54', X'4D45544144415441')")
         maria.append("file_role IN ('CONTENT', 'METADATA')")
     if "component" in attributes:
@@ -1229,7 +1399,7 @@ def relation_checks(
     if "level" in attributes:
         sqlite.append("level BETWEEN 0 AND 8")
         maria.append("level BETWEEN 0 AND 8")
-    if name == "canonical_value_page_descriptor":
+    if name == "canonical_value_page_coordinate":
         sqlite.append("page_position >= 0")
         maria.append("page_position >= 0")
     if name in {"canonical_value_page_parent", "gallery_observation_page_child"}:
@@ -1250,9 +1420,16 @@ def relation_checks(
         if attribute in attributes:
             sqlite.append(f"typeof({attribute}) = 'blob' AND length({attribute}) = 8")
             maria.append(f"octet_length({attribute}) = 8")
-    if name == "analysis_exclusion_delta":
-        sqlite.append("old_excluded IN (0, 1) AND new_excluded IN (0, 1)")
-        maria.append("old_excluded IN (0, 1) AND new_excluded IN (0, 1)")
+    for attribute in ("old_excluded", "new_excluded"):
+        if attribute in attributes:
+            sqlite.append(f"{attribute} IN (0, 1)")
+            maria.append(f"{attribute} IN (0, 1)")
+    if "prefer_not_already_uploaded" in attributes:
+        sqlite.append("prefer_not_already_uploaded IN (0, 1)")
+        maria.append("prefer_not_already_uploaded IN (0, 1)")
+    if "page_limit" in attributes:
+        sqlite.append("page_limit BETWEEN 1 AND 128")
+        maria.append("page_limit BETWEEN 1 AND 128")
     if "excluded_flag" in attributes:
         sqlite.append("excluded_flag IN (0, 1)")
         maria.append("excluded_flag IN (0, 1)")
@@ -1261,7 +1438,6 @@ def relation_checks(
         maria.append("occurrence_count > 0")
     for attribute in (
         "artifact_name",
-        "artifact_id",
         "publication_id",
         "source_gallery_name",
         "name",
@@ -1290,7 +1466,6 @@ def relation_checks(
         "name_bytes": 255,
         "artifact_name": 255,
         "publication_id": 64,
-        "artifact_id": 128,
         "namespace": 128,
         "source_provider": 64,
         "channel": 64,
@@ -1300,7 +1475,6 @@ def relation_checks(
         "file_role": 8,
         "role": 64,
         "archive_format": 32,
-        "priority_key": 512,
         "batch_key": 512,
         "digest_domain": 64,
         "metadata_fingerprint": 40,
@@ -1349,8 +1523,10 @@ def nullable_override(name: str, attribute: str) -> bool | None:
     }:
         return True
     if (name, attribute) in {
+        ("analysis_state_component_sealed_at", "sealed_at"),
         ("analysis_state_component_seal", "sealed_at"),
-        ("publication_candidate_base_source", "base_source_revision"),
+        ("publication_candidate_base_source_revision", "base_source_revision"),
+        ("source_build_sealed_at", "sealed_at"),
     }:
         return False
     return None
@@ -1364,9 +1540,21 @@ def copy_shape(value: dict[str, Any], nullable: bool | None) -> dict[str, Any]:
     return answer
 
 
+def portable_identifier(value: str) -> str:
+    """Return one deterministic identifier within MariaDB's 64-byte ceiling."""
+
+    encoded = value.encode("ascii")
+    if len(encoded) <= 63:
+        return value
+    return f"{value[:50]}_{hashlib.sha256(encoded).hexdigest()[:12]}"
+
+
 def make_relation(
     logical: dict[str, Any],
     ordinal: int,
+    *,
+    vertical_view: dict[str, Any] | None = None,
+    generation_view: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     name = str(logical["name"])
     attributes = list(logical["attributes"])
@@ -1386,13 +1574,20 @@ def make_relation(
         "table": physical_table_name(name),
         "primary_key": list(logical["declared_keys"][0]),
         "unique_keys": [list(key) for key in logical["declared_keys"][1:]],
+        "referential_unique_keys": [
+            list(key) for key in logical.get("referential_unique_keys", [])
+        ],
         "runtime_unique_keys": [],
         "column": [],
         "foreign_key": [],
         "required_index": [],
         "check": [],
     }
-    if name in {"canonical_value_page", "gallery_observation_page"}:
+    if name in {
+        "canonical_value_page",
+        "canonical_value_page_payload",
+        "gallery_observation_page",
+    }:
         relation["runtime_unique_keys"] = relation["unique_keys"]
         relation["unique_keys"] = []
     if name in VIEW_TRIPLES:
@@ -1409,6 +1604,25 @@ def make_relation(
         if template is None:
             raise KeyError(f"No physical type for {name}.{attribute}")
         backend_shape = copy_shape(template, nullable_override(name, attribute))
+        if name == "publication_receipt" and attribute == "state":
+            # PROJECTION_FINALIZED is twenty ASCII bytes.  This derived view
+            # therefore needs the wider state representation even though the
+            # stored state families use the common sixteen-byte domain.
+            backend_shape["mariadb"]["type"] = "VARCHAR(32)"
+        if (
+            name
+            in {
+                "analysis_batch_receipt",
+                "publication_batch_receipt",
+                "publication_finalization_batch_receipt",
+            }
+            and attribute == "next_state"
+        ) or (name == "publication_receipt" and attribute == "state"):
+            # MariaDB conservatively reports every computed string expression
+            # in a view as nullable, even a total CASE with non-null literals.
+            # The exact rendered CASE remains the non-null logical authority;
+            # this flag describes MariaDB's INFORMATION_SCHEMA presentation.
+            backend_shape["mariadb"]["nullable"] = True
         relation["column"].append(
             {
                 "attribute": attribute,
@@ -1419,7 +1633,7 @@ def make_relation(
     for position, foreign_key in enumerate(logical.get("foreign_keys", []), 1):
         relation["foreign_key"].append(
             {
-                "name": f"fk_{name}_{position}",
+                "name": portable_identifier(f"fk_{name}_{position}"),
                 "attributes": list(foreign_key["attributes"]),
                 "referenced_relation": foreign_key["relation"],
                 "referenced_attributes": list(foreign_key["referenced_attributes"]),
@@ -1440,8 +1654,33 @@ def make_relation(
             "shadow_relation": shadow,
             "tombstone_relation": tombstone,
         }
+    elif vertical_view is not None:
+        relation["kind"] = "view"
+        relation["view"] = {
+            "pattern": "sealed_vertical_family",
+            "family": str(vertical_view["name"]),
+            "anchor_relation": str(vertical_view["anchor_relation"]),
+            "seal_relation": str(vertical_view["seal_relation"]),
+            "key_attributes": list(vertical_view["key_attributes"]),
+            "members": [dict(member) for member in vertical_view["members"]],
+        }
+        projection_attributes = vertical_view.get("projection_attributes")
+        if isinstance(projection_attributes, list):
+            relation["view"]["projection_attributes"] = list(projection_attributes)
+        optional_presence = vertical_view.get("optional_presence")
+        if isinstance(optional_presence, dict):
+            relation["view"]["optional_presence"] = dict(optional_presence)
+    elif generation_view is not None:
+        relation["kind"] = "view"
+        relation["view"] = generation_view
     else:
         relation["check"] = relation_checks(name, attributes, ordinal)
+    if relation.get("kind") == "view":
+        # Logical view access paths remain query-planning guidance only.  SQL
+        # views cannot own indexes or CHECK constraints, so the physical
+        # contract must not pretend those declarations are enforceable.
+        relation["required_index"] = []
+        relation["check"] = []
     return relation
 
 
@@ -1451,10 +1690,7 @@ def stable_fk_index_name(
     attributes: list[str],
 ) -> str:
     raw = f"ix_fk_{relation_name}_{position}_{'_'.join(attributes)}"
-    if len(raw) <= 64:
-        return raw
-    suffix = hashlib.sha256(raw.encode("ascii")).hexdigest()[:12]
-    return f"{raw[:51]}_{suffix}"
+    return portable_identifier(raw)
 
 
 def add_missing_foreign_key_indexes(relations: list[dict[str, Any]]) -> None:
@@ -1473,6 +1709,7 @@ def add_missing_foreign_key_indexes(relations: list[dict[str, Any]]) -> None:
         key_prefixes = [
             list(relation["primary_key"]),
             *(list(key) for key in relation["unique_keys"]),
+            *(list(key) for key in relation.get("referential_unique_keys", [])),
             *(list(index["attributes"]) for index in indexes),
         ]
         for position, foreign_key in enumerate(
@@ -1515,23 +1752,184 @@ def emit_relation(relation: dict[str, Any]) -> str:
         lines.append('kind = "view"')
         view = relation["view"]
         assert isinstance(view, dict)
-        lines.append(
-            "view = { pattern = "
-            + q(str(view["pattern"]))
-            + ", ancestry_relation = "
-            + q(str(view["ancestry_relation"]))
-            + ", shadow_relation = "
-            + q(str(view["shadow_relation"]))
-            + ", tombstone_relation = "
-            + q(str(view["tombstone_relation"]))
-            + " }"
-        )
+        if view["pattern"] == "nearest_ancestor_overlay":
+            lines.append(
+                "view = { pattern = "
+                + q(str(view["pattern"]))
+                + ", ancestry_relation = "
+                + q(str(view["ancestry_relation"]))
+                + ", shadow_relation = "
+                + q(str(view["shadow_relation"]))
+                + ", tombstone_relation = "
+                + q(str(view["tombstone_relation"]))
+                + " }"
+            )
+        elif view["pattern"] == "sealed_vertical_family":
+            members = view["members"]
+            assert isinstance(members, list)
+            rendered_members = ", ".join(
+                "{ relation = "
+                + q(str(member["relation"]))
+                + ", key_attributes = "
+                + inline_strings(member["key_attributes"])
+                + ", value_attribute = "
+                + q(str(member["value_attribute"]))
+                + ", projection_attribute = "
+                + q(str(member.get("projection_attribute", member["value_attribute"])))
+                + ", join = { source_relation = "
+                + q(str(member["join"]["source_relation"]))
+                + ", source_attributes = "
+                + inline_strings(member["join"]["source_attributes"])
+                + ", member_attributes = "
+                + inline_strings(member["join"]["member_attributes"])
+                + " }, project = "
+                + str(bool(member["project"])).lower()
+                + ", required = "
+                + str(bool(member.get("required", True))).lower()
+                + " }"
+                for member in members
+            )
+            lines.append(
+                "view = { pattern = "
+                + q(str(view["pattern"]))
+                + ", family = "
+                + q(str(view["family"]))
+                + ", anchor_relation = "
+                + q(str(view["anchor_relation"]))
+                + ", seal_relation = "
+                + q(str(view["seal_relation"]))
+                + ", key_attributes = "
+                + inline_strings(view["key_attributes"])
+                + (
+                    ", projection_attributes = "
+                    + inline_strings(view["projection_attributes"])
+                    if "projection_attributes" in view
+                    else ""
+                )
+                + ", members = ["
+                + rendered_members
+                + "]"
+                + (
+                    ", optional_presence = { member_relation = "
+                    + q(str(view["optional_presence"]["member_relation"]))
+                    + ", discriminator_relation = "
+                    + q(str(view["optional_presence"]["discriminator_relation"]))
+                    + ", discriminator_attribute = "
+                    + q(str(view["optional_presence"]["discriminator_attribute"]))
+                    + ", present_value = "
+                    + q(str(view["optional_presence"]["present_value"]))
+                    + ", absent_values = "
+                    + inline_strings(view["optional_presence"]["absent_values"])
+                    + " }"
+                    if "optional_presence" in view
+                    else ""
+                )
+                + " }"
+            )
+        elif view["pattern"] == "revision_generation_baseline":
+            lines.append(
+                "view = { pattern = "
+                + q(str(view["pattern"]))
+                + ", base_relation = "
+                + q(str(view["base_relation"]))
+                + ", mapping_relation = "
+                + q(str(view["mapping_relation"]))
+                + ", owner_attribute = "
+                + q(str(view["owner_attribute"]))
+                + ", revision_attribute = "
+                + q(str(view["revision_attribute"]))
+                + ", mapping_revision_attribute = "
+                + q(str(view["mapping_revision_attribute"]))
+                + ", generation_attribute = "
+                + q(str(view["generation_attribute"]))
+                + ", mapping_generation_attribute = "
+                + q(str(view["mapping_generation_attribute"]))
+                + " }"
+            )
+        elif view["pattern"] == "revision_generation_head":
+            lines.append(
+                "view = { pattern = "
+                + q(str(view["pattern"]))
+                + ", revision_relation = "
+                + q(str(view["revision_relation"]))
+                + ", time_relation = "
+                + q(str(view["time_relation"]))
+                + ", mapping_relation = "
+                + q(str(view["mapping_relation"]))
+                + ", channel_attribute = "
+                + q(str(view["channel_attribute"]))
+                + ", revision_attribute = "
+                + q(str(view["revision_attribute"]))
+                + ", generation_attribute = "
+                + q(str(view["generation_attribute"]))
+                + ", time_attribute = "
+                + q(str(view["time_attribute"]))
+                + " }"
+            )
+        elif view["pattern"] in {
+            "analysis_ancestry_endpoint",
+            "analysis_gid_winner_keyset",
+            "artifact_delta_old",
+            "artifact_delta_new",
+            "publication_candidate_projection",
+            "batch_receipt_derived",
+            "publication_commit_baseline",
+            "publication_commit_published_descriptor",
+            "publication_commit_generation",
+            "publication_commit_head",
+            "publication_commit_head_projection",
+            "publication_receipt",
+        }:
+            extra_fields = []
+            for field in (
+                "projection",
+                "owner_attribute",
+                "stage_attribute",
+                "batch_key_attribute",
+                "start_generation_attribute",
+                "start_cursor_attribute",
+                "start_processed_count_attribute",
+                "page_limit_attribute",
+                "next_cursor_attribute",
+                "next_processed_count_attribute",
+                "next_state_attribute",
+                "row_count_attribute",
+                "terminal_attribute",
+                "committed_generation_attribute",
+                "committed_at_attribute",
+                "coordinate_relation",
+                "stored_relation",
+                "checkpoint_relation",
+            ):
+                if field in view:
+                    extra_fields.append(", " + field + " = " + q(str(view[field])))
+            lines.append(
+                "view = { pattern = "
+                + q(str(view["pattern"]))
+                + ", source_relations = "
+                + inline_strings(view["source_relations"])
+                + ""
+                + "".join(extra_fields)
+                + " }"
+            )
+        else:
+            raise RuntimeError(
+                f"Unsupported generated view pattern {view['pattern']!r}"
+            )
     lines.append(f"primary_key = {inline_strings(relation['primary_key'])}")
     unique_keys = relation["unique_keys"]
     assert isinstance(unique_keys, list)
     lines.append(
         "unique_keys = [" + ", ".join(inline_strings(key) for key in unique_keys) + "]"
     )
+    referential_unique_keys = relation.get("referential_unique_keys", [])
+    assert isinstance(referential_unique_keys, list)
+    if referential_unique_keys:
+        lines.append(
+            "referential_unique_keys = ["
+            + ", ".join(inline_strings(key) for key in referential_unique_keys)
+            + "]"
+        )
     runtime_unique_keys = relation.get("runtime_unique_keys", [])
     assert isinstance(runtime_unique_keys, list)
     if runtime_unique_keys:
@@ -1596,19 +1994,74 @@ def emit_relation(relation: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def topological_order(relations: list[dict[str, Any]]) -> list[str]:
+def topological_order(
+    relations: list[dict[str, Any]],
+    external_relations: set[str] | None = None,
+) -> list[str]:
     by_name = {str(relation["name"]): relation for relation in relations}
+    external_names = external_relations or set()
     dependencies: dict[str, set[str]] = {name: set() for name in by_name}
     reverse: dict[str, set[str]] = defaultdict(set)
     for name, relation in by_name.items():
         for foreign_key in relation.get("foreign_key", []):
             target = str(foreign_key["referenced_relation"])
+            if target in external_names:
+                continue
+            if target not in by_name:
+                raise RuntimeError(
+                    f"Physical relation {name!r} references unknown target {target!r}"
+                )
             dependencies[name].add(target)
             reverse[target].add(name)
         view = relation.get("view")
         if isinstance(view, dict):
-            for field in ("ancestry_relation", "shadow_relation", "tombstone_relation"):
-                target = str(view[field])
+            pattern = str(view["pattern"])
+            if pattern == "nearest_ancestor_overlay":
+                view_dependencies = tuple(
+                    str(view[field])
+                    for field in (
+                        "ancestry_relation",
+                        "shadow_relation",
+                        "tombstone_relation",
+                    )
+                )
+            elif pattern == "sealed_vertical_family":
+                view_dependencies = (
+                    str(view["anchor_relation"]),
+                    str(view["seal_relation"]),
+                    *(str(member["relation"]) for member in view["members"]),
+                )
+            elif pattern == "revision_generation_baseline":
+                view_dependencies = (
+                    str(view["base_relation"]),
+                    str(view["mapping_relation"]),
+                )
+            elif pattern == "revision_generation_head":
+                view_dependencies = (
+                    str(view["revision_relation"]),
+                    str(view["time_relation"]),
+                    str(view["mapping_relation"]),
+                )
+            elif pattern in {
+                "analysis_ancestry_endpoint",
+                "analysis_gid_winner_keyset",
+                "artifact_delta_old",
+                "artifact_delta_new",
+                "publication_candidate_projection",
+                "batch_receipt_derived",
+                "publication_commit_baseline",
+                "publication_commit_published_descriptor",
+                "publication_commit_generation",
+                "publication_commit_head",
+                "publication_commit_head_projection",
+                "publication_receipt",
+            }:
+                view_dependencies = tuple(
+                    str(value) for value in view["source_relations"]
+                )
+            else:
+                raise RuntimeError(f"Unsupported view pattern {pattern!r}")
+            for target in view_dependencies:
                 dependencies[name].add(target)
                 reverse[target].add(name)
     catalog_order = {name: position for position, name in enumerate(by_name)}
@@ -1638,30 +2091,242 @@ def topological_order(relations: list[dict[str, Any]]) -> list[str]:
 def render() -> str:
     catalog = tomllib.loads(CATALOG_PATH.read_text())
     obligation_records = runtime_obligation_records(catalog)
+    vertical_family_by_name = {
+        str(family["name"]): family for family in catalog.get("vertical_family", [])
+    }
+    if len(vertical_family_by_name) != len(catalog.get("vertical_family", [])):
+        raise RuntimeError("Vertical families must have distinct names")
+    vertical_views = {
+        str(family["view_relation"]): family
+        for family in catalog.get("vertical_family", [])
+    }
+    if len(vertical_views) != len(catalog.get("vertical_family", [])):
+        raise RuntimeError("Vertical families must have distinct view relations")
+    for logical in catalog["relation"]:
+        materialization = logical.get("materialization")
+        if (
+            not isinstance(materialization, dict)
+            or materialization.get("view_pattern") != "sealed_vertical_projection"
+        ):
+            continue
+        relation_name = str(logical["name"])
+        if relation_name in vertical_views:
+            raise RuntimeError(f"Duplicate sealed vertical view {relation_name!r}")
+        family_name = str(materialization["vertical_family"])
+        family = vertical_family_by_name.get(family_name)
+        if family is None:
+            raise RuntimeError(
+                f"Sealed vertical projection {relation_name!r} references "
+                f"unknown family {family_name!r}"
+            )
+        member_names = {str(value) for value in materialization["projection_members"]}
+        family_member_names = {str(member["relation"]) for member in family["members"]}
+        if not member_names <= family_member_names:
+            raise RuntimeError(
+                f"Sealed vertical projection {relation_name!r} references "
+                "unknown family members"
+            )
+        projection_members = [
+            {
+                **member,
+                "project": str(member["relation"]) in member_names,
+            }
+            for member in family["members"]
+        ]
+        vertical_views[relation_name] = {
+            **family,
+            "view_relation": relation_name,
+            "members": projection_members,
+            "projection_attributes": list(logical["attributes"]),
+        }
+    generation_views: dict[str, dict[str, Any]] = {}
+    for stream in catalog.get("generation_stream", []):
+        head_view = str(stream["head_view_relation"])
+        generation_views[head_view] = {
+            "pattern": "revision_generation_head",
+            "revision_relation": str(stream["head_revision_relation"]),
+            "time_relation": str(stream["head_time_relation"]),
+            "mapping_relation": str(stream["mapping_relation"]),
+            "channel_attribute": str(stream["head_channel_attribute"]),
+            "revision_attribute": str(stream["revision_attribute"]),
+            "generation_attribute": str(stream["generation_attribute"]),
+            "time_attribute": str(stream["head_time_attribute"]),
+        }
+        for baseline in stream["baselines"]:
+            view_relation = str(baseline["view_relation"])
+            generation_views[view_relation] = {
+                "pattern": "revision_generation_baseline",
+                "base_relation": str(baseline["base_relation"]),
+                "mapping_relation": str(stream["mapping_relation"]),
+                "owner_attribute": str(baseline["owner_attribute"]),
+                "revision_attribute": str(baseline["revision_attribute"]),
+                "mapping_revision_attribute": str(stream["revision_attribute"]),
+                "generation_attribute": str(baseline["generation_attribute"]),
+                "mapping_generation_attribute": str(stream["generation_attribute"]),
+            }
+    expected_generation_views = len(catalog.get("generation_stream", [])) + sum(
+        len(stream["baselines"]) for stream in catalog.get("generation_stream", [])
+    )
+    if len(generation_views) != expected_generation_views:
+        raise RuntimeError("Generation streams must have distinct derived views")
+    batch_projection_by_view = {
+        str(projection["view_relation"]): projection
+        for projection in catalog.get("batch_receipt_projection", [])
+    }
+    for logical in catalog["relation"]:
+        materialization = logical.get("materialization")
+        if not isinstance(materialization, dict):
+            continue
+        pattern = materialization.get("view_pattern")
+        if not isinstance(pattern, str):
+            continue
+        if pattern == "sealed_vertical_projection":
+            continue
+        relation_name = str(logical["name"])
+        if relation_name in generation_views:
+            raise RuntimeError(f"Duplicate generated derived view {relation_name!r}")
+        descriptor: dict[str, Any] = {
+            "pattern": pattern,
+            "source_relations": [
+                str(value) for value in materialization["derived_from"]
+            ],
+        }
+        projection_name = materialization.get("projection")
+        if isinstance(projection_name, str):
+            descriptor["projection"] = projection_name
+        batch_projection = batch_projection_by_view.get(relation_name)
+        if batch_projection is not None:
+            for field in (
+                "owner_attribute",
+                "stage_attribute",
+                "batch_key_attribute",
+                "start_generation_attribute",
+                "start_cursor_attribute",
+                "start_processed_count_attribute",
+                "page_limit_attribute",
+                "next_cursor_attribute",
+                "next_processed_count_attribute",
+                "next_state_attribute",
+                "row_count_attribute",
+                "terminal_attribute",
+                "committed_generation_attribute",
+                "committed_at_attribute",
+                "coordinate_relation",
+                "stored_relation",
+                "checkpoint_relation",
+            ):
+                if field in batch_projection:
+                    descriptor[field] = str(batch_projection[field])
+        generation_views[relation_name] = descriptor
+    vertical_family_by_view = {
+        str(family["view_relation"]): family
+        for family in catalog.get("vertical_family", [])
+    }
+    bootstrap_seeds: list[dict[str, Any]] = []
+    for seed in catalog.get("bootstrap_seed", []):
+        seed_relation = str(seed["relation"])
+        family = vertical_family_by_view.get(seed_relation)
+        if family is None:
+            bootstrap_seeds.append(dict(seed))
+            continue
+        source_values = dict(zip(seed["columns"], seed["values"], strict=True))
+        family_key = [str(value) for value in family["key_attributes"]]
+
+        def projected_seed(relation_name: str, columns: list[str]) -> dict[str, Any]:
+            return {
+                "id": f"{seed['id']}.{relation_name}",
+                "relation": relation_name,
+                "columns": columns,
+                "values": [source_values[column] for column in columns],
+            }
+
+        bootstrap_seeds.append(
+            projected_seed(str(family["anchor_relation"]), family_key)
+        )
+        for member in family["members"]:
+            member_columns = [
+                *(str(value) for value in member["key_attributes"]),
+                str(member["value_attribute"]),
+            ]
+            bootstrap_seeds.append(
+                projected_seed(str(member["relation"]), member_columns)
+            )
+        bootstrap_seeds.append(projected_seed(str(family["seal_relation"]), family_key))
     relations: list[dict[str, Any]] = []
     for ordinal, logical in enumerate(catalog["relation"], 1):
-        relations.append(make_relation(logical, ordinal))
+        relations.append(
+            make_relation(
+                logical,
+                ordinal,
+                vertical_view=vertical_views.get(str(logical["name"])),
+                generation_view=generation_views.get(str(logical["name"])),
+            )
+        )
+    relation_by_name = {str(relation["name"]): relation for relation in relations}
+    stale_table_names = sorted(set(TABLE_NAMES) - set(relation_by_name))
+    if stale_table_names:
+        raise RuntimeError(
+            "Physical table-name registry contains non-catalog relations: "
+            + ", ".join(stale_table_names)
+        )
+    physical_base_names = {
+        name
+        for name, relation in relation_by_name.items()
+        if relation.get("kind", "table") == "table"
+    }
+    stale_index_relations = sorted(set(INDEXES) - physical_base_names)
+    if stale_index_relations:
+        raise RuntimeError(
+            "Physical index registry must target current base relations only: "
+            + ", ".join(stale_index_relations)
+        )
+    for relation_name, configured_indexes in INDEXES.items():
+        relation_attributes = {
+            str(column["attribute"])
+            for column in relation_by_name[relation_name]["column"]
+        }
+        for index_name, index_attributes, _unique in configured_indexes:
+            if not set(index_attributes) <= relation_attributes:
+                raise RuntimeError(
+                    f"Physical index {index_name!r} on {relation_name!r} "
+                    "references a non-column attribute"
+                )
     add_missing_foreign_key_indexes(relations)
 
-    order = topological_order(relations)
-    seeded_relation_set = {
+    order = topological_order(
+        relations,
+        {str(value["name"]) for value in catalog.get("external_relation", [])},
+    )
+    seeded_relation_set = {str(seed["relation"]) for seed in bootstrap_seeds}
+    logical_seeded_relation_set = {
         str(seed["relation"]) for seed in catalog.get("bootstrap_seed", [])
     }
-    expected_seeded_relations = {
+    expected_logical_seeded_relations = {
         "analysis_stage",
         "artifact_storage_codec",
         "artifact_zip_writer_policy",
         "canonical_digest_policy",
         "channel_registry",
+        "contributor_role_registry",
+        "publication_generation_node",
         "publication_stage",
         "source_provider_registry",
     }
-    if seeded_relation_set != expected_seeded_relations:
+    if logical_seeded_relation_set != expected_logical_seeded_relations:
         raise RuntimeError(
-            "Data bootstrap seeds must target exactly the seven closed registries"
+            "Data bootstrap seeds must target exactly the nine closed logical "
+            "registry authorities"
         )
     seeded_relations = tuple(name for name in order if name in seeded_relation_set)
-    absent_relations = tuple(name for name in order if name not in seeded_relation_set)
+    derived_relations = tuple(
+        name for name in order if relation_by_name[name].get("kind") == "view"
+    )
+    absent_relations = tuple(
+        name
+        for name in order
+        if name not in seeded_relation_set
+        and relation_by_name[name].get("kind", "table") == "table"
+    )
 
     def render_seed_cell(attribute: str, value: str) -> str:
         attribute_shape = NEW_ATTRIBUTE_SHAPES.get(attribute)
@@ -1731,6 +2396,9 @@ def render() -> str:
         'epoch_owned_relation = "schema_epoch_control"',
         "seeded_relations = [" + ", ".join(q(name) for name in seeded_relations) + "]",
         "absent_relations = [" + ", ".join(q(name) for name in absent_relations) + "]",
+        "derived_relations = ["
+        + ", ".join(q(name) for name in derived_relations)
+        + "]",
         'absence_rule = "A fresh data plane contains exactly the schema-owned canonical digest-domain, default-channel, and filesystem-provider registry seeds and no business, work, receipt, projection, artifact, or history rows; first use creates those facts only through their fenced writer protocols."',
         'epoch_rule = "schema_epoch_control is external to the data plane, created and managed exclusively by SchemaEpochCatalog, and is never a data bootstrap seed."',
         "",
@@ -1818,7 +2486,7 @@ def render() -> str:
         ),
         *(
             line
-            for seed in catalog.get("bootstrap_seed", [])
+            for seed in bootstrap_seeds
             for line in (
                 "[[bootstrap_seed]]",
                 f"id = {q(seed['id'])}",

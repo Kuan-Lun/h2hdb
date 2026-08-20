@@ -6,8 +6,18 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from vnext_catalog_registry_fixtures import (
+    seed_artifact_policy_semantics,
+    seed_artifact_producer_fingerprint,
+    seed_display_title_policy,
+    seed_manifest_policy,
+    seed_title_sort_policy,
+)
+from vnext_manifest_fixtures import seed_snapshot_manifest
+from vnext_publication_fixtures import seed_publication_finalization_checkpoint
 
 from h2hdb import CoreConfig
+from h2hdb import vnext_identity as identity
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.mariadb_connector import MariaDBConnector
 from h2hdb.vnext_allocator_repository import (
@@ -108,12 +118,7 @@ def generated_mariadb(
         connector.execute(seed["sql"], seed["parameters"])
 
     # Database-owned immutable/configuration facts needed by the writer graph.
-    connector.execute(
-        "INSERT INTO catalog_manifest_policies "
-        "(manifest_policy_id, manifest_algorithm_version, file_order_version) "
-        "VALUES (%s, %s, %s)",
-        (1, 1, 1),
-    )
+    seed_manifest_policy(connector)
     connector.execute(
         "INSERT INTO operational_operational_policys "
         "(operational_policy_id, operational_schema_version, algorithm_version, "
@@ -545,7 +550,7 @@ def test_live_mariadb_operational_writer_workflows(
     # APIs. The empty discovery is a valid exact source snapshot and keeps the
     # integration focused on the operational state machines.
     build_id = b"mariadb-build001"
-    root_command = SourceRootBuildCommand((), build_id, 500)
+    root_command = SourceRootBuildCommand((), build_id)
     with root_command.prepare_root_upload() as root_plan:
         _upload(connector, current_gate, current_turn, root_plan, now=501)
         with connector.transaction():
@@ -650,29 +655,98 @@ def test_live_mariadb_operational_writer_workflows(
             now=550,
         )
     assert assembly_receipt.terminal
-    assert _read_one(
+    sealed_source = _read_one(
         connector,
-        "SELECT state, sealed_at FROM catalog_source_builds WHERE build_id = %s",
+        "SELECT state, created_at, sealed_at FROM catalog_source_builds "
+        "WHERE build_id = %s",
         (build_id,),
-    ) == ("SEALED", 550)
+    )
+    assert sealed_source is not None
+    assert sealed_source[0] == "SEALED"
+    assert sealed_source[1] <= sealed_source[2]
+    assert sealed_source[2] != 550
 
     # Only the immutable upstream publication fact is fixture SQL. Revision 1
     # itself came from the real SOURCE allocator above.
     # The root handoff above already established this digest as an exact,
     # sealed canonical identity, satisfying the snapshot manifest's FK.
     snapshot_manifest_sha256 = root_command.source_root_sha256
-    connector.execute(
-        "INSERT INTO catalog_source_snapshot_manifest_identity "
-        "(snapshot_manifest_sha256, gallery_count, file_count, byte_count) "
-        "VALUES (%s, %s, %s, %s)",
-        (snapshot_manifest_sha256, 0, 0, 0),
+    seed_snapshot_manifest(
+        connector,
+        snapshot_manifest_sha256=snapshot_manifest_sha256,
+        gallery_count=0,
+        file_count=0,
+        byte_count=0,
     )
     connector.execute(
-        "INSERT INTO catalog_source_revisions "
-        "(source_revision, channel, snapshot_manifest_sha256, published_at) "
-        "VALUES (%s, %s, %s, %s)",
-        (source_revision, b"default", snapshot_manifest_sha256, 560),
+        "INSERT INTO catalog_source_revision_anchors " "(source_revision) VALUES (%s)",
+        (source_revision,),
     )
+    connector.execute(
+        "INSERT INTO catalog_source_revision_channels "
+        "(source_revision, channel) VALUES (%s, %s)",
+        (source_revision, b"default"),
+    )
+    connector.execute(
+        "INSERT INTO catalog_source_revision_snapshot_manifests "
+        "(source_revision, snapshot_manifest_sha256) VALUES (%s, %s)",
+        (source_revision, snapshot_manifest_sha256),
+    )
+    connector.execute(
+        "INSERT INTO catalog_source_revision_descriptor_seals "
+        "(source_revision) VALUES (%s)",
+        (source_revision,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_revision_anchors (revision) VALUES (%s)",
+        (catalog_revision,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_revision_publication_counts "
+        "(revision, publication_count) VALUES (%s, %s)",
+        (catalog_revision, 0),
+    )
+    connector.execute(
+        "INSERT INTO catalog_revision_descriptor_seals " "(revision) VALUES (%s)",
+        (catalog_revision,),
+    )
+    producer = seed_artifact_producer_fingerprint(
+        connector,
+        artifact_algorithm_version=1,
+        writer_id=b"writer",
+        python_abi=b"abi",
+        pillow_build=b"pillow",
+        libjpeg_build=b"jpeg",
+        zlib_build=b"zlib",
+    )
+    # Exact registry replay can be SELECT-only and therefore opens an implicit
+    # Connector/Python transaction even though no fixture mutation was needed.
+    connector.commit()
+    policy_payload = identity.encode_artifact_policy(
+        1,
+        2048,
+        producer.producer_fingerprint_sha256,
+    )
+    with CanonicalValueUploadPlan.from_parts(
+        "artifact_policy_v2",
+        (policy_payload,),
+    ) as policy_plan:
+        _upload(connector, current_gate, current_turn, policy_plan, now=551)
+        policy_semantics = seed_artifact_policy_semantics(
+            connector,
+            artifact_algorithm_version=1,
+            max_image_short_side=2048,
+            producer_fingerprint_sha256=producer.producer_fingerprint_sha256,
+        )
+        assert policy_semantics.policy_component_sha256 == policy_plan.value_sha256
+    connector.execute(
+        "INSERT INTO catalog_artifact_policies "
+        "(artifact_policy_id, policy_component_sha256) VALUES (%s, %s)",
+        (1, policy_semantics.policy_component_sha256),
+    )
+    seed_title_sort_policy(connector, unicode_data_version=b"test-unicode")
+    seed_display_title_policy(connector)
+    connector.commit()
 
     deletion_token = b"effect-delete-01"
     with connector.transaction():
@@ -751,28 +825,88 @@ def test_live_mariadb_operational_writer_workflows(
             now=591,
         )
     assert seal.event_count == 2
+    receipt_id = b"live-receipt-001"
+    commit_members = (
+        (
+            "catalog_publication_commit_candidates",
+            "candidate_id",
+            b"live-candidate01",
+        ),
+        (
+            "catalog_publication_commit_catalog_revisions",
+            "revision",
+            catalog_revision,
+        ),
+        (
+            "catalog_publication_commit_source_revisions",
+            "source_revision",
+            source_revision,
+        ),
+        ("catalog_publication_commit_generations", "generation", 1),
+        (
+            "catalog_publication_commit_operational_preparations",
+            "preparation_id",
+            preparation.preparation_id,
+        ),
+        (
+            "catalog_publication_commit_operational_policies",
+            "operational_policy_id",
+            1,
+        ),
+        ("catalog_publication_commit_artifact_policies", "artifact_policy_id", 1),
+        (
+            "catalog_publication_commit_display_title_policies",
+            "display_title_policy_id",
+            1,
+        ),
+        ("catalog_publication_commit_new_galleries", "new_galleries", 0),
+        ("catalog_publication_commit_changed_galleries", "changed_galleries", 0),
+        ("catalog_publication_commit_removed_galleries", "removed_galleries", 0),
+        (
+            "catalog_publication_commit_duplicate_losers",
+            "duplicate_losers",
+            0,
+        ),
+        ("catalog_publication_commit_committed_ats", "committed_at", 600),
+    )
     with connector.transaction():
-        activation = OperationalEffectRepository.activate(
-            _work(connector),
-            gate_lease=current_gate,
-            ingest_turn=current_turn,
-            preparation_id=preparation.preparation_id,
-            source_revision=source_revision,
-            operational_policy_id=1,
-            now=600,
+        connector.execute(
+            "INSERT INTO catalog_publication_generation_nodes "
+            "(generation) VALUES (%s)",
+            (1,),
         )
-    assert not activation.replayed
-    with connector.transaction():
-        activation_replay = OperationalEffectRepository.activate(
-            _work(connector),
-            gate_lease=current_gate,
-            ingest_turn=current_turn,
-            preparation_id=preparation.preparation_id,
-            source_revision=source_revision,
-            operational_policy_id=1,
-            now=601,
+        connector.execute(
+            "INSERT INTO catalog_publication_generation_successors "
+            "(successor_generation, predecessor_generation) VALUES (%s, %s)",
+            (1, 0),
         )
-    assert activation_replay.replayed
+        connector.execute(
+            "INSERT INTO catalog_publication_commit_anchors "
+            "(receipt_id) VALUES (%s)",
+            (receipt_id,),
+        )
+        for table, value_column, value in commit_members:
+            connector.execute(
+                f"INSERT INTO {table} (receipt_id, {value_column}) " "VALUES (%s, %s)",
+                (receipt_id, value),
+            )
+        seed_publication_finalization_checkpoint(
+            connector,
+            receipt_id=receipt_id,
+            updated_at=600,
+        )
+        connector.execute(
+            "INSERT INTO catalog_publication_commit_seals " "(receipt_id) VALUES (%s)",
+            (receipt_id,),
+        )
+    activation = _read_one(
+        connector,
+        "SELECT source_revision, preparation_id, operational_policy_id, "
+        "activated_at FROM operational_operational_activations "
+        "WHERE source_revision = %s",
+        (source_revision,),
+    )
+    assert activation == (source_revision, preparation.preparation_id, 1, 600)
     with connector.transaction():
         acknowledgement = OperationalEffectRepository.acknowledge_through(
             _work(connector),

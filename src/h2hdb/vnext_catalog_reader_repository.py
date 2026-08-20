@@ -10,6 +10,7 @@ sort a revision-sized result in memory.
 from __future__ import annotations
 
 __all__ = [
+    "VNextCatalogIdentifierError",
     "VNextCatalogReadError",
     "VNextCatalogReaderRepository",
 ]
@@ -18,7 +19,8 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 
-from .catalog_errors import CatalogRevisionNotFoundError
+from . import vnext_identity as identity
+from .catalog_errors import CatalogIdentifierError, CatalogRevisionNotFoundError
 from .domain import (
     CatalogArtifact,
     CatalogContributor,
@@ -40,7 +42,6 @@ from .vnext_domains import (
     require_positive_int63,
     require_utf8_bytes,
 )
-from .vnext_identity import artifact_name, decode_artifact_locator
 from .vnext_transaction import VNextUnitOfWork
 
 _DEFAULT_CHANNEL = b"default"
@@ -52,6 +53,10 @@ _EFFECTIVE_CONTENT_HEADER_BYTES = len(_EFFECTIVE_CONTENT_PREFIX) + 12
 
 class VNextCatalogReadError(RuntimeError):
     """A supposedly immutable published revision is incomplete or corrupt."""
+
+
+class VNextCatalogIdentifierError(VNextCatalogReadError, CatalogIdentifierError):
+    """A caller supplied a noncanonical public catalog identifier."""
 
 
 class _CanonicalLoader:
@@ -189,24 +194,68 @@ class VNextCatalogReaderRepository:
             maximum=64,
         )
         if revision is None:
-            head = connector.fetch_one(
-                "SELECT revision FROM catalog_publication_heads WHERE channel = %s",
+            row = connector.fetch_one(
+                "SELECT catalog.revision, count.publication_count, "
+                "committed.committed_at, generation.generation "
+                "FROM catalog_channel_registry AS registry "
+                "JOIN catalog_publication_commit_head_receipts AS head "
+                "ON head.channel = registry.channel "
+                "JOIN catalog_publication_commit_seals AS commit_seal "
+                "ON commit_seal.receipt_id = head.receipt_id "
+                "JOIN catalog_publication_commit_catalog_revisions AS catalog "
+                "ON catalog.receipt_id = head.receipt_id "
+                "JOIN catalog_publication_commit_source_revisions AS source "
+                "ON source.receipt_id = head.receipt_id "
+                "JOIN catalog_source_revision_descriptor_seals AS source_seal "
+                "ON source_seal.source_revision = source.source_revision "
+                "JOIN catalog_source_revision_channels AS source_channel "
+                "ON source_channel.source_revision = source.source_revision "
+                "AND source_channel.channel = registry.channel "
+                "JOIN catalog_publication_commit_generations AS generation "
+                "ON generation.receipt_id = head.receipt_id "
+                "JOIN catalog_publication_commit_committed_ats AS committed "
+                "ON committed.receipt_id = head.receipt_id "
+                "JOIN catalog_revision_descriptor_seals AS descriptor_seal "
+                "ON descriptor_seal.revision = catalog.revision "
+                "JOIN catalog_revision_publication_counts AS count "
+                "ON count.revision = descriptor_seal.revision "
+                "WHERE registry.channel = %s",
                 (exact_channel,),
             )
-            if len(head) != 1:
+            if len(row) != 4:
                 raise CatalogRevisionNotFoundError(0)
-            selected = require_positive_int63(head[0], field="catalog head revision")
+            selected = require_positive_int63(row[0], field="catalog head revision")
         else:
             selected = require_positive_int63(revision, field="catalog revision")
-        row = connector.fetch_one(
-            "SELECT revision, publication_count, published_at "
-            "FROM catalog_revisions WHERE revision = %s",
-            (selected,),
-        )
-        if len(row) != 3:
+            row = connector.fetch_one(
+                "SELECT catalog.revision, count.publication_count, "
+                "committed.committed_at, generation.generation "
+                "FROM catalog_publication_commit_catalog_revisions AS catalog "
+                "JOIN catalog_publication_commit_seals AS commit_seal "
+                "ON commit_seal.receipt_id = catalog.receipt_id "
+                "JOIN catalog_publication_commit_source_revisions AS source "
+                "ON source.receipt_id = catalog.receipt_id "
+                "JOIN catalog_source_revision_descriptor_seals AS source_seal "
+                "ON source_seal.source_revision = source.source_revision "
+                "JOIN catalog_source_revision_channels AS source_channel "
+                "ON source_channel.source_revision = source.source_revision "
+                "AND source_channel.channel = %s "
+                "JOIN catalog_publication_commit_generations AS generation "
+                "ON generation.receipt_id = catalog.receipt_id "
+                "JOIN catalog_publication_commit_committed_ats AS committed "
+                "ON committed.receipt_id = catalog.receipt_id "
+                "JOIN catalog_revision_descriptor_seals AS descriptor_seal "
+                "ON descriptor_seal.revision = catalog.revision "
+                "JOIN catalog_revision_publication_counts AS count "
+                "ON count.revision = descriptor_seal.revision "
+                "WHERE catalog.revision = %s",
+                (exact_channel, selected),
+            )
+        if len(row) != 4:
             raise CatalogRevisionNotFoundError(selected)
         if require_positive_int63(row[0], field="catalog revision") != selected:
             raise VNextCatalogReadError("catalog revision lookup returned another key")
+        require_positive_int63(row[3], field="catalog revision generation")
         return CatalogRevision(
             selected,
             _datetime_from_microseconds(row[2], field="catalog published_at"),
@@ -233,8 +282,8 @@ class VNextCatalogReaderRepository:
                 )
         page_offset = require_int63(offset, field="catalog page offset")
         page_limit = require_positive_int63(limit, field="catalog page limit")
-        if page_limit > 1000:
-            raise ValueError("catalog page limit must not exceed 1000")
+        if page_limit > 128:
+            raise ValueError("catalog page limit must not exceed 128")
         if not isinstance(require_artifact, bool):
             raise TypeError("require_artifact must be bool")
         pinned = self._pin(connector, revision)
@@ -243,11 +292,9 @@ class VNextCatalogReaderRepository:
             total_row = connector.fetch_one(
                 "SELECT COUNT(*) FROM catalog_publication_order AS o "
                 "WHERE o.revision = %s AND EXISTS ("
-                "SELECT 1 FROM catalog_artifacts AS a "
-                "JOIN catalog_artifact_identity AS i "
-                "ON i.artifact_id = a.artifact_id "
-                "WHERE a.revision = o.revision "
-                "AND i.publication_key = o.publication_key)",
+                "SELECT 1 FROM catalog_artifact_seals AS artifact "
+                "WHERE artifact.revision = o.revision "
+                "AND artifact.publication_key = o.publication_key)",
                 (pinned.revision,),
             )
             if len(total_row) != 1:
@@ -266,11 +313,9 @@ class VNextCatalogReaderRepository:
                 "SELECT o.position, o.publication_key "
                 "FROM catalog_publication_order AS o "
                 "WHERE o.revision = %s AND EXISTS ("
-                "SELECT 1 FROM catalog_artifacts AS a "
-                "JOIN catalog_artifact_identity AS i "
-                "ON i.artifact_id = a.artifact_id "
-                "WHERE a.revision = o.revision "
-                "AND i.publication_key = o.publication_key) "
+                "SELECT 1 FROM catalog_artifact_seals AS artifact "
+                "WHERE artifact.revision = o.revision "
+                "AND artifact.publication_key = o.publication_key) "
                 "ORDER BY o.position LIMIT %s OFFSET %s",
                 (pinned.revision, page_limit, page_offset),
             )
@@ -304,15 +349,13 @@ class VNextCatalogReaderRepository:
             previous_position = position
             keys.append(require_digest32(row[1], field="publication_key"))
         loader = _CanonicalLoader(connector, backend=self._backend)
-        publications = tuple(
-            self._hydrate_publication(
-                connector,
-                loader,
-                revision=pinned.revision,
-                publication_key=key,
-            )
-            for key in keys
+        hydrated = self._hydrate_publications(
+            connector,
+            loader,
+            revision=pinned.revision,
+            publication_keys=keys,
         )
+        publications = tuple(hydrated[key] for key in keys)
         return CatalogPage(
             revision=pinned,
             publications=publications,
@@ -328,30 +371,31 @@ class VNextCatalogReaderRepository:
         *,
         revision: CatalogRevision | int | None = None,
     ) -> CatalogPublication | None:
-        identifier = require_ascii_bytes(
-            publication_id.encode("ascii", errors="strict"),
-            field="publication_id",
-            minimum=1,
-            maximum=64,
-        )
+        if not isinstance(publication_id, str):
+            raise TypeError("publication_id must be str")
+        try:
+            gid = identity.decode_publication_id(
+                publication_id.encode("ascii", errors="strict")
+            )
+        except (UnicodeError, identity.VNextIdentityError) as error:
+            raise VNextCatalogIdentifierError(
+                "publication ID is not an exact registered identity"
+            ) from error
+        publication_key = identity.publication_key(gid)
         pinned = self._pin(connector, revision)
-        row = connector.fetch_one(
-            "SELECT i.publication_key "
-            "FROM catalog_publication_identities AS i "
-            "JOIN catalog_publications AS p ON p.publication_key = i.publication_key "
-            "AND p.revision = %s WHERE i.publication_id = %s",
-            (pinned.revision, identifier),
-        )
-        if not row:
-            return None
-        if len(row) != 1:
-            raise VNextCatalogReadError("publication lookup has an invalid shape")
-        return self._hydrate_publication(
+        publications = self._hydrate_publications(
             connector,
             _CanonicalLoader(connector, backend=self._backend),
             revision=pinned.revision,
-            publication_key=require_digest32(row[0], field="publication_key"),
+            publication_keys=(publication_key,),
+            require_all=False,
         )
+        publication = publications.get(publication_key)
+        if publication is not None and publication.gid != gid:
+            raise VNextCatalogReadError(
+                "publication identity collides with the requested GID"
+            )
+        return publication
 
     def get_artifact(
         self,
@@ -360,25 +404,24 @@ class VNextCatalogReaderRepository:
         *,
         revision: CatalogRevision | int | None = None,
     ) -> CatalogArtifact | None:
-        identifier = require_ascii_bytes(
-            artifact_id.encode("ascii", errors="strict"),
-            field="artifact_id",
-            minimum=1,
-            maximum=128,
-        )
+        if not isinstance(artifact_id, str):
+            raise TypeError("artifact_id must be str")
+        try:
+            identifier = artifact_id.encode("ascii", errors="strict")
+            gid, artifact_sha256 = identity.decode_artifact_id(identifier)
+        except (UnicodeError, identity.VNextIdentityError) as error:
+            raise VNextCatalogIdentifierError(
+                "artifact ID is not an exact registered identity"
+            ) from error
+        publication_key = identity.publication_key(gid)
         pinned = self._pin(connector, revision)
-        row = connector.fetch_one(
-            "SELECT artifact_id FROM catalog_artifacts "
-            "WHERE revision = %s AND artifact_id = %s",
-            (pinned.revision, identifier),
-        )
-        if not row:
-            return None
         return self._hydrate_artifact(
             connector,
             _CanonicalLoader(connector, backend=self._backend),
             revision=pinned.revision,
-            artifact_id=identifier,
+            publication_key=publication_key,
+            expected_gid=gid,
+            expected_artifact_sha256=artifact_sha256,
         )
 
     def get_publications_by_artifact_names(
@@ -388,50 +431,80 @@ class VNextCatalogReaderRepository:
         *,
         revision: CatalogRevision | int | None = None,
     ) -> Mapping[str, CatalogPublication]:
-        pinned = self._pin(connector, revision)
-        encoded: list[tuple[str, bytes]] = []
+        if isinstance(names, (str, bytes)) or not isinstance(names, Sequence):
+            raise TypeError("artifact names must be a sequence of str")
+        if len(names) > 128:
+            raise ValueError("artifact name lookup accepts at most 128 names")
+        encoded: list[tuple[str, bytes, int]] = []
         seen: set[bytes] = set()
+        requested_gid_by_key: dict[bytes, int] = {}
         for name in names:
-            raw = require_utf8_bytes(
-                name.encode("utf-8", errors="strict"),
-                field="artifact_name",
-                minimum=1,
-                maximum=255,
-                reject_nul=True,
-            )
+            if not isinstance(name, str):
+                raise TypeError("each artifact name must be str")
+            try:
+                raw = name.encode("ascii", errors="strict")
+                gid = identity.decode_artifact_name(raw)
+            except (UnicodeError, identity.VNextIdentityError) as error:
+                raise VNextCatalogIdentifierError(
+                    "artifact name is not an exact registered identity"
+                ) from error
             if raw in seen:
                 continue
             seen.add(raw)
-            encoded.append((name, raw))
+            key = identity.publication_key(gid)
+            previous_gid = requested_gid_by_key.setdefault(key, gid)
+            if previous_gid != gid:
+                raise VNextCatalogReadError(
+                    "artifact-name request contains a publication-key collision"
+                )
+            encoded.append((name, key, gid))
+        if not encoded:
+            return {}
+        pinned = self._pin(connector, revision)
+        requested_keys = tuple(key for _name, key, _gid in encoded)
+        rows = connector.fetch_all(
+            "SELECT identity.publication_key, identity.gid "
+            "FROM catalog_publication_identities AS identity "
+            "JOIN catalog_artifact_seals AS artifact "
+            "ON artifact.publication_key = identity.publication_key "
+            f"WHERE artifact.revision = %s AND identity.publication_key IN "
+            f"({_sql_placeholders(len(requested_keys))}) "
+            "ORDER BY identity.publication_key",
+            (pinned.revision, *requested_keys),
+        )
+        found: dict[bytes, int] = {}
+        for row in rows:
+            if len(row) != 2:
+                raise VNextCatalogReadError(
+                    "artifact-name lookup returned an invalid row shape"
+                )
+            key = require_digest32(row[0], field="publication_key")
+            gid = require_positive_int63(row[1], field="publication GID")
+            if (
+                requested_gid_by_key.get(key) != gid
+                or key in found
+                or identity.publication_key(gid) != key
+            ):
+                raise VNextCatalogReadError(
+                    "artifact-name lookup is not an exact identity set"
+                )
+            found[key] = gid
         loader = _CanonicalLoader(connector, backend=self._backend)
         result: dict[str, CatalogPublication] = {}
-        hydrated: dict[bytes, CatalogPublication] = {}
-        for name, raw in encoded:
-            rows = connector.fetch_all(
-                "SELECT i.publication_key FROM catalog_publication_identities AS p "
-                "JOIN catalog_artifact_identity AS i "
-                "ON i.publication_key = p.publication_key "
-                "JOIN catalog_artifacts AS a ON a.artifact_id = i.artifact_id "
-                "WHERE a.revision = %s AND p.artifact_name = %s "
-                "ORDER BY i.publication_key LIMIT 2",
-                (pinned.revision, raw),
-            )
-            if not rows:
+        hydrated = self._hydrate_publications(
+            connector,
+            loader,
+            revision=pinned.revision,
+            publication_keys=tuple(sorted(found)),
+        )
+        for name, key, gid in encoded:
+            if found.get(key) != gid:
                 continue
-            if len(rows) != 1:
+            publication = hydrated[key]
+            if publication.gid != gid:
                 raise VNextCatalogReadError(
-                    "artifact name is ambiguous within a published revision"
+                    "artifact-name identity collides with the requested GID"
                 )
-            key = require_digest32(rows[0][0], field="publication_key")
-            publication = hydrated.get(key)
-            if publication is None:
-                publication = self._hydrate_publication(
-                    connector,
-                    loader,
-                    revision=pinned.revision,
-                    publication_key=key,
-                )
-                hydrated[key] = publication
             result[name] = publication
         return result
 
@@ -449,206 +522,452 @@ class VNextCatalogReaderRepository:
             return revision
         return self.get_catalog_revision(connector, revision)
 
-    def _hydrate_publication(
+    def _hydrate_publications(
         self,
         connector: SQLConnector,
         loader: _CanonicalLoader,
         *,
         revision: int,
-        publication_key: bytes,
-    ) -> CatalogPublication:
-        row = connector.fetch_one(
-            "SELECT i.publication_id, i.gid, p.summary_sha256, "
-            "p.language_sha256, p.published_at, p.modified_at, "
-            "t.source_title_sha256, t.source_gallery_name, d.title_sha256, "
-            "s.sort_title_sha256, c.content_sha256 "
-            "FROM catalog_publications AS p "
-            "JOIN catalog_publication_identities AS i "
-            "ON i.publication_key = p.publication_key "
-            "JOIN catalog_publication_titles AS t "
-            "ON t.revision = p.revision AND t.publication_key = p.publication_key "
-            "JOIN catalog_display_title_choices AS d "
-            "ON d.display_title_policy_id = t.display_title_policy_id "
-            "AND d.source_title_sha256 = t.source_title_sha256 "
-            "AND d.source_gallery_name = t.source_gallery_name "
-            "JOIN catalog_display_title_policies AS dp "
-            "ON dp.display_title_policy_id = t.display_title_policy_id "
-            "JOIN catalog_title_sorts AS s "
-            "ON s.title_sort_policy_id = dp.title_sort_policy_id "
-            "AND s.title_sha256 = d.title_sha256 "
-            "LEFT JOIN catalog_publication_contents AS c "
-            "ON c.revision = p.revision AND c.publication_key = p.publication_key "
-            "WHERE p.revision = %s AND p.publication_key = %s",
-            (revision, publication_key),
+        publication_keys: Sequence[bytes],
+        require_all: bool = True,
+    ) -> dict[bytes, CatalogPublication]:
+        selected = tuple(
+            require_digest32(value, field="publication_key")
+            for value in publication_keys
         )
-        if len(row) != 11:
+        if not selected:
+            return {}
+        if len(selected) > 128 or len(set(selected)) != len(selected):
+            raise VNextCatalogReadError(
+                "publication hydration keys must be unique and bounded"
+            )
+        selected_cte = _selected_keys_cte(len(selected))
+        rows = connector.fetch_all(
+            f"WITH selected(publication_key) AS ({selected_cte}), "
+            "family_keys(publication_key) AS ("
+            "SELECT ordering.publication_key FROM catalog_publication_order AS ordering "
+            "JOIN selected AS chosen ON chosen.publication_key = ordering.publication_key "
+            "WHERE ordering.revision = %s UNION "
+            "SELECT anchor.publication_key FROM catalog_publication_anchors AS anchor "
+            "JOIN selected AS chosen ON chosen.publication_key = anchor.publication_key "
+            "WHERE anchor.revision = %s UNION "
+            "SELECT gallery.publication_key FROM catalog_publication_gallery_ids AS gallery "
+            "JOIN selected AS chosen ON chosen.publication_key = gallery.publication_key "
+            "WHERE gallery.revision = %s UNION "
+            "SELECT summary.publication_key FROM catalog_publication_summary_sha256s AS summary "
+            "JOIN selected AS chosen ON chosen.publication_key = summary.publication_key "
+            "WHERE summary.revision = %s UNION "
+            "SELECT language.publication_key FROM catalog_publication_language_sha256s AS language "
+            "JOIN selected AS chosen ON chosen.publication_key = language.publication_key "
+            "WHERE language.revision = %s UNION "
+            "SELECT modified.publication_key FROM catalog_publication_modified_ats AS modified "
+            "JOIN selected AS chosen ON chosen.publication_key = modified.publication_key "
+            "WHERE modified.revision = %s UNION "
+            "SELECT seal.publication_key FROM catalog_publication_seals AS seal "
+            "JOIN selected AS chosen ON chosen.publication_key = seal.publication_key "
+            "WHERE seal.revision = %s UNION "
+            "SELECT anchor.publication_key FROM catalog_publication_title_anchors AS anchor "
+            "JOIN selected AS chosen ON chosen.publication_key = anchor.publication_key "
+            "WHERE anchor.revision = %s UNION "
+            "SELECT source.publication_key "
+            "FROM catalog_publication_title_source_title_sha256s AS source "
+            "JOIN selected AS chosen ON chosen.publication_key = source.publication_key "
+            "WHERE source.revision = %s UNION "
+            "SELECT name.publication_key "
+            "FROM catalog_publication_title_source_gallery_names AS name "
+            "JOIN selected AS chosen ON chosen.publication_key = name.publication_key "
+            "WHERE name.revision = %s UNION "
+            "SELECT seal.publication_key FROM catalog_publication_title_seals AS seal "
+            "JOIN selected AS chosen ON chosen.publication_key = seal.publication_key "
+            "WHERE seal.revision = %s UNION "
+            "SELECT content.publication_key FROM catalog_publication_contents AS content "
+            "JOIN selected AS chosen ON chosen.publication_key = content.publication_key "
+            "WHERE content.revision = %s) "
+            "SELECT family.publication_key, ordering.publication_key, "
+            "publication_anchor.publication_key, gallery.gallery_id, "
+            "summary.summary_sha256, language.language_sha256, modified.modified_at, "
+            "publication_seal.publication_key, identity.gid, upload.upload_time, "
+            "title_anchor.publication_key, title_source.source_title_sha256, "
+            "title_name.source_gallery_name, title_seal.publication_key, "
+            "committed_revision.receipt_id, commit_seal.receipt_id, "
+            "commit_policy.display_title_policy_id, policy_seal.display_title_policy_id, "
+            "choice.title_sha256, policy_sort.title_sort_policy_id, "
+            "title_sort.sort_title_sha256, content.content_sha256 "
+            "FROM family_keys AS family "
+            "LEFT JOIN catalog_publication_order AS ordering "
+            "ON ordering.revision = %s AND ordering.publication_key = family.publication_key "
+            "LEFT JOIN catalog_publication_anchors AS publication_anchor "
+            "ON publication_anchor.revision = ordering.revision "
+            "AND publication_anchor.publication_key = ordering.publication_key "
+            "LEFT JOIN catalog_publication_gallery_ids AS gallery "
+            "ON gallery.revision = publication_anchor.revision "
+            "AND gallery.publication_key = publication_anchor.publication_key "
+            "LEFT JOIN catalog_publication_summary_sha256s AS summary "
+            "ON summary.revision = publication_anchor.revision "
+            "AND summary.publication_key = publication_anchor.publication_key "
+            "LEFT JOIN catalog_publication_language_sha256s AS language "
+            "ON language.revision = publication_anchor.revision "
+            "AND language.publication_key = publication_anchor.publication_key "
+            "LEFT JOIN catalog_publication_modified_ats AS modified "
+            "ON modified.revision = publication_anchor.revision "
+            "AND modified.publication_key = publication_anchor.publication_key "
+            "LEFT JOIN catalog_publication_seals AS publication_seal "
+            "ON publication_seal.revision = publication_anchor.revision "
+            "AND publication_seal.publication_key = publication_anchor.publication_key "
+            "LEFT JOIN catalog_publication_identities AS identity "
+            "ON identity.publication_key = publication_anchor.publication_key "
+            "LEFT JOIN catalog_gallery_upload_times AS upload ON upload.gid = identity.gid "
+            "LEFT JOIN catalog_publication_title_anchors AS title_anchor "
+            "ON title_anchor.revision = publication_anchor.revision "
+            "AND title_anchor.publication_key = publication_anchor.publication_key "
+            "LEFT JOIN catalog_publication_title_source_title_sha256s AS title_source "
+            "ON title_source.revision = title_anchor.revision "
+            "AND title_source.publication_key = title_anchor.publication_key "
+            "LEFT JOIN catalog_publication_title_source_gallery_names AS title_name "
+            "ON title_name.revision = title_anchor.revision "
+            "AND title_name.publication_key = title_anchor.publication_key "
+            "LEFT JOIN catalog_publication_title_seals AS title_seal "
+            "ON title_seal.revision = title_anchor.revision "
+            "AND title_seal.publication_key = title_anchor.publication_key "
+            "LEFT JOIN catalog_publication_commit_catalog_revisions AS committed_revision "
+            "ON committed_revision.revision = publication_anchor.revision "
+            "LEFT JOIN catalog_publication_commit_seals AS commit_seal "
+            "ON commit_seal.receipt_id = committed_revision.receipt_id "
+            "LEFT JOIN catalog_publication_commit_display_title_policies AS commit_policy "
+            "ON commit_policy.receipt_id = commit_seal.receipt_id "
+            "LEFT JOIN catalog_display_title_policy_seals AS policy_seal "
+            "ON policy_seal.display_title_policy_id = "
+            "commit_policy.display_title_policy_id "
+            "LEFT JOIN catalog_display_title_choices AS choice "
+            "ON choice.display_title_policy_id = policy_seal.display_title_policy_id "
+            "AND choice.source_title_sha256 = title_source.source_title_sha256 "
+            "AND choice.source_gallery_name = title_name.source_gallery_name "
+            "LEFT JOIN catalog_display_title_policy_title_sort_policy_ids AS policy_sort "
+            "ON policy_sort.display_title_policy_id = "
+            "policy_seal.display_title_policy_id "
+            "LEFT JOIN catalog_title_sorts AS title_sort "
+            "ON title_sort.title_sort_policy_id = policy_sort.title_sort_policy_id "
+            "AND title_sort.title_sha256 = choice.title_sha256 "
+            "LEFT JOIN catalog_publication_contents AS content "
+            "ON content.revision = publication_anchor.revision "
+            "AND content.publication_key = publication_anchor.publication_key "
+            "ORDER BY family.publication_key",
+            (*selected, *(revision for _ in range(12)), revision),
+        )
+        expected = set(selected)
+        scalar_by_key: dict[bytes, tuple[object, ...]] = {}
+        for row in rows:
+            if len(row) != 22:
+                raise VNextCatalogReadError(
+                    "published item scalar query returned an invalid shape"
+                )
+            key = require_digest32(row[0], field="publication_key")
+            if key not in expected or key in scalar_by_key:
+                raise VNextCatalogReadError(
+                    "published item scalar query is not one-to-one"
+                )
+            if any(value is None for value in row[1:21]):
+                raise VNextCatalogReadError(
+                    "published item scalar/title family is partial or noncongruent"
+                )
+            scalar_by_key[key] = (
+                key,
+                row[8],
+                row[4],
+                row[5],
+                row[9],
+                row[6],
+                row[11],
+                row[12],
+                row[18],
+                row[20],
+                row[21],
+            )
+        if require_all and set(scalar_by_key) != expected:
             raise VNextCatalogReadError(
                 "published item lacks its exact identity/title projection"
             )
-        publication_id = require_ascii_bytes(
-            row[0], field="publication_id", minimum=1, maximum=64
-        ).decode("ascii")
-        gid = require_positive_int63(row[1], field="publication gid")
-        expected_id = f"urn:h2h:gallery:{gid}"
-        if publication_id != expected_id:
-            raise VNextCatalogReadError("publication ID does not encode its GID")
-        summary = loader.text(
-            row[2], domain=b"catalog_summary_utf8_v1", field="catalog summary"
+
+        visible = tuple(sorted(scalar_by_key))
+        if not visible:
+            return {}
+        contributors = self._contributors_for_publications(
+            connector, loader, revision=revision, publication_keys=visible
         )
-        language = loader.text(
-            row[3], domain=b"catalog_language_utf8_v1", field="catalog language"
+        subjects = self._subjects_for_publications(
+            connector, loader, revision=revision, publication_keys=visible
         )
-        source_title = loader.text(
-            row[6], domain=b"source_title_utf8_v1", field="source title"
-        )
-        source_gallery_name = require_utf8_bytes(
-            row[7],
-            field="source_gallery_name",
-            minimum=1,
-            maximum=255,
-            reject_nul=True,
-        ).decode("utf-8")
-        title = loader.text(
-            row[8], domain=b"display_title_utf8_v1", field="display title"
-        )
-        sort_title = loader.text(
-            row[9], domain=b"title_sort_utf8_v1", field="sort title"
-        )
-        content_sha256 = (
-            None
-            if row[10] is None
-            else require_digest32(row[10], field="content_sha256").hex()
-        )
-        if row[10] is not None:
-            loader.validate_effective_content(row[10])
-        contributors = self._contributors(
-            connector,
-            loader,
-            revision=revision,
-            publication_key=publication_key,
-        )
-        subjects = self._subjects(
-            connector,
-            loader,
-            revision=revision,
-            publication_key=publication_key,
-        )
-        artifact_rows = connector.fetch_all(
-            "SELECT a.artifact_id FROM catalog_artifacts AS a "
-            "JOIN catalog_artifact_identity AS i ON i.artifact_id = a.artifact_id "
-            "WHERE a.revision = %s AND i.publication_key = %s "
-            "ORDER BY a.artifact_id",
-            (revision, publication_key),
-        )
-        artifacts = tuple(
-            self._hydrate_artifact(
-                connector,
-                loader,
-                revision=revision,
-                artifact_id=require_ascii_bytes(
-                    artifact_row[0],
-                    field="artifact_id",
-                    minimum=1,
-                    maximum=128,
-                ),
-            )
-            for artifact_row in artifact_rows
-        )
-        return CatalogPublication(
-            publication_id=publication_id,
-            gid=gid,
-            title=title,
-            source_title=source_title,
-            sort_title=sort_title,
-            summary=summary,
-            language=language,
-            published_at=_datetime_from_microseconds(
-                row[4], field="publication published_at"
-            ),
-            modified_at=_datetime_from_microseconds(
-                row[5], field="publication modified_at"
-            ),
-            source_gallery_name=source_gallery_name,
-            contributors=contributors,
-            subjects=subjects,
-            artifacts=artifacts,
-            content_sha256=content_sha256,
+        artifact_facts = self._artifact_facts_for_publications(
+            connector, revision=revision, publication_keys=visible
         )
 
+        result: dict[bytes, CatalogPublication] = {}
+        for key in visible:
+            row = scalar_by_key[key]
+            gid = require_positive_int63(row[1], field="publication gid")
+            if identity.publication_key(gid) != key:
+                raise VNextCatalogReadError(
+                    "publication key disagrees with its immutable GID"
+                )
+            source_gallery_name = require_utf8_bytes(
+                row[7],
+                field="source_gallery_name",
+                minimum=1,
+                maximum=255,
+                reject_nul=True,
+            ).decode("utf-8")
+            content_sha256 = None
+            if row[10] is not None:
+                content = require_digest32(row[10], field="content_sha256")
+                loader.validate_effective_content(content)
+                content_sha256 = content.hex()
+            modified_at = _datetime_from_microseconds(
+                row[5], field="publication modified_at"
+            )
+            artifact = artifact_facts.get(key)
+            artifacts = (
+                ()
+                if artifact is None
+                else (
+                    _catalog_artifact_from_facts(
+                        loader,
+                        publication_key=key,
+                        gid=gid,
+                        modified_at=modified_at,
+                        artifact_sha256=artifact[0],
+                        size_bytes=artifact[1],
+                        locator_sha256=artifact[2],
+                        artifact_semantics_sha256=artifact[3],
+                    ),
+                )
+            )
+            result[key] = CatalogPublication(
+                publication_id=identity.publication_id(gid).decode("ascii"),
+                gid=gid,
+                title=loader.text(
+                    row[8], domain=b"display_title_utf8_v1", field="display title"
+                ),
+                source_title=loader.text(
+                    row[6], domain=b"source_title_utf8_v1", field="source title"
+                ),
+                sort_title=loader.text(
+                    row[9], domain=b"title_sort_utf8_v1", field="sort title"
+                ),
+                summary=loader.text(
+                    row[2], domain=b"catalog_summary_utf8_v1", field="catalog summary"
+                ),
+                language=loader.text(
+                    row[3],
+                    domain=b"catalog_language_utf8_v1",
+                    field="catalog language",
+                ),
+                published_at=_datetime_from_microseconds(
+                    row[4], field="publication published_at"
+                ),
+                modified_at=modified_at,
+                source_gallery_name=source_gallery_name,
+                contributors=contributors.get(key, ()),
+                subjects=subjects.get(key, ()),
+                artifacts=artifacts,
+                content_sha256=content_sha256,
+            )
+        return result
+
     @staticmethod
-    def _contributors(
+    def _contributors_for_publications(
         connector: SQLConnector,
         loader: _CanonicalLoader,
         *,
         revision: int,
-        publication_key: bytes,
-    ) -> tuple[CatalogContributor, ...]:
+        publication_keys: tuple[bytes, ...],
+    ) -> dict[bytes, tuple[CatalogContributor, ...]]:
+        selected_cte = _selected_keys_cte(len(publication_keys))
         rows = connector.fetch_all(
-            "SELECT c.position, c.contributor_name_sha256, c.role, s.sort_as_sha256 "
-            "FROM catalog_contributors AS c "
-            "LEFT JOIN catalog_contributor_sort_as AS s "
-            "ON s.revision = c.revision AND s.publication_key = c.publication_key "
-            "AND s.position = c.position "
-            "WHERE c.revision = %s AND c.publication_key = %s "
-            "ORDER BY c.position",
-            (revision, publication_key),
+            f"WITH selected(publication_key) AS ({selected_cte}), "
+            "family_keys(revision, publication_key, position) AS ("
+            "SELECT a.revision, a.publication_key, a.position "
+            "FROM catalog_contributor_anchors AS a JOIN selected AS chosen "
+            "ON chosen.publication_key = a.publication_key WHERE a.revision = %s "
+            "UNION SELECT n.revision, n.publication_key, n.position "
+            "FROM catalog_contributor_name_sha256s AS n JOIN selected AS chosen "
+            "ON chosen.publication_key = n.publication_key WHERE n.revision = %s "
+            "UNION SELECT r.revision, r.publication_key, r.position "
+            "FROM catalog_contributor_roles AS r JOIN selected AS chosen "
+            "ON chosen.publication_key = r.publication_key WHERE r.revision = %s "
+            "UNION SELECT i.revision, i.publication_key, i.position "
+            "FROM catalog_contributor_identities AS i JOIN selected AS chosen "
+            "ON chosen.publication_key = i.publication_key WHERE i.revision = %s "
+            "UNION SELECT s.revision, s.publication_key, s.position "
+            "FROM catalog_contributor_seals AS s JOIN selected AS chosen "
+            "ON chosen.publication_key = s.publication_key WHERE s.revision = %s) "
+            "SELECT family.publication_key, family.position, a.position, "
+            "n.contributor_name_sha256, r.role, i.position, s.position, roles.role "
+            "FROM family_keys AS family "
+            "LEFT JOIN catalog_contributor_anchors AS a "
+            "ON a.revision = family.revision AND a.publication_key = family.publication_key "
+            "AND a.position = family.position "
+            "LEFT JOIN catalog_contributor_name_sha256s AS n "
+            "ON n.revision = family.revision AND n.publication_key = family.publication_key "
+            "AND n.position = family.position "
+            "LEFT JOIN catalog_contributor_roles AS r "
+            "ON r.revision = family.revision AND r.publication_key = family.publication_key "
+            "AND r.position = family.position "
+            "LEFT JOIN catalog_contributor_identities AS i "
+            "ON i.revision = family.revision AND i.publication_key = family.publication_key "
+            "AND i.position = family.position "
+            "AND i.contributor_name_sha256 = n.contributor_name_sha256 "
+            "AND i.role = r.role "
+            "LEFT JOIN catalog_contributor_seals AS s "
+            "ON s.revision = family.revision AND s.publication_key = family.publication_key "
+            "AND s.position = family.position "
+            "LEFT JOIN catalog_contributor_role_registry AS roles ON roles.role = r.role "
+            "ORDER BY family.publication_key, family.position",
+            (*publication_keys, revision, revision, revision, revision, revision),
         )
-        result: list[CatalogContributor] = []
-        for expected_position, row in enumerate(rows):
-            if require_int63(row[0], field="contributor position") != expected_position:
+        grouped: dict[bytes, list[CatalogContributor]] = {}
+        for row in rows:
+            if len(row) != 8 or any(value is None for value in row[2:]):
+                raise VNextCatalogReadError(
+                    "contributor family is partial or noncongruent"
+                )
+            key = require_digest32(row[0], field="publication_key")
+            position = require_int63(row[1], field="contributor position")
+            if any(
+                require_int63(value, field="contributor family position") != position
+                for value in (row[2], row[5], row[6])
+            ):
+                raise VNextCatalogReadError("contributor family keys disagree")
+            current = grouped.setdefault(key, [])
+            if position != len(current):
                 raise VNextCatalogReadError("contributor positions are not contiguous")
             name = loader.text(
-                row[1],
+                row[3],
                 domain=b"contributor_name_utf8_v1",
                 field="contributor name",
             )
-            role = require_utf8_bytes(
-                row[2], field="contributor role", minimum=1, maximum=64
-            ).decode("utf-8")
-            sort_as = (
-                None
-                if row[3] is None
-                else loader.text(
-                    row[3],
-                    domain=b"contributor_sort_as_utf8_v1",
-                    field="contributor sort_as",
-                )
+            role_bytes = require_ascii_bytes(
+                row[4], field="contributor role", minimum=1, maximum=64
             )
-            result.append(CatalogContributor(name=name, role=role, sort_as=sort_as))
-        return tuple(result)
+            if (
+                require_ascii_bytes(
+                    row[7], field="registered contributor role", minimum=1, maximum=64
+                )
+                != role_bytes
+            ):
+                raise VNextCatalogReadError("contributor role registry disagrees")
+            current.append(
+                CatalogContributor(name=name, role=role_bytes.decode("ascii"))
+            )
+        return {key: tuple(values) for key, values in grouped.items()}
 
     @staticmethod
-    def _subjects(
+    def _subjects_for_publications(
         connector: SQLConnector,
         loader: _CanonicalLoader,
         *,
         revision: int,
-        publication_key: bytes,
-    ) -> tuple[CatalogSubject, ...]:
+        publication_keys: tuple[bytes, ...],
+    ) -> dict[bytes, tuple[CatalogSubject, ...]]:
+        placeholders = _sql_placeholders(len(publication_keys))
         rows = connector.fetch_all(
-            "SELECT s.position, t.namespace, t.tag_value_sha256 "
-            "FROM catalog_subjects AS s JOIN catalog_tag_terms AS t "
-            "ON t.tag_id = s.tag_id "
-            "WHERE s.revision = %s AND s.publication_key = %s "
-            "ORDER BY s.position",
-            (revision, publication_key),
+            "SELECT s.publication_key, s.position, s.tag_id, "
+            "tag_seal.tag_id, t.namespace, t.tag_value_sha256 "
+            "FROM catalog_subjects AS s "
+            "LEFT JOIN catalog_tag_term_seals AS tag_seal ON tag_seal.tag_id = s.tag_id "
+            "LEFT JOIN catalog_tag_term_identities AS t "
+            "ON t.tag_id = tag_seal.tag_id "
+            f"WHERE s.revision = %s AND s.publication_key IN ({placeholders}) "
+            "ORDER BY s.publication_key, s.position",
+            (revision, *publication_keys),
         )
-        result: list[CatalogSubject] = []
-        for expected_position, row in enumerate(rows):
-            if require_int63(row[0], field="subject position") != expected_position:
+        grouped: dict[bytes, list[CatalogSubject]] = {}
+        for row in rows:
+            if len(row) != 6 or any(value is None for value in row[2:]):
+                raise VNextCatalogReadError("subject row lacks its sealed tag identity")
+            key = require_digest32(row[0], field="publication_key")
+            position = require_int63(row[1], field="subject position")
+            if require_positive_int63(
+                row[2], field="subject tag_id"
+            ) != require_positive_int63(row[3], field="sealed subject tag_id"):
+                raise VNextCatalogReadError("subject tag identity disagrees")
+            current = grouped.setdefault(key, [])
+            if position != len(current):
                 raise VNextCatalogReadError("subject positions are not contiguous")
             namespace = require_utf8_bytes(
-                row[1], field="tag namespace", maximum=128
+                row[4], field="tag namespace", maximum=128
             ).decode("utf-8")
-            value = loader.text(row[2], domain=b"tag_value_utf8_v1", field="tag value")
-            result.append(
+            value = loader.text(row[5], domain=b"tag_value_utf8_v1", field="tag value")
+            current.append(
                 CatalogSubject(
                     name=value,
                     scheme=f"h2h:tag:{namespace}",
                     code=namespace,
                 )
             )
-        return tuple(result)
+        return {key: tuple(values) for key, values in grouped.items()}
+
+    @staticmethod
+    def _artifact_facts_for_publications(
+        connector: SQLConnector,
+        *,
+        revision: int,
+        publication_keys: tuple[bytes, ...],
+    ) -> dict[bytes, tuple[bytes, int, bytes, bytes]]:
+        selected_cte = _selected_keys_cte(len(publication_keys))
+        rows = connector.fetch_all(
+            f"WITH selected(publication_key) AS ({selected_cte}), "
+            "family_keys(revision, publication_key) AS ("
+            "SELECT a.revision, a.publication_key FROM catalog_artifact_anchors AS a "
+            "JOIN selected AS chosen ON chosen.publication_key = a.publication_key "
+            "WHERE a.revision = %s "
+            "UNION SELECT d.revision, d.publication_key FROM catalog_artifact_sha256s AS d "
+            "JOIN selected AS chosen ON chosen.publication_key = d.publication_key "
+            "WHERE d.revision = %s "
+            "UNION SELECT m.revision, m.publication_key "
+            "FROM catalog_artifact_semantics_sha256s AS m "
+            "JOIN selected AS chosen ON chosen.publication_key = m.publication_key "
+            "WHERE m.revision = %s "
+            "UNION SELECT s.revision, s.publication_key FROM catalog_artifact_seals AS s "
+            "JOIN selected AS chosen ON chosen.publication_key = s.publication_key "
+            "WHERE s.revision = %s) "
+            "SELECT family.publication_key, a.publication_key, d.artifact_sha256, "
+            "m.artifact_semantics_sha256, s.publication_key, blob.size_bytes, "
+            "location.artifact_locator_sha256 "
+            "FROM family_keys AS family "
+            "LEFT JOIN catalog_artifact_anchors AS a "
+            "ON a.revision = family.revision AND a.publication_key = family.publication_key "
+            "LEFT JOIN catalog_artifact_sha256s AS d "
+            "ON d.revision = family.revision AND d.publication_key = family.publication_key "
+            "LEFT JOIN catalog_artifact_semantics_sha256s AS m "
+            "ON m.revision = family.revision AND m.publication_key = family.publication_key "
+            "LEFT JOIN catalog_artifact_seals AS s "
+            "ON s.revision = family.revision AND s.publication_key = family.publication_key "
+            "LEFT JOIN catalog_artifact_blobs AS blob "
+            "ON blob.artifact_sha256 = d.artifact_sha256 "
+            "LEFT JOIN catalog_artifact_location AS location "
+            "ON location.artifact_sha256 = d.artifact_sha256 "
+            "ORDER BY family.publication_key",
+            (*publication_keys, revision, revision, revision, revision),
+        )
+        result: dict[bytes, tuple[bytes, int, bytes, bytes]] = {}
+        for row in rows:
+            if len(row) != 7 or any(value is None for value in row[1:]):
+                raise VNextCatalogReadError(
+                    "catalog artifact family is partial or lacks storage facts"
+                )
+            key = require_digest32(row[0], field="artifact publication_key")
+            if key in result or any(
+                require_digest32(value, field="artifact family publication_key") != key
+                for value in (row[1], row[4])
+            ):
+                raise VNextCatalogReadError("catalog artifact family keys disagree")
+            result[key] = (
+                require_digest32(row[2], field="artifact_sha256"),
+                require_int63(row[5], field="artifact size_bytes"),
+                require_digest32(row[6], field="artifact_locator_sha256"),
+                require_digest32(row[3], field="artifact_semantics_sha256"),
+            )
+        return result
 
     @staticmethod
     def _hydrate_artifact(
@@ -656,87 +975,122 @@ class VNextCatalogReaderRepository:
         loader: _CanonicalLoader,
         *,
         revision: int,
-        artifact_id: bytes,
-    ) -> CatalogArtifact:
+        publication_key: bytes,
+        expected_gid: int | None = None,
+        expected_artifact_sha256: bytes | None = None,
+    ) -> CatalogArtifact | None:
+        key = require_digest32(publication_key, field="publication_key")
+        facts = VNextCatalogReaderRepository._artifact_facts_for_publications(
+            connector,
+            revision=revision,
+            publication_keys=(key,),
+        ).get(key)
+        if facts is None:
+            return None
+        if expected_artifact_sha256 is not None and facts[0] != require_digest32(
+            expected_artifact_sha256,
+            field="expected artifact_sha256",
+        ):
+            return None
         row = connector.fetch_one(
-            "SELECT p.artifact_name, i.artifact_sha256, b.size_bytes, "
-            "l.artifact_locator_sha256, a.modified_at, p.gid "
-            "FROM catalog_artifacts AS a "
-            "JOIN catalog_artifact_identity AS i ON i.artifact_id = a.artifact_id "
-            "JOIN catalog_artifact_blobs AS b ON b.artifact_sha256 = i.artifact_sha256 "
-            "JOIN catalog_artifact_location AS l "
-            "ON l.artifact_sha256 = i.artifact_sha256 "
-            "JOIN catalog_publication_identities AS p "
-            "ON p.publication_key = i.publication_key "
-            "WHERE a.revision = %s AND a.artifact_id = %s",
-            (revision, artifact_id),
+            "SELECT identity.gid, modified.modified_at "
+            "FROM catalog_publication_order AS ordering "
+            "JOIN catalog_publication_anchors AS anchor "
+            "ON anchor.revision = ordering.revision "
+            "AND anchor.publication_key = ordering.publication_key "
+            "JOIN catalog_publication_modified_ats AS modified "
+            "ON modified.revision = anchor.revision "
+            "AND modified.publication_key = anchor.publication_key "
+            "JOIN catalog_publication_seals AS seal "
+            "ON seal.revision = anchor.revision "
+            "AND seal.publication_key = anchor.publication_key "
+            "JOIN catalog_publication_identities AS identity "
+            "ON identity.publication_key = anchor.publication_key "
+            "WHERE ordering.revision = %s AND ordering.publication_key = %s",
+            (revision, key),
         )
-        if len(row) != 6:
-            raise VNextCatalogReadError("catalog artifact lacks identity or location")
-        identifier = require_ascii_bytes(
-            artifact_id, field="artifact_id", minimum=1, maximum=128
-        ).decode("ascii")
-        name_bytes = require_utf8_bytes(
-            row[0],
-            field="artifact_name",
-            minimum=1,
-            maximum=255,
-            reject_nul=True,
-        )
-        name = name_bytes.decode("utf-8")
-        if name in {".", ".."} or "/" in name or "\\" in name:
-            raise VNextCatalogReadError("artifact name is not a safe leaf")
-        artifact_sha256 = require_digest32(row[1], field="artifact_sha256")
-        gid_marker = identifier.split(":")
-        if (
-            len(gid_marker) != 7
-            or gid_marker[:4] != ["urn", "h2h", "artifact", "cbz"]
-            or gid_marker[5] != "sha256"
-            or gid_marker[6] != artifact_sha256.hex()
+        if not row:
+            raise VNextCatalogReadError(
+                "catalog artifact refers to an incomplete publication"
+            )
+        if len(row) != 2:
+            raise VNextCatalogReadError(
+                "catalog artifact identity has an invalid shape"
+            )
+        gid = require_positive_int63(row[0], field="publication GID")
+        if expected_gid is not None and gid != require_positive_int63(
+            expected_gid,
+            field="expected publication GID",
         ):
             raise VNextCatalogReadError(
-                "artifact ID does not encode its exact byte identity"
+                "artifact identity collides with the requested GID"
             )
-        try:
-            encoded_gid = require_positive_int63(
-                int(gid_marker[4]), field="artifact GID"
-            )
-        except ValueError as error:
-            raise VNextCatalogReadError("artifact ID has an invalid GID") from error
-        publication_gid = require_positive_int63(row[5], field="publication GID")
-        if encoded_gid != publication_gid:
-            raise VNextCatalogReadError("artifact ID belongs to another publication")
-        if name_bytes != artifact_name(publication_gid):
-            raise VNextCatalogReadError(
-                "artifact name is not the canonical GID-derived leaf"
-            )
-        locator_payload = loader.load(row[3], domain=b"artifact_locator_bytes_v1")
-        if len(locator_payload) > 4096:
-            raise VNextCatalogReadError("artifact locator exceeds its v1 bound")
-        try:
-            components = decode_artifact_locator(locator_payload)
-        except ValueError as error:
-            raise VNextCatalogReadError(
-                "artifact locator framing is invalid"
-            ) from error
-        if not components:
-            raise VNextCatalogReadError("artifact locator must not be empty")
-        relative = PurePosixPath(*components)
-        if relative.is_absolute() or any(
-            part in {"", ".", ".."} for part in relative.parts
-        ):
-            raise VNextCatalogReadError("artifact locator is not a safe relative path")
-        return CatalogArtifact(
-            artifact_id=identifier,
-            name=name,
-            location=Path(*components),
-            media_type=_CBZ_MEDIA_TYPE,
-            size_bytes=require_int63(row[2], field="artifact size_bytes"),
-            sha256=artifact_sha256.hex(),
+        return _catalog_artifact_from_facts(
+            loader,
+            publication_key=key,
+            gid=gid,
             modified_at=_datetime_from_microseconds(
-                row[4], field="artifact modified_at"
+                row[1], field="artifact modified_at"
             ),
+            artifact_sha256=facts[0],
+            size_bytes=facts[1],
+            locator_sha256=facts[2],
+            artifact_semantics_sha256=facts[3],
         )
+
+
+def _catalog_artifact_from_facts(
+    loader: _CanonicalLoader,
+    *,
+    publication_key: bytes,
+    gid: int,
+    modified_at: datetime,
+    artifact_sha256: bytes,
+    size_bytes: int,
+    locator_sha256: bytes,
+    artifact_semantics_sha256: bytes,
+) -> CatalogArtifact:
+    exact_key = require_digest32(publication_key, field="publication_key")
+    exact_gid = require_positive_int63(gid, field="publication GID")
+    digest = require_digest32(artifact_sha256, field="artifact_sha256")
+    if identity.publication_key(exact_gid) != exact_key:
+        raise VNextCatalogReadError(
+            "artifact publication key disagrees with its immutable GID"
+        )
+    require_digest32(
+        artifact_semantics_sha256,
+        field="artifact_semantics_sha256",
+    )
+    name_bytes = identity.artifact_name(exact_gid)
+    name = name_bytes.decode("ascii")
+    locator_payload = loader.load(
+        require_digest32(locator_sha256, field="artifact_locator_sha256"),
+        domain=b"artifact_locator_bytes_v1",
+    )
+    if len(locator_payload) > 4096:
+        raise VNextCatalogReadError("artifact locator exceeds its v1 bound")
+    try:
+        components = identity.decode_artifact_locator(locator_payload)
+    except ValueError as error:
+        raise VNextCatalogReadError("artifact locator framing is invalid") from error
+    if not components or components != identity.artifact_locator_components(digest):
+        raise VNextCatalogReadError(
+            "artifact locator disagrees with its content-addressed identity"
+        )
+    relative = PurePosixPath(*components)
+    if relative.is_absolute() or any(
+        part in {"", ".", ".."} for part in relative.parts
+    ):
+        raise VNextCatalogReadError("artifact locator is not a safe relative path")
+    return CatalogArtifact(
+        artifact_id=identity.artifact_id(exact_gid, digest).decode("ascii"),
+        name=name,
+        location=Path(*components),
+        media_type=_CBZ_MEDIA_TYPE,
+        size_bytes=require_int63(size_bytes, field="artifact size_bytes"),
+        sha256=digest.hex(),
+        modified_at=modified_at,
+    )
 
 
 def _datetime_from_microseconds(value: object, *, field: str) -> datetime:
@@ -745,3 +1099,17 @@ def _datetime_from_microseconds(value: object, *, field: str) -> datetime:
         return _EPOCH + timedelta(microseconds=microseconds)
     except OverflowError as error:
         raise VNextCatalogReadError(f"{field} exceeds Python datetime") from error
+
+
+def _sql_placeholders(count: int) -> str:
+    if count <= 0:
+        raise ValueError("SQL placeholder count must be positive")
+    return ", ".join("%s" for _ in range(count))
+
+
+def _selected_keys_cte(count: int) -> str:
+    if count <= 0:
+        raise ValueError("selected-key count must be positive")
+    return " UNION ALL ".join(
+        ("SELECT %s AS publication_key", *("SELECT %s" for _ in range(count - 1)))
+    )

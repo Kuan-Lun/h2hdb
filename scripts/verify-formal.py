@@ -60,6 +60,7 @@ def verify_schema() -> None:
     provider_generator = (
         REPOSITORY_ROOT / "scripts" / "generate-vnext-schema-provider.py"
     )
+    narrow_physical_checker = VERIFICATION_ROOT / "schema" / "check_narrow_physical.py"
     if (
         not checker.is_file()
         or not contract.is_file()
@@ -70,6 +71,7 @@ def verify_schema() -> None:
         not generator.is_file()
         or not physical_generator.is_file()
         or not provider_generator.is_file()
+        or not narrow_physical_checker.is_file()
     ):
         raise RuntimeError("A schema/physical generator is missing")
     _run([sys.executable, str(generator), "--check"])
@@ -86,6 +88,7 @@ def verify_schema() -> None:
     )
     _run([sys.executable, str(checker), str(contract)])
     _run([sys.executable, str(checker), str(operational_contract)])
+    _run([sys.executable, str(narrow_physical_checker), "--quiet"])
     _run([sys.executable, str(provider_generator), "--check"])
 
 

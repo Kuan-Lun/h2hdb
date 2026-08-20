@@ -1,8 +1,8 @@
 """Public administration boundary for the greenfield schema epoch.
 
-This boundary intentionally does not use the legacy migration or maintenance
-tables.  Epoch construction and validation own one connector and delegate
-serialization to :mod:`h2hdb.schema_epoch`.
+The package has no numbered migration or legacy maintenance-table path. Epoch
+construction and validation own one connector and delegate serialization to
+:mod:`h2hdb.schema_epoch`.
 """
 
 from __future__ import annotations
@@ -40,32 +40,28 @@ class SchemaEpochReadiness:
 
 
 class VNextSchemaAdmin:
-    """Administer epoch v2 without entering any legacy database gate."""
+    """Administer the sole epoch-2 production schema."""
 
     def __init__(self, context: RepositoryContext) -> None:
         self._context = context
 
-    def initialize(
-        self, provider: SchemaEpochProvider | None = None
-    ) -> SchemaEpochReport:
+    def initialize(self) -> SchemaEpochReport:
         """Create/resume epoch v2, or fully validate an existing READY epoch."""
 
-        resolved, _ = self._resolve_provider(provider)
+        resolved, _ = self._resolve_provider()
         with self._context.SQLConnector() as connector:
             return self._run(connector, resolved)
 
-    def check(self, provider: SchemaEpochProvider | None = None) -> SchemaEpochReport:
+    def check(self) -> SchemaEpochReport:
         """Fully validate an already-READY epoch without constructing it."""
 
-        resolved, definition = self._resolve_provider(provider)
+        resolved, definition = self._resolve_provider()
         with self._context.SQLConnector() as connector:
             with connector.read_transaction():
                 self._readiness_with_connector(connector, definition)
                 return self._validate_ready(connector, resolved)
 
-    def check_readiness(
-        self, provider: SchemaEpochProvider | None = None
-    ) -> SchemaEpochReadiness:
+    def check_readiness(self) -> SchemaEpochReadiness:
         """Read the exact READY marker in O(1) database work.
 
         This deliberately does not perform closed-world or semantic validation;
@@ -74,29 +70,27 @@ class VNextSchemaAdmin:
         database, so a stale or blocked generated artifact fails closed.
         """
 
-        _, definition = self._resolve_provider(provider)
+        _, definition = self._resolve_provider()
         with self._context.SQLConnector() as connector:
             with connector.read_transaction():
                 return self._readiness_with_connector(connector, definition)
 
     def _resolve_provider(
-        self, provider: SchemaEpochProvider | None
+        self,
     ) -> tuple[SchemaEpochProvider, SchemaEpochDefinition]:
-        resolved: SchemaEpochProvider
-        if provider is None:
-            # Keep the generated multi-thousand-object artifact off ordinary
-            # production facade imports; only explicit epoch-v2 administration
-            # loads and validates it.
-            from .vnext_schema_provider import GeneratedVNextSchemaProvider
+        # Keep the generated multi-thousand-object artifact off ordinary
+        # production facade imports; only explicit epoch-v2 administration
+        # loads and validates it.  This is intentionally not an injection seam:
+        # the production administrator accepts only the wheel-owned provider.
+        from .vnext_schema_provider import GeneratedVNextSchemaProvider
 
-            if self._context.sql_type == "sqlite":
-                resolved = GeneratedVNextSchemaProvider("sqlite")
-            elif self._context.sql_type == "mariadb":
-                resolved = GeneratedVNextSchemaProvider("mariadb")
-            else:
-                raise ValueError(f"Unsupported SQL type: {self._context.sql_type!r}")
+        resolved: SchemaEpochProvider
+        if self._context.sql_type == "sqlite":
+            resolved = GeneratedVNextSchemaProvider("sqlite")
+        elif self._context.sql_type == "mariadb":
+            resolved = GeneratedVNextSchemaProvider("mariadb")
         else:
-            resolved = provider
+            raise ValueError(f"Unsupported SQL type: {self._context.sql_type!r}")
         # Definition validation (including generated-artifact blockers) must
         # finish before a connector is opened or any database state is touched.
         return resolved, resolved.definition

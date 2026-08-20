@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import patch
 
+from vnext_catalog_registry_fixtures import seed_manifest_policy
+
 from h2hdb import CoreConfig
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.mariadb_connector import MariaDBConnector
@@ -44,12 +46,10 @@ def _generated_mariadb(config: CoreConfig) -> MariaDBConnector:
             connector.execute(sql)
     for seed in payload["bootstrap_seeds"]:
         connector.execute(seed["sql"], seed["parameters"])
-    connector.execute(
-        "INSERT INTO catalog_manifest_policies "
-        "(manifest_policy_id, manifest_algorithm_version, file_order_version) "
-        "VALUES (%s, %s, %s)",
-        (1, 1, 1),
-    )
+    seed_manifest_policy(connector)
+    # A bootstrap replay may be read-only when the generated family is already
+    # present; Connector/Python starts an implicit transaction for that SELECT.
+    connector.commit()
     return connector
 
 
@@ -119,7 +119,7 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
     try:
         gate, turn = _authorities(connector)
         build_id = b"mariadb-build001"
-        root_command = SourceRootBuildCommand(("Volumes", "資料"), build_id, 20)
+        root_command = SourceRootBuildCommand(("Volumes", "資料"), build_id)
         root_plan = root_command.prepare_root_upload()
         _put_plan(connector, gate, turn, root_plan, now=20)
         with connector.transaction():

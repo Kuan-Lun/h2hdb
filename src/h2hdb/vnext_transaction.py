@@ -10,6 +10,7 @@ __all__ = [
     "encode_lock_key",
 ]
 
+from collections.abc import Sequence
 from enum import IntEnum
 from typing import Any
 
@@ -105,6 +106,39 @@ class VNextUnitOfWork:
         if self.backend == "mariadb":
             statement += " FOR UPDATE"
         return self.connector.fetch_one(statement, data)
+
+    def lock_rows(
+        self,
+        rank: LockRank,
+        keys: Sequence[bytes],
+        query: str,
+        data: tuple[Any, ...] = (),
+    ) -> list[tuple[Any, ...]]:
+        """Record ordered natural keys and lock/read their bounded row set once."""
+
+        lock_keys = tuple(
+            require_bounded_bytes(
+                key,
+                field="lock key",
+                minimum=1,
+                maximum=4096,
+            )
+            for key in keys
+        )
+        if not lock_keys or tuple(sorted(set(lock_keys))) != lock_keys:
+            raise ValueError("lock_rows keys must be one nonempty exact ordered set")
+        for lock_key in lock_keys:
+            self._record_lock(rank, lock_key)
+        statement = query.strip()
+        if statement.endswith(";"):
+            statement = statement[:-1].rstrip()
+        if not statement.upper().startswith("SELECT ") or ";" in statement:
+            raise ValueError("lock_rows accepts one SELECT statement")
+        if " FOR UPDATE" in statement.upper():
+            raise ValueError("lock_rows owns backend-specific FOR UPDATE syntax")
+        if self.backend == "mariadb":
+            statement += " FOR UPDATE"
+        return self.connector.fetch_all(statement, data)
 
     def compare_and_swap(
         self,

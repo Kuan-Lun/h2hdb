@@ -7,8 +7,13 @@ Guidance for coding agents working in the `h2hdb` core repository.
 This package owns the SQLite/MariaDB connectors, greenfield schema epoch,
 normalized catalog and operational relations, bounded transactions, durable
 coordination state, and public application facades. The supported schema is
-epoch 2/version 1: 125 catalog BCNF relations, 25 lossless and
-dependency-preserving decompositions, and 76 operational BCNF relations.
+epoch 2/version 1: 361 catalog BCNF base relations, 82 intentional logical
+views, 28 lossless and dependency-preserving binary decompositions, 53
+sealed vertical families, 361 narrow catalog bases with no width debt,
+an exact 320-relation catalog physical-domain closure (260 mutation relations
+and 60 read-only views), 75 operational BCNF base relations, and one derived
+operational view. The generated provider installs exactly 4,645 typed bootstrap
+rows per backend.
 
 Core must not depend on Pillow, FastAPI, OPDS types, `hbrowser`, filesystem
 scanning, gallery parsing, or concrete CBZ/object-storage behavior. Those
@@ -16,6 +21,16 @@ belong to sibling repositories or consumer adapters. Consumers use
 `VNextDatabaseAdminFacade`, `VNextCatalogFacade`, and
 `VNextDownloadQueueFacade` rather than connector, repository, generated-schema,
 or table internals.
+
+The package has no `H2HDB`, `MigrationRunner`, numbered migration ledger, or
+legacy hand-written catalog repositories. Do not reintroduce one as a
+compatibility path. The current ingest/downloader siblings must remain outside
+the epoch-2 release set until they are ported to explicit vNext orchestration
+facades.
+
+Public administration and catalog-opening entry points always use the exact
+wheel-resident generated schema provider. A caller-injected provider is a second
+schema-authoring surface and must not be added, even as a production test seam.
 
 ## Environment and commands
 
@@ -69,6 +84,7 @@ Run drift and proof checks with:
 uv run --no-sync python scripts/verify-formal.py coverage --validate-only
 uv run --no-sync python scripts/verify-formal.py schema
 uv run --no-sync python scripts/verify-formal.py lean
+uv run --no-sync python scripts/verify-schema-surface.py
 uv run --no-sync python scripts/fetch-formal-tools.py
 uv run --no-sync python scripts/verify-formal.py tla \
   --tla-jar .formal-tools/tla2tools-1.7.4.jar
@@ -77,6 +93,13 @@ uv run --no-sync python scripts/verify-formal.py tla \
 Do not hand-edit generated physical manifests, generated Lean schema files, or
 the generated runtime-provider artifact. A relation-count change must be
 reflected consistently in manifests, checks, and documentation.
+
+BCNF and physical width are separate gates. Every physical `catalog_*` base
+table is intended to contain its semantic primary key plus at most one atomic
+non-key column; logical views are exempt. The current narrow-layout checker
+records all 361 bases as compliant and has no width-debt ledger. Never hide an
+ordinary value in a primary key, packed scalar, JSON, or
+EAV representation to make that count appear smaller.
 
 ## Formal verification
 
@@ -171,6 +194,12 @@ validates rather than mutates the data-plane schema.
 There is no numbered v1-v7 upgrade, schema adoption, compatibility view, or
 dual-write path. Do not add one. A previous, foreign, or drifted database must
 be rejected; rebuilding starts from a new empty database.
+
+Every production SQL relation identifier, including static dynamic-dispatch
+tables, must be admitted by `physical.toml` or `operational_physical.toml` (plus
+the epoch-control relation). Keep the source and wheel schema-surface gate
+green; formal BCNF success for a manifest is not permission to ship a second
+unmanifested SQL schema.
 
 `check` performs the complete `READY` audit in a read transaction. `ready` is
 the O(1) read-only epoch/version/manifest probe. Provider blockers must fail

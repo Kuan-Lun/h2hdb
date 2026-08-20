@@ -1,12 +1,41 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
+from vnext_analysis_fixtures import seed_analysis_run
+from vnext_canonical_value_fixtures import (
+    seed_canonical_allocation,
+    seed_canonical_page,
+    seed_canonical_value,
+)
+from vnext_catalog_identity_fixtures import (
+    seed_file_name_identity,
+    seed_gallery_identity,
+)
+from vnext_catalog_registry_fixtures import (
+    seed_analysis_policy,
+    seed_artifact_policy_semantics,
+    seed_artifact_producer_fingerprint,
+    seed_manifest_policy,
+    seed_source_scope,
+)
+from vnext_gallery_page_fixtures import (
+    seed_gallery_page_bounds,
+    seed_gallery_page_descriptor,
+)
+from vnext_manifest_fixtures import (
+    seed_build_manifest,
+    seed_gallery_manifest,
+    seed_snapshot_manifest,
+    seed_source_build,
+)
+from vnext_publication_fixtures import seed_publication_candidate
 
 import h2hdb.vnext_cleanup_repository as cleanup_module
+from h2hdb import vnext_identity as identity
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_cleanup_repository import (
@@ -61,6 +90,7 @@ def _begin(
     shard: int,
     *,
     max_rows: int = 1,
+    now: int = 2,
 ) -> CleanupCycle:
     with connector.transaction():
         return VNextCleanupRepository.begin_cycle(
@@ -70,7 +100,7 @@ def _begin(
             shard_no=shard,
             cycle_cutoff_at=100,
             max_rows_per_transaction=max_rows,
-            now=2,
+            now=now,
         )
 
 
@@ -131,6 +161,756 @@ def _fixture_rows(
             connector.execute(sql, parameters)
     finally:
         connector.execute("PRAGMA foreign_keys = ON")
+
+
+_GALLERY_PAGE_DELETE_GROUPS = {
+    "catalog_gallery_observation_page_children": (
+        "catalog_gallery_observation_page_children",
+    ),
+    "catalog_gallery_observation_page_key_bounds_seals": (
+        "catalog_gallery_observation_page_key_bounds_seals",
+        "catalog_gallery_observation_page_key_bounds_first_keys",
+        "catalog_gallery_observation_page_key_bounds_last_keys",
+        "catalog_gallery_observation_page_key_bounds_anchors",
+    ),
+    "catalog_gallery_observation_page_descriptor_seals": (
+        "catalog_gallery_observation_page_descriptor_seals",
+        "catalog_gallery_observation_page_descriptor_components",
+        "catalog_gallery_observation_page_descriptor_levels",
+        "catalog_gallery_observation_page_descriptor_subtree_item_counts",
+        "catalog_gallery_observation_pages",
+    ),
+    "catalog_gallery_observation_page_descriptor_anchors": (
+        "catalog_gallery_observation_page_descriptor_anchors",
+    ),
+}
+
+_ANALYSIS_OVERLAY_TABLES = (
+    "catalog_a_file_decision_shadow_seals",
+    "catalog_a_content_candidate_shadow_seals",
+    "catalog_a_content_owner_shadow_seals",
+    "catalog_a_impacted_content_seals",
+    "catalog_a_impacted_gid_seals",
+    "catalog_analysis_file_hash_decision_tombstone",
+    "catalog_analysis_content_owner_candidate_tombstones",
+    "catalog_analysis_content_owner_tombstones",
+    "catalog_analysis_gid_candidate_shadows",
+    "catalog_analysis_gid_candidate_tombstones",
+    "catalog_analysis_gid_winner_selections",
+    "catalog_analysis_gid_winner_tombstones",
+    "catalog_a_file_decision_shadow_occurrences",
+    "catalog_a_file_decision_shadow_artists",
+    "catalog_a_file_decision_shadow_gallery_artist_max",
+    "catalog_a_content_candidate_shadow_contents",
+    "catalog_a_content_candidate_shadow_not_uploaded",
+    "catalog_a_content_candidate_shadow_title_counts",
+    "catalog_a_content_candidate_shadow_download_times",
+    "catalog_a_content_owner_shadow_galleries",
+    "catalog_a_impacted_content_witnesses",
+    "catalog_a_impacted_gid_witnesses",
+    "catalog_a_impacted_content_provenance",
+    "catalog_a_impacted_gid_provenance",
+    "catalog_a_file_decision_shadow_anchors",
+    "catalog_a_content_candidate_shadow_anchors",
+    "catalog_a_content_owner_shadow_anchors",
+    "catalog_a_impacted_content_anchors",
+    "catalog_a_impacted_gid_anchors",
+)
+
+
+def _seed_analysis_overlay_rows(
+    connector: SQLiteConnector,
+    analysis_id: bytes,
+) -> None:
+    file_sha256 = b"f" * 32
+    content_sha256 = b"c" * 32
+    gallery_id = 7
+    gid = 9
+    _fixture_rows(
+        connector,
+        [
+            (
+                "INSERT INTO catalog_analysis_impacted_galleries "
+                "(analysis_id, gallery_id) VALUES (%s, %s)",
+                (analysis_id, gallery_id),
+            ),
+            *[
+                (sql, parameters)
+                for sql, parameters in (
+                    (
+                        "INSERT INTO catalog_a_file_decision_shadow_anchors "
+                        "(analysis_id, file_sha256) VALUES (%s, %s)",
+                        (analysis_id, file_sha256),
+                    ),
+                    (
+                        "INSERT INTO catalog_a_file_decision_shadow_occurrences "
+                        "(analysis_id, file_sha256, occurrence_count) "
+                        "VALUES (%s, %s, 1)",
+                        (analysis_id, file_sha256),
+                    ),
+                    (
+                        "INSERT INTO catalog_a_file_decision_shadow_artists "
+                        "(analysis_id, file_sha256, artist_count) "
+                        "VALUES (%s, %s, 1)",
+                        (analysis_id, file_sha256),
+                    ),
+                    (
+                        "INSERT INTO catalog_a_file_decision_shadow_gallery_artist_max "
+                        "(analysis_id, file_sha256, maximum_gallery_artist_count) "
+                        "VALUES (%s, %s, 1)",
+                        (analysis_id, file_sha256),
+                    ),
+                    (
+                        "INSERT INTO catalog_a_file_decision_shadow_seals "
+                        "(analysis_id, file_sha256) VALUES (%s, %s)",
+                        (analysis_id, file_sha256),
+                    ),
+                    (
+                        "INSERT INTO catalog_a_content_candidate_shadow_anchors "
+                        "(analysis_id, gallery_id) VALUES (%s, %s)",
+                        (analysis_id, gallery_id),
+                    ),
+                    (
+                        "INSERT INTO catalog_a_content_candidate_shadow_contents "
+                        "(analysis_id, gallery_id, content_sha256) "
+                        "VALUES (%s, %s, %s)",
+                        (analysis_id, gallery_id, content_sha256),
+                    ),
+                    (
+                        "INSERT INTO catalog_a_content_candidate_shadow_not_uploaded "
+                        "(analysis_id, gallery_id, prefer_not_already_uploaded) "
+                        "VALUES (%s, %s, 1)",
+                        (analysis_id, gallery_id),
+                    ),
+                    (
+                        "INSERT INTO catalog_a_content_candidate_shadow_title_counts "
+                        "(analysis_id, gallery_id, title_scalar_count) "
+                        "VALUES (%s, %s, 1)",
+                        (analysis_id, gallery_id),
+                    ),
+                    (
+                        "INSERT INTO catalog_a_content_candidate_shadow_download_times "
+                        "(analysis_id, gallery_id, download_time) "
+                        "VALUES (%s, %s, 1)",
+                        (analysis_id, gallery_id),
+                    ),
+                    (
+                        "INSERT INTO catalog_a_content_candidate_shadow_seals "
+                        "(analysis_id, gallery_id) VALUES (%s, %s)",
+                        (analysis_id, gallery_id),
+                    ),
+                    (
+                        "INSERT INTO catalog_a_content_owner_shadow_anchors "
+                        "(analysis_id, content_sha256) VALUES (%s, %s)",
+                        (analysis_id, content_sha256),
+                    ),
+                    (
+                        "INSERT INTO catalog_a_content_owner_shadow_galleries "
+                        "(analysis_id, content_sha256, owner_gallery_id) "
+                        "VALUES (%s, %s, %s)",
+                        (analysis_id, content_sha256, gallery_id),
+                    ),
+                    (
+                        "INSERT INTO catalog_a_content_owner_shadow_seals "
+                        "(analysis_id, content_sha256) VALUES (%s, %s)",
+                        (analysis_id, content_sha256),
+                    ),
+                    (
+                        "INSERT INTO catalog_a_impacted_content_anchors "
+                        "(analysis_id, content_sha256) VALUES (%s, %s)",
+                        (analysis_id, content_sha256),
+                    ),
+                    (
+                        "INSERT INTO catalog_a_impacted_content_provenance "
+                        "(analysis_id, gallery_id, content_sha256) "
+                        "VALUES (%s, %s, %s)",
+                        (analysis_id, gallery_id, content_sha256),
+                    ),
+                    (
+                        "INSERT INTO catalog_a_impacted_content_witnesses "
+                        "(analysis_id, content_sha256, witness_gallery_id) "
+                        "VALUES (%s, %s, %s)",
+                        (analysis_id, content_sha256, gallery_id),
+                    ),
+                    (
+                        "INSERT INTO catalog_a_impacted_content_seals "
+                        "(analysis_id, content_sha256) VALUES (%s, %s)",
+                        (analysis_id, content_sha256),
+                    ),
+                    (
+                        "INSERT INTO catalog_a_impacted_gid_anchors "
+                        "(analysis_id, gid) VALUES (%s, %s)",
+                        (analysis_id, gid),
+                    ),
+                    (
+                        "INSERT INTO catalog_a_impacted_gid_provenance "
+                        "(analysis_id, gallery_id, gid) VALUES (%s, %s, %s)",
+                        (analysis_id, gallery_id, gid),
+                    ),
+                    (
+                        "INSERT INTO catalog_a_impacted_gid_witnesses "
+                        "(analysis_id, gid, witness_gallery_id) "
+                        "VALUES (%s, %s, %s)",
+                        (analysis_id, gid, gallery_id),
+                    ),
+                    (
+                        "INSERT INTO catalog_a_impacted_gid_seals "
+                        "(analysis_id, gid) VALUES (%s, %s)",
+                        (analysis_id, gid),
+                    ),
+                    (
+                        "INSERT INTO catalog_analysis_file_hash_decision_tombstone "
+                        "(analysis_id, file_sha256) VALUES (%s, %s)",
+                        (analysis_id, b"t" * 32),
+                    ),
+                    (
+                        "INSERT INTO catalog_analysis_content_owner_candidate_tombstones "
+                        "(analysis_id, gallery_id) VALUES (%s, 8)",
+                        (analysis_id,),
+                    ),
+                    (
+                        "INSERT INTO catalog_analysis_content_owner_tombstones "
+                        "(analysis_id, content_sha256) VALUES (%s, %s)",
+                        (analysis_id, b"d" * 32),
+                    ),
+                    (
+                        "INSERT INTO catalog_analysis_gid_candidate_shadows "
+                        "(analysis_id, gallery_id) VALUES (%s, %s)",
+                        (analysis_id, gallery_id),
+                    ),
+                    (
+                        "INSERT INTO catalog_analysis_gid_candidate_tombstones "
+                        "(analysis_id, gallery_id) VALUES (%s, 8)",
+                        (analysis_id,),
+                    ),
+                    (
+                        "INSERT INTO catalog_analysis_gid_winner_selections "
+                        "(analysis_id, winner_gallery_id) VALUES (%s, %s)",
+                        (analysis_id, gallery_id),
+                    ),
+                    (
+                        "INSERT INTO catalog_analysis_gid_winner_tombstones "
+                        "(analysis_id, gid) VALUES (%s, 10)",
+                        (analysis_id,),
+                    ),
+                )
+            ],
+        ],
+    )
+
+
+def _analysis_overlay_rows(
+    connector: SQLiteConnector,
+    analysis_id: bytes,
+) -> tuple[tuple[object, ...], ...]:
+    return tuple(
+        connector.fetch_one(
+            f"SELECT COUNT(*) FROM {table} WHERE analysis_id = %s",
+            (analysis_id,),
+        )
+        for table in _ANALYSIS_OVERLAY_TABLES
+    )
+
+
+_GALLERY_PAGE_DELETE_PHASE_BY_TABLE = {
+    table: group for group in _GALLERY_PAGE_DELETE_GROUPS.values() for table in group
+}
+
+
+def _seed_cleanup_gallery_page(
+    connector: SQLiteConnector,
+    *,
+    parent: bytes,
+    child: bytes,
+) -> None:
+    seed_gallery_page_descriptor(
+        connector,
+        page_sha256=child,
+        page_bytes=b"child",
+        component=b"FILE",
+        level=0,
+        subtree_item_count=1,
+    )
+    seed_gallery_page_descriptor(
+        connector,
+        page_sha256=parent,
+        page_bytes=b"parent",
+        component=b"FILE",
+        level=1,
+        subtree_item_count=1,
+    )
+    seed_gallery_page_bounds(
+        connector,
+        page_sha256=parent,
+        first_key=b"a" * 8,
+        last_key=b"z" * 8,
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_page_children "
+        "(parent_sha256, position, child_sha256) VALUES (%s, 0, %s)",
+        (parent, child),
+    )
+
+
+def _gallery_page_group_rows(
+    connector: SQLiteConnector,
+    *,
+    parent: bytes,
+    tables: tuple[str, ...],
+) -> tuple[list[tuple[Any, ...]], ...]:
+    rows: list[list[tuple[Any, ...]]] = []
+    for table in tables:
+        key = "parent_sha256" if table.endswith("_children") else "page_sha256"
+        rows.append(
+            connector.fetch_all(
+                f"SELECT * FROM {table} WHERE {key} = %s",
+                (parent,),
+            )
+        )
+    return tuple(rows)
+
+
+def _seed_minimal_canonical_value(
+    connector: SQLiteConnector,
+    *,
+    value_sha256: bytes,
+    page_sha256: bytes,
+    digest_domain: bytes,
+) -> None:
+    seed_canonical_value(
+        connector,
+        value_sha256=value_sha256,
+        digest_domain=digest_domain,
+        page_sha256=page_sha256,
+        page_bytes=b"x",
+        subtree_item_count=1,
+        allocated_at=0,
+    )
+
+
+def _seed_source_build_scope(
+    connector: SQLiteConnector,
+    *,
+    discriminator: int,
+) -> bytes:
+    seed_manifest_policy(connector)
+    source_root_sha256 = bytes((discriminator,)) + b"r" * 31
+    _seed_minimal_canonical_value(
+        connector,
+        value_sha256=source_root_sha256,
+        page_sha256=bytes((discriminator,)) + b"p" * 31,
+        digest_domain=b"source_root_v1",
+    )
+    return seed_source_scope(
+        connector,
+        source_root_sha256=source_root_sha256,
+    ).scope_key
+
+
+def _seed_abandoned_analysis_for_cleanup(
+    connector: SQLiteConnector,
+    *,
+    discriminator: int,
+) -> bytes:
+    analysis_id = bytes((discriminator,)) + b"a" * 15
+    build_id = bytes((discriminator,)) + b"b" * 15
+    scope_key = _seed_source_build_scope(
+        connector,
+        discriminator=discriminator,
+    )
+    seed_analysis_policy(connector)
+    seed_source_build(
+        connector,
+        build_id=build_id,
+        scope_key=scope_key,
+        manifest_policy_id=1,
+        state="SEALED",
+        created_at=0,
+        sealed_at=0,
+    )
+    seed_analysis_run(
+        connector,
+        analysis_id=analysis_id,
+        build_id=build_id,
+        policy_id=1,
+        input_manifest_sha256=b"m" * 32,
+        started_at=0,
+        state="ABANDONED",
+    )
+    return analysis_id
+
+
+def _position_analysis_cleanup_at_overlay(
+    connector: SQLiteConnector,
+    gate: GateLease,
+    cycle: CleanupCycle,
+    *,
+    now: int,
+) -> None:
+    result: CleanupBatchResult | None = None
+    for phase_index in range(6):
+        result = _advance(
+            connector,
+            gate,
+            cycle,
+            1,
+            phase_index.to_bytes(32, "big"),
+            now=now + phase_index,
+        )
+        assert result.row_count == 0
+    assert result is not None
+    assert result.phase == "AR_OVERLAY"
+    assert result.generation == 1
+
+
+def _cleanup_protocol_snapshot(
+    connector: SQLiteConnector,
+) -> tuple[list[tuple[Any, ...]], list[tuple[Any, ...]]]:
+    return (
+        connector.fetch_all("SELECT * FROM operational_cleanup_checkpoints"),
+        connector.fetch_all("SELECT * FROM operational_cleanup_batch_receipts"),
+    )
+
+
+def _source_scope_family_rows(
+    connector: SQLiteConnector,
+) -> tuple[list[tuple[Any, ...]], ...]:
+    return tuple(
+        connector.fetch_all(query)
+        for query in (
+            "SELECT * FROM catalog_source_scope_seals",
+            "SELECT * FROM catalog_source_scope_identities",
+            "SELECT * FROM catalog_source_scope_identity_policy_versions",
+            "SELECT * FROM catalog_source_scope_source_root_sha256s",
+            "SELECT * FROM catalog_source_scope_source_providers",
+            "SELECT * FROM catalog_source_scope_anchors",
+        )
+    )
+
+
+def _artifact_policy_semantics_family_rows(
+    connector: SQLiteConnector,
+) -> tuple[list[tuple[Any, ...]], ...]:
+    return tuple(
+        connector.fetch_all(query)
+        for query in (
+            "SELECT * FROM catalog_artifact_policy_semantics_seals",
+            "SELECT * FROM catalog_artifact_policy_semantics_identities",
+            "SELECT * FROM "
+            "catalog_artifact_policy_semantics_producer_fingerprint_sha256s",
+            "SELECT * FROM catalog_artifact_policy_semantics_max_image_short_sides",
+            "SELECT * FROM "
+            "catalog_artifact_policy_semantics_artifact_algorithm_versions",
+            "SELECT * FROM catalog_artifact_policy_semantics_anchors",
+        )
+    )
+
+
+def _seed_cleanup_candidate(
+    connector: SQLiteConnector,
+    *,
+    candidate_id: bytes,
+) -> None:
+    connector.execute("PRAGMA foreign_keys = OFF")
+    try:
+        seed_publication_candidate(
+            connector,
+            candidate_id=candidate_id,
+            analysis_id=b"a" * 16,
+            reserved_revision=1,
+            artifact_policy_id=1,
+            display_title_policy_id=1,
+            artifacts_required=False,
+            created_at=0,
+        )
+    finally:
+        connector.execute("PRAGMA foreign_keys = ON")
+
+
+_CANDIDATE_DEFINITION_DELETE_ORDER = (
+    "catalog_publication_candidate_definition_seals",
+    "catalog_publication_candidate_created_ats",
+    "catalog_publication_candidate_artifacts_required",
+    "catalog_publication_candidate_display_title_policy_ids",
+    "catalog_publication_candidate_artifact_policy_ids",
+    "catalog_publication_candidate_reserved_revisions",
+    "catalog_publication_candidate_analysis_ids",
+    "catalog_publication_candidate_anchors",
+)
+
+
+def _candidate_definition_rows(
+    connector: SQLiteConnector,
+    *,
+    candidate_id: bytes,
+) -> tuple[list[tuple[Any, ...]], ...]:
+    return tuple(
+        connector.fetch_all(
+            f"SELECT * FROM {table} WHERE candidate_id = %s",
+            (candidate_id,),
+        )
+        for table in _CANDIDATE_DEFINITION_DELETE_ORDER
+    )
+
+
+def _advance_to_cleanup_phase(
+    connector: SQLiteConnector,
+    gate: GateLease,
+    cycle: CleanupCycle,
+    target_phase: str,
+) -> CleanupBatchResult:
+    generation = 1
+    for attempt in range(64):
+        result = _advance(
+            connector,
+            gate,
+            cycle,
+            generation,
+            (attempt + 1).to_bytes(32, "big"),
+            now=3 + attempt,
+        )
+        if result.phase == target_phase and result.generation == 1:
+            assert result.row_count == 0
+            return result
+        assert result.generation is not None
+        generation = result.generation
+    raise AssertionError(f"cleanup did not reach {target_phase}")
+
+
+def _seed_prepared_artifact_family(
+    connector: SQLiteConnector,
+    *,
+    candidate_id: bytes,
+    publication_key: bytes,
+    artifact_sha256: bytes,
+    state: str,
+    include_seal: bool = True,
+) -> None:
+    statements: list[tuple[str, tuple[object, ...]]] = [
+        (
+            "INSERT INTO catalog_prepared_artifact_anchors "
+            "(candidate_id, publication_key) VALUES (%s, %s)",
+            (candidate_id, publication_key),
+        ),
+        (
+            "INSERT INTO catalog_prepared_artifact_sha256s "
+            "(candidate_id, publication_key, artifact_sha256) VALUES (%s, %s, %s)",
+            (candidate_id, publication_key, artifact_sha256),
+        ),
+        (
+            "INSERT INTO catalog_prepared_artifact_storage_codec_versions "
+            "(candidate_id, publication_key, storage_codec_version) "
+            "VALUES (%s, %s, 1)",
+            (candidate_id, publication_key),
+        ),
+        (
+            "INSERT INTO catalog_prepared_artifact_storage_generations "
+            "(candidate_id, publication_key, storage_generation) VALUES (%s, %s, 7)",
+            (candidate_id, publication_key),
+        ),
+        (
+            "INSERT INTO catalog_prepared_artifact_protection_tokens "
+            "(candidate_id, publication_key, protection_token) VALUES (%s, %s, %s)",
+            (candidate_id, publication_key, b"t" * 184),
+        ),
+        (
+            "INSERT INTO catalog_prepared_artifact_states "
+            "(candidate_id, publication_key, state) VALUES (%s, %s, %s)",
+            (candidate_id, publication_key, state),
+        ),
+    ]
+    if include_seal:
+        statements.append(
+            (
+                "INSERT INTO catalog_prepared_artifact_seals "
+                "(candidate_id, publication_key) VALUES (%s, %s)",
+                (candidate_id, publication_key),
+            )
+        )
+    _fixture_rows(connector, statements)
+
+
+def _prepared_artifact_family_rows(
+    connector: SQLiteConnector,
+    *,
+    candidate_id: bytes,
+    publication_key: bytes,
+) -> tuple[list[tuple[Any, ...]], ...]:
+    return tuple(
+        connector.fetch_all(
+            f"SELECT * FROM {table} "
+            "WHERE candidate_id = %s AND publication_key = %s",
+            (candidate_id, publication_key),
+        )
+        for table in (
+            "catalog_prepared_artifact_seals",
+            "catalog_prepared_artifact_states",
+            "catalog_prepared_artifact_protection_tokens",
+            "catalog_prepared_artifact_storage_generations",
+            "catalog_prepared_artifact_storage_codec_versions",
+            "catalog_prepared_artifact_sha256s",
+            "catalog_prepared_artifact_anchors",
+        )
+    )
+
+
+def _seed_artifact_semantic_input_family(
+    connector: SQLiteConnector,
+    *,
+    artifact_semantics_sha256: bytes,
+) -> None:
+    components = tuple(bytes((index,)) * 32 for index in range(1, 7))
+    _fixture_rows(
+        connector,
+        [
+            (
+                "INSERT INTO catalog_artifact_semantic_input_anchors "
+                "(artifact_semantics_sha256) VALUES (%s)",
+                (artifact_semantics_sha256,),
+            ),
+            (
+                "INSERT INTO catalog_artifact_semantic_source_manifest_sha256s "
+                "(artifact_semantics_sha256, source_manifest_component_sha256) "
+                "VALUES (%s, %s)",
+                (artifact_semantics_sha256, components[0]),
+            ),
+            (
+                "INSERT INTO catalog_artifact_semantic_member_plan_sha256s "
+                "(artifact_semantics_sha256, member_plan_component_sha256) "
+                "VALUES (%s, %s)",
+                (artifact_semantics_sha256, components[1]),
+            ),
+            (
+                "INSERT INTO catalog_artifact_semantic_effective_content_sha256s "
+                "(artifact_semantics_sha256, effective_content_component_sha256) "
+                "VALUES (%s, %s)",
+                (artifact_semantics_sha256, components[2]),
+            ),
+            (
+                "INSERT INTO catalog_artifact_semantic_selected_sha256s "
+                "(artifact_semantics_sha256, selected_component_sha256) "
+                "VALUES (%s, %s)",
+                (artifact_semantics_sha256, components[3]),
+            ),
+            (
+                "INSERT INTO catalog_artifact_semantic_owner_sha256s "
+                "(artifact_semantics_sha256, owner_component_sha256) "
+                "VALUES (%s, %s)",
+                (artifact_semantics_sha256, components[4]),
+            ),
+            (
+                "INSERT INTO catalog_artifact_semantic_policy_sha256s "
+                "(artifact_semantics_sha256, policy_component_sha256) "
+                "VALUES (%s, %s)",
+                (artifact_semantics_sha256, components[5]),
+            ),
+            (
+                "INSERT INTO catalog_artifact_semantic_input_identities "
+                "(source_manifest_component_sha256, member_plan_component_sha256, "
+                "effective_content_component_sha256, selected_component_sha256, "
+                "owner_component_sha256, policy_component_sha256, "
+                "artifact_semantics_sha256) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (*components, artifact_semantics_sha256),
+            ),
+            (
+                "INSERT INTO catalog_artifact_semantic_input_seals "
+                "(artifact_semantics_sha256) VALUES (%s)",
+                (artifact_semantics_sha256,),
+            ),
+        ],
+    )
+
+
+def _artifact_semantic_input_family_rows(
+    connector: SQLiteConnector,
+    *,
+    artifact_semantics_sha256: bytes,
+) -> tuple[list[tuple[Any, ...]], ...]:
+    return tuple(
+        connector.fetch_all(
+            f"SELECT * FROM {table} WHERE artifact_semantics_sha256 = %s",
+            (artifact_semantics_sha256,),
+        )
+        for table in (
+            "catalog_artifact_semantic_input_seals",
+            "catalog_artifact_semantic_input_identities",
+            "catalog_artifact_semantic_source_manifest_sha256s",
+            "catalog_artifact_semantic_member_plan_sha256s",
+            "catalog_artifact_semantic_effective_content_sha256s",
+            "catalog_artifact_semantic_selected_sha256s",
+            "catalog_artifact_semantic_owner_sha256s",
+            "catalog_artifact_semantic_policy_sha256s",
+            "catalog_artifact_semantic_input_anchors",
+        )
+    )
+
+
+def _source_build_discovery_rows(
+    connector: SQLiteConnector,
+) -> tuple[list[tuple[object, ...]], ...]:
+    return tuple(
+        connector.fetch_all(query)
+        for query in (
+            "SELECT * FROM catalog_source_build_discovery_anchors",
+            "SELECT * FROM catalog_source_build_discovery_scan_attempts",
+            "SELECT * FROM catalog_source_build_discovery_gallery_counts",
+            "SELECT * FROM catalog_source_build_discovery_tree_observation_sha256s",
+            "SELECT * FROM catalog_source_build_discovery_completed_ats",
+            "SELECT * FROM catalog_source_build_discovery_seals",
+        )
+    )
+
+
+def _analysis_run_family_rows(
+    connector: SQLiteConnector,
+    analysis_id: bytes,
+) -> tuple[list[tuple[Any, ...]], ...]:
+    return tuple(
+        connector.fetch_all(
+            f"SELECT * FROM {table} WHERE analysis_id = %s",
+            (analysis_id,),
+        )
+        for table in (
+            "catalog_analysis_run_completed_ats",
+            "catalog_analysis_run_descriptor_seals",
+            "catalog_analysis_run_identities",
+            "catalog_analysis_run_started_ats",
+            "catalog_analysis_run_input_manifest_sha256s",
+            "catalog_analysis_run_policy_ids",
+            "catalog_analysis_run_build_ids",
+            "catalog_analysis_run_states",
+            "catalog_analysis_run_anchors",
+        )
+    )
+
+
+def _observation_vertical_rows(
+    connector: SQLiteConnector,
+) -> tuple[list[tuple[object, ...]], ...]:
+    return tuple(
+        connector.fetch_all(query)
+        for query in (
+            "SELECT * FROM catalog_gallery_observation_directory_anchors",
+            "SELECT * FROM catalog_gallery_observation_directory_entry_counts",
+            "SELECT * FROM catalog_gallery_observation_directory_observation_sha256s",
+            "SELECT * FROM catalog_gallery_observation_directory_seals",
+            "SELECT * FROM catalog_gallery_observation_stat_anchors",
+            "SELECT * FROM catalog_gallery_observation_stat_file_counts",
+            "SELECT * FROM catalog_gallery_observation_stat_byte_counts",
+            "SELECT * FROM catalog_gallery_observation_stat_seals",
+            "SELECT * FROM catalog_gallery_observation_scan_anchors",
+            "SELECT * FROM catalog_gallery_observation_scan_observation_sha256s",
+            "SELECT * FROM catalog_gallery_observation_scan_observation_versions",
+            "SELECT * FROM catalog_gallery_observation_scan_source_file_counts",
+            "SELECT * FROM catalog_gallery_observation_scan_seals",
+            "SELECT * FROM catalog_gallery_observation_file_filesystem_anchors",
+            "SELECT * FROM catalog_gallery_observation_file_filesystem_devices",
+            "SELECT * FROM catalog_gallery_observation_file_filesystem_inodes",
+            "SELECT * FROM catalog_gallery_observation_file_filesystem_modified_nses",
+            "SELECT * FROM catalog_gallery_observation_file_filesystem_changed_nses",
+            "SELECT * FROM catalog_gallery_observation_file_filesystem_seals",
+        )
+    )
 
 
 def test_content_blob_sweep_is_bounded_replayable_and_reusable(tmp_path: Path) -> None:
@@ -220,8 +1000,7 @@ def test_content_blob_sweep_is_bounded_replayable_and_reusable(tmp_path: Path) -
         (
             CleanupTargetKind.FILE_NAME_IDENTITY,
             "catalog_file_name_identities",
-            "INSERT INTO catalog_file_name_identities "
-            "(file_key, name_bytes, file_role) VALUES (%s, %s, %s)",
+            None,
             (bytes((9,)) + b"n" * 31, b"001.jpg", b"CONTENT"),
             bytes((9,)) + b"n" * 31,
         ),
@@ -229,15 +1008,12 @@ def test_content_blob_sweep_is_bounded_replayable_and_reusable(tmp_path: Path) -
             CleanupTargetKind.PUBLICATION_IDENTITY,
             "catalog_publication_identities",
             "INSERT INTO catalog_publication_identities "
-            "(publication_key, publication_id, gid, artifact_name) "
-            "VALUES (%s, %s, %s, %s)",
+            "(publication_key, gid) VALUES (%s, %s)",
             (
-                bytes((9,)) + b"p" * 31,
-                b"urn:h2h:gallery:9",
+                identity.publication_key(9),
                 9,
-                b"h2h-9.cbz",
             ),
-            bytes((9,)) + b"p" * 31,
+            identity.publication_key(9),
         ),
     ),
 )
@@ -245,20 +1021,117 @@ def test_leaf_identity_strategies_delete_only_their_fixed_shard(
     tmp_path: Path,
     kind: CleanupTargetKind,
     table: str,
-    insert_sql: str,
+    insert_sql: str | None,
     values: tuple[object, ...],
     key: bytes,
 ) -> None:
     connector = _database(tmp_path / f"{kind.value}.sqlite3")
     try:
         gate = _exclusive(connector)
-        connector.execute(insert_sql, values)
-        cycle = _begin(connector, gate, kind, 9, max_rows=8)
+        if kind is CleanupTargetKind.FILE_NAME_IDENTITY:
+            seed_file_name_identity(
+                connector,
+                file_key=key,
+                name_bytes=cast(bytes, values[1]),
+                file_role=cast(bytes, values[2]),
+            )
+        else:
+            assert insert_sql is not None
+            connector.execute(
+                "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
+                "VALUES (%s, 0)",
+                (values[1],),
+            )
+            connector.execute(insert_sql, values)
+        cycle = _begin(connector, gate, kind, key[0], max_rows=8)
         first = _advance(connector, gate, cycle, 1, b"d" * 32, now=3)
         assert first.row_count == 1 and first.cursor == key
         completed = _advance(connector, gate, cycle, 2, b"e" * 32, now=4)
         assert completed.cycle_complete and completed.deleted_count == 1
         assert connector.fetch_all(f"SELECT * FROM {table}") == []
+    finally:
+        connector.close()
+
+
+def test_publication_selection_retains_its_derived_publication_identity(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "publication-selection-retention.sqlite3")
+    try:
+        gid = 17
+        publication_key = identity.publication_key(gid)
+        candidate_id = bytes((17,)) + b"c" * 15
+        connector.execute(
+            "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
+            "VALUES (%s, 0)",
+            (gid,),
+        )
+        connector.execute(
+            "INSERT INTO catalog_publication_identities (publication_key, gid) "
+            "VALUES (%s, %s)",
+            (publication_key, gid),
+        )
+        _seed_cleanup_candidate(connector, candidate_id=candidate_id)
+        _fixture_rows(
+            connector,
+            [
+                (
+                    "INSERT INTO catalog_publication_selections "
+                    "(candidate_id, gallery_id, publication_key) VALUES (%s, %s, %s)",
+                    (candidate_id, 1, publication_key),
+                )
+            ],
+        )
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_IDENTITY,
+            publication_key[0],
+            max_rows=8,
+        )
+        results = _drain(connector, gate, cycle)
+        assert results[-1].deleted_count == 0
+        assert connector.fetch_one(
+            "SELECT gid FROM catalog_publication_identities "
+            "WHERE publication_key = %s",
+            (publication_key,),
+        ) == (gid,)
+    finally:
+        connector.close()
+
+
+def test_publication_identity_retains_its_gid_upload_time(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "publication-upload-time-retention.sqlite3")
+    try:
+        gid = 23
+        publication_key = identity.publication_key(gid)
+        connector.execute(
+            "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
+            "VALUES (%s, 123)",
+            (gid,),
+        )
+        connector.execute(
+            "INSERT INTO catalog_publication_identities (publication_key, gid) "
+            "VALUES (%s, %s)",
+            (publication_key, gid),
+        )
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.GALLERY_UPLOAD_TIME,
+            gid % 256,
+            max_rows=8,
+        )
+        results = _drain(connector, gate, cycle)
+        assert results[-1].deleted_count == 0
+        assert connector.fetch_one(
+            "SELECT upload_time FROM catalog_gallery_upload_times WHERE gid = %s",
+            (gid,),
+        ) == (123,)
     finally:
         connector.close()
 
@@ -324,26 +1197,44 @@ def test_all_fifteen_static_strategies_match_the_closed_phase_registry(
         CleanupTargetKind.SOURCE_BUILD: (
             "SB_CANONICAL_UPLOAD",
             "SB_GALLERY",
+            "SB_DISCOVERY_SEAL",
+            "SB_DISCOVERY_VALUES",
+            "SB_DISCOVERY_ANCHOR",
             "SB_SATELLITES",
             "SB_GENERATION",
             "SB_ROOT",
         ),
         CleanupTargetKind.ANALYSIS_RUN: (
-            "AR_BATCH",
-            "AR_SEALS",
+            "AR_BATCH_SEAL",
+            "AR_BATCH_VALUES",
+            "AR_BATCH_ANCHOR",
+            "AR_COMPONENT_SEAL",
+            "AR_COMPONENT_VALUES",
+            "AR_COMPONENT_ANCHOR",
             "AR_OVERLAY",
             "AR_EVIDENCE",
-            "AR_CHECKPOINT",
+            "AR_EXCLUSION_VALUES",
+            "AR_EXCLUSION_ANCHOR",
+            "AR_CHECKPOINT_SEAL",
+            "AR_CHECKPOINT_VALUES",
+            "AR_CHECKPOINT_ANCHOR",
             "AR_ANCESTRY",
-            "AR_LINKS",
+            "AR_BASELINE",
+            "AR_BINDINGS",
+            "AR_DESCRIPTOR",
+            "AR_RUN_VALUES",
             "AR_ROOT",
         ),
         CleanupTargetKind.PUBLICATION_CANDIDATE: (
-            "PC_DELTAS",
+            "PC_SEALS",
+            "PC_PREPARED_VALUES",
+            "PC_PREPARED_ANCHOR",
             "PC_INPUT",
-            "PC_SELECTION",
-            "PC_BATCH",
-            "PC_CHECKPOINT",
+            "PC_BATCH_VALUES",
+            "PC_BATCH_ANCHOR",
+            "PC_CHECKPOINT_SEAL",
+            "PC_CHECKPOINT_VALUES",
+            "PC_CHECKPOINT_ANCHOR",
             "PC_BASES",
             "PC_ROOT",
         ),
@@ -364,7 +1255,15 @@ def test_all_fifteen_static_strategies_match_the_closed_phase_registry(
             "GO_STAGING_CLAIM",
             "GO_STAGING_ROOT",
             "GO_FACTS",
+            "GO_FILESYSTEM_SEAL",
+            "GO_FILESYSTEM_VALUES",
+            "GO_FILESYSTEM_ANCHOR",
             "GO_FILES",
+            "GO_METADATA_SEAL",
+            "GO_METADATA_VALUES",
+            "GO_OBSERVATION_FACT_SEALS",
+            "GO_OBSERVATION_FACT_VALUES",
+            "GO_OBSERVATION_FACT_ANCHORS",
             "GO_DESCRIPTOR",
             "GO_ROOT",
         ),
@@ -379,7 +1278,6 @@ def test_all_fifteen_static_strategies_match_the_closed_phase_registry(
         ),
         CleanupTargetKind.ARTIFACT_BLOB: (
             "AB_LOCATIONS",
-            "AB_IDENTITIES",
             "AB_ROOT",
         ),
         CleanupTargetKind.CANONICAL_VALUE: (
@@ -401,8 +1299,11 @@ def test_all_fifteen_static_strategies_match_the_closed_phase_registry(
         CleanupTargetKind.PUBLICATION_IDENTITY: ("PI_ROOT",),
         CleanupTargetKind.GALLERY_IDENTITY: (
             "GI_OBSERVATION_ALLOCATOR",
+            "GI_SOURCE_NAME_ACCESS",
             "GI_ROOT",
         ),
+        CleanupTargetKind.SOURCE_GALLERY_NAME_GID: ("SNG_ROOT",),
+        CleanupTargetKind.GALLERY_UPLOAD_TIME: ("GUT_ROOT",),
         CleanupTargetKind.CANONICAL_VALUE_UPLOAD: ("CVU_ROOT",),
         CleanupTargetKind.HASH_CACHE_OBSERVATION: ("HC_FILE", "HC_ROOT"),
     }
@@ -423,6 +1324,134 @@ def test_all_fifteen_static_strategies_match_the_closed_phase_registry(
         connector.close()
 
 
+def test_first_vertical_batch_cleanup_is_exactly_child_first() -> None:
+    source = cleanup_module._STATIC_PLANS[CleanupTargetKind.SOURCE_BUILD].phases
+    assert tuple(spec.table for spec in source["SB_GALLERY"])[2:] == (
+        "catalog_build_manifest_seals",
+        "catalog_build_manifest_manifest_sha256s",
+        "catalog_build_manifest_file_counts",
+        "catalog_build_manifest_byte_counts",
+        "catalog_build_manifest_anchors",
+        "catalog_source_build_galleries",
+    )
+    assert tuple(spec.table for spec in source["SB_DISCOVERY_SEAL"]) == (
+        "catalog_source_build_discovery_seals",
+    )
+    assert tuple(spec.table for spec in source["SB_DISCOVERY_VALUES"]) == (
+        "catalog_source_build_discovery_scan_attempts",
+        "catalog_source_build_discovery_gallery_counts",
+        "catalog_source_build_discovery_tree_observation_sha256s",
+        "catalog_source_build_discovery_completed_ats",
+    )
+    assert tuple(spec.table for spec in source["SB_DISCOVERY_ANCHOR"]) == (
+        "catalog_source_build_discovery_anchors",
+    )
+    assert source["SB_ROOT"][0].delete_sql == (
+        "DELETE FROM catalog_source_build_sealed_ats WHERE build_id = %s",
+        "DELETE FROM catalog_source_build_descriptor_seals WHERE build_id = %s",
+        "DELETE FROM catalog_source_build_states WHERE build_id = %s",
+        "DELETE FROM catalog_source_build_created_ats WHERE build_id = %s",
+        "DELETE FROM catalog_source_build_manifest_policy_ids WHERE build_id = %s",
+        "DELETE FROM catalog_source_build_scope_keys WHERE build_id = %s",
+        "DELETE FROM catalog_source_build_anchors WHERE build_id = %s",
+    )
+
+    canonical = cleanup_module._STATIC_PLANS[CleanupTargetKind.CANONICAL_VALUE].phases
+    assert tuple(spec.table for spec in canonical["CV_DICTIONARY"]) == (
+        "catalog_source_scope_anchors",
+        "catalog_source_locator_identity",
+        "catalog_tag_term_anchors",
+        "catalog_source_snapshot_manifest_identity_anchors",
+        "catalog_artifact_policies",
+        "catalog_artifact_semantic_input_anchors",
+    )
+    source_scope = canonical["CV_DICTIONARY"][0]
+    assert source_scope.primary_key == ("scope_key",)
+    assert (
+        "JOIN catalog_source_scope_source_root_sha256s AS scope_root"
+        in source_scope.source
+    )
+    assert source_scope.delete_sql == (
+        "DELETE FROM catalog_source_scope_seals WHERE scope_key = %s",
+        "DELETE FROM catalog_source_scope_identities WHERE scope_key = %s",
+        "DELETE FROM catalog_source_scope_identity_policy_versions "
+        "WHERE scope_key = %s",
+        "DELETE FROM catalog_source_scope_source_providers WHERE scope_key = %s",
+        "DELETE FROM catalog_source_scope_source_root_sha256s WHERE scope_key = %s",
+        "DELETE FROM catalog_source_scope_anchors WHERE scope_key = %s",
+    )
+    tag_term = canonical["CV_DICTIONARY"][2]
+    assert tag_term.delete_sql == (
+        "DELETE FROM catalog_tag_term_seals WHERE tag_id = %s",
+        "DELETE FROM catalog_tag_term_identities WHERE tag_id = %s",
+        "DELETE FROM catalog_tag_term_anchors WHERE tag_id = %s",
+    )
+    assert tuple(spec.table for spec in canonical["CV_SEMANTIC_LINK"]) == (
+        "catalog_artifact_policy_semantics_seals",
+        "catalog_artifact_policy_semantics_identities",
+        "catalog_artifact_policy_semantics_producer_fingerprint_sha256s",
+        "catalog_artifact_policy_semantics_max_image_short_sides",
+        "catalog_artifact_policy_semantics_artifact_algorithm_versions",
+        "catalog_artifact_policy_semantics_anchors",
+    )
+    assert canonical["CV_DICTIONARY"][-1].delete_sql == (
+        "DELETE FROM catalog_artifact_semantic_input_seals "
+        "WHERE artifact_semantics_sha256 = %s",
+        "DELETE FROM catalog_artifact_semantic_input_identities "
+        "WHERE artifact_semantics_sha256 = %s",
+        "DELETE FROM catalog_artifact_semantic_source_manifest_sha256s "
+        "WHERE artifact_semantics_sha256 = %s",
+        "DELETE FROM catalog_artifact_semantic_member_plan_sha256s "
+        "WHERE artifact_semantics_sha256 = %s",
+        "DELETE FROM catalog_artifact_semantic_effective_content_sha256s "
+        "WHERE artifact_semantics_sha256 = %s",
+        "DELETE FROM catalog_artifact_semantic_selected_sha256s "
+        "WHERE artifact_semantics_sha256 = %s",
+        "DELETE FROM catalog_artifact_semantic_owner_sha256s "
+        "WHERE artifact_semantics_sha256 = %s",
+        "DELETE FROM catalog_artifact_semantic_policy_sha256s "
+        "WHERE artifact_semantics_sha256 = %s",
+        "DELETE FROM catalog_artifact_semantic_input_anchors "
+        "WHERE artifact_semantics_sha256 = %s",
+    )
+
+    observation = cleanup_module._STATIC_PLANS[
+        CleanupTargetKind.GALLERY_OBSERVATION
+    ].phases
+    assert tuple(spec.table for spec in observation["GO_FILESYSTEM_SEAL"]) == (
+        "catalog_gallery_observation_file_filesystem_seals",
+    )
+    assert tuple(spec.table for spec in observation["GO_FILESYSTEM_VALUES"]) == (
+        "catalog_gallery_observation_file_filesystem_devices",
+        "catalog_gallery_observation_file_filesystem_inodes",
+        "catalog_gallery_observation_file_filesystem_modified_nses",
+        "catalog_gallery_observation_file_filesystem_changed_nses",
+    )
+    assert tuple(spec.table for spec in observation["GO_FILESYSTEM_ANCHOR"]) == (
+        "catalog_gallery_observation_file_filesystem_anchors",
+    )
+    assert tuple(spec.table for spec in observation["GO_OBSERVATION_FACT_SEALS"]) == (
+        "catalog_gallery_observation_directory_seals",
+        "catalog_gallery_observation_stat_seals",
+        "catalog_gallery_observation_scan_seals",
+    )
+    assert tuple(spec.table for spec in observation["GO_OBSERVATION_FACT_VALUES"]) == (
+        "catalog_gallery_observation_directory_entry_counts",
+        "catalog_gallery_observation_directory_observation_sha256s",
+        "catalog_gallery_observation_stat_file_counts",
+        "catalog_gallery_observation_stat_byte_counts",
+        "catalog_gallery_observation_scan_observation_sha256s",
+        "catalog_gallery_observation_scan_observation_versions",
+        "catalog_gallery_observation_scan_source_file_counts",
+    )
+    assert tuple(spec.table for spec in observation["GO_OBSERVATION_FACT_ANCHORS"]) == (
+        "catalog_gallery_observation_metadata_anchors",
+        "catalog_gallery_observation_directory_anchors",
+        "catalog_gallery_observation_stat_anchors",
+        "catalog_gallery_observation_scan_anchors",
+    )
+
+
 def test_source_analysis_and_candidate_strategies_delete_child_first(
     tmp_path: Path,
 ) -> None:
@@ -432,6 +1461,14 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
 
         build_id = bytes((17,)) + b"b" * 15
         upload_value = b"u" * 32
+        scope_key = _seed_source_build_scope(connector, discriminator=17)
+        seed_source_build(
+            connector,
+            build_id=build_id,
+            scope_key=scope_key,
+            state="ABANDONED",
+            created_at=0,
+        )
         _fixture_rows(
             connector,
             [
@@ -441,15 +1478,39 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
                     (1, 0, 1),
                 ),
                 (
-                    "INSERT INTO catalog_source_builds "
-                    "(build_id, scope_key, manifest_policy_id, state, created_at, sealed_at) "
-                    "VALUES (%s, %s, %s, 'ABANDONED', %s, NULL)",
-                    (build_id, b"s" * 32, 1, 0),
-                ),
-                (
                     "INSERT INTO operational_source_build_generations "
                     "(build_id, generation) VALUES (%s, %s)",
                     (build_id, 1),
+                ),
+                (
+                    "INSERT INTO catalog_source_build_discovery_anchors "
+                    "(build_id) VALUES (%s)",
+                    (build_id,),
+                ),
+                (
+                    "INSERT INTO catalog_source_build_discovery_scan_attempts "
+                    "(build_id, scan_attempt) VALUES (%s, %s)",
+                    (build_id, b"d" * 16),
+                ),
+                (
+                    "INSERT INTO catalog_source_build_discovery_gallery_counts "
+                    "(build_id, gallery_count) VALUES (%s, 1)",
+                    (build_id,),
+                ),
+                (
+                    "INSERT INTO catalog_source_build_discovery_tree_observation_sha256s "
+                    "(build_id, tree_observation_sha256) VALUES (%s, %s)",
+                    (build_id, b"t" * 32),
+                ),
+                (
+                    "INSERT INTO catalog_source_build_discovery_completed_ats "
+                    "(build_id, completed_at) VALUES (%s, 1)",
+                    (build_id,),
+                ),
+                (
+                    "INSERT INTO catalog_source_build_discovery_seals "
+                    "(build_id) VALUES (%s)",
+                    (build_id,),
                 ),
                 (
                     "INSERT INTO operational_canonical_value_uploads "
@@ -472,7 +1533,7 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
             connector, gate, CleanupTargetKind.SOURCE_BUILD, 17, max_rows=1
         )
         source_results = _drain(connector, gate, source_cycle)
-        assert source_results[-1].deleted_count == 5
+        assert source_results[-1].deleted_count == 11
         assert (
             connector.fetch_one(
                 "SELECT 1 FROM catalog_source_builds WHERE build_id = %s", (build_id,)
@@ -487,33 +1548,95 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
             )
             == ()
         )
+        assert _source_build_discovery_rows(connector) == ([], [], [], [], [], [])
 
         analysis_id = bytes((18,)) + b"a" * 15
+        seed_analysis_policy(connector)
+        seed_source_build(
+            connector,
+            build_id=b"z" * 16,
+            scope_key=scope_key,
+            manifest_policy_id=1,
+            state="SEALED",
+            created_at=0,
+            sealed_at=0,
+        )
+        seed_analysis_run(
+            connector,
+            analysis_id=analysis_id,
+            build_id=b"z" * 16,
+            policy_id=1,
+            input_manifest_sha256=b"m" * 32,
+            started_at=0,
+            state="ABANDONED",
+        )
         _fixture_rows(
             connector,
             [
-                (
-                    "INSERT INTO catalog_analysis_runs "
-                    "(analysis_id, build_id, policy_id, input_manifest_sha256, "
-                    "state, started_at, completed_at) "
-                    "VALUES (%s, %s, %s, %s, 'ABANDONED', %s, NULL)",
-                    (analysis_id, b"z" * 16, 1, b"m" * 32, 0),
-                ),
                 (
                     "INSERT INTO catalog_source_revision_provenance "
                     "(source_revision, analysis_id) VALUES (%s, %s)",
                     (9, analysis_id),
                 ),
                 (
-                    "INSERT INTO catalog_analysis_impacted_gid "
+                    "INSERT INTO catalog_analysis_impacted_galleries "
+                    "(analysis_id, gallery_id) VALUES (%s, %s)",
+                    (analysis_id, 1),
+                ),
+                (
+                    "INSERT INTO catalog_a_impacted_gid_anchors "
                     "(analysis_id, gid) VALUES (%s, %s)",
                     (analysis_id, 7),
                 ),
                 (
-                    "INSERT INTO catalog_analysis_checkpoints "
-                    "(analysis_id, stage, generation, cursor, processed_count, "
-                    "state, updated_at) VALUES (%s, %s, %s, %s, %s, 'OPEN', %s)",
-                    (analysis_id, b"changed_gallery", 1, b"", 0, 0),
+                    "INSERT INTO catalog_a_impacted_gid_provenance "
+                    "(analysis_id, gallery_id, gid) VALUES (%s, %s, %s)",
+                    (analysis_id, 1, 7),
+                ),
+                (
+                    "INSERT INTO catalog_a_impacted_gid_witnesses "
+                    "(analysis_id, gid, witness_gallery_id) VALUES (%s, %s, %s)",
+                    (analysis_id, 7, 1),
+                ),
+                (
+                    "INSERT INTO catalog_a_impacted_gid_seals "
+                    "(analysis_id, gid) VALUES (%s, %s)",
+                    (analysis_id, 7),
+                ),
+                (
+                    "INSERT INTO catalog_analysis_checkpoint_anchors "
+                    "(analysis_id, stage) VALUES (%s, %s)",
+                    (analysis_id, b"changed_gallery"),
+                ),
+                (
+                    "INSERT INTO catalog_analysis_checkpoint_generations "
+                    "(analysis_id, stage, generation) VALUES (%s, %s, %s)",
+                    (analysis_id, b"changed_gallery", 1),
+                ),
+                (
+                    "INSERT INTO catalog_analysis_checkpoint_cursors "
+                    "(analysis_id, stage, cursor) VALUES (%s, %s, %s)",
+                    (analysis_id, b"changed_gallery", b""),
+                ),
+                (
+                    "INSERT INTO catalog_analysis_checkpoint_processed_counts "
+                    "(analysis_id, stage, processed_count) VALUES (%s, %s, %s)",
+                    (analysis_id, b"changed_gallery", 0),
+                ),
+                (
+                    "INSERT INTO catalog_analysis_checkpoint_states "
+                    "(analysis_id, stage, state) VALUES (%s, %s, 'OPEN')",
+                    (analysis_id, b"changed_gallery"),
+                ),
+                (
+                    "INSERT INTO catalog_analysis_checkpoint_updated_ats "
+                    "(analysis_id, stage, updated_at) VALUES (%s, %s, %s)",
+                    (analysis_id, b"changed_gallery", 0),
+                ),
+                (
+                    "INSERT INTO catalog_analysis_checkpoint_seals "
+                    "(analysis_id, stage) VALUES (%s, %s)",
+                    (analysis_id, b"changed_gallery"),
                 ),
                 (
                     "INSERT INTO catalog_analysis_state_ancestry "
@@ -521,19 +1644,13 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
                     "VALUES (%s, %s, %s)",
                     (analysis_id, 0, analysis_id),
                 ),
-                (
-                    "INSERT INTO catalog_analysis_state_anchors "
-                    "(analysis_id, anchor_analysis_id, overlay_depth) "
-                    "VALUES (%s, %s, %s)",
-                    (analysis_id, analysis_id, 0),
-                ),
             ],
         )
         analysis_cycle = _begin(
             connector, gate, CleanupTargetKind.ANALYSIS_RUN, 18, max_rows=2
         )
         analysis_results = _drain(connector, gate, analysis_cycle, now=50)
-        assert analysis_results[-1].deleted_count == 6
+        assert analysis_results[-1].deleted_count == 15
         assert (
             connector.fetch_one(
                 "SELECT 1 FROM catalog_analysis_runs WHERE analysis_id = %s",
@@ -541,20 +1658,31 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
             )
             == ()
         )
+        for table in (
+            "catalog_analysis_run_completed_ats",
+            "catalog_analysis_run_descriptor_seals",
+            "catalog_analysis_run_identities",
+            "catalog_analysis_run_started_ats",
+            "catalog_analysis_run_input_manifest_sha256s",
+            "catalog_analysis_run_policy_ids",
+            "catalog_analysis_run_build_ids",
+            "catalog_analysis_run_states",
+            "catalog_analysis_run_anchors",
+        ):
+            assert (
+                connector.fetch_one(
+                    f"SELECT 1 FROM {table} WHERE analysis_id = %s",
+                    (analysis_id,),
+                )
+                == ()
+            )
 
         candidate_id = bytes((19,)) + b"c" * 15
         publication_key = b"p" * 32
+        _seed_cleanup_candidate(connector, candidate_id=candidate_id)
         _fixture_rows(
             connector,
             [
-                (
-                    "INSERT INTO catalog_publication_candidates "
-                    "(candidate_id, analysis_id, reserved_revision, channel, "
-                    "artifact_policy_id, display_title_policy_id, artifacts_required, "
-                    "state, created_at, sealed_at) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, 0, 'ABANDONED', 0, NULL)",
-                    (candidate_id, b"q" * 16, 77, b"default", 1, 1),
-                ),
                 (
                     "INSERT INTO catalog_artifact_operations "
                     "(candidate_id, publication_key, operation) "
@@ -567,10 +1695,9 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
                     (candidate_id, 2, publication_key),
                 ),
                 (
-                    "INSERT INTO catalog_publication_candidate_base_catalog "
-                    "(candidate_id, base_revision, base_catalog_generation) "
-                    "VALUES (%s, %s, %s)",
-                    (candidate_id, 1, 1),
+                    "INSERT INTO catalog_publication_candidate_base_publication_commits "
+                    "(candidate_id, base_receipt_id) VALUES (%s, %s)",
+                    (candidate_id, b"r" * 16),
                 ),
             ],
         )
@@ -582,7 +1709,7 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
             max_rows=1,
         )
         candidate_results = _drain(connector, gate, candidate_cycle, now=100)
-        assert candidate_results[-1].deleted_count == 4
+        assert candidate_results[-1].deleted_count == 11
         assert (
             connector.fetch_one(
                 "SELECT 1 FROM catalog_publication_candidates WHERE candidate_id = %s",
@@ -590,6 +1717,455 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
             )
             == ()
         )
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize("state", ("PENDING", "PREPARED"))
+def test_candidate_cleanup_retains_unresolved_protection_families(
+    tmp_path: Path,
+    state: str,
+) -> None:
+    connector = _database(tmp_path / f"candidate-{state.lower()}-cleanup.sqlite3")
+    try:
+        candidate_id = bytes((20,)) + state.encode("ascii")[:1] * 15
+        publication_key = state.encode("ascii")[:1] * 32
+        artifact_sha256 = state.encode("ascii")[-1:] * 32
+        _seed_cleanup_candidate(connector, candidate_id=candidate_id)
+        _seed_prepared_artifact_family(
+            connector,
+            candidate_id=candidate_id,
+            publication_key=publication_key,
+            artifact_sha256=artifact_sha256,
+            state=state,
+        )
+        before = _prepared_artifact_family_rows(
+            connector,
+            candidate_id=candidate_id,
+            publication_key=publication_key,
+        )
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_CANDIDATE,
+            20,
+            max_rows=32,
+        )
+        results = _drain(connector, gate, cycle)
+        assert results[-1].deleted_count == 0
+        assert connector.fetch_one(
+            "SELECT candidate_id FROM catalog_publication_candidates "
+            "WHERE candidate_id = %s",
+            (candidate_id,),
+        ) == (candidate_id,)
+        assert (
+            _prepared_artifact_family_rows(
+                connector,
+                candidate_id=candidate_id,
+                publication_key=publication_key,
+            )
+            == before
+        )
+    finally:
+        connector.close()
+
+
+def test_candidate_cleanup_deletes_committed_prepared_family_child_first(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "candidate-committed-cleanup.sqlite3")
+    try:
+        candidate_id = bytes((21,)) + b"c" * 15
+        publication_key = b"p" * 32
+        _seed_cleanup_candidate(connector, candidate_id=candidate_id)
+        _seed_prepared_artifact_family(
+            connector,
+            candidate_id=candidate_id,
+            publication_key=publication_key,
+            artifact_sha256=b"a" * 32,
+            state="COMMITTED",
+        )
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_CANDIDATE,
+            21,
+            max_rows=32,
+        )
+        family_deletes: list[str] = []
+        original_execute_affected = connector.execute_affected
+
+        def record_delete(sql: str, data: tuple[Any, ...] = ()) -> int:
+            statement = sql.lstrip()
+            if statement.startswith("DELETE FROM catalog_prepared_artifact_"):
+                family_deletes.append(statement.split()[2])
+            return original_execute_affected(sql, data)
+
+        with patch.object(connector, "execute_affected", side_effect=record_delete):
+            results = _drain(connector, gate, cycle)
+        assert family_deletes == [
+            "catalog_prepared_artifact_seals",
+            "catalog_prepared_artifact_states",
+            "catalog_prepared_artifact_protection_tokens",
+            "catalog_prepared_artifact_storage_generations",
+            "catalog_prepared_artifact_storage_codec_versions",
+            "catalog_prepared_artifact_sha256s",
+            "catalog_prepared_artifact_anchors",
+        ]
+        assert results[-1].deleted_count == 11
+        assert _prepared_artifact_family_rows(
+            connector,
+            candidate_id=candidate_id,
+            publication_key=publication_key,
+        ) == tuple([] for _ in range(7))
+    finally:
+        connector.close()
+
+
+def test_candidate_cleanup_rejects_partial_prepared_family_before_writes(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "candidate-partial-prepared.sqlite3")
+    try:
+        candidate_id = bytes((22,)) + b"c" * 15
+        publication_key = b"p" * 32
+        _seed_cleanup_candidate(connector, candidate_id=candidate_id)
+        _seed_prepared_artifact_family(
+            connector,
+            candidate_id=candidate_id,
+            publication_key=publication_key,
+            artifact_sha256=b"a" * 32,
+            state="COMMITTED",
+            include_seal=False,
+        )
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_CANDIDATE,
+            22,
+            max_rows=32,
+        )
+        family_before = _prepared_artifact_family_rows(
+            connector,
+            candidate_id=candidate_id,
+            publication_key=publication_key,
+        )
+        protocol_before = _cleanup_protocol_snapshot(connector)
+        with pytest.raises(CleanupUnavailableError, match="cleanup row changed"):
+            _advance(connector, gate, cycle, 1, b"p" * 32, now=3)
+        assert (
+            _prepared_artifact_family_rows(
+                connector,
+                candidate_id=candidate_id,
+                publication_key=publication_key,
+            )
+            == family_before
+        )
+        assert _cleanup_protocol_snapshot(connector) == protocol_before
+    finally:
+        connector.close()
+
+
+def test_candidate_prepared_value_delete_faults_roll_back_every_statement(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "candidate-prepared-delete-faults.sqlite3")
+    try:
+        candidate_id = bytes((23,)) + b"c" * 15
+        publication_key = b"p" * 32
+        _seed_cleanup_candidate(connector, candidate_id=candidate_id)
+        _seed_prepared_artifact_family(
+            connector,
+            candidate_id=candidate_id,
+            publication_key=publication_key,
+            artifact_sha256=b"a" * 32,
+            state="COMMITTED",
+        )
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_CANDIDATE,
+            23,
+            max_rows=32,
+        )
+        deleted_seal = _advance(connector, gate, cycle, 1, b"s" * 32, now=3)
+        assert deleted_seal.phase == "PC_SEALS" and deleted_seal.row_count == 1
+        transitioned = _advance(connector, gate, cycle, 2, b"t" * 32, now=4)
+        assert transitioned.phase == "PC_PREPARED_VALUES"
+        assert transitioned.generation == 1
+
+        family_before = _prepared_artifact_family_rows(
+            connector,
+            candidate_id=candidate_id,
+            publication_key=publication_key,
+        )
+        protocol_before = _cleanup_protocol_snapshot(connector)
+        value_tables = (
+            "catalog_prepared_artifact_states",
+            "catalog_prepared_artifact_protection_tokens",
+            "catalog_prepared_artifact_storage_generations",
+            "catalog_prepared_artifact_storage_codec_versions",
+            "catalog_prepared_artifact_sha256s",
+        )
+        original_execute_affected = connector.execute_affected
+        for failed_table in value_tables:
+            triggered = False
+
+            def fail_delete(
+                sql: str,
+                data: tuple[Any, ...] = (),
+                *,
+                target: str = failed_table,
+            ) -> int:
+                nonlocal triggered
+                if sql.lstrip().startswith(f"DELETE FROM {target}"):
+                    triggered = True
+                    raise RuntimeError("injected prepared family delete fault")
+                return original_execute_affected(sql, data)
+
+            with (
+                patch.object(connector, "execute_affected", side_effect=fail_delete),
+                pytest.raises(RuntimeError, match="prepared family delete fault"),
+            ):
+                _advance(connector, gate, cycle, 1, b"v" * 32, now=5)
+            assert triggered, failed_table
+            assert (
+                _prepared_artifact_family_rows(
+                    connector,
+                    candidate_id=candidate_id,
+                    publication_key=publication_key,
+                )
+                == family_before
+            )
+            assert _cleanup_protocol_snapshot(connector) == protocol_before
+    finally:
+        connector.close()
+
+
+def test_candidate_definition_cleanup_is_seal_last_reversed_and_atomic(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "candidate-definition-delete-faults.sqlite3")
+    try:
+        candidate_id = bytes((24,)) + b"c" * 15
+        _seed_cleanup_candidate(connector, candidate_id=candidate_id)
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_CANDIDATE,
+            24,
+            max_rows=32,
+        )
+        _advance_to_cleanup_phase(connector, gate, cycle, "PC_ROOT")
+        family_before = _candidate_definition_rows(
+            connector,
+            candidate_id=candidate_id,
+        )
+        assert all(rows for rows in family_before)
+        protocol_before = _cleanup_protocol_snapshot(connector)
+        original_execute_affected = connector.execute_affected
+
+        for failed_table in _CANDIDATE_DEFINITION_DELETE_ORDER:
+            triggered = False
+
+            def fail_delete(
+                sql: str,
+                data: tuple[Any, ...] = (),
+                *,
+                target: str = failed_table,
+            ) -> int:
+                nonlocal triggered
+                if sql.lstrip().startswith(f"DELETE FROM {target}"):
+                    triggered = True
+                    raise RuntimeError("injected candidate definition delete fault")
+                return original_execute_affected(sql, data)
+
+            with (
+                patch.object(connector, "execute_affected", side_effect=fail_delete),
+                pytest.raises(RuntimeError, match="candidate definition delete fault"),
+            ):
+                _advance(connector, gate, cycle, 1, b"f" * 32, now=100)
+            assert triggered, failed_table
+            assert (
+                _candidate_definition_rows(connector, candidate_id=candidate_id)
+                == family_before
+            )
+            assert _cleanup_protocol_snapshot(connector) == protocol_before
+
+        deleted: list[str] = []
+
+        def record_delete(sql: str, data: tuple[Any, ...] = ()) -> int:
+            statement = sql.lstrip()
+            if statement.startswith("DELETE FROM catalog_publication_candidate_"):
+                deleted.append(statement.split()[2])
+            return original_execute_affected(sql, data)
+
+        with patch.object(connector, "execute_affected", side_effect=record_delete):
+            result = _advance(connector, gate, cycle, 1, b"g" * 32, now=101)
+        assert result.phase == "PC_ROOT" and result.row_count == 8
+        assert tuple(deleted) == _CANDIDATE_DEFINITION_DELETE_ORDER
+        assert _candidate_definition_rows(
+            connector,
+            candidate_id=candidate_id,
+        ) == tuple([] for _ in _CANDIDATE_DEFINITION_DELETE_ORDER)
+    finally:
+        connector.close()
+
+
+def test_source_build_cleanup_explicitly_rejects_open_family(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "open-source-cleanup.sqlite3")
+    try:
+        gate = _exclusive(connector)
+        build_id = bytes((51,)) + b"o" * 15
+        scope_key = _seed_source_build_scope(connector, discriminator=51)
+        seed_source_build(
+            connector,
+            build_id=build_id,
+            scope_key=scope_key,
+            state="OPEN",
+            created_at=1,
+        )
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.SOURCE_BUILD,
+            51,
+            max_rows=32,
+        )
+        results = _drain(connector, gate, cycle)
+        assert results[-1].cycle_complete
+        assert results[-1].deleted_count == 0
+        assert connector.fetch_one(
+            "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
+            (build_id,),
+        ) == ("OPEN",)
+        assert connector.fetch_one(
+            "SELECT build_id FROM catalog_source_build_anchors WHERE build_id = %s",
+            (build_id,),
+        ) == (build_id,)
+    finally:
+        connector.close()
+
+
+def test_source_build_cleanup_deletes_sealed_build_manifest_child_first(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "sealed-source-cleanup.sqlite3")
+    try:
+        gate = _exclusive(connector)
+        build_id = bytes((52,)) + b"s" * 15
+        scope_key = _seed_source_build_scope(connector, discriminator=52)
+        seed_source_build(
+            connector,
+            build_id=build_id,
+            scope_key=scope_key,
+            state="SEALED",
+            created_at=1,
+            sealed_at=2,
+        )
+        seed_build_manifest(
+            connector,
+            build_id=build_id,
+            manifest_sha256=b"m" * 32,
+            gallery_count=0,
+            file_count=0,
+            byte_count=0,
+            computed_at=2,
+        )
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.SOURCE_BUILD,
+            52,
+            max_rows=32,
+        )
+        results = _drain(connector, gate, cycle)
+        assert results[-1].cycle_complete
+        for table in (
+            "catalog_build_manifest_seals",
+            "catalog_build_manifest_manifest_sha256s",
+            "catalog_build_manifest_file_counts",
+            "catalog_build_manifest_byte_counts",
+            "catalog_build_manifest_anchors",
+            "catalog_source_build_anchors",
+        ):
+            assert (
+                connector.fetch_all(
+                    f"SELECT 1 FROM {table} WHERE build_id = %s",
+                    (build_id,),
+                )
+                == []
+            )
+    finally:
+        connector.close()
+
+
+def test_canonical_cleanup_deletes_snapshot_manifest_family_before_identity(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "snapshot-manifest-cleanup.sqlite3")
+    try:
+        snapshot = bytes((53,)) + b"m" * 31
+        _seed_minimal_canonical_value(
+            connector,
+            value_sha256=snapshot,
+            page_sha256=b"p" * 32,
+            digest_domain=b"source_snapshot_manifest_v1",
+        )
+        seed_snapshot_manifest(
+            connector,
+            snapshot_manifest_sha256=snapshot,
+            gallery_count=0,
+            file_count=0,
+            byte_count=0,
+        )
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.CANONICAL_VALUE,
+            53,
+            max_rows=32,
+        )
+        results = _drain(connector, gate, cycle)
+        assert results[-1].cycle_complete
+        for table, key_column in (
+            (
+                "catalog_source_snapshot_manifest_identity_seals",
+                "snapshot_manifest_sha256",
+            ),
+            (
+                "catalog_source_snapshot_manifest_identity_gallery_counts",
+                "snapshot_manifest_sha256",
+            ),
+            (
+                "catalog_source_snapshot_manifest_identity_file_counts",
+                "snapshot_manifest_sha256",
+            ),
+            (
+                "catalog_source_snapshot_manifest_identity_byte_counts",
+                "snapshot_manifest_sha256",
+            ),
+            (
+                "catalog_source_snapshot_manifest_identity_anchors",
+                "snapshot_manifest_sha256",
+            ),
+            ("catalog_canonical_value_allocation_anchors", "value_sha256"),
+        ):
+            assert (
+                connector.fetch_all(
+                    f"SELECT 1 FROM {table} WHERE {key_column} = %s",
+                    (snapshot,),
+                )
+                == []
+            )
     finally:
         connector.close()
 
@@ -674,10 +2250,9 @@ def test_operational_preparation_cleanup_preserves_activated_effects(
                     )
                 ],
                 (
-                    "INSERT INTO operational_operational_activations "
-                    "(source_revision, preparation_id, operational_policy_id, activated_at) "
-                    "VALUES (1, %s, 1, 1)",
-                    (activated,),
+                    "INSERT INTO catalog_publication_commit_operational_preparations "
+                    "(receipt_id, preparation_id) VALUES (%s, %s)",
+                    (b"r" * 16, activated),
                 ),
                 (
                     "INSERT INTO operational_operational_preparation_checkpoints "
@@ -840,24 +2415,152 @@ def test_staging_compaction_and_observation_orphan_cleanup_are_separate(
                     (reused_build,),
                 ),
                 (
-                    "INSERT INTO catalog_gallery_observation_stat "
-                    "(gallery_id, observation_id, file_count, byte_count) "
-                    "VALUES (24, 2, 1, 7)",
-                    (),
-                ),
-                (
-                    "INSERT INTO catalog_gallery_observation_files "
-                    "(gallery_id, observation_id, file_no, file_key, file_sha256) "
-                    "VALUES (24, 2, 0, %s, %s)",
-                    (b"n" * 32, b"f" * 32),
-                ),
-                (
                     "INSERT INTO catalog_gallery_observations "
                     "(gallery_id, observation_id, observation_identity_sha256) "
                     "VALUES (24, 2, %s)",
                     (b"o" * 32,),
                 ),
+                (
+                    "INSERT INTO catalog_gallery_observation_stat_anchors "
+                    "(gallery_id, observation_id) VALUES (24, 2)",
+                    (),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_observation_stat_file_counts "
+                    "(gallery_id, observation_id, file_count) VALUES (24, 2, 1)",
+                    (),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_observation_stat_byte_counts "
+                    "(gallery_id, observation_id, byte_count) VALUES (24, 2, 7)",
+                    (),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_observation_stat_seals "
+                    "(gallery_id, observation_id) VALUES (24, 2)",
+                    (),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_observation_file_anchors "
+                    "(gallery_id, observation_id, file_key) VALUES (24, 2, %s)",
+                    (b"n" * 32,),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_observation_file_file_nos "
+                    "(gallery_id, observation_id, file_key, file_no) "
+                    "VALUES (24, 2, %s, 0)",
+                    (b"n" * 32,),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_observation_file_file_sha256s "
+                    "(gallery_id, observation_id, file_key, file_sha256) "
+                    "VALUES (24, 2, %s, %s)",
+                    (b"n" * 32, b"f" * 32),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_observation_file_seals "
+                    "(gallery_id, observation_id, file_key) VALUES (24, 2, %s)",
+                    (b"n" * 32,),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_observation_directory_anchors "
+                    "(gallery_id, observation_id) VALUES (24, 2)",
+                    (),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_observation_directory_entry_counts "
+                    "(gallery_id, observation_id, directory_entry_count) "
+                    "VALUES (24, 2, 1)",
+                    (),
+                ),
+                (
+                    "INSERT INTO "
+                    "catalog_gallery_observation_directory_observation_sha256s "
+                    "(gallery_id, observation_id, directory_observation_sha256) "
+                    "VALUES (24, 2, %s)",
+                    (b"d" * 32,),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_observation_directory_seals "
+                    "(gallery_id, observation_id) VALUES (24, 2)",
+                    (),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_observation_scan_anchors "
+                    "(gallery_id, observation_id) VALUES (24, 2)",
+                    (),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_observation_scan_observation_sha256s "
+                    "(gallery_id, observation_id, scan_observation_sha256) "
+                    "VALUES (24, 2, %s)",
+                    (b"s" * 32,),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_observation_scan_observation_versions "
+                    "(gallery_id, observation_id, scan_observation_version) "
+                    "VALUES (24, 2, 1)",
+                    (),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_observation_scan_source_file_counts "
+                    "(gallery_id, observation_id, source_file_count) "
+                    "VALUES (24, 2, 1)",
+                    (),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_observation_scan_seals "
+                    "(gallery_id, observation_id) VALUES (24, 2)",
+                    (),
+                ),
+                (
+                    "INSERT INTO "
+                    "catalog_gallery_observation_file_filesystem_anchors "
+                    "(gallery_id, observation_id, file_key) VALUES (24, 2, %s)",
+                    (b"n" * 32,),
+                ),
+                (
+                    "INSERT INTO "
+                    "catalog_gallery_observation_file_filesystem_devices "
+                    "(gallery_id, observation_id, file_key, device) "
+                    "VALUES (24, 2, %s, %s)",
+                    (b"n" * 32, b"1" * 8),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_observation_file_filesystem_inodes "
+                    "(gallery_id, observation_id, file_key, inode) "
+                    "VALUES (24, 2, %s, %s)",
+                    (b"n" * 32, b"2" * 8),
+                ),
+                (
+                    "INSERT INTO "
+                    "catalog_gallery_observation_file_filesystem_modified_nses "
+                    "(gallery_id, observation_id, file_key, modified_ns) "
+                    "VALUES (24, 2, %s, %s)",
+                    (b"n" * 32, b"3" * 8),
+                ),
+                (
+                    "INSERT INTO "
+                    "catalog_gallery_observation_file_filesystem_changed_nses "
+                    "(gallery_id, observation_id, file_key, changed_ns) "
+                    "VALUES (24, 2, %s, %s)",
+                    (b"n" * 32, b"4" * 8),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_observation_file_filesystem_seals "
+                    "(gallery_id, observation_id, file_key) VALUES (24, 2, %s)",
+                    (b"n" * 32,),
+                ),
             ],
+        )
+        seed_manifest_policy(connector)
+        seed_gallery_manifest(
+            connector,
+            gallery_id=24,
+            observation_id=2,
+            manifest_policy_id=1,
+            manifest_sha256=b"m" * 32,
+            computed_at=1,
         )
         observation_cycle = _begin(
             connector,
@@ -879,6 +2582,438 @@ def test_staging_compaction_and_observation_orphan_cleanup_are_separate(
             "WHERE build_id = %s AND gallery_id = 24",
             (reused_build,),
         ) == (1,)
+        vertical_rows = _observation_vertical_rows(connector)
+        assert len(vertical_rows) == 19
+        assert all(rows == [] for rows in vertical_rows)
+        for table in (
+            "catalog_gallery_manifest_seals",
+            "catalog_gallery_manifest_manifest_sha256s",
+            "catalog_gallery_manifest_computed_ats",
+            "catalog_gallery_manifest_anchors",
+        ):
+            assert (
+                connector.fetch_all(
+                    f"SELECT 1 FROM {table} WHERE gallery_id = 24 AND observation_id = 2"
+                )
+                == []
+            )
+        assert (
+            connector.fetch_all(
+                "SELECT 1 FROM catalog_gallery_observation_directories "
+                "WHERE gallery_id = 24 AND observation_id = 2"
+            )
+            == []
+        )
+        assert (
+            connector.fetch_all(
+                "SELECT 1 FROM catalog_gallery_observation_stat "
+                "WHERE gallery_id = 24 AND observation_id = 2"
+            )
+            == []
+        )
+        assert (
+            connector.fetch_all(
+                "SELECT 1 FROM catalog_gallery_observation_scans "
+                "WHERE gallery_id = 24 AND observation_id = 2"
+            )
+            == []
+        )
+        assert (
+            connector.fetch_all(
+                "SELECT 1 FROM catalog_gallery_observation_file_filesystem "
+                "WHERE gallery_id = 24 AND observation_id = 2"
+            )
+            == []
+        )
+    finally:
+        connector.close()
+
+
+def test_observation_cleanup_keeps_shared_metadata_for_other_observations_and_locations(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "metadata-reachability-cleanup.sqlite3")
+    try:
+        gate = _exclusive(connector)
+        source_name = b"shared-gallery"
+        gid = 9_001
+        _fixture_rows(
+            connector,
+            [
+                *[
+                    (
+                        "INSERT INTO catalog_gallery_observation_allocations "
+                        "(gallery_id, observation_id, allocated_at) "
+                        "VALUES (%s, %s, 0)",
+                        pair,
+                    )
+                    for pair in ((42, 1), (42, 2), (298, 1))
+                ],
+                (
+                    "INSERT INTO catalog_source_build_galleries "
+                    "(build_id, gallery_id, observation_id) VALUES (%s, 42, 2)",
+                    (b"a" * 16,),
+                ),
+                (
+                    "INSERT INTO catalog_source_build_galleries "
+                    "(build_id, gallery_id, observation_id) VALUES (%s, 298, 1)",
+                    (b"b" * 16,),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
+                    "VALUES (%s, 10)",
+                    (gid,),
+                ),
+                (
+                    "INSERT INTO catalog_source_gallery_name_gids "
+                    "(source_gallery_name, gid) VALUES (%s, %s)",
+                    (source_name, gid),
+                ),
+                *[
+                    (
+                        "INSERT INTO catalog_gallery_source_name_accesses "
+                        "(gallery_id, source_gallery_name) VALUES (%s, %s)",
+                        (gallery_id, source_name),
+                    )
+                    for gallery_id in (42, 298)
+                ],
+                *[
+                    (
+                        "INSERT INTO catalog_gallery_observation_metadata_anchors "
+                        "(gallery_id, observation_id) VALUES (%s, %s)",
+                        pair,
+                    )
+                    for pair in ((42, 1), (42, 2), (298, 1))
+                ],
+                *[
+                    (
+                        "INSERT INTO catalog_gallery_observation_download_times "
+                        "(gallery_id, observation_id, download_time) "
+                        "VALUES (%s, %s, %s)",
+                        (*pair, download_time),
+                    )
+                    for pair, download_time in (
+                        ((42, 1), 11),
+                        ((42, 2), 12),
+                        ((298, 1), 13),
+                    )
+                ],
+                *[
+                    (
+                        "INSERT INTO catalog_gallery_observation_modified_times "
+                        "(gallery_id, observation_id, modified_time) "
+                        "VALUES (%s, %s, %s)",
+                        (*pair, modified_time),
+                    )
+                    for pair, modified_time in (
+                        ((42, 1), 21),
+                        ((42, 2), 22),
+                        ((298, 1), 23),
+                    )
+                ],
+                *[
+                    (
+                        "INSERT INTO catalog_gallery_observation_metadata_seals "
+                        "(gallery_id, observation_id) VALUES (%s, %s)",
+                        pair,
+                    )
+                    for pair in ((42, 1), (42, 2), (298, 1))
+                ],
+            ],
+        )
+
+        observation_phases = cleanup_module._STATIC_PLANS[
+            CleanupTargetKind.GALLERY_OBSERVATION
+        ].phases
+        assert tuple(spec.table for spec in observation_phases["GO_METADATA_SEAL"]) == (
+            "catalog_gallery_observation_metadata_seals",
+        )
+        assert tuple(
+            spec.table for spec in observation_phases["GO_METADATA_VALUES"]
+        ) == (
+            "catalog_gallery_observation_download_times",
+            "catalog_gallery_observation_modified_times",
+        )
+        anchor_tables = tuple(
+            spec.table for spec in observation_phases["GO_OBSERVATION_FACT_ANCHORS"]
+        )
+        assert "catalog_gallery_observation_metadata_anchors" in anchor_tables
+        assert not {
+            "catalog_gallery_upload_times",
+            "catalog_source_gallery_name_gids",
+            "catalog_gallery_source_name_accesses",
+        }.intersection(
+            spec.table for specs in observation_phases.values() for spec in specs
+        )
+
+        source_name_cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.SOURCE_GALLERY_NAME_GID,
+            source_name[0],
+            max_rows=8,
+        )
+        assert _drain(connector, gate, source_name_cycle)[-1].deleted_count == 0
+        upload_time_cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.GALLERY_UPLOAD_TIME,
+            gid % 256,
+            max_rows=8,
+        )
+        assert _drain(connector, gate, upload_time_cycle)[-1].deleted_count == 0
+
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.GALLERY_OBSERVATION,
+            42,
+            max_rows=8,
+        )
+        _drain(connector, gate, cycle, now=100)
+
+        assert connector.fetch_all(
+            "SELECT gallery_id, observation_id "
+            "FROM catalog_gallery_observation_metadata_anchors "
+            "ORDER BY gallery_id, observation_id"
+        ) == [(42, 2), (298, 1)]
+        assert connector.fetch_all(
+            "SELECT gallery_id, observation_id, gid, upload_time, download_time, "
+            "modified_time FROM catalog_gallery_observation_metadata "
+            "ORDER BY gallery_id, observation_id"
+        ) == [
+            (42, 2, gid, 10, 12, 22),
+            (298, 1, gid, 10, 13, 23),
+        ]
+        assert connector.fetch_all(
+            "SELECT gid, upload_time FROM catalog_gallery_upload_times"
+        ) == [(gid, 10)]
+        assert connector.fetch_all(
+            "SELECT source_gallery_name, gid FROM catalog_source_gallery_name_gids"
+        ) == [(source_name, gid)]
+        assert connector.fetch_all(
+            "SELECT gallery_id, source_gallery_name "
+            "FROM catalog_gallery_source_name_accesses ORDER BY gallery_id"
+        ) == [(42, source_name), (298, source_name)]
+        assert connector.fetch_all(
+            "SELECT gallery_id, observation_id "
+            "FROM catalog_gallery_observation_allocations "
+            "ORDER BY gallery_id, observation_id"
+        ) == [(42, 2), (298, 1)]
+    finally:
+        connector.close()
+
+
+def test_shared_metadata_cleanup_follows_identity_name_and_gid_reachability(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "shared-metadata-cleanup-order.sqlite3")
+    try:
+        gate = _exclusive(connector)
+        source_name = b"a"
+        gid = 321
+        _fixture_rows(
+            connector,
+            [
+                (
+                    "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
+                    "VALUES (%s, 10)",
+                    (gid,),
+                ),
+                (
+                    "INSERT INTO catalog_source_gallery_name_gids "
+                    "(source_gallery_name, gid) VALUES (%s, %s)",
+                    (source_name, gid),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_identity_anchors (gallery_id) "
+                    "VALUES (65)",
+                    (),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_identity_coordinates "
+                    "(scope_key, locator_sha256, gallery_id) VALUES (%s, %s, 65)",
+                    (b"s" * 32, b"l" * 32),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_identity_gallery_keys "
+                    "(gallery_id, gallery_key) VALUES (65, %s)",
+                    (b"g" * 32,),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_identity_seals (gallery_id) "
+                    "VALUES (65)",
+                    (),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_source_name_accesses "
+                    "(gallery_id, source_gallery_name) VALUES (65, %s)",
+                    (source_name,),
+                ),
+            ],
+        )
+
+        blocked_name = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.SOURCE_GALLERY_NAME_GID,
+            source_name[0],
+            max_rows=8,
+        )
+        assert _drain(connector, gate, blocked_name)[-1].deleted_count == 0
+        blocked_upload = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.GALLERY_UPLOAD_TIME,
+            gid % 256,
+            max_rows=8,
+        )
+        assert _drain(connector, gate, blocked_upload)[-1].deleted_count == 0
+
+        identity = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.GALLERY_IDENTITY,
+            65,
+            max_rows=8,
+        )
+        assert _drain(connector, gate, identity)[-1].deleted_count == 2
+        assert (
+            connector.fetch_all("SELECT 1 FROM catalog_gallery_source_name_accesses")
+            == []
+        )
+
+        name = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.SOURCE_GALLERY_NAME_GID,
+            source_name[0],
+            max_rows=8,
+        )
+        assert _drain(connector, gate, name)[-1].deleted_count == 1
+        upload = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.GALLERY_UPLOAD_TIME,
+            gid % 256,
+            max_rows=8,
+        )
+        assert _drain(connector, gate, upload)[-1].deleted_count == 1
+        assert connector.fetch_all("SELECT 1 FROM catalog_gallery_upload_times") == []
+    finally:
+        connector.close()
+
+
+def test_gallery_identity_cleanup_retains_witness_only_partial_impact_families(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "gallery-identity-witness-retention.sqlite3")
+    try:
+        content_gallery_id = 45
+        gid_gallery_id = content_gallery_id + 256
+        _fixture_rows(
+            connector,
+            [
+                *[
+                    (
+                        "INSERT INTO catalog_gallery_identity_anchors (gallery_id) "
+                        "VALUES (%s)",
+                        (gallery_id,),
+                    )
+                    for gallery_id in (content_gallery_id, gid_gallery_id)
+                ],
+                (
+                    "INSERT INTO catalog_gallery_identity_coordinates "
+                    "(scope_key, locator_sha256, gallery_id) VALUES (%s, %s, %s)",
+                    (b"s" * 32, b"c" * 32, content_gallery_id),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_identity_coordinates "
+                    "(scope_key, locator_sha256, gallery_id) VALUES (%s, %s, %s)",
+                    (b"t" * 32, b"g" * 32, gid_gallery_id),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_identity_gallery_keys "
+                    "(gallery_id, gallery_key) VALUES (%s, %s)",
+                    (content_gallery_id, b"k" * 32),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_identity_gallery_keys "
+                    "(gallery_id, gallery_key) VALUES (%s, %s)",
+                    (gid_gallery_id, b"l" * 32),
+                ),
+                *[
+                    (
+                        "INSERT INTO catalog_gallery_identity_seals (gallery_id) "
+                        "VALUES (%s)",
+                        (gallery_id,),
+                    )
+                    for gallery_id in (content_gallery_id, gid_gallery_id)
+                ],
+                (
+                    "INSERT INTO catalog_a_impacted_content_witnesses "
+                    "(analysis_id, content_sha256, witness_gallery_id) "
+                    "VALUES (%s, %s, %s)",
+                    (b"a" * 16, b"v" * 32, content_gallery_id),
+                ),
+                (
+                    "INSERT INTO catalog_a_impacted_gid_witnesses "
+                    "(analysis_id, gid, witness_gallery_id) VALUES (%s, 9, %s)",
+                    (b"b" * 16, gid_gallery_id),
+                ),
+            ],
+        )
+        assert "catalog_a_impacted_content_witnesses" in (
+            cleanup_module._GALLERY_IDENTITY_ELIGIBILITY
+        )
+        assert "catalog_a_impacted_gid_witnesses" in (
+            cleanup_module._GALLERY_IDENTITY_ELIGIBILITY
+        )
+
+        gate = _exclusive(connector)
+        blocked_cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.GALLERY_IDENTITY,
+            content_gallery_id,
+            max_rows=32,
+        )
+        blocked = _drain(connector, gate, blocked_cycle)
+        assert blocked[-1].deleted_count == 0
+        assert connector.fetch_all(
+            "SELECT gallery_id FROM catalog_gallery_identity_anchors "
+            "WHERE MOD(gallery_id, 256) = %s ORDER BY gallery_id",
+            (content_gallery_id,),
+        ) == [(content_gallery_id,), (gid_gallery_id,)]
+
+        connector.execute(
+            "DELETE FROM catalog_a_impacted_content_witnesses "
+            "WHERE witness_gallery_id = %s",
+            (content_gallery_id,),
+        )
+        connector.execute(
+            "DELETE FROM catalog_a_impacted_gid_witnesses "
+            "WHERE witness_gallery_id = %s",
+            (gid_gallery_id,),
+        )
+        unblocked_cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.GALLERY_IDENTITY,
+            content_gallery_id,
+            max_rows=32,
+            now=200,
+        )
+        unblocked = _drain(connector, gate, unblocked_cycle, now=201)
+        assert unblocked[-1].deleted_count == 2
+        assert (
+            connector.fetch_all(
+                "SELECT gallery_id FROM catalog_gallery_identity_anchors "
+                "WHERE MOD(gallery_id, 256) = %s ORDER BY gallery_id",
+                (content_gallery_id,),
+            )
+            == []
+        )
     finally:
         connector.close()
 
@@ -962,6 +3097,944 @@ def test_foreign_owner_predecessor_blocks_staging_compaction(
         connector.close()
 
 
+def test_canonical_source_root_cleanup_waits_for_every_scope_consumer_then_deletes_family(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "canonical-source-root-retained.sqlite3")
+    try:
+        source_root = bytes((71,)) + b"r" * 31
+        _seed_minimal_canonical_value(
+            connector,
+            value_sha256=source_root,
+            page_sha256=b"R" * 32,
+            digest_domain=b"source_root_v1",
+        )
+        build_scope = seed_source_scope(
+            connector,
+            source_root_sha256=source_root,
+            identity_policy_version=1,
+        )
+        gallery_scope = seed_source_scope(
+            connector,
+            source_root_sha256=source_root,
+            identity_policy_version=2,
+        )
+        seed_manifest_policy(connector)
+        build_id = b"b" * 16
+        seed_source_build(
+            connector,
+            build_id=build_id,
+            scope_key=build_scope.scope_key,
+            state="OPEN",
+            created_at=1,
+        )
+        locator = bytes((170,)) + b"l" * 31
+        _seed_minimal_canonical_value(
+            connector,
+            value_sha256=locator,
+            page_sha256=b"L" * 32,
+            digest_domain=b"source_relative_locator_v1",
+        )
+        connector.execute(
+            "INSERT INTO catalog_source_locator_identity "
+            "(locator_sha256, source_gallery_name) VALUES (%s, %s)",
+            (locator, b"gallery-two"),
+        )
+        seed_gallery_identity(
+            connector,
+            gallery_id=1,
+            gallery_key=identity.gallery_key(gallery_scope.scope_key, locator),
+            scope_key=gallery_scope.scope_key,
+            locator_sha256=locator,
+        )
+        before = (
+            connector.fetch_all(
+                "SELECT * FROM catalog_canonical_value_allocations "
+                "WHERE value_sha256 = %s",
+                (source_root,),
+            ),
+            connector.fetch_all(
+                "SELECT * FROM catalog_canonical_value_pages WHERE value_sha256 = %s",
+                (source_root,),
+            ),
+            connector.fetch_all(
+                "SELECT * FROM catalog_canonical_value_identities "
+                "WHERE value_sha256 = %s",
+                (source_root,),
+            ),
+            _source_scope_family_rows(connector),
+        )
+        assert "catalog_source_scope_source_root_sha256s" in (
+            cleanup_module._CANONICAL_VALUE_ELIGIBILITY
+        )
+        assert "catalog_source_scopes" not in (
+            cleanup_module._CANONICAL_VALUE_ELIGIBILITY
+        )
+        assert "JOIN catalog_source_build_scope_keys build" in (
+            cleanup_module._CANONICAL_VALUE_ELIGIBILITY
+        )
+        assert "JOIN catalog_gallery_identity_coordinates gallery" in (
+            cleanup_module._CANONICAL_VALUE_ELIGIBILITY
+        )
+
+        gate = _exclusive(connector)
+        both_active_cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.CANONICAL_VALUE,
+            source_root[0],
+            max_rows=32,
+        )
+        results = _drain(connector, gate, both_active_cycle)
+        assert results[-1].cycle_complete
+        assert results[-1].deleted_count == 0
+        assert (
+            connector.fetch_all(
+                "SELECT * FROM catalog_canonical_value_allocations "
+                "WHERE value_sha256 = %s",
+                (source_root,),
+            ),
+            connector.fetch_all(
+                "SELECT * FROM catalog_canonical_value_pages WHERE value_sha256 = %s",
+                (source_root,),
+            ),
+            connector.fetch_all(
+                "SELECT * FROM catalog_canonical_value_identities "
+                "WHERE value_sha256 = %s",
+                (source_root,),
+            ),
+            _source_scope_family_rows(connector),
+        ) == before
+
+        for table in (
+            "catalog_source_build_descriptor_seals",
+            "catalog_source_build_states",
+            "catalog_source_build_created_ats",
+            "catalog_source_build_manifest_policy_ids",
+            "catalog_source_build_scope_keys",
+            "catalog_source_build_anchors",
+        ):
+            connector.execute(f"DELETE FROM {table} WHERE build_id = %s", (build_id,))
+        gallery_active_cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.CANONICAL_VALUE,
+            source_root[0],
+            max_rows=32,
+            now=200,
+        )
+        results = _drain(connector, gate, gallery_active_cycle, now=201)
+        assert results[-1].cycle_complete
+        assert results[-1].deleted_count == 0
+        assert _source_scope_family_rows(connector) == before[-1]
+
+        for table in (
+            "catalog_gallery_identity_seals",
+            "catalog_gallery_identity_gallery_keys",
+            "catalog_gallery_identity_coordinates",
+            "catalog_gallery_identity_anchors",
+        ):
+            connector.execute(f"DELETE FROM {table} WHERE gallery_id = 1")
+        unreferenced_cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.CANONICAL_VALUE,
+            source_root[0],
+            max_rows=32,
+            now=300,
+        )
+        traced: list[str] = []
+        connector.connection.set_trace_callback(traced.append)
+        results = _drain(connector, gate, unreferenced_cycle, now=301)
+        connector.connection.set_trace_callback(None)
+        assert results[-1].cycle_complete
+        # Two source-scope family candidates plus eight narrow canonical
+        # identity/page/allocation candidates are removed child-first.
+        assert results[-1].deleted_count == 10
+        assert _source_scope_family_rows(connector) == ([], [], [], [], [], [])
+        assert (
+            connector.fetch_one(
+                "SELECT 1 FROM catalog_canonical_value_allocations "
+                "WHERE value_sha256 = %s",
+                (source_root,),
+            )
+            == ()
+        )
+        assert (
+            connector.fetch_one(
+                "SELECT 1 FROM catalog_canonical_value_pages WHERE value_sha256 = %s",
+                (source_root,),
+            )
+            == ()
+        )
+        assert (
+            connector.fetch_one(
+                "SELECT 1 FROM catalog_canonical_value_identities "
+                "WHERE value_sha256 = %s",
+                (source_root,),
+            )
+            == ()
+        )
+        scope_delete_tables = (
+            "catalog_source_scope_seals",
+            "catalog_source_scope_identities",
+            "catalog_source_scope_identity_policy_versions",
+            "catalog_source_scope_source_providers",
+            "catalog_source_scope_source_root_sha256s",
+            "catalog_source_scope_anchors",
+        )
+        observed_scope_deletes = tuple(
+            table
+            for statement in traced
+            for table in scope_delete_tables
+            if statement.startswith(f"DELETE FROM {table} ")
+        )
+        assert observed_scope_deletes == scope_delete_tables * 2
+    finally:
+        connector.close()
+
+
+def test_canonical_cleanup_removes_partial_policy_family_child_first(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "canonical-partial-policy.sqlite3")
+    try:
+        policy = bytes((72,)) + b"p" * 31
+        _seed_minimal_canonical_value(
+            connector,
+            value_sha256=policy,
+            page_sha256=b"P" * 32,
+            digest_domain=b"artifact_policy_v2",
+        )
+        connector.execute(
+            "INSERT INTO catalog_artifact_policy_semantics_anchors "
+            "(policy_component_sha256) VALUES (%s)",
+            (policy,),
+        )
+        connector.execute(
+            "INSERT INTO "
+            "catalog_artifact_policy_semantics_artifact_algorithm_versions "
+            "(policy_component_sha256, artifact_algorithm_version) "
+            "VALUES (%s, 1)",
+            (policy,),
+        )
+        connector.execute(
+            "INSERT INTO catalog_artifact_policy_semantics_max_image_short_sides "
+            "(policy_component_sha256, max_image_short_side) VALUES (%s, 2048)",
+            (policy,),
+        )
+        assert tuple(
+            bool(rows) for rows in _artifact_policy_semantics_family_rows(connector)
+        ) == (
+            False,
+            False,
+            False,
+            True,
+            True,
+            True,
+        )
+
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.CANONICAL_VALUE,
+            policy[0],
+            max_rows=32,
+        )
+        results = _drain(connector, gate, cycle)
+        assert results[-1].cycle_complete
+        assert _artifact_policy_semantics_family_rows(connector) == (
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+        )
+        assert (
+            connector.fetch_one(
+                "SELECT 1 FROM catalog_canonical_value_allocations "
+                "WHERE value_sha256 = %s",
+                (policy,),
+            )
+            == ()
+        )
+    finally:
+        connector.close()
+
+
+def test_canonical_source_scope_delete_faults_roll_back_every_child_boundary(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "canonical-source-scope-faults.sqlite3")
+    try:
+        source_root = bytes((73,)) + b"r" * 31
+        _seed_minimal_canonical_value(
+            connector,
+            value_sha256=source_root,
+            page_sha256=b"T" * 32,
+            digest_domain=b"source_root_v1",
+        )
+        seed_source_scope(
+            connector,
+            source_root_sha256=source_root,
+        )
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.CANONICAL_VALUE,
+            source_root[0],
+            max_rows=32,
+        )
+        family_before = _source_scope_family_rows(connector)
+        protocol_before = _cleanup_protocol_snapshot(connector)
+        source_scope_spec = cleanup_module._STATIC_PLANS[
+            CleanupTargetKind.CANONICAL_VALUE
+        ].phases["CV_DICTIONARY"][0]
+        tables = tuple(
+            statement.split()[2] for statement in source_scope_spec.delete_sql
+        )
+        original_execute_affected = connector.execute_affected
+        for failed_table in tables:
+            triggered = False
+
+            def fail_delete(
+                sql: str,
+                data: tuple[Any, ...] = (),
+                *,
+                target: str = failed_table,
+            ) -> int:
+                nonlocal triggered
+                if sql.lstrip().startswith(f"DELETE FROM {target}"):
+                    triggered = True
+                    raise RuntimeError("injected canonical dictionary delete fault")
+                return original_execute_affected(sql, data)
+
+            with (
+                patch.object(
+                    connector,
+                    "execute_affected",
+                    side_effect=fail_delete,
+                ),
+                pytest.raises(RuntimeError, match="dictionary delete fault"),
+            ):
+                _advance(connector, gate, cycle, 1, b"d" * 32, now=20)
+            assert triggered, failed_table
+            assert _source_scope_family_rows(connector) == family_before
+            assert _cleanup_protocol_snapshot(connector) == protocol_before
+
+        committed = _advance(connector, gate, cycle, 1, b"d" * 32, now=21)
+        assert committed.row_count == 1
+        assert _source_scope_family_rows(connector) == ([], [], [], [], [], [])
+    finally:
+        connector.close()
+
+
+def test_analysis_overlay_cleanup_observes_exact_child_first_order(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "analysis-overlay-order.sqlite3")
+    try:
+        analysis_id = _seed_abandoned_analysis_for_cleanup(
+            connector,
+            discriminator=92,
+        )
+        _seed_analysis_overlay_rows(connector, analysis_id)
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.ANALYSIS_RUN,
+            analysis_id[0],
+            max_rows=32,
+        )
+        _position_analysis_cleanup_at_overlay(
+            connector,
+            gate,
+            cycle,
+            now=10,
+        )
+
+        traced: list[str] = []
+        connector.connection.set_trace_callback(traced.append)
+        overlay = _advance(
+            connector,
+            gate,
+            cycle,
+            1,
+            b"o" * 32,
+            now=20,
+        )
+        overlay_terminal = _advance(
+            connector,
+            gate,
+            cycle,
+            2,
+            b"t" * 32,
+            now=21,
+        )
+        evidence = _advance(
+            connector,
+            gate,
+            cycle,
+            1,
+            b"e" * 32,
+            now=22,
+        )
+        connector.connection.set_trace_callback(None)
+
+        expected_order = _ANALYSIS_OVERLAY_TABLES + (
+            "catalog_analysis_impacted_galleries",
+        )
+        observed_order = tuple(
+            table
+            for statement in traced
+            for table in expected_order
+            if statement.startswith(f"DELETE FROM {table} ")
+        )
+        assert observed_order == expected_order
+        assert overlay.phase == "AR_OVERLAY"
+        assert overlay.row_count == len(_ANALYSIS_OVERLAY_TABLES)
+        assert overlay_terminal.phase == "AR_EVIDENCE"
+        assert overlay_terminal.row_count == 0
+        assert evidence.phase == "AR_EVIDENCE"
+        assert evidence.row_count == 1
+        assert all(
+            row == (0,) for row in _analysis_overlay_rows(connector, analysis_id)
+        )
+        assert (
+            connector.fetch_one(
+                "SELECT 1 FROM catalog_analysis_impacted_galleries "
+                "WHERE analysis_id = %s",
+                (analysis_id,),
+            )
+            == ()
+        )
+    finally:
+        connector.connection.set_trace_callback(None)
+        connector.close()
+
+
+def test_analysis_overlay_delete_faults_roll_back_every_table_boundary(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "analysis-overlay-faults.sqlite3")
+    try:
+        analysis_id = _seed_abandoned_analysis_for_cleanup(
+            connector,
+            discriminator=93,
+        )
+        _seed_analysis_overlay_rows(connector, analysis_id)
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.ANALYSIS_RUN,
+            analysis_id[0],
+            max_rows=32,
+        )
+        _position_analysis_cleanup_at_overlay(
+            connector,
+            gate,
+            cycle,
+            now=10,
+        )
+        family_before = _analysis_overlay_rows(connector, analysis_id)
+        assert all(row == (1,) for row in family_before)
+        protocol_before = _cleanup_protocol_snapshot(connector)
+        original_execute_affected = connector.execute_affected
+
+        for failed_table in _ANALYSIS_OVERLAY_TABLES:
+            triggered = False
+
+            def fail_delete(
+                sql: str,
+                data: tuple[Any, ...] = (),
+                *,
+                target: str = failed_table,
+            ) -> int:
+                nonlocal triggered
+                if sql.lstrip().startswith(f"DELETE FROM {target} "):
+                    triggered = True
+                    raise RuntimeError("injected analysis overlay delete fault")
+                return original_execute_affected(sql, data)
+
+            with (
+                patch.object(
+                    connector,
+                    "execute_affected",
+                    side_effect=fail_delete,
+                ),
+                pytest.raises(RuntimeError, match="analysis overlay delete fault"),
+            ):
+                _advance(
+                    connector,
+                    gate,
+                    cycle,
+                    1,
+                    b"f" * 32,
+                    now=30,
+                )
+            assert triggered, failed_table
+            assert _analysis_overlay_rows(connector, analysis_id) == family_before
+            assert _cleanup_protocol_snapshot(connector) == protocol_before
+            assert connector.fetch_one(
+                "SELECT 1 FROM catalog_analysis_impacted_galleries "
+                "WHERE analysis_id = %s",
+                (analysis_id,),
+            ) == (1,)
+
+        committed = _advance(
+            connector,
+            gate,
+            cycle,
+            1,
+            b"s" * 32,
+            now=31,
+        )
+        assert committed.phase == "AR_OVERLAY"
+        assert committed.row_count == len(_ANALYSIS_OVERLAY_TABLES)
+        assert all(
+            row == (0,) for row in _analysis_overlay_rows(connector, analysis_id)
+        )
+    finally:
+        connector.close()
+
+
+def test_analysis_overlay_cleanup_removes_partial_unsealed_families(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "analysis-overlay-partial.sqlite3")
+    try:
+        analysis_id = _seed_abandoned_analysis_for_cleanup(
+            connector,
+            discriminator=94,
+        )
+        _fixture_rows(
+            connector,
+            [
+                (
+                    "INSERT INTO catalog_a_file_decision_shadow_occurrences "
+                    "(analysis_id, file_sha256, occurrence_count) "
+                    "VALUES (%s, %s, 1)",
+                    (analysis_id, b"f" * 32),
+                ),
+                (
+                    "INSERT INTO catalog_a_content_candidate_shadow_anchors "
+                    "(analysis_id, gallery_id) VALUES (%s, 7)",
+                    (analysis_id,),
+                ),
+                (
+                    "INSERT INTO catalog_a_content_owner_shadow_galleries "
+                    "(analysis_id, content_sha256, owner_gallery_id) "
+                    "VALUES (%s, %s, 7)",
+                    (analysis_id, b"c" * 32),
+                ),
+                (
+                    "INSERT INTO catalog_a_impacted_content_anchors "
+                    "(analysis_id, content_sha256) VALUES (%s, %s)",
+                    (analysis_id, b"d" * 32),
+                ),
+                (
+                    "INSERT INTO catalog_a_impacted_gid_provenance "
+                    "(analysis_id, gallery_id, gid) VALUES (%s, 7, 9)",
+                    (analysis_id,),
+                ),
+            ],
+        )
+        assert (
+            sum(
+                cast(int, row[0])
+                for row in _analysis_overlay_rows(connector, analysis_id)
+            )
+            == 5
+        )
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.ANALYSIS_RUN,
+            analysis_id[0],
+            max_rows=32,
+        )
+        _position_analysis_cleanup_at_overlay(
+            connector,
+            gate,
+            cycle,
+            now=10,
+        )
+        overlay = _advance(
+            connector,
+            gate,
+            cycle,
+            1,
+            b"p" * 32,
+            now=20,
+        )
+        assert overlay.phase == "AR_OVERLAY"
+        assert overlay.row_count == 5
+        assert all(
+            row == (0,) for row in _analysis_overlay_rows(connector, analysis_id)
+        )
+    finally:
+        connector.close()
+
+
+def test_analysis_root_compound_delete_faults_roll_back_every_member_boundary(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "analysis-root-family-faults.sqlite3")
+    try:
+        analysis_id = bytes((91,)) + b"a" * 15
+        build_id = b"R" * 16
+        scope_key = _seed_source_build_scope(connector, discriminator=91)
+        seed_analysis_policy(connector)
+        seed_source_build(
+            connector,
+            build_id=build_id,
+            scope_key=scope_key,
+            manifest_policy_id=1,
+            state="SEALED",
+            created_at=0,
+            sealed_at=0,
+        )
+        seed_analysis_run(
+            connector,
+            analysis_id=analysis_id,
+            build_id=build_id,
+            policy_id=1,
+            input_manifest_sha256=b"m" * 32,
+            started_at=0,
+            state="ABANDONED",
+        )
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.ANALYSIS_RUN,
+            analysis_id[0],
+            max_rows=32,
+        )
+        generation = 1
+        for attempt in range(18):
+            result = _advance(
+                connector,
+                gate,
+                cycle,
+                generation,
+                attempt.to_bytes(32, "big"),
+                now=3 + attempt,
+            )
+            assert not result.cycle_complete
+            if attempt < 17:
+                assert result.phase != "AR_ROOT"
+            assert result.generation is not None
+            generation = result.generation
+        assert result.phase == "AR_ROOT" and result.row_count == 0
+
+        family_before = _analysis_run_family_rows(connector, analysis_id)
+        protocol_before = _cleanup_protocol_snapshot(connector)
+        root_spec = cleanup_module._STATIC_PLANS[CleanupTargetKind.ANALYSIS_RUN].phases[
+            "AR_ROOT"
+        ][0]
+        tables = tuple(statement.split()[2] for statement in root_spec.delete_sql)
+        assert len(tables) == 9
+        original_execute_affected = connector.execute_affected
+        for failed_table in tables:
+            triggered = False
+
+            def fail_delete(
+                sql: str,
+                data: tuple[Any, ...] = (),
+                *,
+                target: str = failed_table,
+            ) -> int:
+                nonlocal triggered
+                if sql.lstrip().startswith(f"DELETE FROM {target}"):
+                    triggered = True
+                    raise RuntimeError("injected analysis family delete fault")
+                return original_execute_affected(sql, data)
+
+            with (
+                patch.object(
+                    connector,
+                    "execute_affected",
+                    side_effect=fail_delete,
+                ),
+                pytest.raises(RuntimeError, match="analysis family delete fault"),
+            ):
+                _advance(
+                    connector,
+                    gate,
+                    cycle,
+                    generation,
+                    b"f" * 32,
+                    now=30,
+                )
+            assert triggered
+            assert _analysis_run_family_rows(connector, analysis_id) == family_before
+            assert _cleanup_protocol_snapshot(connector) == protocol_before
+
+        committed = _advance(
+            connector,
+            gate,
+            cycle,
+            generation,
+            b"s" * 32,
+            now=31,
+        )
+        assert committed.phase == "AR_ROOT" and committed.row_count == 1
+        assert _analysis_run_family_rows(connector, analysis_id) == tuple(
+            [] for _table in tables
+        )
+    finally:
+        connector.close()
+
+
+def test_canonical_policy_delete_faults_roll_back_every_child_boundary(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "canonical-policy-faults.sqlite3")
+    try:
+        producer = seed_artifact_producer_fingerprint(connector)
+        policy = identity.artifact_policy_digest(
+            1,
+            2048,
+            producer.producer_fingerprint_sha256,
+        )
+        _seed_minimal_canonical_value(
+            connector,
+            value_sha256=policy,
+            page_sha256=b"U" * 32,
+            digest_domain=b"artifact_policy_v2",
+        )
+        seed_artifact_policy_semantics(
+            connector,
+            artifact_algorithm_version=1,
+            max_image_short_side=2048,
+            producer_fingerprint_sha256=producer.producer_fingerprint_sha256,
+        )
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.CANONICAL_VALUE,
+            policy[0],
+            max_rows=32,
+        )
+        dictionary = _advance(connector, gate, cycle, 1, b"c" * 32, now=20)
+        assert dictionary.phase == "CV_SEMANTIC_LINK"
+        assert dictionary.generation == 1
+        family_before = _artifact_policy_semantics_family_rows(connector)
+        protocol_before = _cleanup_protocol_snapshot(connector)
+        tables = tuple(
+            spec.table
+            for spec in cleanup_module._STATIC_PLANS[
+                CleanupTargetKind.CANONICAL_VALUE
+            ].phases["CV_SEMANTIC_LINK"]
+        )
+        original_execute_affected = connector.execute_affected
+        for failed_table in tables:
+            triggered = False
+
+            def fail_delete(
+                sql: str,
+                data: tuple[Any, ...] = (),
+                *,
+                target: str = failed_table,
+            ) -> int:
+                nonlocal triggered
+                if sql.lstrip().startswith(f"DELETE FROM {target}"):
+                    triggered = True
+                    raise RuntimeError("injected canonical semantic delete fault")
+                return original_execute_affected(sql, data)
+
+            with (
+                patch.object(
+                    connector,
+                    "execute_affected",
+                    side_effect=fail_delete,
+                ),
+                pytest.raises(RuntimeError, match="semantic delete fault"),
+            ):
+                _advance(connector, gate, cycle, 1, b"s" * 32, now=21)
+            assert triggered, failed_table
+            assert _artifact_policy_semantics_family_rows(connector) == family_before
+            assert _cleanup_protocol_snapshot(connector) == protocol_before
+
+        committed = _advance(connector, gate, cycle, 1, b"s" * 32, now=22)
+        assert committed.row_count == 6
+        assert _artifact_policy_semantics_family_rows(connector) == (
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+        )
+    finally:
+        connector.close()
+
+
+def test_canonical_semantic_family_delete_faults_roll_back_every_statement(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "canonical-semantic-family-faults.sqlite3")
+    try:
+        semantics = bytes((24,)) + b"s" * 31
+        _seed_minimal_canonical_value(
+            connector,
+            value_sha256=semantics,
+            page_sha256=b"Q" * 32,
+            digest_domain=b"artifact_semantics_v1",
+        )
+        _seed_artifact_semantic_input_family(
+            connector,
+            artifact_semantics_sha256=semantics,
+        )
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.CANONICAL_VALUE,
+            24,
+            max_rows=32,
+        )
+        family_before = _artifact_semantic_input_family_rows(
+            connector,
+            artifact_semantics_sha256=semantics,
+        )
+        protocol_before = _cleanup_protocol_snapshot(connector)
+        semantic_spec = cleanup_module._STATIC_PLANS[
+            CleanupTargetKind.CANONICAL_VALUE
+        ].phases["CV_DICTIONARY"][-1]
+        tables = tuple(statement.split()[2] for statement in semantic_spec.delete_sql)
+        assert tables == (
+            "catalog_artifact_semantic_input_seals",
+            "catalog_artifact_semantic_input_identities",
+            "catalog_artifact_semantic_source_manifest_sha256s",
+            "catalog_artifact_semantic_member_plan_sha256s",
+            "catalog_artifact_semantic_effective_content_sha256s",
+            "catalog_artifact_semantic_selected_sha256s",
+            "catalog_artifact_semantic_owner_sha256s",
+            "catalog_artifact_semantic_policy_sha256s",
+            "catalog_artifact_semantic_input_anchors",
+        )
+        original_execute_affected = connector.execute_affected
+        for failed_table in tables:
+            triggered = False
+
+            def fail_delete(
+                sql: str,
+                data: tuple[Any, ...] = (),
+                *,
+                target: str = failed_table,
+            ) -> int:
+                nonlocal triggered
+                if sql.lstrip().startswith(f"DELETE FROM {target}"):
+                    triggered = True
+                    raise RuntimeError("injected semantic family delete fault")
+                return original_execute_affected(sql, data)
+
+            with (
+                patch.object(connector, "execute_affected", side_effect=fail_delete),
+                pytest.raises(RuntimeError, match="semantic family delete fault"),
+            ):
+                _advance(connector, gate, cycle, 1, b"f" * 32, now=20)
+            assert triggered, failed_table
+            assert (
+                _artifact_semantic_input_family_rows(
+                    connector,
+                    artifact_semantics_sha256=semantics,
+                )
+                == family_before
+            )
+            assert _cleanup_protocol_snapshot(connector) == protocol_before
+
+        committed = _advance(connector, gate, cycle, 1, b"s" * 32, now=21)
+        assert committed.phase == "CV_DICTIONARY" and committed.row_count == 1
+        assert _artifact_semantic_input_family_rows(
+            connector,
+            artifact_semantics_sha256=semantics,
+        ) == tuple([] for _ in tables)
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize(
+    ("blocker_table", "blocker_sql", "blocker_parameters"),
+    (
+        (
+            "catalog_candidate_artifact_inputs",
+            "INSERT INTO catalog_candidate_artifact_inputs "
+            "(candidate_id, publication_key, artifact_semantics_sha256) "
+            "VALUES (%s, %s, %s)",
+            (b"c" * 16, b"p" * 32),
+        ),
+        (
+            "catalog_artifact_semantics_sha256s",
+            "INSERT INTO catalog_artifact_semantics_sha256s "
+            "(revision, publication_key, artifact_semantics_sha256) "
+            "VALUES (1, %s, %s)",
+            (b"p" * 32,),
+        ),
+    ),
+)
+def test_canonical_cleanup_retains_physical_artifact_semantic_consumers(
+    tmp_path: Path,
+    blocker_table: str,
+    blocker_sql: str,
+    blocker_parameters: tuple[object, ...],
+) -> None:
+    connector = _database(tmp_path / f"semantic-retained-{blocker_table}.sqlite3")
+    try:
+        semantics = bytes((26,)) + b"s" * 31
+        _seed_minimal_canonical_value(
+            connector,
+            value_sha256=semantics,
+            page_sha256=b"W" * 32,
+            digest_domain=b"artifact_semantics_v1",
+        )
+        _seed_artifact_semantic_input_family(
+            connector,
+            artifact_semantics_sha256=semantics,
+        )
+        _fixture_rows(
+            connector,
+            [(blocker_sql, (*blocker_parameters, semantics))],
+        )
+        family_before = _artifact_semantic_input_family_rows(
+            connector,
+            artifact_semantics_sha256=semantics,
+        )
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.CANONICAL_VALUE,
+            26,
+            max_rows=32,
+        )
+        results = _drain(connector, gate, cycle)
+        assert results[-1].deleted_count == 0
+        assert (
+            _artifact_semantic_input_family_rows(
+                connector,
+                artifact_semantics_sha256=semantics,
+            )
+            == family_before
+        )
+        assert connector.fetch_one(
+            "SELECT value_sha256 FROM catalog_canonical_value_allocation_anchors "
+            "WHERE value_sha256 = %s",
+            (semantics,),
+        ) == (semantics,)
+    finally:
+        connector.close()
+
+
 def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
     tmp_path: Path,
 ) -> None:
@@ -969,41 +4042,39 @@ def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
     try:
         gate = _exclusive(connector)
 
-        value = bytes((31,)) + b"v" * 31
+        source_provider = b"filesystem"
+        source_root = b"R" * 32
+        value = identity.source_scope_key("filesystem", source_root, 1)
         parent_page = b"P" * 32
         child_page = b"C" * 32
+        seed_canonical_allocation(
+            connector,
+            value_sha256=value,
+            digest_domain=b"source_root_v1",
+            byte_count=2,
+            allocated_at=0,
+        )
+        seed_canonical_page(
+            connector,
+            page_sha256=child_page,
+            value_sha256=value,
+            page_bytes=b"child",
+            level=0,
+            page_position=0,
+            subtree_item_count=1,
+        )
+        seed_canonical_page(
+            connector,
+            page_sha256=parent_page,
+            value_sha256=value,
+            page_bytes=b"parent",
+            level=1,
+            page_position=0,
+            subtree_item_count=1,
+        )
         _fixture_rows(
             connector,
             [
-                (
-                    "INSERT INTO catalog_canonical_value_allocations "
-                    "(value_sha256, digest_domain, byte_count, allocated_at) "
-                    "VALUES (%s, %s, 2, 0)",
-                    (value, b"source_root_v1"),
-                ),
-                *[
-                    (
-                        "INSERT INTO catalog_canonical_value_pages "
-                        "(page_sha256, value_sha256, page_bytes) VALUES (%s, %s, %s)",
-                        (page, value, payload),
-                    )
-                    for page, payload in (
-                        (parent_page, b"parent"),
-                        (child_page, b"child"),
-                    )
-                ],
-                *[
-                    (
-                        "INSERT INTO catalog_canonical_value_page_descriptors "
-                        "(page_sha256, value_sha256, level, page_position, "
-                        "subtree_item_count) VALUES (%s, %s, %s, %s, 1)",
-                        (page, value, level, position),
-                    )
-                    for page, level, position in (
-                        (child_page, 0, 0),
-                        (parent_page, 1, 0),
-                    )
-                ],
                 (
                     "INSERT INTO catalog_canonical_value_page_parents "
                     "(child_sha256, parent_sha256, position) VALUES (%s, %s, 0)",
@@ -1015,10 +4086,33 @@ def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
                     (value, parent_page),
                 ),
                 (
-                    "INSERT INTO catalog_source_scopes "
-                    "(scope_key, source_provider, source_root_sha256, "
-                    "identity_policy_version) VALUES (%s, %s, %s, 1)",
-                    (value, b"fixture", b"R" * 32),
+                    "INSERT INTO catalog_source_scope_anchors (scope_key) VALUES (%s)",
+                    (value,),
+                ),
+                (
+                    "INSERT INTO catalog_source_scope_source_providers "
+                    "(scope_key, source_provider) VALUES (%s, %s)",
+                    (value, source_provider),
+                ),
+                (
+                    "INSERT INTO catalog_source_scope_source_root_sha256s "
+                    "(scope_key, source_root_sha256) VALUES (%s, %s)",
+                    (value, source_root),
+                ),
+                (
+                    "INSERT INTO catalog_source_scope_identity_policy_versions "
+                    "(scope_key, identity_policy_version) VALUES (%s, 1)",
+                    (value,),
+                ),
+                (
+                    "INSERT INTO catalog_source_scope_identities "
+                    "(source_provider, source_root_sha256, identity_policy_version, "
+                    "scope_key) VALUES (%s, %s, 1, %s)",
+                    (source_provider, source_root, value),
+                ),
+                (
+                    "INSERT INTO catalog_source_scope_seals (scope_key) VALUES (%s)",
+                    (value,),
                 ),
             ],
         )
@@ -1026,7 +4120,7 @@ def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
             connector,
             gate,
             CleanupTargetKind.CANONICAL_VALUE,
-            31,
+            value[0],
             max_rows=1,
         )
         _drain(connector, gate, canonical_cycle)
@@ -1049,34 +4143,32 @@ def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
 
         page = bytes((32,)) + b"g" * 31
         child = bytes((33,)) + b"h" * 31
-        _fixture_rows(
+        seed_gallery_page_descriptor(
             connector,
-            [
-                *[
-                    (
-                        "INSERT INTO catalog_gallery_observation_pages "
-                        "(page_sha256, page_bytes) VALUES (%s, %s)",
-                        (digest, payload),
-                    )
-                    for digest, payload in ((page, b"page"), (child, b"child"))
-                ],
-                (
-                    "INSERT INTO catalog_gallery_observation_page_descriptors "
-                    "(page_sha256, component, level, subtree_item_count) "
-                    "VALUES (%s, %s, 1, 1)",
-                    (page, b"FILE"),
-                ),
-                (
-                    "INSERT INTO catalog_gallery_observation_page_key_bounds "
-                    "(page_sha256, first_key, last_key) VALUES (%s, %s, %s)",
-                    (page, b"a", b"z"),
-                ),
-                (
-                    "INSERT INTO catalog_gallery_observation_page_children "
-                    "(parent_sha256, position, child_sha256) VALUES (%s, 0, %s)",
-                    (page, child),
-                ),
-            ],
+            page_sha256=child,
+            page_bytes=b"child",
+            component=b"FILE",
+            level=0,
+            subtree_item_count=1,
+        )
+        seed_gallery_page_descriptor(
+            connector,
+            page_sha256=page,
+            page_bytes=b"page",
+            component=b"FILE",
+            level=1,
+            subtree_item_count=1,
+        )
+        seed_gallery_page_bounds(
+            connector,
+            page_sha256=page,
+            first_key=b"a",
+            last_key=b"z",
+        )
+        connector.execute(
+            "INSERT INTO catalog_gallery_observation_page_children "
+            "(parent_sha256, position, child_sha256) VALUES (%s, 0, %s)",
+            (page, child),
         )
         page_cycle = _begin(
             connector,
@@ -1102,10 +4194,24 @@ def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
             connector,
             [
                 (
-                    "INSERT INTO catalog_gallery_identities "
-                    "(gallery_id, gallery_key, scope_key, locator_sha256) "
-                    "VALUES (34, %s, %s, %s)",
-                    (b"g" * 32, b"s" * 32, b"l" * 32),
+                    "INSERT INTO catalog_gallery_identity_anchors (gallery_id) "
+                    "VALUES (34)",
+                    (),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_identity_coordinates "
+                    "(scope_key, locator_sha256, gallery_id) VALUES (%s, %s, 34)",
+                    (b"s" * 32, b"l" * 32),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_identity_gallery_keys "
+                    "(gallery_id, gallery_key) VALUES (34, %s)",
+                    (b"g" * 32,),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_identity_seals (gallery_id) "
+                    "VALUES (34)",
+                    (),
                 ),
                 (
                     "INSERT INTO operational_gallery_observation_allocators "
@@ -1126,6 +4232,13 @@ def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
         )
 
         upload = bytes((35,)) + b"u" * 31
+        seed_canonical_allocation(
+            connector,
+            value_sha256=upload,
+            digest_domain=b"source_root_v1",
+            byte_count=0,
+            allocated_at=0,
+        )
         _fixture_rows(
             connector,
             [
@@ -1139,12 +4252,6 @@ def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
                     "(singleton_id, current_generation, completed_generation, "
                     "phase, last_transition_at) VALUES (1, 6, 5, 'READY', 1)",
                     (),
-                ),
-                (
-                    "INSERT INTO catalog_canonical_value_allocations "
-                    "(value_sha256, digest_domain, byte_count, allocated_at) "
-                    "VALUES (%s, %s, 0, 0)",
-                    (upload, b"source_root_v1"),
                 ),
                 (
                     "INSERT INTO operational_canonical_value_uploads "
@@ -1178,12 +4285,6 @@ def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
                     "INSERT INTO catalog_artifact_blobs "
                     "(artifact_sha256, size_bytes) VALUES (%s, 4)",
                     (artifact,),
-                ),
-                (
-                    "INSERT INTO catalog_artifact_identity "
-                    "(artifact_id, publication_key, artifact_sha256) "
-                    "VALUES (%s, %s, %s)",
-                    (b"artifact", b"p" * 32, artifact),
                 ),
                 (
                     "INSERT INTO catalog_artifact_location "
@@ -1243,6 +4344,228 @@ def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
         connector.close()
 
 
+@pytest.mark.parametrize(
+    ("blocker_table", "blocker_sql", "blocker_parameters"),
+    (
+        (
+            "catalog_prepared_artifact_sha256s",
+            "INSERT INTO catalog_prepared_artifact_sha256s "
+            "(candidate_id, publication_key, artifact_sha256) VALUES (%s, %s, %s)",
+            (b"c" * 16, b"p" * 32),
+        ),
+        (
+            "catalog_artifact_sha256s",
+            "INSERT INTO catalog_artifact_sha256s "
+            "(revision, publication_key, artifact_sha256) VALUES (1, %s, %s)",
+            (b"p" * 32,),
+        ),
+    ),
+)
+def test_artifact_blob_cleanup_retains_every_physical_sha_fact(
+    tmp_path: Path,
+    blocker_table: str,
+    blocker_sql: str,
+    blocker_parameters: tuple[object, ...],
+) -> None:
+    connector = _database(tmp_path / f"artifact-retained-{blocker_table}.sqlite3")
+    try:
+        artifact_sha256 = bytes((25,)) + b"a" * 31
+        _fixture_rows(
+            connector,
+            [
+                (
+                    "INSERT INTO catalog_artifact_blobs "
+                    "(artifact_sha256, size_bytes) VALUES (%s, 4)",
+                    (artifact_sha256,),
+                ),
+                (
+                    "INSERT INTO catalog_artifact_location "
+                    "(artifact_sha256, artifact_locator_sha256) VALUES (%s, %s)",
+                    (artifact_sha256, b"l" * 32),
+                ),
+                (blocker_sql, (*blocker_parameters, artifact_sha256)),
+            ],
+        )
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.ARTIFACT_BLOB,
+            25,
+            max_rows=32,
+        )
+        results = _drain(connector, gate, cycle)
+        assert results[-1].deleted_count == 0
+        assert connector.fetch_one(
+            "SELECT artifact_sha256 FROM catalog_artifact_location "
+            "WHERE artifact_sha256 = %s",
+            (artifact_sha256,),
+        ) == (artifact_sha256,)
+        assert connector.fetch_one(
+            "SELECT artifact_sha256 FROM catalog_artifact_blobs "
+            "WHERE artifact_sha256 = %s",
+            (artifact_sha256,),
+        ) == (artifact_sha256,)
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize(
+    "failed_table",
+    tuple(_GALLERY_PAGE_DELETE_PHASE_BY_TABLE),
+)
+def test_gallery_page_cleanup_fault_rolls_back_its_complete_child_first_phase(
+    tmp_path: Path,
+    failed_table: str,
+) -> None:
+    connector = _database(tmp_path / "gallery-page-cleanup-fault.sqlite3")
+    try:
+        parent = bytes((80,)) + b"p" * 31
+        child = bytes((81,)) + b"c" * 31
+        _seed_cleanup_gallery_page(connector, parent=parent, child=child)
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.GALLERY_OBSERVATION_PAGE,
+            parent[0],
+            max_rows=32,
+        )
+        group = _GALLERY_PAGE_DELETE_PHASE_BY_TABLE[failed_table]
+        before = _gallery_page_group_rows(
+            connector,
+            parent=parent,
+            tables=group,
+        )
+        assert all(before)
+        original_execute_affected = connector.execute_affected
+        triggered = False
+
+        def fail_one_delete(sql: str, data: tuple[Any, ...] = ()) -> int:
+            nonlocal triggered
+            if not triggered and sql.lstrip().startswith(f"DELETE FROM {failed_table}"):
+                triggered = True
+                raise RuntimeError("injected gallery-page delete fault")
+            return original_execute_affected(sql, data)
+
+        with (
+            patch.object(
+                connector,
+                "execute_affected",
+                side_effect=fail_one_delete,
+            ),
+            pytest.raises(RuntimeError, match="gallery-page delete fault"),
+        ):
+            _drain(connector, gate, cycle)
+        assert triggered, failed_table
+        assert (
+            _gallery_page_group_rows(
+                connector,
+                parent=parent,
+                tables=group,
+            )
+            == before
+        )
+    finally:
+        connector.close()
+
+
+def test_gallery_page_cleanup_exact_delete_order_and_partial_family_support(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "gallery-page-cleanup-order.sqlite3")
+    try:
+        parent = bytes((80,)) + b"p" * 31
+        child = bytes((81,)) + b"c" * 31
+        _seed_cleanup_gallery_page(connector, parent=parent, child=child)
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.GALLERY_OBSERVATION_PAGE,
+            parent[0],
+            max_rows=32,
+        )
+        traced: list[str] = []
+        connector.connection.set_trace_callback(traced.append)
+        results = _drain(connector, gate, cycle)
+        connector.connection.set_trace_callback(None)
+        expected_order = (
+            "catalog_gallery_observation_page_children",
+            "catalog_gallery_observation_page_key_bounds_seals",
+            "catalog_gallery_observation_page_key_bounds_first_keys",
+            "catalog_gallery_observation_page_key_bounds_last_keys",
+            "catalog_gallery_observation_page_key_bounds_anchors",
+            "catalog_gallery_observation_page_descriptor_seals",
+            "catalog_gallery_observation_page_descriptor_components",
+            "catalog_gallery_observation_page_descriptor_levels",
+            "catalog_gallery_observation_page_descriptor_subtree_item_counts",
+            "catalog_gallery_observation_pages",
+            "catalog_gallery_observation_page_descriptor_anchors",
+        )
+        observed_order = tuple(
+            table
+            for statement in traced
+            for table in expected_order
+            if statement.startswith(f"DELETE FROM {table} ")
+        )
+        assert observed_order == expected_order
+        assert results[-1].deleted_count == len(expected_order)
+        assert (
+            connector.fetch_one(
+                "SELECT 1 FROM catalog_gallery_observation_page_descriptor_anchors "
+                "WHERE page_sha256 = %s",
+                (parent,),
+            )
+            == ()
+        )
+        assert connector.fetch_one(
+            "SELECT 1 FROM catalog_gallery_observation_page_descriptor_seals "
+            "WHERE page_sha256 = %s",
+            (child,),
+        ) == (1,)
+
+        partial = bytes((82,)) + b"x" * 31
+        seed_gallery_page_descriptor(
+            connector,
+            page_sha256=partial,
+            page_bytes=b"partial",
+            component=b"FILE",
+            level=0,
+            subtree_item_count=1,
+        )
+        connector.execute(
+            "INSERT INTO catalog_gallery_observation_page_key_bounds_anchors "
+            "(page_sha256) VALUES (%s)",
+            (partial,),
+        )
+        connector.execute(
+            "INSERT INTO catalog_gallery_observation_page_key_bounds_first_keys "
+            "(page_sha256, first_key) VALUES (%s, %s)",
+            (partial, b"a" * 8),
+        )
+        partial_cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.GALLERY_OBSERVATION_PAGE,
+            partial[0],
+            max_rows=32,
+            now=100,
+        )
+        partial_results = _drain(connector, gate, partial_cycle, now=101)
+        assert partial_results[-1].deleted_count == 8
+        assert (
+            connector.fetch_one(
+                "SELECT 1 FROM catalog_gallery_observation_page_descriptor_anchors "
+                "WHERE page_sha256 = %s",
+                (partial,),
+            )
+            == ()
+        )
+    finally:
+        connector.close()
+
+
 def test_live_generation_upload_incoming_page_and_redownload_roots_block(
     tmp_path: Path,
 ) -> None:
@@ -1253,6 +4576,37 @@ def test_live_generation_upload_incoming_page_and_redownload_roots_block(
         value = bytes((41,)) + b"v" * 31
         page = bytes((42,)) + b"p" * 31
         parent = bytes((43,)) + b"q" * 31
+        seed_canonical_allocation(
+            connector,
+            value_sha256=value,
+            digest_domain=b"source_root_v1",
+            byte_count=0,
+            allocated_at=0,
+        )
+        seed_gallery_page_descriptor(
+            connector,
+            page_sha256=page,
+            page_bytes=b"page",
+            component=b"FILE",
+            level=0,
+            subtree_item_count=0,
+        )
+        seed_gallery_page_descriptor(
+            connector,
+            page_sha256=parent,
+            page_bytes=b"page",
+            component=b"FILE",
+            level=1,
+            subtree_item_count=0,
+        )
+        scope_key = _seed_source_build_scope(connector, discriminator=40)
+        seed_source_build(
+            connector,
+            build_id=build,
+            scope_key=scope_key,
+            state="ABANDONED",
+            created_at=0,
+        )
         _fixture_rows(
             connector,
             [
@@ -1268,45 +4622,39 @@ def test_live_generation_upload_incoming_page_and_redownload_roots_block(
                     (),
                 ),
                 (
-                    "INSERT INTO catalog_source_builds "
-                    "(build_id, scope_key, manifest_policy_id, state, created_at, sealed_at) "
-                    "VALUES (%s, %s, 1, 'ABANDONED', 0, NULL)",
-                    (build, b"s" * 32),
-                ),
-                (
                     "INSERT INTO operational_source_build_generations "
                     "(build_id, generation) VALUES (%s, 10)",
                     (build,),
-                ),
-                (
-                    "INSERT INTO catalog_canonical_value_allocations "
-                    "(value_sha256, digest_domain, byte_count, allocated_at) "
-                    "VALUES (%s, %s, 0, 0)",
-                    (value, b"source_root_v1"),
                 ),
                 (
                     "INSERT INTO operational_canonical_value_uploads "
                     "(generation, value_sha256) VALUES (10, %s)",
                     (value,),
                 ),
-                *[
-                    (
-                        "INSERT INTO catalog_gallery_observation_pages "
-                        "(page_sha256, page_bytes) VALUES (%s, %s)",
-                        (digest, b"page"),
-                    )
-                    for digest in (page, parent)
-                ],
                 (
                     "INSERT INTO catalog_gallery_observation_page_children "
                     "(parent_sha256, position, child_sha256) VALUES (%s, 0, %s)",
                     (parent, page),
                 ),
                 (
-                    "INSERT INTO catalog_gallery_identities "
-                    "(gallery_id, gallery_key, scope_key, locator_sha256) "
-                    "VALUES (44, %s, %s, %s)",
-                    (b"g" * 32, b"x" * 32, b"l" * 32),
+                    "INSERT INTO catalog_gallery_identity_anchors (gallery_id) "
+                    "VALUES (44)",
+                    (),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_identity_coordinates "
+                    "(scope_key, locator_sha256, gallery_id) VALUES (%s, %s, 44)",
+                    (b"x" * 32, b"l" * 32),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_identity_gallery_keys "
+                    "(gallery_id, gallery_key) VALUES (44, %s)",
+                    (b"g" * 32,),
+                ),
+                (
+                    "INSERT INTO catalog_gallery_identity_seals (gallery_id) "
+                    "VALUES (44)",
+                    (),
                 ),
                 (
                     "INSERT INTO operational_gallery_redownload_states "
@@ -1337,8 +4685,7 @@ def test_live_generation_upload_incoming_page_and_redownload_roots_block(
             (value,),
         ) == (1,)
         assert connector.fetch_one(
-            "SELECT 1 FROM catalog_canonical_value_allocations "
-            "WHERE value_sha256 = %s",
+            "SELECT 1 FROM catalog_canonical_value_allocations WHERE value_sha256 = %s",
             (value,),
         ) == (1,)
         assert connector.fetch_one(
@@ -1406,7 +4753,7 @@ def test_intermediate_empty_terminal_response_loss_is_zero_write_replay(
         gate = _exclusive(connector)
         cycle = _begin(connector, gate, CleanupTargetKind.ARTIFACT_BLOB, 47, max_rows=8)
         committed = _advance(connector, gate, cycle, 1, b"t" * 32, now=3)
-        assert committed.phase == "AB_IDENTITIES"
+        assert committed.phase == "AB_ROOT"
         assert committed.phase_complete and not committed.replayed
         before = (
             connector.fetch_all(
@@ -1423,7 +4770,7 @@ def test_intermediate_empty_terminal_response_loss_is_zero_write_replay(
         replay = _advance(connector, gate, cycle, 1, b"t" * 32, now=4)
         assert replay == CleanupBatchResult(
             cycle=cycle,
-            phase="AB_IDENTITIES",
+            phase="AB_ROOT",
             generation=1,
             cursor=b"",
             deleted_count=0,
@@ -1640,6 +4987,16 @@ def test_cleanup_sql_is_bounded_static_and_has_portable_mariadb_lock_shape(
     assert "SUM(" not in source
     assert "SELECT RELATION" not in source
     assert "SELECT PREDICATE" not in source
+    for removed_surface in (
+        "CATALOG_ARTIFACT_IDENTITY",
+        "FROM CATALOG_PREPARED_ARTIFACTS",
+        "FROM CATALOG_ARTIFACT_SEMANTIC_INPUT AS",
+        "FROM CATALOG_ARTIFACT_DELTA_OLD",
+        "FROM CATALOG_ARTIFACTS AS",
+        "DELETE FROM CATALOG_ARTIFACT_DELTA_OLD",
+        "DELETE FROM CATALOG_ARTIFACT_DELTA_NEW",
+    ):
+        assert removed_surface not in source
 
     connector = _database(tmp_path / "cleanup-explain.sqlite3")
     try:

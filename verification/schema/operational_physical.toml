@@ -178,7 +178,7 @@ class = "retention_protocol"
 lifecycle = "ready_and_runtime"
 check = "operational_refinement.check_cleanup_reachability_v1"
 hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
-relations = ["cleanup_target_kind", "cleanup_phase", "cleanup_job", "cleanup_checkpoint", "source_build", "publication_candidate", "analysis_snapshot_manifest", "source_revision", "catalog_revision", "canonical_value_identity", "content_blob", "operational_event_stream", "operational_preparation", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_activation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "operational_event_ack", "operational_event_ack_head"]
+relations = ["cleanup_target_kind", "cleanup_phase", "cleanup_job", "cleanup_checkpoint", "source_build_descriptor_seal", "publication_candidate_anchor", "publication_candidate_definition_seal", "publication_candidate_analysis_id", "publication_candidate_reserved_revision", "publication_candidate_artifact_policy_id", "publication_candidate_display_title_policy_id", "publication_candidate_artifacts_required", "publication_candidate_created_at", "analysis_snapshot_manifest", "source_revision", "catalog_revision", "canonical_value_identity", "content_blob", "operational_event_stream", "operational_preparation", "operational_preparation_effect_seal", "publication_candidate_preparation", "operational_activation", "operational_event", "operational_removed_gid_event", "operational_deletion_consumption_event", "operational_event_ack", "operational_event_ack_head"]
 description = "Validate the exact seeded cleanup kind/phase registry, 32-byte target-key codecs, static writer hooks, retention-root closure, blocker identities, candidate-to-preparation binding, and conditional child-first preparation cleanup: activated effects outlive control rows, bound or unactivated COMPLETE work is retained, and ABANDONED invisible streams leave no orphan."
 
 [[semantic_obligation]]
@@ -206,7 +206,7 @@ class = "transaction_protocol"
 lifecycle = "ready_and_runtime"
 check = "operational_refinement.check_gallery_staging_contract_v1"
 hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
-relations = ["identity_allocator", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_checkpoint", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_receipt", "source_build", "gallery_identity", "gallery_observation_allocation", "gallery_observation_page", "gallery_observation_page_descriptor", "gallery_observation_page_key_bounds", "gallery_observation_tree_root"]
+relations = ["identity_allocator", "gallery_observation_allocator", "gallery_observation_staging", "gallery_observation_staging_checkpoint", "gallery_observation_staging_receipt", "gallery_observation_staging_frontier", "gallery_observation_staging_match_checkpoint", "gallery_observation_staging_match_receipt", "source_build_descriptor_seal", "gallery_identity", "gallery_observation_allocation", "gallery_observation_page", "gallery_observation_page_descriptor", "gallery_observation_page_key_bounds", "gallery_observation_tree_root"]
 description = "Validate portable int63 identity allocation, live-owner staging takeover, contiguous bounded FILE/TAG/DIRECTORY/METADATA page commits with latest-receipt replay, bounded base-256 frontiers, exact FILE/DIRECTORY matching, metadata-only seal/reuse, and final visibility only after all four streams are complete and root-consistent."
 
 [[semantic_obligation]]
@@ -444,6 +444,26 @@ value = [{ attribute = "target_kind", type = "ascii_enum", text = "HASH_CACHE_OB
 invariant = "HASH_CACHE_OBSERVATION uses exactly 256 fixed shard keys; cache observations are keyset-selected and never create per-row jobs."
 
 [[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-target.source-gallery-name-gid.v1"
+columns = ["target_kind"]
+values = ["SOURCE_GALLERY_NAME_GID"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_target_kind"
+value = [{ attribute = "target_kind", type = "ascii_enum", text = "SOURCE_GALLERY_NAME_GID" }]
+invariant = "SOURCE_GALLERY_NAME_GID sweeps exact basename-to-GID facts only after no gallery access row references the basename."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-target.gallery-upload-time.v1"
+columns = ["target_kind"]
+values = ["GALLERY_UPLOAD_TIME"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_target_kind"
+value = [{ attribute = "target_kind", type = "ascii_enum", text = "GALLERY_UPLOAD_TIME" }]
+invariant = "GALLERY_UPLOAD_TIME sweeps shared GID timestamps only after neither an exact source basename nor a publication identity references the GID."
+
+[[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.sb-canonical-upload.v1"
 columns = ["phase", "target_kind", "phase_order"]
 values = ["SB_CANONICAL_UPLOAD", "SOURCE_BUILD", "1"]
@@ -456,11 +476,11 @@ invariant = "Delete only completed or strictly superseded canonical upload claim
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.sb-generation.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["SB_GENERATION", "SOURCE_BUILD", "4"]
+values = ["SB_GENERATION", "SOURCE_BUILD", "7"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "SB_GENERATION" }, { attribute = "target_kind", type = "ascii_enum", text = "SOURCE_BUILD" }, { attribute = "phase_order", type = "uint64", integer = 4 }]
+value = [{ attribute = "phase", type = "ascii_enum", text = "SB_GENERATION" }, { attribute = "target_kind", type = "ascii_enum", text = "SOURCE_BUILD" }, { attribute = "phase_order", type = "uint64", integer = 7 }]
 invariant = "SB_GENERATION deletes an inactive generation mapping only after every residual canonical upload claim."
 
 [[bootstrap_seed]]
@@ -474,174 +494,354 @@ value = [{ attribute = "phase", type = "ascii_enum", text = "SB_GALLERY" }, { at
 invariant = "SB_GALLERY is the immutable child-first phase 2 for SOURCE_BUILD cleanup."
 
 [[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-phase.sb-satellites.v1"
+id = "h2hdb.operational.cleanup-phase.sb-discovery-seal.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["SB_SATELLITES", "SOURCE_BUILD", "3"]
+values = ["SB_DISCOVERY_SEAL", "SOURCE_BUILD", "3"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "SB_SATELLITES" }, { attribute = "target_kind", type = "ascii_enum", text = "SOURCE_BUILD" }, { attribute = "phase_order", type = "uint64", integer = 3 }]
-invariant = "SB_SATELLITES is the immutable child-first phase 3 for SOURCE_BUILD cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "SB_DISCOVERY_SEAL" }, { attribute = "target_kind", type = "ascii_enum", text = "SOURCE_BUILD" }, { attribute = "phase_order", type = "uint64", integer = 3 }]
+invariant = "Delete the terminal discovery completion seal before any discovery value member."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.sb-discovery-values.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["SB_DISCOVERY_VALUES", "SOURCE_BUILD", "4"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "SB_DISCOVERY_VALUES" }, { attribute = "target_kind", type = "ascii_enum", text = "SOURCE_BUILD" }, { attribute = "phase_order", type = "uint64", integer = 4 }]
+invariant = "Delete all four PK-plus-one discovery members after their seal and before their anchor."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.sb-discovery-anchor.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["SB_DISCOVERY_ANCHOR", "SOURCE_BUILD", "5"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "SB_DISCOVERY_ANCHOR" }, { attribute = "target_kind", type = "ascii_enum", text = "SOURCE_BUILD" }, { attribute = "phase_order", type = "uint64", integer = 5 }]
+invariant = "Delete the discovery anchor only after its seal and every member are absent."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.sb-satellites.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["SB_SATELLITES", "SOURCE_BUILD", "6"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "SB_SATELLITES" }, { attribute = "target_kind", type = "ascii_enum", text = "SOURCE_BUILD" }, { attribute = "phase_order", type = "uint64", integer = 6 }]
+invariant = "SB_SATELLITES deletes expected-membership, base-source, and channel facts only after the discovery family."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.sb-root.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["SB_ROOT", "SOURCE_BUILD", "5"]
+values = ["SB_ROOT", "SOURCE_BUILD", "8"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "SB_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "SOURCE_BUILD" }, { attribute = "phase_order", type = "uint64", integer = 5 }]
-invariant = "SB_ROOT is the immutable child-first phase 5 for SOURCE_BUILD cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "SB_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "SOURCE_BUILD" }, { attribute = "phase_order", type = "uint64", integer = 8 }]
+invariant = "SB_ROOT deletes the source build after every owned child and generation mapping."
 
 [[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-phase.ar-batch.v1"
+id = "h2hdb.operational.cleanup-phase.ar-batch-seal.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["AR_BATCH", "ANALYSIS_RUN", "1"]
+values = ["AR_BATCH_SEAL", "ANALYSIS_RUN", "1"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "AR_BATCH" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 1 }]
-invariant = "AR_BATCH is the immutable child-first phase 1 for ANALYSIS_RUN cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "AR_BATCH_SEAL" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 1 }]
+invariant = "AR_BATCH_SEAL removes receipt visibility before any member."
 
 [[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-phase.ar-checkpoint.v1"
+id = "h2hdb.operational.cleanup-phase.ar-batch-values.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["AR_CHECKPOINT", "ANALYSIS_RUN", "5"]
+values = ["AR_BATCH_VALUES", "ANALYSIS_RUN", "2"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "AR_CHECKPOINT" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 5 }]
-invariant = "AR_CHECKPOINT is the immutable child-first phase 5 for ANALYSIS_RUN cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "AR_BATCH_VALUES" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 2 }]
+invariant = "AR_BATCH_VALUES removes every narrow receipt member after its seal."
 
 [[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-phase.ar-seals.v1"
+id = "h2hdb.operational.cleanup-phase.ar-batch-anchor.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["AR_SEALS", "ANALYSIS_RUN", "2"]
+values = ["AR_BATCH_ANCHOR", "ANALYSIS_RUN", "3"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "AR_SEALS" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 2 }]
-invariant = "AR_SEALS is the immutable child-first phase 2 for ANALYSIS_RUN cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "AR_BATCH_ANCHOR" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 3 }]
+invariant = "AR_BATCH_ANCHOR removes receipt anchors after members."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.ar-component-seal.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["AR_COMPONENT_SEAL", "ANALYSIS_RUN", "4"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "AR_COMPONENT_SEAL" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 4 }]
+invariant = "Remove component completion visibility before either terminal-receipt fact."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.ar-component-values.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["AR_COMPONENT_VALUES", "ANALYSIS_RUN", "5"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "AR_COMPONENT_VALUES" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 5 }]
+invariant = "Remove component row-count and seal-time facts after the completion seal."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.ar-component-anchor.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["AR_COMPONENT_ANCHOR", "ANALYSIS_RUN", "6"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "AR_COMPONENT_ANCHOR" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 6 }]
+invariant = "Remove component anchors only after their facts are absent."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.ar-overlay.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["AR_OVERLAY", "ANALYSIS_RUN", "3"]
+values = ["AR_OVERLAY", "ANALYSIS_RUN", "7"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "AR_OVERLAY" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 3 }]
-invariant = "AR_OVERLAY is the immutable child-first phase 3 for ANALYSIS_RUN cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "AR_OVERLAY" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 7 }]
+invariant = "AR_OVERLAY removes analysis overlay rows after component completion facts."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.ar-evidence.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["AR_EVIDENCE", "ANALYSIS_RUN", "4"]
+values = ["AR_EVIDENCE", "ANALYSIS_RUN", "8"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "AR_EVIDENCE" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 4 }]
-invariant = "AR_EVIDENCE is the immutable child-first phase 4 for ANALYSIS_RUN cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "AR_EVIDENCE" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 8 }]
+invariant = "Remove delta visibility and remaining analysis evidence after overlays."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.ar-exclusion-values.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["AR_EXCLUSION_VALUES", "ANALYSIS_RUN", "9"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "AR_EXCLUSION_VALUES" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 9 }]
+invariant = "Remove old/new exclusion facts only after change markers and seals."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.ar-exclusion-anchor.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["AR_EXCLUSION_ANCHOR", "ANALYSIS_RUN", "10"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "AR_EXCLUSION_ANCHOR" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 10 }]
+invariant = "Remove exclusion anchors after both facts are absent."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.ar-checkpoint-seal.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["AR_CHECKPOINT_SEAL", "ANALYSIS_RUN", "11"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "AR_CHECKPOINT_SEAL" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 11 }]
+invariant = "AR_CHECKPOINT_SEAL removes checkpoint visibility before values."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.ar-checkpoint-values.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["AR_CHECKPOINT_VALUES", "ANALYSIS_RUN", "12"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "AR_CHECKPOINT_VALUES" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 12 }]
+invariant = "AR_CHECKPOINT_VALUES removes every checkpoint member after its seal."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.ar-checkpoint-anchor.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["AR_CHECKPOINT_ANCHOR", "ANALYSIS_RUN", "13"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "AR_CHECKPOINT_ANCHOR" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 13 }]
+invariant = "AR_CHECKPOINT_ANCHOR removes checkpoint anchors after values."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.ar-ancestry.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["AR_ANCESTRY", "ANALYSIS_RUN", "6"]
+values = ["AR_ANCESTRY", "ANALYSIS_RUN", "14"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "AR_ANCESTRY" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 6 }]
-invariant = "AR_ANCESTRY is the immutable child-first phase 6 for ANALYSIS_RUN cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "AR_ANCESTRY" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 14 }]
+invariant = "AR_ANCESTRY removes the endpoint view source before baseline and descriptor facts."
 
 [[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-phase.ar-links.v1"
+id = "h2hdb.operational.cleanup-phase.ar-baseline.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["AR_LINKS", "ANALYSIS_RUN", "7"]
+values = ["AR_BASELINE", "ANALYSIS_RUN", "15"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "AR_LINKS" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 7 }]
-invariant = "AR_LINKS is the immutable child-first phase 7 for ANALYSIS_RUN cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "AR_BASELINE" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 15 }]
+invariant = "Remove the run's baseline only after ancestry is absent."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.ar-bindings.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["AR_BINDINGS", "ANALYSIS_RUN", "16"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "AR_BINDINGS" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 16 }]
+invariant = "Remove inactive revision provenance and snapshot binding before the run descriptor."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.ar-descriptor.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["AR_DESCRIPTOR", "ANALYSIS_RUN", "17"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "AR_DESCRIPTOR" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 17 }]
+invariant = "Remove optional completion time and descriptor seal before mandatory run facts."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.ar-run-values.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["AR_RUN_VALUES", "ANALYSIS_RUN", "18"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "AR_RUN_VALUES" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 18 }]
+invariant = "Remove all mandatory run facts and its natural identity before the anchor."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.ar-root.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["AR_ROOT", "ANALYSIS_RUN", "8"]
+values = ["AR_ROOT", "ANALYSIS_RUN", "19"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "AR_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 8 }]
-invariant = "AR_ROOT is the immutable child-first phase 8 for ANALYSIS_RUN cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "AR_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "ANALYSIS_RUN" }, { attribute = "phase_order", type = "uint64", integer = 19 }]
+invariant = "AR_ROOT removes the analysis anchor last after terminal-state revalidation."
 
 [[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-phase.pc-deltas.v1"
+id = "h2hdb.operational.cleanup-phase.pc-seals.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["PC_DELTAS", "PUBLICATION_CANDIDATE", "1"]
+values = ["PC_SEALS", "PUBLICATION_CANDIDATE", "1"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "PC_DELTAS" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 1 }]
-invariant = "PC_DELTAS is the immutable child-first phase 1 for PUBLICATION_CANDIDATE cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "PC_SEALS" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 1 }]
+invariant = "PC_SEALS removes candidate, batch, prepared-artifact, and operation seals before their narrow members."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.pc-prepared-values.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["PC_PREPARED_VALUES", "PUBLICATION_CANDIDATE", "2"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "PC_PREPARED_VALUES" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 2 }]
+invariant = "PC_PREPARED_VALUES removes the mutable state and immutable prepared-artifact facts after the family seal."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.pc-prepared-anchor.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["PC_PREPARED_ANCHOR", "PUBLICATION_CANDIDATE", "3"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "PC_PREPARED_ANCHOR" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 3 }]
+invariant = "PC_PREPARED_ANCHOR removes prepared-artifact anchors after every satellite fact."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.pc-input.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["PC_INPUT", "PUBLICATION_CANDIDATE", "2"]
+values = ["PC_INPUT", "PUBLICATION_CANDIDATE", "4"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "PC_INPUT" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 2 }]
-invariant = "PC_INPUT is the immutable child-first phase 2 for PUBLICATION_CANDIDATE cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "PC_INPUT" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 4 }]
+invariant = "PC_INPUT removes artifact semantic inputs after every prepared-artifact child."
 
 [[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-phase.pc-selection.v1"
+id = "h2hdb.operational.cleanup-phase.pc-batch-values.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["PC_SELECTION", "PUBLICATION_CANDIDATE", "3"]
+values = ["PC_BATCH_VALUES", "PUBLICATION_CANDIDATE", "5"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "PC_SELECTION" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 3 }]
-invariant = "PC_SELECTION is the immutable child-first phase 3 for PUBLICATION_CANDIDATE cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "PC_BATCH_VALUES" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 5 }]
+invariant = "PC_BATCH_VALUES removes every receipt member after its seal."
 
 [[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-phase.pc-batch.v1"
+id = "h2hdb.operational.cleanup-phase.pc-batch-anchor.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["PC_BATCH", "PUBLICATION_CANDIDATE", "4"]
+values = ["PC_BATCH_ANCHOR", "PUBLICATION_CANDIDATE", "6"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "PC_BATCH" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 4 }]
-invariant = "PC_BATCH is the immutable child-first phase 4 for PUBLICATION_CANDIDATE cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "PC_BATCH_ANCHOR" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 6 }]
+invariant = "PC_BATCH_ANCHOR removes receipt anchors after members."
 
 [[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-phase.pc-checkpoint.v1"
+id = "h2hdb.operational.cleanup-phase.pc-checkpoint-seal.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["PC_CHECKPOINT", "PUBLICATION_CANDIDATE", "5"]
+values = ["PC_CHECKPOINT_SEAL", "PUBLICATION_CANDIDATE", "7"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "PC_CHECKPOINT" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 5 }]
-invariant = "PC_CHECKPOINT is the immutable child-first phase 5 for PUBLICATION_CANDIDATE cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "PC_CHECKPOINT_SEAL" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 7 }]
+invariant = "PC_CHECKPOINT_SEAL removes checkpoint visibility before values."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.pc-checkpoint-values.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["PC_CHECKPOINT_VALUES", "PUBLICATION_CANDIDATE", "8"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "PC_CHECKPOINT_VALUES" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 8 }]
+invariant = "PC_CHECKPOINT_VALUES removes every checkpoint member after its seal."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.pc-checkpoint-anchor.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["PC_CHECKPOINT_ANCHOR", "PUBLICATION_CANDIDATE", "9"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "PC_CHECKPOINT_ANCHOR" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 9 }]
+invariant = "PC_CHECKPOINT_ANCHOR removes checkpoint anchors after values."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.pc-bases.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["PC_BASES", "PUBLICATION_CANDIDATE", "6"]
+values = ["PC_BASES", "PUBLICATION_CANDIDATE", "10"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "PC_BASES" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 6 }]
-invariant = "PC_BASES is the immutable child-first phase 6 for PUBLICATION_CANDIDATE cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "PC_BASES" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 10 }]
+invariant = "PC_BASES removes the common base receipt before the candidate root."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.pc-root.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["PC_ROOT", "PUBLICATION_CANDIDATE", "7"]
+values = ["PC_ROOT", "PUBLICATION_CANDIDATE", "11"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "PC_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 7 }]
-invariant = "PC_ROOT is the immutable child-first phase 7 for PUBLICATION_CANDIDATE cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "PC_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "PUBLICATION_CANDIDATE" }, { attribute = "phase_order", type = "uint64", integer = 11 }]
+invariant = "PC_ROOT removes the publication candidate last."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.op-batch.v1"
@@ -784,33 +984,113 @@ value = [{ attribute = "phase", type = "ascii_enum", text = "GO_FACTS" }, { attr
 invariant = "Delete observation-local leaf facts before files and descriptors."
 
 [[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-phase.go-files.v1"
+id = "h2hdb.operational.cleanup-phase.go-filesystem-seal.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["GO_FILES", "GALLERY_OBSERVATION", "9"]
+values = ["GO_FILESYSTEM_SEAL", "GALLERY_OBSERVATION", "9"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "GO_FILES" }, { attribute = "target_kind", type = "ascii_enum", text = "GALLERY_OBSERVATION" }, { attribute = "phase_order", type = "uint64", integer = 9 }]
+value = [{ attribute = "phase", type = "ascii_enum", text = "GO_FILESYSTEM_SEAL" }, { attribute = "target_kind", type = "ascii_enum", text = "GALLERY_OBSERVATION" }, { attribute = "phase_order", type = "uint64", integer = 9 }]
+invariant = "Delete every per-file filesystem completion seal before any lstat member."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.go-filesystem-values.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["GO_FILESYSTEM_VALUES", "GALLERY_OBSERVATION", "10"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "GO_FILESYSTEM_VALUES" }, { attribute = "target_kind", type = "ascii_enum", text = "GALLERY_OBSERVATION" }, { attribute = "phase_order", type = "uint64", integer = 10 }]
+invariant = "Delete all four per-file PK-plus-one lstat members after their seal."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.go-filesystem-anchor.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["GO_FILESYSTEM_ANCHOR", "GALLERY_OBSERVATION", "11"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "GO_FILESYSTEM_ANCHOR" }, { attribute = "target_kind", type = "ascii_enum", text = "GALLERY_OBSERVATION" }, { attribute = "phase_order", type = "uint64", integer = 11 }]
+invariant = "Delete per-file filesystem anchors before their gallery_observation_file parents."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.go-files.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["GO_FILES", "GALLERY_OBSERVATION", "12"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "GO_FILES" }, { attribute = "target_kind", type = "ascii_enum", text = "GALLERY_OBSERVATION" }, { attribute = "phase_order", type = "uint64", integer = 12 }]
 invariant = "Delete files after their occurrence and filesystem children."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.go-metadata-seal.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["GO_METADATA_SEAL", "GALLERY_OBSERVATION", "13"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "GO_METADATA_SEAL" }, { attribute = "target_kind", type = "ascii_enum", text = "GALLERY_OBSERVATION" }, { attribute = "phase_order", type = "uint64", integer = 13 }]
+invariant = "Delete the completion seal before any narrow metadata value row."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.go-metadata-values.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["GO_METADATA_VALUES", "GALLERY_OBSERVATION", "14"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "GO_METADATA_VALUES" }, { attribute = "target_kind", type = "ascii_enum", text = "GALLERY_OBSERVATION" }, { attribute = "phase_order", type = "uint64", integer = 14 }]
+invariant = "Delete every PK-plus-one metadata satellite after its completion seal and before its anchor."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.go-observation-fact-seals.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["GO_OBSERVATION_FACT_SEALS", "GALLERY_OBSERVATION", "15"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "GO_OBSERVATION_FACT_SEALS" }, { attribute = "target_kind", type = "ascii_enum", text = "GALLERY_OBSERVATION" }, { attribute = "phase_order", type = "uint64", integer = 15 }]
+invariant = "Delete directory, stat, and scan completion seals before their member rows."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.go-observation-fact-values.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["GO_OBSERVATION_FACT_VALUES", "GALLERY_OBSERVATION", "16"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "GO_OBSERVATION_FACT_VALUES" }, { attribute = "target_kind", type = "ascii_enum", text = "GALLERY_OBSERVATION" }, { attribute = "phase_order", type = "uint64", integer = 16 }]
+invariant = "Delete every directory, stat, and scan PK-plus-one member after its family seal."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.go-observation-fact-anchors.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["GO_OBSERVATION_FACT_ANCHORS", "GALLERY_OBSERVATION", "17"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "GO_OBSERVATION_FACT_ANCHORS" }, { attribute = "target_kind", type = "ascii_enum", text = "GALLERY_OBSERVATION" }, { attribute = "phase_order", type = "uint64", integer = 17 }]
+invariant = "Delete metadata, directory, stat, and scan anchors only after their seals and observation-local members are absent."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.go-descriptor.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["GO_DESCRIPTOR", "GALLERY_OBSERVATION", "10"]
+values = ["GO_DESCRIPTOR", "GALLERY_OBSERVATION", "18"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "GO_DESCRIPTOR" }, { attribute = "target_kind", type = "ascii_enum", text = "GALLERY_OBSERVATION" }, { attribute = "phase_order", type = "uint64", integer = 10 }]
-invariant = "Delete tree roots and observation satellites before the final observation seal."
+value = [{ attribute = "phase", type = "ascii_enum", text = "GO_DESCRIPTOR" }, { attribute = "target_kind", type = "ascii_enum", text = "GALLERY_OBSERVATION" }, { attribute = "phase_order", type = "uint64", integer = 18 }]
+invariant = "Delete tree roots, final observation identity, and remaining observation satellites before the allocation root."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.go-root.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["GO_ROOT", "GALLERY_OBSERVATION", "11"]
+values = ["GO_ROOT", "GALLERY_OBSERVATION", "19"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "GO_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "GALLERY_OBSERVATION" }, { attribute = "phase_order", type = "uint64", integer = 11 }]
+value = [{ attribute = "phase", type = "ascii_enum", text = "GO_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "GALLERY_OBSERVATION" }, { attribute = "phase_order", type = "uint64", integer = 19 }]
 invariant = "Delete the observation allocation last; global page and page-child rows remain data-owned."
 
 [[bootstrap_seed]]
@@ -824,24 +1104,14 @@ value = [{ attribute = "phase", type = "ascii_enum", text = "AB_LOCATIONS" }, { 
 invariant = "AB_LOCATIONS is the immutable child-first phase 1 for ARTIFACT_BLOB cleanup."
 
 [[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-phase.ab-identities.v1"
-columns = ["phase", "target_kind", "phase_order"]
-values = ["AB_IDENTITIES", "ARTIFACT_BLOB", "2"]
-version = 1
-lifecycle = "building_only"
-relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "AB_IDENTITIES" }, { attribute = "target_kind", type = "ascii_enum", text = "ARTIFACT_BLOB" }, { attribute = "phase_order", type = "uint64", integer = 2 }]
-invariant = "AB_IDENTITIES is the immutable child-first phase 2 for ARTIFACT_BLOB cleanup."
-
-[[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.ab-root.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["AB_ROOT", "ARTIFACT_BLOB", "3"]
+values = ["AB_ROOT", "ARTIFACT_BLOB", "2"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "AB_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "ARTIFACT_BLOB" }, { attribute = "phase_order", type = "uint64", integer = 3 }]
-invariant = "AB_ROOT is the immutable child-first phase 3 for ARTIFACT_BLOB cleanup."
+value = [{ attribute = "phase", type = "ascii_enum", text = "AB_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "ARTIFACT_BLOB" }, { attribute = "phase_order", type = "uint64", integer = 2 }]
+invariant = "AB_ROOT removes the artifact blob after every storage-location child."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.cv-semantic-link.v1"
@@ -984,14 +1254,44 @@ value = [{ attribute = "phase", type = "ascii_enum", text = "GI_OBSERVATION_ALLO
 invariant = "Delete the empty gallery-local observation allocator after every observation allocation is gone."
 
 [[bootstrap_seed]]
-id = "h2hdb.operational.cleanup-phase.gi-root.v1"
+id = "h2hdb.operational.cleanup-phase.gi-source-name-access.v1"
 columns = ["phase", "target_kind", "phase_order"]
-values = ["GI_ROOT", "GALLERY_IDENTITY", "2"]
+values = ["GI_SOURCE_NAME_ACCESS", "GALLERY_IDENTITY", "2"]
 version = 1
 lifecycle = "building_only"
 relation = "cleanup_phase"
-value = [{ attribute = "phase", type = "ascii_enum", text = "GI_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "GALLERY_IDENTITY" }, { attribute = "phase_order", type = "uint64", integer = 2 }]
+value = [{ attribute = "phase", type = "ascii_enum", text = "GI_SOURCE_NAME_ACCESS" }, { attribute = "target_kind", type = "ascii_enum", text = "GALLERY_IDENTITY" }, { attribute = "phase_order", type = "uint64", integer = 2 }]
+invariant = "Delete the gallery-local basename access row after every sealed observation is gone and before the gallery identity root."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.gi-root.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["GI_ROOT", "GALLERY_IDENTITY", "3"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "GI_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "GALLERY_IDENTITY" }, { attribute = "phase_order", type = "uint64", integer = 3 }]
 invariant = "Delete gallery identity only after its local allocator and every retention blocker are absent."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.sng-root.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["SNG_ROOT", "SOURCE_GALLERY_NAME_GID", "1"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "SNG_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "SOURCE_GALLERY_NAME_GID" }, { attribute = "phase_order", type = "uint64", integer = 1 }]
+invariant = "Delete an exact basename-to-GID fact only after the access-path blocker recheck finds no gallery location."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.cleanup-phase.gut-root.v1"
+columns = ["phase", "target_kind", "phase_order"]
+values = ["GUT_ROOT", "GALLERY_UPLOAD_TIME", "1"]
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_phase"
+value = [{ attribute = "phase", type = "ascii_enum", text = "GUT_ROOT" }, { attribute = "target_kind", type = "ascii_enum", text = "GALLERY_UPLOAD_TIME" }, { attribute = "phase_order", type = "uint64", integer = 1 }]
+invariant = "Delete a shared GID upload timestamp only after neither a basename-to-GID row nor a publication identity references it."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.cleanup-phase.cvu-root.v1"
@@ -1273,9 +1573,33 @@ key_codec = "target_kind_tag16_u64be_zero8_v1"
 target_kind_tag_hex = "b09b8a0a89a3167806670e37a16c7f71"
 invariant = "Seed exactly 256 fixed cache-eviction sweep targets; reuse one bounded job/completion slot per shard and never create a job per cache row."
 
+[[bootstrap_seed_range]]
+id = "h2hdb.operational.cleanup-sweep.source-gallery-name-gid.v1"
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_sweep_target"
+target_kind = "SOURCE_GALLERY_NAME_GID"
+shard_start = 0
+shard_end = 255
+key_codec = "target_kind_tag16_u64be_zero8_v1"
+target_kind_tag_hex = "c976a237cd5c7f8e68b29150af31ae6f"
+invariant = "Seed exactly 256 basename byte-order shards; each sweep preserves mappings still reached by a gallery access row."
+
+[[bootstrap_seed_range]]
+id = "h2hdb.operational.cleanup-sweep.gallery-upload-time.v1"
+version = 1
+lifecycle = "building_only"
+relation = "cleanup_sweep_target"
+target_kind = "GALLERY_UPLOAD_TIME"
+shard_start = 0
+shard_end = 255
+key_codec = "target_kind_tag16_u64be_zero8_v1"
+target_kind_tag_hex = "56ec4397b9e9c240398b3e1baf1d1c75"
+invariant = "Seed exactly 256 positive-GID shards; each sweep preserves timestamps reached through any basename mapping or publication identity."
+
 [[external_stub]]
-relation = "source_build"
-table = "catalog_source_builds"
+relation = "source_build_descriptor_seal"
+table = "catalog_source_build_descriptor_seals"
 primary_key = ["build_id"]
 unique_keys = []
 [[external_stub.column]]
@@ -1285,8 +1609,78 @@ mariadb_type = "BINARY(16)"
 nullable = false
 
 [[external_stub]]
-relation = "publication_candidate"
-table = "catalog_publication_candidates"
+relation = "publication_candidate_anchor"
+table = "catalog_publication_candidate_anchors"
+primary_key = ["candidate_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "candidate_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
+nullable = false
+
+[[external_stub]]
+relation = "publication_candidate_definition_seal"
+table = "catalog_publication_candidate_definition_seals"
+primary_key = ["candidate_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "candidate_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
+nullable = false
+
+[[external_stub]]
+relation = "publication_candidate_analysis_id"
+table = "catalog_publication_candidate_analysis_ids"
+primary_key = ["candidate_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "candidate_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
+nullable = false
+[[external_stub.column]]
+name = "analysis_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
+nullable = false
+
+[[external_stub]]
+relation = "publication_candidate_artifact_policy_id"
+table = "catalog_publication_candidate_artifact_policy_ids"
+primary_key = ["candidate_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "candidate_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
+nullable = false
+[[external_stub.column]]
+name = "artifact_policy_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+
+[[external_stub]]
+relation = "publication_candidate_display_title_policy_id"
+table = "catalog_publication_candidate_display_title_policy_ids"
+primary_key = ["candidate_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "candidate_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
+nullable = false
+[[external_stub.column]]
+name = "display_title_policy_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+
+[[external_stub]]
+relation = "publication_candidate_reserved_revision"
+table = "catalog_publication_candidate_reserved_revisions"
 primary_key = ["candidate_id"]
 unique_keys = [["reserved_revision"]]
 [[external_stub.column]]
@@ -1301,8 +1695,40 @@ mariadb_type = "BIGINT UNSIGNED"
 nullable = false
 
 [[external_stub]]
+relation = "publication_candidate_artifacts_required"
+table = "catalog_publication_candidate_artifacts_required"
+primary_key = ["candidate_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "candidate_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
+nullable = false
+[[external_stub.column]]
+name = "artifacts_required"
+sqlite_type = "INTEGER"
+mariadb_type = "TINYINT UNSIGNED"
+nullable = false
+
+[[external_stub]]
+relation = "publication_candidate_created_at"
+table = "catalog_publication_candidate_created_ats"
+primary_key = ["candidate_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "candidate_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
+nullable = false
+[[external_stub.column]]
+name = "created_at"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+
+[[external_stub]]
 relation = "publication_candidate_projection_seal"
-table = "catalog_publication_candidate_projection_seal"
+table = "catalog_publication_candidate_projection_seals"
 primary_key = ["candidate_id"]
 unique_keys = []
 [[external_stub.column]]
@@ -1339,12 +1765,200 @@ mariadb_type = "BIGINT UNSIGNED"
 nullable = false
 
 [[external_stub]]
+relation = "source_revision_descriptor_seal"
+table = "catalog_source_revision_descriptor_seals"
+primary_key = ["source_revision"]
+unique_keys = []
+[[external_stub.column]]
+name = "source_revision"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+
+[[external_stub]]
+relation = "source_revision_snapshot_manifest"
+table = "catalog_source_revision_snapshot_manifests"
+primary_key = ["source_revision"]
+unique_keys = []
+[[external_stub.column]]
+name = "source_revision"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "snapshot_manifest_sha256"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(32)"
+nullable = false
+
+[[external_stub]]
 relation = "catalog_revision"
 table = "catalog_revisions"
 primary_key = ["revision"]
 unique_keys = []
 [[external_stub.column]]
 name = "revision"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+
+[[external_stub]]
+relation = "catalog_revision_descriptor_seal"
+table = "catalog_revision_descriptor_seals"
+primary_key = ["revision"]
+unique_keys = []
+[[external_stub.column]]
+name = "revision"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+
+[[external_stub]]
+relation = "publication_commit_seal"
+table = "catalog_publication_commit_seals"
+primary_key = ["receipt_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "receipt_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
+nullable = false
+
+[[external_stub]]
+relation = "publication_commit_source_revision"
+table = "catalog_publication_commit_source_revisions"
+primary_key = ["receipt_id"]
+unique_keys = [["source_revision"]]
+[[external_stub.column]]
+name = "receipt_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
+nullable = false
+[[external_stub.column]]
+name = "source_revision"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+
+[[external_stub]]
+relation = "publication_commit_operational_preparation"
+table = "catalog_publication_commit_operational_preparations"
+primary_key = ["receipt_id"]
+unique_keys = [["preparation_id"]]
+[[external_stub.column]]
+name = "receipt_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
+nullable = false
+[[external_stub.column]]
+name = "preparation_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
+nullable = false
+
+[[external_stub]]
+relation = "publication_commit_operational_policy"
+table = "catalog_publication_commit_operational_policies"
+primary_key = ["receipt_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "receipt_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
+nullable = false
+[[external_stub.column]]
+name = "operational_policy_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+
+[[external_stub]]
+relation = "publication_commit_committed_at"
+table = "catalog_publication_commit_committed_ats"
+primary_key = ["receipt_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "receipt_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
+nullable = false
+[[external_stub.column]]
+name = "committed_at"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+
+[[external_stub]]
+relation = "publication_commit_artifact_policy"
+table = "catalog_publication_commit_artifact_policies"
+primary_key = ["receipt_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "receipt_id"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(16)"
+nullable = false
+[[external_stub.column]]
+name = "artifact_policy_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+
+[[external_stub]]
+relation = "gallery_identity_anchor"
+table = "catalog_gallery_identity_anchors"
+primary_key = ["gallery_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "gallery_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+
+[[external_stub]]
+relation = "gallery_identity_coordinate"
+table = "catalog_gallery_identity_coordinates"
+primary_key = ["scope_key", "locator_sha256"]
+unique_keys = [["gallery_id"]]
+[[external_stub.column]]
+name = "scope_key"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(32)"
+nullable = false
+[[external_stub.column]]
+name = "locator_sha256"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(32)"
+nullable = false
+[[external_stub.column]]
+name = "gallery_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+
+[[external_stub]]
+relation = "gallery_identity_gallery_key"
+table = "catalog_gallery_identity_gallery_keys"
+primary_key = ["gallery_id"]
+unique_keys = [["gallery_key"]]
+[[external_stub.column]]
+name = "gallery_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "gallery_key"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(32)"
+nullable = false
+
+[[external_stub]]
+relation = "gallery_identity_seal"
+table = "catalog_gallery_identity_seals"
+primary_key = ["gallery_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "gallery_id"
 sqlite_type = "INTEGER"
 mariadb_type = "BIGINT UNSIGNED"
 nullable = false
@@ -1410,6 +2024,28 @@ nullable = false
 name = "page_bytes"
 sqlite_type = "BLOB"
 mariadb_type = "MEDIUMBLOB"
+nullable = false
+
+[[external_stub]]
+relation = "gallery_observation_page_descriptor_anchor"
+table = "catalog_gallery_observation_page_descriptor_anchors"
+primary_key = ["page_sha256"]
+unique_keys = []
+[[external_stub.column]]
+name = "page_sha256"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(32)"
+nullable = false
+
+[[external_stub]]
+relation = "gallery_observation_page_descriptor_seal"
+table = "catalog_gallery_observation_page_descriptor_seals"
+primary_key = ["page_sha256"]
+unique_keys = []
+[[external_stub.column]]
+name = "page_sha256"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(32)"
 nullable = false
 
 [[external_stub]]
@@ -1544,6 +2180,28 @@ mariadb_type = "BIGINT UNSIGNED"
 nullable = false
 
 [[external_stub]]
+relation = "canonical_value_allocation_anchor"
+table = "catalog_canonical_value_allocation_anchors"
+primary_key = ["value_sha256"]
+unique_keys = []
+[[external_stub.column]]
+name = "value_sha256"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(32)"
+nullable = false
+
+[[external_stub]]
+relation = "canonical_value_allocation_seal"
+table = "catalog_canonical_value_allocation_seals"
+primary_key = ["value_sha256"]
+unique_keys = []
+[[external_stub.column]]
+name = "value_sha256"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(32)"
+nullable = false
+
+[[external_stub]]
 relation = "canonical_value_page"
 table = "catalog_canonical_value_pages"
 primary_key = ["page_sha256"]
@@ -1598,13 +2256,8 @@ nullable = false
 [[external_stub]]
 relation = "canonical_value_page_parent"
 table = "catalog_canonical_value_page_parents"
-primary_key = ["child_sha256"]
-unique_keys = [["parent_sha256", "position"]]
-[[external_stub.column]]
-name = "child_sha256"
-sqlite_type = "BLOB"
-mariadb_type = "BINARY(32)"
-nullable = false
+primary_key = ["parent_sha256", "position"]
+unique_keys = [["child_sha256"]]
 [[external_stub.column]]
 name = "parent_sha256"
 sqlite_type = "BLOB"
@@ -1614,6 +2267,11 @@ nullable = false
 name = "position"
 sqlite_type = "INTEGER"
 mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "child_sha256"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(32)"
 nullable = false
 
 [[external_stub]]
@@ -1654,6 +2312,60 @@ mariadb_type = "BINARY(32)"
 nullable = false
 
 [[external_stub]]
+relation = "file_name_identity_anchor"
+table = "catalog_file_name_identity_anchors"
+primary_key = ["file_key"]
+unique_keys = []
+[[external_stub.column]]
+name = "file_key"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(32)"
+nullable = false
+
+[[external_stub]]
+relation = "file_name_identity_name_bytes"
+table = "catalog_file_name_identity_name_bytes"
+primary_key = ["file_key"]
+unique_keys = [["name_bytes"]]
+[[external_stub.column]]
+name = "file_key"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(32)"
+nullable = false
+[[external_stub.column]]
+name = "name_bytes"
+sqlite_type = "BLOB"
+mariadb_type = "VARBINARY(255)"
+nullable = false
+
+[[external_stub]]
+relation = "file_name_identity_file_role"
+table = "catalog_file_name_identity_file_roles"
+primary_key = ["file_key"]
+unique_keys = []
+[[external_stub.column]]
+name = "file_key"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(32)"
+nullable = false
+[[external_stub.column]]
+name = "file_role"
+sqlite_type = "BLOB"
+mariadb_type = "VARBINARY(8)"
+nullable = false
+
+[[external_stub]]
+relation = "file_name_identity_seal"
+table = "catalog_file_name_identity_seals"
+primary_key = ["file_key"]
+unique_keys = []
+[[external_stub.column]]
+name = "file_key"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(32)"
+nullable = false
+
+[[external_stub]]
 relation = "file_name_identity"
 table = "catalog_file_name_identities"
 primary_key = ["file_key"]
@@ -1675,10 +2387,104 @@ mariadb_type = "VARBINARY(8)"
 nullable = false
 
 [[external_stub]]
+relation = "gallery_observation_file_anchor"
+table = "catalog_gallery_observation_file_anchors"
+primary_key = ["gallery_id", "observation_id", "file_key"]
+unique_keys = []
+[[external_stub.column]]
+name = "gallery_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "observation_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "file_key"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(32)"
+nullable = false
+
+[[external_stub]]
+relation = "gallery_observation_file_file_no"
+table = "catalog_gallery_observation_file_file_nos"
+primary_key = ["gallery_id", "observation_id", "file_key"]
+unique_keys = [["gallery_id", "observation_id", "file_no"]]
+[[external_stub.column]]
+name = "gallery_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "observation_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "file_key"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(32)"
+nullable = false
+[[external_stub.column]]
+name = "file_no"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+
+[[external_stub]]
+relation = "gallery_observation_file_file_sha256"
+table = "catalog_gallery_observation_file_file_sha256s"
+primary_key = ["gallery_id", "observation_id", "file_key"]
+unique_keys = []
+[[external_stub.column]]
+name = "gallery_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "observation_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "file_key"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(32)"
+nullable = false
+[[external_stub.column]]
+name = "file_sha256"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(32)"
+nullable = false
+
+[[external_stub]]
+relation = "gallery_observation_file_seal"
+table = "catalog_gallery_observation_file_seals"
+primary_key = ["gallery_id", "observation_id", "file_key"]
+unique_keys = []
+[[external_stub.column]]
+name = "gallery_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "observation_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+[[external_stub.column]]
+name = "file_key"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(32)"
+nullable = false
+
+[[external_stub]]
 relation = "gallery_observation_file"
 table = "catalog_gallery_observation_files"
-primary_key = ["gallery_id", "observation_id", "file_no"]
-unique_keys = [["gallery_id", "observation_id", "file_key"]]
+primary_key = ["gallery_id", "observation_id", "file_key"]
+unique_keys = [["gallery_id", "observation_id", "file_no"]]
 [[external_stub.column]]
 name = "gallery_id"
 sqlite_type = "INTEGER"
@@ -1744,6 +2550,49 @@ nullable = false
 name = "changed_ns"
 sqlite_type = "BLOB"
 mariadb_type = "BINARY(8)"
+nullable = false
+
+[[external_stub]]
+relation = "tag_term_anchor"
+table = "catalog_tag_term_anchors"
+primary_key = ["tag_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "tag_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+
+[[external_stub]]
+relation = "tag_term_identity"
+table = "catalog_tag_term_identities"
+primary_key = ["namespace", "tag_value_sha256"]
+unique_keys = [["tag_id"]]
+[[external_stub.column]]
+name = "namespace"
+sqlite_type = "BLOB"
+mariadb_type = "VARBINARY(128)"
+nullable = false
+[[external_stub.column]]
+name = "tag_value_sha256"
+sqlite_type = "BLOB"
+mariadb_type = "BINARY(32)"
+nullable = false
+[[external_stub.column]]
+name = "tag_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
+nullable = false
+
+[[external_stub]]
+relation = "tag_term_seal"
+table = "catalog_tag_term_seals"
+primary_key = ["tag_id"]
+unique_keys = []
+[[external_stub.column]]
+name = "tag_id"
+sqlite_type = "INTEGER"
+mariadb_type = "BIGINT UNSIGNED"
 nullable = false
 
 [[external_stub]]
@@ -2625,7 +3474,7 @@ mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
 [[relation.foreign_key]]
 name = "fk_source_build_generation_1"
 attributes = ["build_id"]
-referenced_relation = "source_build"
+referenced_relation = "source_build_descriptor_seal"
 referenced_attributes = ["build_id"]
 [[relation.foreign_key]]
 name = "fk_source_build_generation_2"
@@ -2685,7 +3534,7 @@ mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
 [[relation.foreign_key]]
 name = "fk_source_build_discovery_checkpoint_1"
 attributes = ["build_id"]
-referenced_relation = "source_build"
+referenced_relation = "source_build_descriptor_seal"
 referenced_attributes = ["build_id"]
 [[relation.required_index]]
 name = "ix_source_build_discovery_checkpoint_state"
@@ -2876,7 +3725,7 @@ mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
 [[relation.foreign_key]]
 name = "fk_source_build_assembly_checkpoint_1"
 attributes = ["build_id"]
-referenced_relation = "source_build"
+referenced_relation = "source_build_descriptor_seal"
 referenced_attributes = ["build_id"]
 [[relation.required_index]]
 name = "ix_source_build_assembly_checkpoint_state"
@@ -3317,7 +4166,7 @@ mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
 [[relation.foreign_key]]
 name = "fk_source_working_build_1"
 attributes = ["build_id"]
-referenced_relation = "source_build"
+referenced_relation = "source_build_descriptor_seal"
 referenced_attributes = ["build_id"]
 [[relation.check]]
 name = "ck_source_working_build_build_id_len"
@@ -3361,7 +4210,7 @@ mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
 [[relation.foreign_key]]
 name = "fk_catalog_working_candidate_1"
 attributes = ["candidate_id"]
-referenced_relation = "publication_candidate"
+referenced_relation = "publication_candidate_definition_seal"
 referenced_attributes = ["candidate_id"]
 [[relation.check]]
 name = "ck_catalog_working_candidate_candidate_id_len"
@@ -3479,7 +4328,7 @@ mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
 [[relation.foreign_key]]
 name = "fk_gallery_observation_allocator_1"
 attributes = ["gallery_id"]
-referenced_relation = "gallery_identity"
+referenced_relation = "gallery_identity_seal"
 referenced_attributes = ["gallery_id"]
 [[relation.check]]
 name = "ck_gallery_observation_allocator_updated_at_nonneg"
@@ -3543,7 +4392,7 @@ mariadb = { type = "BIGINT UNSIGNED", nullable = true, collation = "NONE" }
 [[relation.foreign_key]]
 name = "fk_gallery_observation_staging_1"
 attributes = ["build_id"]
-referenced_relation = "source_build"
+referenced_relation = "source_build_descriptor_seal"
 referenced_attributes = ["build_id"]
 [[relation.foreign_key]]
 name = "fk_gallery_observation_staging_2"
@@ -3980,7 +4829,7 @@ referenced_attributes = ["request_sha256"]
 [[relation.foreign_key]]
 name = "fk_gallery_observation_staging_request_page_2"
 attributes = ["page_sha256"]
-referenced_relation = "gallery_observation_page"
+referenced_relation = "gallery_observation_page_descriptor_seal"
 referenced_attributes = ["page_sha256"]
 [[relation.required_index]]
 name = "ix_gallery_observation_staging_request_page_fk_2"
@@ -4467,7 +5316,7 @@ referenced_attributes = ["generation"]
 [[relation.foreign_key]]
 name = "fk_canonical_value_upload_2"
 attributes = ["value_sha256"]
-referenced_relation = "canonical_value_allocation"
+referenced_relation = "canonical_value_allocation_seal"
 referenced_attributes = ["value_sha256"]
 [[relation.required_index]]
 name = "ix_canonical_value_upload_fk_2"
@@ -4736,12 +5585,12 @@ mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
 [[relation.foreign_key]]
 name = "fk_gallery_redownload_state_1"
 attributes = ["gallery_id"]
-referenced_relation = "gallery_identity"
+referenced_relation = "gallery_identity_seal"
 referenced_attributes = ["gallery_id"]
 [[relation.foreign_key]]
 name = "fk_gallery_redownload_state_2"
 attributes = ["through_source_revision"]
-referenced_relation = "source_revision"
+referenced_relation = "publication_commit_source_revision"
 referenced_attributes = ["source_revision"]
 [[relation.required_index]]
 name = "ix_gallery_redownload_state_fk_2"
@@ -4884,7 +5733,7 @@ referenced_attributes = ["preparation_id"]
 [[relation.foreign_key]]
 name = "fk_operational_preparation_2"
 attributes = ["build_id"]
-referenced_relation = "source_build"
+referenced_relation = "source_build_descriptor_seal"
 referenced_attributes = ["build_id"]
 [[relation.foreign_key]]
 name = "fk_operational_preparation_3"
@@ -5179,7 +6028,7 @@ mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
 [[relation.foreign_key]]
 name = "fk_publication_candidate_preparation_1"
 attributes = ["candidate_id"]
-referenced_relation = "publication_candidate"
+referenced_relation = "publication_candidate_definition_seal"
 referenced_attributes = ["candidate_id"]
 [[relation.foreign_key]]
 name = "fk_publication_candidate_preparation_2"
@@ -5207,8 +6056,10 @@ mariadb_expression = "bound_at >= 0 AND bound_at <= 9223372036854775807"
 [[relation]]
 name = "operational_activation"
 status = "implemented"
-rationale = "BCNF operational authority or exact durable protocol state for operational_activation."
+rationale = "Project activation only from one complete sealed common publication commit."
 table = "operational_operational_activations"
+kind = "view"
+view = { pattern = "publication_commit_activation", source_relations = ["publication_commit_seal", "publication_commit_source_revision", "publication_commit_operational_preparation", "publication_commit_operational_policy", "publication_commit_committed_at"] }
 primary_key = ["source_revision"]
 unique_keys = [["preparation_id"]]
 [[relation.column]]
@@ -5234,38 +6085,18 @@ mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
 [[relation.foreign_key]]
 name = "fk_operational_activation_1"
 attributes = ["source_revision"]
-referenced_relation = "source_revision"
+referenced_relation = "publication_commit_source_revision"
 referenced_attributes = ["source_revision"]
 [[relation.foreign_key]]
 name = "fk_operational_activation_2"
 attributes = ["preparation_id"]
-referenced_relation = "operational_preparation_effect_seal"
+referenced_relation = "publication_commit_operational_preparation"
 referenced_attributes = ["preparation_id"]
 [[relation.foreign_key]]
 name = "fk_operational_activation_3"
 attributes = ["operational_policy_id"]
 referenced_relation = "operational_policy"
 referenced_attributes = ["operational_policy_id"]
-[[relation.required_index]]
-name = "ix_operational_activation_fk_3"
-attributes = ["operational_policy_id"]
-unique = false
-[[relation.check]]
-name = "ck_operational_activation_preparation_id_len"
-sqlite_expression = "length(preparation_id) = 16"
-mariadb_expression = "octet_length(preparation_id) = 16"
-[[relation.check]]
-name = "ck_operational_activation_activated_at_nonneg"
-sqlite_expression = "activated_at >= 0 AND activated_at <= 9223372036854775807"
-mariadb_expression = "activated_at >= 0 AND activated_at <= 9223372036854775807"
-[[relation.check]]
-name = "ck_operational_activation_operational_policy_id_nonneg"
-sqlite_expression = "operational_policy_id >= 0 AND operational_policy_id <= 9223372036854775807"
-mariadb_expression = "operational_policy_id >= 0 AND operational_policy_id <= 9223372036854775807"
-[[relation.check]]
-name = "ck_operational_activation_source_revision_nonneg"
-sqlite_expression = "source_revision >= 0 AND source_revision <= 9223372036854775807"
-mariadb_expression = "source_revision >= 0 AND source_revision <= 9223372036854775807"
 
 [[relation]]
 name = "operational_event"
@@ -5583,7 +6414,7 @@ referenced_attributes = ["consumer_id"]
 [[relation.foreign_key]]
 name = "fk_removed_gid_ack_2"
 attributes = ["through_source_revision"]
-referenced_relation = "source_revision"
+referenced_relation = "publication_commit_source_revision"
 referenced_attributes = ["source_revision"]
 [[relation.required_index]]
 name = "ix_removed_gid_ack_fk_2"
@@ -5727,8 +6558,8 @@ sqlite = { type = "TEXT", nullable = false, collation = "BINARY" }
 mariadb = { type = "VARCHAR(48)", nullable = false, collation = "ascii_bin" }
 [[relation.check]]
 name = "ck_cleanup_target_kind_target_kind_registry"
-sqlite_expression = "target_kind IN ('SOURCE_BUILD', 'ANALYSIS_RUN', 'PUBLICATION_CANDIDATE', 'OPERATIONAL_PREPARATION', 'GALLERY_OBSERVATION', 'GALLERY_OBSERVATION_STAGING', 'ARTIFACT_BLOB', 'CANONICAL_VALUE', 'CONTENT_BLOB', 'GALLERY_OBSERVATION_PAGE', 'FILE_NAME_IDENTITY', 'PUBLICATION_IDENTITY', 'GALLERY_IDENTITY', 'CANONICAL_VALUE_UPLOAD', 'HASH_CACHE_OBSERVATION')"
-mariadb_expression = "target_kind IN ('SOURCE_BUILD', 'ANALYSIS_RUN', 'PUBLICATION_CANDIDATE', 'OPERATIONAL_PREPARATION', 'GALLERY_OBSERVATION', 'GALLERY_OBSERVATION_STAGING', 'ARTIFACT_BLOB', 'CANONICAL_VALUE', 'CONTENT_BLOB', 'GALLERY_OBSERVATION_PAGE', 'FILE_NAME_IDENTITY', 'PUBLICATION_IDENTITY', 'GALLERY_IDENTITY', 'CANONICAL_VALUE_UPLOAD', 'HASH_CACHE_OBSERVATION')"
+sqlite_expression = "target_kind IN ('SOURCE_BUILD', 'ANALYSIS_RUN', 'PUBLICATION_CANDIDATE', 'OPERATIONAL_PREPARATION', 'GALLERY_OBSERVATION', 'GALLERY_OBSERVATION_STAGING', 'ARTIFACT_BLOB', 'CANONICAL_VALUE', 'CONTENT_BLOB', 'GALLERY_OBSERVATION_PAGE', 'FILE_NAME_IDENTITY', 'PUBLICATION_IDENTITY', 'GALLERY_IDENTITY', 'SOURCE_GALLERY_NAME_GID', 'GALLERY_UPLOAD_TIME', 'CANONICAL_VALUE_UPLOAD', 'HASH_CACHE_OBSERVATION')"
+mariadb_expression = "target_kind IN ('SOURCE_BUILD', 'ANALYSIS_RUN', 'PUBLICATION_CANDIDATE', 'OPERATIONAL_PREPARATION', 'GALLERY_OBSERVATION', 'GALLERY_OBSERVATION_STAGING', 'ARTIFACT_BLOB', 'CANONICAL_VALUE', 'CONTENT_BLOB', 'GALLERY_OBSERVATION_PAGE', 'FILE_NAME_IDENTITY', 'PUBLICATION_IDENTITY', 'GALLERY_IDENTITY', 'SOURCE_GALLERY_NAME_GID', 'GALLERY_UPLOAD_TIME', 'CANONICAL_VALUE_UPLOAD', 'HASH_CACHE_OBSERVATION')"
 
 [[relation]]
 name = "cleanup_sweep_target"
@@ -5803,8 +6634,8 @@ sqlite_expression = "phase_order >= 0 AND phase_order <= 9223372036854775807"
 mariadb_expression = "phase_order >= 0 AND phase_order <= 9223372036854775807"
 [[relation.check]]
 name = "ck_cleanup_phase_phase_registry"
-sqlite_expression = "phase IN ('SB_CANONICAL_UPLOAD', 'SB_GALLERY', 'SB_SATELLITES', 'SB_GENERATION', 'SB_ROOT', 'AR_BATCH', 'AR_SEALS', 'AR_OVERLAY', 'AR_EVIDENCE', 'AR_CHECKPOINT', 'AR_ANCESTRY', 'AR_LINKS', 'AR_ROOT', 'PC_DELTAS', 'PC_INPUT', 'PC_SELECTION', 'PC_BATCH', 'PC_CHECKPOINT', 'PC_BASES', 'PC_ROOT', 'OP_BATCH', 'OP_CHECKPOINT', 'OP_SUBTYPE', 'OP_EVENT', 'OP_SEAL', 'OP_ROOT', 'GO_STAGING_RECEIPT_FRONTIER', 'GO_STAGING_PAGE_ASSOCIATION', 'GO_STAGING_REQUEST_DESCRIPTOR', 'GO_STAGING_REQUEST_IDENTITY', 'GO_STAGING_CHECKPOINT', 'GO_STAGING_CLAIM', 'GO_STAGING_ROOT', 'GO_FACTS', 'GO_FILES', 'GO_DESCRIPTOR', 'GO_ROOT', 'GOS_RECEIPT_FRONTIER', 'GOS_PAGE_ASSOCIATION', 'GOS_REQUEST_DESCRIPTOR', 'GOS_REQUEST_IDENTITY', 'GOS_CHECKPOINT', 'GOS_CLAIM', 'GOS_ROOT', 'AB_LOCATIONS', 'AB_IDENTITIES', 'AB_ROOT', 'CV_DICTIONARY', 'CV_SEMANTIC_LINK', 'CV_IDENTITY', 'CV_PARENT_DESCRIPTOR', 'CV_PAGE', 'CV_ROOT', 'CB_ROOT', 'GOP_OUTGOING_CHILD', 'GOP_BOUNDS', 'GOP_DESCRIPTOR', 'GOP_ROOT', 'FN_ROOT', 'PI_ROOT', 'GI_OBSERVATION_ALLOCATOR', 'GI_ROOT', 'CVU_ROOT', 'HC_FILE', 'HC_ROOT')"
-mariadb_expression = "phase IN ('SB_CANONICAL_UPLOAD', 'SB_GALLERY', 'SB_SATELLITES', 'SB_GENERATION', 'SB_ROOT', 'AR_BATCH', 'AR_SEALS', 'AR_OVERLAY', 'AR_EVIDENCE', 'AR_CHECKPOINT', 'AR_ANCESTRY', 'AR_LINKS', 'AR_ROOT', 'PC_DELTAS', 'PC_INPUT', 'PC_SELECTION', 'PC_BATCH', 'PC_CHECKPOINT', 'PC_BASES', 'PC_ROOT', 'OP_BATCH', 'OP_CHECKPOINT', 'OP_SUBTYPE', 'OP_EVENT', 'OP_SEAL', 'OP_ROOT', 'GO_STAGING_RECEIPT_FRONTIER', 'GO_STAGING_PAGE_ASSOCIATION', 'GO_STAGING_REQUEST_DESCRIPTOR', 'GO_STAGING_REQUEST_IDENTITY', 'GO_STAGING_CHECKPOINT', 'GO_STAGING_CLAIM', 'GO_STAGING_ROOT', 'GO_FACTS', 'GO_FILES', 'GO_DESCRIPTOR', 'GO_ROOT', 'GOS_RECEIPT_FRONTIER', 'GOS_PAGE_ASSOCIATION', 'GOS_REQUEST_DESCRIPTOR', 'GOS_REQUEST_IDENTITY', 'GOS_CHECKPOINT', 'GOS_CLAIM', 'GOS_ROOT', 'AB_LOCATIONS', 'AB_IDENTITIES', 'AB_ROOT', 'CV_DICTIONARY', 'CV_SEMANTIC_LINK', 'CV_IDENTITY', 'CV_PARENT_DESCRIPTOR', 'CV_PAGE', 'CV_ROOT', 'CB_ROOT', 'GOP_OUTGOING_CHILD', 'GOP_BOUNDS', 'GOP_DESCRIPTOR', 'GOP_ROOT', 'FN_ROOT', 'PI_ROOT', 'GI_OBSERVATION_ALLOCATOR', 'GI_ROOT', 'CVU_ROOT', 'HC_FILE', 'HC_ROOT')"
+sqlite_expression = "phase IN ('SB_CANONICAL_UPLOAD', 'SB_GALLERY', 'SB_DISCOVERY_SEAL', 'SB_DISCOVERY_VALUES', 'SB_DISCOVERY_ANCHOR', 'SB_SATELLITES', 'SB_GENERATION', 'SB_ROOT', 'AR_BATCH_SEAL', 'AR_BATCH_VALUES', 'AR_BATCH_ANCHOR', 'AR_COMPONENT_SEAL', 'AR_COMPONENT_VALUES', 'AR_COMPONENT_ANCHOR', 'AR_OVERLAY', 'AR_EVIDENCE', 'AR_EXCLUSION_VALUES', 'AR_EXCLUSION_ANCHOR', 'AR_CHECKPOINT_SEAL', 'AR_CHECKPOINT_VALUES', 'AR_CHECKPOINT_ANCHOR', 'AR_ANCESTRY', 'AR_BASELINE', 'AR_BINDINGS', 'AR_DESCRIPTOR', 'AR_RUN_VALUES', 'AR_ROOT', 'PC_SEALS', 'PC_PREPARED_VALUES', 'PC_PREPARED_ANCHOR', 'PC_INPUT', 'PC_BATCH_VALUES', 'PC_BATCH_ANCHOR', 'PC_CHECKPOINT_SEAL', 'PC_CHECKPOINT_VALUES', 'PC_CHECKPOINT_ANCHOR', 'PC_BASES', 'PC_ROOT', 'OP_BATCH', 'OP_CHECKPOINT', 'OP_SUBTYPE', 'OP_EVENT', 'OP_SEAL', 'OP_ROOT', 'GO_STAGING_RECEIPT_FRONTIER', 'GO_STAGING_PAGE_ASSOCIATION', 'GO_STAGING_REQUEST_DESCRIPTOR', 'GO_STAGING_REQUEST_IDENTITY', 'GO_STAGING_CHECKPOINT', 'GO_STAGING_CLAIM', 'GO_STAGING_ROOT', 'GO_FACTS', 'GO_FILESYSTEM_SEAL', 'GO_FILESYSTEM_VALUES', 'GO_FILESYSTEM_ANCHOR', 'GO_FILES', 'GO_METADATA_SEAL', 'GO_METADATA_VALUES', 'GO_OBSERVATION_FACT_SEALS', 'GO_OBSERVATION_FACT_VALUES', 'GO_OBSERVATION_FACT_ANCHORS', 'GO_DESCRIPTOR', 'GO_ROOT', 'GOS_RECEIPT_FRONTIER', 'GOS_PAGE_ASSOCIATION', 'GOS_REQUEST_DESCRIPTOR', 'GOS_REQUEST_IDENTITY', 'GOS_CHECKPOINT', 'GOS_CLAIM', 'GOS_ROOT', 'AB_LOCATIONS', 'AB_ROOT', 'CV_DICTIONARY', 'CV_SEMANTIC_LINK', 'CV_IDENTITY', 'CV_PARENT_DESCRIPTOR', 'CV_PAGE', 'CV_ROOT', 'CB_ROOT', 'GOP_OUTGOING_CHILD', 'GOP_BOUNDS', 'GOP_DESCRIPTOR', 'GOP_ROOT', 'FN_ROOT', 'PI_ROOT', 'GI_OBSERVATION_ALLOCATOR', 'GI_SOURCE_NAME_ACCESS', 'GI_ROOT', 'SNG_ROOT', 'GUT_ROOT', 'CVU_ROOT', 'HC_FILE', 'HC_ROOT')"
+mariadb_expression = "phase IN ('SB_CANONICAL_UPLOAD', 'SB_GALLERY', 'SB_DISCOVERY_SEAL', 'SB_DISCOVERY_VALUES', 'SB_DISCOVERY_ANCHOR', 'SB_SATELLITES', 'SB_GENERATION', 'SB_ROOT', 'AR_BATCH_SEAL', 'AR_BATCH_VALUES', 'AR_BATCH_ANCHOR', 'AR_COMPONENT_SEAL', 'AR_COMPONENT_VALUES', 'AR_COMPONENT_ANCHOR', 'AR_OVERLAY', 'AR_EVIDENCE', 'AR_EXCLUSION_VALUES', 'AR_EXCLUSION_ANCHOR', 'AR_CHECKPOINT_SEAL', 'AR_CHECKPOINT_VALUES', 'AR_CHECKPOINT_ANCHOR', 'AR_ANCESTRY', 'AR_BASELINE', 'AR_BINDINGS', 'AR_DESCRIPTOR', 'AR_RUN_VALUES', 'AR_ROOT', 'PC_SEALS', 'PC_PREPARED_VALUES', 'PC_PREPARED_ANCHOR', 'PC_INPUT', 'PC_BATCH_VALUES', 'PC_BATCH_ANCHOR', 'PC_CHECKPOINT_SEAL', 'PC_CHECKPOINT_VALUES', 'PC_CHECKPOINT_ANCHOR', 'PC_BASES', 'PC_ROOT', 'OP_BATCH', 'OP_CHECKPOINT', 'OP_SUBTYPE', 'OP_EVENT', 'OP_SEAL', 'OP_ROOT', 'GO_STAGING_RECEIPT_FRONTIER', 'GO_STAGING_PAGE_ASSOCIATION', 'GO_STAGING_REQUEST_DESCRIPTOR', 'GO_STAGING_REQUEST_IDENTITY', 'GO_STAGING_CHECKPOINT', 'GO_STAGING_CLAIM', 'GO_STAGING_ROOT', 'GO_FACTS', 'GO_FILESYSTEM_SEAL', 'GO_FILESYSTEM_VALUES', 'GO_FILESYSTEM_ANCHOR', 'GO_FILES', 'GO_METADATA_SEAL', 'GO_METADATA_VALUES', 'GO_OBSERVATION_FACT_SEALS', 'GO_OBSERVATION_FACT_VALUES', 'GO_OBSERVATION_FACT_ANCHORS', 'GO_DESCRIPTOR', 'GO_ROOT', 'GOS_RECEIPT_FRONTIER', 'GOS_PAGE_ASSOCIATION', 'GOS_REQUEST_DESCRIPTOR', 'GOS_REQUEST_IDENTITY', 'GOS_CHECKPOINT', 'GOS_CLAIM', 'GOS_ROOT', 'AB_LOCATIONS', 'AB_ROOT', 'CV_DICTIONARY', 'CV_SEMANTIC_LINK', 'CV_IDENTITY', 'CV_PARENT_DESCRIPTOR', 'CV_PAGE', 'CV_ROOT', 'CB_ROOT', 'GOP_OUTGOING_CHILD', 'GOP_BOUNDS', 'GOP_DESCRIPTOR', 'GOP_ROOT', 'FN_ROOT', 'PI_ROOT', 'GI_OBSERVATION_ALLOCATOR', 'GI_SOURCE_NAME_ACCESS', 'GI_ROOT', 'SNG_ROOT', 'GUT_ROOT', 'CVU_ROOT', 'HC_FILE', 'HC_ROOT')"
 [[relation.check]]
 name = "ck_cleanup_phase_order_positive"
 sqlite_expression = "phase_order > 0"

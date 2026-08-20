@@ -9,6 +9,7 @@ import pytest
 
 from h2hdb import catalog_refinement, catalog_writer
 from h2hdb._generated_vnext_schema import ARTIFACT
+from h2hdb.vnext_analysis_repository import AnalysisRepository
 
 
 def _manifest() -> tuple[dict[str, object], ...]:
@@ -113,6 +114,17 @@ def test_catalog_semantic_registry_and_writer_bindings_are_closed_world() -> Non
         cast(dict[str, object], catalog_writer.BUILTIN_WRITER_HOOK_BINDINGS)[
             hook.obligation_id
         ] = binding
+
+
+def test_analysis_abandon_is_bound_to_every_fenced_state_machine_contract() -> None:
+    for obligation_id in (
+        "catalog.physical-domains.v1",
+        "catalog.state-machines.v1",
+        "h2hdb.operational.fencing.v1",
+        "h2hdb.operational.maintenance-gate.v1",
+    ):
+        binding = catalog_writer.BUILTIN_WRITER_HOOK_BINDINGS[obligation_id]
+        assert binding.entrypoints.count(AnalysisRepository.abandon) == 1
 
 
 def test_writer_binding_rejects_empty_duplicate_and_callback_markers() -> None:

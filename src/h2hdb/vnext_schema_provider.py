@@ -495,9 +495,14 @@ def _validate_mariadb_relation(
         raise SchemaEpochValidationError(
             f"MariaDB relation {relation['relation']!r} primary key drifts"
         )
-    for position, key in enumerate(
-        _records(relation.get("unique_keys"), "unique keys"), 1
-    ):
+    physical_unique_keys = (
+        *_records(relation.get("unique_keys"), "unique keys"),
+        *_records(
+            relation.get("referential_unique_keys"),
+            "referential unique keys",
+        ),
+    )
+    for position, key in enumerate(physical_unique_keys, 1):
         name = _ddl_identifier(f"uk_{table}_{position}")
         expected = (tuple(str(value) for value in key), True)
         if actual_indexes.get(name) != expected:
@@ -554,9 +559,7 @@ def _validate_mariadb_relation(
         "PRIMARY",
         *(
             _ddl_identifier(f"uk_{table}_{position}")
-            for position, _key in enumerate(
-                _records(relation.get("unique_keys"), "unique keys"), 1
-            )
+            for position, _key in enumerate(physical_unique_keys, 1)
         ),
         *(
             str(name)
@@ -726,6 +729,11 @@ def _canonicalize_mariadb_view_presentation(
     * ``NOT EXISTS`` is stored as ``!exists``;
     * a complete joined ``FROM`` table-reference and its complete ``ON``
       predicate are wrapped in parentheses; and
+    * a flat INNER JOIN prefix is stored as a left-deep tree, including when
+      that prefix is the left operand of one generated LEFT JOIN;
+    * parentheses around one complete ``WHERE`` expression are omitted; and
+    * parentheses around one generated projection-local binary addition are
+      omitted; and
     * an exact trailing ``LIMIT 1`` is added to ``EXISTS (SELECT ...)``.
 
     Parenthesis pairs are validated before any rewrite.  A wrapper is removed
@@ -745,6 +753,10 @@ def _canonicalize_mariadb_view_presentation(
         if _mariadb_is_complete_join_wrapper(canonical, opening, closing):
             removed.update((opening, closing))
         elif _mariadb_is_complete_on_wrapper(canonical, opening, closing):
+            removed.update((opening, closing))
+        elif _mariadb_is_complete_where_wrapper(canonical, opening, closing):
+            removed.update((opening, closing))
+        elif _mariadb_is_projection_addition_wrapper(canonical, opening, closing):
             removed.update((opening, closing))
 
         if (
@@ -811,9 +823,23 @@ def _mariadb_wrapper_has_complete_clause_boundary(
 def _mariadb_is_complete_join_wrapper(
     tokens: Sequence[str], opening: int, closing: int
 ) -> bool:
+    is_from_wrapper = opening > 0 and tokens[opening - 1] == "identifier:from"
+    is_followed_by_join = closing + 1 < len(tokens) and tokens[closing + 1] == (
+        "identifier:join"
+    )
+    is_followed_by_left_join = (
+        closing + 2 < len(tokens)
+        and tokens[closing + 1] == "identifier:left"
+        and tokens[closing + 2] == "identifier:join"
+    )
+    is_left_deep_inner_wrapper = (
+        opening > 0
+        and tokens[opening - 1] == "("
+        and (is_followed_by_join or is_followed_by_left_join)
+    )
     if (
         opening == 0
-        or tokens[opening - 1] != "identifier:from"
+        or not (is_from_wrapper or is_left_deep_inner_wrapper)
         or opening + 1 == closing
         or tokens[opening + 1] == "identifier:select"
         or not _mariadb_wrapper_has_complete_clause_boundary(tokens, closing)
@@ -821,8 +847,18 @@ def _mariadb_is_complete_join_wrapper(
         return False
 
     depth = 0
-    has_top_level_join = False
-    for token in tokens[opening + 1 : closing]:
+    top_level_joins = 0
+    top_level_ons = 0
+    non_inner_join_prefixes = {
+        "identifier:cross",
+        "identifier:full",
+        "identifier:left",
+        "identifier:natural",
+        "identifier:right",
+        "identifier:straight_join",
+    }
+    for position in range(opening + 1, closing):
+        token = tokens[position]
         if token == "(":
             depth += 1
         elif token == ")":
@@ -831,8 +867,26 @@ def _mariadb_is_complete_join_wrapper(
             if token == ",":
                 return False
             if token == "identifier:join":
-                has_top_level_join = True
-    return has_top_level_join
+                if (
+                    is_left_deep_inner_wrapper
+                    and tokens[position - 1] in non_inner_join_prefixes
+                ):
+                    return False
+                top_level_joins += 1
+            elif token == "identifier:on":
+                top_level_ons += 1
+
+    if not is_left_deep_inner_wrapper:
+        return top_level_joins > 0
+
+    # MariaDB persists a flat chain of generated INNER JOINs as a fully
+    # parenthesized left-deep tree.  Peel only one exact tree node at a time:
+    # it must contain exactly one top-level bare JOIN with its ON predicate and
+    # itself be the left operand of another bare JOIN or the renderer's one
+    # optional LEFT JOIN.  Keeping this narrower than arbitrary join
+    # reassociation preserves outer-join and predicate grouping as
+    # authoritative schema evidence.
+    return top_level_joins == 1 and top_level_ons == 1
 
 
 def _mariadb_is_complete_on_wrapper(
@@ -845,6 +899,55 @@ def _mariadb_is_complete_on_wrapper(
         and tokens[opening + 1] != "identifier:select"
         and _mariadb_wrapper_has_complete_clause_boundary(tokens, closing)
     )
+
+
+def _mariadb_is_complete_where_wrapper(
+    tokens: Sequence[str], opening: int, closing: int
+) -> bool:
+    return (
+        opening > 0
+        and tokens[opening - 1] == "identifier:where"
+        and opening + 1 < closing
+        and tokens[opening + 1] != "identifier:select"
+        and _mariadb_wrapper_has_complete_clause_boundary(tokens, closing)
+    )
+
+
+def _mariadb_is_projection_addition_wrapper(
+    tokens: Sequence[str], opening: int, closing: int
+) -> bool:
+    if (
+        opening == 0
+        or tokens[opening - 1] not in {"identifier:select", ","}
+        or closing + 2 >= len(tokens)
+        or not tokens[closing + 1].startswith("identifier:")
+        or tokens[closing + 2] not in {",", "identifier:from"}
+    ):
+        return False
+
+    expression = tuple(tokens[opening + 1 : closing])
+
+    def is_qualified_column(value: Sequence[str]) -> bool:
+        return (
+            len(value) == 3
+            and value[0].startswith("identifier:")
+            and value[1] == "."
+            and value[2].startswith("identifier:")
+        )
+
+    if len(expression) == 7:
+        return (
+            is_qualified_column(expression[:3])
+            and expression[3] == "+"
+            and is_qualified_column(expression[4:])
+        )
+    if len(expression) == 5:
+        return (
+            is_qualified_column(expression[:3])
+            and expression[3] == "+"
+            and re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", expression[4]) is not None
+        )
+    return False
 
 
 def _validate_bootstrap_seed_records(

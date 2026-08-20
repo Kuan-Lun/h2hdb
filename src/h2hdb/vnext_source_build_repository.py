@@ -17,6 +17,7 @@ __all__ = [
     "PreparedDiscoveryLocator",
     "ResolvedDiscoveryLocator",
     "SourceBuildConflictError",
+    "SourceBuildAbandonment",
     "SourceBuildHandoff",
     "SourceBuildNotReadyError",
     "SourceBuildRepository",
@@ -35,9 +36,24 @@ from tempfile import TemporaryDirectory
 from typing import Any
 
 from .vnext_allocator_repository import IdentityStream, VNextAllocatorRepository
+from .vnext_canonical_value_family import load_sealed_value_identity
 from .vnext_canonical_value_repository import (
     CanonicalValueUploadPlan,
     _authorize,
+)
+from .vnext_catalog_identity_family import (
+    CatalogIdentityCollisionError,
+    GalleryIdentity,
+    ensure_gallery_identity,
+    load_gallery_identities,
+    load_gallery_identity_candidates,
+)
+from .vnext_catalog_registry_repository import (
+    CatalogRegistryConflictError,
+    CatalogRegistryNotReadyError,
+    ensure_source_scope,
+    load_manifest_policy_by_natural,
+    load_source_scope,
 )
 from .vnext_domains import (
     INT63_MAX,
@@ -61,6 +77,15 @@ from .vnext_identity import (
 )
 from .vnext_ingest_fence_repository import IngestTurn
 from .vnext_maintenance_gate_repository import GateLease
+from .vnext_manifest_family import (
+    ManifestFamilyCollisionError,
+    SourceBuildFamily,
+    database_unix_microseconds,
+    ensure_build_manifest_family,
+    ensure_source_build_family,
+    load_build_manifest_family,
+    load_source_build_family,
+)
 from .vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 
 _FILESYSTEM = "filesystem"
@@ -82,6 +107,14 @@ _EMPTY_MANIFEST_CHAIN = bytes.fromhex(
 _PLAN_CONSTRUCTOR_TOKEN = object()
 _DISCOVERY_BATCH_TOKEN = object()
 _ASSEMBLY_ATTEMPT_TOKEN = object()
+
+_PUBLICATION_COMMIT_HEAD_TABLE = "catalog_publication_commit_head_receipts"
+_PUBLICATION_COMMIT_SEAL_TABLE = "catalog_publication_commit_seals"
+_PUBLICATION_COMMIT_SOURCE_TABLE = "catalog_publication_commit_source_revisions"
+_PUBLICATION_COMMIT_GENERATION_TABLE = "catalog_publication_commit_generations"
+_PUBLICATION_COMMIT_COMMITTED_AT_TABLE = "catalog_publication_commit_committed_ats"
+_SOURCE_REVISION_CHANNEL_TABLE = "catalog_source_revision_channels"
+_SOURCE_BUILD_BASE_COMMIT_TABLE = "catalog_source_build_base_publication_commits"
 
 
 class SourceBuildConflictError(RuntimeError):
@@ -339,8 +372,7 @@ class SourceDiscoveryPlan:
                 )
                 leaf = components[-1].encode("utf-8", errors="strict")
                 duplicate = index.execute(
-                    "SELECT payload_name FROM locator_entries "
-                    "WHERE locator_sha256 = ?",
+                    "SELECT payload_name FROM locator_entries WHERE locator_sha256 = ?",
                     (locator_sha256,),
                 ).fetchone()
                 if duplicate is not None:
@@ -372,8 +404,7 @@ class SourceDiscoveryPlan:
             audit.update(count.to_bytes(8, "big"))
             try:
                 rows = reader.execute(
-                    "SELECT locator_sha256 FROM locator_entries "
-                    "ORDER BY locator_sha256"
+                    "SELECT locator_sha256 FROM locator_entries ORDER BY locator_sha256"
                 )
                 for position, row in enumerate(rows):
                     digest = require_digest32(row[0], field="locator_sha256")
@@ -491,7 +522,6 @@ class SourceRootBuildCommand:
 
     source_root_components: tuple[str, ...]
     build_attempt_id: bytes
-    created_at: int
     source_root_sha256: bytes = field(init=False)
     source_root_byte_count: int = field(init=False)
     source_root_payload_sha256: bytes = field(init=False)
@@ -520,7 +550,6 @@ class SourceRootBuildCommand:
             source_root_digest(self.source_root_components),
         )
         require_uuid16(self.build_attempt_id, field="build_attempt_id")
-        require_int63(self.created_at, field="created_at")
 
     def prepare_root_upload(self) -> CanonicalValueUploadPlan:
         return CanonicalValueUploadPlan.from_parts(
@@ -546,6 +575,27 @@ class SourceBuildHandoff:
         require_positive_int63(self.manifest_policy_id, field="manifest_policy_id")
         if not isinstance(self.replayed, bool):
             raise ValueError("replayed must be bool")
+
+
+@dataclass(frozen=True, slots=True)
+class SourceBuildAbandonment:
+    build_id: bytes
+    generation: int
+    replayed: bool
+
+    def __post_init__(self) -> None:
+        require_uuid16(self.build_id, field="build_id")
+        require_positive_int63(self.generation, field="generation")
+        if not isinstance(self.replayed, bool):
+            raise TypeError("replayed must be bool")
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceHead:
+    receipt_id: bytes
+    revision: int
+    generation: int
+    committed_at: int
 
 
 class SourceBuildRepository:
@@ -693,19 +743,40 @@ class SourceBuildRepository:
             byte_count=root_plan.byte_count,
             root_page_sha256=root_plan.root_page_sha256,
         )
+        base_source = _lock_source_head(work, _DEFAULT_CHANNEL)
 
         _insert_or_validate_scope(
             connector,
             scope=scope,
             source_root_sha256=expected_root,
         )
-        _insert_or_validate_build(
-            connector,
-            build_id=command.build_attempt_id,
-            scope=scope,
-            manifest_policy_id=manifest_policy_id,
-            created_at=command.created_at,
-        )
+        try:
+            durable_build = load_source_build_family(
+                connector,
+                build_id=command.build_attempt_id,
+            )
+        except ManifestFamilyCollisionError as error:
+            raise SourceBuildConflictError(str(error)) from error
+        if durable_build is None:
+            created_at = database_unix_microseconds(work)
+            _insert_or_validate_build(
+                connector,
+                build_id=command.build_attempt_id,
+                scope=scope,
+                manifest_policy_id=manifest_policy_id,
+                created_at=created_at,
+            )
+        else:
+            _require_exact(
+                "successor-generation source build immutable fields",
+                (durable_build.scope_key, durable_build.manifest_policy_id),
+                (scope, manifest_policy_id),
+            )
+            if durable_build.state not in {"OPEN", "SEALED"}:
+                raise SourceBuildConflictError(
+                    "successor generation cannot reuse an ABANDONED source build"
+                )
+            created_at = durable_build.created_at
         _insert_or_validate(
             connector,
             label="source build channel",
@@ -720,11 +791,33 @@ class SourceBuildRepository:
             ),
             expected=(command.build_attempt_id, _DEFAULT_CHANNEL),
         )
-        _insert_or_validate_checkpoints(
-            connector,
-            build_id=command.build_attempt_id,
-            created_at=command.created_at,
-        )
+        if base_source is not None:
+            _insert_or_validate(
+                connector,
+                label="source build base publication commit",
+                select_sql=(
+                    f"SELECT build_id, base_receipt_id "
+                    f"FROM {_SOURCE_BUILD_BASE_COMMIT_TABLE} WHERE build_id = %s"
+                ),
+                select_data=(command.build_attempt_id,),
+                insert_sql=(
+                    f"INSERT INTO {_SOURCE_BUILD_BASE_COMMIT_TABLE} "
+                    "(build_id, base_receipt_id) VALUES (%s, %s)"
+                ),
+                expected=(command.build_attempt_id, base_source.receipt_id),
+            )
+        if durable_build is None:
+            _insert_or_validate_checkpoints(
+                connector,
+                build_id=command.build_attempt_id,
+                created_at=created_at,
+            )
+        else:
+            _require_checkpoint_pair(
+                connector,
+                build_id=command.build_attempt_id,
+                build_state=durable_build.state,
+            )
         _insert_or_validate(
             connector,
             label="source build generation",
@@ -751,7 +844,7 @@ class SourceBuildRepository:
                 "INSERT INTO operational_source_working_builds "
                 "(slot, build_id, assigned_at) VALUES (%s, %s, %s)"
             ),
-            expected=(1, command.build_attempt_id, command.created_at),
+            expected=(1, command.build_attempt_id, created_at),
         )
 
         affected = connector.execute_affected(
@@ -773,6 +866,84 @@ class SourceBuildRepository:
         )
 
     @staticmethod
+    def abandon(
+        work: VNextUnitOfWork,
+        *,
+        gate_lease: GateLease,
+        ingest_turn: IngestTurn,
+        build_id: bytes,
+        now: int,
+    ) -> SourceBuildAbandonment:
+        """Atomically release one exact OPEN working root as ABANDONED.
+
+        The generation mapping deliberately remains durable, so a response-loss
+        replay is read-only and the same generation cannot reserve a replacement.
+        """
+
+        build = require_uuid16(build_id, field="build_id")
+        generation = _authorize(
+            work,
+            gate_lease,
+            ingest_turn,
+            now=require_int63(now, field="now"),
+        )
+        mapping = work.lock_row(
+            LockRank.WORKING_ROOT,
+            encode_lock_key("source-build", 0, generation),
+            "SELECT build_id FROM operational_source_build_generations "
+            "WHERE generation = %s",
+            (generation,),
+        )
+        if mapping != (build,):
+            raise SourceBuildNotReadyError(
+                "live ingest generation is not mapped to this source build"
+            )
+        working = work.lock_row(
+            LockRank.WORKING_ROOT,
+            encode_lock_key("source-build", 1, 1),
+            "SELECT build_id, assigned_at FROM operational_source_working_builds "
+            "WHERE slot = %s",
+            (1,),
+        )
+        family = _load_source_build_or_conflict(work.connector, build)
+        state = work.lock_row(
+            LockRank.WORKING_ROOT,
+            encode_lock_key("source-build", 2, build),
+            "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
+            (build,),
+        )
+        if state != (family.state,):
+            raise SourceBuildConflictError("source build state changed while locking")
+        if family.state == "ABANDONED":
+            if working:
+                raise SourceBuildConflictError(
+                    "ABANDONED source build retained its working root"
+                )
+            return SourceBuildAbandonment(build, generation, True)
+        if family.state != "OPEN":
+            raise SourceBuildConflictError("terminal source build cannot be abandoned")
+        if working != (build, family.created_at):
+            raise SourceBuildNotReadyError(
+                "source build is not the exact locked working root"
+            )
+        deleted = work.connector.execute_affected(
+            "DELETE FROM operational_source_working_builds "
+            "WHERE slot = %s AND build_id = %s AND assigned_at = %s",
+            (1, build, family.created_at),
+        )
+        if deleted != 1:
+            raise SourceBuildConflictError(
+                "source working root changed before abandonment"
+            )
+        work.compare_and_swap(
+            "UPDATE catalog_source_build_states SET state = %s "
+            "WHERE build_id = %s AND state = %s",
+            ("ABANDONED", build, "OPEN"),
+            authority="source build abandonment",
+        )
+        return SourceBuildAbandonment(build, generation, False)
+
+    @staticmethod
     def prepare_discovery_batch(
         connector: Any,
         *,
@@ -790,11 +961,8 @@ class SourceBuildRepository:
         if not isinstance(plan, SourceDiscoveryPlan):
             raise TypeError("plan must be SourceDiscoveryPlan")
         plan._require_open()
-        build_row = connector.fetch_one(
-            "SELECT state FROM catalog_source_builds WHERE build_id = %s",
-            (build,),
-        )
-        if build_row != ("OPEN",):
+        build_row = _load_source_build_or_conflict(connector, build)
+        if build_row.state != "OPEN":
             raise SourceBuildNotReadyError("discovery requires an OPEN source build")
         checkpoint = connector.fetch_one(
             "SELECT generation, cursor_bytes, processed_count, state "
@@ -938,12 +1106,22 @@ class SourceBuildRepository:
                         "(locator_sha256, source_gallery_name) VALUES (%s, %s)",
                         (locator.locator_sha256, locator.source_gallery_name),
                     )
-                connector.execute(
-                    "INSERT INTO catalog_gallery_identities "
-                    "(gallery_id, gallery_key, scope_key, locator_sha256) "
-                    "VALUES (%s, %s, %s, %s)",
-                    (gallery_id, stable_key, scope, locator.locator_sha256),
-                )
+                try:
+                    created = ensure_gallery_identity(
+                        connector,
+                        identity=GalleryIdentity(
+                            gallery_id,
+                            stable_key,
+                            scope,
+                            locator.locator_sha256,
+                        ),
+                    )
+                except CatalogIdentityCollisionError as error:
+                    raise SourceBuildConflictError(str(error)) from error
+                if not created:
+                    raise SourceBuildConflictError(
+                        "gallery identity appeared after its allocator re-read"
+                    )
                 connector.execute(
                     "INSERT INTO operational_gallery_observation_allocators "
                     "(gallery_id, next_observation_id, updated_at) "
@@ -1062,12 +1240,28 @@ class SourceBuildRepository:
             raise SourceBuildNotReadyError(
                 "every locator in the page must have durable identity evidence"
             )
+        try:
+            durable_identities = load_gallery_identities(
+                connector,
+                gallery_ids=tuple(evidence.gallery_id for evidence in resolved),
+            )
+        except CatalogIdentityCollisionError as error:
+            raise SourceBuildConflictError(str(error)) from error
+        if len(durable_identities) != len(resolved):
+            raise SourceBuildConflictError(
+                "resolved discovery batch lacks complete gallery identities"
+            )
         for expected_locator, evidence in zip(batch.locators, resolved, strict=True):
             _validate_resolved_locator(batch, expected_locator, evidence)
-            gallery_row = connector.fetch_one(
-                "SELECT gallery_key, scope_key, locator_sha256 "
-                "FROM catalog_gallery_identities WHERE gallery_id = %s",
-                (evidence.gallery_id,),
+            gallery = durable_identities.get(evidence.gallery_id)
+            gallery_row = (
+                ()
+                if gallery is None
+                else (
+                    gallery.gallery_key,
+                    gallery.scope_key,
+                    gallery.locator_sha256,
+                )
             )
             _require_exact(
                 "resolved gallery identity",
@@ -1175,28 +1369,13 @@ class SourceBuildRepository:
             receipt_tuple,
         )
         if terminal:
-            _insert_or_validate(
+            _persist_source_build_discovery(
                 connector,
-                label="source build discovery",
-                select_sql=(
-                    "SELECT build_id, scan_attempt, gallery_count, "
-                    "tree_observation_sha256, completed_at "
-                    "FROM catalog_source_build_discoveries WHERE build_id = %s"
-                ),
-                select_data=(batch.build_id,),
-                insert_sql=(
-                    "INSERT INTO catalog_source_build_discoveries "
-                    "(build_id, scan_attempt, gallery_count, "
-                    "tree_observation_sha256, completed_at) "
-                    "VALUES (%s, %s, %s, %s, %s)"
-                ),
-                expected=(
-                    batch.build_id,
-                    batch.scan_attempt,
-                    batch.gallery_count,
-                    batch.tree_observation_sha256,
-                    timestamp,
-                ),
+                build_id=batch.build_id,
+                scan_attempt=batch.scan_attempt,
+                gallery_count=batch.gallery_count,
+                tree_observation_sha256=batch.tree_observation_sha256,
+                completed_at=timestamp,
             )
         work.compare_and_swap(
             "UPDATE operational_source_build_discovery_checkpoints "
@@ -1304,10 +1483,15 @@ class SourceBuildRepository:
             start_chain,
         ) = _validate_assembly_checkpoint(checkpoint[:7], require_open=True)
         discovery = connector.fetch_one(
-            "SELECT d.gallery_count, d.tree_observation_sha256, c.state "
-            "FROM catalog_source_build_discoveries d "
-            "JOIN operational_source_build_discovery_checkpoints c "
-            "ON c.build_id = d.build_id WHERE d.build_id = %s",
+            "SELECT gallery_count.gallery_count, "
+            "tree.tree_observation_sha256, checkpoint.state "
+            "FROM catalog_source_build_discovery_seals seal "
+            "JOIN catalog_source_build_discovery_gallery_counts gallery_count "
+            "ON gallery_count.build_id = seal.build_id "
+            "JOIN catalog_source_build_discovery_tree_observation_sha256s tree "
+            "ON tree.build_id = seal.build_id "
+            "JOIN operational_source_build_discovery_checkpoints checkpoint "
+            "ON checkpoint.build_id = seal.build_id WHERE seal.build_id = %s",
             (build,),
         )
         if len(discovery) != 3 or discovery[2] != "COMPLETE":
@@ -1397,6 +1581,7 @@ class SourceBuildRepository:
             1,
             field="assembly committed_generation",
         )
+        committed_at = database_unix_microseconds(work) if terminal else timestamp
         receipt_tuple = (
             build,
             attempt.batch_key,
@@ -1415,7 +1600,7 @@ class SourceBuildRepository:
             row_count,
             int(terminal),
             committed_generation,
-            timestamp,
+            committed_at,
         )
         existing_start = connector.fetch_one(
             _ASSEMBLY_RECEIPT_SELECT + " WHERE build_id = %s AND start_generation = %s",
@@ -1437,28 +1622,10 @@ class SourceBuildRepository:
             receipt_tuple,
         )
         if terminal:
-            _insert_or_validate(
-                connector,
-                label="build manifest",
-                select_sql=(
-                    "SELECT build_id, manifest_sha256, gallery_count, file_count, "
-                    "byte_count, computed_at FROM catalog_build_manifests "
-                    "WHERE build_id = %s"
-                ),
-                select_data=(build,),
-                insert_sql=(
-                    "INSERT INTO catalog_build_manifests "
-                    "(build_id, manifest_sha256, gallery_count, file_count, "
-                    "byte_count, computed_at) VALUES (%s, %s, %s, %s, %s, %s)"
-                ),
-                expected=(
-                    build,
-                    next_chain,
-                    next_gallery_count,
-                    next_file_count,
-                    next_byte_count,
-                    timestamp,
-                ),
+            connector.execute(
+                "INSERT INTO catalog_source_build_sealed_ats "
+                "(build_id, sealed_at) VALUES (%s, %s)",
+                (build, committed_at),
             )
         work.compare_and_swap(
             "UPDATE operational_source_build_assembly_checkpoints SET "
@@ -1492,21 +1659,23 @@ class SourceBuildRepository:
         )
         if terminal:
             work.compare_and_swap(
-                "UPDATE catalog_source_builds SET state = %s, sealed_at = %s "
-                "WHERE build_id = %s AND scope_key = %s "
-                "AND manifest_policy_id = %s AND state = %s "
-                "AND created_at = %s AND sealed_at IS NULL",
-                (
-                    "SEALED",
-                    timestamp,
-                    build,
-                    scope,
-                    manifest_policy_id,
-                    "OPEN",
-                    created_at,
-                ),
+                "UPDATE catalog_source_build_states SET state = %s "
+                "WHERE build_id = %s AND state = %s",
+                ("SEALED", build, "OPEN"),
                 authority="source build seal",
             )
+            try:
+                ensure_build_manifest_family(
+                    connector,
+                    build_id=build,
+                    manifest_sha256=next_chain,
+                    gallery_count=next_gallery_count,
+                    file_count=next_file_count,
+                    byte_count=next_byte_count,
+                    computed_at=committed_at,
+                )
+            except ManifestFamilyCollisionError as error:
+                raise SourceBuildConflictError(str(error)) from error
         return AssemblyBatchReceipt(
             build,
             attempt.batch_key,
@@ -1525,7 +1694,7 @@ class SourceBuildRepository:
             row_count,
             terminal,
             committed_generation,
-            timestamp,
+            committed_at,
             False,
         )
 
@@ -1574,6 +1743,19 @@ def _checked_add(left: int, right: int, *, field: str) -> int:
     if first > INT63_MAX - second:
         raise SourceBuildConflictError(f"{field} exceeds signed-int63")
     return first + second
+
+
+def _load_source_build_or_conflict(
+    connector: Any,
+    build_id: bytes,
+) -> SourceBuildFamily:
+    try:
+        family = load_source_build_family(connector, build_id=build_id)
+    except ManifestFamilyCollisionError as error:
+        raise SourceBuildConflictError(str(error)) from error
+    if family is None:
+        raise SourceBuildNotReadyError("source build is missing")
+    return family
 
 
 def _encode_cursor(position: int) -> bytes:
@@ -1711,21 +1893,25 @@ def _require_checkpoint_cross_state(
         raise SourceBuildConflictError(
             "source build and assembly checkpoint states disagree"
         )
-    manifest = connector.fetch_one(
-        "SELECT manifest_sha256, gallery_count, file_count, byte_count, computed_at "
-        "FROM catalog_build_manifests WHERE build_id = %s",
-        (build_id,),
-    )
+    try:
+        manifest = load_build_manifest_family(connector, build_id=build_id)
+    except ManifestFamilyCollisionError as error:
+        raise SourceBuildConflictError(str(error)) from error
     if build_state == "SEALED":
-        if len(manifest) != 5:
+        if manifest is None:
             raise SourceBuildConflictError("SEALED build has no exact manifest")
         _require_exact(
             "sealed build manifest checkpoint",
-            manifest[:4],
+            (
+                manifest.manifest_sha256,
+                manifest.gallery_count,
+                manifest.file_count,
+                manifest.byte_count,
+            ),
             (assembly[5], assembly[2], assembly[3], assembly[4]),
         )
-        require_int63(manifest[4], field="build manifest computed_at")
-    elif manifest:
+        require_int63(manifest.computed_at, field="build manifest computed_at")
+    elif manifest is not None:
         raise SourceBuildConflictError("OPEN build already has a build manifest")
 
 
@@ -1805,26 +1991,26 @@ def _lock_build_context(
         "WHERE slot = %s",
         (1,),
     )
-    build = work.lock_row(
+    build = _load_source_build_or_conflict(work.connector, build_id)
+    locked_state = work.lock_row(
         LockRank.WORKING_ROOT,
         encode_lock_key("source-build", 2, build_id),
-        "SELECT scope_key, manifest_policy_id, state, created_at, sealed_at "
-        "FROM catalog_source_builds WHERE build_id = %s",
+        "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
         (build_id,),
     )
-    if len(build) != 5:
-        raise SourceBuildNotReadyError("source build is missing")
-    scope = require_digest32(build[0], field="source build scope_key")
-    policy = require_positive_int63(build[1], field="manifest_policy_id")
-    state = build[2]
-    created_at = require_int63(build[3], field="source build created_at")
+    if locked_state != (build.state,):
+        raise SourceBuildConflictError("source build state changed while locking")
+    scope = build.scope_key
+    policy = build.manifest_policy_id
+    state = build.state
+    created_at = build.created_at
     if working != (build_id, created_at):
         raise SourceBuildNotReadyError("source build is not the exact working root")
     if state == "OPEN":
-        if build[4] is not None:
+        if build.sealed_at is not None:
             raise SourceBuildConflictError("OPEN source build has sealed_at")
     elif allow_sealed and state == "SEALED":
-        require_int63(build[4], field="source build sealed_at")
+        require_int63(build.sealed_at, field="source build sealed_at")
     else:
         raise SourceBuildNotReadyError("source build is not writable")
     return scope, policy, state, created_at
@@ -1974,18 +2160,19 @@ def _require_sealed_root_identity(
     byte_count: int,
     root_page_sha256: bytes,
 ) -> None:
-    identity = connector.fetch_one(
-        "SELECT a.digest_domain, a.byte_count, i.root_page_sha256 "
-        "FROM catalog_canonical_value_allocations a "
-        "JOIN catalog_canonical_value_identities i "
-        "ON i.value_sha256 = a.value_sha256 WHERE a.value_sha256 = %s",
-        (source_root_sha256,),
+    identity = load_sealed_value_identity(
+        connector,
+        value_sha256=source_root_sha256,
     )
-    if len(identity) != 3:
+    if identity is None:
         raise SourceBuildNotReadyError("canonical source root is not sealed")
     _require_exact(
         "sealed source root",
-        identity,
+        (
+            identity.digest_domain,
+            identity.byte_count,
+            identity.root_page_sha256,
+        ),
         (
             SOURCE_ROOT_DIGEST_DOMAIN.encode("ascii"),
             require_int63(byte_count, field="source root byte_count"),
@@ -1999,16 +2186,21 @@ def _require_sealed_locator(
     locator: PreparedDiscoveryLocator,
     plan: CanonicalValueUploadPlan,
 ) -> None:
-    row = connector.fetch_one(
-        "SELECT a.digest_domain, a.byte_count, i.root_page_sha256 "
-        "FROM catalog_canonical_value_allocations a "
-        "JOIN catalog_canonical_value_identities i "
-        "ON i.value_sha256 = a.value_sha256 WHERE a.value_sha256 = %s",
-        (locator.locator_sha256,),
+    identity = load_sealed_value_identity(
+        connector,
+        value_sha256=locator.locator_sha256,
     )
     _require_exact(
         "sealed source locator",
-        row,
+        (
+            (
+                identity.digest_domain,
+                identity.byte_count,
+                identity.root_page_sha256,
+            )
+            if identity is not None
+            else ()
+        ),
         (_LOCATOR_DOMAIN_BYTES, locator.payload_byte_count, plan.root_page_sha256),
     )
 
@@ -2020,33 +2212,31 @@ def _load_gallery_identity(
     locator_sha256: bytes,
     stable_key: bytes,
 ) -> int | None:
-    by_natural = connector.fetch_one(
-        "SELECT gallery_id, gallery_key, scope_key, locator_sha256 "
-        "FROM catalog_gallery_identities "
-        "WHERE scope_key = %s AND locator_sha256 = %s",
-        (scope, locator_sha256),
-    )
-    by_key = connector.fetch_one(
-        "SELECT gallery_id, gallery_key, scope_key, locator_sha256 "
-        "FROM catalog_gallery_identities WHERE gallery_key = %s",
-        (stable_key,),
-    )
-    if by_natural:
-        gallery_id = require_positive_int63(by_natural[0], field="gallery_id")
-        expected = (gallery_id, stable_key, scope, locator_sha256)
-        _require_exact("gallery natural identity", by_natural, expected)
-        if by_key:
-            _require_exact("gallery stable key", by_key, expected)
-        return gallery_id
-    if by_key:
-        gallery_id = require_positive_int63(by_key[0], field="gallery_id")
-        _require_exact(
-            "gallery key collision",
-            by_key,
-            (gallery_id, stable_key, scope, locator_sha256),
+    try:
+        rows = load_gallery_identity_candidates(
+            connector,
+            scope_key=scope,
+            locator_sha256=locator_sha256,
+            gallery_key=stable_key,
         )
-        return gallery_id
-    return None
+    except CatalogIdentityCollisionError as error:
+        raise SourceBuildConflictError(str(error)) from error
+    if not rows:
+        return None
+    if len(rows) != 1:
+        raise SourceBuildConflictError(
+            "gallery natural identity and stable key name different surrogates"
+        )
+    identity = rows[0]
+    if (
+        identity.gallery_key,
+        identity.scope_key,
+        identity.locator_sha256,
+    ) != (stable_key, scope, locator_sha256):
+        raise SourceBuildConflictError(
+            "gallery natural identity or stable key collision differs"
+        )
+    return identity.gallery_id
 
 
 def _require_gallery_observation_allocator(connector: Any, gallery_id: int) -> None:
@@ -2243,25 +2433,41 @@ def _load_assembly_page(
     manifest_policy_id: int,
 ) -> tuple[tuple[Any, ...], ...]:
     select = (
-        "SELECT e.position, e.gallery_id, gi.gallery_key, gi.scope_key, "
+        "SELECT e.position, e.gallery_id, gik.gallery_key, gic.scope_key, "
         "member.observation_id, observation.observation_identity_sha256, "
-        "stat.file_count, stat.byte_count, manifest.manifest_policy_id, "
+        "stat_file.file_count, stat_byte.byte_count, manifest_seal.manifest_policy_id, "
         "manifest.manifest_sha256 "
         "FROM catalog_source_build_expected_gallery e "
-        "LEFT JOIN catalog_gallery_identities gi "
-        "ON gi.gallery_id = e.gallery_id "
+        "LEFT JOIN catalog_gallery_identity_seals gis "
+        "ON gis.gallery_id = e.gallery_id "
+        "LEFT JOIN catalog_gallery_identity_anchors gia "
+        "ON gia.gallery_id = gis.gallery_id "
+        "LEFT JOIN catalog_gallery_identity_coordinates gic "
+        "ON gic.gallery_id = gis.gallery_id "
+        "LEFT JOIN catalog_gallery_identity_gallery_keys gik "
+        "ON gik.gallery_id = gis.gallery_id "
         "LEFT JOIN catalog_source_build_galleries member "
         "ON member.build_id = e.build_id AND member.gallery_id = e.gallery_id "
         "LEFT JOIN catalog_gallery_observations observation "
         "ON observation.gallery_id = member.gallery_id "
         "AND observation.observation_id = member.observation_id "
-        "LEFT JOIN catalog_gallery_observation_stat stat "
-        "ON stat.gallery_id = member.gallery_id "
-        "AND stat.observation_id = member.observation_id "
-        "LEFT JOIN catalog_gallery_manifests manifest "
-        "ON manifest.gallery_id = member.gallery_id "
-        "AND manifest.observation_id = member.observation_id "
-        "AND manifest.manifest_policy_id = %s "
+        "LEFT JOIN catalog_gallery_observation_stat_seals stat_seal "
+        "ON stat_seal.gallery_id = member.gallery_id "
+        "AND stat_seal.observation_id = member.observation_id "
+        "LEFT JOIN catalog_gallery_observation_stat_file_counts stat_file "
+        "ON stat_file.gallery_id = stat_seal.gallery_id "
+        "AND stat_file.observation_id = stat_seal.observation_id "
+        "LEFT JOIN catalog_gallery_observation_stat_byte_counts stat_byte "
+        "ON stat_byte.gallery_id = stat_seal.gallery_id "
+        "AND stat_byte.observation_id = stat_seal.observation_id "
+        "LEFT JOIN catalog_gallery_manifest_seals manifest_seal "
+        "ON manifest_seal.gallery_id = member.gallery_id "
+        "AND manifest_seal.observation_id = member.observation_id "
+        "AND manifest_seal.manifest_policy_id = %s "
+        "LEFT JOIN catalog_gallery_manifest_manifest_sha256s manifest "
+        "ON manifest.gallery_id = manifest_seal.gallery_id "
+        "AND manifest.observation_id = manifest_seal.observation_id "
+        "AND manifest.manifest_policy_id = manifest_seal.manifest_policy_id "
     )
     if cursor:
         position = int.from_bytes(cursor, "big")
@@ -2481,14 +2687,24 @@ def _validate_assembly_replay(
             ),
         )
     if receipt.terminal:
-        manifest = connector.fetch_one(
-            "SELECT manifest_sha256, gallery_count, file_count, byte_count, computed_at "
-            "FROM catalog_build_manifests WHERE build_id = %s",
-            (receipt.build_id,),
-        )
+        try:
+            manifest = load_build_manifest_family(
+                connector,
+                build_id=receipt.build_id,
+            )
+        except ManifestFamilyCollisionError as error:
+            raise SourceBuildConflictError(str(error)) from error
+        if manifest is None:
+            raise SourceBuildConflictError("replayed build manifest is missing")
         _require_exact(
             "replayed build manifest",
-            manifest,
+            (
+                manifest.manifest_sha256,
+                manifest.gallery_count,
+                manifest.file_count,
+                manifest.byte_count,
+                manifest.computed_at,
+            ),
             (
                 receipt.next_manifest_chain_sha256,
                 receipt.next_gallery_count,
@@ -2499,14 +2715,16 @@ def _validate_assembly_replay(
         )
         if build_state != "SEALED":
             raise SourceBuildConflictError("terminal assembly build is not SEALED")
-        build = connector.fetch_one(
-            "SELECT scope_key, manifest_policy_id, state, created_at, sealed_at "
-            "FROM catalog_source_builds WHERE build_id = %s",
-            (receipt.build_id,),
-        )
+        build = _load_source_build_or_conflict(connector, receipt.build_id)
         _require_exact(
             "replayed sealed source build",
-            build,
+            (
+                build.scope_key,
+                build.manifest_policy_id,
+                build.state,
+                build.created_at,
+                build.sealed_at,
+            ),
             (
                 scope,
                 manifest_policy_id,
@@ -2518,22 +2736,21 @@ def _validate_assembly_replay(
 
 
 def _manifest_policy_id(connector: Any) -> int:
-    rows = connector.fetch_all(
-        "SELECT manifest_policy_id, manifest_algorithm_version, file_order_version "
-        "FROM catalog_manifest_policies "
-        "WHERE manifest_algorithm_version = %s AND file_order_version = %s",
-        (_MANIFEST_ALGORITHM_VERSION, _FILE_ORDER_VERSION),
-    )
-    if len(rows) != 1:
-        raise SourceBuildNotReadyError(
-            "exact v1 manifest policy tuple is not seeded exactly once"
+    try:
+        policy = load_manifest_policy_by_natural(
+            connector,
+            manifest_algorithm_version=_MANIFEST_ALGORITHM_VERSION,
+            file_order_version=_FILE_ORDER_VERSION,
         )
-    _require_exact(
-        "manifest policy",
-        rows[0][1:],
-        (_MANIFEST_ALGORITHM_VERSION, _FILE_ORDER_VERSION),
-    )
-    return require_positive_int63(rows[0][0], field="manifest_policy_id")
+    except CatalogRegistryNotReadyError as error:
+        raise SourceBuildNotReadyError(
+            "exact v1 manifest policy tuple is not sealed"
+        ) from error
+    except CatalogRegistryConflictError as error:
+        raise SourceBuildConflictError(
+            "exact v1 manifest policy tuple is corrupt"
+        ) from error
+    return policy.manifest_policy_id
 
 
 def _require_registry_value(
@@ -2560,35 +2777,22 @@ def _insert_or_validate_scope(
     scope: bytes,
     source_root_sha256: bytes,
 ) -> None:
-    expected = (
-        scope,
-        _FILESYSTEM_BYTES,
-        source_root_sha256,
-        _IDENTITY_POLICY_VERSION,
-    )
-    by_key = connector.fetch_one(
-        "SELECT scope_key, source_provider, source_root_sha256, "
-        "identity_policy_version FROM catalog_source_scopes WHERE scope_key = %s",
-        (scope,),
-    )
-    by_tuple = connector.fetch_one(
-        "SELECT scope_key, source_provider, source_root_sha256, "
-        "identity_policy_version FROM catalog_source_scopes "
-        "WHERE source_provider = %s AND source_root_sha256 = %s "
-        "AND identity_policy_version = %s",
-        (_FILESYSTEM_BYTES, source_root_sha256, _IDENTITY_POLICY_VERSION),
-    )
-    if by_key:
-        _require_exact("source scope key", by_key, expected)
-    elif by_tuple:
-        _require_exact("source scope natural tuple", by_tuple, expected)
-    else:
-        connector.execute(
-            "INSERT INTO catalog_source_scopes "
-            "(scope_key, source_provider, source_root_sha256, "
-            "identity_policy_version) VALUES (%s, %s, %s, %s)",
-            expected,
+    try:
+        result = ensure_source_scope(
+            connector,
+            source_provider=_FILESYSTEM_BYTES,
+            source_root_sha256=source_root_sha256,
+            identity_policy_version=_IDENTITY_POLICY_VERSION,
         )
+    except CatalogRegistryNotReadyError as error:
+        raise SourceBuildNotReadyError(
+            "source scope family is incomplete or unsealed"
+        ) from error
+    except CatalogRegistryConflictError as error:
+        raise SourceBuildConflictError(
+            "source scope identity conflicts with durable registry facts"
+        ) from error
+    _require_exact("derived source scope key", (result.record.scope_key,), (scope,))
 
 
 def _insert_or_validate_build(
@@ -2599,21 +2803,100 @@ def _insert_or_validate_build(
     manifest_policy_id: int,
     created_at: int,
 ) -> None:
-    expected = (build_id, scope, manifest_policy_id, "OPEN", created_at, None)
-    row = connector.fetch_one(
-        "SELECT build_id, scope_key, manifest_policy_id, state, created_at, sealed_at "
-        "FROM catalog_source_builds WHERE build_id = %s",
-        (build_id,),
-    )
-    if row:
-        _require_exact("source build", row, expected)
-    else:
-        connector.execute(
-            "INSERT INTO catalog_source_builds "
-            "(build_id, scope_key, manifest_policy_id, state, created_at, sealed_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s)",
-            expected,
+    try:
+        ensure_source_build_family(
+            connector,
+            build_id=build_id,
+            scope_key=scope,
+            manifest_policy_id=manifest_policy_id,
+            created_at=created_at,
         )
+    except ManifestFamilyCollisionError as error:
+        raise SourceBuildConflictError(str(error)) from error
+
+
+def _persist_source_build_discovery(
+    connector: Any,
+    *,
+    build_id: bytes,
+    scan_attempt: bytes,
+    gallery_count: int,
+    tree_observation_sha256: bytes,
+    completed_at: int,
+) -> None:
+    key = (build_id,)
+    _insert_or_validate(
+        connector,
+        label="source build discovery anchor",
+        select_sql=(
+            "SELECT build_id FROM catalog_source_build_discovery_anchors "
+            "WHERE build_id = %s"
+        ),
+        select_data=key,
+        insert_sql=(
+            "INSERT INTO catalog_source_build_discovery_anchors (build_id) VALUES (%s)"
+        ),
+        expected=key,
+    )
+    for label, select_sql, insert_sql, value in (
+        (
+            "source build discovery scan attempt",
+            "SELECT build_id, scan_attempt "
+            "FROM catalog_source_build_discovery_scan_attempts "
+            "WHERE build_id = %s",
+            "INSERT INTO catalog_source_build_discovery_scan_attempts "
+            "(build_id, scan_attempt) VALUES (%s, %s)",
+            scan_attempt,
+        ),
+        (
+            "source build discovery gallery count",
+            "SELECT build_id, gallery_count "
+            "FROM catalog_source_build_discovery_gallery_counts "
+            "WHERE build_id = %s",
+            "INSERT INTO catalog_source_build_discovery_gallery_counts "
+            "(build_id, gallery_count) VALUES (%s, %s)",
+            gallery_count,
+        ),
+        (
+            "source build discovery tree observation digest",
+            "SELECT build_id, tree_observation_sha256 "
+            "FROM catalog_source_build_discovery_tree_observation_sha256s "
+            "WHERE build_id = %s",
+            "INSERT INTO catalog_source_build_discovery_tree_observation_sha256s "
+            "(build_id, tree_observation_sha256) VALUES (%s, %s)",
+            tree_observation_sha256,
+        ),
+        (
+            "source build discovery completed at",
+            "SELECT build_id, completed_at "
+            "FROM catalog_source_build_discovery_completed_ats "
+            "WHERE build_id = %s",
+            "INSERT INTO catalog_source_build_discovery_completed_ats "
+            "(build_id, completed_at) VALUES (%s, %s)",
+            completed_at,
+        ),
+    ):
+        _insert_or_validate(
+            connector,
+            label=label,
+            select_sql=select_sql,
+            select_data=key,
+            insert_sql=insert_sql,
+            expected=(build_id, value),
+        )
+    _insert_or_validate(
+        connector,
+        label="source build discovery seal",
+        select_sql=(
+            "SELECT build_id FROM catalog_source_build_discovery_seals "
+            "WHERE build_id = %s"
+        ),
+        select_data=key,
+        insert_sql=(
+            "INSERT INTO catalog_source_build_discovery_seals (build_id) VALUES (%s)"
+        ),
+        expected=key,
+    )
 
 
 def _insert_or_validate(
@@ -2632,6 +2915,98 @@ def _insert_or_validate(
         connector.execute(insert_sql, expected)
 
 
+def _lock_source_head(
+    work: VNextUnitOfWork,
+    channel: bytes,
+) -> _SourceHead | None:
+    row = work.lock_row(
+        LockRank.HEAD,
+        encode_lock_key("source-build-head", channel),
+        "SELECT registry.channel, head.receipt_id, seal.receipt_id, "
+        "source.source_revision, generation.generation, committed.committed_at, "
+        "descriptor.channel "
+        "FROM catalog_channel_registry AS registry "
+        f"LEFT JOIN {_PUBLICATION_COMMIT_HEAD_TABLE} AS head "
+        "ON head.channel = registry.channel "
+        f"LEFT JOIN {_PUBLICATION_COMMIT_SEAL_TABLE} AS seal "
+        "ON seal.receipt_id = head.receipt_id "
+        f"LEFT JOIN {_PUBLICATION_COMMIT_SOURCE_TABLE} AS source "
+        "ON source.receipt_id = head.receipt_id "
+        f"LEFT JOIN {_PUBLICATION_COMMIT_GENERATION_TABLE} AS generation "
+        "ON generation.receipt_id = head.receipt_id "
+        f"LEFT JOIN {_PUBLICATION_COMMIT_COMMITTED_AT_TABLE} AS committed "
+        "ON committed.receipt_id = head.receipt_id "
+        f"LEFT JOIN {_SOURCE_REVISION_CHANNEL_TABLE} AS descriptor "
+        "ON descriptor.source_revision = source.source_revision "
+        "WHERE registry.channel = %s",
+        (channel,),
+    )
+    if len(row) != 7 or row[0] != channel:
+        raise SourceBuildConflictError(
+            "source channel registry is missing or malformed"
+        )
+    members = row[1:]
+    if all(value is None for value in members):
+        return None
+    if any(value is None for value in members):
+        raise SourceBuildConflictError("source head vertical family is incomplete")
+    if row[1] != row[2]:
+        raise SourceBuildConflictError("common publication head is not sealed")
+    descriptor_channel = require_bounded_bytes(
+        row[6],
+        field="source head descriptor channel",
+        minimum=1,
+        maximum=64,
+    )
+    if descriptor_channel != channel:
+        raise SourceBuildConflictError(
+            "source head points to a revision from another channel"
+        )
+    return _SourceHead(
+        require_uuid16(row[1], field="source head receipt_id"),
+        require_positive_int63(row[3], field="source head revision"),
+        require_positive_int63(row[4], field="source head generation"),
+        require_int63(row[5], field="source head committed_at"),
+    )
+
+
+def _validate_build_base_source(
+    connector: Any,
+    *,
+    build_id: bytes,
+) -> None:
+    row = connector.fetch_one(
+        f"SELECT base.base_receipt_id, seal.receipt_id, source.source_revision, "
+        "generation.generation, descriptor.channel "
+        f"FROM {_SOURCE_BUILD_BASE_COMMIT_TABLE} AS base "
+        f"LEFT JOIN {_PUBLICATION_COMMIT_SEAL_TABLE} AS seal "
+        "ON seal.receipt_id = base.base_receipt_id "
+        f"LEFT JOIN {_PUBLICATION_COMMIT_SOURCE_TABLE} AS source "
+        "ON source.receipt_id = base.base_receipt_id "
+        f"LEFT JOIN {_PUBLICATION_COMMIT_GENERATION_TABLE} AS generation "
+        "ON generation.receipt_id = base.base_receipt_id "
+        f"LEFT JOIN {_SOURCE_REVISION_CHANNEL_TABLE} AS descriptor "
+        "ON descriptor.source_revision = source.source_revision "
+        "WHERE base.build_id = %s",
+        (build_id,),
+    )
+    if not row:
+        return
+    if len(row) != 5 or any(value is None for value in row):
+        raise SourceBuildConflictError(
+            "source build base commit lacks its immutable sealed authority"
+        )
+    receipt_id = require_uuid16(row[0], field="source build base receipt_id")
+    if row[1] != receipt_id:
+        raise SourceBuildConflictError("source build base commit is not sealed")
+    require_positive_int63(row[2], field="source build base source revision")
+    require_positive_int63(row[3], field="source build base generation")
+    if row[4] != _DEFAULT_CHANNEL:
+        raise SourceBuildConflictError(
+            "source build base commit belongs to another channel"
+        )
+
+
 def _validate_existing_handoff(
     connector: Any,
     *,
@@ -2642,46 +3017,43 @@ def _validate_existing_handoff(
     manifest_policy_id: int,
     working: tuple[Any, ...],
 ) -> None:
-    scope_row = connector.fetch_one(
-        "SELECT scope_key, source_provider, source_root_sha256, "
-        "identity_policy_version FROM catalog_source_scopes WHERE scope_key = %s",
-        (scope,),
-    )
+    try:
+        scope_record = load_source_scope(connector, scope)
+    except CatalogRegistryNotReadyError as error:
+        raise SourceBuildNotReadyError(
+            "replayed source scope is absent or unsealed"
+        ) from error
+    except CatalogRegistryConflictError as error:
+        raise SourceBuildConflictError("replayed source scope is corrupt") from error
     _require_exact(
         "replayed source scope",
-        scope_row,
+        (
+            scope_record.scope_key,
+            scope_record.source_provider,
+            scope_record.source_root_sha256,
+            scope_record.identity_policy_version,
+        ),
         (scope, _FILESYSTEM_BYTES, source_root_sha256, _IDENTITY_POLICY_VERSION),
     )
-    build = connector.fetch_one(
-        "SELECT scope_key, manifest_policy_id, state, created_at, sealed_at "
-        "FROM catalog_source_builds WHERE build_id = %s",
-        (build_id,),
-    )
-    if len(build) != 5:
-        raise SourceBuildConflictError("replayed source build is missing")
-    created_at = require_int63(build[3], field="replayed build created_at")
+    build = _load_source_build_or_conflict(connector, build_id)
+    created_at = build.created_at
     _require_exact(
         "replayed source build immutable fields",
-        build[:2],
+        (build.scope_key, build.manifest_policy_id),
         (scope, manifest_policy_id),
     )
-    if build[2] == "OPEN":
-        if build[4] is not None:
+    if build.state == "OPEN":
+        if build.sealed_at is not None:
             raise SourceBuildConflictError("replayed OPEN build has sealed_at")
-    elif build[2] == "SEALED":
-        require_int63(build[4], field="replayed build sealed_at")
-        manifest = connector.fetch_one(
-            "SELECT manifest_sha256, gallery_count, file_count, byte_count, "
-            "computed_at FROM catalog_build_manifests WHERE build_id = %s",
-            (build_id,),
-        )
-        if len(manifest) != 5:
+    elif build.state == "SEALED":
+        require_int63(build.sealed_at, field="replayed build sealed_at")
+        try:
+            manifest = load_build_manifest_family(connector, build_id=build_id)
+        except ManifestFamilyCollisionError as error:
+            raise SourceBuildConflictError(str(error)) from error
+        if manifest is None:
             raise SourceBuildConflictError("replayed SEALED build has no manifest")
-        require_digest32(manifest[0], field="replayed build manifest_sha256")
-        require_int63(manifest[1], field="replayed build gallery_count")
-        require_int63(manifest[2], field="replayed build file_count")
-        require_int63(manifest[3], field="replayed build byte_count")
-        require_int63(manifest[4], field="replayed build computed_at")
+        manifest.__post_init__()
     else:
         raise SourceBuildConflictError("replayed source build is ABANDONED")
     channel = connector.fetch_one(
@@ -2689,6 +3061,7 @@ def _validate_existing_handoff(
         (build_id,),
     )
     _require_exact("replayed source channel", channel, (_DEFAULT_CHANNEL,))
+    _validate_build_base_source(connector, build_id=build_id)
     mapping = connector.fetch_one(
         "SELECT build_id, generation FROM operational_source_build_generations "
         "WHERE generation = %s",
@@ -2703,7 +3076,7 @@ def _validate_existing_handoff(
     _require_checkpoint_pair(
         connector,
         build_id=build_id,
-        build_state=build[2],
+        build_state=build.state,
     )
 
 

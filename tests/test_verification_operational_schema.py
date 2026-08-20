@@ -202,7 +202,7 @@ def test_operational_contract_is_closed_world_bcnf_and_scope_separated() -> None
     assert not report.lossless_decompositions
     assert not report.dependency_preserving_decompositions
     assert all(not checker.bcnf_violations(value) for value in contract.relations)
-    assert len(contract.external_relations) == 33
+    assert len(contract.external_relations) == 68
     assert {
         "canonical_value_allocation",
         "canonical_value_page",
@@ -212,6 +212,21 @@ def test_operational_contract_is_closed_world_bcnf_and_scope_separated() -> None
         "gallery_observation_allocation_page",
         "gallery_observation_page_descriptor",
         "gallery_observation_file_filesystem",
+        "gallery_identity_anchor",
+        "gallery_identity_coordinate",
+        "gallery_identity_gallery_key",
+        "gallery_identity_seal",
+        "file_name_identity_anchor",
+        "file_name_identity_name_bytes",
+        "file_name_identity_file_role",
+        "file_name_identity_seal",
+        "gallery_observation_file_anchor",
+        "gallery_observation_file_file_no",
+        "gallery_observation_file_file_sha256",
+        "gallery_observation_file_seal",
+        "tag_term_anchor",
+        "tag_term_identity",
+        "tag_term_seal",
         "gallery_observation_metadata",
         "gallery_observation_scan",
         "source_build_gallery",
@@ -220,7 +235,7 @@ def test_operational_contract_is_closed_world_bcnf_and_scope_separated() -> None
         value.name
         for value in contract.relations
         if value.kind == "controlled_materialization"
-    } == {"file_hash_cache"}
+    } == {"file_hash_cache", "operational_activation"}
 
 
 def test_maintenance_gate_holder_allows_one_owner_to_hold_every_slot() -> None:
@@ -470,7 +485,7 @@ def test_operational_sqlite_history_and_attempts_accept_required_reuse() -> None
         assert all(len(value) == 16 for value in values)
 
         connection.executemany(
-            "INSERT INTO catalog_source_builds (build_id) VALUES (?)",
+            "INSERT INTO catalog_source_build_descriptor_seals (build_id) VALUES (?)",
             ((first_build,), (second_build,)),
         )
         connection.execute(
@@ -701,7 +716,7 @@ def test_operational_sqlite_event_types_subtypes_and_ack_coordinates() -> None:
             "(preparation_id, created_at) VALUES (?, 1)",
             (preparation,),
         )
-        with pytest.raises(sqlite3.IntegrityError):
+        with pytest.raises(sqlite3.OperationalError, match="view"):
             connection.execute(
                 """
                 INSERT INTO operational_operational_activations
@@ -785,13 +800,30 @@ def test_operational_sqlite_event_types_subtypes_and_ack_coordinates() -> None:
             """,
             (preparation, bytes([12]) * 32),
         )
+        receipt_id = bytes([7]) * 16
         connection.execute(
-            """
-            INSERT INTO operational_operational_activations
-                (source_revision, preparation_id, operational_policy_id, activated_at)
-            VALUES (1, ?, 1, 2)
-            """,
-            (preparation,),
+            "INSERT INTO catalog_publication_commit_source_revisions "
+            "(receipt_id, source_revision) VALUES (?, 1)",
+            (receipt_id,),
+        )
+        connection.execute(
+            "INSERT INTO catalog_publication_commit_operational_preparations "
+            "(receipt_id, preparation_id) VALUES (?, ?)",
+            (receipt_id, preparation),
+        )
+        connection.execute(
+            "INSERT INTO catalog_publication_commit_operational_policies "
+            "(receipt_id, operational_policy_id) VALUES (?, 1)",
+            (receipt_id,),
+        )
+        connection.execute(
+            "INSERT INTO catalog_publication_commit_committed_ats "
+            "(receipt_id, committed_at) VALUES (?, 2)",
+            (receipt_id,),
+        )
+        connection.execute(
+            "INSERT INTO catalog_publication_commit_seals (receipt_id) VALUES (?)",
+            (receipt_id,),
         )
         assert connection.execute("""
             SELECT COUNT(*)
@@ -870,14 +902,17 @@ def test_generation_retention_rows_outlive_ephemeral_owner_authority() -> None:
         build_id = bytes([8]) * 16
         value_sha256 = bytes([9]) * 32
         connection.execute(
-            "INSERT INTO catalog_source_builds (build_id) VALUES (?)", (build_id,)
+            "INSERT INTO catalog_source_build_descriptor_seals (build_id) VALUES (?)",
+            (build_id,),
         )
         connection.execute(
-            """
-            INSERT INTO catalog_canonical_value_allocations
-                (value_sha256, digest_domain, byte_count, allocated_at)
-            VALUES (?, X'01', 0, 1)
-            """,
+            "INSERT INTO catalog_canonical_value_allocation_anchors "
+            "(value_sha256) VALUES (?)",
+            (value_sha256,),
+        )
+        connection.execute(
+            "INSERT INTO catalog_canonical_value_allocation_seals "
+            "(value_sha256) VALUES (?)",
             (value_sha256,),
         )
         connection.execute(
@@ -922,7 +957,9 @@ def test_generation_retention_rows_outlive_ephemeral_owner_authority() -> None:
 def test_operational_external_fk_must_target_declared_candidate_key() -> None:
     contract = checker.load_contract(LOGICAL_PATH)
     external = next(
-        value for value in contract.external_relations if value.name == "source_build"
+        value
+        for value in contract.external_relations
+        if value.name == "source_build_descriptor_seal"
     )
     invalid_external = replace(external, declared_keys=(frozenset({"missing"}),))
     invalid = replace(
@@ -1009,7 +1046,7 @@ def test_source_build_authority_is_fail_closed_across_manifests() -> None:
         foreign_keys=tuple(
             foreign_key
             for foreign_key in expected_membership.foreign_keys
-            if foreign_key.relation != "gallery_identity"
+            if foreign_key.relation != "gallery_identity_seal"
         ),
     )
     drifted_catalog = replace(
@@ -1166,7 +1203,7 @@ def test_operational_machine_obligations_and_genesis_are_closed_world() -> None:
     )
     assert machine.epoch_owned_relation == "schema_epoch_control"
     assert len(machine.absent_relations) == 68
-    assert len(machine.seeds) == 86
+    assert len(machine.seeds) == 116
     assert {
         value.seed_id
         for value in machine.seeds
@@ -1230,8 +1267,8 @@ def test_cleanup_fk_descendant_and_root_codec_mutations_fail_closed() -> None:
     next(
         phase
         for phase in observation["phases"]
-        if "gallery_observation_metadata" in phase["relations"]
-    )["relations"].remove("gallery_observation_metadata")
+        if "gallery_observation_modified_time" in phase["relations"]
+    )["relations"].remove("gallery_observation_modified_time")
     with pytest.raises(ValueError, match="phase ownership"):
         operational_refinement.check_cleanup_reachability_v1(missing_child, physical)
 
@@ -1251,9 +1288,29 @@ def test_cleanup_fk_descendant_and_root_codec_mutations_fail_closed() -> None:
         for value in string_blocker["cleanup_target"]
         if value["target_kind"] == "ARTIFACT_BLOB"
     )
-    artifact["retained_fk_edges"] = ["catalog_artifact.artifact_id"]
+    artifact["retained_fk_edges"] = ["catalog_artifact_sha256.artifact_sha256"]
     with pytest.raises(ValueError, match="retained_fk_edges is invalid"):
         operational_refinement.check_cleanup_reachability_v1(string_blocker, physical)
+
+    missing_publication_identity = deepcopy(logical)
+    upload_time = next(
+        value
+        for value in missing_publication_identity["cleanup_target"]
+        if value["target_kind"] == "GALLERY_UPLOAD_TIME"
+    )
+    assert upload_time["retention_roots"] == [
+        "source_gallery_name_gid.gid",
+        "publication_identity.gid",
+    ]
+    upload_time["retained_fk_edges"] = [
+        edge
+        for edge in upload_time["retained_fk_edges"]
+        if edge["relation"] != "publication_identity"
+    ]
+    with pytest.raises(ValueError, match="structured FK boundary"):
+        operational_refinement.check_cleanup_reachability_v1(
+            missing_publication_identity, physical
+        )
 
     missing_intermediary = deepcopy(logical)
     artifact = next(
@@ -2857,6 +2914,24 @@ def test_gallery_parser_and_audit_contract_mutations_fail_closed() -> None:
     assert tuple(logical["gallery_staging_contract"]["durable_parser_phases"]) == (
         GALLERY_OBSERVATION_DURABLE_PARSER_PHASES
     )
+    assert (
+        "zero-based contiguous ordinal sequence 0..n-1"
+        in logical["gallery_staging_contract"]["normalized_fact_rule"]
+    )
+
+    one_based_file_numbers = deepcopy(logical)
+    one_based_file_numbers["gallery_staging_contract"][
+        "normalized_fact_rule"
+    ] = one_based_file_numbers["gallery_staging_contract"][
+        "normalized_fact_rule"
+    ].replace(
+        "zero-based contiguous ordinal sequence 0..n-1",
+        "one-based contiguous ordinal sequence 1..n",
+    )
+    with pytest.raises(ValueError, match="exact protocol text drifts"):
+        operational_refinement.check_gallery_staging_contract_v1(
+            one_based_file_numbers, physical
+        )
 
     alias_phase = deepcopy(logical)
     phases = alias_phase["gallery_staging_contract"]["durable_parser_phases"]
@@ -2978,7 +3053,7 @@ def test_operational_machine_binding_and_typed_seed_mutations_fail_closed() -> N
     activation["foreign_keys"] = [
         value
         for value in activation["foreign_keys"]
-        if value["relation"] != "operational_preparation_effect_seal"
+        if value["relation"] != "publication_commit_operational_preparation"
     ]
     with pytest.raises(ValueError, match="lacks exact effect FK"):
         operational_refinement.validate_operational_machine_contract_documents(
@@ -3052,7 +3127,6 @@ def test_every_operational_foreign_key_has_explicit_left_prefix_access() -> None
         "ix_gallery_redownload_state_fk_2",
         "ix_operational_preparation_fk_3",
         "ix_operational_preparation_fk_4",
-        "ix_operational_activation_fk_3",
         "ix_operational_event_ack_head_fk_2",
         "ix_removed_gid_ack_fk_2",
         "ix_hash_cache_observation_fk_2",
@@ -3141,7 +3215,6 @@ def test_complete_operational_sqlite_fixture_physically_refines() -> None:
         "ix_gallery_redownload_state_fk_2",
         "ix_operational_preparation_fk_3",
         "ix_operational_preparation_fk_4",
-        "ix_operational_activation_fk_3",
         "ix_operational_event_ack_head_fk_2",
         "ix_removed_gid_ack_fk_2",
         "ix_hash_cache_observation_fk_2",
@@ -3272,10 +3345,14 @@ def test_source_root_upload_can_bootstrap_before_build_mapping_in_sqlite() -> No
                 "(generation, lease_expires_at) VALUES (1, 100)"
             )
             connection.execute(
-                "INSERT INTO catalog_canonical_value_allocations "
-                "(value_sha256, digest_domain, byte_count, allocated_at) "
-                "VALUES (?, ?, 1, 1)",
-                (value_sha256, b"source_root_v1"),
+                "INSERT INTO catalog_canonical_value_allocation_anchors "
+                "(value_sha256) VALUES (?)",
+                (value_sha256,),
+            )
+            connection.execute(
+                "INSERT INTO catalog_canonical_value_allocation_seals "
+                "(value_sha256) VALUES (?)",
+                (value_sha256,),
             )
             # The source-root claim intentionally precedes the build mapping
             # that its final identity enables; all declared FKs remain valid.
@@ -3293,7 +3370,7 @@ def test_source_root_upload_can_bootstrap_before_build_mapping_in_sqlite() -> No
 
         with connection:
             connection.execute(
-                "INSERT INTO catalog_source_builds (build_id) VALUES (?)",
+                "INSERT INTO catalog_source_build_descriptor_seals (build_id) VALUES (?)",
                 (build_id,),
             )
             connection.execute(
@@ -3416,7 +3493,9 @@ def test_operational_mariadb_renderer_uses_exact_binary_domains() -> None:
     activation_ddl = next(
         statement
         for statement in statements
-        if statement.startswith("CREATE TABLE `operational_operational_activations`")
+        if statement.startswith(
+            "CREATE SQL SECURITY INVOKER VIEW `operational_operational_activations`"
+        )
     )
     event_ddl = next(
         statement
@@ -3511,10 +3590,11 @@ def test_operational_mariadb_renderer_uses_exact_binary_domains() -> None:
     assert "`event_count` BIGINT UNSIGNED NOT NULL" in effect_seal_ddl
     assert "`final_chain_sha256` BINARY(32) NOT NULL" in effect_seal_ddl
     assert "`sealed_at` BIGINT UNSIGNED NOT NULL" in effect_seal_ddl
-    assert (
-        "FOREIGN KEY (`preparation_id`) REFERENCES "
-        "`operational_operational_preparation_effect_seals` (`preparation_id`)"
-    ) in activation_ddl
+    assert "FROM `catalog_publication_commit_seals` AS sealed" in activation_ddl
+    assert "catalog_publication_commit_source_revisions" in activation_ddl
+    assert "catalog_publication_commit_operational_preparations" in activation_ddl
+    assert "catalog_publication_commit_operational_policies" in activation_ddl
+    assert "catalog_publication_commit_committed_ats" in activation_ddl
     assert "UNIQUE (`preparation_id`, `sequence_no`)" in event_ddl
     assert "`source_revision`" not in event_ddl
     assert (
@@ -3535,6 +3615,63 @@ def test_operational_mariadb_renderer_uses_exact_binary_domains() -> None:
     ) in ddl
     assert "CREATE INDEX `ix_operational_event_revision`" not in ddl
     assert "CREATE INDEX `ix_file_hash_cache_hash`" in ddl
+
+
+def test_operational_activation_accepts_only_mariadb_inner_join_reformatting() -> None:
+    _logical, _local_names, physical, stubs = _schemas()
+    relation_by_name = {relation.relation: relation for relation in physical.relations}
+    relation_by_name.update(
+        (stub.relation, operational_refinement._external_physical_relation(stub))
+        for stub in stubs
+    )
+    expected = next(
+        statement
+        for statement in operational_refinement.render_mariadb_ddl(physical, stubs)
+        if "operational_operational_activations" in statement
+    )
+    actual = """SELECT
+      source_member.source_revision AS source_revision,
+      preparation_member.preparation_id AS preparation_id,
+      policy_member.operational_policy_id AS operational_policy_id,
+      time_member.committed_at AS activated_at
+    FROM ((((test_database.catalog_publication_commit_seals sealed
+      JOIN test_database.catalog_publication_commit_source_revisions source_member
+        ON(source_member.receipt_id = sealed.receipt_id))
+      JOIN test_database.catalog_publication_commit_operational_preparations preparation_member
+        ON(preparation_member.receipt_id = sealed.receipt_id))
+      JOIN test_database.catalog_publication_commit_operational_policies policy_member
+        ON(policy_member.receipt_id = sealed.receipt_id))
+      JOIN test_database.catalog_publication_commit_committed_ats time_member
+        ON(time_member.receipt_id = sealed.receipt_id))"""
+    table_names = tuple(
+        relation.table
+        for relation in relation_by_name.values()
+        if relation.table is not None
+    )
+
+    expected_normalized = refinement._normalize_view_definition(
+        expected,
+        table_names=table_names,
+        collapse_inner_join_tree=True,
+    )
+    actual_normalized = refinement._normalize_view_definition(
+        actual,
+        table_names=table_names,
+        collapse_inner_join_tree=True,
+    )
+
+    assert actual_normalized == expected_normalized
+    assert (
+        refinement._normalize_view_definition(
+            actual.replace(
+                "catalog_publication_commit_committed_ats",
+                "catalog_publication_commit_operational_policies",
+            ),
+            table_names=table_names,
+            collapse_inner_join_tree=True,
+        )
+        != expected_normalized
+    )
 
 
 def test_complete_operational_mariadb_fixture_physically_refines(
@@ -3596,10 +3733,14 @@ def test_complete_operational_mariadb_fixture_physically_refines(
                 "(generation, lease_expires_at) VALUES (1, 100)"
             )
             connector.execute(
-                "INSERT INTO catalog_canonical_value_allocations "
-                "(value_sha256, digest_domain, byte_count, allocated_at) "
-                "VALUES (%s, %s, 1, 1)",
-                (value_sha256, b"source_root_v1"),
+                "INSERT INTO catalog_canonical_value_allocation_anchors "
+                "(value_sha256) VALUES (%s)",
+                (value_sha256,),
+            )
+            connector.execute(
+                "INSERT INTO catalog_canonical_value_allocation_seals "
+                "(value_sha256) VALUES (%s)",
+                (value_sha256,),
             )
             connector.execute(
                 "INSERT INTO operational_canonical_value_uploads "
@@ -3612,7 +3753,7 @@ def test_complete_operational_mariadb_fixture_physically_refines(
         connector.commit()
         with connector.transaction():
             connector.execute(
-                "INSERT INTO catalog_source_builds (build_id) VALUES (%s)",
+                "INSERT INTO catalog_source_build_descriptor_seals (build_id) VALUES (%s)",
                 (build_id,),
             )
             connector.execute(
@@ -3671,7 +3812,6 @@ def test_complete_operational_mariadb_fixture_physically_refines(
         "ix_gallery_redownload_state_fk_2",
         "ix_operational_preparation_fk_3",
         "ix_operational_preparation_fk_4",
-        "ix_operational_activation_fk_3",
         "ix_operational_event_ack_head_fk_2",
         "ix_removed_gid_ack_fk_2",
         "ix_hash_cache_observation_fk_2",

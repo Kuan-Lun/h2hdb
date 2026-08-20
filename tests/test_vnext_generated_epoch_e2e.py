@@ -54,12 +54,13 @@ def _exercise_generated_epoch(config: CoreConfig) -> None:
     context = RepositoryContext.from_config(read_only_config)
     with context.SQLConnector() as connector:
         assert connector.check_table_exists("h2hdb_schema_epoch")
+        assert not connector.check_table_exists("catalog_build_discoveries")
         assert not connector.check_table_exists("h2hdb_schema_migrations")
 
     backend = config.database.sql_type
     backends = cast(Mapping[str, Mapping[str, object]], ARTIFACT["backends"])
     bootstrap_seeds = cast(Sequence[object], backends[backend]["bootstrap_seeds"])
-    assert len(bootstrap_seeds) == 3_985
+    assert len(bootstrap_seeds) == 4_645
 
 
 def test_default_generated_epoch_end_to_end_on_sqlite(

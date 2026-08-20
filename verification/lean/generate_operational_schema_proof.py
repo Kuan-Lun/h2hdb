@@ -815,12 +815,15 @@ theorem exhausted_allocator_sentinel_fails_closed :
 def _machine_contract_model(manifest: dict[str, object]) -> str:
     raw_obligations = manifest.get("semantic_obligation")
     raw_seeds = manifest.get("bootstrap_seed")
+    raw_cleanup_targets = manifest.get("cleanup_target")
     bootstrap = manifest.get("bootstrap_contract")
     if (
         not isinstance(raw_obligations, list)
         or not all(isinstance(value, dict) for value in raw_obligations)
         or not isinstance(raw_seeds, list)
         or not all(isinstance(value, dict) for value in raw_seeds)
+        or not isinstance(raw_cleanup_targets, list)
+        or not all(isinstance(value, dict) for value in raw_cleanup_targets)
         or not isinstance(bootstrap, dict)
     ):
         raise ValueError("operational machine contracts are missing")
@@ -846,6 +849,24 @@ def _machine_contract_model(manifest: dict[str, object]) -> str:
     ):
         raise ValueError("operational semantic-obligation lifecycle partition drifts")
     obligations_by_id = {str(value.get("id")): value for value in raw_obligations}
+    cleanup_targets_by_kind = {
+        str(value.get("target_kind")): value for value in raw_cleanup_targets
+    }
+    candidate_cleanup = cleanup_targets_by_kind.get("PUBLICATION_CANDIDATE")
+    if candidate_cleanup is None or candidate_cleanup.get("semantic_blockers") != [
+        {
+            "relation": "prepared_artifact_state",
+            "attributes": ["candidate_id"],
+            "root_attributes": ["candidate_id"],
+            "blocking_predicate": "state IN ('PENDING','PREPARED')",
+            "nonblocking_state": "COMMITTED",
+            "semantic_obligation_id": "catalog.retention.v1",
+            "release_obligation_id": "catalog.artifact-semantics.v1",
+        }
+    ]:
+        raise ValueError(
+            "publication-candidate cleanup release semantic blocker drifts"
+        )
     expected_generation_obligation_relations = {
         "h2hdb.operational.bounded-work.v1": (
             "operational_event_stream",
@@ -898,8 +919,15 @@ def _machine_contract_model(manifest: dict[str, object]) -> str:
             "cleanup_phase",
             "cleanup_job",
             "cleanup_checkpoint",
-            "source_build",
-            "publication_candidate",
+            "source_build_descriptor_seal",
+            "publication_candidate_anchor",
+            "publication_candidate_definition_seal",
+            "publication_candidate_analysis_id",
+            "publication_candidate_reserved_revision",
+            "publication_candidate_artifact_policy_id",
+            "publication_candidate_display_title_policy_id",
+            "publication_candidate_artifacts_required",
+            "publication_candidate_created_at",
             "analysis_snapshot_manifest",
             "source_revision",
             "catalog_revision",
@@ -1090,6 +1118,30 @@ theorem reachable_retention_root_is_never_cleanup_eligible
     ¬ CleanupEligible reachableFromRetentionRoot target := by
   intro eligible
   exact eligible reachable
+
+inductive PreparedArtifactCleanupState where
+  | pending
+  | prepared
+  | committed
+deriving DecidableEq
+
+def PreparedArtifactBlocksCandidateCleanup :
+    PreparedArtifactCleanupState → Bool
+  | .pending => true
+  | .prepared => true
+  | .committed => false
+
+theorem pending_prepared_artifact_blocks_candidate_cleanup :
+    PreparedArtifactBlocksCandidateCleanup .pending = true := by
+  native_decide
+
+theorem prepared_prepared_artifact_blocks_candidate_cleanup :
+    PreparedArtifactBlocksCandidateCleanup .prepared = true := by
+  native_decide
+
+theorem committed_prepared_artifact_does_not_block_candidate_cleanup :
+    PreparedArtifactBlocksCandidateCleanup .committed = false := by
+  native_decide
 
 structure CleanupPhaseOrder where
   childOrder : Nat

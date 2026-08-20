@@ -9,6 +9,7 @@ derived and independently checked by this module.
 from __future__ import annotations
 
 __all__ = [
+    "ArtifactProducerRegistration",
     "ArtifactPreparationAuthority",
     "ArtifactPreparationConflictError",
     "ArtifactPreparationContractUnavailableError",
@@ -17,6 +18,8 @@ __all__ = [
     "ArtifactPreparationRepository",
     "ArtifactPreparationRepositoryError",
     "ArtifactPreparationReceipt",
+    "ArtifactProtectionEvidence",
+    "ArtifactProtectionIntent",
     "ArtifactPersistenceReceipt",
     "ArtifactInputProjectionAuthority",
     "ArtifactInputProjectionPlan",
@@ -36,7 +39,29 @@ from tempfile import TemporaryDirectory, TemporaryFile
 from typing import Any, BinaryIO, Protocol, cast
 
 from . import vnext_identity as identity
-from .sql_connector import SQLConnector
+from .sql_connector import DatabaseDuplicateKeyError, SQLConnector
+from .vnext_analysis_family import (
+    AnalysisFamilyCollisionError,
+    load_analysis_run_family,
+)
+from .vnext_artifact_family import (
+    ArtifactFamilyCollisionError,
+    ArtifactFamilyPartialError,
+    ArtifactSemanticInputFamily,
+    CatalogArtifactFamily,
+    PreparedArtifactFamily,
+    cas_prepared_artifact_state,
+    ensure_artifact_semantic_input_family,
+    ensure_catalog_artifact_family,
+    ensure_prepared_artifact_family,
+    load_artifact_semantic_input_family,
+    load_catalog_artifact_family,
+    load_prepared_artifact_family,
+)
+from .vnext_canonical_value_family import (
+    load_sealed_value_identities,
+    load_sealed_value_identity,
+)
 from .vnext_canonical_value_repository import (
     CanonicalValueCollisionError,
     CanonicalValueNotReadyError,
@@ -49,6 +74,7 @@ from .vnext_domains import (
     require_digest32,
     require_int63,
     require_positive_int63,
+    require_uint32,
     require_uuid16,
 )
 from .vnext_ingest_fence_repository import IngestFenceRepository, IngestTurn
@@ -59,10 +85,14 @@ from .vnext_maintenance_gate_repository import (
 )
 from .vnext_operational_event_repository import OperationalEffectSeal
 from .vnext_publication_candidate_repository import (
+    _ARTIFACT_POLICY_DOMAIN,
     PublicationCandidateBatch,
+    PublicationCandidateConflictError,
     PublicationCandidateRepository,
     PublicationProjectionAuthority,
+    _candidate_batch_from_row,
     _commit_candidate_batch,
+    _load_candidate_batch_at_generation,
     _load_projection_authority,
     _MutationAuthority,
     _prepare_candidate_batch,
@@ -79,10 +109,39 @@ _ZIP_MEMBER_NAME_MAXIMUM_BYTES = (1 << 16) - 1
 _ZIP_WRITER_POLICY_V1 = (1, 8, 9, 33, 0, 33188, 2048, 3, 1, 1)
 _STORAGE_CODEC_V1 = (1, b"managed-filesystem", 1, 1)
 _PREPARATION_RECEIPT_TOKEN = object()
+_PROTECTION_INTENT_TOKEN = object()
+_PROTECTION_EVIDENCE_TOKEN = object()
 _INPUT_AUTHORITY_TOKEN = object()
 _INPUT_PLAN_TOKEN = object()
 _INPUT_VALIDATION_PLAN_TOKEN = object()
-_ARTIFACT_INPUT_ID_DOMAIN = b"h2hdb-vnext-artifact-input-id\0"
+
+_CHECKPOINT_GENERATION_TABLE = "catalog_publication_checkpoint_generations"
+_CHECKPOINT_CURSOR_TABLE = "catalog_publication_checkpoint_cursors"
+_CHECKPOINT_COUNT_TABLE = "catalog_publication_checkpoint_processed_counts"
+_CHECKPOINT_STATE_TABLE = "catalog_publication_checkpoint_states"
+_CHECKPOINT_UPDATED_AT_TABLE = "catalog_publication_checkpoint_updated_ats"
+_CHECKPOINT_SEAL_TABLE = "catalog_publication_checkpoint_seals"
+
+_SOURCE_FILE_FAMILY_SQL = (
+    "FROM (SELECT file_no.gallery_id, file_no.observation_id, file_no.file_key, "
+    "file_no.file_no, file_sha.file_sha256 "
+    "FROM catalog_gallery_observation_file_seals AS file_seal "
+    "JOIN catalog_gallery_observation_file_file_nos AS file_no "
+    "ON file_no.gallery_id = file_seal.gallery_id "
+    "AND file_no.observation_id = file_seal.observation_id "
+    "AND file_no.file_key = file_seal.file_key "
+    "JOIN catalog_gallery_observation_file_file_sha256s AS file_sha "
+    "ON file_sha.gallery_id = file_seal.gallery_id "
+    "AND file_sha.observation_id = file_seal.observation_id "
+    "AND file_sha.file_key = file_seal.file_key) AS source "
+    "JOIN (SELECT name_seal.file_key, name_bytes.name_bytes, role.file_role "
+    "FROM catalog_file_name_identity_seals AS name_seal "
+    "JOIN catalog_file_name_identity_name_bytes AS name_bytes "
+    "ON name_bytes.file_key = name_seal.file_key "
+    "JOIN catalog_file_name_identity_file_roles AS role "
+    "ON role.file_key = name_seal.file_key) AS name "
+    "ON name.file_key = source.file_key "
+)
 
 
 class ArtifactPreparationRepositoryError(RuntimeError):
@@ -102,6 +161,64 @@ class ArtifactPreparationContractUnavailableError(ArtifactPreparationRepositoryE
 
 
 @dataclass(frozen=True, slots=True)
+class ArtifactProducerRegistration:
+    """One exact sealed artifact byte-producer identity."""
+
+    producer_fingerprint_sha256: bytes
+    artifact_algorithm_version: int
+    producer_equivalence_class: bytes
+    writer_id: bytes
+    python_abi: bytes
+    pillow_build: bytes
+    libjpeg_build: bytes
+    zlib_build: bytes
+    replayed: bool
+
+    def __post_init__(self) -> None:
+        fingerprint = require_digest32(
+            self.producer_fingerprint_sha256,
+            field="artifact producer fingerprint",
+        )
+        algorithm_version = require_uint32(
+            self.artifact_algorithm_version,
+            field="artifact producer algorithm version",
+        )
+        if algorithm_version == 0:
+            raise ValueError("artifact producer algorithm version must be positive")
+        equivalence_class = require_bounded_bytes(
+            self.producer_equivalence_class,
+            field="artifact producer equivalence class",
+            minimum=1,
+            maximum=128,
+        )
+        fields = tuple(
+            require_bounded_bytes(
+                value,
+                field=f"artifact producer {field}",
+                minimum=1,
+                maximum=128,
+            )
+            for field, value in (
+                ("writer_id", self.writer_id),
+                ("python_abi", self.python_abi),
+                ("pillow_build", self.pillow_build),
+                ("libjpeg_build", self.libjpeg_build),
+                ("zlib_build", self.zlib_build),
+            )
+        )
+        if identity.artifact_producer_fingerprint_sha256(*fields) != fingerprint:
+            raise ValueError("artifact producer fingerprint does not match its frame")
+        if equivalence_class != identity.artifact_producer_equivalence_class(
+            fingerprint
+        ):
+            raise ValueError(
+                "artifact producer equivalence class is not repository-derived"
+            )
+        if not isinstance(self.replayed, bool):
+            raise TypeError("artifact producer replayed must be bool")
+
+
+@dataclass(frozen=True, slots=True)
 class ArtifactPreparationAuthority:
     """Repository-issued immutable authority for one CREATE/REBUILD input."""
 
@@ -112,7 +229,6 @@ class ArtifactPreparationAuthority:
     gallery_key: bytes
     observation_id: int
     observation_identity_sha256: bytes
-    artifact_input_id: bytes
     artifact_semantics_sha256: bytes
     operation: str
     source_manifest_component_sha256: bytes
@@ -152,7 +268,6 @@ class ArtifactPreparationAuthority:
             self.observation_identity_sha256,
             field="artifact observation_identity_sha256",
         )
-        require_uuid16(self.artifact_input_id, field="artifact_input_id")
         for digest_label, digest_value in self.component_tuple:
             require_digest32(digest_value, field=digest_label)
         for version_label, version_value in (
@@ -275,13 +390,132 @@ class ArtifactPreparationInputAudit:
 
 @dataclass(frozen=True, slots=True)
 class ArtifactStorageEvidence:
-    """Diagnostic adapter acknowledgement; never digest/token authority."""
+    """Untrusted adapter acknowledgement wrapped by the repository."""
 
     stored: bool
 
+    def __post_init__(self) -> None:
+        if type(self.stored) is not bool:
+            raise TypeError("artifact storage acknowledgement must be bool")
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactProtectionIntent:
+    """Opaque durable PENDING intent issued only after its family is sealed."""
+
+    candidate_id: bytes
+    publication_key: bytes
+    artifact_sha256: bytes
+    size_bytes: int
+    locator_components: tuple[str, ...]
+    artifact_locator_sha256: bytes
+    storage_codec_version: int
+    storage_generation: int
+    protection_token: bytes
+    state: str
+    replayed: bool
+    _capability: object = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self._capability is not _PROTECTION_INTENT_TOKEN:
+            raise TypeError("artifact protection intents are repository-issued")
+        candidate = require_uuid16(self.candidate_id, field="intent candidate_id")
+        publication = require_digest32(
+            self.publication_key,
+            field="intent publication_key",
+        )
+        artifact = require_digest32(
+            self.artifact_sha256,
+            field="intent artifact_sha256",
+        )
+        size = require_int63(self.size_bytes, field="intent size_bytes")
+        if tuple(self.locator_components) != identity.artifact_locator_components(
+            artifact
+        ):
+            raise ValueError("artifact intent locator is not content-addressed")
+        locator = require_digest32(
+            self.artifact_locator_sha256,
+            field="intent artifact_locator_sha256",
+        )
+        if identity.artifact_locator_digest(self.locator_components) != locator:
+            raise ValueError("artifact intent locator digest disagrees")
+        codec = require_positive_int63(
+            self.storage_codec_version,
+            field="intent storage_codec_version",
+        )
+        generation = require_int63(
+            self.storage_generation,
+            field="intent storage_generation",
+        )
+        token_bytes = require_bounded_bytes(
+            self.protection_token,
+            field="intent protection_token",
+            minimum=184,
+            maximum=184,
+        )
+        token = identity.decode_artifact_protection_token(token_bytes)
+        if (
+            token.candidate_id != candidate
+            or token.publication_key != publication
+            or token.artifact_sha256 != artifact
+            or token.artifact_locator_sha256 != locator
+            or token.storage_codec_version != codec
+            or token.storage_generation != generation
+            or token.size_bytes != size
+        ):
+            raise ValueError("artifact intent token disagrees with durable facts")
+        if self.state not in {"PENDING", "PREPARED", "COMMITTED"}:
+            raise ValueError("artifact protection intent state is not registered")
+        if type(self.replayed) is not bool:
+            raise TypeError("artifact protection intent replayed must be bool")
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactProtectionEvidence:
+    """Repository-issued exact acknowledgement of one durable intent."""
+
+    intent: ArtifactProtectionIntent
+    adapter_id: bytes
+    producer_fingerprint_sha256: bytes
+    _capability: object = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self._capability is not _PROTECTION_EVIDENCE_TOKEN:
+            raise TypeError("artifact protection evidence is repository-issued")
+        if not isinstance(self.intent, ArtifactProtectionIntent):
+            raise TypeError("artifact protection evidence lacks its durable intent")
+        require_bounded_bytes(
+            self.adapter_id,
+            field="protection evidence adapter_id",
+            minimum=1,
+            maximum=64,
+        )
+        require_digest32(
+            self.producer_fingerprint_sha256,
+            field="protection evidence producer fingerprint",
+        )
+
 
 class ArtifactPreparationReceipt:
-    """Opaque protected-byte receipt plus its bounded canonical locator plan."""
+    """Opaque verified archive plus its bounded canonical locator plan.
+
+    No external storage protection has happened when this value is returned.
+    The owned archive remains open until the receipt is closed so protection
+    can occur only after the database has durably sealed a PENDING intent.
+    """
+
+    __slots__ = (
+        "audit",
+        "_archive",
+        "_artifact_locator_sha256",
+        "_artifact_sha256",
+        "_capability",
+        "_closed",
+        "_locator_components",
+        "_locator_plan",
+        "_size_bytes",
+        "_storage_codec_version",
+    )
 
     def __init__(
         self,
@@ -292,8 +526,8 @@ class ArtifactPreparationReceipt:
         locator_components: tuple[str, ...],
         artifact_locator_sha256: bytes,
         storage_codec_version: int,
-        protection_token: bytes,
         locator_plan: CanonicalValueUploadPlan,
+        archive: BinaryIO,
         _capability: object,
     ) -> None:
         if _capability is not _PREPARATION_RECEIPT_TOKEN:
@@ -301,53 +535,41 @@ class ArtifactPreparationReceipt:
         if audit._capability is not _AUDIT_TOKEN:
             raise TypeError("artifact preparation receipt lacks an input audit")
         self.audit = audit
-        self.artifact_sha256 = require_digest32(
+        self._artifact_sha256 = require_digest32(
             artifact_sha256, field="prepared artifact_sha256"
         )
-        self.size_bytes = require_int63(size_bytes, field="prepared size_bytes")
+        self._size_bytes = require_int63(size_bytes, field="prepared size_bytes")
         if tuple(locator_components) != identity.artifact_locator_components(
-            self.artifact_sha256
+            self._artifact_sha256
         ):
             raise ValueError("prepared locator is not content-addressed")
-        self.locator_components = tuple(locator_components)
-        self.artifact_locator_sha256 = require_digest32(
+        self._locator_components = tuple(locator_components)
+        self._artifact_locator_sha256 = require_digest32(
             artifact_locator_sha256, field="prepared artifact_locator_sha256"
         )
-        if identity.artifact_locator_digest(self.locator_components) != (
-            self.artifact_locator_sha256
+        if identity.artifact_locator_digest(self._locator_components) != (
+            self._artifact_locator_sha256
         ):
             raise ValueError("prepared locator digest disagrees")
-        self.storage_codec_version = require_positive_int63(
+        self._storage_codec_version = require_positive_int63(
             storage_codec_version, field="prepared storage_codec_version"
         )
-        self.protection_token = require_bounded_bytes(
-            protection_token,
-            field="prepared protection_token",
-            minimum=184,
-            maximum=184,
-        )
-        token = identity.decode_artifact_protection_token(self.protection_token)
-        authority = audit.authority
-        if (
-            token.storage_codec_version != self.storage_codec_version
-            or token.candidate_id != authority.candidate_id
-            or token.publication_key != authority.publication_key
-            or token.artifact_sha256 != self.artifact_sha256
-            or token.artifact_locator_sha256 != self.artifact_locator_sha256
-            or token.storage_generation != authority.projection.generation
-            or token.size_bytes != self.size_bytes
-        ):
-            raise ValueError("prepared protection token disagrees with authority")
-        if locator_plan.value_sha256 != self.artifact_locator_sha256:
+        if locator_plan.value_sha256 != self._artifact_locator_sha256:
             raise ValueError("locator upload plan disagrees with receipt")
-        self.locator_plan = locator_plan
+        if not hasattr(archive, "read") or not hasattr(archive, "seek"):
+            raise TypeError("prepared archive must be one seekable binary stream")
+        self._locator_plan = locator_plan
+        self._archive = archive
         self._capability = _capability
         self._closed = False
 
     def close(self) -> None:
         if not self._closed:
             self._closed = True
-            self.locator_plan.close()
+            try:
+                self._locator_plan.close()
+            finally:
+                self._archive.close()
 
     def __enter__(self) -> ArtifactPreparationReceipt:
         if self._closed:
@@ -356,6 +578,30 @@ class ArtifactPreparationReceipt:
 
     def __exit__(self, *_exc: object) -> None:
         self.close()
+
+    @property
+    def artifact_sha256(self) -> bytes:
+        return self._artifact_sha256
+
+    @property
+    def size_bytes(self) -> int:
+        return self._size_bytes
+
+    @property
+    def locator_components(self) -> tuple[str, ...]:
+        return self._locator_components
+
+    @property
+    def artifact_locator_sha256(self) -> bytes:
+        return self._artifact_locator_sha256
+
+    @property
+    def storage_codec_version(self) -> int:
+        return self._storage_codec_version
+
+    @property
+    def locator_plan(self) -> CanonicalValueUploadPlan:
+        return self._locator_plan
 
 
 @dataclass(frozen=True, slots=True)
@@ -389,7 +635,14 @@ class ArtifactPersistenceReceipt:
 
 
 class ArtifactStorageAdapter(Protocol):
-    """Internal producer/storage boundary selected by closed registries."""
+    """Internal producer/storage boundary selected by closed registries.
+
+    Protection tokens have a monotone external lifecycle.  ``protect`` is
+    idempotent while protected, and a release acknowledgement is terminal for
+    that token: a delayed or retried ``protect`` must never resurrect bytes
+    after release.  Implementations must retain that terminal tombstone (or an
+    equivalent monotone ordering record) for the token's full retry horizon.
+    """
 
     adapter_id: bytes
     producer_fingerprint_sha256: bytes
@@ -507,7 +760,7 @@ class ArtifactInputProjectionPlan:
         self._require_open()
         _validate_publication_cursor(cursor)
         rows = self._database.execute(
-            "SELECT publication_key, artifact_input_id, artifact_semantics_sha256, "
+            "SELECT publication_key, artifact_semantics_sha256, "
             "source_manifest_component_sha256, member_plan_component_sha256, "
             "effective_content_component_sha256, selected_component_sha256, "
             "owner_component_sha256, policy_component_sha256 "
@@ -561,7 +814,6 @@ class _AuthorityFacts:
     gallery_key: bytes
     observation_id: int
     observation_identity_sha256: bytes
-    artifact_input_id: bytes
     artifact_semantics_sha256: bytes
     operation: str
     source_manifest_component_sha256: bytes
@@ -587,8 +839,186 @@ class _AuthorityFacts:
     validation_terminal_receipt: tuple[Any, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _ArtifactContractFacts:
+    scope_key: bytes
+    source_provider: bytes
+    source_root_sha256: bytes
+    identity_policy_version: int
+    manifest_algorithm_version: int
+    file_order_version: int
+    analysis_algorithm_version: int
+    spam_artist_threshold: int
+    spam_occurrence_threshold: int
+    content_owner_rule_version: int
+    gid_winner_rule_version: int
+    policy_component_sha256: bytes
+    artifact_algorithm_version: int
+    max_image_short_side: int
+    producer_fingerprint_sha256: bytes
+    producer_fields: tuple[bytes, bytes, bytes, bytes, bytes]
+    writer_policy: tuple[int, int, int, int, int, int, int, int, int, int]
+    storage_codec: tuple[int, bytes, int, int]
+
+
 class ArtifactPreparationRepository:
     """Issue exact input authority and audit the canonical member projection."""
+
+    @staticmethod
+    def register_producer(
+        work: VNextUnitOfWork,
+        *,
+        gate_lease: GateLease,
+        ingest_turn: IngestTurn,
+        now: int,
+        artifact_algorithm_version: int,
+        writer_id: bytes,
+        python_abi: bytes,
+        pillow_build: bytes,
+        libjpeg_build: bytes,
+        zlib_build: bytes,
+    ) -> ArtifactProducerRegistration:
+        """Derive, collision-check, and seal one byte-producer registration.
+
+        The caller owns the write transaction.  The digest is never accepted
+        from the caller: it is derived from the exact five-field producer
+        frame, checked through both candidate keys, and made visible through
+        the sealed read view only by the final seal insert.
+        """
+
+        algorithm_version = require_uint32(
+            artifact_algorithm_version,
+            field="artifact producer algorithm version",
+        )
+        if algorithm_version == 0:
+            raise ValueError("artifact producer algorithm version must be positive")
+        producer_fields = cast(
+            tuple[bytes, bytes, bytes, bytes, bytes],
+            tuple(
+                require_bounded_bytes(
+                    value,
+                    field=f"artifact producer {field}",
+                    minimum=1,
+                    maximum=128,
+                )
+                for field, value in (
+                    ("writer_id", writer_id),
+                    ("python_abi", python_abi),
+                    ("pillow_build", pillow_build),
+                    ("libjpeg_build", libjpeg_build),
+                    ("zlib_build", zlib_build),
+                )
+            ),
+        )
+        fingerprint = identity.artifact_producer_fingerprint_sha256(*producer_fields)
+        equivalence_class = identity.artifact_producer_equivalence_class(fingerprint)
+        _authorize_artifact_mutation(
+            work,
+            gate_lease=gate_lease,
+            ingest_turn=ingest_turn,
+            now=now,
+        )
+        if work.connector.fetch_one(
+            "SELECT artifact_algorithm_version "
+            "FROM catalog_artifact_zip_writer_policy_seals "
+            "WHERE artifact_algorithm_version = %s",
+            (algorithm_version,),
+        ) != (algorithm_version,):
+            raise ArtifactPreparationNotReadyError(
+                "artifact producer algorithm version is not registered"
+            )
+
+        # The maintenance gate and ingest fence above are the mutable
+        # serialization authorities.  Immutable registry rows are plain reads.
+        digest_row = work.connector.fetch_one(
+            "SELECT anchor.producer_fingerprint_sha256, "
+            "algorithm.artifact_algorithm_version, "
+            "equivalence.producer_equivalence_class, identity.writer_id, "
+            "identity.python_abi, identity.pillow_build, identity.libjpeg_build, "
+            "identity.zlib_build, seal.producer_fingerprint_sha256 "
+            "FROM catalog_artifact_producer_fingerprint_anchors AS anchor "
+            "LEFT JOIN catalog_artifact_producer_fingerprint_algorithm_versions "
+            "AS algorithm ON algorithm.producer_fingerprint_sha256 = "
+            "anchor.producer_fingerprint_sha256 "
+            "LEFT JOIN catalog_artifact_producer_fingerprint_equivalence_classes "
+            "AS equivalence ON equivalence.producer_fingerprint_sha256 = "
+            "anchor.producer_fingerprint_sha256 "
+            "LEFT JOIN catalog_artifact_producer_fingerprint_identities AS identity "
+            "ON identity.producer_fingerprint_sha256 = "
+            "anchor.producer_fingerprint_sha256 "
+            "LEFT JOIN catalog_artifact_producer_fingerprint_seals AS seal "
+            "ON seal.producer_fingerprint_sha256 = anchor.producer_fingerprint_sha256 "
+            "WHERE anchor.producer_fingerprint_sha256 = %s",
+            (fingerprint,),
+        )
+        natural_row = work.connector.fetch_one(
+            "SELECT producer_fingerprint_sha256 "
+            "FROM catalog_artifact_producer_fingerprint_identities "
+            "WHERE writer_id = %s AND python_abi = %s AND pillow_build = %s "
+            "AND libjpeg_build = %s AND zlib_build = %s",
+            producer_fields,
+        )
+
+        expected = (
+            fingerprint,
+            algorithm_version,
+            equivalence_class,
+            *producer_fields,
+            fingerprint,
+        )
+        if digest_row:
+            if digest_row != expected or natural_row != (fingerprint,):
+                raise ArtifactPreparationConflictError(
+                    "artifact producer digest collides with another exact registration"
+                )
+            return ArtifactProducerRegistration(
+                fingerprint,
+                algorithm_version,
+                equivalence_class,
+                *producer_fields,
+                True,
+            )
+        if natural_row:
+            raise ArtifactPreparationConflictError(
+                "artifact producer natural identity is already registered differently"
+            )
+
+        connector = work.connector
+        connector.execute(
+            "INSERT INTO catalog_artifact_producer_fingerprint_anchors "
+            "(producer_fingerprint_sha256) VALUES (%s)",
+            (fingerprint,),
+        )
+        connector.execute(
+            "INSERT INTO catalog_artifact_producer_fingerprint_algorithm_versions "
+            "(producer_fingerprint_sha256, artifact_algorithm_version) "
+            "VALUES (%s, %s)",
+            (fingerprint, algorithm_version),
+        )
+        connector.execute(
+            "INSERT INTO catalog_artifact_producer_fingerprint_equivalence_classes "
+            "(producer_fingerprint_sha256, producer_equivalence_class) "
+            "VALUES (%s, %s)",
+            (fingerprint, equivalence_class),
+        )
+        connector.execute(
+            "INSERT INTO catalog_artifact_producer_fingerprint_identities "
+            "(writer_id, python_abi, pillow_build, libjpeg_build, zlib_build, "
+            "producer_fingerprint_sha256) VALUES (%s, %s, %s, %s, %s, %s)",
+            (*producer_fields, fingerprint),
+        )
+        connector.execute(
+            "INSERT INTO catalog_artifact_producer_fingerprint_seals "
+            "(producer_fingerprint_sha256) VALUES (%s)",
+            (fingerprint,),
+        )
+        return ArtifactProducerRegistration(
+            fingerprint,
+            algorithm_version,
+            equivalence_class,
+            *producer_fields,
+            False,
+        )
 
     @staticmethod
     def issue_input_projection_authority(
@@ -761,15 +1191,13 @@ class ArtifactPreparationRepository:
         _require_input_plan(work, mutation, validation, validation=True)
         expected = validation._page_after(checkpoint.cursor)
         actual = work.connector.fetch_all(
-            "SELECT publication_key, artifact_input_id, artifact_semantics_sha256 "
+            "SELECT publication_key, artifact_semantics_sha256 "
             "FROM catalog_candidate_artifact_inputs "
             "WHERE candidate_id = %s AND publication_key > %s "
             "ORDER BY publication_key LIMIT 128",
             (mutation.candidate.candidate_id, checkpoint.cursor),
         )
-        expected_input = tuple(
-            (bytes(row[0]), bytes(row[1]), bytes(row[2])) for row in expected
-        )
+        expected_input = tuple((bytes(row[0]), bytes(row[1])) for row in expected)
         if tuple(actual) != expected_input:
             raise ArtifactPreparationConflictError(
                 "artifact input rows differ from the independent evaluator"
@@ -819,9 +1247,13 @@ class ArtifactPreparationRepository:
             after=checkpoint.cursor,
         )
         actual_rows = work.connector.fetch_all(
-            "SELECT publication_key FROM catalog_prepared_artifacts "
-            "WHERE candidate_id = %s AND publication_key > %s "
-            "ORDER BY publication_key LIMIT 128",
+            "SELECT seal.publication_key FROM catalog_prepared_artifact_seals AS seal "
+            "JOIN catalog_prepared_artifact_states AS state "
+            "ON state.candidate_id = seal.candidate_id "
+            "AND state.publication_key = seal.publication_key "
+            "WHERE seal.candidate_id = %s AND seal.publication_key > %s "
+            "AND state.state IN ('PREPARED', 'COMMITTED') "
+            "ORDER BY seal.publication_key LIMIT 128",
             (mutation.candidate.candidate_id, checkpoint.cursor),
         )
         actual = tuple(
@@ -832,8 +1264,21 @@ class ArtifactPreparationRepository:
             raise ArtifactPreparationConflictError(
                 "prepared artifact coverage differs from CREATE/REBUILD"
             )
+        storage_codec = (
+            None if not expected else _load_storage_codec(work, _STORAGE_CODEC_V1[0])
+        )
+        if storage_codec is not None and storage_codec != _STORAGE_CODEC_V1:
+            raise ArtifactPreparationContractUnavailableError(
+                "prepared artifact storage codec is unsupported"
+            )
         for publication in expected:
-            _validate_prepared_row(work, mutation, publication)
+            assert storage_codec is not None
+            _validate_prepared_row(
+                work,
+                mutation,
+                publication,
+                storage_codec=storage_codec,
+            )
         next_cursor = checkpoint.cursor if not expected else expected[-1]
         return _commit_candidate_batch(
             work,
@@ -961,22 +1406,30 @@ class ArtifactPreparationRepository:
             field="artifact publication_key",
         )
         timestamp = require_int63(now, field="artifact authority now")
-        projection = PublicationCandidateRepository.issue_projection_authority(
-            work,
-            gate_lease=gate_lease,
-            ingest_turn=ingest_turn,
-            candidate_id=candidate,
-            now=timestamp,
+        projection = (
+            PublicationCandidateRepository._issue_artifact_projection_authority(
+                work,
+                gate_lease=gate_lease,
+                ingest_turn=ingest_turn,
+                candidate_id=candidate,
+                now=timestamp,
+            )
         )
         if not projection.artifacts_required:
             raise ArtifactPreparationNotReadyError(
                 "candidate does not require artifact preparation"
             )
+        contract = _load_projection_contract(
+            work,
+            projection,
+            validate_policy_canonical=True,
+        )
         facts = _load_authority_facts(
             work,
             projection,
             publication,
             now=timestamp,
+            contract=contract,
         )
         return ArtifactPreparationAuthority(
             projection,
@@ -986,7 +1439,6 @@ class ArtifactPreparationRepository:
             facts.gallery_key,
             facts.observation_id,
             facts.observation_identity_sha256,
-            facts.artifact_input_id,
             facts.artifact_semantics_sha256,
             facts.operation,
             facts.source_manifest_component_sha256,
@@ -1047,7 +1499,7 @@ class ArtifactPreparationRepository:
         audit: ArtifactPreparationInputAudit,
         adapter: ArtifactStorageAdapter,
     ) -> ArtifactPreparationReceipt:
-        """Stream deterministic ZIP bytes and obtain a protected storage receipt."""
+        """Render and verify deterministic ZIP bytes without external protection."""
 
         if not isinstance(audit, ArtifactPreparationInputAudit):
             raise TypeError("audit must be ArtifactPreparationInputAudit")
@@ -1086,6 +1538,7 @@ class ArtifactPreparationRepository:
             audit=audit,
         )
         archive = TemporaryFile(mode="w+b")
+        archive_owned = True
         locator_plan: CanonicalValueUploadPlan | None = None
         try:
             _write_canonical_archive(archive_plan, archive, audit, adapter)
@@ -1106,29 +1559,6 @@ class ArtifactPreparationRepository:
                 raise ArtifactPreparationConflictError(
                     "artifact locator upload plan has the wrong digest"
                 )
-            protection_token = identity.encode_artifact_protection_token(
-                authority.storage_codec[0],
-                authority.candidate_id,
-                authority.publication_key,
-                artifact_sha256,
-                locator_digest,
-                authority.projection.generation,
-                size_bytes,
-            )
-            archive.seek(0)
-            evidence = adapter.protect(
-                archive,
-                locator_components,
-                protection_token,
-            )
-            if not isinstance(evidence, ArtifactStorageEvidence) or not evidence.stored:
-                raise ArtifactPreparationNotReadyError(
-                    "artifact storage adapter did not acknowledge exact protection"
-                )
-            if _hash_stream(archive) != (artifact_sha256, size_bytes):
-                raise ArtifactPreparationConflictError(
-                    "artifact storage adapter changed the verified archive bytes"
-                )
             receipt = ArtifactPreparationReceipt(
                 audit=audit,
                 artifact_sha256=artifact_sha256,
@@ -1136,17 +1566,131 @@ class ArtifactPreparationRepository:
                 locator_components=locator_components,
                 artifact_locator_sha256=locator_digest,
                 storage_codec_version=authority.storage_codec[0],
-                protection_token=protection_token,
                 locator_plan=locator_plan,
+                archive=archive,
                 _capability=_PREPARATION_RECEIPT_TOKEN,
             )
             locator_plan = None
+            archive_owned = False
             return receipt
         finally:
             if locator_plan is not None:
                 locator_plan.close()
-            archive.close()
+            if archive_owned:
+                archive.close()
             archive_plan.close()
+
+    @staticmethod
+    def protect_prepared_artifact(
+        connector: SQLConnector,
+        *,
+        backend: str,
+        receipt: ArtifactPreparationReceipt,
+        intent: ArtifactProtectionIntent,
+        adapter: ArtifactStorageAdapter,
+    ) -> ArtifactProtectionEvidence:
+        """Idempotently protect bytes for one already-durable PENDING intent."""
+
+        _require_preparation_receipt(receipt)
+        if not isinstance(intent, ArtifactProtectionIntent):
+            raise TypeError("intent must be ArtifactProtectionIntent")
+        intent.__post_init__()
+        authority = receipt.audit.authority
+        with connector.read_transaction():
+            durable_family = _load_prepared_family_or_conflict(
+                connector,
+                candidate_id=authority.candidate_id,
+                publication_key=authority.publication_key,
+                backend=backend,
+            )
+            if durable_family is None:
+                raise ArtifactPreparationNotReadyError(
+                    "artifact protection intent is not committed and visible"
+                )
+            durable_intent = _protection_intent_from_family(
+                VNextUnitOfWork(connector, backend=backend),
+                receipt,
+                durable_family,
+                replayed=True,
+            )
+        if durable_family.state != "PENDING":
+            raise ArtifactPreparationNotReadyError(
+                "artifact protection is only valid for a durable PENDING intent"
+            )
+        if _intent_facts(durable_intent) != _intent_facts(intent):
+            raise ArtifactPreparationConflictError(
+                "artifact protection request differs from committed durable intent"
+            )
+        expected = (
+            authority.candidate_id,
+            authority.publication_key,
+            receipt.artifact_sha256,
+            receipt.size_bytes,
+            receipt.locator_components,
+            receipt.artifact_locator_sha256,
+            receipt.storage_codec_version,
+        )
+        actual = (
+            intent.candidate_id,
+            intent.publication_key,
+            intent.artifact_sha256,
+            intent.size_bytes,
+            intent.locator_components,
+            intent.artifact_locator_sha256,
+            intent.storage_codec_version,
+        )
+        if actual != expected or intent.state != "PENDING":
+            raise ArtifactPreparationConflictError(
+                "artifact protection intent differs from the verified receipt"
+            )
+        adapter_id = require_bounded_bytes(
+            adapter.adapter_id,
+            field="artifact adapter_id",
+            minimum=1,
+            maximum=64,
+        )
+        producer = require_digest32(
+            adapter.producer_fingerprint_sha256,
+            field="artifact adapter producer fingerprint",
+        )
+        if adapter_id != authority.storage_codec[1]:
+            raise ArtifactPreparationContractUnavailableError(
+                "artifact adapter does not match the registered storage codec"
+            )
+        if producer != authority.producer_fingerprint_sha256:
+            raise ArtifactPreparationContractUnavailableError(
+                "artifact adapter does not match the policy producer fingerprint"
+            )
+        if _hash_stream(receipt._archive) != (
+            receipt.artifact_sha256,
+            receipt.size_bytes,
+        ):
+            raise ArtifactPreparationConflictError(
+                "verified artifact archive changed before external protection"
+            )
+        receipt._archive.seek(0)
+        raw = adapter.protect(
+            receipt._archive,
+            intent.locator_components,
+            intent.protection_token,
+        )
+        if not isinstance(raw, ArtifactStorageEvidence) or not raw.stored:
+            raise ArtifactPreparationNotReadyError(
+                "artifact storage adapter did not acknowledge exact protection"
+            )
+        if _hash_stream(receipt._archive) != (
+            receipt.artifact_sha256,
+            receipt.size_bytes,
+        ):
+            raise ArtifactPreparationConflictError(
+                "artifact storage adapter changed the verified archive bytes"
+            )
+        return ArtifactProtectionEvidence(
+            intent,
+            adapter_id,
+            producer,
+            _capability=_PROTECTION_EVIDENCE_TOKEN,
+        )
 
     @staticmethod
     def persist_prepared_artifact(
@@ -1155,10 +1699,9 @@ class ArtifactPreparationRepository:
         gate_lease: GateLease,
         ingest_turn: IngestTurn,
         receipt: ArtifactPreparationReceipt,
-        effect_seal: OperationalEffectSeal,
         now: int,
-    ) -> ArtifactPersistenceReceipt:
-        """Consume one exact locator claim and persist all byte identities."""
+    ) -> ArtifactProtectionIntent:
+        """Seal one PENDING storage intent before any external protection call."""
 
         _require_preparation_receipt(receipt)
         timestamp = require_int63(now, field="prepared artifact persisted_at")
@@ -1168,27 +1711,8 @@ class ArtifactPreparationRepository:
             ingest_turn=ingest_turn,
             now=timestamp,
         )
-        existing = _load_persisted_artifact(
-            work,
-            receipt,
-            replayed=True,
-        )
-        if existing is not None:
-            _bind_operational_effect_seal(
-                work,
-                candidate_id=receipt.audit.authority.candidate_id,
-                build_id=receipt.audit.authority.build_id,
-                effect_seal=effect_seal,
-                now=timestamp,
-            )
-            return existing
-
         authority = receipt.audit.authority
-        if live_generation != authority.projection.generation:
-            raise ArtifactPreparationNotReadyError(
-                "prepared artifact storage generation is no longer live"
-            )
-        mutation = _load_projection_authority(work, authority.projection)
+        _load_projection_authority(work, authority.projection)
         current_facts = _load_authority_facts(
             work,
             authority.projection,
@@ -1199,28 +1723,44 @@ class ArtifactPreparationRepository:
             raise ArtifactPreparationConflictError(
                 "prepared artifact input authority changed"
             )
+        existing = _load_prepared_family_or_conflict(
+            work.connector,
+            candidate_id=authority.candidate_id,
+            publication_key=authority.publication_key,
+            backend=work.backend,
+        )
+        if existing is not None:
+            return _protection_intent_from_family(
+                work,
+                receipt,
+                existing,
+                replayed=True,
+            )
+        if live_generation != authority.projection.generation:
+            raise ArtifactPreparationNotReadyError(
+                "new artifact storage intent requires the live projection generation"
+            )
         locator = receipt.locator_plan
         if locator.value_sha256 != receipt.artifact_locator_sha256:
             raise ArtifactPreparationConflictError(
                 "prepared locator plan changed before persistence"
             )
-        sealed = work.connector.fetch_one(
-            "SELECT allocation.digest_domain, allocation.byte_count, "
-            "identity.root_page_sha256 FROM catalog_canonical_value_allocations allocation "
-            "JOIN catalog_canonical_value_identities identity "
-            "ON identity.value_sha256 = allocation.value_sha256 "
-            "WHERE allocation.value_sha256 = %s",
-            (receipt.artifact_locator_sha256,),
+        sealed = load_sealed_value_identity(
+            work.connector,
+            value_sha256=receipt.artifact_locator_sha256,
         )
         if (
-            len(sealed) != 3
-            or sealed[0] != b"artifact_locator_bytes_v1"
-            or sealed[1] != locator.byte_count
+            sealed is None
+            or sealed.digest_domain != b"artifact_locator_bytes_v1"
+            or sealed.byte_count != locator.byte_count
         ):
             raise ArtifactPreparationNotReadyError(
                 "artifact locator canonical value is not exactly sealed"
             )
-        require_digest32(sealed[2], field="artifact locator root page")
+        require_digest32(
+            sealed.root_page_sha256,
+            field="artifact locator root page",
+        )
         claim = work.connector.fetch_one(
             "SELECT generation, value_sha256 "
             "FROM operational_canonical_value_uploads "
@@ -1231,13 +1771,20 @@ class ArtifactPreparationRepository:
             raise ArtifactPreparationNotReadyError(
                 "artifact locator first consumer lacks its upload claim"
             )
-        _persist_artifact_byte_identities(work, mutation, receipt)
-        _bind_operational_effect_seal(
+        protection_token = identity.encode_artifact_protection_token(
+            receipt.storage_codec_version,
+            authority.candidate_id,
+            authority.publication_key,
+            receipt.artifact_sha256,
+            receipt.artifact_locator_sha256,
+            live_generation,
+            receipt.size_bytes,
+        )
+        _persist_artifact_byte_identities(
             work,
-            candidate_id=authority.candidate_id,
-            build_id=authority.build_id,
-            effect_seal=effect_seal,
-            now=timestamp,
+            receipt,
+            storage_generation=live_generation,
+            protection_token=protection_token,
         )
         deleted = work.connector.execute_affected(
             "DELETE FROM operational_canonical_value_uploads "
@@ -1248,12 +1795,163 @@ class ArtifactPreparationRepository:
             raise ArtifactPreparationConflictError(
                 "artifact locator claim changed during consumer handoff"
             )
-        persisted = _load_persisted_artifact(work, receipt, replayed=False)
-        if persisted is None:  # pragma: no cover - insert path proves this
+        persisted = _load_prepared_family_or_conflict(
+            work.connector,
+            candidate_id=authority.candidate_id,
+            publication_key=authority.publication_key,
+            backend=work.backend,
+        )
+        if persisted is None:  # pragma: no cover - seal insert proves this
             raise ArtifactPreparationConflictError(
-                "prepared artifact vanished after persistence"
+                "prepared artifact intent vanished after persistence"
             )
-        return persisted
+        return _protection_intent_from_family(
+            work,
+            receipt,
+            persisted,
+            replayed=False,
+        )
+
+    @staticmethod
+    def confirm_prepared_artifact(
+        work: VNextUnitOfWork,
+        *,
+        gate_lease: GateLease,
+        ingest_turn: IngestTurn,
+        receipt: ArtifactPreparationReceipt,
+        intent: ArtifactProtectionIntent,
+        evidence: ArtifactProtectionEvidence | None,
+        effect_seal: OperationalEffectSeal,
+        now: int,
+    ) -> ArtifactPersistenceReceipt:
+        """Acknowledge external protection and publish one prepared occurrence."""
+
+        _require_preparation_receipt(receipt)
+        timestamp = require_int63(now, field="prepared artifact confirmed_at")
+        _authorize_artifact_mutation(
+            work,
+            gate_lease=gate_lease,
+            ingest_turn=ingest_turn,
+            now=timestamp,
+        )
+        if not isinstance(intent, ArtifactProtectionIntent):
+            raise TypeError("intent must be ArtifactProtectionIntent")
+        intent.__post_init__()
+        authority = receipt.audit.authority
+        mutation = _load_projection_authority(work, authority.projection)
+        current_facts = _load_authority_facts(
+            work,
+            authority.projection,
+            authority.publication_key,
+            now=timestamp,
+        )
+        if current_facts != _facts_from_authority(authority):
+            raise ArtifactPreparationConflictError(
+                "prepared artifact input authority changed before confirmation"
+            )
+        family = _load_prepared_family_or_conflict(
+            work.connector,
+            candidate_id=authority.candidate_id,
+            publication_key=authority.publication_key,
+            backend=work.backend,
+        )
+        if family is None:
+            raise ArtifactPreparationNotReadyError(
+                "artifact confirmation lacks a durable PENDING intent"
+            )
+        durable_intent = _protection_intent_from_family(
+            work,
+            receipt,
+            family,
+            replayed=True,
+        )
+        if _intent_facts(durable_intent) != _intent_facts(intent):
+            raise ArtifactPreparationConflictError(
+                "artifact confirmation intent differs from durable facts"
+            )
+        was_pending = family.state == "PENDING"
+        if was_pending:
+            if (
+                not isinstance(evidence, ArtifactProtectionEvidence)
+                or evidence._capability is not _PROTECTION_EVIDENCE_TOKEN
+                or _intent_facts(evidence.intent) != _intent_facts(durable_intent)
+                or evidence.adapter_id != authority.storage_codec[1]
+                or evidence.producer_fingerprint_sha256
+                != authority.producer_fingerprint_sha256
+            ):
+                raise ArtifactPreparationNotReadyError(
+                    "PENDING artifact lacks exact repository-issued protection evidence"
+                )
+            try:
+                family = cas_prepared_artifact_state(
+                    work,
+                    candidate_id=authority.candidate_id,
+                    publication_key=authority.publication_key,
+                    expected_state="PENDING",
+                    next_state="PREPARED",
+                )
+            except (ArtifactFamilyCollisionError, ArtifactFamilyPartialError) as error:
+                raise ArtifactPreparationConflictError(
+                    "prepared artifact state changed during confirmation"
+                ) from error
+        elif evidence is not None and (
+            evidence._capability is not _PROTECTION_EVIDENCE_TOKEN
+            or _intent_facts(evidence.intent) != _intent_facts(durable_intent)
+        ):
+            raise ArtifactPreparationConflictError(
+                "replayed protection evidence differs from durable intent"
+            )
+        if family.state not in {"PREPARED", "COMMITTED"}:
+            raise ArtifactPreparationConflictError(
+                "confirmed artifact has an invalid durable state"
+            )
+        if was_pending:
+            _insert_catalog_artifact_occurrence(
+                work,
+                mutation,
+                publication_key=authority.publication_key,
+                artifact_sha256=receipt.artifact_sha256,
+                artifact_semantics_sha256=authority.artifact_semantics_sha256,
+            )
+        else:
+            try:
+                occurrence = load_catalog_artifact_family(
+                    work.connector,
+                    revision=mutation.candidate.reserved_revision,
+                    publication_key=authority.publication_key,
+                    backend=work.backend,
+                )
+            except (ArtifactFamilyCollisionError, ArtifactFamilyPartialError) as error:
+                raise ArtifactPreparationConflictError(
+                    "replayed catalog artifact occurrence is incomplete"
+                ) from error
+            expected_occurrence = CatalogArtifactFamily(
+                mutation.candidate.reserved_revision,
+                authority.publication_key,
+                receipt.artifact_sha256,
+                authority.artifact_semantics_sha256,
+            )
+            if occurrence != expected_occurrence:
+                raise ArtifactPreparationConflictError(
+                    "replayed catalog artifact occurrence differs from durable intent"
+                )
+        _bind_operational_effect_seal(
+            work,
+            candidate_id=authority.candidate_id,
+            build_id=authority.build_id,
+            effect_seal=effect_seal,
+            now=timestamp,
+            allow_insert=was_pending,
+        )
+        return ArtifactPersistenceReceipt(
+            authority.candidate_id,
+            authority.publication_key,
+            receipt.artifact_sha256,
+            receipt.artifact_locator_sha256,
+            family.protection_token,
+            family.state,
+            not was_pending,
+        )
 
     @staticmethod
     def bind_operational_preparation(
@@ -1358,18 +2056,24 @@ def _prepare_archive_source_plan(
             work = VNextUnitOfWork(connector, backend=backend)
             authority = audit.authority
             _load_projection_authority(work, authority.projection)
+            contract = _load_projection_contract(work, authority.projection)
             current = _load_authority_facts(
                 work,
                 authority.projection,
                 authority.publication_key,
                 now=None,
+                contract=contract,
             )
             if current != _facts_from_authority(authority):
                 raise ArtifactPreparationConflictError(
                     "artifact authority changed before archive preparation"
                 )
             _validate_fixed_components(work, authority)
-            source_directory = _load_source_directory(work, authority)
+            source_directory = _load_source_directory(
+                work,
+                authority,
+                contract=contract,
+            )
             member_payload = TemporaryFile(mode="w+b")
             try:
                 receipt = CanonicalValueRepository.stream_and_validate(
@@ -1429,15 +2133,27 @@ def _prepare_archive_source_plan(
 def _load_source_directory(
     work: VNextUnitOfWork,
     authority: ArtifactPreparationAuthority,
+    *,
+    contract: _ArtifactContractFacts,
 ) -> Path:
     row = work.connector.fetch_one(
-        "SELECT scope.source_provider, scope.source_root_sha256, "
-        "gallery.locator_sha256 FROM catalog_gallery_identities gallery "
-        "JOIN catalog_source_scopes scope ON scope.scope_key = gallery.scope_key "
-        "WHERE gallery.gallery_id = %s",
+        "SELECT gallery.scope_key, gallery.locator_sha256 "
+        "FROM catalog_gallery_identity_seals AS gallery_seal "
+        "JOIN catalog_gallery_identity_coordinates AS gallery "
+        "ON gallery.gallery_id = gallery_seal.gallery_id "
+        "WHERE gallery_seal.gallery_id = %s",
         (authority.gallery_id,),
     )
-    if len(row) != 3 or row[0] != b"filesystem":
+    if len(row) != 2:
+        raise ArtifactPreparationContractUnavailableError(
+            "artifact archive source has no exact gallery identity"
+        )
+    gallery_scope = require_digest32(row[0], field="artifact gallery scope_key")
+    if gallery_scope != contract.scope_key:
+        raise ArtifactPreparationConflictError(
+            "artifact archive gallery belongs to another source scope"
+        )
+    if contract.source_provider != b"filesystem":
         raise ArtifactPreparationContractUnavailableError(
             "artifact archive source requires the filesystem provider"
         )
@@ -1446,12 +2162,12 @@ def _load_source_directory(
     try:
         root_receipt = CanonicalValueRepository.stream_and_validate(
             work,
-            value_sha256=require_digest32(row[1], field="artifact source root"),
+            value_sha256=contract.source_root_sha256,
             consume_provisional=root_payload.extend,
         )
         locator_receipt = CanonicalValueRepository.stream_and_validate(
             work,
-            value_sha256=require_digest32(row[2], field="artifact source locator"),
+            value_sha256=require_digest32(row[1], field="artifact source locator"),
             consume_provisional=locator_payload.extend,
         )
         if (
@@ -1485,7 +2201,7 @@ def _spool_archive_source_rows(
     *,
     member_count: int,
 ) -> None:
-    after = 0
+    after = -1
     position = 0
     while True:
         rows = work.connector.fetch_all(
@@ -1494,9 +2210,8 @@ def _spool_archive_source_rows(
             "decision.artist_count, decision.maximum_gallery_artist_count, "
             "filesystem.device, filesystem.inode, filesystem.modified_ns, "
             "filesystem.changed_ns "
-            "FROM catalog_gallery_observation_files source "
-            "JOIN catalog_file_name_identities name ON name.file_key = source.file_key "
-            "JOIN catalog_content_blobs blob ON blob.file_sha256 = source.file_sha256 "
+            + _SOURCE_FILE_FAMILY_SQL
+            + "JOIN catalog_content_blobs blob ON blob.file_sha256 = source.file_sha256 "
             "JOIN catalog_gallery_observation_file_filesystem filesystem "
             "ON filesystem.gallery_id = source.gallery_id "
             "AND filesystem.observation_id = source.observation_id "
@@ -1519,10 +2234,10 @@ def _spool_archive_source_rows(
                 raise ArtifactPreparationConflictError(
                     "archive member plan omits a source row"
                 )
-            file_no = require_positive_int63(row[0], field="archive source file_no")
-            if file_no != position + 1:
+            file_no = require_int63(row[0], field="archive source file_no")
+            if file_no != position:
                 raise ArtifactPreparationConflictError(
-                    "archive source positions are not contiguous"
+                    "archive source positions are not zero-based contiguous"
                 )
             entry = _read_member_entry(payload, expected_position=position)
             name = require_bounded_bytes(
@@ -1840,7 +2555,7 @@ def _create_input_plan_schema(database: sqlite3.Connection) -> None:
         "payload_offset INTEGER NOT NULL, byte_count INTEGER NOT NULL, "
         "consumer_key BLOB NOT NULL) WITHOUT ROWID;"
         "CREATE TABLE inputs ("
-        "publication_key BLOB PRIMARY KEY, artifact_input_id BLOB NOT NULL UNIQUE, "
+        "publication_key BLOB PRIMARY KEY, "
         "artifact_semantics_sha256 BLOB NOT NULL, "
         "source_manifest_component_sha256 BLOB NOT NULL, "
         "member_plan_component_sha256 BLOB NOT NULL, "
@@ -1858,6 +2573,529 @@ def _create_input_plan_schema(database: sqlite3.Connection) -> None:
     )
 
 
+def _load_manifest_policy(
+    work: VNextUnitOfWork,
+    manifest_policy_id: int,
+) -> tuple[int, int]:
+    policy_id = require_positive_int63(
+        manifest_policy_id,
+        field="artifact manifest_policy_id",
+    )
+    row = work.connector.fetch_one(
+        "SELECT algorithm.manifest_algorithm_version, ordering.file_order_version "
+        "FROM catalog_manifest_policy_seals AS seal "
+        "JOIN catalog_manifest_policy_manifest_algorithm_versions AS algorithm "
+        "ON algorithm.manifest_policy_id = seal.manifest_policy_id "
+        "JOIN catalog_manifest_policy_file_order_versions AS ordering "
+        "ON ordering.manifest_policy_id = seal.manifest_policy_id "
+        "JOIN catalog_manifest_policy_identities AS natural "
+        "ON natural.manifest_policy_id = seal.manifest_policy_id "
+        "AND natural.manifest_algorithm_version = "
+        "algorithm.manifest_algorithm_version "
+        "AND natural.file_order_version = ordering.file_order_version "
+        "WHERE seal.manifest_policy_id = %s",
+        (policy_id,),
+    )
+    if len(row) != 2:
+        raise ArtifactPreparationNotReadyError(
+            "artifact manifest policy is missing or incomplete"
+        )
+    algorithm_version = require_uint32(
+        row[0], field="artifact manifest_algorithm_version"
+    )
+    file_order_version = require_uint32(row[1], field="artifact file_order_version")
+    if algorithm_version == 0 or file_order_version == 0:
+        raise ArtifactPreparationConflictError(
+            "artifact manifest policy has a zero codec version"
+        )
+    return algorithm_version, file_order_version
+
+
+def _load_analysis_policy(
+    work: VNextUnitOfWork,
+    policy_id: int,
+) -> tuple[int, int, int, int, int]:
+    analysis_policy_id = require_positive_int63(
+        policy_id,
+        field="artifact analysis policy_id",
+    )
+    row = work.connector.fetch_one(
+        "SELECT algorithm.algorithm_version, artist.spam_artist_threshold, "
+        "occurrence.spam_occurrence_threshold, "
+        "owner.content_owner_rule_version, winner.gid_winner_rule_version "
+        "FROM catalog_analysis_policy_seals AS seal "
+        "JOIN catalog_analysis_policy_algorithm_versions AS algorithm "
+        "ON algorithm.policy_id = seal.policy_id "
+        "JOIN catalog_analysis_policy_spam_artist_thresholds AS artist "
+        "ON artist.policy_id = seal.policy_id "
+        "JOIN catalog_analysis_policy_spam_occurrence_thresholds AS occurrence "
+        "ON occurrence.policy_id = seal.policy_id "
+        "JOIN catalog_analysis_policy_content_owner_rule_versions AS owner "
+        "ON owner.policy_id = seal.policy_id "
+        "JOIN catalog_analysis_policy_gid_winner_rule_versions AS winner "
+        "ON winner.policy_id = seal.policy_id "
+        "JOIN catalog_analysis_policy_identities AS natural "
+        "ON natural.policy_id = seal.policy_id "
+        "AND natural.algorithm_version = algorithm.algorithm_version "
+        "AND natural.spam_artist_threshold = artist.spam_artist_threshold "
+        "AND natural.spam_occurrence_threshold = "
+        "occurrence.spam_occurrence_threshold "
+        "AND natural.content_owner_rule_version = "
+        "owner.content_owner_rule_version "
+        "AND natural.gid_winner_rule_version = winner.gid_winner_rule_version "
+        "WHERE seal.policy_id = %s",
+        (analysis_policy_id,),
+    )
+    if len(row) != 5:
+        raise ArtifactPreparationNotReadyError(
+            "artifact analysis policy is missing or incomplete"
+        )
+    algorithm_version = require_uint32(
+        row[0], field="artifact analysis algorithm_version"
+    )
+    content_owner_version = require_uint32(
+        row[3], field="artifact content_owner_rule_version"
+    )
+    gid_winner_version = require_uint32(
+        row[4], field="artifact gid_winner_rule_version"
+    )
+    if algorithm_version == 0 or content_owner_version == 0 or gid_winner_version == 0:
+        raise ArtifactPreparationConflictError(
+            "artifact analysis policy has a zero algorithm version"
+        )
+    return (
+        algorithm_version,
+        require_int63(row[1], field="artifact spam_artist_threshold"),
+        require_int63(row[2], field="artifact spam_occurrence_threshold"),
+        content_owner_version,
+        gid_winner_version,
+    )
+
+
+def _load_source_scope(
+    work: VNextUnitOfWork,
+    scope_key: bytes,
+) -> tuple[bytes, bytes, int]:
+    scope = require_digest32(scope_key, field="artifact scope_key")
+    row = work.connector.fetch_one(
+        "SELECT provider.source_provider, root.source_root_sha256, "
+        "version.identity_policy_version "
+        "FROM catalog_source_scope_seals AS seal "
+        "JOIN catalog_source_scope_source_providers AS provider "
+        "ON provider.scope_key = seal.scope_key "
+        "JOIN catalog_source_scope_source_root_sha256s AS root "
+        "ON root.scope_key = seal.scope_key "
+        "JOIN catalog_source_scope_identity_policy_versions AS version "
+        "ON version.scope_key = seal.scope_key "
+        "JOIN catalog_source_scope_identities AS natural "
+        "ON natural.scope_key = seal.scope_key "
+        "AND natural.source_provider = provider.source_provider "
+        "AND natural.source_root_sha256 = root.source_root_sha256 "
+        "AND natural.identity_policy_version = version.identity_policy_version "
+        "WHERE seal.scope_key = %s",
+        (scope,),
+    )
+    if len(row) != 3:
+        raise ArtifactPreparationNotReadyError(
+            "artifact source scope is missing or incomplete"
+        )
+    provider = require_bounded_bytes(
+        row[0], field="artifact source_provider", minimum=1, maximum=64
+    )
+    root_sha256 = require_digest32(row[1], field="artifact source_root_sha256")
+    policy_version = require_uint32(row[2], field="artifact identity_policy_version")
+    if policy_version == 0:
+        raise ArtifactPreparationConflictError(
+            "artifact source scope has a zero identity-policy version"
+        )
+    try:
+        expected_scope = identity.source_scope_key(
+            provider.decode("ascii", errors="strict"),
+            root_sha256,
+            policy_version,
+        )
+    except (UnicodeError, identity.VNextIdentityError) as error:
+        raise ArtifactPreparationConflictError(
+            "artifact source scope has a malformed natural identity"
+        ) from error
+    if expected_scope != scope:
+        raise ArtifactPreparationConflictError(
+            "artifact source scope digest differs from its natural identity"
+        )
+    return provider, root_sha256, policy_version
+
+
+def _load_artifact_policy_semantics(
+    work: VNextUnitOfWork,
+    policy_component_sha256: bytes,
+) -> tuple[int, int, bytes]:
+    policy = require_digest32(
+        policy_component_sha256,
+        field="artifact policy_component_sha256",
+    )
+    row = work.connector.fetch_one(
+        "SELECT algorithm.artifact_algorithm_version, "
+        "side.max_image_short_side, producer.producer_fingerprint_sha256 "
+        "FROM catalog_artifact_policy_semantics_seals AS seal "
+        "JOIN catalog_artifact_policy_semantics_artifact_algorithm_versions "
+        "AS algorithm ON algorithm.policy_component_sha256 = "
+        "seal.policy_component_sha256 "
+        "JOIN catalog_artifact_policy_semantics_max_image_short_sides AS side "
+        "ON side.policy_component_sha256 = seal.policy_component_sha256 "
+        "JOIN catalog_artifact_policy_semantics_producer_fingerprint_sha256s "
+        "AS producer ON producer.policy_component_sha256 = "
+        "seal.policy_component_sha256 "
+        "JOIN catalog_artifact_policy_semantics_identities AS natural "
+        "ON natural.policy_component_sha256 = seal.policy_component_sha256 "
+        "AND natural.artifact_algorithm_version = "
+        "algorithm.artifact_algorithm_version "
+        "AND natural.max_image_short_side = side.max_image_short_side "
+        "AND natural.producer_fingerprint_sha256 = "
+        "producer.producer_fingerprint_sha256 "
+        "WHERE seal.policy_component_sha256 = %s",
+        (policy,),
+    )
+    if len(row) != 3:
+        raise ArtifactPreparationNotReadyError(
+            "artifact policy semantics are missing or incomplete"
+        )
+    algorithm_version = require_uint32(row[0], field="artifact algorithm_version")
+    if algorithm_version == 0:
+        raise ArtifactPreparationConflictError(
+            "artifact policy semantics have a zero algorithm version"
+        )
+    max_short_side = require_positive_int63(
+        row[1], field="artifact max_image_short_side"
+    )
+    producer = require_digest32(row[2], field="artifact producer_fingerprint_sha256")
+    if (
+        identity.artifact_policy_digest(
+            algorithm_version,
+            max_short_side,
+            producer,
+        )
+        != policy
+    ):
+        raise ArtifactPreparationConflictError(
+            "artifact policy digest differs from its registered semantics"
+        )
+    return algorithm_version, max_short_side, producer
+
+
+def _load_zip_writer_policy(
+    work: VNextUnitOfWork,
+    artifact_algorithm_version: int,
+) -> tuple[int, int, int, int, int, int, int, int, int, int]:
+    algorithm_version = require_uint32(
+        artifact_algorithm_version,
+        field="artifact ZIP algorithm_version",
+    )
+    if algorithm_version == 0:
+        raise ArtifactPreparationConflictError("artifact ZIP algorithm version is zero")
+    row = work.connector.fetch_one(
+        "SELECT zip.zip_codec_version, method.compression_method, "
+        "level.compression_level, date.dos_date, time.dos_time, mode.unix_mode, "
+        "flags.general_purpose_flags, system.create_system, "
+        "archive.archive_name_codec_version, "
+        "artifact.artifact_name_codec_version "
+        "FROM catalog_artifact_zip_writer_policy_seals AS seal "
+        "JOIN catalog_artifact_zip_writer_policy_zip_codec_versions AS zip "
+        "ON zip.artifact_algorithm_version = seal.artifact_algorithm_version "
+        "JOIN catalog_artifact_zip_writer_policy_compression_methods AS method "
+        "ON method.artifact_algorithm_version = seal.artifact_algorithm_version "
+        "JOIN catalog_artifact_zip_writer_policy_compression_levels AS level "
+        "ON level.artifact_algorithm_version = seal.artifact_algorithm_version "
+        "JOIN catalog_artifact_zip_writer_policy_dos_dates AS date "
+        "ON date.artifact_algorithm_version = seal.artifact_algorithm_version "
+        "JOIN catalog_artifact_zip_writer_policy_dos_times AS time "
+        "ON time.artifact_algorithm_version = seal.artifact_algorithm_version "
+        "JOIN catalog_artifact_zip_writer_policy_unix_modes AS mode "
+        "ON mode.artifact_algorithm_version = seal.artifact_algorithm_version "
+        "JOIN catalog_artifact_zip_writer_policy_general_purpose_flags AS flags "
+        "ON flags.artifact_algorithm_version = seal.artifact_algorithm_version "
+        "JOIN catalog_artifact_zip_writer_policy_create_systems AS system "
+        "ON system.artifact_algorithm_version = seal.artifact_algorithm_version "
+        "JOIN catalog_artifact_zip_writer_policy_archive_name_codec_versions "
+        "AS archive ON archive.artifact_algorithm_version = "
+        "seal.artifact_algorithm_version "
+        "JOIN catalog_artifact_zip_writer_policy_artifact_name_codec_versions "
+        "AS artifact ON artifact.artifact_algorithm_version = "
+        "seal.artifact_algorithm_version "
+        "JOIN catalog_artifact_zip_writer_policy_identities AS natural "
+        "ON natural.artifact_algorithm_version = seal.artifact_algorithm_version "
+        "AND natural.zip_codec_version = zip.zip_codec_version "
+        "AND natural.compression_method = method.compression_method "
+        "AND natural.compression_level = level.compression_level "
+        "AND natural.dos_date = date.dos_date "
+        "AND natural.dos_time = time.dos_time "
+        "AND natural.unix_mode = mode.unix_mode "
+        "AND natural.general_purpose_flags = flags.general_purpose_flags "
+        "AND natural.create_system = system.create_system "
+        "AND natural.archive_name_codec_version = "
+        "archive.archive_name_codec_version "
+        "AND natural.artifact_name_codec_version = "
+        "artifact.artifact_name_codec_version "
+        "WHERE seal.artifact_algorithm_version = %s",
+        (algorithm_version,),
+    )
+    if len(row) != 10:
+        raise ArtifactPreparationNotReadyError(
+            "artifact ZIP writer policy is missing or incomplete"
+        )
+    return cast(
+        tuple[int, int, int, int, int, int, int, int, int, int],
+        tuple(
+            require_int63(value, field=f"artifact ZIP writer fact {index}")
+            for index, value in enumerate(row)
+        ),
+    )
+
+
+def _load_storage_codec(
+    work: VNextUnitOfWork,
+    storage_codec_version: int,
+) -> tuple[int, bytes, int, int]:
+    version = require_positive_int63(
+        storage_codec_version,
+        field="artifact storage_codec_version",
+    )
+    row = work.connector.fetch_one(
+        "SELECT adapter.adapter_id, locator.locator_codec_version, "
+        "token.protection_token_codec_version "
+        "FROM catalog_artifact_storage_codec_seals AS seal "
+        "JOIN catalog_artifact_storage_codec_adapter_ids AS adapter "
+        "ON adapter.storage_codec_version = seal.storage_codec_version "
+        "JOIN catalog_artifact_storage_codec_locator_codec_versions AS locator "
+        "ON locator.storage_codec_version = seal.storage_codec_version "
+        "JOIN catalog_artifact_storage_codec_protection_token_codec_versions "
+        "AS token ON token.storage_codec_version = seal.storage_codec_version "
+        "WHERE seal.storage_codec_version = %s",
+        (version,),
+    )
+    if len(row) != 3:
+        raise ArtifactPreparationNotReadyError(
+            "artifact storage codec is missing or incomplete"
+        )
+    return (
+        version,
+        require_bounded_bytes(
+            row[0], field="artifact storage adapter_id", minimum=1, maximum=64
+        ),
+        require_positive_int63(row[1], field="artifact locator_codec_version"),
+        require_positive_int63(row[2], field="artifact protection_token_codec_version"),
+    )
+
+
+def _load_producer_fingerprint(
+    work: VNextUnitOfWork,
+    producer_fingerprint_sha256: bytes,
+) -> tuple[tuple[bytes, bytes, bytes, bytes, bytes], int, bytes]:
+    fingerprint = require_digest32(
+        producer_fingerprint_sha256,
+        field="artifact producer_fingerprint_sha256",
+    )
+    row = work.connector.fetch_one(
+        "SELECT natural.writer_id, natural.python_abi, natural.pillow_build, "
+        "natural.libjpeg_build, natural.zlib_build, "
+        "algorithm.artifact_algorithm_version, "
+        "equivalence.producer_equivalence_class "
+        "FROM catalog_artifact_producer_fingerprint_seals AS seal "
+        "JOIN catalog_artifact_producer_fingerprint_identities AS natural "
+        "ON natural.producer_fingerprint_sha256 = "
+        "seal.producer_fingerprint_sha256 "
+        "JOIN catalog_artifact_producer_fingerprint_algorithm_versions "
+        "AS algorithm ON algorithm.producer_fingerprint_sha256 = "
+        "seal.producer_fingerprint_sha256 "
+        "JOIN catalog_artifact_producer_fingerprint_equivalence_classes "
+        "AS equivalence ON equivalence.producer_fingerprint_sha256 = "
+        "seal.producer_fingerprint_sha256 "
+        "WHERE seal.producer_fingerprint_sha256 = %s",
+        (fingerprint,),
+    )
+    if len(row) != 7:
+        raise ArtifactPreparationNotReadyError(
+            "artifact producer fingerprint is missing or incomplete"
+        )
+    fields = cast(
+        tuple[bytes, bytes, bytes, bytes, bytes],
+        tuple(
+            require_bounded_bytes(
+                value,
+                field=f"artifact producer field {index}",
+                minimum=1,
+                maximum=128,
+            )
+            for index, value in enumerate(row[:5])
+        ),
+    )
+    algorithm_version = require_uint32(
+        row[5], field="artifact producer algorithm_version"
+    )
+    equivalence = require_bounded_bytes(
+        row[6],
+        field="artifact producer equivalence class",
+        minimum=1,
+        maximum=128,
+    )
+    if (
+        algorithm_version == 0
+        or identity.artifact_producer_fingerprint_sha256(*fields) != fingerprint
+        or identity.artifact_producer_equivalence_class(fingerprint) != equivalence
+    ):
+        raise ArtifactPreparationConflictError(
+            "artifact producer registry is not exactly derived"
+        )
+    return fields, algorithm_version, equivalence
+
+
+def _load_projection_contract(
+    work: VNextUnitOfWork,
+    projection: PublicationProjectionAuthority,
+    *,
+    validate_policy_canonical: bool = False,
+) -> _ArtifactContractFacts:
+    try:
+        run = load_analysis_run_family(
+            work.connector,
+            analysis_id=projection.analysis_id,
+        )
+    except AnalysisFamilyCollisionError as error:
+        raise ArtifactPreparationConflictError(str(error)) from error
+    if run is None or run.build_id != projection.build_id or run.state != "COMPLETE":
+        raise ArtifactPreparationNotReadyError(
+            "artifact projection analysis is missing, incomplete, or mismatched"
+        )
+    root = work.connector.fetch_one(
+        "SELECT build_scope.scope_key, build_policy.manifest_policy_id, "
+        "policy.policy_component_sha256 "
+        "FROM catalog_source_build_descriptor_seals AS build_seal "
+        "JOIN catalog_source_build_scope_keys AS build_scope "
+        "ON build_scope.build_id = build_seal.build_id "
+        "JOIN catalog_source_build_manifest_policy_ids AS build_policy "
+        "ON build_policy.build_id = build_seal.build_id "
+        "JOIN catalog_source_build_states AS build_state "
+        "ON build_state.build_id = build_seal.build_id AND build_state.state = 'SEALED' "
+        "JOIN catalog_source_build_sealed_ats AS build_completed "
+        "ON build_completed.build_id = build_seal.build_id "
+        "JOIN catalog_artifact_policies AS policy "
+        "ON policy.artifact_policy_id = %s "
+        "WHERE build_seal.build_id = %s",
+        (
+            projection.artifact_policy_id,
+            projection.build_id,
+        ),
+    )
+    if len(root) != 3:
+        raise ArtifactPreparationNotReadyError(
+            "artifact projection contract roots are missing"
+        )
+    scope_key = require_digest32(root[0], field="artifact build scope_key")
+    source_scope = _load_source_scope(work, scope_key)
+    manifest = _load_manifest_policy(
+        work,
+        require_positive_int63(root[1], field="artifact manifest_policy_id"),
+    )
+    analysis = _load_analysis_policy(
+        work,
+        run.policy_id,
+    )
+    policy_component = require_digest32(
+        root[2], field="artifact policy_component_sha256"
+    )
+    semantics = _load_artifact_policy_semantics(work, policy_component)
+    producer_fields, producer_algorithm, _equivalence = _load_producer_fingerprint(
+        work,
+        semantics[2],
+    )
+    if producer_algorithm != semantics[0]:
+        raise ArtifactPreparationConflictError(
+            "artifact producer algorithm differs from policy semantics"
+        )
+    writer_policy = _load_zip_writer_policy(work, semantics[0])
+    storage_codec = _load_storage_codec(work, _STORAGE_CODEC_V1[0])
+    if writer_policy != _ZIP_WRITER_POLICY_V1:
+        raise ArtifactPreparationContractUnavailableError(
+            "artifact ZIP writer policy is unsupported"
+        )
+    if storage_codec != _STORAGE_CODEC_V1:
+        raise ArtifactPreparationContractUnavailableError(
+            "artifact storage codec is unsupported"
+        )
+    if validate_policy_canonical:
+        _require_policy_canonical_value(
+            work,
+            policy_component=policy_component,
+            algorithm_version=semantics[0],
+            max_short_side=semantics[1],
+            producer_fingerprint_sha256=semantics[2],
+        )
+    return _ArtifactContractFacts(
+        scope_key,
+        source_scope[0],
+        source_scope[1],
+        source_scope[2],
+        manifest[0],
+        manifest[1],
+        analysis[0],
+        analysis[1],
+        analysis[2],
+        analysis[3],
+        analysis[4],
+        policy_component,
+        semantics[0],
+        semantics[1],
+        semantics[2],
+        producer_fields,
+        writer_policy,
+        storage_codec,
+    )
+
+
+def _require_policy_canonical_value(
+    work: VNextUnitOfWork,
+    *,
+    policy_component: bytes,
+    algorithm_version: int,
+    max_short_side: int,
+    producer_fingerprint_sha256: bytes,
+) -> None:
+    expected_payload = identity.encode_artifact_policy(
+        algorithm_version,
+        max_short_side,
+        producer_fingerprint_sha256,
+    )
+    if (
+        identity.artifact_policy_digest(
+            algorithm_version,
+            max_short_side,
+            producer_fingerprint_sha256,
+        )
+        != policy_component
+    ):
+        raise ArtifactPreparationConflictError(
+            "artifact policy component disagrees with its registered tuple"
+        )
+    payload = bytearray()
+    try:
+        receipt = CanonicalValueRepository.stream_and_validate(
+            work,
+            value_sha256=policy_component,
+            consume_provisional=payload.extend,
+        )
+    except (CanonicalValueCollisionError, CanonicalValueNotReadyError) as error:
+        raise ArtifactPreparationConflictError(
+            "artifact policy canonical payload is incomplete or corrupt"
+        ) from error
+    if (
+        receipt.digest_domain != _ARTIFACT_POLICY_DOMAIN
+        or receipt.byte_count != len(expected_payload)
+        or bytes(payload) != expected_payload
+    ):
+        raise ArtifactPreparationConflictError(
+            "artifact policy canonical payload disagrees with its registered tuple"
+        )
+
+
 def _build_input_plan(
     work: VNextUnitOfWork,
     authority: ArtifactInputProjectionAuthority,
@@ -1867,47 +3105,33 @@ def _build_input_plan(
     projection = authority.projection
     if not projection.artifacts_required:
         return 0
+    contract = _load_projection_contract(work, projection)
     after = b""
     count = 0
     while True:
         rows = work.connector.fetch_all(
             "SELECT selection.publication_key, selection.gallery_id, pub.gid, "
-            "gallery.gallery_key, member.observation_id, "
-            "observation.observation_identity_sha256, "
-            "manifest.manifest_algorithm_version, manifest.file_order_version, "
-            "artifact_policy.artifact_algorithm_version, "
-            "artifact_policy.max_image_short_side, "
-            "artifact_policy.producer_fingerprint_sha256, "
-            "analysis_policy.spam_artist_threshold, "
-            "analysis_policy.spam_occurrence_threshold, "
-            "policy.policy_component_sha256 "
+            "gallery.gallery_key, gallery_coordinate.scope_key, "
+            "member.observation_id, "
+            "observation.observation_identity_sha256 "
             "FROM catalog_publication_selections AS selection "
             "JOIN catalog_publication_identities AS pub "
             "ON pub.publication_key = selection.publication_key "
-            "JOIN catalog_gallery_identities AS gallery "
-            "ON gallery.gallery_id = selection.gallery_id "
+            "JOIN catalog_gallery_identity_seals AS gallery_seal "
+            "ON gallery_seal.gallery_id = selection.gallery_id "
+            "JOIN catalog_gallery_identity_gallery_keys AS gallery "
+            "ON gallery.gallery_id = gallery_seal.gallery_id "
+            "JOIN catalog_gallery_identity_coordinates AS gallery_coordinate "
+            "ON gallery_coordinate.gallery_id = gallery_seal.gallery_id "
             "JOIN catalog_source_build_galleries AS member "
             "ON member.build_id = %s AND member.gallery_id = selection.gallery_id "
             "JOIN catalog_gallery_observations AS observation "
             "ON observation.gallery_id = member.gallery_id "
             "AND observation.observation_id = member.observation_id "
-            "JOIN catalog_source_builds AS build ON build.build_id = %s "
-            "JOIN catalog_manifest_policies AS manifest "
-            "ON manifest.manifest_policy_id = build.manifest_policy_id "
-            "JOIN catalog_analysis_runs AS analysis ON analysis.analysis_id = %s "
-            "JOIN catalog_analysis_policies AS analysis_policy "
-            "ON analysis_policy.policy_id = analysis.policy_id "
-            "JOIN catalog_artifact_policies AS policy "
-            "ON policy.artifact_policy_id = %s "
-            "JOIN catalog_artifact_policy_semantics AS artifact_policy "
-            "ON artifact_policy.policy_component_sha256 = policy.policy_component_sha256 "
             "WHERE selection.candidate_id = %s AND selection.publication_key > %s "
             "ORDER BY selection.publication_key LIMIT 128",
             (
                 projection.build_id,
-                projection.build_id,
-                projection.analysis_id,
-                projection.artifact_policy_id,
                 projection.candidate_id,
                 after,
             ),
@@ -1915,7 +3139,7 @@ def _build_input_plan(
         if not rows:
             break
         for row in rows:
-            _build_one_input(work, authority, database, payload, row)
+            _build_one_input(work, authority, contract, database, payload, row)
             after = require_digest32(row[0], field="planned publication_key")
             count += 1
             if count > INT63_MAX:
@@ -1930,11 +3154,12 @@ def _build_input_plan(
 def _build_one_input(
     work: VNextUnitOfWork,
     authority: ArtifactInputProjectionAuthority,
+    contract: _ArtifactContractFacts,
     database: sqlite3.Connection,
     payload: BinaryIO,
     row: tuple[Any, ...],
 ) -> None:
-    if len(row) != 14:
+    if len(row) != 7:
         raise ArtifactPreparationConflictError(
             "artifact input evaluator returned a malformed row"
         )
@@ -1942,33 +3167,23 @@ def _build_one_input(
     gallery_id = require_positive_int63(row[1], field="planned gallery_id")
     gid = require_positive_int63(row[2], field="planned gid")
     gallery_key = require_digest32(row[3], field="planned gallery_key")
-    observation_id = require_positive_int63(row[4], field="planned observation_id")
-    observation_identity = require_digest32(
-        row[5], field="planned observation identity"
-    )
-    manifest_version = require_positive_int63(row[6], field="planned manifest version")
-    file_order_version = require_positive_int63(
-        row[7], field="planned file order version"
-    )
-    artifact_algorithm = require_positive_int63(
-        row[8], field="planned artifact algorithm"
-    )
-    max_short_side = require_positive_int63(
-        row[9], field="planned artifact max short side"
-    )
-    producer = require_digest32(row[10], field="planned producer fingerprint")
-    spam_artist = require_int63(row[11], field="planned spam artist threshold")
-    spam_occurrence = require_int63(row[12], field="planned spam occurrence threshold")
-    policy = require_digest32(row[13], field="planned policy component")
-    expected_policy = identity.artifact_policy_digest(
-        artifact_algorithm,
-        max_short_side,
-        producer,
-    )
-    if expected_policy != policy:
+    gallery_scope = require_digest32(row[4], field="planned gallery scope_key")
+    if gallery_scope != contract.scope_key:
         raise ArtifactPreparationConflictError(
-            "planned artifact policy differs from registered semantics"
+            "planned gallery belongs to another source scope"
         )
+    observation_id = require_positive_int63(row[5], field="planned observation_id")
+    observation_identity = require_digest32(
+        row[6], field="planned observation identity"
+    )
+    manifest_version = contract.manifest_algorithm_version
+    file_order_version = contract.file_order_version
+    artifact_algorithm = contract.artifact_algorithm_version
+    max_short_side = contract.max_image_short_side
+    producer = contract.producer_fingerprint_sha256
+    spam_artist = contract.spam_artist_threshold
+    spam_occurrence = contract.spam_occurrence_threshold
+    policy = contract.policy_component_sha256
     owner = _load_owner_facts(
         work,
         analysis_id=authority.projection.analysis_id,
@@ -2108,17 +3323,10 @@ def _build_one_input(
             parts=parts,
             consumer_key=publication,
         )
-    input_id = sha256(
-        _ARTIFACT_INPUT_ID_DOMAIN
-        + authority.projection.candidate_id
-        + publication
-        + semantics
-    ).digest()[:16]
     database.execute(
-        "INSERT INTO inputs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO inputs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
             sqlite3.Binary(publication),
-            sqlite3.Binary(input_id),
             sqlite3.Binary(semantics),
             sqlite3.Binary(source_manifest),
             sqlite3.Binary(member_digest),
@@ -2141,16 +3349,15 @@ def _spool_planned_members(
     spam_artist_threshold: int,
     spam_occurrence_threshold: int,
 ) -> None:
-    after = 0
+    after = -1
     position = 0
     while True:
         rows = work.connector.fetch_all(
             "SELECT source.file_no, name.name_bytes, source.file_sha256, "
             "blob.size_bytes, decision.occurrence_count, decision.artist_count, "
             "decision.maximum_gallery_artist_count "
-            "FROM catalog_gallery_observation_files AS source "
-            "JOIN catalog_file_name_identities AS name ON name.file_key = source.file_key "
-            "JOIN catalog_content_blobs AS blob ON blob.file_sha256 = source.file_sha256 "
+            + _SOURCE_FILE_FAMILY_SQL
+            + "JOIN catalog_content_blobs AS blob ON blob.file_sha256 = source.file_sha256 "
             "LEFT JOIN catalog_analysis_file_hash_decision_resolved AS decision "
             "ON decision.analysis_id = %s AND decision.file_sha256 = source.file_sha256 "
             "WHERE source.gallery_id = %s AND source.observation_id = %s "
@@ -2160,10 +3367,10 @@ def _spool_planned_members(
         if not rows:
             break
         for row in rows:
-            file_no = require_positive_int63(row[0], field="planned source file_no")
-            if file_no != position + 1:
+            file_no = require_int63(row[0], field="planned source file_no")
+            if file_no != position:
                 raise ArtifactPreparationConflictError(
-                    "planned source file positions are not contiguous"
+                    "planned source file positions are not zero-based contiguous"
                 )
             name = require_bounded_bytes(
                 row[1], field="planned source name", minimum=1, maximum=255
@@ -2294,8 +3501,7 @@ def _append_input_canonical(
             )
         if consumer_key < bytes(existing[3]):
             database.execute(
-                "UPDATE canonical_values SET consumer_key = ? "
-                "WHERE value_sha256 = ?",
+                "UPDATE canonical_values SET consumer_key = ? WHERE value_sha256 = ?",
                 (sqlite3.Binary(consumer_key), sqlite3.Binary(value_sha256)),
             )
         return
@@ -2427,14 +3633,13 @@ def _persist_artifact_input(
     plan: ArtifactInputProjectionPlan,
     row: tuple[Any, ...],
 ) -> None:
-    if len(row) != 9:
+    if len(row) != 8:
         raise ArtifactPreparationConflictError("artifact input plan row is malformed")
     publication = require_digest32(row[0], field="artifact input publication_key")
-    input_id = require_uuid16(row[1], field="planned artifact_input_id")
     digests = tuple(
-        require_digest32(value, field="planned artifact component") for value in row[2:]
+        require_digest32(value, field="planned artifact component") for value in row[1:]
     )
-    semantic_expected = (
+    semantic_family = ArtifactSemanticInputFamily(
         digests[0],
         digests[1],
         digests[2],
@@ -2443,42 +3648,27 @@ def _persist_artifact_input(
         digests[5],
         digests[6],
     )
-    _insert_or_compare(
-        work,
-        "catalog_artifact_semantic_input",
-        (
-            "artifact_semantics_sha256",
-            "source_manifest_component_sha256",
-            "member_plan_component_sha256",
-            "effective_content_component_sha256",
-            "selected_component_sha256",
-            "owner_component_sha256",
-            "policy_component_sha256",
-        ),
-        semantic_expected,
-        key_where="artifact_semantics_sha256 = %s",
-        key_parameters=(digests[0],),
-        conflict_label="artifact semantic input",
-    )
+    try:
+        ensure_artifact_semantic_input_family(
+            work.connector,
+            semantic_family,
+            backend=work.backend,
+        )
+    except (ArtifactFamilyCollisionError, ArtifactFamilyPartialError) as error:
+        raise ArtifactPreparationConflictError(
+            "artifact semantic family collides with different exact facts"
+        ) from error
     _insert_or_compare(
         work,
         "catalog_candidate_artifact_inputs",
+        ("candidate_id", "publication_key", "artifact_semantics_sha256"),
         (
-            "artifact_input_id",
-            "candidate_id",
-            "publication_key",
-            "artifact_semantics_sha256",
-        ),
-        (
-            input_id,
             mutation.candidate.candidate_id,
             publication,
             digests[0],
         ),
-        key_where=(
-            "artifact_input_id = %s OR " "(candidate_id = %s AND publication_key = %s)"
-        ),
-        key_parameters=(input_id, mutation.candidate.candidate_id, publication),
+        key_where="candidate_id = %s AND publication_key = %s",
+        key_parameters=(mutation.candidate.candidate_id, publication),
         conflict_label="candidate artifact input",
     )
     generation = plan.authority.projection.generation
@@ -2492,25 +3682,28 @@ def _persist_artifact_input(
         raise ArtifactPreparationConflictError(
             "artifact input plan lacks one of its canonical components"
         )
+    sealed_values = load_sealed_value_identities(
+        work.connector,
+        value_sha256s=tuple(
+            require_digest32(row[0], field="artifact canonical digest")
+            for row in canonical_rows
+        ),
+    )
     for canonical in canonical_rows:
         value = require_digest32(canonical[0], field="artifact canonical digest")
-        persisted = work.connector.fetch_one(
-            "SELECT allocation.digest_domain, allocation.byte_count, "
-            "identity.root_page_sha256 FROM catalog_canonical_value_allocations allocation "
-            "JOIN catalog_canonical_value_identities identity "
-            "ON identity.value_sha256 = allocation.value_sha256 "
-            "WHERE allocation.value_sha256 = %s",
-            (value,),
-        )
+        persisted = sealed_values.get(value)
         if (
-            len(persisted) != 3
-            or persisted[0] != bytes(canonical[1])
-            or persisted[1] != canonical[2]
+            persisted is None
+            or persisted.digest_domain != bytes(canonical[1])
+            or persisted.byte_count != canonical[2]
         ):
             raise ArtifactPreparationNotReadyError(
                 "artifact input canonical component is not exactly sealed"
             )
-        require_digest32(persisted[2], field="artifact canonical root")
+        require_digest32(
+            persisted.root_page_sha256,
+            field="artifact canonical root",
+        )
         if bytes(canonical[3]) != publication:
             continue
         deleted = work.connector.execute_affected(
@@ -2545,10 +3738,22 @@ def _insert_or_compare(
             )
         return
     placeholders = ", ".join("%s" for _ in columns)
-    work.connector.execute(
-        f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})",
-        expected,
-    )
+    try:
+        work.connector.execute(
+            f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})",
+            expected,
+        )
+    except DatabaseDuplicateKeyError:
+        locking = " FOR UPDATE" if work.backend == "mariadb" else ""
+        raced = work.connector.fetch_all(
+            f"SELECT {', '.join(columns)} FROM {table} "
+            f"WHERE {key_where} LIMIT 2{locking}",
+            key_parameters,
+        )
+        if tuple(raced) != (expected,):
+            raise ArtifactPreparationConflictError(
+                f"{conflict_label} concurrent replay changed exact facts"
+            )
 
 
 def _derive_delta_keys(
@@ -2568,11 +3773,9 @@ def _derive_delta_keys(
     old_rows: list[tuple[Any, ...]] = []
     if mutation.base_catalog is not None:
         old_rows = work.connector.fetch_all(
-            "SELECT identity.publication_key FROM catalog_artifacts artifact "
-            "JOIN catalog_artifact_identity identity "
-            "ON identity.artifact_id = artifact.artifact_id "
-            "WHERE artifact.revision = %s AND identity.publication_key > %s "
-            "ORDER BY identity.publication_key LIMIT 128",
+            "SELECT publication_key FROM catalog_artifact_seals "
+            "WHERE revision = %s AND publication_key > %s "
+            "ORDER BY publication_key LIMIT 128",
             (mutation.base_catalog.revision, after),
         )
     values = sorted(
@@ -2588,29 +3791,30 @@ def _old_artifact(
     work: VNextUnitOfWork,
     mutation: _MutationAuthority,
     publication_key: bytes,
-) -> tuple[bytes, bytes, bytes] | None:
+) -> tuple[bytes, bytes] | None:
     if mutation.base_catalog is None:
         return None
     rows = work.connector.fetch_all(
-        "SELECT artifact.artifact_semantics_sha256, identity.artifact_sha256, "
-        "identity.artifact_id FROM catalog_artifacts artifact "
-        "JOIN catalog_artifact_identity identity "
-        "ON identity.artifact_id = artifact.artifact_id "
-        "WHERE artifact.revision = %s AND identity.publication_key = %s LIMIT 2",
+        "SELECT semantics.artifact_semantics_sha256, digest.artifact_sha256 "
+        "FROM catalog_artifact_seals AS seal "
+        "JOIN catalog_artifact_semantics_sha256s AS semantics "
+        "ON semantics.revision = seal.revision "
+        "AND semantics.publication_key = seal.publication_key "
+        "JOIN catalog_artifact_sha256s AS digest "
+        "ON digest.revision = seal.revision "
+        "AND digest.publication_key = seal.publication_key "
+        "WHERE seal.revision = %s AND seal.publication_key = %s LIMIT 2",
         (mutation.base_catalog.revision, publication_key),
     )
     if not rows:
         return None
-    if len(rows) != 1 or len(rows[0]) != 3:
+    if len(rows) != 1 or len(rows[0]) != 2:
         raise ArtifactPreparationConflictError(
             "base catalog has more than one artifact for a publication"
         )
     return (
         require_digest32(rows[0][0], field="old artifact semantics"),
         require_digest32(rows[0][1], field="old artifact sha256"),
-        require_bounded_bytes(
-            rows[0][2], field="old artifact_id", minimum=1, maximum=128
-        ),
     )
 
 
@@ -2618,26 +3822,23 @@ def _new_artifact_input(
     work: VNextUnitOfWork,
     mutation: _MutationAuthority,
     publication_key: bytes,
-) -> tuple[bytes, bytes] | None:
+) -> bytes | None:
     row = work.connector.fetch_one(
-        "SELECT artifact_input_id, artifact_semantics_sha256 "
+        "SELECT artifact_semantics_sha256 "
         "FROM catalog_candidate_artifact_inputs "
         "WHERE candidate_id = %s AND publication_key = %s",
         (mutation.candidate.candidate_id, publication_key),
     )
     if not row:
         return None
-    if len(row) != 2:
+    if len(row) != 1:
         raise ArtifactPreparationConflictError("new artifact input is malformed")
-    return (
-        require_uuid16(row[0], field="new artifact_input_id"),
-        require_digest32(row[1], field="new artifact semantics"),
-    )
+    return require_digest32(row[0], field="new artifact semantics")
 
 
 def _classify_artifact_operation(
-    old: tuple[bytes, bytes, bytes] | None,
-    new: tuple[bytes, bytes] | None,
+    old: tuple[bytes, bytes] | None,
+    new: bytes | None,
 ) -> str:
     if old is None and new is not None:
         return "CREATE"
@@ -2645,7 +3846,7 @@ def _classify_artifact_operation(
         return "DELETE"
     if old is None or new is None:
         raise ArtifactPreparationConflictError("artifact delta has no old or new side")
-    return "UNCHANGED" if old[0] == new[1] else "REBUILD"
+    return "UNCHANGED" if old[0] == new else "REBUILD"
 
 
 def _materialize_delta_key(
@@ -2657,31 +3858,6 @@ def _materialize_delta_key(
     new = _new_artifact_input(work, mutation, publication_key)
     operation = _classify_artifact_operation(old, new)
     candidate = mutation.candidate.candidate_id
-    if old is not None:
-        _insert_or_compare(
-            work,
-            "catalog_artifact_delta_old",
-            (
-                "candidate_id",
-                "publication_key",
-                "artifact_semantics_sha256",
-                "artifact_sha256",
-            ),
-            (candidate, publication_key, old[0], old[1]),
-            key_where="candidate_id = %s AND publication_key = %s",
-            key_parameters=(candidate, publication_key),
-            conflict_label="old artifact delta",
-        )
-    if new is not None:
-        _insert_or_compare(
-            work,
-            "catalog_artifact_delta_new",
-            ("candidate_id", "publication_key", "artifact_input_id"),
-            (candidate, publication_key, new[0]),
-            key_where="candidate_id = %s AND publication_key = %s",
-            key_parameters=(candidate, publication_key),
-            conflict_label="new artifact delta",
-        )
     _insert_or_compare(
         work,
         "catalog_artifact_operations",
@@ -2697,7 +3873,7 @@ def _materialize_delta_key(
             work,
             mutation,
             publication_key=publication_key,
-            artifact_id=old[2],
+            artifact_sha256=old[1],
             artifact_semantics_sha256=old[0],
         )
 
@@ -2707,33 +3883,33 @@ def _insert_catalog_artifact_occurrence(
     mutation: _MutationAuthority,
     *,
     publication_key: bytes,
-    artifact_id: bytes,
+    artifact_sha256: bytes,
     artifact_semantics_sha256: bytes,
 ) -> None:
-    modified = work.connector.fetch_one(
-        "SELECT modified_at FROM catalog_publications "
+    publication = work.connector.fetch_one(
+        "SELECT publication_key FROM catalog_publications "
         "WHERE revision = %s AND publication_key = %s",
         (mutation.candidate.reserved_revision, publication_key),
     )
-    if len(modified) != 1:
+    if publication != (publication_key,):
         raise ArtifactPreparationNotReadyError(
             "artifact occurrence lacks its reserved catalog publication"
         )
-    timestamp = require_int63(modified[0], field="artifact occurrence modified_at")
-    _insert_or_compare(
-        work,
-        "catalog_artifacts",
-        ("revision", "artifact_id", "artifact_semantics_sha256", "modified_at"),
-        (
-            mutation.candidate.reserved_revision,
-            artifact_id,
-            artifact_semantics_sha256,
-            timestamp,
-        ),
-        key_where="revision = %s AND artifact_id = %s",
-        key_parameters=(mutation.candidate.reserved_revision, artifact_id),
-        conflict_label="catalog artifact occurrence",
-    )
+    try:
+        ensure_catalog_artifact_family(
+            work.connector,
+            CatalogArtifactFamily(
+                mutation.candidate.reserved_revision,
+                publication_key,
+                artifact_sha256,
+                artifact_semantics_sha256,
+            ),
+            backend=work.backend,
+        )
+    except (ArtifactFamilyCollisionError, ArtifactFamilyPartialError) as error:
+        raise ArtifactPreparationConflictError(
+            "catalog artifact occurrence collides with different exact facts"
+        ) from error
 
 
 def _compare_delta_for_input(
@@ -2742,27 +3918,36 @@ def _compare_delta_for_input(
     planned: tuple[Any, ...],
 ) -> None:
     publication = require_digest32(planned[0], field="validated publication_key")
-    input_id = require_uuid16(planned[1], field="validated artifact_input_id")
     semantics = tuple(
         require_digest32(value, field="validated artifact semantic component")
-        for value in planned[2:]
+        for value in planned[1:]
     )
-    row = work.connector.fetch_one(
-        "SELECT artifact_semantics_sha256, source_manifest_component_sha256, "
-        "member_plan_component_sha256, effective_content_component_sha256, "
-        "selected_component_sha256, owner_component_sha256, policy_component_sha256 "
-        "FROM catalog_artifact_semantic_input WHERE artifact_semantics_sha256 = %s",
-        (semantics[0],),
-    )
-    if row != semantics:
+    try:
+        semantic_family = load_artifact_semantic_input_family(
+            work.connector,
+            artifact_semantics_sha256=semantics[0],
+            backend=work.backend,
+        )
+    except (ArtifactFamilyCollisionError, ArtifactFamilyPartialError) as error:
+        raise ArtifactPreparationConflictError(
+            "artifact semantic family is incomplete or corrupt"
+        ) from error
+    if (
+        semantic_family is None
+        or (
+            semantic_family.artifact_semantics_sha256,
+            *semantic_family.components,
+        )
+        != semantics
+    ):
         raise ArtifactPreparationConflictError(
             "artifact semantic tuple differs from independent evaluator"
         )
     old = _old_artifact(work, mutation, publication)
-    new = (input_id, semantics[0])
+    new = semantics[0]
     expected_operation = _classify_artifact_operation(old, new)
     materialized_new = work.connector.fetch_one(
-        "SELECT artifact_input_id FROM catalog_artifact_delta_new "
+        "SELECT artifact_semantics_sha256 FROM catalog_artifact_delta_new "
         "WHERE candidate_id = %s AND publication_key = %s",
         (mutation.candidate.candidate_id, publication),
     )
@@ -2771,7 +3956,7 @@ def _compare_delta_for_input(
         "WHERE candidate_id = %s AND publication_key = %s",
         (mutation.candidate.candidate_id, publication),
     )
-    if materialized_new != (input_id,) or materialized_operation != (
+    if materialized_new != (semantics[0],) or materialized_operation != (
         expected_operation,
     ):
         raise ArtifactPreparationConflictError(
@@ -2814,16 +3999,13 @@ def _operation_keys(
         )
     elif operations == ("DELETE",):
         rows = work.connector.fetch_all(
-            "SELECT DISTINCT identity.publication_key "
-            "FROM catalog_artifacts artifact "
-            "JOIN catalog_artifact_identity identity "
-            "ON identity.artifact_id = artifact.artifact_id "
-            "WHERE artifact.revision = %s AND identity.publication_key > %s "
+            "SELECT publication_key FROM catalog_artifact_seals "
+            "WHERE revision = %s AND publication_key > %s "
             "AND NOT EXISTS ("
             "SELECT 1 FROM catalog_candidate_artifact_inputs input "
             "WHERE input.candidate_id = %s "
-            "AND input.publication_key = identity.publication_key) "
-            "ORDER BY identity.publication_key LIMIT 128",
+            "AND input.publication_key = catalog_artifact_seals.publication_key) "
+            "ORDER BY publication_key LIMIT 128",
             (base, after, candidate),
         )
     elif "DELETE" in operations:
@@ -2832,11 +4014,12 @@ def _operation_keys(
         predicates: list[str] = []
         parameters: list[Any] = [base]
         old_exists = (
-            "SELECT 1 FROM catalog_artifacts old_artifact "
-            "JOIN catalog_artifact_identity old_identity "
-            "ON old_identity.artifact_id = old_artifact.artifact_id "
-            "WHERE old_artifact.revision = %s "
-            "AND old_identity.publication_key = input.publication_key"
+            "SELECT 1 FROM catalog_artifact_seals old_seal "
+            "JOIN catalog_artifact_semantics_sha256s old_artifact "
+            "ON old_artifact.revision = old_seal.revision "
+            "AND old_artifact.publication_key = old_seal.publication_key "
+            "WHERE old_seal.revision = %s "
+            "AND old_seal.publication_key = input.publication_key"
         )
         if "CREATE" in operations:
             predicates.append(f"NOT EXISTS ({old_exists})")
@@ -2937,6 +4120,244 @@ def _validate_operation_batch(
     )
 
 
+# This is one fixed transaction query with a result/API bound of 128 keys.  The
+# bound does not claim that a backend examines at most 128 index entries; the
+# physical contract instead supplies leading (revision, publication_key, ...)
+# keys and both backends must retain a selective EXPLAIN plan.  Display order is
+# presentation state, while artifact bytes have their own B7 delta, so neither
+# family participates in semantic item equality here.
+_EXACT_CHANGED_ITEM_QUERY = """
+WITH current_policy(display_title_policy_id) AS (SELECT %s)
+SELECT current_item.publication_key
+FROM catalog_publications AS current_item
+JOIN catalog_publications AS old_item
+  ON old_item.revision = %s
+ AND old_item.publication_key = current_item.publication_key
+WHERE current_item.revision = %s
+  AND current_item.publication_key > %s
+  AND (
+    EXISTS (
+      SELECT 1
+      FROM catalog_publications AS current_scalar
+      WHERE current_scalar.revision = current_item.revision
+        AND current_scalar.publication_key = current_item.publication_key
+        AND NOT EXISTS (
+          SELECT 1
+          FROM catalog_publications AS old_scalar
+          WHERE old_scalar.revision = old_item.revision
+            AND old_scalar.publication_key = old_item.publication_key
+            AND old_scalar.gallery_id = current_scalar.gallery_id
+            AND old_scalar.summary_sha256 = current_scalar.summary_sha256
+            AND old_scalar.language_sha256 = current_scalar.language_sha256
+            AND old_scalar.modified_at = current_scalar.modified_at
+        )
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM catalog_publications AS old_scalar
+      WHERE old_scalar.revision = old_item.revision
+        AND old_scalar.publication_key = old_item.publication_key
+        AND NOT EXISTS (
+          SELECT 1
+          FROM catalog_publications AS current_scalar
+          WHERE current_scalar.revision = current_item.revision
+            AND current_scalar.publication_key = current_item.publication_key
+            AND current_scalar.gallery_id = old_scalar.gallery_id
+            AND current_scalar.summary_sha256 = old_scalar.summary_sha256
+            AND current_scalar.language_sha256 = old_scalar.language_sha256
+            AND current_scalar.modified_at = old_scalar.modified_at
+        )
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM catalog_publication_titles AS current_title
+      CROSS JOIN current_policy
+      JOIN catalog_display_title_choices AS current_choice
+        ON current_choice.display_title_policy_id =
+           current_policy.display_title_policy_id
+       AND current_choice.source_title_sha256 =
+           current_title.source_title_sha256
+       AND current_choice.source_gallery_name =
+           current_title.source_gallery_name
+      JOIN catalog_display_title_policy_title_sort_policy_ids AS current_policy_sort
+        ON current_policy_sort.display_title_policy_id =
+           current_policy.display_title_policy_id
+      JOIN catalog_title_sorts AS current_sort
+        ON current_sort.title_sort_policy_id =
+           current_policy_sort.title_sort_policy_id
+       AND current_sort.title_sha256 = current_choice.title_sha256
+      WHERE current_title.revision = current_item.revision
+        AND current_title.publication_key = current_item.publication_key
+        AND NOT EXISTS (
+          SELECT 1
+          FROM catalog_publication_titles AS old_title
+          JOIN catalog_publication_commit_catalog_revisions AS old_commit_revision
+            ON old_commit_revision.revision = old_title.revision
+          JOIN catalog_publication_commit_seals AS old_commit_seal
+            ON old_commit_seal.receipt_id = old_commit_revision.receipt_id
+          JOIN catalog_publication_commit_display_title_policies AS old_commit_policy
+            ON old_commit_policy.receipt_id = old_commit_seal.receipt_id
+          JOIN catalog_display_title_choices AS old_choice
+            ON old_choice.display_title_policy_id =
+               old_commit_policy.display_title_policy_id
+           AND old_choice.source_title_sha256 = old_title.source_title_sha256
+           AND old_choice.source_gallery_name = old_title.source_gallery_name
+          JOIN catalog_display_title_policy_title_sort_policy_ids AS old_policy_sort
+            ON old_policy_sort.display_title_policy_id =
+               old_commit_policy.display_title_policy_id
+          JOIN catalog_title_sorts AS old_sort
+            ON old_sort.title_sort_policy_id = old_policy_sort.title_sort_policy_id
+           AND old_sort.title_sha256 = old_choice.title_sha256
+          WHERE old_title.revision = old_item.revision
+            AND old_title.publication_key = old_item.publication_key
+            AND old_title.source_title_sha256 =
+                current_title.source_title_sha256
+            AND old_title.source_gallery_name =
+                current_title.source_gallery_name
+            AND old_choice.title_sha256 = current_choice.title_sha256
+            AND old_sort.sort_title_sha256 = current_sort.sort_title_sha256
+        )
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM catalog_publication_titles AS old_title
+      JOIN catalog_publication_commit_catalog_revisions AS old_commit_revision
+        ON old_commit_revision.revision = old_title.revision
+      JOIN catalog_publication_commit_seals AS old_commit_seal
+        ON old_commit_seal.receipt_id = old_commit_revision.receipt_id
+      JOIN catalog_publication_commit_display_title_policies AS old_commit_policy
+        ON old_commit_policy.receipt_id = old_commit_seal.receipt_id
+      JOIN catalog_display_title_choices AS old_choice
+        ON old_choice.display_title_policy_id =
+           old_commit_policy.display_title_policy_id
+       AND old_choice.source_title_sha256 = old_title.source_title_sha256
+       AND old_choice.source_gallery_name = old_title.source_gallery_name
+      JOIN catalog_display_title_policy_title_sort_policy_ids AS old_policy_sort
+        ON old_policy_sort.display_title_policy_id =
+           old_commit_policy.display_title_policy_id
+      JOIN catalog_title_sorts AS old_sort
+        ON old_sort.title_sort_policy_id = old_policy_sort.title_sort_policy_id
+       AND old_sort.title_sha256 = old_choice.title_sha256
+      WHERE old_title.revision = old_item.revision
+        AND old_title.publication_key = old_item.publication_key
+        AND NOT EXISTS (
+          SELECT 1
+          FROM catalog_publication_titles AS current_title
+          CROSS JOIN current_policy
+          JOIN catalog_display_title_choices AS current_choice
+            ON current_choice.display_title_policy_id =
+               current_policy.display_title_policy_id
+           AND current_choice.source_title_sha256 =
+               current_title.source_title_sha256
+           AND current_choice.source_gallery_name =
+               current_title.source_gallery_name
+          JOIN catalog_display_title_policy_title_sort_policy_ids AS current_policy_sort
+            ON current_policy_sort.display_title_policy_id =
+               current_policy.display_title_policy_id
+          JOIN catalog_title_sorts AS current_sort
+            ON current_sort.title_sort_policy_id =
+               current_policy_sort.title_sort_policy_id
+           AND current_sort.title_sha256 = current_choice.title_sha256
+          WHERE current_title.revision = current_item.revision
+            AND current_title.publication_key = current_item.publication_key
+            AND current_title.source_title_sha256 = old_title.source_title_sha256
+            AND current_title.source_gallery_name = old_title.source_gallery_name
+            AND current_choice.title_sha256 = old_choice.title_sha256
+            AND current_sort.sort_title_sha256 = old_sort.sort_title_sha256
+        )
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM catalog_publication_contents AS current_content
+      WHERE current_content.revision = current_item.revision
+        AND current_content.publication_key = current_item.publication_key
+        AND NOT EXISTS (
+          SELECT 1
+          FROM catalog_publication_contents AS old_content
+          WHERE old_content.revision = old_item.revision
+            AND old_content.publication_key = old_item.publication_key
+            AND old_content.content_sha256 = current_content.content_sha256
+        )
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM catalog_publication_contents AS old_content
+      WHERE old_content.revision = old_item.revision
+        AND old_content.publication_key = old_item.publication_key
+        AND NOT EXISTS (
+          SELECT 1
+          FROM catalog_publication_contents AS current_content
+          WHERE current_content.revision = current_item.revision
+            AND current_content.publication_key = current_item.publication_key
+            AND current_content.content_sha256 = old_content.content_sha256
+        )
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM catalog_contributors AS current_contributor
+      WHERE current_contributor.revision = current_item.revision
+        AND current_contributor.publication_key = current_item.publication_key
+        AND NOT EXISTS (
+          SELECT 1
+          FROM catalog_contributors AS old_contributor
+          WHERE old_contributor.revision = old_item.revision
+            AND old_contributor.publication_key = old_item.publication_key
+            AND old_contributor.position = current_contributor.position
+            AND old_contributor.contributor_name_sha256 =
+                current_contributor.contributor_name_sha256
+            AND old_contributor.role = current_contributor.role
+        )
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM catalog_contributors AS old_contributor
+      WHERE old_contributor.revision = old_item.revision
+        AND old_contributor.publication_key = old_item.publication_key
+        AND NOT EXISTS (
+          SELECT 1
+          FROM catalog_contributors AS current_contributor
+          WHERE current_contributor.revision = current_item.revision
+            AND current_contributor.publication_key = current_item.publication_key
+            AND current_contributor.position = old_contributor.position
+            AND current_contributor.contributor_name_sha256 =
+                old_contributor.contributor_name_sha256
+            AND current_contributor.role = old_contributor.role
+        )
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM catalog_subjects AS current_subject
+      WHERE current_subject.revision = current_item.revision
+        AND current_subject.publication_key = current_item.publication_key
+        AND NOT EXISTS (
+          SELECT 1
+          FROM catalog_subjects AS old_subject
+          WHERE old_subject.revision = old_item.revision
+            AND old_subject.publication_key = old_item.publication_key
+            AND old_subject.position = current_subject.position
+            AND old_subject.tag_id = current_subject.tag_id
+        )
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM catalog_subjects AS old_subject
+      WHERE old_subject.revision = old_item.revision
+        AND old_subject.publication_key = old_item.publication_key
+        AND NOT EXISTS (
+          SELECT 1
+          FROM catalog_subjects AS current_subject
+          WHERE current_subject.revision = current_item.revision
+            AND current_subject.publication_key = current_item.publication_key
+            AND current_subject.position = old_subject.position
+            AND current_subject.tag_id = old_subject.tag_id
+        )
+    )
+  )
+ORDER BY current_item.publication_key
+LIMIT 128
+"""
+
+
 def _gallery_diff_keys(
     work: VNextUnitOfWork,
     mutation: _MutationAuthority,
@@ -2967,15 +4388,13 @@ def _gallery_diff_keys(
     elif kind == "CHANGED":
         if base is None:
             return ()
-        query = (
-            "SELECT current.publication_key FROM catalog_publications current "
-            "JOIN catalog_publications old ON old.revision = %s "
-            "AND old.publication_key = current.publication_key "
-            "WHERE current.revision = %s AND current.publication_key > %s "
-            "AND current.item_sha256 <> old.item_sha256 "
-            "ORDER BY current.publication_key LIMIT 128"
+        query = _EXACT_CHANGED_ITEM_QUERY
+        parameters = (
+            mutation.candidate.display_title_policy_id,
+            base,
+            revision,
+            after,
         )
-        parameters = (base, revision, after)
     elif kind == "REMOVED":
         if base is None:
             return ()
@@ -3037,51 +4456,37 @@ def _validate_prepared_row(
     work: VNextUnitOfWork,
     mutation: _MutationAuthority,
     publication_key: bytes,
+    *,
+    storage_codec: tuple[int, bytes, int, int],
 ) -> None:
-    rows = work.connector.fetch_all(
-        "SELECT prepared.artifact_sha256, prepared.storage_codec_version, "
-        "prepared.protection_token, prepared.state, blob.size_bytes, "
-        "location.artifact_locator_sha256, identity.artifact_id, "
-        "identity.publication_key, artifact.artifact_semantics_sha256 "
-        "FROM catalog_prepared_artifacts prepared "
-        "JOIN catalog_artifact_blobs blob "
-        "ON blob.artifact_sha256 = prepared.artifact_sha256 "
-        "JOIN catalog_artifact_location location "
-        "ON location.artifact_sha256 = prepared.artifact_sha256 "
-        "JOIN catalog_artifact_identity identity "
-        "ON identity.artifact_sha256 = prepared.artifact_sha256 "
-        "AND identity.publication_key = prepared.publication_key "
-        "JOIN catalog_artifacts artifact ON artifact.revision = %s "
-        "AND artifact.artifact_id = identity.artifact_id "
-        "WHERE prepared.candidate_id = %s AND prepared.publication_key = %s LIMIT 2",
-        (
-            mutation.candidate.reserved_revision,
-            mutation.candidate.candidate_id,
-            publication_key,
-        ),
-    )
-    if len(rows) != 1 or len(rows[0]) != 9:
-        raise ArtifactPreparationConflictError(
-            "prepared artifact lacks one exact blob/location/catalog identity"
+    try:
+        prepared = load_prepared_artifact_family(
+            work.connector,
+            candidate_id=mutation.candidate.candidate_id,
+            publication_key=publication_key,
+            backend=work.backend,
         )
-    row = rows[0]
-    artifact_sha256 = require_digest32(row[0], field="prepared artifact sha256")
-    storage_version = require_positive_int63(row[1], field="prepared storage codec")
-    token_bytes = require_bounded_bytes(
-        row[2], field="prepared protection token", minimum=184, maximum=184
-    )
-    if row[3] != "PREPARED":
+        occurrence = load_catalog_artifact_family(
+            work.connector,
+            revision=mutation.candidate.reserved_revision,
+            publication_key=publication_key,
+            backend=work.backend,
+        )
+    except (ArtifactFamilyCollisionError, ArtifactFamilyPartialError) as error:
+        raise ArtifactPreparationConflictError(
+            "prepared artifact has an invalid narrow family"
+        ) from error
+    if prepared is None or occurrence is None:
+        raise ArtifactPreparationConflictError(
+            "prepared artifact lacks one exact family or catalog occurrence"
+        )
+    if prepared.state != "PREPARED":
         raise ArtifactPreparationConflictError(
             "candidate seal requires PREPARED artifact state"
         )
-    size = require_int63(row[4], field="prepared artifact size")
-    locator = require_digest32(row[5], field="prepared locator digest")
-    artifact_id = require_bounded_bytes(
-        row[6], field="prepared artifact_id", minimum=1, maximum=128
-    )
-    if row[7] != publication_key:
+    if occurrence.artifact_sha256 != prepared.artifact_sha256:
         raise ArtifactPreparationConflictError(
-            "prepared artifact identity publication changed"
+            "prepared occurrence byte digest differs from prepared family"
         )
     operation = work.connector.fetch_one(
         "SELECT input.artifact_semantics_sha256, operation.operation, pub.gid "
@@ -3098,26 +4503,23 @@ def _validate_prepared_row(
         raise ArtifactPreparationConflictError(
             "prepared artifact has no exact byte-producing operation"
         )
-    if row[8] != operation[0] or artifact_id != identity.artifact_id(
-        require_positive_int63(operation[2], field="prepared artifact gid"),
-        artifact_sha256,
-    ):
+    if occurrence.artifact_semantics_sha256 != operation[0]:
         raise ArtifactPreparationConflictError(
-            "prepared catalog occurrence differs from its input or identity"
+            "prepared catalog occurrence differs from its semantic input"
         )
     try:
-        token = identity.decode_artifact_protection_token(token_bytes)
+        token = identity.decode_artifact_protection_token(prepared.protection_token)
     except identity.VNextIdentityError as error:
         raise ArtifactPreparationConflictError(
             "prepared artifact protection token is malformed"
         ) from error
     expected_token = (
-        storage_version,
+        prepared.storage_codec_version,
         mutation.candidate.candidate_id,
         publication_key,
-        artifact_sha256,
-        locator,
-        size,
+        prepared.artifact_sha256,
+        token.artifact_locator_sha256,
+        token.size_bytes,
     )
     actual_token = (
         token.storage_codec_version,
@@ -3140,13 +4542,10 @@ def _validate_prepared_row(
         raise ArtifactPreparationConflictError(
             "prepared storage generation is not mapped to the candidate build"
         )
-    codec = work.connector.fetch_one(
-        "SELECT storage_codec_version, adapter_id, locator_codec_version, "
-        "protection_token_codec_version FROM catalog_artifact_storage_codecs "
-        "WHERE storage_codec_version = %s",
-        (storage_version,),
-    )
-    if codec != _STORAGE_CODEC_V1:
+    if (
+        prepared.storage_codec_version != storage_codec[0]
+        or storage_codec != _STORAGE_CODEC_V1
+    ):
         raise ArtifactPreparationConflictError(
             "prepared artifact storage codec is not registered"
         )
@@ -3162,7 +4561,7 @@ def _validate_prepared_row(
     try:
         receipt = CanonicalValueRepository.stream_and_validate(
             work,
-            value_sha256=locator,
+            value_sha256=token.artifact_locator_sha256,
             consume_provisional=consume_locator,
         )
         components = identity.decode_artifact_locator(bytes(locator_parts))
@@ -3176,8 +4575,8 @@ def _validate_prepared_row(
         ) from error
     if (
         receipt.digest_domain != b"artifact_locator_bytes_v1"
-        or components != identity.artifact_locator_components(artifact_sha256)
-        or identity.artifact_locator_digest(components) != locator
+        or components != identity.artifact_locator_components(prepared.artifact_sha256)
+        or identity.artifact_locator_digest(components) != token.artifact_locator_sha256
     ):
         raise ArtifactPreparationConflictError(
             "prepared artifact locator differs from content-addressed bytes"
@@ -3206,9 +4605,21 @@ def _seal_projection(
     *,
     now: int,
 ) -> None:
-    timestamp = require_int63(now, field="projection sealed_at")
+    timestamp = require_int63(now, field="projection certification now")
     candidate = mutation.candidate.candidate_id
+    # ``_prepare_candidate_batch`` already locked this exact definition seal
+    # before any checkpoint lock; re-read it here without violating lock order.
+    definition = work.connector.fetch_one(
+        "SELECT candidate_id FROM catalog_publication_candidate_definition_seals "
+        "WHERE candidate_id = %s",
+        (candidate,),
+    )
+    if definition != (candidate,):
+        raise ArtifactPreparationConflictError(
+            "projection certification lacks its candidate definition seal"
+        )
     counts: dict[bytes, int] = {}
+    latest_terminal_at = 0
     for stage in _SEAL_STAGES:
         checkpoint, _receipt = _load_complete_stage_receipt(
             work,
@@ -3217,12 +4628,12 @@ def _seal_projection(
             cursor_maximum=8 if stage == b"VALIDATE_DUPLICATE_LOSER" else 2048,
         )
         counts[stage] = checkpoint[2]
+        latest_terminal_at = max(latest_terminal_at, checkpoint[4])
     publication_count = counts[b"VALIDATE_SELECTION"]
     artifact_inputs = counts[b"VALIDATE_ARTIFACT_INPUT_DELTA"]
     prepared = counts[b"VALIDATE_PREPARED_ARTIFACT"]
     create = counts[b"VALIDATE_CREATE"]
     rebuild = counts[b"VALIDATE_REBUILD"]
-    delete = counts[b"VALIDATE_DELETE"]
     unchanged = counts[b"VALIDATE_UNCHANGED"]
     if prepared != create + rebuild:
         raise ArtifactPreparationConflictError(
@@ -3233,7 +4644,10 @@ def _seal_projection(
             "artifact input count differs from byte-producing plus unchanged"
         )
     revision = work.connector.fetch_one(
-        "SELECT publication_count FROM catalog_revisions WHERE revision = %s",
+        "SELECT count.publication_count "
+        "FROM catalog_revision_descriptor_seals AS seal "
+        "JOIN catalog_revision_publication_counts AS count "
+        "ON count.revision = seal.revision WHERE seal.revision = %s",
         (mutation.candidate.reserved_revision,),
     )
     if revision != (publication_count,):
@@ -3261,49 +4675,18 @@ def _seal_projection(
         raise ArtifactPreparationNotReadyError(
             "candidate lacks one COMPLETE operational preparation effect seal"
         )
-    values = (
-        candidate,
-        publication_count,
-        artifact_inputs,
-        prepared,
-        create,
-        rebuild,
-        delete,
-        unchanged,
-        counts[b"VALIDATE_NEW_GALLERY"],
-        counts[b"VALIDATE_CHANGED_GALLERY"],
-        counts[b"VALIDATE_REMOVED_GALLERY"],
-        counts[b"VALIDATE_DUPLICATE_LOSER"],
-        timestamp,
-    )
+    if timestamp < latest_terminal_at:
+        raise ArtifactPreparationNotReadyError(
+            "projection certification timestamp precedes a terminal receipt"
+        )
     _insert_or_compare(
         work,
-        "catalog_publication_candidate_projection_seal",
-        (
-            "candidate_id",
-            "publication_count",
-            "artifact_input_count",
-            "prepared_artifact_count",
-            "create_count",
-            "rebuild_count",
-            "delete_count",
-            "unchanged_count",
-            "new_galleries",
-            "changed_galleries",
-            "removed_galleries",
-            "duplicate_losers",
-            "projection_sealed_at",
-        ),
-        values,
+        "catalog_publication_candidate_projection_seals",
+        ("candidate_id",),
+        (candidate,),
         key_where="candidate_id = %s",
         key_parameters=(candidate,),
         conflict_label="publication projection seal",
-    )
-    work.compare_and_swap(
-        "UPDATE catalog_publication_candidates SET state = %s, sealed_at = %s "
-        "WHERE candidate_id = %s AND state = %s AND sealed_at IS NULL",
-        ("SEALED", timestamp, candidate, "OPEN"),
-        authority="publication candidate projection seal",
     )
 
 
@@ -3327,12 +4710,6 @@ def _require_preparation_receipt(receipt: ArtifactPreparationReceipt) -> None:
         receipt.storage_codec_version,
         field="prepared storage_codec_version",
     )
-    require_bounded_bytes(
-        receipt.protection_token,
-        field="prepared protection_token",
-        minimum=184,
-        maximum=184,
-    )
     if type(receipt.locator_plan) is not CanonicalValueUploadPlan:
         raise TypeError("prepared locator plan must be exact")
     require_digest32(
@@ -3343,17 +4720,22 @@ def _require_preparation_receipt(receipt: ArtifactPreparationReceipt) -> None:
         receipt.locator_plan.byte_count,
         field="prepared locator plan byte_count",
     )
-    token = identity.decode_artifact_protection_token(receipt.protection_token)
-    if (
-        token.candidate_id != authority.candidate_id
-        or token.publication_key != authority.publication_key
-        or token.artifact_sha256 != receipt.artifact_sha256
-        or token.artifact_locator_sha256 != receipt.artifact_locator_sha256
-        or token.storage_generation != authority.projection.generation
-        or token.size_bytes != receipt.size_bytes
+    if _hash_stream(receipt._archive) != (
+        receipt.artifact_sha256,
+        receipt.size_bytes,
     ):
         raise ArtifactPreparationConflictError(
-            "artifact preparation receipt token changed"
+            "verified artifact archive bytes changed before durable persistence"
+        )
+    expected_components = identity.artifact_locator_components(receipt.artifact_sha256)
+    if (
+        receipt.locator_components != expected_components
+        or identity.artifact_locator_digest(expected_components)
+        != receipt.artifact_locator_sha256
+        or receipt.storage_codec_version != authority.storage_codec[0]
+    ):
+        raise ArtifactPreparationConflictError(
+            "verified artifact receipt differs from derived locator or codec"
         )
 
 
@@ -3373,74 +4755,118 @@ def _authorize_artifact_mutation(
     return require_int63(turn.generation, field="artifact ingest generation")
 
 
-def _load_persisted_artifact(
+def _intent_facts(intent: ArtifactProtectionIntent) -> tuple[Any, ...]:
+    return (
+        intent.candidate_id,
+        intent.publication_key,
+        intent.artifact_sha256,
+        intent.size_bytes,
+        intent.locator_components,
+        intent.artifact_locator_sha256,
+        intent.storage_codec_version,
+        intent.storage_generation,
+        intent.protection_token,
+    )
+
+
+def _load_prepared_family_or_conflict(
+    connector: SQLConnector,
+    *,
+    candidate_id: bytes,
+    publication_key: bytes,
+    backend: str,
+) -> PreparedArtifactFamily | None:
+    try:
+        return load_prepared_artifact_family(
+            connector,
+            candidate_id=candidate_id,
+            publication_key=publication_key,
+            backend=backend,
+        )
+    except (ArtifactFamilyCollisionError, ArtifactFamilyPartialError) as error:
+        raise ArtifactPreparationConflictError(
+            "prepared artifact family is partial or internally inconsistent"
+        ) from error
+
+
+def _protection_intent_from_family(
     work: VNextUnitOfWork,
     receipt: ArtifactPreparationReceipt,
+    family: PreparedArtifactFamily,
     *,
     replayed: bool,
-) -> ArtifactPersistenceReceipt | None:
+) -> ArtifactProtectionIntent:
     authority = receipt.audit.authority
-    rows = work.connector.fetch_all(
-        "SELECT prepared.artifact_sha256, prepared.storage_codec_version, "
-        "prepared.protection_token, prepared.state, blob.size_bytes, "
-        "location.artifact_locator_sha256, identity.artifact_id, "
-        "artifact.artifact_semantics_sha256 "
-        "FROM catalog_prepared_artifacts prepared "
-        "JOIN catalog_artifact_blobs blob "
-        "ON blob.artifact_sha256 = prepared.artifact_sha256 "
-        "JOIN catalog_artifact_location location "
-        "ON location.artifact_sha256 = prepared.artifact_sha256 "
-        "JOIN catalog_artifact_identity identity "
-        "ON identity.publication_key = prepared.publication_key "
-        "AND identity.artifact_sha256 = prepared.artifact_sha256 "
-        "JOIN catalog_artifacts artifact ON artifact.revision = %s "
-        "AND artifact.artifact_id = identity.artifact_id "
-        "WHERE prepared.candidate_id = %s AND prepared.publication_key = %s LIMIT 2",
-        (
-            authority.projection.reserved_revision,
-            authority.candidate_id,
-            authority.publication_key,
-        ),
-    )
-    if not rows:
-        return None
-    expected = (
-        receipt.artifact_sha256,
-        receipt.storage_codec_version,
-        receipt.protection_token,
-        rows[0][3],
-        receipt.size_bytes,
-        receipt.artifact_locator_sha256,
-        identity.artifact_id(authority.gid, receipt.artifact_sha256),
-        authority.artifact_semantics_sha256,
-    )
-    if len(rows) != 1 or tuple(rows[0]) != expected:
+    if (
+        family.candidate_id != authority.candidate_id
+        or family.publication_key != authority.publication_key
+        or family.artifact_sha256 != receipt.artifact_sha256
+        or family.storage_codec_version != receipt.storage_codec_version
+    ):
         raise ArtifactPreparationConflictError(
-            "durable prepared artifact differs from the exact receipt"
+            "durable prepared artifact differs from verified archive facts"
         )
-    state = rows[0][3]
-    if state not in {"PREPARED", "COMMITTED"}:
+    try:
+        token = identity.decode_artifact_protection_token(family.protection_token)
+    except identity.VNextIdentityError as error:
         raise ArtifactPreparationConflictError(
-            "durable prepared artifact state is not registered"
-        )
-    return ArtifactPersistenceReceipt(
+            "durable prepared artifact token is malformed"
+        ) from error
+    expected_token = (
         authority.candidate_id,
         authority.publication_key,
         receipt.artifact_sha256,
         receipt.artifact_locator_sha256,
-        receipt.protection_token,
-        state,
+        receipt.storage_codec_version,
+        family.storage_generation,
+        receipt.size_bytes,
+    )
+    actual_token = (
+        token.candidate_id,
+        token.publication_key,
+        token.artifact_sha256,
+        token.artifact_locator_sha256,
+        token.storage_codec_version,
+        token.storage_generation,
+        token.size_bytes,
+    )
+    if actual_token != expected_token:
+        raise ArtifactPreparationConflictError(
+            "durable prepared artifact token differs from verified archive"
+        )
+    mapping = work.connector.fetch_one(
+        "SELECT build_id FROM operational_source_build_generations "
+        "WHERE generation = %s",
+        (family.storage_generation,),
+    )
+    if mapping != (authority.build_id,):
+        raise ArtifactPreparationConflictError(
+            "prepared storage generation is not mapped to the candidate build"
+        )
+    return ArtifactProtectionIntent(
+        authority.candidate_id,
+        authority.publication_key,
+        receipt.artifact_sha256,
+        receipt.size_bytes,
+        receipt.locator_components,
+        receipt.artifact_locator_sha256,
+        receipt.storage_codec_version,
+        family.storage_generation,
+        family.protection_token,
+        family.state,
         replayed,
+        _capability=_PROTECTION_INTENT_TOKEN,
     )
 
 
 def _persist_artifact_byte_identities(
     work: VNextUnitOfWork,
-    mutation: _MutationAuthority,
     receipt: ArtifactPreparationReceipt,
+    *,
+    storage_generation: int,
+    protection_token: bytes,
 ) -> None:
     authority = receipt.audit.authority
-    artifact_id = identity.artifact_id(authority.gid, receipt.artifact_sha256)
     _insert_or_compare(
         work,
         "catalog_artifact_blobs",
@@ -3449,21 +4875,6 @@ def _persist_artifact_byte_identities(
         key_where="artifact_sha256 = %s",
         key_parameters=(receipt.artifact_sha256,),
         conflict_label="artifact blob",
-    )
-    _insert_or_compare(
-        work,
-        "catalog_artifact_identity",
-        ("artifact_id", "publication_key", "artifact_sha256"),
-        (artifact_id, authority.publication_key, receipt.artifact_sha256),
-        key_where=(
-            "artifact_id = %s OR " "(publication_key = %s AND artifact_sha256 = %s)"
-        ),
-        key_parameters=(
-            artifact_id,
-            authority.publication_key,
-            receipt.artifact_sha256,
-        ),
-        conflict_label="artifact identity",
     )
     _insert_or_compare(
         work,
@@ -3477,42 +4888,24 @@ def _persist_artifact_byte_identities(
         ),
         conflict_label="artifact location",
     )
-    _insert_or_compare(
-        work,
-        "catalog_prepared_artifacts",
-        (
-            "candidate_id",
-            "publication_key",
-            "artifact_sha256",
-            "storage_codec_version",
-            "protection_token",
-            "state",
-        ),
-        (
-            authority.candidate_id,
-            authority.publication_key,
-            receipt.artifact_sha256,
-            receipt.storage_codec_version,
-            receipt.protection_token,
-            "PREPARED",
-        ),
-        key_where=(
-            "(candidate_id = %s AND publication_key = %s) " "OR protection_token = %s"
-        ),
-        key_parameters=(
-            authority.candidate_id,
-            authority.publication_key,
-            receipt.protection_token,
-        ),
-        conflict_label="prepared artifact",
-    )
-    _insert_catalog_artifact_occurrence(
-        work,
-        mutation,
-        publication_key=authority.publication_key,
-        artifact_id=artifact_id,
-        artifact_semantics_sha256=authority.artifact_semantics_sha256,
-    )
+    try:
+        ensure_prepared_artifact_family(
+            work.connector,
+            PreparedArtifactFamily(
+                authority.candidate_id,
+                authority.publication_key,
+                receipt.artifact_sha256,
+                receipt.storage_codec_version,
+                storage_generation,
+                protection_token,
+                "PENDING",
+            ),
+            backend=work.backend,
+        )
+    except (ArtifactFamilyCollisionError, ArtifactFamilyPartialError) as error:
+        raise ArtifactPreparationConflictError(
+            "prepared artifact family collides with different exact facts"
+        ) from error
 
 
 def _bind_operational_effect_seal(
@@ -3522,6 +4915,7 @@ def _bind_operational_effect_seal(
     build_id: bytes,
     effect_seal: OperationalEffectSeal,
     now: int,
+    allow_insert: bool = True,
 ) -> None:
     if not isinstance(effect_seal, OperationalEffectSeal):
         raise TypeError("effect_seal must be OperationalEffectSeal")
@@ -3566,6 +4960,10 @@ def _bind_operational_effect_seal(
                 "operational preparation is bound to a different candidate"
             )
         return
+    if not allow_insert:
+        raise ArtifactPreparationConflictError(
+            "replayed prepared artifact lacks its operational binding"
+        )
     work.connector.execute(
         "INSERT INTO operational_publication_candidate_preparations "
         "(candidate_id, preparation_id, bound_at) VALUES (%s, %s, %s)",
@@ -3579,6 +4977,7 @@ def _load_authority_facts(
     publication_key: bytes,
     *,
     now: int | None,
+    contract: _ArtifactContractFacts | None = None,
 ) -> _AuthorityFacts:
     checkpoint = _load_validation_checkpoint(
         work,
@@ -3590,27 +4989,28 @@ def _load_authority_facts(
         projection.candidate_id,
         checkpoint,
     )
+    if contract is None:
+        contract = _load_projection_contract(work, projection)
     rows = work.connector.fetch_all(
         "SELECT selection.publication_key, selection.gallery_id, pub.gid, "
-        "gallery.gallery_key, member.observation_id, "
-        "observation.observation_identity_sha256, input.artifact_input_id, "
+        "gallery.gallery_key, gallery_coordinate.scope_key, member.observation_id, "
+        "observation.observation_identity_sha256, "
         "input.artifact_semantics_sha256, operation.operation, "
         "semantics.source_manifest_component_sha256, "
-        "semantics.member_plan_component_sha256, "
-        "semantics.effective_content_component_sha256, "
-        "semantics.selected_component_sha256, "
-        "semantics.owner_component_sha256, semantics.policy_component_sha256, "
-        "manifest.manifest_algorithm_version, manifest.file_order_version, "
-        "artifact_policy.artifact_algorithm_version, "
-        "artifact_policy.max_image_short_side, "
-        "artifact_policy.producer_fingerprint_sha256, "
-        "analysis_policy.spam_artist_threshold, "
-        "analysis_policy.spam_occurrence_threshold "
+        "semantic_member.member_plan_component_sha256, "
+        "semantic_effective.effective_content_component_sha256, "
+        "semantic_selected.selected_component_sha256, "
+        "semantic_owner.owner_component_sha256, "
+        "semantic_policy.policy_component_sha256 "
         "FROM catalog_publication_selections AS selection "
         "JOIN catalog_publication_identities AS pub "
         "ON pub.publication_key = selection.publication_key "
-        "JOIN catalog_gallery_identities AS gallery "
-        "ON gallery.gallery_id = selection.gallery_id "
+        "JOIN catalog_gallery_identity_seals AS gallery_seal "
+        "ON gallery_seal.gallery_id = selection.gallery_id "
+        "JOIN catalog_gallery_identity_gallery_keys AS gallery "
+        "ON gallery.gallery_id = gallery_seal.gallery_id "
+        "JOIN catalog_gallery_identity_coordinates AS gallery_coordinate "
+        "ON gallery_coordinate.gallery_id = gallery_seal.gallery_id "
         "JOIN catalog_source_build_galleries AS member "
         "ON member.build_id = %s AND member.gallery_id = selection.gallery_id "
         "JOIN catalog_gallery_observations AS observation "
@@ -3619,36 +5019,46 @@ def _load_authority_facts(
         "JOIN catalog_candidate_artifact_inputs AS input "
         "ON input.candidate_id = selection.candidate_id "
         "AND input.publication_key = selection.publication_key "
-        "JOIN catalog_artifact_semantic_input AS semantics "
-        "ON semantics.artifact_semantics_sha256 = input.artifact_semantics_sha256 "
+        "JOIN catalog_artifact_semantic_input_seals AS semantic_seal "
+        "ON semantic_seal.artifact_semantics_sha256 = input.artifact_semantics_sha256 "
+        "JOIN catalog_artifact_semantic_source_manifest_sha256s AS semantics "
+        "ON semantics.artifact_semantics_sha256 = "
+        "semantic_seal.artifact_semantics_sha256 "
+        "JOIN catalog_artifact_semantic_member_plan_sha256s AS semantic_member "
+        "ON semantic_member.artifact_semantics_sha256 = "
+        "semantic_seal.artifact_semantics_sha256 "
+        "JOIN catalog_artifact_semantic_effective_content_sha256s AS semantic_effective "
+        "ON semantic_effective.artifact_semantics_sha256 = "
+        "semantic_seal.artifact_semantics_sha256 "
+        "JOIN catalog_artifact_semantic_selected_sha256s AS semantic_selected "
+        "ON semantic_selected.artifact_semantics_sha256 = "
+        "semantic_seal.artifact_semantics_sha256 "
+        "JOIN catalog_artifact_semantic_owner_sha256s AS semantic_owner "
+        "ON semantic_owner.artifact_semantics_sha256 = "
+        "semantic_seal.artifact_semantics_sha256 "
+        "JOIN catalog_artifact_semantic_policy_sha256s AS semantic_policy "
+        "ON semantic_policy.artifact_semantics_sha256 = "
+        "semantic_seal.artifact_semantics_sha256 "
         "JOIN catalog_artifact_operations AS operation "
         "ON operation.candidate_id = input.candidate_id "
         "AND operation.publication_key = input.publication_key "
-        "JOIN catalog_source_builds AS build ON build.build_id = %s "
-        "JOIN catalog_manifest_policies AS manifest "
-        "ON manifest.manifest_policy_id = build.manifest_policy_id "
-        "JOIN catalog_analysis_runs AS analysis ON analysis.analysis_id = %s "
-        "JOIN catalog_analysis_policies AS analysis_policy "
-        "ON analysis_policy.policy_id = analysis.policy_id "
-        "JOIN catalog_artifact_policies AS policy "
-        "ON policy.artifact_policy_id = %s "
-        "JOIN catalog_artifact_policy_semantics AS artifact_policy "
-        "ON artifact_policy.policy_component_sha256 = policy.policy_component_sha256 "
         "WHERE selection.candidate_id = %s AND selection.publication_key = %s LIMIT 2",
         (
             projection.build_id,
-            projection.build_id,
-            projection.analysis_id,
-            projection.artifact_policy_id,
             projection.candidate_id,
             publication_key,
         ),
     )
-    if len(rows) != 1 or len(rows[0]) != 22:
+    if len(rows) != 1 or len(rows[0]) != 15:
         raise ArtifactPreparationNotReadyError(
             "artifact input lacks one exact selected semantic operation"
         )
     row = rows[0]
+    gallery_scope = require_digest32(row[4], field="artifact gallery scope_key")
+    if gallery_scope != contract.scope_key:
+        raise ArtifactPreparationConflictError(
+            "artifact input gallery belongs to another source scope"
+        )
     operation = row[8]
     if operation not in {"CREATE", "REBUILD"}:
         raise ArtifactPreparationNotReadyError(
@@ -3661,67 +5071,17 @@ def _load_authority_facts(
         gid=require_positive_int63(row[2], field="artifact gid"),
     )
     policy_component = require_digest32(row[14], field="policy_component_sha256")
-    if policy_component != _policy_component_for_candidate(work, projection):
+    if policy_component != contract.policy_component_sha256:
         raise ArtifactPreparationConflictError(
             "artifact semantic policy differs from the candidate policy"
         )
-    producer_fingerprint = require_digest32(
-        row[19], field="producer_fingerprint_sha256"
-    )
-    producer = work.connector.fetch_one(
-        "SELECT writer_id, python_abi, pillow_build, libjpeg_build, zlib_build, "
-        "artifact_algorithm_version FROM catalog_artifact_producer_fingerprints "
-        "WHERE producer_fingerprint_sha256 = %s",
-        (producer_fingerprint,),
-    )
-    if len(producer) != 6:
-        raise ArtifactPreparationNotReadyError(
-            "artifact producer fingerprint is not registered"
-        )
-    producer_fields = tuple(
-        require_bounded_bytes(
-            value,
-            field=f"artifact producer field {index}",
-            minimum=1,
-            maximum=128,
-        )
-        for index, value in enumerate(producer[:5])
-    )
-    if (
-        require_positive_int63(producer[5], field="producer algorithm version")
-        != row[17]
-        or identity.artifact_producer_fingerprint_sha256(*producer_fields)
-        != producer_fingerprint
-    ):
-        raise ArtifactPreparationConflictError(
-            "artifact producer registry disagrees with policy semantics"
-        )
-    writer_policy = tuple(
-        work.connector.fetch_one(
-            "SELECT zip_codec_version, compression_method, compression_level, "
-            "dos_date, dos_time, unix_mode, general_purpose_flags, create_system, "
-            "archive_name_codec_version, artifact_name_codec_version "
-            "FROM catalog_artifact_zip_writer_policies "
-            "WHERE artifact_algorithm_version = %s",
-            (row[17],),
-        )
-    )
-    storage_codec = tuple(
-        work.connector.fetch_one(
-            "SELECT storage_codec_version, adapter_id, locator_codec_version, "
-            "protection_token_codec_version FROM catalog_artifact_storage_codecs "
-            "WHERE storage_codec_version = %s",
-            (1,),
-        )
-    )
     facts = _AuthorityFacts(
         require_digest32(row[0], field="artifact publication_key"),
         require_positive_int63(row[1], field="artifact gallery_id"),
         require_positive_int63(row[2], field="artifact gid"),
         require_digest32(row[3], field="artifact gallery_key"),
-        require_positive_int63(row[4], field="artifact observation_id"),
-        require_digest32(row[5], field="artifact observation identity"),
-        require_uuid16(row[6], field="artifact_input_id"),
+        require_positive_int63(row[5], field="artifact observation_id"),
+        require_digest32(row[6], field="artifact observation identity"),
         require_digest32(row[7], field="artifact_semantics_sha256"),
         operation,
         require_digest32(row[9], field="source_manifest_component_sha256"),
@@ -3733,16 +5093,16 @@ def _load_authority_facts(
         owner[0],
         owner[1],
         owner[2],
-        require_positive_int63(row[15], field="manifest_algorithm_version"),
-        require_positive_int63(row[16], field="file_order_version"),
-        require_positive_int63(row[17], field="artifact_algorithm_version"),
-        require_positive_int63(row[18], field="max_image_short_side"),
-        producer_fingerprint,
-        cast(tuple[bytes, bytes, bytes, bytes, bytes], producer_fields),
-        writer_policy,
-        storage_codec,
-        require_int63(row[20], field="spam_artist_threshold"),
-        require_int63(row[21], field="spam_occurrence_threshold"),
+        contract.manifest_algorithm_version,
+        contract.file_order_version,
+        contract.artifact_algorithm_version,
+        contract.max_image_short_side,
+        contract.producer_fingerprint_sha256,
+        contract.producer_fields,
+        contract.writer_policy,
+        contract.storage_codec,
+        contract.spam_artist_threshold,
+        contract.spam_occurrence_threshold,
         checkpoint,
         terminal,
     )
@@ -3764,12 +5124,16 @@ def _load_owner_facts(
         "JOIN catalog_analysis_content_owner_resolved AS owner "
         "ON owner.analysis_id = content.analysis_id "
         "AND owner.content_sha256 = content.content_sha256 "
-        "JOIN catalog_gallery_identities AS owner_gallery "
-        "ON owner_gallery.gallery_id = owner.owner_gallery_id "
+        "JOIN catalog_gallery_identity_seals AS owner_gallery_seal "
+        "ON owner_gallery_seal.gallery_id = owner.owner_gallery_id "
+        "JOIN catalog_gallery_identity_gallery_keys AS owner_gallery "
+        "ON owner_gallery.gallery_id = owner_gallery_seal.gallery_id "
         "JOIN catalog_analysis_gid_winner_resolved AS winner "
         "ON winner.analysis_id = content.analysis_id AND winner.gid = %s "
-        "JOIN catalog_gallery_identities AS winner_gallery "
-        "ON winner_gallery.gallery_id = winner.winner_gallery_id "
+        "JOIN catalog_gallery_identity_seals AS winner_gallery_seal "
+        "ON winner_gallery_seal.gallery_id = winner.winner_gallery_id "
+        "JOIN catalog_gallery_identity_gallery_keys AS winner_gallery "
+        "ON winner_gallery.gallery_id = winner_gallery_seal.gallery_id "
         "WHERE content.analysis_id = %s AND content.gallery_id = %s LIMIT 2",
         (gid, analysis_id, gallery_id),
     )
@@ -3787,20 +5151,6 @@ def _load_owner_facts(
         require_digest32(row[1], field="artifact owner_gallery_key"),
         require_digest32(row[2], field="artifact winner_gallery_key"),
     )
-
-
-def _policy_component_for_candidate(
-    work: VNextUnitOfWork,
-    projection: PublicationProjectionAuthority,
-) -> bytes:
-    row = work.connector.fetch_one(
-        "SELECT policy_component_sha256 FROM catalog_artifact_policies "
-        "WHERE artifact_policy_id = %s",
-        (projection.artifact_policy_id,),
-    )
-    if len(row) != 1:
-        raise ArtifactPreparationNotReadyError("candidate artifact policy is missing")
-    return require_digest32(row[0], field="candidate policy_component_sha256")
 
 
 def _require_derived_fixed_digests(facts: _AuthorityFacts) -> None:
@@ -4056,7 +5406,7 @@ def _compare_member_entries(
     position = 0
     emitted = 0
     total_bytes = 0
-    last_file_no = 0
+    last_file_no = -1
     while True:
         rows = _source_file_page(work, authority, after_file_no=last_file_no)
         if not rows:
@@ -4066,10 +5416,10 @@ def _compare_member_entries(
                 raise ArtifactPreparationConflictError(
                     "member plan omits immutable source files"
                 )
-            file_no = require_positive_int63(row[0], field="artifact source file_no")
-            if file_no != position + 1:
+            file_no = require_int63(row[0], field="artifact source file_no")
+            if file_no != position:
                 raise ArtifactPreparationConflictError(
-                    "artifact source file positions are not contiguous"
+                    "artifact source file positions are not zero-based contiguous"
                 )
             entry = _read_member_entry(payload, expected_position=position)
             name = require_bounded_bytes(
@@ -4141,9 +5491,8 @@ def _source_file_page(
         "SELECT source.file_no, name.name_bytes, name.file_role, "
         "source.file_sha256, blob.size_bytes, decision.occurrence_count, "
         "decision.artist_count, decision.maximum_gallery_artist_count "
-        "FROM catalog_gallery_observation_files AS source "
-        "JOIN catalog_file_name_identities AS name ON name.file_key = source.file_key "
-        "JOIN catalog_content_blobs AS blob "
+        + _SOURCE_FILE_FAMILY_SQL
+        + "JOIN catalog_content_blobs AS blob "
         "ON blob.file_sha256 = source.file_sha256 "
         "LEFT JOIN catalog_analysis_file_hash_decision_resolved AS decision "
         "ON decision.analysis_id = %s AND decision.file_sha256 = source.file_sha256 "
@@ -4284,21 +5633,24 @@ def _load_validation_checkpoint(
     now: int | None,
 ) -> tuple[int, bytes, int, str, int]:
     predecessor = work.connector.fetch_one(
-        "SELECT state FROM catalog_publication_checkpoints "
-        "WHERE candidate_id = %s AND stage = %s",
+        "SELECT state.state "
+        f"FROM {_CHECKPOINT_STATE_TABLE} AS state "
+        f"JOIN {_CHECKPOINT_SEAL_TABLE} AS seal "
+        "ON seal.candidate_id = state.candidate_id AND seal.stage = state.stage "
+        "WHERE state.candidate_id = %s AND state.stage = %s",
         (candidate_id, b"BUILD_ARTIFACT_DELTA_OPERATION"),
     )
     if predecessor != ("COMPLETE",):
         raise ArtifactPreparationNotReadyError(
             "artifact delta build checkpoint is incomplete"
         )
-    row = work.connector.fetch_one(
-        "SELECT generation, cursor, processed_count, state, updated_at "
-        "FROM catalog_publication_checkpoints "
-        "WHERE candidate_id = %s AND stage = %s",
-        (candidate_id, b"VALIDATE_ARTIFACT_INPUT_DELTA"),
+    checkpoint = _checkpoint_from_row(
+        _load_checkpoint_row(
+            work,
+            candidate_id,
+            b"VALIDATE_ARTIFACT_INPUT_DELTA",
+        )
     )
-    checkpoint = _checkpoint_from_row(row)
     if checkpoint[3] != "COMPLETE":
         raise ArtifactPreparationNotReadyError(
             "artifact input/delta validation checkpoint is incomplete"
@@ -4317,12 +5669,7 @@ def _load_complete_stage_receipt(
     *,
     cursor_maximum: int,
 ) -> tuple[tuple[int, bytes, int, str, int], tuple[Any, ...]]:
-    row = work.connector.fetch_one(
-        "SELECT generation, cursor, processed_count, state, updated_at "
-        "FROM catalog_publication_checkpoints "
-        "WHERE candidate_id = %s AND stage = %s",
-        (candidate_id, stage),
-    )
+    row = _load_checkpoint_row(work, candidate_id, stage)
     if len(row) != 5:
         raise ArtifactPreparationNotReadyError(
             f"publication stage {stage!r} checkpoint is missing"
@@ -4341,20 +5688,16 @@ def _load_complete_stage_receipt(
         raise ArtifactPreparationNotReadyError(
             f"publication stage {stage!r} is not COMPLETE"
         )
-    rows = work.connector.fetch_all(
-        "SELECT batch_key, start_generation, start_cursor, "
-        "start_processed_count, next_cursor, next_processed_count, next_state, "
-        "row_count, terminal, committed_generation, committed_at "
-        "FROM catalog_publication_batch_receipts "
-        "WHERE candidate_id = %s AND stage = %s AND committed_generation = %s "
-        "LIMIT 2",
-        (candidate_id, stage, checkpoint[0]),
+    receipt = _load_terminal_batch_receipt(
+        work,
+        candidate_id,
+        stage,
+        checkpoint[0],
     )
-    if len(rows) != 1:
+    if receipt is None:
         raise ArtifactPreparationNotReadyError(
             f"publication stage {stage!r} lacks one terminal receipt"
         )
-    receipt = tuple(rows[0])
     _validate_terminal_receipt(
         receipt,
         checkpoint=checkpoint,
@@ -4368,25 +5711,96 @@ def _load_validation_terminal_receipt(
     candidate_id: bytes,
     checkpoint: tuple[int, bytes, int, str, int],
 ) -> tuple[Any, ...]:
-    rows = work.connector.fetch_all(
-        "SELECT batch_key, start_generation, start_cursor, "
-        "start_processed_count, next_cursor, next_processed_count, next_state, "
-        "row_count, terminal, committed_generation, committed_at "
-        "FROM catalog_publication_batch_receipts "
-        "WHERE candidate_id = %s AND stage = %s AND committed_generation = %s LIMIT 2",
-        (
-            candidate_id,
-            b"VALIDATE_ARTIFACT_INPUT_DELTA",
-            checkpoint[0],
-        ),
+    receipt = _load_terminal_batch_receipt(
+        work,
+        candidate_id,
+        b"VALIDATE_ARTIFACT_INPUT_DELTA",
+        checkpoint[0],
     )
-    if len(rows) != 1:
+    if receipt is None:
         raise ArtifactPreparationNotReadyError(
             "artifact validation lacks one exact terminal receipt"
         )
-    receipt = tuple(rows[0])
     _validate_terminal_receipt(receipt, checkpoint=checkpoint)
     return receipt
+
+
+def _load_checkpoint_row(
+    work: VNextUnitOfWork,
+    candidate_id: bytes,
+    stage: bytes,
+) -> tuple[Any, ...]:
+    return work.connector.fetch_one(
+        "SELECT generation.generation, cursor.cursor, count.processed_count, "
+        "state.state, updated.updated_at "
+        f"FROM {_CHECKPOINT_SEAL_TABLE} AS seal "
+        f"JOIN {_CHECKPOINT_GENERATION_TABLE} AS generation "
+        "ON generation.candidate_id = seal.candidate_id "
+        "AND generation.stage = seal.stage "
+        f"JOIN {_CHECKPOINT_CURSOR_TABLE} AS cursor "
+        "ON cursor.candidate_id = seal.candidate_id AND cursor.stage = seal.stage "
+        f"JOIN {_CHECKPOINT_COUNT_TABLE} AS count "
+        "ON count.candidate_id = seal.candidate_id AND count.stage = seal.stage "
+        f"JOIN {_CHECKPOINT_STATE_TABLE} AS state "
+        "ON state.candidate_id = seal.candidate_id AND state.stage = seal.stage "
+        f"JOIN {_CHECKPOINT_UPDATED_AT_TABLE} AS updated "
+        "ON updated.candidate_id = seal.candidate_id AND updated.stage = seal.stage "
+        "WHERE seal.candidate_id = %s AND seal.stage = %s",
+        (candidate_id, stage),
+    )
+
+
+def _load_terminal_batch_receipt(
+    work: VNextUnitOfWork,
+    candidate_id: bytes,
+    stage: bytes,
+    committed_generation: int,
+) -> tuple[Any, ...] | None:
+    generation = require_positive_int63(
+        committed_generation,
+        field="artifact terminal receipt committed_generation",
+    )
+    if generation <= 1:
+        return None
+    try:
+        stored = _load_candidate_batch_at_generation(
+            work,
+            candidate_id,
+            stage,
+            generation - 1,
+        )
+        if stored is None:
+            return None
+        batch_key = require_bounded_bytes(
+            stored[0],
+            field="artifact terminal receipt batch_key",
+            minimum=1,
+            maximum=512,
+        )
+        batch = _candidate_batch_from_row(
+            candidate_id,
+            stage,
+            batch_key,
+            stored[1:],
+            replayed=True,
+        )
+    except (PublicationCandidateConflictError, TypeError, ValueError) as error:
+        raise ArtifactPreparationConflictError(
+            "artifact terminal receipt vertical family is malformed"
+        ) from error
+    return (
+        batch.batch_key,
+        batch.start_generation,
+        batch.start_cursor,
+        batch.start_processed_count,
+        batch.next_cursor,
+        batch.next_processed_count,
+        batch.next_state,
+        batch.row_count,
+        int(batch.terminal),
+        batch.committed_generation,
+        batch.committed_at,
+    )
 
 
 def _checkpoint_from_row(row: tuple[Any, ...]) -> tuple[int, bytes, int, str, int]:
@@ -4481,7 +5895,6 @@ def _facts_from_authority(authority: ArtifactPreparationAuthority) -> _Authority
         authority.gallery_key,
         authority.observation_id,
         authority.observation_identity_sha256,
-        authority.artifact_input_id,
         authority.artifact_semantics_sha256,
         authority.operation,
         authority.source_manifest_component_sha256,

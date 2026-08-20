@@ -1,15 +1,11 @@
-__all__ = [
-    "FILE_NAME_LENGTH_LIMIT",
-    "FOLDER_NAME_LENGTH_LIMIT",
-    "LOG_LEVEL",
-    "chunk_list",
-]
+"""Logging settings retained by the greenfield configuration surface."""
+
+from __future__ import annotations
+
+__all__ = ["LOG_LEVEL"]
 
 import logging
 from enum import Enum
-
-FOLDER_NAME_LENGTH_LIMIT = 255
-FILE_NAME_LENGTH_LIMIT = 255
 
 
 class LOG_LEVEL(int, Enum):
@@ -19,12 +15,3 @@ class LOG_LEVEL(int, Enum):
     warning = logging.WARNING
     error = logging.ERROR
     critical = logging.CRITICAL
-
-
-def chunk_list[T](input_list: list[T], chunk_size: int) -> list[list[T]]:
-    if chunk_size <= 0:
-        raise ValueError("Chunk size must be greater than 0.")
-    return [
-        input_list[index : index + chunk_size]
-        for index in range(0, len(input_list), chunk_size)
-    ]

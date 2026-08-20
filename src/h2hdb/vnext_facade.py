@@ -23,7 +23,7 @@ from .config_loader import CoreConfig
 from .domain import CatalogArtifact, CatalogPage, CatalogPublication, CatalogRevision
 from .repository import RepositoryContext
 from .schema_admin import SchemaEpochReadiness, VNextSchemaAdmin
-from .schema_epoch import SchemaEpochProvider, SchemaEpochReport
+from .schema_epoch import SchemaEpochReport
 from .sql_connector import SQLConnector
 from .vnext_catalog_reader_repository import VNextCatalogReaderRepository
 from .vnext_queue_repository import (
@@ -52,23 +52,14 @@ class VNextDatabaseAdminFacade:
             raise TypeError("config must be CoreConfig")
         self.__admin = VNextSchemaAdmin(RepositoryContext.from_config(config))
 
-    def initialize(
-        self,
-        provider: SchemaEpochProvider | None = None,
-    ) -> SchemaEpochReport:
-        return self.__admin.initialize(provider)
+    def initialize(self) -> SchemaEpochReport:
+        return self.__admin.initialize()
 
-    def check(
-        self,
-        provider: SchemaEpochProvider | None = None,
-    ) -> SchemaEpochReport:
-        return self.__admin.check(provider)
+    def check(self) -> SchemaEpochReport:
+        return self.__admin.check()
 
-    def check_readiness(
-        self,
-        provider: SchemaEpochProvider | None = None,
-    ) -> SchemaEpochReadiness:
-        return self.__admin.check_readiness(provider)
+    def check_readiness(self) -> SchemaEpochReadiness:
+        return self.__admin.check_readiness()
 
 
 class VNextCatalogFacade:
@@ -250,17 +241,13 @@ class VNextDownloadQueueFacade:
                 return operation(VNextUnitOfWork(connector, backend=self.__backend))
 
 
-def open_database(
-    config: CoreConfig,
-    *,
-    provider: SchemaEpochProvider | None = None,
-) -> VNextCatalogFacade:
+def open_database(config: CoreConfig) -> VNextCatalogFacade:
     """Open the public catalog only after a complete epoch-READY audit.
 
-    ``provider`` is an injection seam for deterministic schema tests.  Ordinary
-    callers omit it and therefore validate against the exact wheel-resident
-    generated provider before the catalog facade is constructed.
+    The audit always resolves the exact wheel-resident generated provider before
+    the catalog facade is constructed.  Callers cannot substitute schema DDL or
+    validation behavior through this public boundary.
     """
 
-    VNextDatabaseAdminFacade(config).check(provider)
+    VNextDatabaseAdminFacade(config).check()
     return VNextCatalogFacade(config)

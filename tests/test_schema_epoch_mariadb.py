@@ -11,7 +11,6 @@ import pytest
 from h2hdb import CoreConfig, DatabaseAccessMode
 from h2hdb.mariadb_connector import MariaDBConnector
 from h2hdb.repository import RepositoryContext
-from h2hdb.schema_admin import VNextSchemaAdmin
 from h2hdb.schema_epoch import (
     MARIADB_SCHEMA_EPOCH_GATE_NAME,
     SCHEMA_EPOCH_CONTROL_TABLE,
@@ -29,6 +28,7 @@ from h2hdb.schema_epoch import (
     SchemaSlice,
     mariadb_schema_epoch_gate_name,
     run_mariadb_schema_epoch,
+    validate_mariadb_schema_epoch,
 )
 from h2hdb.sql_connector import SQLConnector
 
@@ -610,9 +610,10 @@ def test_mariadb_ready_epoch_fully_checks_through_read_only_config(
         }
     )
 
-    report = VNextSchemaAdmin(RepositoryContext.from_config(read_only_config)).check(
-        provider
-    )
+    context = RepositoryContext.from_config(read_only_config)
+    with context.SQLConnector() as connector:
+        with connector.read_transaction():
+            report = validate_mariadb_schema_epoch(connector, provider)
 
     assert report.state == "READY"
     assert report.resumed_build

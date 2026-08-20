@@ -19,6 +19,8 @@ CATALOG_CHECKER = ROOT / "verification" / "schema" / "check_contract.py"
 OPERATIONAL_LOGICAL = ROOT / "verification" / "schema" / "operational.toml"
 OPERATIONAL_PHYSICAL = ROOT / "verification" / "schema" / "operational_physical.toml"
 OPERATIONAL_REFINEMENT = ROOT / "verification" / "schema" / "operational_refinement.py"
+VERTICAL_FAMILY_TLA = ROOT / "verification" / "tla" / "VerticalFamily.tla"
+VERTICAL_FAMILY_SMALL = ROOT / "verification" / "tla" / "VerticalFamilySmall.cfg"
 
 
 def _load_module(name: str, path: Path) -> ModuleType:
@@ -59,8 +61,8 @@ def test_required_invariant_coverage_is_closed_and_nonempty() -> None:
     assert required_ids
     assert set(report.required_invariants) == required_ids
     assert report.evidence_ids
-    assert len(report.blockers) == 44
-    assert sum(blocker.startswith("catalog.") for blocker in report.blockers) == 18
+    assert len(report.blockers) == 46
+    assert sum(blocker.startswith("catalog.") for blocker in report.blockers) == 20
     assert (
         sum(blocker.startswith("h2hdb.operational.") for blocker in report.blockers)
         == 26
@@ -128,6 +130,26 @@ def test_bounded_tlc_cannot_be_labeled_an_unbounded_proof(tmp_path: Path) -> Non
         coverage.CoverageValidationError, match="invalid for layer 'tla'"
     ):
         coverage.validate_coverage(path)
+
+
+def test_vertical_family_small_declares_bounded_safety_scope() -> None:
+    model = VERTICAL_FAMILY_TLA.read_text(encoding="utf-8")
+    profile = VERTICAL_FAMILY_SMALL.read_text(encoding="utf-8")
+    required_invariants = {
+        "VisibleImpliesAllMembers",
+        "PartialNeverVisible",
+        "SealImmutable",
+        "ReplayObservational",
+        "CleanupNeverLeavesVisiblePartial",
+        "SharedMemberRetention",
+    }
+
+    for invariant in required_invariants:
+        assert f"{invariant} ==" in model
+        assert invariant in profile
+    assert "not an unbounded proof" in model
+    assert "does not establish" in model
+    assert "not an unbounded proof" in profile
 
 
 def test_runtime_obligation_cannot_hide_missing_fault_coverage(tmp_path: Path) -> None:
@@ -250,7 +272,7 @@ def test_coverage_validate_only_reports_production_blockers() -> None:
     assert result.returncode == 0, result.stderr
     assert (
         "formal coverage contract valid; production readiness blocked: "
-        "invariants=27 evidence=103 blockers=44"
+        "invariants=27 evidence=109 blockers=46"
     ) in result.stdout
     assert "catalog.identity-codecs.v1:fault:" in result.stdout
     assert "h2hdb.operational.gallery-staging.v1:integration:" in result.stdout
