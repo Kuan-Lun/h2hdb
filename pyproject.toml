@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "h2hdb"
-version = "0.23.0.2"
+version = "0.23.0.3"
 description = "Database, coordination, and revision catalog core for H2HDB"
 readme = "README.md"
 authors = [{ name = "Kuan-Lun Wang" }]
@@ -25,14 +25,14 @@ classifiers = [
 [project.optional-dependencies]
 dev = [
     "black>=26.5.1",
-    "ruff>=0.16.3",
-    "mypy>=2.3.0",
+    "ruff>=0.16.4",
+    "mypy>=2.3.1",
     "pymarkdownlnt>=0.9.39",
     "pytest>=9.1.1",
-    "hypothesis>=6.165.8,<7.0.0",
+    "hypothesis>=6.165.10,<7.0.0",
     "testcontainers>=4.15.0",
     "build>=1.5.0",
-    "packaging>=26.0",
+    "packaging>=26.3",
 ]
 
 [project.urls]

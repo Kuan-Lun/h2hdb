@@ -1361,7 +1361,7 @@ id = "runtime.production.schema-epoch"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "SchemaEpochRunner constructs only an admissible empty epoch, records and revalidates exact DDL, 4,645 bootstrap seeds per backend and all 25 semantic-obligation writer bindings, resumes committed create-only slices and idempotent seeds, runs wheel validators read-only, and publishes READY by exact compare-and-swap; full check deliberately performs the documented linear scan of the single sealed publication generation chain for exact nodes, edges, commits, arithmetic, no-fork/no-gap/no-orphan and maximum-head consistency, while quick readiness remains epoch-only O(1); the default generated wheel provider completes initialize, replay, read-only full check and readiness on fresh SQLite and live MariaDB."
+claim = "SchemaEpochRunner constructs only an admissible empty epoch, records and revalidates exact DDL, 4,646 bootstrap seeds per backend and all 25 semantic-obligation writer bindings, resumes committed create-only slices and idempotent seeds, runs wheel validators read-only, and publishes READY by exact compare-and-swap; full check deliberately performs the documented linear scan of the single sealed publication generation chain for exact nodes, edges, commits, arithmetic, no-fork/no-gap/no-orphan and maximum-head consistency, while quick readiness remains epoch-only O(1); the default generated wheel provider completes initialize, replay, read-only full check and readiness on fresh SQLite and live MariaDB."
 assumptions = ["The live MariaDB test remains an opt-in testcontainer integration gate."]
 [[evidence.location]]
 path = "src/h2hdb/schema_epoch.py"
@@ -1398,7 +1398,7 @@ id = "integration.sqlite.schema-epoch"
 layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
-claim = "SQLite integration executes the production epoch runner from an empty database through create-only slices, exact bootstrap and semantic validation, READY publication, read-only READY revalidation, and committed retry convergence; the default generated provider additionally initializes, replays and validates all 4,645 SQLite seeds and 25 resolved writer bindings."
+claim = "SQLite integration executes the production epoch runner from an empty database through create-only slices, exact bootstrap and semantic validation, READY publication, read-only READY revalidation, and committed retry convergence; the default generated provider additionally initializes, replays and validates all 4,646 SQLite seeds and 25 resolved writer bindings."
 assumptions = []
 [[evidence.location]]
 path = "tests/test_schema_epoch.py"
@@ -1415,7 +1415,7 @@ id = "integration.live-mariadb.schema-epoch"
 layer = "integration"
 strength = "mariadb_integration"
 directness = "direct"
-claim = "Live MariaDB integration executes the production epoch runner through empty-database READY, read-only full revalidation, committed partial-DDL resume, committed seed resume, and fail-closed rejection with advisory-lock release; the default generated provider additionally initializes, replays and validates all 4,645 MariaDB seeds and 25 resolved writer bindings."
+claim = "Live MariaDB integration executes the production epoch runner through empty-database READY, read-only full revalidation, committed partial-DDL resume, committed seed resume, and fail-closed rejection with advisory-lock release; the default generated provider additionally initializes, replays and validates all 4,646 MariaDB seeds and 25 resolved writer bindings."
 assumptions = ["The live MariaDB tests remain opt-in testcontainer integration gates."]
 [[evidence.location]]
 path = "tests/test_schema_epoch_mariadb.py"
@@ -1920,7 +1920,7 @@ lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
 tla = { status = "not_applicable", rationale = "CatalogCore selects revisions from a finite set but does not model SOURCE and CATALOG allocator rows, row locks, or exact generation CAS." }
 runtime_refinement = { status = "covered", evidence = ["runtime.revision-allocation", "runtime.production.writer-bindings", "runtime.production.allocator", "runtime.production.publication-candidate", "runtime.production.publication"] }
 fault = { status = "blocked", evidence = ["fault.operational.binding-corruption", "fault.production.allocator", "fault.production.publication-candidate", "fault.production.publication"], blocker = "Seed corruption, exhaustion, two-connection row-lock serialization, candidate allocation rollback and publication pointer rollback are direct, but no matrix forces stale allocator CAS and response loss across both revision streams." }
-integration = { status = "blocked", evidence = ["integration.operational.sqlite-refinement", "integration.live-mariadb.operational-workflows"], blocker = "Live MariaDB allocates SOURCE, CATALOG, GALLERY and TAG streams and proves two-connection row-lock serialization plus rollback, but it does not force stale compare-and-swap or exhaustion or carry both revision streams through publication." }
+integration = { status = "blocked", evidence = ["integration.operational.sqlite-refinement", "integration.live-mariadb.operational-workflows"], blocker = "Live MariaDB allocates SOURCE, CATALOG, GALLERY and TAG streams and proves two-connection row-lock serialization plus rollback, but it does not exercise the POLICY stream, force stale compare-and-swap or exhaustion, or carry both revision streams through publication." }
 
 [[invariant]]
 id = "h2hdb.operational.bootstrap-genesis.v1"

@@ -627,6 +627,102 @@ class OperationalEffectRepository:
         )
 
     @staticmethod
+    def _load_complete_seal_authorized(
+        work: VNextUnitOfWork,
+        *,
+        preparation_id: bytes,
+        build_id: bytes,
+    ) -> OperationalEffectSeal:
+        """Load an immutable seal after the application fenced this transaction.
+
+        This is the read-only replay side used by compound orchestration.  It
+        cannot transition an OPEN preparation and therefore never reacquires a
+        lower-ranked gate or ingest lock after the outer authorization.
+        """
+
+        preparation = require_uuid16(
+            preparation_id,
+            field="operational preparation id",
+        )
+        expected_build = require_uuid16(
+            build_id,
+            field="operational preparation build_id",
+        )
+        control = work.connector.fetch_one(
+            f"SELECT p.build_id, p.state, p.prepared_at, p.completed_at, "
+            "c.generation, c.cursor_bytes, c.processed_count, c.chain_sha256, "
+            f"c.state, c.updated_at FROM {_PREPARATION_TABLE} AS p "
+            f"JOIN {_CHECKPOINT_TABLE} AS c ON c.preparation_id = p.preparation_id "
+            "AND c.phase = %s WHERE p.preparation_id = %s",
+            (_EFFECT_PHASE, preparation),
+        )
+        if len(control) != 10:
+            raise OperationalEffectCorruptionError(
+                "completed operational preparation control is missing"
+            )
+        if (
+            require_uuid16(control[0], field="stored preparation build_id")
+            != expected_build
+        ):
+            raise OperationalEffectStateError(
+                "completed operational preparation belongs to another build"
+            )
+        if control[1] != "COMPLETE" or control[8] != "COMPLETE":
+            raise OperationalEffectStateError(
+                "operational effect seal replay requires COMPLETE control state"
+            )
+        prepared_at = require_int63(
+            control[2],
+            field="stored preparation prepared_at",
+        )
+        completed_at = require_int63(
+            control[3],
+            field="stored preparation completed_at",
+        )
+        require_int63(control[4], field="operational checkpoint generation")
+        cursor = require_bounded_bytes(
+            control[5],
+            field="operational checkpoint cursor",
+            minimum=8,
+            maximum=8,
+        )
+        processed_count = require_int63(
+            control[6],
+            field="operational checkpoint processed_count",
+        )
+        chain = require_digest32(
+            control[7],
+            field="operational checkpoint chain",
+        )
+        updated_at = require_int63(
+            control[9],
+            field="operational checkpoint updated_at",
+        )
+        if _decode_cursor(cursor) != processed_count:
+            raise OperationalEffectCorruptionError(
+                "operational checkpoint cursor and count disagree"
+            )
+        seal = _require_seal_row(
+            preparation,
+            work.connector.fetch_one(
+                f"SELECT event_count, final_chain_sha256, sealed_at "
+                f"FROM {_SEAL_TABLE} WHERE preparation_id = %s",
+                (preparation,),
+            ),
+            replayed=True,
+        )
+        if (
+            seal.event_count != processed_count
+            or seal.final_chain_sha256 != chain
+            or seal.sealed_at != completed_at
+            or seal.sealed_at < max(prepared_at, updated_at)
+        ):
+            raise OperationalEffectCorruptionError(
+                "effect seal disagrees with its completed control state"
+            )
+        return seal
+
+    @staticmethod
     def acknowledge_through(
         work: VNextUnitOfWork,
         *,

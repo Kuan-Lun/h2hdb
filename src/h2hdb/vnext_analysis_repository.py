@@ -28,6 +28,7 @@ __all__ = [
     "AnalysisRepositoryError",
     "AnalysisRun",
     "AnalysisSnapshotPreparation",
+    "AnalysisStageIssue",
     "AnalysisUnsupportedError",
 ]
 
@@ -205,6 +206,7 @@ _SNAPSHOT_DOMAIN = b"source_snapshot_manifest_v1"
 _METADATA_PREFIX = b"h2hdb-vnext-gallery-observation-metadata\0"
 _SNAPSHOT_PREFIX = b"h2hdb-vnext-source-snapshot-manifest\0"
 _PREPARATION_TOKEN = object()
+_STAGE_ISSUE_TOKEN = object()
 
 # This mirrors the provider-seeded closed registry byte-for-byte.  Runtime
 # checks the physical registry before creating or advancing any checkpoint;
@@ -251,6 +253,15 @@ _STAGE_REGISTRY: dict[bytes, tuple[bytes, bytes, bytes, bool]] = {
         True,
     ),
 }
+_GALLERY_PREPARATION_STAGES = frozenset(
+    {
+        _STAGE_IMPACTED_CONTENT,
+        _STAGE_CONTENT_CANDIDATE,
+        _STAGE_VALIDATE_CONTENT_CANDIDATE,
+        _STAGE_GID_CANDIDATE,
+        _STAGE_VALIDATE_GID_CANDIDATE,
+    }
+)
 
 
 class AnalysisRepositoryError(RuntimeError):
@@ -574,6 +585,120 @@ class AnalysisPreparationAuthority:
             require_int63(row_count, field="authority component row_count")
             require_int63(sealed_at, field="authority component sealed_at")
             previous = exact
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisStageIssue:
+    """Opaque exact next-stage authority derived from durable checkpoints."""
+
+    analysis_id: bytes
+    build_id: bytes
+    stage: bytes | None
+    batch_key: bytes | None
+    page_limit: int
+    checkpoint_generation: int | None
+    checkpoint_cursor: bytes | None
+    checkpoint_processed_count: int | None
+    memberships: tuple[tuple[int, int | None], ...]
+    preparation_authority: AnalysisPreparationAuthority
+    completion_snapshot_sha256: bytes | None
+    replayed_result: AnalysisBatchResult | None
+    _capability: object
+
+    def __post_init__(self) -> None:
+        if self._capability is not _STAGE_ISSUE_TOKEN:
+            raise TypeError("analysis stage issues are repository-issued only")
+        require_uuid16(self.analysis_id, field="stage issue analysis_id")
+        require_uuid16(self.build_id, field="stage issue build_id")
+        if not isinstance(
+            self.preparation_authority,
+            AnalysisPreparationAuthority,
+        ):
+            raise TypeError("stage issue preparation authority is missing")
+        self.preparation_authority.__post_init__()
+        if (
+            self.preparation_authority.analysis_id != self.analysis_id
+            or self.preparation_authority.build_id != self.build_id
+        ):
+            raise ValueError("stage issue differs from its preparation authority")
+        if self.stage is None:
+            if any(
+                value is not None
+                for value in (
+                    self.batch_key,
+                    self.checkpoint_generation,
+                    self.checkpoint_cursor,
+                    self.checkpoint_processed_count,
+                    self.replayed_result,
+                )
+            ):
+                raise ValueError("terminal/snapshot stage issue carries batch state")
+            if self.page_limit != 0 or self.memberships:
+                raise ValueError("terminal/snapshot stage issue carries a page")
+            if self.completion_snapshot_sha256 is not None:
+                require_digest32(
+                    self.completion_snapshot_sha256,
+                    field="stage issue completion_snapshot_sha256",
+                )
+            return
+        if self.stage not in _STAGES:
+            raise ValueError("analysis stage issue has an unregistered stage")
+        require_bounded_bytes(
+            self.batch_key,
+            field="stage issue batch_key",
+            minimum=1,
+            maximum=512,
+        )
+        require_positive_int63(
+            self.checkpoint_generation,
+            field="stage issue checkpoint_generation",
+        )
+        require_bounded_bytes(
+            self.checkpoint_cursor,
+            field="stage issue checkpoint_cursor",
+            maximum=2048,
+        )
+        require_int63(
+            self.checkpoint_processed_count,
+            field="stage issue checkpoint_processed_count",
+        )
+        limit = require_positive_int63(
+            self.page_limit,
+            field="stage issue page_limit",
+        )
+        if limit > _MAX_BATCH_ROWS:
+            raise ValueError("analysis stage issue exceeds the 128-row cap")
+        if self.completion_snapshot_sha256 is not None:
+            raise ValueError("an active stage issue cannot be complete")
+        previous = 0
+        for gallery_id, observation_id in self.memberships:
+            gallery = require_positive_int63(
+                gallery_id,
+                field="stage issue gallery_id",
+            )
+            if gallery <= previous:
+                raise ValueError("stage issue memberships are not strictly ordered")
+            if observation_id is not None:
+                require_positive_int63(
+                    observation_id,
+                    field="stage issue observation_id",
+                )
+            previous = gallery
+        if self.stage in _GALLERY_PREPARATION_STAGES:
+            if len(self.memberships) > limit:
+                raise ValueError("stage issue memberships exceed the page limit")
+        elif self.memberships:
+            raise ValueError("non-preparation stage issue carries memberships")
+        if self.replayed_result is not None:
+            if not isinstance(self.replayed_result, AnalysisBatchResult):
+                raise TypeError("stage issue replay result has a foreign type")
+            if (
+                self.replayed_result.analysis_id != self.analysis_id
+                or self.replayed_result.stage != self.stage
+                or self.replayed_result.batch_key != self.batch_key
+                or not self.replayed_result.replayed
+            ):
+                raise ValueError("stage issue replay result differs from its batch")
 
 
 @dataclass(frozen=True, slots=True)
@@ -947,6 +1072,53 @@ class AnalysisRepository:
             "OPEN",
             False,
         )
+
+    @staticmethod
+    def begin_and_issue_next_batch(
+        work: VNextUnitOfWork,
+        *,
+        gate_lease: GateLease,
+        ingest_turn: IngestTurn,
+        build_id: bytes,
+        policy_id: int,
+        proposed_analysis_id: bytes,
+        batch_key: bytes,
+        max_rows: int,
+        now: int,
+    ) -> tuple[AnalysisRun, AnalysisStageIssue]:
+        """Begin/restart and issue one server-selected batch under one fence lock.
+
+        ``begin`` already acquires the gate, ingest fence, and sole working-root
+        lock.  Reauthorizing before the checkpoint lock would invert the global
+        lock order, so the combined application operation carries the authority
+        derived by ``begin`` directly into the bounded issuer.
+        """
+
+        timestamp = require_int63(now, field="analysis begin/issue now")
+        run = AnalysisRepository.begin(
+            work,
+            gate_lease=gate_lease,
+            ingest_turn=ingest_turn,
+            build_id=build_id,
+            policy_id=policy_id,
+            proposed_analysis_id=proposed_analysis_id,
+            now=timestamp,
+        )
+        authority = _RunAuthority(
+            run.analysis_id,
+            run.build_id,
+            _load_policy(work, run.policy_id),
+            run.baseline_analysis_id,
+            run.overlay_depth,
+        )
+        issue = _issue_next_batch_authorized(
+            work,
+            authority=authority,
+            generation=ingest_turn.generation,
+            batch_key=batch_key,
+            max_rows=max_rows,
+        )
+        return run, issue
 
     @staticmethod
     def abandon(
@@ -1407,28 +1579,159 @@ class AnalysisRepository:
             now=require_int63(now, field="preparation authority now"),
             allow_complete=True,
         )
-        try:
-            run_family = load_analysis_run_family(
-                work.connector,
-                analysis_id=authority.analysis_id,
-            )
-        except AnalysisFamilyCollisionError as error:
-            raise AnalysisCorruptionError(str(error)) from error
-        if run_family is None:
-            raise AnalysisCorruptionError("preparation authority lost its run")
-        seals = _component_seal_receipts(work, authority.analysis_id)
-        return AnalysisPreparationAuthority(
-            authority.analysis_id,
-            authority.build_id,
-            require_positive_int63(
-                ingest_turn.generation,
-                field="preparation authority generation",
-            ),
-            authority.policy.policy_id,
-            run_family.input_manifest_sha256,
-            seals,
-            _PREPARATION_TOKEN,
+        return _preparation_authority_receipt(
+            work,
+            authority,
+            generation=ingest_turn.generation,
         )
+
+    @staticmethod
+    def issue_next_batch(
+        work: VNextUnitOfWork,
+        *,
+        gate_lease: GateLease,
+        ingest_turn: IngestTurn,
+        analysis_id: bytes,
+        batch_key: bytes,
+        max_rows: int,
+        now: int,
+    ) -> AnalysisStageIssue:
+        """Fix the exact next durable stage and gallery-membership page.
+
+        The caller supplies only an idempotency key and an upper bound. Stage,
+        cursor, processed count, gallery keys, and current membership are all
+        loaded under the live analysis authority. No corpus-sized value is
+        returned and the hard server cap remains 128.
+        """
+
+        authority = _authorize_analysis(
+            work,
+            gate_lease=gate_lease,
+            ingest_turn=ingest_turn,
+            analysis_id=analysis_id,
+            now=require_int63(now, field="analysis stage issue now"),
+            allow_complete=True,
+        )
+        return _issue_next_batch_authorized(
+            work,
+            authority=authority,
+            generation=ingest_turn.generation,
+            batch_key=batch_key,
+            max_rows=max_rows,
+        )
+
+    @staticmethod
+    def process_issued_batch(
+        work: VNextUnitOfWork,
+        *,
+        gate_lease: GateLease,
+        ingest_turn: IngestTurn,
+        issue: AnalysisStageIssue,
+        preparations: Sequence[AnalysisGalleryPreparation | None],
+        now: int,
+    ) -> AnalysisBatchResult:
+        """Commit exactly one previously issued stage page or replay it."""
+
+        if not isinstance(issue, AnalysisStageIssue):
+            raise TypeError("issue must be AnalysisStageIssue")
+        issue.__post_init__()
+        if issue.stage is None or issue.batch_key is None:
+            raise AnalysisNotReadyError("snapshot/complete issue has no stage batch")
+        exact_preparations = tuple(preparations)
+        if issue.stage not in _GALLERY_PREPARATION_STAGES and exact_preparations:
+            raise AnalysisNotReadyError(
+                "non-preparation analysis stage received gallery preparations"
+            )
+
+        if issue.replayed_result is not None:
+            authority = _authorize_analysis(
+                work,
+                gate_lease=gate_lease,
+                ingest_turn=ingest_turn,
+                analysis_id=issue.analysis_id,
+                now=require_int63(now, field="analysis replay commit now"),
+            )
+            if authority.build_id != issue.build_id:
+                raise AnalysisCorruptionError(
+                    "replayed analysis issue changed its build authority"
+                )
+            return issue.replayed_result
+
+        common: dict[str, Any] = {
+            "gate_lease": gate_lease,
+            "ingest_turn": ingest_turn,
+            "analysis_id": issue.analysis_id,
+            "batch_key": issue.batch_key,
+            "max_rows": issue.page_limit,
+            "now": now,
+        }
+        if issue.stage == _STAGE_CHANGED_GALLERY:
+            result = AnalysisRepository.process_changed_gallery_batch(work, **common)
+        elif issue.stage == _STAGE_CHANGED_FILE_HASH:
+            result = AnalysisRepository.process_changed_file_hash_batch(work, **common)
+        elif issue.stage == _STAGE_FILE_HASH_DECISION:
+            result = AnalysisRepository.process_file_hash_decision_batch(work, **common)
+        elif issue.stage == _STAGE_VALIDATE_FILE_HASH:
+            result = AnalysisRepository.validate_file_hash_decision_batch(
+                work, **common
+            )
+        elif issue.stage == _STAGE_IMPACTED_GALLERY:
+            result = AnalysisRepository.process_impacted_gallery_batch(work, **common)
+        elif issue.stage == _STAGE_IMPACTED_CONTENT:
+            result = AnalysisRepository.process_impacted_content_batch(
+                work,
+                preparations=exact_preparations,
+                **common,
+            )
+        elif issue.stage == _STAGE_CONTENT_CANDIDATE:
+            result = AnalysisRepository.process_content_owner_candidate_batch(
+                work,
+                preparations=exact_preparations,
+                **common,
+            )
+        elif issue.stage == _STAGE_VALIDATE_CONTENT_CANDIDATE:
+            result = AnalysisRepository.validate_content_owner_candidate_batch(
+                work,
+                preparations=exact_preparations,
+                **common,
+            )
+        elif issue.stage == _STAGE_CONTENT_OWNER:
+            result = AnalysisRepository.process_content_owner_batch(work, **common)
+        elif issue.stage == _STAGE_VALIDATE_CONTENT_OWNER:
+            result = AnalysisRepository.validate_content_owner_batch(work, **common)
+        elif issue.stage == _STAGE_IMPACTED_GID:
+            result = AnalysisRepository.process_impacted_gid_batch(work, **common)
+        elif issue.stage == _STAGE_GID_CANDIDATE:
+            result = AnalysisRepository.process_gid_candidate_batch(
+                work,
+                preparations=exact_preparations,
+                **common,
+            )
+        elif issue.stage == _STAGE_VALIDATE_GID_CANDIDATE:
+            result = AnalysisRepository.validate_gid_candidate_batch(
+                work,
+                preparations=exact_preparations,
+                **common,
+            )
+        elif issue.stage == _STAGE_GID_WINNER:
+            result = AnalysisRepository.process_gid_winner_batch(work, **common)
+        elif issue.stage == _STAGE_VALIDATE_GID_WINNER:
+            result = AnalysisRepository.validate_gid_winner_batch(work, **common)
+        else:
+            raise AnalysisCorruptionError("issued analysis stage is not executable")
+        if (
+            result.analysis_id != issue.analysis_id
+            or result.stage != issue.stage
+            or result.batch_key != issue.batch_key
+            or result.start_generation != issue.checkpoint_generation
+            or result.start_cursor != issue.checkpoint_cursor
+            or result.start_processed_count != issue.checkpoint_processed_count
+            or result.page_limit != issue.page_limit
+        ):
+            raise AnalysisNotReadyError(
+                "analysis stage issue is stale against its durable checkpoint"
+            )
+        return result
 
     @staticmethod
     def prepare_gallery(
@@ -2983,6 +3286,101 @@ def _analysis_input_digest(
     return sha256(payload).digest()
 
 
+def _preparation_authority_receipt(
+    work: VNextUnitOfWork,
+    authority: _RunAuthority,
+    *,
+    generation: int,
+) -> AnalysisPreparationAuthority:
+    try:
+        run_family = load_analysis_run_family(
+            work.connector,
+            analysis_id=authority.analysis_id,
+        )
+    except AnalysisFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+    if run_family is None:
+        raise AnalysisCorruptionError("preparation authority lost its run")
+    if (
+        run_family.build_id != authority.build_id
+        or run_family.policy_id != authority.policy.policy_id
+    ):
+        raise AnalysisCorruptionError(
+            "preparation authority differs from its analysis run"
+        )
+    return AnalysisPreparationAuthority(
+        authority.analysis_id,
+        authority.build_id,
+        require_positive_int63(
+            generation,
+            field="preparation authority generation",
+        ),
+        authority.policy.policy_id,
+        run_family.input_manifest_sha256,
+        _component_seal_receipts(work, authority.analysis_id),
+        _PREPARATION_TOKEN,
+    )
+
+
+def _issued_gallery_memberships(
+    work: VNextUnitOfWork,
+    authority: _RunAuthority,
+    *,
+    stage: bytes,
+    checkpoint: _Checkpoint,
+) -> tuple[tuple[int, int | None], ...]:
+    """Load one exact server-keyset page and its current build membership."""
+
+    if stage not in _GALLERY_PREPARATION_STAGES:
+        raise ValueError("stage does not use gallery preparations")
+    last, _live_count = _decode_cursor(
+        _CURSOR_GALLERY,
+        checkpoint.cursor,
+        live=stage
+        in {
+            _STAGE_VALIDATE_CONTENT_CANDIDATE,
+            _STAGE_VALIDATE_GID_CANDIDATE,
+        },
+    )
+    after = None if last is None else int.from_bytes(last, "big")
+    if stage in {
+        _STAGE_IMPACTED_CONTENT,
+        _STAGE_CONTENT_CANDIDATE,
+        _STAGE_GID_CANDIDATE,
+    }:
+        rows = _workset_gallery_rows(
+            work,
+            authority.analysis_id,
+            after=after,
+            limit=checkpoint.page_limit + 1,
+        )
+    elif stage == _STAGE_VALIDATE_CONTENT_CANDIDATE:
+        rows = _content_candidate_validation_keys(
+            work,
+            authority,
+            after=after,
+            limit=checkpoint.page_limit + 1,
+        )
+    else:
+        rows = _gid_candidate_validation_keys(
+            work,
+            authority,
+            after=after,
+            limit=checkpoint.page_limit + 1,
+        )
+    selected = rows[: checkpoint.page_limit]
+    gallery_ids = tuple(
+        require_positive_int63(row[0], field="issued preparation gallery_id")
+        for row in selected
+    )
+    memberships = _current_memberships_for_page(work, authority, gallery_ids)
+    if set(memberships) != set(gallery_ids):
+        raise AnalysisCorruptionError(
+            "issued gallery membership differs from its exact keyset"
+        )
+    return tuple((gallery_id, memberships[gallery_id]) for gallery_id in gallery_ids)
+
+
 def _prepare_gallery(
     work: VNextUnitOfWork,
     run: _RunAuthority,
@@ -4155,6 +4553,170 @@ def _receipt_family_exists(
     return bool(row)
 
 
+def _issue_next_batch_authorized(
+    work: VNextUnitOfWork,
+    *,
+    authority: _RunAuthority,
+    generation: int,
+    batch_key: bytes,
+    max_rows: int,
+) -> AnalysisStageIssue:
+    exact_generation = require_positive_int63(
+        generation,
+        field="analysis stage issue generation",
+    )
+    preparation_authority = _preparation_authority_receipt(
+        work,
+        authority,
+        generation=exact_generation,
+    )
+    run_state = work.connector.fetch_one(
+        "SELECT state FROM catalog_analysis_run_states WHERE analysis_id = %s",
+        (authority.analysis_id,),
+    )
+    if run_state == ("COMPLETE",):
+        _require_exact_component_seals(work, authority.analysis_id)
+        binding = work.connector.fetch_one(
+            "SELECT snapshot_manifest_sha256 "
+            "FROM catalog_analysis_snapshot_manifest WHERE analysis_id = %s",
+            (authority.analysis_id,),
+        )
+        if len(binding) != 1:
+            raise AnalysisCorruptionError(
+                "COMPLETE analysis lacks its snapshot-manifest binding"
+            )
+        return AnalysisStageIssue(
+            authority.analysis_id,
+            authority.build_id,
+            None,
+            None,
+            0,
+            None,
+            None,
+            None,
+            (),
+            preparation_authority,
+            require_digest32(
+                binding[0],
+                field="completed analysis snapshot_manifest_sha256",
+            ),
+            None,
+            _STAGE_ISSUE_TOKEN,
+        )
+    if run_state != ("OPEN",):
+        raise AnalysisNotReadyError("analysis stage issue requires an OPEN run")
+
+    states = work.connector.fetch_all(
+        f"SELECT state.stage, state.state FROM {_CHECKPOINT_STATE_TABLE} AS state "
+        f"JOIN {_CHECKPOINT_SEAL_TABLE} AS seal "
+        "ON seal.analysis_id = state.analysis_id AND seal.stage = state.stage "
+        "WHERE state.analysis_id = %s",
+        (authority.analysis_id,),
+    )
+    if len(states) != len(_STAGES):
+        raise AnalysisCorruptionError(
+            "analysis run lacks its exact checkpoint state set"
+        )
+    state_by_stage: dict[bytes, str] = {}
+    for raw_stage, raw_state in states:
+        stage = require_bounded_bytes(
+            raw_stage,
+            field="analysis checkpoint stage",
+            minimum=1,
+            maximum=64,
+        )
+        if stage in state_by_stage or not isinstance(raw_state, str):
+            raise AnalysisCorruptionError("analysis checkpoint state set is malformed")
+        state_by_stage[stage] = _require_checkpoint_state(raw_state)
+    if set(state_by_stage) != set(_STAGES):
+        raise AnalysisCorruptionError(
+            "analysis checkpoint state set differs from the registry"
+        )
+    first_open: bytes | None = None
+    saw_open = False
+    for stage in _STAGES:
+        state = state_by_stage[stage]
+        if state == _CHECKPOINT_OPEN:
+            saw_open = True
+            if first_open is None:
+                first_open = stage
+        elif saw_open:
+            raise AnalysisCorruptionError(
+                "analysis checkpoint completion is not a contiguous prefix"
+            )
+    if first_open is None:
+        _require_exact_component_seals(work, authority.analysis_id)
+        return AnalysisStageIssue(
+            authority.analysis_id,
+            authority.build_id,
+            None,
+            None,
+            0,
+            None,
+            None,
+            None,
+            (),
+            preparation_authority,
+            None,
+            None,
+            _STAGE_ISSUE_TOKEN,
+        )
+
+    exact_key = require_bounded_bytes(
+        batch_key,
+        field="analysis stage issue batch_key",
+        minimum=1,
+        maximum=512,
+    )
+    run, checkpoint, replay = _prepare_batch_authorized(
+        work,
+        authority=authority,
+        stage=first_open,
+        batch_key=exact_key,
+        max_rows=max_rows,
+    )
+    if replay is not None:
+        return AnalysisStageIssue(
+            authority.analysis_id,
+            authority.build_id,
+            first_open,
+            exact_key,
+            replay.page_limit,
+            replay.start_generation,
+            replay.start_cursor,
+            replay.start_processed_count,
+            (),
+            preparation_authority,
+            None,
+            replay,
+            _STAGE_ISSUE_TOKEN,
+        )
+    assert checkpoint is not None
+    memberships: tuple[tuple[int, int | None], ...] = ()
+    if first_open in _GALLERY_PREPARATION_STAGES:
+        memberships = _issued_gallery_memberships(
+            work,
+            run,
+            stage=first_open,
+            checkpoint=checkpoint,
+        )
+    return AnalysisStageIssue(
+        authority.analysis_id,
+        authority.build_id,
+        first_open,
+        exact_key,
+        checkpoint.page_limit,
+        checkpoint.generation,
+        checkpoint.cursor,
+        checkpoint.processed_count,
+        memberships,
+        preparation_authority,
+        None,
+        None,
+        _STAGE_ISSUE_TOKEN,
+    )
+
+
 def _prepare_batch(
     work: VNextUnitOfWork,
     *,
@@ -4166,19 +4728,35 @@ def _prepare_batch(
     max_rows: int,
     now: int,
 ) -> tuple[_RunAuthority, _Checkpoint | None, AnalysisBatchResult | None]:
-    authorization_time = require_int63(now, field="analysis batch now")
-    key = require_bounded_bytes(
-        batch_key,
-        field="analysis batch_key",
-        minimum=1,
-        maximum=512,
-    )
     authority = _authorize_analysis(
         work,
         gate_lease=gate_lease,
         ingest_turn=ingest_turn,
         analysis_id=analysis_id,
-        now=authorization_time,
+        now=require_int63(now, field="analysis batch now"),
+    )
+    return _prepare_batch_authorized(
+        work,
+        authority=authority,
+        stage=stage,
+        batch_key=batch_key,
+        max_rows=max_rows,
+    )
+
+
+def _prepare_batch_authorized(
+    work: VNextUnitOfWork,
+    *,
+    authority: _RunAuthority,
+    stage: bytes,
+    batch_key: bytes,
+    max_rows: int,
+) -> tuple[_RunAuthority, _Checkpoint | None, AnalysisBatchResult | None]:
+    key = require_bounded_bytes(
+        batch_key,
+        field="analysis batch_key",
+        minimum=1,
+        maximum=512,
     )
     coordinate = work.connector.fetch_one(
         f"SELECT start_generation FROM {_RECEIPT_COORDINATE_TABLE} "

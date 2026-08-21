@@ -2,17 +2,30 @@
 
 from __future__ import annotations
 
-__all__ = ["CatalogReader"]
+__all__ = [
+    "ArtifactReleaseAdapter",
+    "ArtifactStorageAdapter",
+    "CatalogReader",
+    "VNextIngestSourceAdapter",
+]
 
 from collections.abc import Mapping, Sequence
-from typing import Protocol, runtime_checkable
+from typing import BinaryIO, Protocol, runtime_checkable
 
 from .domain import (
+    ArtifactReleaseStorageEvidence,
+    ArtifactStorageEvidence,
     CatalogArtifact,
     CatalogPage,
     CatalogPublication,
     CatalogRevision,
+    DirectoryObservation,
+    FileObservation,
+    TagObservation,
+    VNextIngestGalleryObservation,
+    VNextIngestPage,
 )
+from .vnext_identity import ArtifactTransformKind
 
 
 @runtime_checkable
@@ -49,3 +62,87 @@ class CatalogReader(Protocol):
         *,
         revision: CatalogRevision | int | None = None,
     ) -> CatalogArtifact | None: ...
+
+
+@runtime_checkable
+class VNextIngestSourceAdapter(Protocol):
+    """Restartable, bounded observation boundary implemented by consumers.
+
+    Every page method is keyset-addressed and may be called again after
+    response loss.  The facade always requests the registered leaf capacity:
+    256 FILE rows, 192 DIRECTORY rows, and 256 TAG rows.
+    """
+
+    @property
+    def source_root_components(self) -> tuple[str, ...]: ...
+
+    def list_gallery_locators(
+        self,
+        *,
+        after_locator: tuple[str, ...] | None,
+        limit: int,
+    ) -> VNextIngestPage[tuple[str, ...]]: ...
+
+    def observe_gallery(
+        self,
+        locator_components: tuple[str, ...],
+    ) -> VNextIngestGalleryObservation: ...
+
+    def list_file_observations(
+        self,
+        observation: VNextIngestGalleryObservation,
+        *,
+        after_name_bytes: bytes | None,
+        limit: int,
+    ) -> VNextIngestPage[FileObservation]: ...
+
+    def list_directory_observations(
+        self,
+        observation: VNextIngestGalleryObservation,
+        *,
+        after_name_bytes: bytes | None,
+        limit: int,
+    ) -> VNextIngestPage[DirectoryObservation]: ...
+
+    def list_tag_observations(
+        self,
+        observation: VNextIngestGalleryObservation,
+        *,
+        after_ordinal: int | None,
+        limit: int,
+    ) -> VNextIngestPage[TagObservation]: ...
+
+
+@runtime_checkable
+class ArtifactStorageAdapter(Protocol):
+    """Consumer-owned deterministic renderer and monotone protection store."""
+
+    adapter_id: bytes
+    producer_fingerprint_sha256: bytes
+
+    def render_member(
+        self,
+        source: BinaryIO,
+        transform_kind: ArtifactTransformKind,
+        destination: BinaryIO,
+    ) -> None: ...
+
+    def protect(
+        self,
+        archive: BinaryIO,
+        locator_components: tuple[str, ...],
+        protection_token: bytes,
+    ) -> ArtifactStorageEvidence: ...
+
+
+@runtime_checkable
+class ArtifactReleaseAdapter(Protocol):
+    """Consumer-owned terminal, idempotent protection-token tombstone."""
+
+    adapter_id: bytes
+
+    def release(
+        self,
+        locator_components: tuple[str, ...],
+        protection_token: bytes,
+    ) -> ArtifactReleaseStorageEvidence: ...

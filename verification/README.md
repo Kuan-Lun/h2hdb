@@ -19,7 +19,7 @@ The generated contract currently contains:
   fencing, downloader-to-ingest handoff, staging, allocation, receipts,
   maintenance, queues, caches, and bounded cleanup;
 - 27 versioned semantic obligations: 12 data-plane and 15 operational; and
-- 4,645 typed bootstrap rows per backend, including the real deletion-request
+- 4,646 typed bootstrap rows per backend, including the real deletion-request
   generation-zero history/head and 17 cleanup target kinds
   expanded into 256 fixed shards each.
 
@@ -206,7 +206,7 @@ They do not erase the remaining exhaustive fault and cross-backend gaps.
 
 The default generated provider now completes initialize, replay, read-only full
 check, readiness, and public open on fresh SQLite and live MariaDB, validating
-all 4,645 bootstrap rows per backend. This closes the catalog and operational
+all 4,646 bootstrap rows per backend. This closes the catalog and operational
 bootstrap
 runtime/integration claims, while their row-by-row corruption and partial-commit
 fault matrices remain explicit blockers.

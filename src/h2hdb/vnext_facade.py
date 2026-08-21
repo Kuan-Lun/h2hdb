@@ -15,19 +15,34 @@ __all__ = [
     "open_database",
 ]
 
+import secrets
 from collections.abc import Callable, Mapping, Sequence
 from time import time_ns
 from typing import TypeVar
 
 from .config_loader import CoreConfig
-from .domain import CatalogArtifact, CatalogPage, CatalogPublication, CatalogRevision
+from .domain import (
+    CatalogArtifact,
+    CatalogPage,
+    CatalogPublication,
+    CatalogRevision,
+    DownloadCandidateState,
+)
 from .repository import RepositoryContext
 from .schema_admin import SchemaEpochReadiness, VNextSchemaAdmin
 from .schema_epoch import SchemaEpochReport
 from .sql_connector import SQLConnector
 from .vnext_catalog_reader_repository import VNextCatalogReaderRepository
+from .vnext_download_ingest_repository import (
+    DownloadHandoff,
+    DownloadIngestRepository,
+    DownloadTurn,
+)
 from .vnext_queue_repository import (
+    DeletionRequestReceipt,
     EnsureDownloadRequestReceipt,
+    PendingRedownloadCursor,
+    PendingRedownloadPage,
     VNextDownloadRequest,
     VNextQueueRepository,
 )
@@ -221,6 +236,202 @@ class VNextDownloadQueueFacade:
             lambda work: VNextQueueRepository.complete_download_request(
                 work,
                 request=request,
+            )
+        )
+
+    def complete_missing_download_request(
+        self,
+        request: VNextDownloadRequest,
+        missing_gid: int,
+    ) -> bool:
+        return self.__write(
+            lambda work: VNextQueueRepository.complete_missing_download_request(
+                work,
+                request=request,
+                missing_gid=missing_gid,
+            )
+        )
+
+    def record_gallery_found(self, *gids: int) -> int:
+        return self.__write(
+            lambda work: VNextQueueRepository.record_galleries_found(
+                work,
+                gids=gids,
+            )
+        )
+
+    def request_deletion(
+        self,
+        gid: int,
+        url: str | None = None,
+    ) -> DeletionRequestReceipt:
+        request_token = secrets.token_bytes(16)
+        requested_at = self.__clock()
+        return self.__write(
+            lambda work: VNextQueueRepository.request_deletion(
+                work,
+                gid=gid,
+                request_token=request_token,
+                url=url,
+                requested_at=requested_at,
+            )
+        )
+
+    def get_candidate_states(
+        self,
+        gids: Sequence[int],
+    ) -> Mapping[int, DownloadCandidateState]:
+        now = self.__clock()
+        return self.__read(
+            lambda work: VNextQueueRepository.get_candidate_states(
+                work,
+                gids=gids,
+                now=now,
+            )
+        )
+
+    def list_pending_redownloads(
+        self,
+        *,
+        cursor: PendingRedownloadCursor | None = None,
+        limit: int = 256,
+    ) -> PendingRedownloadPage:
+        now = self.__clock() if cursor is None else None
+        return self.__read(
+            lambda work: VNextQueueRepository.list_pending_redownloads(
+                work,
+                cursor=cursor,
+                limit=limit,
+                now=now,
+            )
+        )
+
+    def claim_download_turn(
+        self,
+        *,
+        lease_duration_microseconds: int,
+    ) -> DownloadTurn:
+        now = self.__clock()
+        return self.__write(
+            lambda work: DownloadIngestRepository.claim_download(
+                work,
+                now=now,
+                lease_duration=lease_duration_microseconds,
+            )
+        )
+
+    def renew_download_turn(
+        self,
+        turn: DownloadTurn,
+        *,
+        lease_duration_microseconds: int,
+    ) -> DownloadTurn:
+        now = self.__clock()
+        return self.__write(
+            lambda work: DownloadIngestRepository.renew_download(
+                work,
+                turn,
+                now=now,
+                lease_duration=lease_duration_microseconds,
+            )
+        )
+
+    def handoff_download_turn(self, turn: DownloadTurn) -> DownloadHandoff:
+        now = self.__clock()
+        return self.__write(
+            lambda work: DownloadIngestRepository.handoff_download(
+                work,
+                turn,
+                now=now,
+                recover_existing=True,
+            )
+        )
+
+    def complete_download_request_in_turn(
+        self,
+        turn: DownloadTurn,
+        request: VNextDownloadRequest,
+    ) -> bool:
+        now = self.__clock()
+
+        def operation(work: VNextUnitOfWork) -> bool:
+            DownloadIngestRepository.resume_download(work, turn, now=now)
+            return VNextQueueRepository.complete_download_request(
+                work,
+                request=request,
+            )
+
+        return self.__write(operation)
+
+    def complete_missing_download_request_in_turn(
+        self,
+        turn: DownloadTurn,
+        request: VNextDownloadRequest,
+        missing_gid: int,
+    ) -> bool:
+        now = self.__clock()
+
+        def operation(work: VNextUnitOfWork) -> bool:
+            DownloadIngestRepository.resume_download(work, turn, now=now)
+            return VNextQueueRepository.complete_missing_download_request(
+                work,
+                request=request,
+                missing_gid=missing_gid,
+            )
+
+        return self.__write(operation)
+
+    def finish_download_turn(
+        self,
+        turn: DownloadTurn,
+        request: VNextDownloadRequest,
+    ) -> DownloadHandoff:
+        now = self.__clock()
+
+        def operation(work: VNextUnitOfWork) -> DownloadHandoff:
+            transition = DownloadIngestRepository.ensure_download_handoff(
+                work,
+                turn,
+                now=now,
+            )
+            if transition.created:
+                VNextQueueRepository.complete_download_request(
+                    work,
+                    request=request,
+                )
+            return transition.handoff
+
+        return self.__write(operation)
+
+    def finish_missing_download_turn(
+        self,
+        turn: DownloadTurn,
+        request: VNextDownloadRequest,
+        missing_gid: int,
+    ) -> DownloadHandoff:
+        now = self.__clock()
+
+        def operation(work: VNextUnitOfWork) -> DownloadHandoff:
+            transition = DownloadIngestRepository.ensure_download_handoff(
+                work,
+                turn,
+                now=now,
+            )
+            if transition.created:
+                VNextQueueRepository.complete_missing_download_request(
+                    work,
+                    request=request,
+                    missing_gid=missing_gid,
+                )
+            return transition.handoff
+
+        return self.__write(operation)
+
+    def is_download_handoff_complete(self, handoff: DownloadHandoff) -> bool:
+        return self.__read(
+            lambda work: DownloadIngestRepository.is_download_handoff_complete(
+                work,
+                handoff,
             )
         )
 

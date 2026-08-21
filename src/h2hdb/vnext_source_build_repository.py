@@ -15,6 +15,7 @@ __all__ = [
     "DiscoveryBatch",
     "DiscoveryBatchReceipt",
     "PreparedDiscoveryLocator",
+    "PendingSourceGallery",
     "ResolvedDiscoveryLocator",
     "SourceBuildConflictError",
     "SourceBuildAbandonment",
@@ -67,6 +68,7 @@ from .vnext_domains import (
 from .vnext_identity import (
     SOURCE_ROOT_DIGEST_DOMAIN,
     canonical_value_digest_parts,
+    decode_source_relative_locator,
     gallery_key,
     iter_source_relative_locator_payload,
     iter_source_root_payload,
@@ -100,6 +102,7 @@ _BATCH_LIMIT = 256
 _STREAM_BYTES = 64 * 1024
 _DISCOVERY_AUDIT_PREFIX = b"h2hdb-vnext-source-build-discovery-audit-v1\0"
 _DISCOVERY_BATCH_PREFIX = b"h2hdb-vnext-source-build-discovery-batch-v1\0"
+_DISCOVERY_ATTEMPT_PREFIX = b"h2hdb-vnext-source-build-discovery-attempt-v1\0"
 _MANIFEST_AUDIT_PREFIX = b"h2hdb-vnext-source-build-manifest-audit-v1\0"
 _EMPTY_MANIFEST_CHAIN = bytes.fromhex(
     "121f20d26c10f4c5ce6e621dc5e41b7da2c4028af840caa7547265068f2458e3"
@@ -115,6 +118,17 @@ _PUBLICATION_COMMIT_GENERATION_TABLE = "catalog_publication_commit_generations"
 _PUBLICATION_COMMIT_COMMITTED_AT_TABLE = "catalog_publication_commit_committed_ats"
 _SOURCE_REVISION_CHANNEL_TABLE = "catalog_source_revision_channels"
 _SOURCE_BUILD_BASE_COMMIT_TABLE = "catalog_source_build_base_publication_commits"
+_PENDING_SOURCE_GALLERY_QUERY = (
+    "SELECT expected.position, expected.gallery_id, coordinate.locator_sha256 "
+    "FROM catalog_source_build_expected_gallery AS expected "
+    "LEFT JOIN catalog_gallery_identity_coordinates AS coordinate "
+    "ON coordinate.gallery_id = expected.gallery_id "
+    "LEFT JOIN catalog_source_build_galleries AS member "
+    "ON member.build_id = expected.build_id "
+    "AND member.gallery_id = expected.gallery_id "
+    "WHERE expected.build_id = %s AND member.gallery_id IS NULL "
+    "ORDER BY expected.position LIMIT 1"
+)
 
 
 class SourceBuildConflictError(RuntimeError):
@@ -129,8 +143,21 @@ class SourceDiscoveryPlanError(ValueError):
     """A filesystem discovery stream is malformed, duplicated, or changed."""
 
 
-def _new_scan_attempt() -> bytes:
-    return secrets.token_bytes(16)
+def _discovery_scan_attempt(
+    gallery_count: int,
+    tree_observation_sha256: bytes,
+) -> bytes:
+    """Derive restart-stable attempt authority from the complete disk snapshot."""
+
+    count = require_int63(gallery_count, field="gallery_count")
+    tree = require_digest32(
+        tree_observation_sha256,
+        field="tree_observation_sha256",
+    )
+    digest = sha256(_DISCOVERY_ATTEMPT_PREFIX)
+    digest.update(count.to_bytes(8, "big"))
+    digest.update(tree)
+    return digest.digest()[:16]
 
 
 def _new_assembly_batch_key() -> bytes:
@@ -231,6 +258,25 @@ class ResolvedDiscoveryLocator:
         require_digest32(self.gallery_key, field="gallery_key")
         if not isinstance(self.replayed, bool):
             raise TypeError("replayed must be bool")
+
+
+@dataclass(frozen=True, slots=True)
+class PendingSourceGallery:
+    """One server-selected expected member still lacking an observation link."""
+
+    build_id: bytes
+    position: int
+    gallery_id: int
+    locator_sha256: bytes
+
+    def __post_init__(self) -> None:
+        require_uuid16(self.build_id, field="pending source build_id")
+        require_int63(self.position, field="pending source position")
+        require_positive_int63(self.gallery_id, field="pending source gallery_id")
+        require_digest32(
+            self.locator_sha256,
+            field="pending source locator_sha256",
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -417,12 +463,16 @@ class SourceDiscoveryPlan:
             finally:
                 reader.close()
             index.commit()
+            tree_observation_sha256 = audit.digest()
             return cls(
                 temporary=temporary,
                 index=index,
-                scan_attempt=_new_scan_attempt(),
+                scan_attempt=_discovery_scan_attempt(
+                    count,
+                    tree_observation_sha256,
+                ),
                 gallery_count=count,
-                tree_observation_sha256=audit.digest(),
+                tree_observation_sha256=tree_observation_sha256,
                 _constructor_token=_PLAN_CONSTRUCTOR_TOKEN,
             )
         except BaseException:
@@ -476,6 +526,43 @@ class SourceDiscoveryPlan:
             locator.payload_sha256,
         )
         return plan
+
+    def _decode_locator(
+        self,
+        position: int,
+        locator_sha256: bytes,
+    ) -> tuple[str, ...]:
+        """Decode one exact durable-position locator from the private spool."""
+
+        self._require_open()
+        expected_position = require_int63(position, field="locator position")
+        expected_digest = require_digest32(
+            locator_sha256,
+            field="locator_sha256",
+        )
+        row = self._index.execute(
+            "SELECT locator_sha256, payload_name, payload_byte_count, payload_sha256 "
+            "FROM locator_entries WHERE position = ?",
+            (expected_position,),
+        ).fetchone()
+        if row is None or row[0] != expected_digest:
+            raise SourceDiscoveryPlanError(
+                "durable pending gallery differs from the prepared locator plan"
+            )
+        payload = b"".join(_read_file_parts(self._directory / str(row[1])))
+        if len(payload) != row[2] or sha256(payload).digest() != row[3]:
+            raise SourceDiscoveryPlanError("locator payload changed while decoding")
+        components = decode_source_relative_locator(payload)
+        if (
+            canonical_value_digest_parts(
+                _LOCATOR_DOMAIN,
+                len(payload),
+                (payload,),
+            )
+            != expected_digest
+        ):
+            raise SourceDiscoveryPlanError("decoded locator digest changed")
+        return components
 
     def _page(self, start_position: int) -> tuple[PreparedDiscoveryLocator, ...]:
         self._require_open()
@@ -972,11 +1059,66 @@ class SourceBuildRepository:
         )
         start_generation, cursor, processed_count = _validate_discovery_checkpoint(
             checkpoint,
-            require_open=True,
+            require_open=False,
         )
         if processed_count > plan.gallery_count:
             raise SourceBuildConflictError(
                 "discovery checkpoint exceeds the frozen locator plan"
+            )
+        if checkpoint[3] == "COMPLETE":
+            terminal_row = connector.fetch_one(
+                _DISCOVERY_RECEIPT_SELECT
+                + " WHERE build_id = %s AND start_generation = %s",
+                (build, start_generation - 1),
+            )
+            if not terminal_row:
+                raise SourceBuildConflictError(
+                    "complete discovery checkpoint has no terminal receipt"
+                )
+            terminal_receipt = _discovery_receipt_from_row(
+                terminal_row,
+                replayed=False,
+            )
+            if (
+                not terminal_receipt.terminal
+                or terminal_receipt.committed_generation != start_generation
+                or terminal_receipt.next_cursor != cursor
+                or terminal_receipt.next_processed_count != processed_count
+                or terminal_receipt.next_state != "COMPLETE"
+                or terminal_receipt.start_processed_count != plan.gallery_count
+                or terminal_receipt.batch_key
+                != _discovery_batch_key(
+                    plan,
+                    build,
+                    terminal_receipt.start_generation,
+                )
+            ):
+                raise SourceBuildConflictError(
+                    "terminal discovery receipt differs from the frozen plan"
+                )
+            _require_discovery_plan_binding(
+                connector,
+                build_id=build,
+                plan=plan,
+                start_generation=terminal_receipt.start_generation,
+                start_cursor=terminal_receipt.start_cursor,
+                start_processed_count=terminal_receipt.start_processed_count,
+            )
+            batch_capability = object()
+            return DiscoveryBatch(
+                build,
+                terminal_receipt.batch_key,
+                plan.scan_attempt,
+                plan.gallery_count,
+                plan.tree_observation_sha256,
+                terminal_receipt.start_generation,
+                terminal_receipt.start_cursor,
+                terminal_receipt.start_processed_count,
+                (),
+                True,
+                plan._capability,
+                batch_capability,
+                _DISCOVERY_BATCH_TOKEN,
             )
         _require_discovery_plan_binding(
             connector,
@@ -1006,6 +1148,43 @@ class SourceBuildRepository:
             plan._capability,
             batch_capability,
             _DISCOVERY_BATCH_TOKEN,
+        )
+
+    @staticmethod
+    def get_pending_source_gallery(
+        connector: Any,
+        *,
+        build_id: bytes,
+    ) -> PendingSourceGallery | None:
+        """Select at most one expected-minus-linked member by PK keyset order."""
+
+        build = require_uuid16(build_id, field="build_id")
+        family = _load_source_build_or_conflict(connector, build)
+        if family.state != "OPEN":
+            raise SourceBuildNotReadyError(
+                "pending observation work requires an OPEN source build"
+            )
+        checkpoint = connector.fetch_one(
+            "SELECT state FROM operational_source_build_discovery_checkpoints "
+            "WHERE build_id = %s",
+            (build,),
+        )
+        if checkpoint != ("COMPLETE",):
+            raise SourceBuildNotReadyError(
+                "pending observation work requires complete discovery"
+            )
+        row = connector.fetch_one(_PENDING_SOURCE_GALLERY_QUERY, (build,))
+        if not row:
+            return None
+        if len(row) != 3 or any(value is None for value in row):
+            raise SourceBuildConflictError(
+                "pending expected gallery lacks its sealed locator identity"
+            )
+        return PendingSourceGallery(
+            build,
+            require_int63(row[0], field="pending source position"),
+            require_positive_int63(row[1], field="pending source gallery_id"),
+            require_digest32(row[2], field="pending source locator_sha256"),
         )
 
     @staticmethod

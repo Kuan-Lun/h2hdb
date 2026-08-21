@@ -175,6 +175,12 @@ class _DownloadState:
     consumed_at: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class _DownloadHandoffTransition:
+    handoff: DownloadHandoff
+    created: bool
+
+
 class DownloadIngestRepository:
     """Orchestrate normalized download authority and the existing ingest fence."""
 
@@ -280,62 +286,137 @@ class DownloadIngestRepository:
         turn: DownloadTurn,
         *,
         now: int,
+        recover_existing: bool = False,
     ) -> DownloadHandoff:
-        requested = _require_download_turn(turn)
-        timestamp = require_int63(now, field="download handoff now")
-        head = _require_download_head(work)
-        state = _lock_download_state(work, requested.generation)
-        if state.handoff_kind is not None:
-            expected = DownloadHandoff(
-                requested.generation,
-                requested.owner_token,
-                HandoffKind.DOWNLOADER,
-                timestamp,
-            )
-            _require_exact_handoff(state, expected)
-            if state.owner_token is not None or state.lease_expires_at is not None:
-                raise DownloadIngestCorruptionError(
-                    "durable handoff retained mutable downloader authority"
-                )
-            return expected
+        return _transition_download_handoff(
+            work,
+            turn,
+            now=now,
+            recover_existing=recover_existing,
+        ).handoff
 
-        _require_live_download_turn(head, state, requested, now=timestamp)
-        if timestamp < state.started_at:
-            raise DownloadIngestCorruptionError(
-                "download handoff precedes generation start"
+    @staticmethod
+    def ensure_download_handoff(
+        work: VNextUnitOfWork,
+        turn: DownloadTurn,
+        *,
+        now: int,
+    ) -> _DownloadHandoffTransition:
+        """Create a handoff or recover its exact durable response."""
+
+        return _transition_download_handoff(
+            work,
+            turn,
+            now=now,
+            recover_existing=True,
+        )
+
+    @staticmethod
+    def is_download_handoff_complete(
+        work: VNextUnitOfWork,
+        handoff: DownloadHandoff,
+    ) -> bool:
+        """Return whether linked ingest durably completed one exact handoff."""
+
+        requested = _require_download_handoff(handoff)
+        handoff_row = work.connector.fetch_one(
+            f"SELECT owner_token, handoff_kind, requested_at FROM {_HANDOFF_TABLE} "
+            "WHERE download_generation = %s",
+            (requested.download_generation,),
+        )
+        if not handoff_row:
+            raise DownloadIngestReplayMismatchError(
+                "download handoff receipt has no durable authority"
             )
-        result = DownloadHandoff(
-            requested.generation,
-            requested.owner_token,
-            HandoffKind.DOWNLOADER,
-            timestamp,
+        durable = _download_handoff_from_row(
+            requested.download_generation,
+            handoff_row,
         )
-        work.connector.execute(
-            f"INSERT INTO {_HANDOFF_TABLE} "
-            "(download_generation, owner_token, handoff_kind, requested_at) "
-            "VALUES (%s, %s, %s, %s)",
-            (
-                result.download_generation,
-                result.owner_token,
-                result.handoff_kind.value,
-                result.requested_at,
-            ),
+        if durable != requested:
+            raise DownloadIngestReplayMismatchError(
+                "stored download handoff differs from the complete receipt"
+            )
+
+        row = work.connector.fetch_one(
+            f"SELECT consumption.ingest_generation, completion.owner_token, "
+            "completion.completed_at, generation.completed_at, "
+            f"head.completed_generation FROM {_DOWNLOAD_GENERATION_TABLE} "
+            f"AS generation JOIN {_DOWNLOAD_HEAD_TABLE} AS head "
+            "ON head.singleton_id = 1 "
+            f"LEFT JOIN {_CONSUMPTION_TABLE} AS consumption "
+            "ON consumption.download_generation = generation.generation "
+            f"LEFT JOIN {_COMPLETION_TABLE} AS completion "
+            "ON completion.ingest_generation = consumption.ingest_generation "
+            "WHERE generation.generation = %s",
+            (requested.download_generation,),
         )
-        _delete_exactly_one(
-            work,
-            f"DELETE FROM {_DOWNLOAD_LEASE_TABLE} WHERE generation = %s "
-            "AND lease_expires_at = %s",
-            (requested.generation, requested.lease_expires_at),
-            authority="handed-off download lease",
-        )
-        _delete_exactly_one(
-            work,
-            f"DELETE FROM {_DOWNLOAD_OWNER_TABLE} WHERE generation = %s "
-            "AND owner_token = %s",
-            (requested.generation, requested.owner_token),
-            authority="handed-off download owner",
-        )
-        return result
+        if len(row) != 5:
+            raise DownloadIngestCorruptionError(
+                "download handoff completion state is missing or malformed"
+            )
+        try:
+            ingest_generation = (
+                None
+                if row[0] is None
+                else require_int63(row[0], field="consumed ingest generation")
+            )
+            completion_owner = (
+                None
+                if row[1] is None
+                else require_uuid16(row[1], field="completion owner_token")
+            )
+            completion_at = (
+                None
+                if row[2] is None
+                else require_int63(row[2], field="coordinated completed_at")
+            )
+            download_completed_at = (
+                None
+                if row[3] is None
+                else require_int63(row[3], field="download completed_at")
+            )
+            completed_generation = require_int63(
+                row[4],
+                field="completed download generation",
+            )
+        except (TypeError, ValueError) as error:
+            raise DownloadIngestCorruptionError(
+                "download handoff completion state violates its physical domain"
+            ) from error
+        if (completion_owner is None) != (completion_at is None):
+            raise DownloadIngestCorruptionError(
+                "coordinated ingest completion receipt is incomplete"
+            )
+        if ingest_generation is None:
+            if completion_owner is not None:
+                raise DownloadIngestCorruptionError(
+                    "download completion exists without an ingest consumption"
+                )
+            if (
+                download_completed_at is not None
+                or completed_generation >= requested.download_generation
+            ):
+                raise DownloadIngestCorruptionError(
+                    "unconsumed download handoff is already marked complete"
+                )
+            return False
+        if completion_owner is None:
+            if (
+                download_completed_at is not None
+                or completed_generation >= requested.download_generation
+            ):
+                raise DownloadIngestCorruptionError(
+                    "incomplete linked ingest already advanced download completion"
+                )
+            return False
+        if (
+            download_completed_at != completion_at
+            or completed_generation < requested.download_generation
+        ):
+            raise DownloadIngestCorruptionError(
+                "linked ingest completion disagrees with download authority"
+            )
+        return True
 
     @staticmethod
     def claim_ingest(
@@ -458,22 +539,15 @@ class DownloadIngestRepository:
     ) -> CoordinatedIngestCompletion:
         requested = _require_coordinated_turn(turn)
         timestamp = require_int63(now, field="coordinated ingest completion now")
+        replay = DownloadIngestRepository.get_ingest_completion(work, requested)
+        if replay is not None:
+            return replay
         expected = CoordinatedIngestCompletion(
             requested.ingest_turn.generation,
             requested.ingest_turn.owner_token,
             timestamp,
             requested.download_generation,
         )
-        replay_hint = work.connector.fetch_one(
-            f"SELECT owner_token, completed_at FROM {_COMPLETION_TABLE} "
-            "WHERE ingest_generation = %s",
-            (requested.ingest_turn.generation,),
-        )
-        if replay_hint:
-            _lock_and_validate_completion_relationship(work, requested, timestamp)
-            _lock_and_validate_completed_ingest(work, expected)
-            return expected
-
         _lock_and_validate_active_relationship(work, requested)
         if work.connector.fetch_one(
             f"SELECT owner_token, completed_at FROM {_COMPLETION_TABLE} "
@@ -515,6 +589,124 @@ class DownloadIngestRepository:
             authority="linked download coordination completion",
         )
         return expected
+
+    @staticmethod
+    def get_ingest_completion(
+        work: VNextUnitOfWork,
+        turn: CoordinatedIngestTurn,
+    ) -> CoordinatedIngestCompletion | None:
+        """Return the canonical stored completion for an exact turn, if any.
+
+        The stored timestamp is authority.  This makes a completion retry
+        independent of the retrying process's clock while still validating the
+        complete linked-download relationship and ingest history.
+        """
+
+        requested = _require_coordinated_turn(turn)
+        hint = work.connector.fetch_one(
+            f"SELECT owner_token, completed_at FROM {_COMPLETION_TABLE} "
+            "WHERE ingest_generation = %s",
+            (requested.ingest_turn.generation,),
+        )
+        if not hint:
+            return None
+        if len(hint) != 2:
+            raise DownloadIngestCorruptionError(
+                "coordinated ingest completion has an invalid shape"
+            )
+        completion = CoordinatedIngestCompletion(
+            requested.ingest_turn.generation,
+            require_uuid16(hint[0], field="completion receipt owner_token"),
+            require_int63(hint[1], field="completion receipt completed_at"),
+            requested.download_generation,
+        )
+        if completion.owner_token != requested.ingest_turn.owner_token:
+            raise DownloadIngestReplayMismatchError(
+                "stored coordinated completion belongs to another owner"
+            )
+        _lock_and_validate_completion_relationship(
+            work,
+            requested,
+            completion.completed_at,
+        )
+        _lock_and_validate_completed_ingest(work, completion)
+        return completion
+
+
+def _transition_download_handoff(
+    work: VNextUnitOfWork,
+    turn: DownloadTurn,
+    *,
+    now: int,
+    recover_existing: bool,
+) -> _DownloadHandoffTransition:
+    requested = _require_download_turn(turn)
+    if not isinstance(recover_existing, bool):
+        raise TypeError("recover_existing must be bool")
+    timestamp = require_int63(now, field="download handoff now")
+    head = _require_download_head(work)
+    state = _lock_download_state(work, requested.generation)
+    if state.handoff_kind is not None:
+        if recover_existing:
+            actual = _handoff_from_state(state)
+            if (
+                actual.owner_token != requested.owner_token
+                or actual.handoff_kind is not HandoffKind.DOWNLOADER
+            ):
+                raise DownloadIngestReplayMismatchError(
+                    "stored download handoff differs from the presented turn capability"
+                )
+            return _DownloadHandoffTransition(actual, False)
+        expected = DownloadHandoff(
+            requested.generation,
+            requested.owner_token,
+            HandoffKind.DOWNLOADER,
+            timestamp,
+        )
+        _require_exact_handoff(state, expected)
+        if state.owner_token is not None or state.lease_expires_at is not None:
+            raise DownloadIngestCorruptionError(
+                "durable handoff retained mutable downloader authority"
+            )
+        return _DownloadHandoffTransition(expected, False)
+
+    _require_live_download_turn(head, state, requested, now=timestamp)
+    if timestamp < state.started_at:
+        raise DownloadIngestCorruptionError(
+            "download handoff precedes generation start"
+        )
+    result = DownloadHandoff(
+        requested.generation,
+        requested.owner_token,
+        HandoffKind.DOWNLOADER,
+        timestamp,
+    )
+    work.connector.execute(
+        f"INSERT INTO {_HANDOFF_TABLE} "
+        "(download_generation, owner_token, handoff_kind, requested_at) "
+        "VALUES (%s, %s, %s, %s)",
+        (
+            result.download_generation,
+            result.owner_token,
+            result.handoff_kind.value,
+            result.requested_at,
+        ),
+    )
+    _delete_exactly_one(
+        work,
+        f"DELETE FROM {_DOWNLOAD_LEASE_TABLE} WHERE generation = %s "
+        "AND lease_expires_at = %s",
+        (requested.generation, requested.lease_expires_at),
+        authority="handed-off download lease",
+    )
+    _delete_exactly_one(
+        work,
+        f"DELETE FROM {_DOWNLOAD_OWNER_TABLE} WHERE generation = %s "
+        "AND owner_token = %s",
+        (requested.generation, requested.owner_token),
+        authority="handed-off download owner",
+    )
+    return _DownloadHandoffTransition(result, True)
 
 
 def _lock_download_head(work: VNextUnitOfWork) -> _DownloadHead | None:
@@ -1019,6 +1211,37 @@ def _require_download_turn(turn: DownloadTurn) -> DownloadTurn:
     require_uuid16(turn.owner_token, field="download owner_token")
     require_int63(turn.lease_expires_at, field="download lease_expires_at")
     return turn
+
+
+def _require_download_handoff(value: object) -> DownloadHandoff:
+    if not isinstance(value, DownloadHandoff):
+        raise TypeError("handoff must be a DownloadHandoff")
+    # Frozen dataclasses remain forgeable through ``object.__setattr__``.
+    value.__post_init__()
+    return value
+
+
+def _download_handoff_from_row(
+    download_generation: int,
+    row: tuple[object, ...],
+) -> DownloadHandoff:
+    if len(row) != 3:
+        raise DownloadIngestCorruptionError("download handoff row has an invalid shape")
+    try:
+        generation = require_int63(
+            download_generation,
+            field="handoff download generation",
+        )
+        owner_token = require_uuid16(row[0], field="persisted handoff owner_token")
+        if not isinstance(row[1], str):
+            raise TypeError("persisted handoff kind must be text")
+        handoff_kind = HandoffKind(row[1])
+        requested_at = require_int63(row[2], field="persisted handoff requested_at")
+    except (TypeError, ValueError) as error:
+        raise DownloadIngestCorruptionError(
+            "download handoff row violates its physical domain"
+        ) from error
+    return DownloadHandoff(generation, owner_token, handoff_kind, requested_at)
 
 
 def _require_ingest_turn(turn: IngestTurn) -> IngestTurn:

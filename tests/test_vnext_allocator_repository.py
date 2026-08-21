@@ -45,6 +45,12 @@ def test_revision_and_identity_allocators_advance_exact_seed_rows(
             )
             assert (
                 VNextAllocatorRepository.allocate_identity(
+                    work, IdentityStream.POLICY, updated_at=14
+                )
+                == 1
+            )
+            assert (
+                VNextAllocatorRepository.allocate_identity(
                     work, IdentityStream.GALLERY, updated_at=12
                 )
                 == 1
@@ -69,7 +75,7 @@ def test_revision_and_identity_allocators_advance_exact_seed_rows(
         assert connector.fetch_all(
             "SELECT stream, next_id, updated_at "
             "FROM operational_identity_allocators ORDER BY stream"
-        ) == [("GALLERY", 2, 12), ("TAG", 2, 13)]
+        ) == [("GALLERY", 2, 12), ("POLICY", 2, 14), ("TAG", 2, 13)]
     finally:
         connector.close()
 

@@ -35,9 +35,10 @@ __all__ = [
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Protocol
 
 from . import vnext_identity as identity
+from .domain import ArtifactReleaseStorageEvidence
+from .ports import ArtifactReleaseAdapter
 from .sql_connector import SQLConnector
 from .vnext_domains import (
     require_ascii_bytes,
@@ -70,35 +71,6 @@ class ArtifactReleaseUnavailableError(ArtifactReleaseRepositoryError):
 
 class ArtifactReleaseConflictError(ArtifactReleaseRepositoryError):
     """Durable release authority differs from the repository-issued facts."""
-
-
-@dataclass(frozen=True, slots=True)
-class ArtifactReleaseStorageEvidence:
-    """Untrusted acknowledgement returned by one storage adapter."""
-
-    released: bool
-
-    def __post_init__(self) -> None:
-        if type(self.released) is not bool:
-            raise TypeError("artifact release acknowledgement must be bool")
-
-
-class ArtifactReleaseAdapter(Protocol):
-    """Storage-side terminal protection-token tombstone.
-
-    ``release`` must be idempotent for an exact token, including when no prior
-    ``protect`` is visible.  Its terminal tombstone must win over every delayed
-    or retried ``protect`` for that token, so bytes can never be resurrected by
-    a late protection call after release.
-    """
-
-    adapter_id: bytes
-
-    def release(
-        self,
-        locator_components: tuple[str, ...],
-        protection_token: bytes,
-    ) -> ArtifactReleaseStorageEvidence: ...
 
 
 @dataclass(frozen=True, slots=True)

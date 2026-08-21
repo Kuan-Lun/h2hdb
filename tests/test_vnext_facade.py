@@ -50,6 +50,7 @@ from h2hdb.vnext_artifact_family import (
     ensure_artifact_semantic_input_family,
     ensure_catalog_artifact_family,
 )
+from h2hdb.vnext_download_ingest_repository import DownloadIngestRepository
 from h2hdb.vnext_identity import (
     CanonicalValueChunk,
     CanonicalValuePage,
@@ -72,6 +73,7 @@ from h2hdb.vnext_identity import (
 )
 from h2hdb.vnext_queue_repository import VNextDownloadRequest, VNextQueueRepository
 from h2hdb.vnext_schema_provider import VNextSchemaProviderUnavailableError
+from h2hdb.vnext_transaction import VNextUnitOfWork
 
 if TYPE_CHECKING:
     _catalog_reader: CatalogReader = VNextCatalogFacade(CoreConfig())
@@ -645,6 +647,77 @@ def test_download_queue_facade_owns_short_transactions_and_bounded_reads(
     assert read_only.list_download_requests(limit=1) == (second.request,)
     with pytest.raises(DatabaseReadOnlyError):
         read_only.request_download(200)
+
+
+def test_download_queue_facade_atomically_finishes_and_recovers_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "queue-finish-facade.sqlite3"
+    connector = _generated_database(path)
+    connector.close()
+    request_tokens = iter((b"a" * 16, b"b" * 16, b"c" * 16))
+    monkeypatch.setattr(
+        "h2hdb.vnext_queue_repository.secrets.token_bytes",
+        lambda size: next(request_tokens),
+    )
+    download_tokens = iter((b"d" * 16, b"e" * 16))
+    monkeypatch.setattr(
+        "h2hdb.vnext_download_ingest_repository._new_download_owner_token",
+        lambda: next(download_tokens),
+    )
+    clock = _CountingClock(10, 20, 30, 31, 32, 60, 70, 80)
+    facade = VNextDownloadQueueFacade(_config(path), clock=clock)
+
+    original = facade.request_download(42, "https://example.invalid/42")
+    turn = facade.claim_download_turn(lease_duration_microseconds=100)
+    handoff = facade.finish_download_turn(turn, original)
+    assert handoff.requested_at == 30
+    assert facade.get_download_request(42) is None
+    assert not facade.is_download_handoff_complete(handoff)
+
+    replacement = facade.request_download(42, "https://example.invalid/new-42")
+    assert facade.finish_download_turn(turn, original) == handoff
+    assert facade.get_download_request(42) == replacement
+
+    connector = SQLiteConnector(str(path))
+    connector.connect()
+    try:
+        monkeypatch.setattr(
+            "h2hdb.vnext_download_ingest_repository._new_ingest_owner_token",
+            lambda: b"i" * 16,
+        )
+        with connector.transaction():
+            ingest_turn = DownloadIngestRepository.claim_ingest(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                now=40,
+                lease_duration=100,
+            )
+        with connector.transaction():
+            DownloadIngestRepository.complete_ingest(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                ingest_turn,
+                now=50,
+            )
+    finally:
+        connector.close()
+    assert facade.is_download_handoff_complete(handoff)
+
+    missing = facade.request_download(404)
+    missing_turn = facade.claim_download_turn(lease_duration_microseconds=100)
+    facade.finish_missing_download_turn(missing_turn, missing, 404)
+    assert facade.get_download_request(404) is None
+
+    connector = SQLiteConnector(str(path))
+    connector.connect()
+    try:
+        assert connector.fetch_one(
+            "SELECT gid FROM operational_removed_gids WHERE gid = %s",
+            (404,),
+        ) == (404,)
+    finally:
+        connector.close()
+    assert facade.record_gallery_found(404) == 1
 
 
 def test_download_queue_facade_rolls_back_repository_failure(

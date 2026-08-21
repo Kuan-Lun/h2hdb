@@ -368,7 +368,7 @@ GENERATION_OBLIGATION_BINDINGS = {
             "deletion_request_generation",
             "deletion_request_generation_head",
         ),
-        "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG identity allocator genesis rows, the real immutable deletion generation-zero empty-queue fact and its singleton head, and the declared absence of all request, event, lease, staging, work, cache, policy, and cleanup facts.",
+        "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG/POLICY identity allocator genesis rows, the real immutable deletion generation-zero empty-queue fact and its singleton head, and the declared absence of all request, event, lease, staging, work, cache, policy, and cleanup facts.",
     ),
 }
 
@@ -705,6 +705,7 @@ def _bootstrap_seeds(
     expected_identity_allocator_rows = {
         "h2hdb.operational.identity-allocator.gallery.v1": "GALLERY",
         "h2hdb.operational.identity-allocator.tag.v1": "TAG",
+        "h2hdb.operational.identity-allocator.policy.v1": "POLICY",
     }
     expected_deletion_generation_rows = {
         "h2hdb.operational.deletion-request-generation.genesis.v1": (
@@ -1123,6 +1124,23 @@ def render() -> str:
 def _indexes(name: str, relation: dict[str, Any]) -> list[tuple[str, tuple[str, ...]]]:
     attributes = set(relation["attributes"])
     indexes: list[tuple[str, tuple[str, ...]]] = []
+    for raw_index in relation.get("required_indexes", []):
+        if not isinstance(raw_index, dict):
+            raise ValueError(f"{name} required index must be a table")
+        raw_name = raw_index.get("name")
+        raw_attributes = raw_index.get("attributes")
+        if (
+            not isinstance(raw_name, str)
+            or not raw_name
+            or not isinstance(raw_attributes, list)
+            or not raw_attributes
+            or not all(isinstance(value, str) for value in raw_attributes)
+        ):
+            raise ValueError(f"{name} required index is malformed")
+        index_attributes = tuple(raw_attributes)
+        if not set(index_attributes) <= attributes:
+            raise ValueError(f"{name} required index names an absent attribute")
+        indexes.append((_identifier(raw_name), index_attributes))
     if name == "maintenance_gate_holder":
         indexes.append(("ix_maintenance_gate_holder_owner", ("owner_token",)))
     if {"state", "updated_at"} <= attributes:
@@ -1269,8 +1287,8 @@ def _checks(name: str, relation: dict[str, Any]) -> list[tuple[str, str, str]]:
                 ),
                 (
                     "ck_identity_allocator_stream",
-                    "stream IN ('GALLERY', 'TAG')",
-                    "stream IN ('GALLERY', 'TAG')",
+                    "stream IN ('GALLERY', 'TAG', 'POLICY')",
+                    "stream IN ('GALLERY', 'TAG', 'POLICY')",
                 ),
             ]
         )

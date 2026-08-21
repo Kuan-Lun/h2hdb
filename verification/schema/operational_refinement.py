@@ -611,7 +611,7 @@ _GENERATION_OBLIGATION_RELATION_BINDINGS = {
             "deletion_request_generation",
             "deletion_request_generation_head",
         ),
-        "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG identity allocator genesis rows, the real immutable deletion generation-zero empty-queue fact and its singleton head, and the declared absence of all request, event, lease, staging, work, cache, policy, and cleanup facts.",
+        "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG/POLICY identity allocator genesis rows, the real immutable deletion generation-zero empty-queue fact and its singleton head, and the declared absence of all request, event, lease, staging, work, cache, policy, and cleanup facts.",
     ),
 }
 
@@ -1343,7 +1343,7 @@ def check_build_generation_contract_v1(
         assembly, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("ascii")
     if hashlib.sha256(encoded_assembly).hexdigest() != (
-        "f50de2aafb39537cac192fb20fbf90f6b1ac265063eca501870c5066378c58c1"
+        "c2af7b96706b15114ba1d5df3cb6ccb316a4c44ad432f6fb10cb4357fda89eac"
     ):
         raise ValueError("source-build assembly exact protocol text drifts")
 
@@ -4168,6 +4168,7 @@ def _validate_bootstrap(
     identity_allocator_rows = {
         "h2hdb.operational.identity-allocator.gallery.v1": "GALLERY",
         "h2hdb.operational.identity-allocator.tag.v1": "TAG",
+        "h2hdb.operational.identity-allocator.policy.v1": "POLICY",
     }
     deletion_generation_rows = {
         "h2hdb.operational.deletion-request-generation.genesis.v1": (

@@ -2,10 +2,9 @@
 
 `h2hdb` is a shared core library and schema administrator, not a resident
 service. Long-running behavior belongs to sibling integrations. Komga and OPDS
-already consume the epoch-2 catalog facade. The current ingest and downloader
-packages still target the retired pre-0.23 API and are deliberately excluded
-from an epoch-2 deployment until their orchestration adapters are ported. No
-sibling may query `catalog_*` or operational tables directly.
+consume the epoch-2 catalog facade; ingest uses the transaction-owning ingest
+facade and downloader uses the queue facade. No sibling may query `catalog_*`
+or operational tables directly.
 
 ## Database ownership
 
@@ -16,7 +15,7 @@ for both SQLite and MariaDB from the same logical manifests.
 The catalog graph has 53 sealed vertical families, 28 checked decompositions,
 361 narrow bases with zero width debt, and an exact 320-relation physical
 authority closure (260 mutation relations plus 60 read-only views). Each
-backend receives exactly 4,645 typed bootstrap rows.
+backend receives exactly 4,646 typed bootstrap rows.
 
 Ingest and coordination workers receive read-write credentials. Catalog-serving
 consumers use read-only credentials and `VNextCatalogFacade`. For SQLite, mount
@@ -82,17 +81,16 @@ Repository classes that accept a connector or unit of work are internal
 coordination surfaces. A sibling repository must not depend on physical table
 names, generated SQL, or a private repository method.
 
-The current integration boundary has three explicit limits:
+The integration boundary has three explicit limits:
 
 - Nonblank search fails closed until a normalized revision-pinned search index
   is part of the schema and reader contract.
 - `CatalogPublication.redownload_required` has no closed durable
   revision-scoped derivation contract, so consumers must not infer it from
   transient operational state.
-- Core provides typed artifact preparation and storage protocols, but the
-  concrete filesystem/object-storage adapter and complete ingest orchestration
-  are consumer responsibilities. Core alone does not perform an end-to-end
-  filesystem bootstrap.
+- Core provides typed artifact preparation and storage protocols, while the
+  concrete filesystem/object-storage adapter remains a consumer
+  responsibility. Core alone does not perform filesystem or artifact I/O.
 
 ## Artifact storage and mounts
 
@@ -125,18 +123,15 @@ A deployment integration follows this order:
 1. Create a truly empty SQLite database or MariaDB schema.
 2. Run core `migrate` with read-write credentials.
 3. Run core `check` with the same read-only configuration consumers will use.
-4. After the consumer integration supplies the concrete source/artifact
-   adapters and a supported public orchestration boundary, run it to populate
-   and publish data through bounded vNext workflows.
+4. Run the ingest consumer with its concrete source/artifact adapters to
+   populate and publish data through bounded vNext workflows.
 5. Start catalog readers, download workers, and other consumers only after the
    required initial publication exists.
 6. Use core `ready` for frequent liveness/readiness probes; keep full `check`
    as the stronger startup or deployment audit.
 
-Step 4 is still consumer-integration work: core does not expose a complete
-public ingest-orchestration facade. Until that adapter and boundary exist,
-schema `READY` means the exact database contract is present; it does not mean
-source data or artifacts have been ingested.
+Schema `READY` means the exact database contract is present; it does not mean
+source data or artifacts have already been ingested.
 
 ## Local multi-repository verification
 
@@ -148,8 +143,7 @@ installs with:
 ./scripts/rebuild-multirepo-integration.sh
 ```
 
-The script does not create or consume `uv.lock`. Its smoke test supplements,
-but does not replace, schema/Lean checks, strict coverage evidence, or live
-MariaDB integration tests. Until their vNext orchestration ports exist, the
-smoke intentionally excludes `h2hdb-ingest` and `h2hdb-downloader`; that
-exclusion is a release limitation, not compatibility evidence.
+The script does not create or consume `uv.lock`. Its smoke installs every
+public consumer, including `h2hdb-ingest` and `h2hdb-downloader`, and
+supplements—but does not replace—schema/Lean checks, strict coverage evidence,
+or live MariaDB integration tests.

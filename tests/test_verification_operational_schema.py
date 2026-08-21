@@ -1203,7 +1203,7 @@ def test_operational_machine_obligations_and_genesis_are_closed_world() -> None:
     )
     assert machine.epoch_owned_relation == "schema_epoch_control"
     assert len(machine.absent_relations) == 68
-    assert len(machine.seeds) == 116
+    assert len(machine.seeds) == 117
     assert {
         value.seed_id
         for value in machine.seeds
@@ -1227,6 +1227,7 @@ def test_operational_machine_obligations_and_genesis_are_closed_world() -> None:
     } == {
         ("GALLERY", 1, 0),
         ("TAG", 1, 0),
+        ("POLICY", 1, 0),
     }
     assert {
         value.relation: tuple(cell.value for cell in value.cells)

@@ -194,6 +194,71 @@ def test_live_download_handoff_moves_capability_and_exact_replay_is_zero_write(
         connector.close()
 
 
+def test_recoverable_handoff_and_exact_completion_poll(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connector = _generated_database(tmp_path / "download-handoff-poll.sqlite3")
+    try:
+        turn = _claim_download(
+            connector,
+            monkeypatch,
+            b"d" * 16,
+            now=10,
+            duration=100,
+        )
+        with connector.transaction():
+            handoff = DownloadIngestRepository.handoff_download(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                turn,
+                now=20,
+                recover_existing=True,
+            )
+        with connector.transaction():
+            recovered = DownloadIngestRepository.handoff_download(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                turn,
+                now=21,
+                recover_existing=True,
+            )
+        assert recovered == handoff
+
+        with connector.read_transaction():
+            assert not DownloadIngestRepository.is_download_handoff_complete(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                handoff,
+            )
+
+        monkeypatch.setattr(
+            "h2hdb.vnext_download_ingest_repository._new_ingest_owner_token",
+            lambda: b"i" * 16,
+        )
+        with connector.transaction():
+            ingest_turn = DownloadIngestRepository.claim_ingest(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                now=30,
+                lease_duration=100,
+            )
+        with connector.read_transaction():
+            assert not DownloadIngestRepository.is_download_handoff_complete(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                handoff,
+            )
+        with connector.transaction():
+            DownloadIngestRepository.complete_ingest(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                ingest_turn,
+                now=40,
+            )
+        with connector.read_transaction():
+            assert DownloadIngestRepository.is_download_handoff_complete(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                handoff,
+            )
+    finally:
+        connector.close()
+
+
 def test_generated_bcnf_keys_and_closed_handoff_enum_are_enforced(
     tmp_path: Path,
 ) -> None:
@@ -346,13 +411,15 @@ def test_linked_ingest_consumes_once_completes_both_heads_and_replays(
                 == completion
             )
         assert _snapshot(connector) == durable
-        with pytest.raises(DownloadIngestReplayMismatchError, match="completion"):
-            with connector.transaction():
+        with connector.transaction():
+            assert (
                 DownloadIngestRepository.complete_ingest(
                     VNextUnitOfWork(connector, backend="sqlite"), ingest, now=31
                 )
+                == completion
+            )
         assert _snapshot(connector) == durable
-        with pytest.raises(DownloadIngestReplayMismatchError, match="replay tuple"):
+        with pytest.raises(DownloadIngestReplayMismatchError, match="another owner"):
             with connector.transaction():
                 DownloadIngestRepository.complete_ingest(
                     VNextUnitOfWork(connector, backend="sqlite"),

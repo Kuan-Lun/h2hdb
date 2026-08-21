@@ -908,12 +908,13 @@ class PublicationCandidateRepository:
     ) -> PublicationProjectionAuthority:
         """Capture the exact terminal selection authority in one short tx."""
 
-        return PublicationCandidateRepository._issue_projection_authority(
+        timestamp = require_int63(now, field="projection authority now")
+        generation = _authorize(work, gate_lease, ingest_turn, now=timestamp)
+        return PublicationCandidateRepository._issue_projection_authority_authorized(
             work,
-            gate_lease=gate_lease,
-            ingest_turn=ingest_turn,
             candidate_id=candidate_id,
-            now=now,
+            generation=generation,
+            now=timestamp,
             validate_artifact_policy=True,
         )
 
@@ -928,33 +929,43 @@ class PublicationCandidateRepository:
     ) -> PublicationProjectionAuthority:
         """Issue a projection while deferring artifact-only contract reads."""
 
-        return PublicationCandidateRepository._issue_projection_authority(
+        timestamp = require_int63(now, field="projection authority now")
+        generation = _authorize(work, gate_lease, ingest_turn, now=timestamp)
+        return PublicationCandidateRepository._issue_projection_authority_authorized(
             work,
-            gate_lease=gate_lease,
-            ingest_turn=ingest_turn,
             candidate_id=candidate_id,
-            now=now,
+            generation=generation,
+            now=timestamp,
             validate_artifact_policy=False,
         )
 
     @staticmethod
-    def _issue_projection_authority(
+    def _issue_projection_authority_authorized(
         work: VNextUnitOfWork,
         *,
-        gate_lease: GateLease,
-        ingest_turn: IngestTurn,
         candidate_id: bytes,
+        generation: int,
         now: int,
         validate_artifact_policy: bool,
     ) -> PublicationProjectionAuthority:
-        """Common locked issuer with an explicit artifact-validation owner."""
+        """Issue after the application layer validated this transaction's fence.
+
+        This internal seam exists for a compound application transaction that
+        already acquired the maintenance gate and ingest fence in global order.
+        Public repository callers must use one of the fully authorizing methods
+        above.  The server-derived generation is still checked against the
+        durable build mapping and working roots below.
+        """
 
         candidate_key = require_uuid16(
             candidate_id,
             field="projection authority candidate_id",
         )
         timestamp = require_int63(now, field="projection authority now")
-        generation = _authorize(work, gate_lease, ingest_turn, now=timestamp)
+        exact_generation = require_positive_int63(
+            generation,
+            field="projection authority ingest generation",
+        )
         _require_exact_stage_registry(work)
         hint = work.connector.fetch_one(
             f"SELECT analysis_id, artifact_policy_id, display_title_policy_id "
@@ -977,7 +988,7 @@ class PublicationCandidateRepository:
             validate_artifact_policy=validate_artifact_policy,
         )
         component_seals = _analysis_seal_receipts(work, begin)
-        mapping = _lock_generation_mapping(work, generation)
+        mapping = _lock_generation_mapping(work, exact_generation)
         source_working = _lock_source_working(work)
         catalog_working = _lock_catalog_working(work)
         candidate = _lock_candidate(
@@ -1032,7 +1043,7 @@ class PublicationCandidateRepository:
             candidate.artifact_policy_id,
             candidate.display_title_policy_id,
             candidate.artifacts_required,
-            generation,
+            exact_generation,
             begin.snapshot_manifest_sha256,
             component_seals,
             selection_tuple,

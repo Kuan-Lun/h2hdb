@@ -37,10 +37,16 @@ __all__ = [
 
 import secrets
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any
 
+from .domain import (
+    DirectoryObservation,
+    FileContentReceipt,
+    FileObservation,
+    TagObservation,
+)
 from .vnext_allocator_repository import (
     AllocatorExhaustedError,
     IdentityStream,
@@ -92,7 +98,6 @@ from .vnext_identity import (
     GalleryObservationTagEntry,
     VNextIdentityError,
     artifact_source_manifest_digest,
-    canonical_value_digest,
     decode_gallery_observation_page,
     encode_gallery_observation_descriptor,
     encode_gallery_observation_page,
@@ -104,9 +109,7 @@ from .vnext_identity import (
     gallery_observation_page_digest,
     gallery_observation_page_key_bounds,
     gallery_scan_audit_digest,
-    validate_file_name,
     validate_gallery_observation_durable_parser_phase,
-    validate_namespace,
 )
 from .vnext_ingest_fence_repository import (
     IngestFenceRepository,
@@ -178,10 +181,11 @@ _REQUEST_CHUNK_BYTES = 32_768
 _REQUEST_CHUNK_COUNT = 3
 _REQUEST_BYTES_MAXIMUM = _REQUEST_CHUNK_BYTES * _REQUEST_CHUNK_COUNT
 _REQUEST_PREFIX = b"h2hdb-vnext-gallery-staging-request\0"
-_REQUEST_VERSION = 1
+_REQUEST_VERSION = 2
 _TAG_VALUE_DOMAIN = "tag_value_utf8_v1"
 _OBSERVATION_DOMAIN = "gallery_observation_v1"
-_FILE_RECEIPT_TOKEN = object()
+_ARTIST_NAMESPACE = b"artist"
+_FILE_HASH_OCCURRENCE_RECEIPT_PREFIX = b"\x00FHO2"
 
 
 class GalleryStagingConflictError(RuntimeError):
@@ -190,119 +194,6 @@ class GalleryStagingConflictError(RuntimeError):
 
 class GalleryStagingNotReadyError(RuntimeError):
     """A live fence, OPEN checkpoint, complete component, or root is absent."""
-
-
-@dataclass(frozen=True, slots=True)
-class FileContentReceipt:
-    """Transaction-independent exact-EOF SHA-256 and byte-count receipt.
-
-    The constructor token is module-private.  Public code obtains a receipt by
-    streaming the actual file bytes through :meth:`from_parts`; it cannot bind
-    an independently supplied digest or size to a FILE observation.
-    """
-
-    file_sha256: bytes
-    size_bytes: int
-    _constructor_token: object = field(repr=False, compare=False)
-
-    def __post_init__(self) -> None:
-        if self._constructor_token is not _FILE_RECEIPT_TOKEN:
-            raise TypeError("use FileContentReceipt.from_parts")
-        require_digest32(self.file_sha256, field="file_sha256")
-        require_int63(self.size_bytes, field="size_bytes")
-
-    @classmethod
-    def from_parts(cls, parts: Iterable[bytes]) -> FileContentReceipt:
-        digest = sha256()
-        size = 0
-        for part in parts:
-            exact = require_bounded_bytes(
-                part,
-                field="file content part",
-                maximum=INT63_MAX,
-            )
-            size += len(exact)
-            if size > INT63_MAX:
-                raise OverflowError("file content exceeds signed int63 bytes")
-            digest.update(exact)
-        return cls(digest.digest(), size, _FILE_RECEIPT_TOKEN)
-
-
-@dataclass(frozen=True, slots=True)
-class FileObservation:
-    """One source FILE fact; content digest, size, key, and role are derived."""
-
-    name_bytes: bytes
-    content: FileContentReceipt
-    device: int
-    inode: int
-    modified_ns: int
-    changed_ns: int
-
-    def __post_init__(self) -> None:
-        validate_file_name(self.name_bytes)
-        if (
-            not isinstance(self.content, FileContentReceipt)
-            or self.content._constructor_token is not _FILE_RECEIPT_TOKEN
-        ):
-            raise TypeError("content must be a FileContentReceipt from exact bytes")
-        self.content.__post_init__()
-        _require_uint64(self.device, field="device")
-        _require_uint64(self.inode, field="inode")
-        _require_int64(self.modified_ns, field="modified_ns")
-        _require_int64(self.changed_ns, field="changed_ns")
-
-
-@dataclass(frozen=True, slots=True)
-class DirectoryObservation:
-    """One no-follow direct-child DIRECTORY fact."""
-
-    name_bytes: bytes
-    size_bytes: int
-    device: int
-    inode: int
-    modified_ns: int
-    changed_ns: int
-    file_type: GalleryObservationDirectoryFileType
-
-    def __post_init__(self) -> None:
-        validate_file_name(self.name_bytes)
-        require_int63(self.size_bytes, field="size_bytes")
-        _require_uint64(self.device, field="device")
-        _require_uint64(self.inode, field="inode")
-        _require_int64(self.modified_ns, field="modified_ns")
-        _require_int64(self.changed_ns, field="changed_ns")
-        if not isinstance(self.file_type, GalleryObservationDirectoryFileType):
-            raise TypeError("file_type must be GalleryObservationDirectoryFileType")
-
-
-@dataclass(frozen=True, slots=True)
-class TagObservation:
-    """One exact source tag; its digest and numeric ID are derived internally."""
-
-    namespace: str
-    value: str
-    _namespace_bytes: bytes = field(init=False, repr=False, compare=False)
-    _value_bytes: bytes = field(init=False, repr=False, compare=False)
-    _value_sha256: bytes = field(init=False, repr=False, compare=False)
-
-    def __post_init__(self) -> None:
-        namespace = validate_namespace(self.namespace)
-        if not isinstance(self.value, str):
-            raise TypeError("tag value must be str")
-        value = self.value.encode("utf-8", errors="strict")
-        require_bounded_bytes(
-            value,
-            field="tag value UTF-8",
-            maximum=65_536,
-        )
-        object.__setattr__(self, "_namespace_bytes", namespace)
-        object.__setattr__(self, "_value_bytes", value)
-        object.__setattr__(
-            self,
-            "_value_sha256",
-            canonical_value_digest(_TAG_VALUE_DOMAIN, value),
-        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -494,6 +385,35 @@ class GalleryStagingSeal:
 
 
 @dataclass(frozen=True, slots=True)
+class _ComponentProgress:
+    """Fixed-size durable resume facts for one level-zero component."""
+
+    component: GalleryObservationComponent
+    cursor: int
+    state: str
+    after_name_bytes: bytes | None
+    after_ordinal: int | None
+    latest_operation_id: bytes | None
+
+
+@dataclass(frozen=True, slots=True)
+class GalleryStagingProgress:
+    """Repository-owned durable checkpoint used by the ingest facade.
+
+    The value is intentionally not exported from the package root.  It carries
+    no caller-selected traversal authority: every cursor and predecessor token
+    is reconstructed from the locked staging checkpoints and their latest
+    collision-checked request receipts.
+    """
+
+    handle: GalleryStagingHandle
+    components: tuple[_ComponentProgress, ...]
+    match_state: str
+    matched_count: int
+    match_latest_operation_id: bytes | None
+
+
+@dataclass(frozen=True, slots=True)
 class _Header:
     build_id: bytes
     gallery_id: int
@@ -532,6 +452,14 @@ class _PreparedPage:
 
 
 @dataclass(frozen=True, slots=True)
+class _FileHashOccurrencePlan:
+    file_sha256: bytes
+    page_count: int
+    prior_count: int
+    next_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class _FrontierPage:
     request_sha256: bytes
     position: int
@@ -543,6 +471,36 @@ class GalleryObservationStagingRepository:
     """Transaction-local writer for one gallery-observation attempt."""
 
     @staticmethod
+    def begin_or_resume(
+        work: VNextUnitOfWork,
+        *,
+        gate_lease: GateLease,
+        ingest_turn: IngestTurn,
+        build_id: bytes,
+        gallery_id: int,
+        now: int,
+    ) -> GalleryStagingProgress:
+        """Begin/take over a staging and return its exact durable progress.
+
+        This composite is the restart seam used by the public ingest facade.
+        The ordinary ``begin`` method remains the lower-level command API; this
+        method deliberately performs the fixed-size progress read in the same
+        authorized transaction so a process never guesses adapter cursors or
+        single-flight predecessor tokens after a crash.
+        """
+
+        handle = GalleryObservationStagingRepository.begin(
+            work,
+            gate_lease=gate_lease,
+            ingest_turn=ingest_turn,
+            build_id=build_id,
+            gallery_id=gallery_id,
+            now=now,
+            takeover_existing=True,
+        )
+        return _load_staging_progress(work.connector, handle)
+
+    @staticmethod
     def begin(
         work: VNextUnitOfWork,
         *,
@@ -551,6 +509,7 @@ class GalleryObservationStagingRepository:
         build_id: bytes,
         gallery_id: int,
         now: int,
+        takeover_existing: bool = False,
     ) -> GalleryStagingHandle:
         """Low-level begin after a gallery identity handoff.
 
@@ -562,6 +521,8 @@ class GalleryObservationStagingRepository:
 
         build = require_uuid16(build_id, field="build_id")
         gallery = require_positive_int63(gallery_id, field="gallery_id")
+        if type(takeover_existing) is not bool:
+            raise TypeError("takeover_existing must be bool")
         timestamp = require_int63(now, field="now")
         generation = _authorize_outer(work, gate_lease, ingest_turn, now=timestamp)
         scope, _build_state = _lock_and_require_working_build(
@@ -585,9 +546,30 @@ class GalleryObservationStagingRepository:
             )
             claim = _lock_claim(work, staging)
             if claim.ingest_generation != generation:
-                raise GalleryStagingNotReadyError(
-                    "existing staging requires an explicit takeover"
+                if not takeover_existing:
+                    raise GalleryStagingNotReadyError(
+                        "existing staging requires an explicit takeover"
+                    )
+                if claim.claim_generation == INT63_MAX:
+                    raise OverflowError("staging claim generation is exhausted")
+                successor = claim.claim_generation + 1
+                work.compare_and_swap(
+                    f"UPDATE {_CLAIM} SET ingest_generation = %s, "
+                    "claim_generation = %s, updated_at = %s "
+                    "WHERE staging_id = %s AND ingest_generation = %s "
+                    "AND claim_generation = %s AND updated_at = %s",
+                    (
+                        generation,
+                        successor,
+                        timestamp,
+                        staging,
+                        claim.ingest_generation,
+                        claim.claim_generation,
+                        claim.updated_at,
+                    ),
+                    authority="gallery staging natural-key takeover",
                 )
+                claim = _Claim(generation, successor, timestamp)
             _require_header_state(row[2], row[4])
             return GalleryStagingHandle(
                 staging,
@@ -1372,6 +1354,15 @@ def _put_component_page(
         prepared,
         previous_request=None if not latest else latest[0],
     )
+    file_hash_occurrences: tuple[_FileHashOccurrencePlan, ...] = ()
+    if component is GalleryObservationComponent.FILE:
+        prepared, file_hash_occurrences = _prepare_file_hash_occurrences(
+            work.connector,
+            handle,
+            prepared,
+            source_entries,
+            replayed=False,
+        )
     parser_update: GalleryObservationMetadataDecoderState | None = None
     if component is GalleryObservationComponent.METADATA:
         parser_row = work.lock_row(
@@ -1422,6 +1413,7 @@ def _put_component_page(
         prepared,
         source_entries,
         now=timestamp,
+        file_hash_occurrences=file_hash_occurrences,
     )
     if parser_update is not None:
         _update_parser(work, handle.staging_id, parser_update, now=timestamp)
@@ -2061,6 +2053,15 @@ def _try_replay_page(
     prepared = _prepare_leaf(component, start, source_entries)
     if prepared.page_sha256 != stored_page_sha:
         return None
+    file_hash_occurrences: tuple[_FileHashOccurrencePlan, ...] = ()
+    if component is GalleryObservationComponent.FILE:
+        prepared, file_hash_occurrences = _prepare_file_hash_occurrences(
+            work.connector,
+            handle,
+            prepared,
+            source_entries,
+            replayed=True,
+        )
     predecessor_row = work.connector.fetch_one(
         f"SELECT prior_request_sha256 FROM {_PREDECESSOR} WHERE request_sha256 = %s",
         (request_sha256,),
@@ -2110,6 +2111,7 @@ def _try_replay_page(
         handle,
         prepared,
         source_entries,
+        file_hash_occurrences=file_hash_occurrences,
     )
     root = _component_root(work.connector, handle, component)[0] if terminal else None
     return GalleryStagingReceipt(
@@ -2443,11 +2445,178 @@ def _require_observation_page_association(
         )
 
 
+def _prepare_file_hash_occurrences(
+    connector: Any,
+    handle: GalleryStagingHandle,
+    prepared: _PreparedPage,
+    source_entries: Sequence[Any],
+    *,
+    replayed: bool,
+) -> tuple[_PreparedPage, tuple[_FileHashOccurrencePlan, ...]]:
+    """Bind one bounded FILE page to its exact derived aggregate poststate.
+
+    The request frame stores one post-count per page-local CONTENT digest in
+    digest order.  Digests themselves are already present in the exact page
+    bytes, so this adds at most 2,055 bytes to a 256-entry request instead of
+    repeating 8 KiB of digest authority.  On response-loss replay the counts
+    are reloaded and re-encoded before the complete request preimage is
+    compared, making a replay both read-only and exact without scanning prior
+    pages or the whole observation.
+    """
+
+    if prepared.component is not GalleryObservationComponent.FILE:
+        raise TypeError("file-hash occurrence preparation requires a FILE page")
+    contributions: dict[bytes, int] = {}
+    for page_entry, source in zip(
+        prepared.page.entries,
+        source_entries,
+        strict=True,
+    ):
+        if not isinstance(page_entry, GalleryObservationFileEntry) or not isinstance(
+            source,
+            FileObservation,
+        ):
+            raise TypeError("FILE occurrence inputs must be exact FILE entries")
+        if file_role(source.name_bytes) == b"CONTENT":
+            digest = require_digest32(
+                source.content.file_sha256,
+                field="CONTENT file_sha256",
+            )
+            contributions[digest] = contributions.get(digest, 0) + 1
+
+    digests = tuple(sorted(contributions))
+    stored = _load_file_hash_occurrence_counts(
+        connector,
+        handle,
+        digests,
+    )
+    if replayed and set(stored) != set(digests):
+        raise GalleryStagingConflictError(
+            "replayed FILE hash-occurrence materialization is missing"
+        )
+    if not replayed and prepared.page.entries:
+        first = prepared.page.entries[0]
+        assert isinstance(first, GalleryObservationFileEntry)
+        if first.file_no == 0 and stored:
+            raise GalleryStagingConflictError(
+                "first FILE page found pre-existing hash occurrences"
+            )
+
+    plans: list[_FileHashOccurrencePlan] = []
+    for digest in digests:
+        page_count = contributions[digest]
+        if replayed:
+            next_count = stored[digest]
+            prior_count = next_count - page_count
+            if prior_count < 0:
+                raise GalleryStagingConflictError(
+                    "replayed FILE hash occurrence is smaller than its page delta"
+                )
+        else:
+            prior_count = stored.get(digest, 0)
+            next_count = _checked_int63_add(
+                prior_count,
+                page_count,
+                field_name="gallery observation CONTENT hash occurrence count",
+            )
+        plans.append(
+            _FileHashOccurrencePlan(
+                digest,
+                page_count,
+                prior_count,
+                next_count,
+            )
+        )
+
+    receipt = b"".join(
+        (
+            _FILE_HASH_OCCURRENCE_RECEIPT_PREFIX,
+            len(plans).to_bytes(2, "big"),
+            *(plan.next_count.to_bytes(8, "big") for plan in plans),
+        )
+    )
+    return (
+        _PreparedPage(
+            prepared.component,
+            prepared.page,
+            prepared.page_bytes,
+            prepared.page_sha256,
+            prepared.semantic_bytes + receipt,
+            prepared.item_count,
+            prepared.regular_count,
+            prepared.byte_count_delta,
+        ),
+        tuple(plans),
+    )
+
+
+def _load_file_hash_occurrence_counts(
+    connector: Any,
+    handle: GalleryStagingHandle,
+    digests: tuple[bytes, ...],
+) -> dict[bytes, int]:
+    if not digests:
+        return {}
+    rows = connector.fetch_all(
+        "SELECT file_sha256, occurrence_count "
+        "FROM catalog_gallery_observation_file_hash_occurrences "
+        "WHERE gallery_id = %s AND observation_id = %s "
+        f"AND file_sha256 IN ({_sql_placeholders(len(digests))}) "
+        "ORDER BY file_sha256",
+        (handle.gallery_id, handle.observation_id, *digests),
+    )
+    expected = set(digests)
+    counts: dict[bytes, int] = {}
+    for row in rows:
+        if len(row) != 2:
+            raise GalleryStagingConflictError(
+                "FILE hash-occurrence materialization has a bad shape"
+            )
+        try:
+            digest = require_digest32(
+                row[0],
+                field="materialized CONTENT file_sha256",
+            )
+            count = require_positive_int63(
+                row[1],
+                field="materialized CONTENT occurrence_count",
+            )
+        except (TypeError, ValueError) as error:
+            raise GalleryStagingConflictError(
+                "FILE hash-occurrence materialization has an invalid domain"
+            ) from error
+        if digest not in expected or digest in counts:
+            raise GalleryStagingConflictError(
+                "FILE hash-occurrence materialization has unexpected identities"
+            )
+        counts[digest] = count
+    return counts
+
+
+def _require_exact_file_hash_occurrences(
+    connector: Any,
+    handle: GalleryStagingHandle,
+    plans: tuple[_FileHashOccurrencePlan, ...],
+) -> None:
+    expected = {plan.file_sha256: plan.next_count for plan in plans}
+    stored = _load_file_hash_occurrence_counts(
+        connector,
+        handle,
+        tuple(expected),
+    )
+    if stored != expected:
+        raise GalleryStagingConflictError(
+            "replayed FILE hash-occurrence materialization differs"
+        )
+
+
 def _require_exact_normalized_leaf_facts(
     work: VNextUnitOfWork,
     handle: GalleryStagingHandle,
     prepared: _PreparedPage,
     source_entries: Sequence[Any],
+    *,
+    file_hash_occurrences: tuple[_FileHashOccurrencePlan, ...],
 ) -> None:
     """Validate every normalized leaf before accepting response-loss replay.
 
@@ -2541,6 +2710,11 @@ def _require_exact_normalized_leaf_facts(
             stored_filesystem[key] = (row[7], row[11], row[15], row[19])
         if stored_filesystem != expected_filesystem:
             raise GalleryStagingConflictError("replayed FILE filesystem facts differ")
+        _require_exact_file_hash_occurrences(
+            connector,
+            handle,
+            file_hash_occurrences,
+        )
         return
 
     if prepared.component is GalleryObservationComponent.TAG:
@@ -2600,6 +2774,39 @@ def _require_exact_normalized_leaf_facts(
             ):
                 raise GalleryStagingConflictError(
                     "replayed TAG canonical payload differs"
+                )
+        expected_artist_ids = tuple(
+            sorted(
+                {
+                    require_positive_int63(
+                        association[1],
+                        field="replayed artist tag_id",
+                    )
+                    for association, (_position, source) in zip(
+                        association_rows,
+                        expected_tags,
+                        strict=True,
+                    )
+                    if source._namespace_bytes == _ARTIST_NAMESPACE
+                }
+            )
+        )
+        if expected_artist_ids:
+            artist_rows = connector.fetch_all(
+                "SELECT artist_tag_id FROM catalog_gallery_observation_artists "
+                "WHERE gallery_id = %s AND observation_id = %s "
+                f"AND artist_tag_id IN "
+                f"({_sql_placeholders(len(expected_artist_ids))}) "
+                "ORDER BY artist_tag_id",
+                (
+                    handle.gallery_id,
+                    handle.observation_id,
+                    *expected_artist_ids,
+                ),
+            )
+            if tuple(row[0] for row in artist_rows) != expected_artist_ids:
+                raise GalleryStagingConflictError(
+                    "replayed TAG artist materialization differs"
                 )
         claim_rows = connector.fetch_all(
             "SELECT value_sha256 FROM operational_canonical_value_uploads "
@@ -2663,6 +2870,7 @@ def _persist_normalized_leaf_facts(
     source_entries: Sequence[Any],
     *,
     now: int,
+    file_hash_occurrences: tuple[_FileHashOccurrencePlan, ...],
 ) -> None:
     connector = work.connector
     if prepared.component is GalleryObservationComponent.FILE:
@@ -2732,6 +2940,11 @@ def _persist_normalized_leaf_facts(
                 modified_ns=source.modified_ns.to_bytes(8, "big", signed=True),
                 changed_ns=source.changed_ns.to_bytes(8, "big", signed=True),
             )
+        _persist_file_hash_occurrences(
+            connector,
+            handle,
+            file_hash_occurrences,
+        )
     elif prepared.component is GalleryObservationComponent.TAG:
         pairs = tuple(zip(prepared.page.entries, source_entries, strict=True))
         natural_keys: list[tuple[bytes, bytes]] = []
@@ -2825,6 +3038,37 @@ def _persist_normalized_leaf_facts(
                     term.tag_id,
                 ),
             )
+            if source._namespace_bytes == _ARTIST_NAMESPACE:
+                _insert_or_require(
+                    connector,
+                    label="gallery observation artist",
+                    select_sql=(
+                        "SELECT gallery_id, observation_id, artist_tag_id "
+                        "FROM catalog_gallery_observation_artists "
+                        "WHERE gallery_id = %s AND observation_id = %s "
+                        "AND artist_tag_id = %s"
+                    ),
+                    select_data=(
+                        handle.gallery_id,
+                        handle.observation_id,
+                        term.tag_id,
+                    ),
+                    insert_sql=(
+                        "INSERT INTO catalog_gallery_observation_artists "
+                        "(gallery_id, observation_id, artist_tag_id) "
+                        "VALUES (%s, %s, %s)"
+                    ),
+                    insert_data=(
+                        handle.gallery_id,
+                        handle.observation_id,
+                        term.tag_id,
+                    ),
+                    expected=(
+                        handle.gallery_id,
+                        handle.observation_id,
+                        term.tag_id,
+                    ),
+                )
             deleted = connector.execute_affected(
                 "DELETE FROM operational_canonical_value_uploads "
                 "WHERE generation = %s AND value_sha256 = %s",
@@ -2834,6 +3078,42 @@ def _persist_normalized_leaf_facts(
                 raise GalleryStagingConflictError(
                     "tag canonical claim changed before tag-term handoff"
                 )
+
+
+def _persist_file_hash_occurrences(
+    connector: Any,
+    handle: GalleryStagingHandle,
+    plans: tuple[_FileHashOccurrencePlan, ...],
+) -> None:
+    for plan in plans:
+        key = (
+            handle.gallery_id,
+            handle.observation_id,
+            plan.file_sha256,
+        )
+        if plan.prior_count == 0:
+            connector.execute(
+                "INSERT INTO catalog_gallery_observation_file_hash_occurrences "
+                "(gallery_id, observation_id, file_sha256, occurrence_count) "
+                "VALUES (%s, %s, %s, %s)",
+                (*key, plan.next_count),
+            )
+            continue
+        affected = connector.execute_affected(
+            "UPDATE catalog_gallery_observation_file_hash_occurrences "
+            "SET occurrence_count = %s WHERE gallery_id = %s "
+            "AND observation_id = %s AND file_sha256 = %s "
+            "AND occurrence_count = %s",
+            (
+                plan.next_count,
+                *key,
+                plan.prior_count,
+            ),
+        )
+        if affected != 1:
+            raise GalleryStagingConflictError(
+                "gallery observation FILE hash occurrence changed before CAS"
+            )
 
 
 def _push_frontier(
@@ -4526,6 +4806,171 @@ def _read_level_zero_checkpoint(
     )
 
 
+def _load_staging_progress(
+    connector: Any,
+    handle: GalleryStagingHandle,
+) -> GalleryStagingProgress:
+    """Read the bounded durable resume state after the claim is authorized."""
+
+    current = _require_handle(handle)
+    components = tuple(
+        _load_component_progress(connector, current, component)
+        for component in (
+            GalleryObservationComponent.FILE,
+            GalleryObservationComponent.DIRECTORY,
+            GalleryObservationComponent.TAG,
+            GalleryObservationComponent.METADATA,
+        )
+    )
+    match = _decode_match_checkpoint(
+        connector.fetch_one(
+            f"SELECT file_cursor_bytes, matched_count, state, updated_at "
+            f"FROM {_MATCH_CHECKPOINT} WHERE staging_id = %s",
+            (current.staging_id,),
+        )
+    )
+    latest_match = connector.fetch_one(
+        f"SELECT r.request_sha256, q.terminal FROM {_MATCH_RECEIPT} AS r "
+        f"JOIN {_MATCH_REQUEST} AS q ON q.request_sha256 = r.request_sha256 "
+        "WHERE r.staging_id = %s",
+        (current.staging_id,),
+    )
+    match_operation: bytes | None = None
+    if latest_match:
+        if len(latest_match) != 2:
+            raise GalleryStagingConflictError(
+                "latest match progress receipt has a bad shape"
+            )
+        request_sha = require_digest32(
+            latest_match[0],
+            field="latest match progress request_sha256",
+        )
+        terminal = _decode_bool(
+            latest_match[1],
+            field_name="latest match progress terminal",
+        )
+        subtype, match_operation = _request_operation_id(
+            _load_request_bytes(connector, request_sha)
+        )
+        if subtype != b"M" or terminal != (match.state == "COMPLETE"):
+            raise GalleryStagingConflictError(
+                "latest match receipt disagrees with its checkpoint"
+            )
+    elif match.matched_count != 0 or match.file_cursor_bytes or match.state != "OPEN":
+        raise GalleryStagingConflictError(
+            "advanced match checkpoint has no latest receipt"
+        )
+    return GalleryStagingProgress(
+        current,
+        components,
+        match.state,
+        match.matched_count,
+        match_operation,
+    )
+
+
+def _load_component_progress(
+    connector: Any,
+    handle: GalleryStagingHandle,
+    component: GalleryObservationComponent,
+) -> _ComponentProgress:
+    checkpoint = _read_level_zero_checkpoint(
+        connector,
+        handle.staging_id,
+        component,
+    )
+    latest = _latest_page_receipt(connector, handle.staging_id, component, 0)
+    if not latest:
+        if checkpoint.cursor != 0 or checkpoint.state != "OPEN":
+            raise GalleryStagingConflictError(
+                f"advanced {component.name} checkpoint has no latest receipt"
+            )
+        return _ComponentProgress(component, 0, "OPEN", None, None, None)
+    if len(latest) != 6:
+        raise GalleryStagingConflictError(
+            f"latest {component.name} progress receipt has a bad shape"
+        )
+    request_sha = require_digest32(
+        latest[0],
+        field=f"latest {component.name} progress request_sha256",
+    )
+    start_cursor = require_int63(
+        latest[1],
+        field=f"latest {component.name} progress start_cursor",
+    )
+    terminal = _decode_bool(
+        latest[2],
+        field_name=f"latest {component.name} progress terminal",
+    )
+    page_sha = require_digest32(
+        latest[3],
+        field=f"latest {component.name} progress page_sha256",
+    )
+    stored = _load_page_descriptor_family(connector, page_sha)
+    if stored is None:
+        raise GalleryStagingConflictError(
+            f"latest {component.name} progress page is missing"
+        )
+    page = stored[1]
+    if (
+        page.component is not component
+        or page.level != 0
+        or start_cursor + page.subtree_item_count != checkpoint.cursor
+        or terminal != (checkpoint.state == "COMPLETE")
+    ):
+        raise GalleryStagingConflictError(
+            f"latest {component.name} receipt disagrees with its checkpoint"
+        )
+    subtype, operation = _request_operation_id(
+        _load_request_bytes(connector, request_sha)
+    )
+    if subtype != b"P":
+        raise GalleryStagingConflictError(
+            f"latest {component.name} request has the wrong subtype"
+        )
+
+    after_name: bytes | None = None
+    after_ordinal: int | None = None
+    if checkpoint.state == "OPEN":
+        if not page.entries:
+            raise GalleryStagingConflictError(
+                f"open {component.name} progress page is empty"
+            )
+        last = page.entries[-1]
+        if component is GalleryObservationComponent.FILE:
+            if not isinstance(last, GalleryObservationFileEntry):
+                raise GalleryStagingConflictError("latest FILE leaf type differs")
+            try:
+                identity = load_file_name_identities(
+                    connector,
+                    file_keys=(last.file_key,),
+                ).get(last.file_key)
+            except CatalogIdentityCollisionError as error:
+                raise GalleryStagingConflictError(str(error)) from error
+            if identity is None:
+                raise GalleryStagingConflictError(
+                    "latest FILE cursor has no sealed name identity"
+                )
+            after_name = identity.name_bytes
+        elif component is GalleryObservationComponent.DIRECTORY:
+            if not isinstance(last, GalleryObservationDirectoryEntry):
+                raise GalleryStagingConflictError("latest DIRECTORY leaf type differs")
+            after_name = last.name_bytes
+        elif component is GalleryObservationComponent.TAG:
+            if not isinstance(last, GalleryObservationTagEntry):
+                raise GalleryStagingConflictError("latest TAG leaf type differs")
+            after_ordinal = last.position
+
+    return _ComponentProgress(
+        component,
+        checkpoint.cursor,
+        checkpoint.state,
+        after_name,
+        after_ordinal,
+        operation,
+    )
+
+
 def _decode_header(row: tuple[Any, ...]) -> _Header:
     if len(row) != 6:
         raise GalleryStagingNotReadyError("staging header is missing")
@@ -4879,26 +5324,6 @@ def _checked_int63_add(left: int, right: int, *, field_name: str) -> int:
     if result > INT63_MAX:
         raise OverflowError(f"{field_name} exceeds signed int63")
     return result
-
-
-def _require_uint64(value: object, *, field: str) -> int:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int)
-        or not 0 <= value < 1 << 64
-    ):
-        raise ValueError(f"{field} must be an unsigned 64-bit integer")
-    return value
-
-
-def _require_int64(value: object, *, field: str) -> int:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int)
-        or not -(1 << 63) <= value < 1 << 63
-    ):
-        raise ValueError(f"{field} must be a signed 64-bit integer")
-    return value
 
 
 def _require_handle(handle: GalleryStagingHandle) -> GalleryStagingHandle:

@@ -221,7 +221,7 @@ lifecycle = "building_only"
 check = "operational_refinement.check_bootstrap_contract_v1"
 hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
 relations = ["revision_allocator", "identity_allocator", "deletion_request_generation", "deletion_request_generation_head"]
-description = "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG identity allocator genesis rows, the real immutable deletion generation-zero empty-queue fact and its singleton head, and the declared absence of all request, event, lease, staging, work, cache, policy, and cleanup facts."
+description = "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG/POLICY identity allocator genesis rows, the real immutable deletion generation-zero empty-queue fact and its singleton head, and the declared absence of all request, event, lease, staging, work, cache, policy, and cleanup facts."
 
 [bootstrap_contract]
 version = 1
@@ -272,6 +272,16 @@ lifecycle = "building_only"
 relation = "identity_allocator"
 value = [{ attribute = "stream", type = "ascii_enum", text = "TAG" }, { attribute = "next_id", type = "uint64", integer = 1 }, { attribute = "updated_at", type = "unix_microseconds", integer = 0 }]
 invariant = "Tag identity zero is outside the namespace; allocate the current positive int63 next_id and advance by exact CAS without auto-increment or deletion reuse."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.identity-allocator.policy.v1"
+columns = ["stream", "next_id", "updated_at"]
+values = ["POLICY", "1", "0"]
+version = 1
+lifecycle = "building_only"
+relation = "identity_allocator"
+value = [{ attribute = "stream", type = "ascii_enum", text = "POLICY" }, { attribute = "next_id", type = "uint64", integer = 1 }, { attribute = "updated_at", type = "unix_microseconds", integer = 0 }]
+invariant = "Policy surrogate zero is outside the shared policy namespace; every numeric immutable policy family allocates the current positive int63 next_id and advances by exact CAS without hash-derived IDs, auto-increment, MAX scans, or deletion reuse."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.deletion-request-generation.genesis.v1"
@@ -4300,8 +4310,8 @@ sqlite_expression = "next_id >= 1 AND next_id <= 9223372036854775807"
 mariadb_expression = "next_id >= 1 AND next_id <= 9223372036854775807"
 [[relation.check]]
 name = "ck_identity_allocator_stream"
-sqlite_expression = "stream IN ('GALLERY', 'TAG')"
-mariadb_expression = "stream IN ('GALLERY', 'TAG')"
+sqlite_expression = "stream IN ('GALLERY', 'TAG', 'POLICY')"
+mariadb_expression = "stream IN ('GALLERY', 'TAG', 'POLICY')"
 
 [[relation]]
 name = "gallery_observation_allocator"
@@ -5594,7 +5604,7 @@ referenced_relation = "publication_commit_source_revision"
 referenced_attributes = ["source_revision"]
 [[relation.required_index]]
 name = "ix_gallery_redownload_state_fk_2"
-attributes = ["through_source_revision"]
+attributes = ["through_source_revision", "redownload_at", "gallery_id"]
 unique = false
 [[relation.check]]
 name = "ck_gallery_redownload_state_redownload_at_nonneg"

@@ -7,14 +7,19 @@ __all__ = [
     "DeletionRequestReceipt",
     "DownloadRequestCorruptionError",
     "EnsureDownloadRequestReceipt",
+    "PendingRedownloadCursor",
+    "PendingRedownloadCursorError",
+    "PendingRedownloadPage",
     "QueueIdentityConflictError",
     "VNextQueueRepository",
     "VNextDownloadRequest",
 ]
 
 import secrets
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from .domain import DownloadCandidateState
 from .vnext_domains import (
     INT63_MAX,
     require_int63,
@@ -35,6 +40,10 @@ class DeletionGenerationExhaustedError(OverflowError):
 
 class DownloadRequestCorruptionError(RuntimeError):
     """The durable download queue violates its declared BCNF row shape."""
+
+
+class PendingRedownloadCursorError(ValueError):
+    """A pending-redownload cursor no longer names exact durable authority."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +85,120 @@ class EnsureDownloadRequestReceipt:
             raise TypeError("ensure receipt request must be VNextDownloadRequest")
         if not isinstance(self.created, bool):
             raise TypeError("ensure receipt created must be bool")
+
+
+@dataclass(frozen=True, order=True, slots=True)
+class PendingRedownloadCursor:
+    """One exact, snapshot-pinned keyset position in the redownload schedule."""
+
+    catalog_revision: int
+    source_revision: int
+    cutoff_at: int
+    redownload_at: int
+    gallery_id: int
+
+    def __post_init__(self) -> None:
+        require_positive_int63(
+            self.catalog_revision,
+            field="pending-redownload cursor catalog_revision",
+        )
+        require_positive_int63(
+            self.source_revision,
+            field="pending-redownload cursor source_revision",
+        )
+        cutoff = require_int63(
+            self.cutoff_at,
+            field="pending-redownload cursor cutoff_at",
+        )
+        scheduled = require_int63(
+            self.redownload_at,
+            field="pending-redownload cursor redownload_at",
+        )
+        require_positive_int63(
+            self.gallery_id,
+            field="pending-redownload cursor gallery_id",
+        )
+        if scheduled > cutoff:
+            raise ValueError(
+                "pending-redownload cursor cannot advance beyond its cutoff"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class PendingRedownloadPage:
+    """One hard-bounded page from a pinned redownload schedule scan."""
+
+    catalog_revision: int
+    source_revision: int
+    cutoff_at: int
+    gids: tuple[int, ...]
+    next_cursor: PendingRedownloadCursor | None
+    terminal: bool
+
+    def __post_init__(self) -> None:
+        catalog_revision = require_int63(
+            self.catalog_revision,
+            field="pending-redownload page catalog_revision",
+        )
+        source_revision = require_int63(
+            self.source_revision,
+            field="pending-redownload page source_revision",
+        )
+        cutoff = require_int63(
+            self.cutoff_at,
+            field="pending-redownload page cutoff_at",
+        )
+        if not isinstance(self.gids, tuple):
+            raise TypeError("pending-redownload page gids must be an exact tuple")
+        if len(self.gids) > 256:
+            raise ValueError(
+                "pending-redownload page cannot contain more than 256 GIDs"
+            )
+        validated_gids = tuple(
+            require_positive_int63(gid, field="pending-redownload page gid")
+            for gid in self.gids
+        )
+        if len(set(validated_gids)) != len(validated_gids):
+            raise ValueError("pending-redownload page GIDs must be unique")
+        if type(self.terminal) is not bool:
+            raise TypeError("pending-redownload page terminal must be bool")
+        if self.terminal != (self.next_cursor is None):
+            raise ValueError(
+                "pending-redownload page terminal state and cursor disagree"
+            )
+        if (catalog_revision == 0) != (source_revision == 0):
+            raise ValueError(
+                "pending-redownload page revisions must both be zero or positive"
+            )
+        if catalog_revision == 0:
+            if self.gids or not self.terminal:
+                raise ValueError(
+                    "a headless pending-redownload page must be empty and terminal"
+                )
+            return
+        require_positive_int63(
+            catalog_revision,
+            field="pending-redownload page catalog_revision",
+        )
+        require_positive_int63(
+            source_revision,
+            field="pending-redownload page source_revision",
+        )
+        if self.next_cursor is not None:
+            if not isinstance(self.next_cursor, PendingRedownloadCursor):
+                raise TypeError(
+                    "pending-redownload page next_cursor must be "
+                    "PendingRedownloadCursor"
+                )
+            self.next_cursor.__post_init__()
+            if (
+                self.next_cursor.catalog_revision != catalog_revision
+                or self.next_cursor.source_revision != source_revision
+                or self.next_cursor.cutoff_at != cutoff
+            ):
+                raise ValueError(
+                    "pending-redownload page cursor does not share its snapshot pin"
+                )
 
 
 class VNextQueueRepository:
@@ -233,6 +356,214 @@ class VNextQueueRepository:
         return result
 
     @staticmethod
+    def get_candidate_states(
+        work: VNextUnitOfWork,
+        *,
+        gids: Sequence[int],
+        now: int,
+    ) -> Mapping[int, DownloadCandidateState]:
+        """Read one bounded set of current download decisions.
+
+        ``redownload_required`` is derived only from the current sealed
+        publication's durable, source-revision-scoped redownload authority. It
+        is never inferred from mutable source observations or catalog payload
+        joins.
+        """
+
+        ordered_gids = tuple(
+            dict.fromkeys(
+                require_positive_int63(gid, field="download candidate gid")
+                for gid in gids
+            )
+        )
+        if len(ordered_gids) > 256:
+            raise ValueError("download candidate lookup must not exceed 256 GIDs")
+        if not ordered_gids:
+            return {}
+        timestamp = require_int63(now, field="download candidate now")
+        placeholders = _sql_placeholders(len(ordered_gids))
+        catalog_rows = work.connector.fetch_all(
+            "SELECT identity.gid, redownload.gallery_id, removed.gid, deletion.gid "
+            "FROM catalog_publication_commit_head_receipts AS head "
+            "JOIN catalog_publication_commit_seals AS commit_seal "
+            "ON commit_seal.receipt_id = head.receipt_id "
+            "JOIN catalog_publication_commit_catalog_revisions AS catalog "
+            "ON catalog.receipt_id = commit_seal.receipt_id "
+            "JOIN catalog_publication_commit_source_revisions AS source "
+            "ON source.receipt_id = commit_seal.receipt_id "
+            "JOIN catalog_publication_seals AS publication "
+            "ON publication.revision = catalog.revision "
+            "JOIN catalog_publication_identities AS identity "
+            "ON identity.publication_key = publication.publication_key "
+            "JOIN catalog_publication_gallery_ids AS gallery "
+            "ON gallery.revision = publication.revision "
+            "AND gallery.publication_key = publication.publication_key "
+            "LEFT JOIN operational_gallery_redownload_states AS redownload "
+            "ON redownload.gallery_id = gallery.gallery_id "
+            "AND redownload.through_source_revision = source.source_revision "
+            "AND redownload.redownload_at <= %s "
+            "LEFT JOIN operational_removed_gids AS removed "
+            "ON removed.gid = identity.gid "
+            "LEFT JOIN operational_deletion_request_heads AS deletion "
+            "ON deletion.gid = identity.gid "
+            "WHERE head.channel = %s "
+            f"AND identity.gid IN ({placeholders}) ORDER BY identity.gid",
+            (timestamp, b"default", *ordered_gids),
+        )
+        cataloged: set[int] = set()
+        redownload_required: set[int] = set()
+        requested_rows = work.connector.fetch_all(
+            "SELECT gid FROM operational_download_requests "
+            f"WHERE gid IN ({placeholders}) ORDER BY gid",
+            ordered_gids,
+        )
+        requested = _validated_gid_rows(
+            requested_rows,
+            expected=frozenset(ordered_gids),
+            authority="download request candidate",
+        )
+        expected = frozenset(ordered_gids)
+        for row in catalog_rows:
+            if len(row) != 4:
+                raise DownloadRequestCorruptionError(
+                    "download catalog candidate row has an invalid shape"
+                )
+            try:
+                gid = require_positive_int63(row[0], field="catalog candidate gid")
+            except (TypeError, ValueError) as error:
+                raise DownloadRequestCorruptionError(
+                    "download catalog candidate row violates its physical domain"
+                ) from error
+            if gid not in expected or gid in cataloged:
+                raise DownloadRequestCorruptionError(
+                    "download catalog candidate row is duplicate or unrequested"
+                )
+            cataloged.add(gid)
+            if row[1] is not None:
+                try:
+                    require_positive_int63(
+                        row[1], field="candidate redownload gallery_id"
+                    )
+                except (TypeError, ValueError) as error:
+                    raise DownloadRequestCorruptionError(
+                        "download redownload candidate violates its physical domain"
+                    ) from error
+                if row[2] is None and row[3] is None:
+                    redownload_required.add(gid)
+
+        return {
+            gid: DownloadCandidateState(
+                gid=gid,
+                cataloged=gid in cataloged,
+                redownload_required=gid in redownload_required,
+                requested=gid in requested,
+            )
+            for gid in ordered_gids
+        }
+
+    @staticmethod
+    def list_pending_redownloads(
+        work: VNextUnitOfWork,
+        *,
+        cursor: PendingRedownloadCursor | None = None,
+        limit: int = 256,
+        now: int | None = None,
+    ) -> PendingRedownloadPage:
+        """Scan one bounded keyset page of durable due-redownload authority.
+
+        The initial page pins the current sealed default-channel publication
+        and a caller-supplied time cutoff. Continuations carry those exact pins
+        and advance by the last *scanned* schedule row, including rows that do
+        not map to an eligible external GID.
+        """
+
+        page_limit = require_positive_int63(limit, field="pending-redownload limit")
+        if page_limit > 256:
+            raise ValueError("pending-redownload page limit must not exceed 256")
+        if cursor is None:
+            if now is None:
+                raise TypeError("initial pending-redownload page requires now")
+            cutoff = require_int63(now, field="pending-redownload cutoff_at")
+            pin = _current_publication_pin(work)
+            if pin is None:
+                return PendingRedownloadPage(0, 0, cutoff, (), None, True)
+            catalog_revision, source_revision = pin
+            after: tuple[int, int] | None = None
+        else:
+            exact_cursor = _require_pending_redownload_cursor(cursor)
+            cutoff = exact_cursor.cutoff_at
+            if now is not None:
+                supplied_cutoff = require_int63(
+                    now,
+                    field="pending-redownload continuation cutoff_at",
+                )
+                if supplied_cutoff != cutoff:
+                    raise PendingRedownloadCursorError(
+                        "continuation cutoff differs from its pinned cursor"
+                    )
+            _validate_pending_redownload_cursor(work, exact_cursor)
+            catalog_revision = exact_cursor.catalog_revision
+            source_revision = exact_cursor.source_revision
+            after = (exact_cursor.redownload_at, exact_cursor.gallery_id)
+
+        scan_limit = page_limit + 1
+        query, parameters = _pending_redownload_scan_query(
+            source_revision=source_revision,
+            cutoff=cutoff,
+            catalog_revision=catalog_revision,
+            scan_limit=scan_limit,
+            after=after,
+        )
+        rows = work.connector.fetch_all(query, parameters)
+        if len(rows) > scan_limit:
+            raise DownloadRequestCorruptionError(
+                "pending-redownload scan exceeded its physical hard limit"
+            )
+
+        parsed = tuple(
+            _pending_redownload_row(
+                row,
+                after=after,
+                cutoff=cutoff,
+            )
+            for row in rows
+        )
+        coordinates = tuple((row[0], row[1]) for row in parsed)
+        if any(left >= right for left, right in zip(coordinates, coordinates[1:])):
+            raise DownloadRequestCorruptionError(
+                "pending-redownload scan is not in strict keyset order"
+            )
+        window = parsed[:page_limit]
+        gids = tuple(
+            gid
+            for _redownload_at, _gallery_id, gid, removed, deleting in window
+            if gid is not None and removed is None and deleting is None
+        )
+        if len(set(gids)) != len(gids):
+            raise DownloadRequestCorruptionError(
+                "pending-redownload page contains duplicate external GIDs"
+            )
+        terminal = len(parsed) <= page_limit
+        next_cursor = None
+        if not terminal:
+            redownload_at, gallery_id, _gid, _removed, _deleting = window[-1]
+            next_cursor = PendingRedownloadCursor(
+                catalog_revision,
+                source_revision,
+                cutoff,
+                redownload_at,
+                gallery_id,
+            )
+        return PendingRedownloadPage(
+            catalog_revision,
+            source_revision,
+            cutoff,
+            gids,
+            next_cursor,
+            terminal,
+        )
+
+    @staticmethod
     def complete_download_request(
         work: VNextUnitOfWork,
         *,
@@ -252,6 +583,64 @@ class VNextQueueRepository:
             authority=f"download request completion for gid {exact.gid}",
         )
         return True
+
+    @staticmethod
+    def complete_missing_download_request(
+        work: VNextUnitOfWork,
+        *,
+        request: VNextDownloadRequest,
+        missing_gid: int,
+    ) -> bool:
+        """Complete an exact request and publish its confirmed-missing marker."""
+
+        exact = _require_download_request(request)
+        missing = require_positive_int63(
+            missing_gid,
+            field="confirmed-missing gid",
+        )
+        if exact.gid != missing:
+            raise ValueError(
+                f"download request GID {exact.gid} does not match missing GID {missing}"
+            )
+        if not VNextQueueRepository.complete_download_request(work, request=exact):
+            return False
+        current = _lock_removed_gid(work, missing)
+        if not current:
+            work.connector.execute(
+                "INSERT INTO operational_removed_gids (gid) VALUES (%s)",
+                (missing,),
+            )
+        return True
+
+    @staticmethod
+    def record_galleries_found(
+        work: VNextUnitOfWork,
+        *,
+        gids: Sequence[int],
+    ) -> int:
+        """Clear stale confirmed-missing markers for one bounded GID set."""
+
+        gallery_ids = tuple(
+            sorted(
+                {require_positive_int63(gid, field="found gallery gid") for gid in gids}
+            )
+        )
+        if len(gallery_ids) > 256:
+            raise ValueError("found gallery update must not exceed 256 GIDs")
+        deleted = 0
+        for gid in gallery_ids:
+            if not _lock_removed_gid(work, gid):
+                continue
+            affected = work.connector.execute_affected(
+                "DELETE FROM operational_removed_gids WHERE gid = %s",
+                (gid,),
+            )
+            if affected != 1:
+                raise DownloadRequestCorruptionError(
+                    "confirmed-missing marker changed after its exact lock"
+                )
+            deleted += 1
+        return deleted
 
     @staticmethod
     def request_deletion(
@@ -410,6 +799,249 @@ def _download_url(value: object) -> str:
     return require_text(value, field="download request URL")
 
 
+def _sql_placeholders(count: int) -> str:
+    if count <= 0:
+        raise ValueError("SQL placeholder count must be positive")
+    return ", ".join("%s" for _ in range(count))
+
+
+def _validated_gid_rows(
+    rows: Sequence[tuple[object, ...]],
+    *,
+    expected: frozenset[int],
+    authority: str,
+) -> frozenset[int]:
+    gids: set[int] = set()
+    for row in rows:
+        if len(row) != 1:
+            raise DownloadRequestCorruptionError(
+                f"{authority} row has an invalid shape"
+            )
+        try:
+            gid = require_positive_int63(row[0], field=f"{authority} gid")
+        except (TypeError, ValueError) as error:
+            raise DownloadRequestCorruptionError(
+                f"{authority} row violates its physical domain"
+            ) from error
+        if gid not in expected or gid in gids:
+            raise DownloadRequestCorruptionError(
+                f"{authority} row is duplicate or unrequested"
+            )
+        gids.add(gid)
+    return frozenset(gids)
+
+
+def _pending_redownload_scan_query(
+    *,
+    source_revision: int,
+    cutoff: int,
+    catalog_revision: int,
+    scan_limit: int,
+    after: tuple[int, int] | None,
+) -> tuple[str, tuple[object, ...]]:
+    """Build the shared bounded schedule query used by runtime and plan tests."""
+
+    if after is None:
+        keyset_predicate = ""
+        parameters: tuple[object, ...] = (
+            source_revision,
+            cutoff,
+            scan_limit,
+            catalog_revision,
+        )
+    else:
+        keyset_predicate = (
+            "AND (redownload_at > %s OR " "(redownload_at = %s AND gallery_id > %s)) "
+        )
+        parameters = (
+            source_revision,
+            cutoff,
+            after[0],
+            after[0],
+            after[1],
+            scan_limit,
+            catalog_revision,
+        )
+    return (
+        "SELECT scheduled.redownload_at, scheduled.gallery_id, "
+        "identity.gid, removed.gid, deletion.gid FROM ("
+        "SELECT redownload_at, gallery_id "
+        "FROM operational_gallery_redownload_states "
+        "WHERE through_source_revision = %s AND redownload_at <= %s "
+        f"{keyset_predicate}"
+        "ORDER BY redownload_at, gallery_id LIMIT %s"
+        ") AS scheduled "
+        "LEFT JOIN catalog_publication_gallery_ids AS gallery "
+        "ON gallery.revision = %s "
+        "AND gallery.gallery_id = scheduled.gallery_id "
+        "LEFT JOIN catalog_publication_seals AS publication "
+        "ON publication.revision = gallery.revision "
+        "AND publication.publication_key = gallery.publication_key "
+        "LEFT JOIN catalog_publication_identities AS identity "
+        "ON identity.publication_key = publication.publication_key "
+        "LEFT JOIN operational_removed_gids AS removed "
+        "ON removed.gid = identity.gid "
+        "LEFT JOIN operational_deletion_request_heads AS deletion "
+        "ON deletion.gid = identity.gid "
+        "ORDER BY scheduled.redownload_at, scheduled.gallery_id",
+        parameters,
+    )
+
+
+def _current_publication_pin(
+    work: VNextUnitOfWork,
+) -> tuple[int, int] | None:
+    rows = work.connector.fetch_all(
+        "SELECT catalog.revision, source.source_revision "
+        "FROM catalog_publication_commit_head_receipts AS head "
+        "JOIN catalog_publication_commit_seals AS commit_seal "
+        "ON commit_seal.receipt_id = head.receipt_id "
+        "JOIN catalog_publication_commit_catalog_revisions AS catalog "
+        "ON catalog.receipt_id = commit_seal.receipt_id "
+        "JOIN catalog_publication_commit_source_revisions AS source "
+        "ON source.receipt_id = commit_seal.receipt_id "
+        "WHERE head.channel = %s",
+        (b"default",),
+    )
+    if not rows:
+        return None
+    if len(rows) != 1 or len(rows[0]) != 2:
+        raise DownloadRequestCorruptionError(
+            "current publication pin has an invalid cardinality or shape"
+        )
+    try:
+        return (
+            require_positive_int63(
+                rows[0][0],
+                field="current publication catalog_revision",
+            ),
+            require_positive_int63(
+                rows[0][1],
+                field="current publication source_revision",
+            ),
+        )
+    except (TypeError, ValueError) as error:
+        raise DownloadRequestCorruptionError(
+            "current publication pin violates its physical domain"
+        ) from error
+
+
+def _require_pending_redownload_cursor(value: object) -> PendingRedownloadCursor:
+    if not isinstance(value, PendingRedownloadCursor):
+        raise TypeError("cursor must be PendingRedownloadCursor")
+    # Frozen dataclasses remain forgeable through ``object.__setattr__``.
+    value.__post_init__()
+    return value
+
+
+def _validate_pending_redownload_cursor(
+    work: VNextUnitOfWork,
+    cursor: PendingRedownloadCursor,
+) -> None:
+    pin_rows = work.connector.fetch_all(
+        "SELECT commit_seal.receipt_id "
+        "FROM catalog_publication_commit_seals AS commit_seal "
+        "JOIN catalog_publication_commit_catalog_revisions AS catalog "
+        "ON catalog.receipt_id = commit_seal.receipt_id "
+        "JOIN catalog_publication_commit_source_revisions AS source "
+        "ON source.receipt_id = commit_seal.receipt_id "
+        "WHERE catalog.revision = %s AND source.source_revision = %s",
+        (cursor.catalog_revision, cursor.source_revision),
+    )
+    if len(pin_rows) != 1 or len(pin_rows[0]) != 1:
+        raise PendingRedownloadCursorError(
+            "cursor does not name one exact sealed publication commit"
+        )
+    try:
+        require_uuid16(
+            pin_rows[0][0],
+            field="pending-redownload cursor publication receipt",
+        )
+    except (TypeError, ValueError) as error:
+        raise DownloadRequestCorruptionError(
+            "pending-redownload publication receipt violates its physical domain"
+        ) from error
+    coordinate_rows = work.connector.fetch_all(
+        "SELECT gallery_id FROM operational_gallery_redownload_states "
+        "WHERE gallery_id = %s AND through_source_revision = %s "
+        "AND redownload_at = %s AND redownload_at <= %s",
+        (
+            cursor.gallery_id,
+            cursor.source_revision,
+            cursor.redownload_at,
+            cursor.cutoff_at,
+        ),
+    )
+    if coordinate_rows != [(cursor.gallery_id,)]:
+        raise PendingRedownloadCursorError(
+            "cursor no longer names its exact durable schedule position"
+        )
+
+
+def _pending_redownload_row(
+    row: tuple[object, ...],
+    *,
+    after: tuple[int, int] | None,
+    cutoff: int,
+) -> tuple[int, int, int | None, int | None, int | None]:
+    if len(row) != 5:
+        raise DownloadRequestCorruptionError(
+            "pending-redownload row has an invalid shape"
+        )
+    try:
+        redownload_at = require_int63(
+            row[0],
+            field="pending-redownload row redownload_at",
+        )
+        gallery_id = require_positive_int63(
+            row[1],
+            field="pending-redownload row gallery_id",
+        )
+        gid = (
+            None
+            if row[2] is None
+            else require_positive_int63(row[2], field="pending-redownload row gid")
+        )
+        removed = (
+            None
+            if row[3] is None
+            else require_positive_int63(
+                row[3],
+                field="pending-redownload row removed gid",
+            )
+        )
+        deleting = (
+            None
+            if row[4] is None
+            else require_positive_int63(
+                row[4],
+                field="pending-redownload row deletion gid",
+            )
+        )
+    except (TypeError, ValueError) as error:
+        raise DownloadRequestCorruptionError(
+            "pending-redownload row violates its physical domain"
+        ) from error
+    coordinate = (redownload_at, gallery_id)
+    if redownload_at > cutoff or (after is not None and coordinate <= after):
+        raise DownloadRequestCorruptionError(
+            "pending-redownload row lies outside its pinned keyset window"
+        )
+    if gid is None and (removed is not None or deleting is not None):
+        raise DownloadRequestCorruptionError(
+            "pending-redownload eligibility marker lacks an external GID"
+        )
+    if removed is not None and removed != gid:
+        raise DownloadRequestCorruptionError(
+            "pending-redownload removed marker names a different GID"
+        )
+    if deleting is not None and deleting != gid:
+        raise DownloadRequestCorruptionError(
+            "pending-redownload deletion marker names a different GID"
+        )
+    return redownload_at, gallery_id, gid, removed, deleting
+
+
 def _require_download_request(value: object) -> VNextDownloadRequest:
     if not isinstance(value, VNextDownloadRequest):
         raise TypeError("request must be VNextDownloadRequest")
@@ -441,6 +1073,18 @@ def _lock_download_token(
         "SELECT gid, url, requested_at "
         "FROM operational_download_requests WHERE request_token = %s",
         (token,),
+    )
+
+
+def _lock_removed_gid(
+    work: VNextUnitOfWork,
+    gid: int,
+) -> tuple[object, ...]:
+    return work.lock_row(
+        LockRank.CHILD,
+        encode_lock_key(2, gid),
+        "SELECT gid FROM operational_removed_gids WHERE gid = %s",
+        (gid,),
     )
 
 

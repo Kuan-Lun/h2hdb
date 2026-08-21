@@ -39,6 +39,7 @@ __all__ = [
     "CatalogSourcePage",
     "CatalogSourceRevision",
     "CatalogSubject",
+    "DirectoryObservation",
     "CatalogPreparedArtifact",
     "CatalogProjectionArtifactCursor",
     "CatalogProjectionArtifactPage",
@@ -77,21 +78,70 @@ __all__ = [
     "CatalogSourceManifestPage",
     "CatalogSourceManifestRow",
     "DownloadCandidateState",
+    "FileContentReceipt",
+    "FileObservation",
     "GallerySourceFile",
     "GallerySourceRecord",
     "GalleryTag",
+    "ArtifactReleaseStorageEvidence",
+    "ArtifactStorageEvidence",
     "FileHashCacheEntry",
     "FileHashCacheKey",
     "SchemaCompatibility",
+    "TagObservation",
+    "VNextArtifactProducer",
+    "VNextArtifactStoragePolicy",
+    "VNextArtifactZipPolicy",
+    "VNextCurrentProjectionItem",
+    "VNextCurrentProjectionPage",
+    "VNextIngestAdvanceResult",
+    "VNextIngestCompletionReceipt",
+    "VNextIngestGalleryObservation",
+    "VNextIngestCursor",
+    "VNextIngestPage",
+    "VNextIngestPhase",
+    "VNextIngestPolicy",
+    "VNextIngestSession",
+    "VNextIngestSourceReceipt",
+    "VNextResolvedIngestPolicy",
 ]
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from hashlib import sha256
 from pathlib import Path
+from unicodedata import unidata_version
 from uuid import UUID
 
+from .vnext_domains import (
+    require_ascii_bytes,
+    require_bounded_bytes,
+    require_digest32,
+    require_int63,
+    require_positive_int63,
+    require_uint32,
+)
+from .vnext_identity import (
+    GalleryObservationDirectoryFileType,
+    GalleryObservationMetadata,
+    artifact_locator_components,
+    artifact_policy_digest,
+    artifact_producer_fingerprint_sha256,
+    canonical_value_digest,
+    encode_source_relative_locator,
+    publication_key,
+    validate_file_name,
+    validate_namespace,
+)
+
 CANONICAL_SOURCE_MANIFEST_VERSION = 1
+
+_FILE_CONTENT_RECEIPT_TOKEN = object()
+_TAG_VALUE_DOMAIN = "tag_value_utf8_v1"
+
+VNextIngestCursor = tuple[str, ...] | bytes | int
 
 
 def _validate_sha256(value: str, *, label: str) -> None:
@@ -1804,3 +1854,701 @@ class SchemaCompatibility:
     database_version: int
     minimum_supported: int
     maximum_supported: int
+
+
+def _require_uint64(value: object, *, field_name: str) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 0 <= value < 1 << 64
+    ):
+        raise ValueError(f"{field_name} must be an unsigned 64-bit integer")
+    return value
+
+
+def _require_int64(value: object, *, field_name: str) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not -(1 << 63) <= value < 1 << 63
+    ):
+        raise ValueError(f"{field_name} must be a signed 64-bit integer")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class FileContentReceipt:
+    """Exact-EOF content digest and size derived only from actual byte parts."""
+
+    file_sha256: bytes
+    size_bytes: int
+    _constructor_token: object = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self._constructor_token is not _FILE_CONTENT_RECEIPT_TOKEN:
+            raise TypeError("use FileContentReceipt.from_parts")
+        require_digest32(self.file_sha256, field="file_sha256")
+        require_int63(self.size_bytes, field="size_bytes")
+
+    @classmethod
+    def from_parts(cls, parts: Iterable[bytes]) -> FileContentReceipt:
+        digest = sha256()
+        size = 0
+        for part in parts:
+            exact = require_bounded_bytes(
+                part,
+                field="file content part",
+                maximum=(1 << 63) - 1,
+            )
+            size += len(exact)
+            if size > (1 << 63) - 1:
+                raise OverflowError("file content exceeds signed int63 bytes")
+            digest.update(exact)
+        return cls(digest.digest(), size, _FILE_CONTENT_RECEIPT_TOKEN)
+
+
+@dataclass(frozen=True, slots=True)
+class FileObservation:
+    """One source FILE fact with a content-derived receipt."""
+
+    name_bytes: bytes
+    content: FileContentReceipt
+    device: int
+    inode: int
+    modified_ns: int
+    changed_ns: int
+
+    def __post_init__(self) -> None:
+        validate_file_name(self.name_bytes)
+        if not isinstance(self.content, FileContentReceipt):
+            raise TypeError("content must be a FileContentReceipt from exact bytes")
+        self.content.__post_init__()
+        _require_uint64(self.device, field_name="device")
+        _require_uint64(self.inode, field_name="inode")
+        _require_int64(self.modified_ns, field_name="modified_ns")
+        _require_int64(self.changed_ns, field_name="changed_ns")
+
+
+@dataclass(frozen=True, slots=True)
+class DirectoryObservation:
+    """One no-follow direct-child DIRECTORY fact."""
+
+    name_bytes: bytes
+    size_bytes: int
+    device: int
+    inode: int
+    modified_ns: int
+    changed_ns: int
+    file_type: GalleryObservationDirectoryFileType
+
+    def __post_init__(self) -> None:
+        validate_file_name(self.name_bytes)
+        require_int63(self.size_bytes, field="size_bytes")
+        _require_uint64(self.device, field_name="device")
+        _require_uint64(self.inode, field_name="inode")
+        _require_int64(self.modified_ns, field_name="modified_ns")
+        _require_int64(self.changed_ns, field_name="changed_ns")
+        if not isinstance(self.file_type, GalleryObservationDirectoryFileType):
+            raise TypeError("file_type must be GalleryObservationDirectoryFileType")
+
+
+@dataclass(frozen=True, slots=True)
+class TagObservation:
+    """One exact source tag; its canonical bytes and digest are derived."""
+
+    namespace: str
+    value: str
+    _namespace_bytes: bytes = field(init=False, repr=False, compare=False)
+    _value_bytes: bytes = field(init=False, repr=False, compare=False)
+    _value_sha256: bytes = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        namespace = validate_namespace(self.namespace)
+        if not isinstance(self.value, str):
+            raise TypeError("tag value must be str")
+        value = self.value.encode("utf-8", errors="strict")
+        require_bounded_bytes(
+            value,
+            field="tag value UTF-8",
+            maximum=65_536,
+        )
+        object.__setattr__(self, "_namespace_bytes", namespace)
+        object.__setattr__(self, "_value_bytes", value)
+        object.__setattr__(
+            self,
+            "_value_sha256",
+            canonical_value_digest(_TAG_VALUE_DOMAIN, value),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactStorageEvidence:
+    """Untrusted storage-adapter acknowledgement."""
+
+    stored: bool
+
+    def __post_init__(self) -> None:
+        if type(self.stored) is not bool:
+            raise TypeError("artifact storage acknowledgement must be bool")
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactReleaseStorageEvidence:
+    """Untrusted storage-adapter tombstone acknowledgement."""
+
+    released: bool
+
+    def __post_init__(self) -> None:
+        if type(self.released) is not bool:
+            raise TypeError("artifact release acknowledgement must be bool")
+
+
+@dataclass(frozen=True, slots=True)
+class VNextCurrentProjectionItem:
+    """Neutral immutable facts for one current content-addressed artifact."""
+
+    publication_key: bytes
+    gid: int
+    source_gallery_name: str
+    upload_time: int
+    artifact_locator_components: tuple[str, ...]
+    artifact_sha256: bytes
+    size_bytes: int
+
+    def __post_init__(self) -> None:
+        key = require_digest32(
+            self.publication_key,
+            field="current projection publication_key",
+        )
+        gid = require_positive_int63(self.gid, field="current projection gid")
+        if publication_key(gid) != key:
+            raise ValueError(
+                "current projection publication_key disagrees with its GID"
+            )
+        if not isinstance(self.source_gallery_name, str):
+            raise TypeError("current projection source_gallery_name must be str")
+        source_name = self.source_gallery_name.encode("utf-8", errors="strict")
+        require_bounded_bytes(
+            source_name,
+            field="current projection source_gallery_name UTF-8",
+            minimum=1,
+            maximum=255,
+        )
+        if b"\x00" in source_name:
+            raise ValueError("current projection source_gallery_name contains NUL")
+        require_int63(self.upload_time, field="current projection upload_time")
+        artifact = require_digest32(
+            self.artifact_sha256,
+            field="current projection artifact_sha256",
+        )
+        if not isinstance(
+            self.artifact_locator_components, tuple
+        ) or self.artifact_locator_components != artifact_locator_components(artifact):
+            raise ValueError(
+                "current projection artifact locator is not content-addressed"
+            )
+        size = require_int63(self.size_bytes, field="current projection size_bytes")
+        if size < 0:
+            raise ValueError("current projection size_bytes must be non-negative")
+
+
+@dataclass(frozen=True, slots=True)
+class VNextCurrentProjectionPage:
+    """One bounded keyset page pinned to an immutable publication receipt."""
+
+    receipt_id: bytes
+    catalog_revision: int
+    items: tuple[VNextCurrentProjectionItem, ...]
+    next_cursor: bytes | None
+    terminal: bool
+
+    def __post_init__(self) -> None:
+        require_bounded_bytes(
+            self.receipt_id,
+            field="current projection receipt_id",
+            minimum=16,
+            maximum=16,
+        )
+        require_positive_int63(
+            self.catalog_revision,
+            field="current projection catalog_revision",
+        )
+        if not isinstance(self.items, tuple):
+            raise TypeError("current projection items must be an exact tuple")
+        if len(self.items) > 128:
+            raise ValueError("current projection page cannot exceed 128 items")
+        keys: list[bytes] = []
+        for item in self.items:
+            if not isinstance(item, VNextCurrentProjectionItem):
+                raise TypeError("current projection page contains a foreign item")
+            item.__post_init__()
+            keys.append(item.publication_key)
+        if keys != sorted(set(keys)):
+            raise ValueError(
+                "current projection publication keys must be strictly ordered"
+            )
+        if type(self.terminal) is not bool:
+            raise TypeError("current projection terminal must be bool")
+        if not keys:
+            if not self.terminal or self.next_cursor is not None:
+                raise ValueError("an empty current projection page must be terminal")
+            return
+        cursor = require_digest32(
+            self.next_cursor,
+            field="current projection next_cursor",
+        )
+        if self.terminal or cursor != keys[-1]:
+            raise ValueError(
+                "a nonempty current projection page must advance its exact cursor"
+            )
+
+
+def _require_positive_uint32(value: object, *, field_name: str) -> int:
+    result = require_uint32(value, field=field_name)
+    if result == 0:
+        raise ValueError(f"{field_name} must be positive")
+    return result
+
+
+@dataclass(frozen=True, slots=True)
+class VNextArtifactProducer:
+    """Natural identity of the executable artifact producer."""
+
+    writer_id: bytes
+    python_abi: bytes
+    pillow_build: bytes
+    libjpeg_build: bytes
+    zlib_build: bytes
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "writer_id",
+            "python_abi",
+            "pillow_build",
+            "libjpeg_build",
+            "zlib_build",
+        ):
+            require_bounded_bytes(
+                getattr(self, field_name),
+                field=f"artifact producer {field_name}",
+                minimum=1,
+                maximum=128,
+            )
+
+    @property
+    def fingerprint_sha256(self) -> bytes:
+        return artifact_producer_fingerprint_sha256(
+            self.writer_id,
+            self.python_abi,
+            self.pillow_build,
+            self.libjpeg_build,
+            self.zlib_build,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class VNextArtifactStoragePolicy:
+    """Natural identity of the consumer-owned storage adapter codec."""
+
+    adapter_id: bytes
+    storage_codec_version: int = 1
+    locator_codec_version: int = 1
+    protection_token_codec_version: int = 1
+
+    def __post_init__(self) -> None:
+        require_ascii_bytes(
+            self.adapter_id,
+            field="artifact storage adapter_id",
+            minimum=1,
+            maximum=64,
+        )
+        for field_name in (
+            "storage_codec_version",
+            "locator_codec_version",
+            "protection_token_codec_version",
+        ):
+            _require_positive_uint32(
+                getattr(self, field_name),
+                field_name=f"artifact storage {field_name}",
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class VNextArtifactZipPolicy:
+    """Exact deterministic ZIP-writer facts used by artifact production."""
+
+    zip_codec_version: int = 1
+    compression_method: int = 8
+    compression_level: int = 9
+    dos_date: int = 33
+    dos_time: int = 0
+    unix_mode: int = 33_188
+    general_purpose_flags: int = 2_048
+    create_system: int = 3
+    archive_name_codec_version: int = 1
+    artifact_name_codec_version: int = 1
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "zip_codec_version",
+            "archive_name_codec_version",
+            "artifact_name_codec_version",
+        ):
+            _require_positive_uint32(
+                getattr(self, field_name),
+                field_name=f"artifact ZIP {field_name}",
+            )
+        for field_name in (
+            "compression_method",
+            "compression_level",
+            "dos_date",
+            "dos_time",
+            "unix_mode",
+            "general_purpose_flags",
+            "create_system",
+        ):
+            require_uint32(
+                getattr(self, field_name),
+                field=f"artifact ZIP {field_name}",
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class VNextIngestPolicy:
+    """Complete natural policy facts; callers never select registry IDs."""
+
+    producer: VNextArtifactProducer
+    storage: VNextArtifactStoragePolicy
+    manifest_algorithm_version: int = 1
+    file_order_version: int = 1
+    analysis_algorithm_version: int = 1
+    spam_artist_threshold: int = 1
+    spam_occurrence_threshold: int = 3
+    content_owner_rule_version: int = 1
+    gid_winner_rule_version: int = 1
+    artifact_algorithm_version: int = 1
+    max_image_short_side: int = 2_048
+    zip: VNextArtifactZipPolicy = field(default_factory=VNextArtifactZipPolicy)
+    display_title_algorithm_version: int = 1
+    title_sort_algorithm_version: int = 1
+    unicode_data_version: bytes = unidata_version.encode("ascii")
+    operational_schema_version: int = 1
+    operational_algorithm_version: int = 1
+    operational_max_batch_rows: int = 128
+    artifacts_required: bool = True
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.producer, VNextArtifactProducer):
+            raise TypeError("producer must be VNextArtifactProducer")
+        if not isinstance(self.storage, VNextArtifactStoragePolicy):
+            raise TypeError("storage must be VNextArtifactStoragePolicy")
+        if not isinstance(self.zip, VNextArtifactZipPolicy):
+            raise TypeError("zip must be VNextArtifactZipPolicy")
+        self.producer.__post_init__()
+        self.storage.__post_init__()
+        self.zip.__post_init__()
+        for field_name in (
+            "manifest_algorithm_version",
+            "file_order_version",
+            "analysis_algorithm_version",
+            "content_owner_rule_version",
+            "gid_winner_rule_version",
+            "artifact_algorithm_version",
+            "max_image_short_side",
+            "display_title_algorithm_version",
+            "title_sort_algorithm_version",
+            "operational_schema_version",
+            "operational_algorithm_version",
+            "operational_max_batch_rows",
+        ):
+            _require_positive_uint32(
+                getattr(self, field_name),
+                field_name=f"ingest policy {field_name}",
+            )
+        require_int63(
+            self.spam_artist_threshold,
+            field="ingest policy spam_artist_threshold",
+        )
+        require_int63(
+            self.spam_occurrence_threshold,
+            field="ingest policy spam_occurrence_threshold",
+        )
+        require_bounded_bytes(
+            self.unicode_data_version,
+            field="ingest policy unicode_data_version",
+            minimum=1,
+            maximum=32,
+        )
+        if type(self.artifacts_required) is not bool:
+            raise TypeError("artifacts_required must be bool")
+
+    @property
+    def producer_fingerprint_sha256(self) -> bytes:
+        return self.producer.fingerprint_sha256
+
+    @property
+    def artifact_policy_sha256(self) -> bytes:
+        return artifact_policy_digest(
+            self.artifact_algorithm_version,
+            self.max_image_short_side,
+            self.producer_fingerprint_sha256,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class VNextResolvedIngestPolicy:
+    """Registry authority resolved from one complete natural policy."""
+
+    policy: VNextIngestPolicy
+    manifest_policy_id: int
+    analysis_policy_id: int
+    artifact_policy_sha256: bytes
+    producer_fingerprint_sha256: bytes
+    display_title_policy_id: int
+    title_sort_policy_id: int
+    operational_policy_id: int
+    replayed: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.policy, VNextIngestPolicy):
+            raise TypeError("policy must be VNextIngestPolicy")
+        for field_name in (
+            "manifest_policy_id",
+            "analysis_policy_id",
+            "display_title_policy_id",
+            "title_sort_policy_id",
+            "operational_policy_id",
+        ):
+            require_positive_int63(
+                getattr(self, field_name), field=f"resolved {field_name}"
+            )
+        artifact = require_digest32(
+            self.artifact_policy_sha256,
+            field="resolved artifact_policy_sha256",
+        )
+        producer = require_digest32(
+            self.producer_fingerprint_sha256,
+            field="resolved producer_fingerprint_sha256",
+        )
+        if artifact != self.policy.artifact_policy_sha256:
+            raise ValueError("resolved artifact policy differs from natural facts")
+        if producer != self.policy.producer_fingerprint_sha256:
+            raise ValueError("resolved producer differs from natural facts")
+        if type(self.replayed) is not bool:
+            raise TypeError("resolved policy replayed must be bool")
+
+
+@dataclass(frozen=True, slots=True)
+class VNextIngestPage[IngestItemT]:
+    """One bounded, replayable source-observation page."""
+
+    items: tuple[IngestItemT, ...]
+    next_after: VNextIngestCursor | None
+    terminal: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.items, tuple):
+            raise TypeError("ingest page items must be an exact tuple")
+        if len(self.items) > 256:
+            raise ValueError("ingest page cannot contain more than 256 items")
+        if type(self.terminal) is not bool:
+            raise TypeError("ingest page terminal must be bool")
+        if not self.terminal and not self.items:
+            raise ValueError("a nonterminal ingest page cannot be empty")
+        if self.terminal and self.next_after is not None:
+            raise ValueError("a terminal ingest page cannot expose next_after")
+        if not self.terminal and self.next_after is None:
+            raise ValueError("a nonterminal ingest page requires next_after")
+        if isinstance(self.next_after, int):
+            require_int63(self.next_after, field="ingest page next_after")
+        elif isinstance(self.next_after, bytes):
+            require_bounded_bytes(
+                self.next_after,
+                field="ingest page next_after",
+                minimum=1,
+                maximum=255,
+            )
+        elif isinstance(self.next_after, tuple):
+            encode_source_relative_locator(self.next_after)
+        elif self.next_after is not None:
+            raise TypeError("ingest page next_after has an unsupported cursor type")
+
+
+@dataclass(frozen=True, slots=True)
+class VNextIngestGalleryObservation:
+    """Small gallery header used to reopen bounded component page streams."""
+
+    locator_components: tuple[str, ...]
+    metadata: GalleryObservationMetadata
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.locator_components, tuple):
+            raise TypeError("gallery locator_components must be an exact tuple")
+        encode_source_relative_locator(self.locator_components)
+        if not isinstance(self.metadata, GalleryObservationMetadata):
+            raise TypeError("metadata must be GalleryObservationMetadata")
+        self.metadata.__post_init__()
+
+
+@dataclass(frozen=True, slots=True)
+class VNextIngestSession:
+    """Exact restart capability for the shared gate and coordinated ingest."""
+
+    gate_owner_token: bytes
+    gate_generation: int
+    gate_slot: int
+    gate_lease_expires_at: int
+    ingest_generation: int
+    ingest_owner_token: bytes
+    ingest_lease_expires_at: int
+    download_generation: int | None
+    handoff_owner_token: bytes | None
+    handoff_kind: str | None
+    consumed_at: int | None
+
+    def __post_init__(self) -> None:
+        require_bounded_bytes(
+            self.gate_owner_token,
+            field="ingest session gate_owner_token",
+            minimum=16,
+            maximum=16,
+        )
+        require_int63(self.gate_generation, field="ingest session gate_generation")
+        if isinstance(self.gate_slot, bool) or not isinstance(self.gate_slot, int):
+            raise TypeError("ingest session gate_slot must be int")
+        if not 0 <= self.gate_slot < 64:
+            raise ValueError("ingest session gate_slot must be in 0..63")
+        require_int63(
+            self.gate_lease_expires_at,
+            field="ingest session gate_lease_expires_at",
+        )
+        require_int63(
+            self.ingest_generation,
+            field="ingest session ingest_generation",
+        )
+        require_bounded_bytes(
+            self.ingest_owner_token,
+            field="ingest session ingest_owner_token",
+            minimum=16,
+            maximum=16,
+        )
+        require_int63(
+            self.ingest_lease_expires_at,
+            field="ingest session ingest_lease_expires_at",
+        )
+        linked = self.download_generation is not None
+        if linked != all(
+            value is not None
+            for value in (
+                self.handoff_owner_token,
+                self.handoff_kind,
+                self.consumed_at,
+            )
+        ):
+            raise ValueError(
+                "linked ingest session fields must be all present or absent"
+            )
+        if linked:
+            require_int63(
+                self.download_generation,
+                field="ingest session download_generation",
+            )
+            require_bounded_bytes(
+                self.handoff_owner_token,
+                field="ingest session handoff_owner_token",
+                minimum=16,
+                maximum=16,
+            )
+            if self.handoff_kind not in {"DOWNLOADER", "EXPIRED_TAKEOVER"}:
+                raise ValueError("ingest session handoff_kind is not registered")
+            require_int63(self.consumed_at, field="ingest session consumed_at")
+
+
+@dataclass(frozen=True, slots=True)
+class VNextIngestCompletionReceipt:
+    """Durable, response-loss-safe completion of one ingest capability."""
+
+    ingest_generation: int
+    owner_token: bytes
+    completed_at: int
+    download_generation: int | None
+    replayed: bool
+
+    def __post_init__(self) -> None:
+        require_int63(
+            self.ingest_generation,
+            field="ingest completion ingest_generation",
+        )
+        require_bounded_bytes(
+            self.owner_token,
+            field="ingest completion owner_token",
+            minimum=16,
+            maximum=16,
+        )
+        require_int63(self.completed_at, field="ingest completion completed_at")
+        if self.download_generation is not None:
+            require_int63(
+                self.download_generation,
+                field="ingest completion download_generation",
+            )
+        if type(self.replayed) is not bool:
+            raise TypeError("ingest completion replayed must be bool")
+
+
+@dataclass(frozen=True, slots=True)
+class VNextIngestSourceReceipt:
+    build_id: bytes
+    discovered_galleries: int
+    staged_galleries: int
+    sealed: bool
+    replayed: bool
+
+    def __post_init__(self) -> None:
+        require_bounded_bytes(
+            self.build_id,
+            field="source receipt build_id",
+            minimum=16,
+            maximum=16,
+        )
+        require_int63(
+            self.discovered_galleries,
+            field="source receipt discovered_galleries",
+        )
+        require_int63(
+            self.staged_galleries,
+            field="source receipt staged_galleries",
+        )
+        if self.staged_galleries > self.discovered_galleries:
+            raise ValueError("staged_galleries cannot exceed discovered_galleries")
+        if type(self.sealed) is not bool or type(self.replayed) is not bool:
+            raise TypeError("source receipt flags must be bool")
+
+
+class VNextIngestPhase(StrEnum):
+    SOURCE = "SOURCE"
+    ANALYSIS = "ANALYSIS"
+    PUBLICATION = "PUBLICATION"
+    FINALIZATION = "FINALIZATION"
+    COMPLETE = "COMPLETE"
+
+
+@dataclass(frozen=True, slots=True)
+class VNextIngestAdvanceResult:
+    """Bounded progress result; terminal only means this phase is complete."""
+
+    phase: VNextIngestPhase
+    processed_rows: int
+    terminal: bool
+    replayed: bool
+    source_receipt: VNextIngestSourceReceipt | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.phase, VNextIngestPhase):
+            raise TypeError("phase must be VNextIngestPhase")
+        require_int63(self.processed_rows, field="ingest processed_rows")
+        if type(self.terminal) is not bool or type(self.replayed) is not bool:
+            raise TypeError("ingest result flags must be bool")
+        if self.source_receipt is not None:
+            if not isinstance(self.source_receipt, VNextIngestSourceReceipt):
+                raise TypeError("source_receipt must be VNextIngestSourceReceipt")
+            self.source_receipt.__post_init__()

@@ -142,7 +142,7 @@ batch_rows_maximum = 256
 empty_manifest_chain_sha256 = "121f20d26c10f4c5ce6e621dc5e41b7da2c4028af840caa7547265068f2458e3"
 begin_rule = "the source-root canonical handoff accepts the repository-issued build_id attempt capability, obtains created_at only from the database clock, inserts source_build_anchor, exact scope, manifest-policy, OPEN-state and created-at facts, then source_build_descriptor_seal last, and also inserts source_build_generation plus both generation-one checkpoints with empty cursor, zero processed counters, OPEN state, and the exact empty manifest audit chain; all roots commit or roll back together, while build-id replay locks the narrow facts, exact-compares scope and policy, preserves the original database time, and returns their complete stored state without allocating a second build"
 discovery_rule = "a filesystem adapter freezes one provider-private typed discovery spool outside database transactions, validates exact strict-UTF-8 source-relative locator frames, rejects duplicate locator bytes, and orders entries by exact unsigned locator_sha256 bytes; each maximum-256 short transaction locks the discovery checkpoint and current ingest fence, consumes the next contiguous spool positions, database-resolves or allocates gallery identity, inserts exact source_build_expected_gallery(build_id,position,gallery_id), writes the complete immutable pre/post receipt, and CAS-advances generation/cursor/processed_count; batch_key and every digest/count/cursor are retry fields only, exact replay field-compares the full tuple and writes nothing, and loss of the private spool fails or abandons the build rather than accepting reconstructed caller authority"
-discovery_terminal_rule = "only a server-derived empty page writes terminal one, unchanged cursor/count, next_state COMPLETE, and committed_generation start plus one; that same transaction inserts source_build_discovery_anchor, all four non-null build-keyed members with gallery_count copied from next_processed_count and tree_observation_sha256 computed from the exact SHA-256 audit frame over ascii h2hdb-vnext-source-build-discovery-audit-v1 NUL, u64be gallery_count, and ordered raw32 locator_sha256 values, then inserts source_build_discovery_seal last; scan_attempt and tree_observation_sha256 are audit-only and never authorize membership or sealing"
+discovery_terminal_rule = "only a server-derived empty page writes terminal one, unchanged cursor/count, next_state COMPLETE, and committed_generation start plus one; that same transaction inserts source_build_discovery_anchor, all four non-null build-keyed members with gallery_count copied from next_processed_count and tree_observation_sha256 computed from the exact SHA-256 audit frame over ascii h2hdb-vnext-source-build-discovery-audit-v1 NUL, u64be gallery_count, and ordered raw32 locator_sha256 values, then inserts source_build_discovery_seal last; scan_attempt is the first 16 bytes of SHA-256 over ascii h2hdb-vnext-source-build-discovery-attempt-v1 NUL, u64be gallery_count, and raw32 tree_observation_sha256 so rebuilding the same complete disk snapshot resumes its exact checkpoint chain; scan_attempt and tree_observation_sha256 are audit-only and never authorize membership or sealing"
 observation_stat_rule = "every FILE staging batch adds only database-verified FileContentReceipt size_bytes to gallery_observation_staging_checkpoint.processed_byte_count and its exact latest receipt pre/post fields, while every non-FILE checkpoint keeps the scalar zero; the empty terminal FILE authority supplies exact file_count and byte_count, and after exact FILE/root/parser checks the gallery seal transaction inserts gallery_observation_stat_anchor, both non-null keyed counter members, and gallery_observation_stat_seal last without COUNT or SUM over files or content blobs"
 gallery_manifest_rule = "ASSEMBLY may consume a gallery only after GalleryObservationStagingRepository.seal has locked the final observation and manifest-policy seal, derived artifact_source_manifest_v1 exactly from the collision-checked observation_identity_sha256 plus manifest_algorithm_version and file_order_version without a FILE-row scan, inserted gallery_manifest anchor and digest plus database-clock computed_at facts, and inserted gallery_manifest_seal last; its terminal response-loss replay exact-compares the sealed family with zero writes, and no audit digest is identity authority"
 assembly_rule = "ASSEMBLY starts only after discovery COMPLETE; each maximum-256 transaction locks its checkpoint and current ingest fence, streams the next source_build_expected_gallery positions, requires one exact source_build_gallery link and immutable gallery_observation_stat plus same-policy sealed gallery_manifest for every position, independently compares build and gallery scope, accumulates gallery/file/byte counts with checked int63 addition, advances the exact audit chain as SHA256(ascii h2hdb-vnext-source-build-manifest-audit-v1 NUL || raw32 prior_chain || u64be position || raw32 gallery_key || raw32 observation_identity_sha256 || raw32 gallery_manifest_sha256 || u64be file_count || u64be byte_count), writes one complete immutable pre/post receipt, and CAS-advances all fields in one transaction; schema FKs forbid extra membership and the evaluator proves no expected member is missing"
@@ -902,7 +902,7 @@ lifecycle = "building_only"
 check = "operational_refinement.check_bootstrap_contract_v1"
 hook = "h2hdb.vnext_schema_provider.GeneratedVNextSchemaProvider.semantic_validators"
 relations = ["revision_allocator", "identity_allocator", "deletion_request_generation", "deletion_request_generation_head"]
-description = "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG identity allocator genesis rows, the real immutable deletion generation-zero empty-queue fact and its singleton head, and the declared absence of all request, event, lease, staging, work, cache, policy, and cleanup facts."
+description = "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG/POLICY identity allocator genesis rows, the real immutable deletion generation-zero empty-queue fact and its singleton head, and the declared absence of all request, event, lease, staging, work, cache, policy, and cleanup facts."
 
 [bootstrap_contract]
 version = 1
@@ -1038,6 +1038,20 @@ value = [
   { attribute = "updated_at", type = "unix_microseconds", integer = 0 },
 ]
 invariant = "Tag identity zero is outside the namespace; allocate the current positive int63 next_id and advance by exact CAS without auto-increment or deletion reuse."
+
+[[bootstrap_seed]]
+id = "h2hdb.operational.identity-allocator.policy.v1"
+columns = ["stream", "next_id", "updated_at"]
+values = ["POLICY", "1", "0"]
+version = 1
+lifecycle = "building_only"
+relation = "identity_allocator"
+value = [
+  { attribute = "stream", type = "ascii_enum", text = "POLICY" },
+  { attribute = "next_id", type = "uint64", integer = 1 },
+  { attribute = "updated_at", type = "unix_microseconds", integer = 0 },
+]
+invariant = "Policy surrogate zero is outside the shared policy namespace; every numeric immutable policy family allocates the current positive int63 next_id and advances by exact CAS without hash-derived IDs, auto-increment, MAX scans, or deletion reuse."
 
 [[bootstrap_seed]]
 id = "h2hdb.operational.deletion-request-generation.genesis.v1"
@@ -2798,7 +2812,7 @@ rationale = "Stable gallery identity owned by the data-plane contract."
 [[attribute_semantic]]
 name = "next_id"
 classification = "fencing_counter"
-rationale = "Positive portable int63 next identity in a named GALLERY or TAG stream; it is allocator state and never a database auto-increment value."
+rationale = "Positive portable int63 next identity in a named GALLERY, TAG, or shared POLICY stream; it is allocator state and never a database auto-increment value."
 
 [[attribute_semantic]]
 name = "request_sha256"
@@ -3348,7 +3362,7 @@ declared_keys = [["stream"]]
 fds = [
   { determinant = ["stream"], dependent = ["next_id", "updated_at"] },
 ]
-rationale = "Exactly two provider-seeded rows own the portable GALLERY and TAG namespaces. Writers lock or CAS exact current next_id; monotonic no-reuse makes that ABA-safe without a redundant generation."
+rationale = "Exactly three provider-seeded rows own the portable GALLERY, TAG, and shared POLICY namespaces. Writers lock or CAS exact current next_id; monotonic no-reuse makes that ABA-safe without a redundant generation."
 
 [[relation]]
 name = "gallery_observation_allocator"
@@ -3672,7 +3686,10 @@ foreign_keys = [
   { attributes = ["gallery_id"], relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
   { attributes = ["through_source_revision"], relation = "publication_commit_source_revision", referenced_attributes = ["source_revision"] },
 ]
-rationale = "Runtime redownload scheduling remains stable outside immutable builds and advances only after a committed source revision."
+required_indexes = [
+  { name = "ix_gallery_redownload_state_fk_2", attributes = ["through_source_revision", "redownload_at", "gallery_id"] },
+]
+rationale = "Runtime redownload scheduling remains stable outside immutable builds and advances only after a committed source revision. The FK-prefix composite access path bounds a revision-pinned, cutoff-limited keyset scan ordered by (redownload_at, gallery_id) even when downstream catalog/deletion filtering emits no item."
 
 [[relation]]
 name = "operational_policy"

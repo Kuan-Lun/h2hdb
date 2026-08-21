@@ -27,6 +27,7 @@ class RevisionStream(StrEnum):
 class IdentityStream(StrEnum):
     GALLERY = "GALLERY"
     TAG = "TAG"
+    POLICY = "POLICY"
 
 
 class VNextAllocatorRepository:

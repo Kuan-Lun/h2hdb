@@ -60,7 +60,7 @@ def _exercise_generated_epoch(config: CoreConfig) -> None:
     backend = config.database.sql_type
     backends = cast(Mapping[str, Mapping[str, object]], ARTIFACT["backends"])
     bootstrap_seeds = cast(Sequence[object], backends[backend]["bootstrap_seeds"])
-    assert len(bootstrap_seeds) == 4_645
+    assert len(bootstrap_seeds) == 4_646
 
 
 def test_default_generated_epoch_end_to_end_on_sqlite(

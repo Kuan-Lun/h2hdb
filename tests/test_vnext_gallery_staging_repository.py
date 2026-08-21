@@ -22,6 +22,7 @@ from vnext_catalog_registry_fixtures import (
 )
 from vnext_manifest_fixtures import seed_source_build
 
+import h2hdb.domain as domain_module
 import h2hdb.vnext_gallery_staging_repository as staging_module
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.sqlite_connector import SQLiteConnector
@@ -700,6 +701,227 @@ def test_tag_response_loss_replay_validates_exact_canonical_payload_zero_write(
         connector.close()
 
 
+def test_file_pages_materialize_content_hash_counts_and_replay_exact_zero_write(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "file-hash-materialization.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        build_id, gallery_id = _seed_working_gallery(connector, turn)
+        handle = _begin(connector, gate, turn, build_id, gallery_id, now=20)
+        shared = FileContentReceipt.from_parts((b"same-content",))
+
+        first_entries = tuple(
+            FileObservation(
+                f"page-one-{index:03d}.bin".encode("ascii"),
+                shared,
+                index,
+                1_000 + index,
+                index,
+                index,
+            )
+            for index in range(256)
+        )
+        first = FileBatchCommand(
+            first_entries,
+            False,
+            BatchAttempt(b"a" * 16, None),
+        )
+        _put_files(connector, gate, turn, handle, first, now=21)
+        assert connector.fetch_one(
+            "SELECT occurrence_count "
+            "FROM catalog_gallery_observation_file_hash_occurrences "
+            "WHERE gallery_id = %s AND observation_id = %s "
+            "AND file_sha256 = %s",
+            (handle.gallery_id, handle.observation_id, shared.file_sha256),
+        ) == (256,)
+
+        final = FileBatchCommand(
+            (
+                FileObservation(b"last-content.bin", shared, 300, 1_300, 300, 300),
+                FileObservation(b"galleryinfo.txt", shared, 301, 1_301, 301, 301),
+            ),
+            True,
+            BatchAttempt(b"b" * 16, b"a" * 16),
+        )
+        _put_files(connector, gate, turn, handle, final, now=22)
+        assert connector.fetch_all(
+            "SELECT file_sha256, occurrence_count "
+            "FROM catalog_gallery_observation_file_hash_occurrences "
+            "WHERE gallery_id = %s AND observation_id = %s",
+            (handle.gallery_id, handle.observation_id),
+        ) == [(shared.file_sha256, 257)]
+
+        with (
+            patch.object(connector, "execute", side_effect=AssertionError("write")),
+            patch.object(
+                connector,
+                "execute_affected",
+                side_effect=AssertionError("write"),
+            ),
+        ):
+            assert _put_files(
+                connector,
+                gate,
+                turn,
+                handle,
+                final,
+                now=23,
+            ).replayed
+
+        connector.execute(
+            "UPDATE catalog_gallery_observation_file_hash_occurrences "
+            "SET occurrence_count = 256 WHERE gallery_id = %s "
+            "AND observation_id = %s AND file_sha256 = %s",
+            (handle.gallery_id, handle.observation_id, shared.file_sha256),
+        )
+        with (
+            patch.object(connector, "execute", side_effect=AssertionError("write")),
+            patch.object(
+                connector,
+                "execute_affected",
+                side_effect=AssertionError("write"),
+            ),
+            pytest.raises(GalleryStagingConflictError),
+        ):
+            _put_files(connector, gate, turn, handle, final, now=24)
+    finally:
+        connector.close()
+
+
+def test_file_hash_occurrence_int63_overflow_fails_before_page_writes(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "file-hash-overflow.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        build_id, gallery_id = _seed_working_gallery(connector, turn)
+        handle = _begin(connector, gate, turn, build_id, gallery_id, now=20)
+        shared = FileContentReceipt.from_parts((b"same-content",))
+        first = FileBatchCommand(
+            tuple(
+                FileObservation(
+                    f"page-one-{index:03d}.bin".encode("ascii"),
+                    shared,
+                    index,
+                    1_000 + index,
+                    index,
+                    index,
+                )
+                for index in range(256)
+            ),
+            False,
+            BatchAttempt(b"a" * 16, None),
+        )
+        _put_files(connector, gate, turn, handle, first, now=21)
+        connector.execute(
+            "UPDATE catalog_gallery_observation_file_hash_occurrences "
+            "SET occurrence_count = %s WHERE gallery_id = %s "
+            "AND observation_id = %s AND file_sha256 = %s",
+            (
+                INT63_MAX,
+                handle.gallery_id,
+                handle.observation_id,
+                shared.file_sha256,
+            ),
+        )
+        final = FileBatchCommand(
+            (FileObservation(b"last-content.bin", shared, 300, 1_300, 300, 300),),
+            True,
+            BatchAttempt(b"b" * 16, b"a" * 16),
+        )
+        before = _request_snapshot(connector)
+        with (
+            patch.object(connector, "execute", side_effect=AssertionError("write")),
+            patch.object(
+                connector,
+                "execute_affected",
+                side_effect=AssertionError("write"),
+            ),
+            pytest.raises(OverflowError, match="occurrence count"),
+        ):
+            _put_files(connector, gate, turn, handle, final, now=22)
+        assert _request_snapshot(connector) == before
+        assert connector.fetch_one(
+            "SELECT occurrence_count "
+            "FROM catalog_gallery_observation_file_hash_occurrences "
+            "WHERE gallery_id = %s AND observation_id = %s "
+            "AND file_sha256 = %s",
+            (handle.gallery_id, handle.observation_id, shared.file_sha256),
+        ) == (INT63_MAX,)
+    finally:
+        connector.close()
+
+
+def test_tag_page_materializes_only_exact_artist_namespace_and_replays_exact(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "tag-artist-materialization.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        build_id, gallery_id = _seed_working_gallery(connector, turn)
+        handle = _begin(connector, gate, turn, build_id, gallery_id, now=20)
+        command = TagBatchCommand(
+            (
+                TagObservation("artist", "Alice"),
+                TagObservation("Artist", "Uppercase"),
+                TagObservation("group", "Circle"),
+            ),
+            True,
+            BatchAttempt(b"t" * 16, None),
+        )
+        _put_tags(connector, gate, turn, handle, command, now=21)
+        artist_tag_id = connector.fetch_one(
+            "SELECT tag_id FROM catalog_gallery_observation_tags "
+            "WHERE gallery_id = %s AND observation_id = %s AND position = 0",
+            (handle.gallery_id, handle.observation_id),
+        )[0]
+        assert connector.fetch_all(
+            "SELECT artist_tag_id FROM catalog_gallery_observation_artists "
+            "WHERE gallery_id = %s AND observation_id = %s",
+            (handle.gallery_id, handle.observation_id),
+        ) == [(artist_tag_id,)]
+
+        with (
+            patch.object(connector, "execute", side_effect=AssertionError("write")),
+            patch.object(
+                connector,
+                "execute_affected",
+                side_effect=AssertionError("write"),
+            ),
+        ):
+            assert _put_tags(
+                connector,
+                gate,
+                turn,
+                handle,
+                command,
+                now=22,
+            ).replayed
+
+        connector.execute(
+            "DELETE FROM catalog_gallery_observation_artists "
+            "WHERE gallery_id = %s AND observation_id = %s "
+            "AND artist_tag_id = %s",
+            (handle.gallery_id, handle.observation_id, artist_tag_id),
+        )
+        with (
+            patch.object(connector, "execute", side_effect=AssertionError("write")),
+            patch.object(
+                connector,
+                "execute_affected",
+                side_effect=AssertionError("write"),
+            ),
+            pytest.raises(
+                GalleryStagingConflictError,
+                match="artist materialization",
+            ),
+        ):
+            _put_tags(connector, gate, turn, handle, command, now=23)
+    finally:
+        connector.close()
+
+
 def test_tag_allocator_lock_rereads_natural_identity_before_insert(
     tmp_path: Path,
 ) -> None:
@@ -768,6 +990,7 @@ def test_file_and_tag_identity_families_are_fault_atomic_seal_last_and_replay_ex
         "catalog_gallery_observation_file_file_nos",
         "catalog_gallery_observation_file_file_sha256s",
         "catalog_gallery_observation_file_seals",
+        "catalog_gallery_observation_file_hash_occurrences",
     )
     connector = _generated_database(tmp_path / "file-family-faults.sqlite3")
     try:
@@ -833,6 +1056,8 @@ def test_file_and_tag_identity_families_are_fault_atomic_seal_last_and_replay_ex
         "catalog_tag_term_anchors",
         "catalog_tag_term_identities",
         "catalog_tag_term_seals",
+        "catalog_gallery_observation_tags",
+        "catalog_gallery_observation_artists",
     )
     connector = _generated_database(tmp_path / "tag-family-faults.sqlite3")
     try:
@@ -911,7 +1136,7 @@ def test_equal_content_digest_with_different_stream_size_conflicts_atomically(
             return b"h" * 32
 
     with monkeypatch.context() as context:
-        context.setattr(staging_module, "sha256", lambda _value=b"": _SameDigest())
+        context.setattr(domain_module, "sha256", lambda _value=b"": _SameDigest())
         short = FileContentReceipt.from_parts((b"a",))
         long = FileContentReceipt.from_parts((b"bb",))
 

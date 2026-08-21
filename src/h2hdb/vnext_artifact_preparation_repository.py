@@ -36,9 +36,11 @@ from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory, TemporaryFile
-from typing import Any, BinaryIO, Protocol, cast
+from typing import Any, BinaryIO, cast
 
 from . import vnext_identity as identity
+from .domain import ArtifactStorageEvidence
+from .ports import ArtifactStorageAdapter
 from .sql_connector import DatabaseDuplicateKeyError, SQLConnector
 from .vnext_analysis_family import (
     AnalysisFamilyCollisionError,
@@ -389,17 +391,6 @@ class ArtifactPreparationInputAudit:
 
 
 @dataclass(frozen=True, slots=True)
-class ArtifactStorageEvidence:
-    """Untrusted adapter acknowledgement wrapped by the repository."""
-
-    stored: bool
-
-    def __post_init__(self) -> None:
-        if type(self.stored) is not bool:
-            raise TypeError("artifact storage acknowledgement must be bool")
-
-
-@dataclass(frozen=True, slots=True)
 class ArtifactProtectionIntent:
     """Opaque durable PENDING intent issued only after its family is sealed."""
 
@@ -632,34 +623,6 @@ class ArtifactPersistenceReceipt:
             raise ValueError("persisted artifact state is not registered")
         if type(self.replayed) is not bool:
             raise TypeError("persisted artifact replayed must be bool")
-
-
-class ArtifactStorageAdapter(Protocol):
-    """Internal producer/storage boundary selected by closed registries.
-
-    Protection tokens have a monotone external lifecycle.  ``protect`` is
-    idempotent while protected, and a release acknowledgement is terminal for
-    that token: a delayed or retried ``protect`` must never resurrect bytes
-    after release.  Implementations must retain that terminal tombstone (or an
-    equivalent monotone ordering record) for the token's full retry horizon.
-    """
-
-    adapter_id: bytes
-    producer_fingerprint_sha256: bytes
-
-    def render_member(
-        self,
-        source: BinaryIO,
-        transform_kind: identity.ArtifactTransformKind,
-        destination: BinaryIO,
-    ) -> None: ...
-
-    def protect(
-        self,
-        archive: BinaryIO,
-        locator_components: tuple[str, ...],
-        protection_token: bytes,
-    ) -> ArtifactStorageEvidence: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -1038,18 +1001,28 @@ class ArtifactPreparationRepository:
             candidate_id=candidate_id,
             now=now,
         )
-        checkpoint, receipt = _load_complete_stage_receipt(
-            work,
-            projection.candidate_id,
-            b"VALIDATE_CATALOG_PROJECTION",
-            cursor_maximum=2048,
+        return _input_projection_authority(work, projection)
+
+    @staticmethod
+    def _issue_input_projection_authority_authorized(
+        work: VNextUnitOfWork,
+        *,
+        candidate_id: bytes,
+        generation: int,
+        now: int,
+    ) -> ArtifactInputProjectionAuthority:
+        """Issue after an application transaction already validated its fence."""
+
+        projection = (
+            PublicationCandidateRepository._issue_projection_authority_authorized(
+                work,
+                candidate_id=candidate_id,
+                generation=generation,
+                now=now,
+                validate_artifact_policy=True,
+            )
         )
-        return ArtifactInputProjectionAuthority(
-            projection,
-            checkpoint,
-            receipt,
-            _INPUT_AUTHORITY_TOKEN,
-        )
+        return _input_projection_authority(work, projection)
 
     @staticmethod
     def prepare_artifact_input_projection(
@@ -1415,55 +1388,35 @@ class ArtifactPreparationRepository:
                 now=timestamp,
             )
         )
-        if not projection.artifacts_required:
-            raise ArtifactPreparationNotReadyError(
-                "candidate does not require artifact preparation"
+        return _artifact_authority(work, projection, publication, now=timestamp)
+
+    @staticmethod
+    def _issue_authority_authorized(
+        work: VNextUnitOfWork,
+        *,
+        candidate_id: bytes,
+        publication_key: bytes,
+        generation: int,
+        now: int,
+    ) -> ArtifactPreparationAuthority:
+        """Issue after an application transaction already validated its fence."""
+
+        candidate = require_uuid16(candidate_id, field="artifact candidate_id")
+        publication = require_digest32(
+            publication_key,
+            field="artifact publication_key",
+        )
+        timestamp = require_int63(now, field="artifact authority now")
+        projection = (
+            PublicationCandidateRepository._issue_projection_authority_authorized(
+                work,
+                candidate_id=candidate,
+                generation=generation,
+                now=timestamp,
+                validate_artifact_policy=False,
             )
-        contract = _load_projection_contract(
-            work,
-            projection,
-            validate_policy_canonical=True,
         )
-        facts = _load_authority_facts(
-            work,
-            projection,
-            publication,
-            now=timestamp,
-            contract=contract,
-        )
-        return ArtifactPreparationAuthority(
-            projection,
-            facts.publication_key,
-            facts.gallery_id,
-            facts.gid,
-            facts.gallery_key,
-            facts.observation_id,
-            facts.observation_identity_sha256,
-            facts.artifact_semantics_sha256,
-            facts.operation,
-            facts.source_manifest_component_sha256,
-            facts.member_plan_component_sha256,
-            facts.effective_content_component_sha256,
-            facts.selected_component_sha256,
-            facts.owner_component_sha256,
-            facts.policy_component_sha256,
-            facts.content_sha256,
-            facts.owner_gallery_key,
-            facts.winner_gallery_key,
-            facts.manifest_algorithm_version,
-            facts.file_order_version,
-            facts.artifact_algorithm_version,
-            facts.max_image_short_side,
-            facts.producer_fingerprint_sha256,
-            facts.producer_fields,
-            facts.writer_policy,
-            facts.storage_codec,
-            facts.spam_artist_threshold,
-            facts.spam_occurrence_threshold,
-            facts.validation_checkpoint,
-            facts.validation_terminal_receipt,
-            _AUTHORITY_TOKEN,
-        )
+        return _artifact_authority(work, projection, publication, now=timestamp)
 
     @staticmethod
     def audit_inputs(
@@ -1980,6 +1933,84 @@ class ArtifactPreparationRepository:
             effect_seal=effect_seal,
             now=timestamp,
         )
+
+
+def _artifact_authority(
+    work: VNextUnitOfWork,
+    projection: PublicationProjectionAuthority,
+    publication_key: bytes,
+    *,
+    now: int,
+) -> ArtifactPreparationAuthority:
+    if not projection.artifacts_required:
+        raise ArtifactPreparationNotReadyError(
+            "candidate does not require artifact preparation"
+        )
+    contract = _load_projection_contract(
+        work,
+        projection,
+        validate_policy_canonical=True,
+    )
+    facts = _load_authority_facts(
+        work,
+        projection,
+        publication_key,
+        now=now,
+        contract=contract,
+    )
+    return ArtifactPreparationAuthority(
+        projection,
+        facts.publication_key,
+        facts.gallery_id,
+        facts.gid,
+        facts.gallery_key,
+        facts.observation_id,
+        facts.observation_identity_sha256,
+        facts.artifact_semantics_sha256,
+        facts.operation,
+        facts.source_manifest_component_sha256,
+        facts.member_plan_component_sha256,
+        facts.effective_content_component_sha256,
+        facts.selected_component_sha256,
+        facts.owner_component_sha256,
+        facts.policy_component_sha256,
+        facts.content_sha256,
+        facts.owner_gallery_key,
+        facts.winner_gallery_key,
+        facts.manifest_algorithm_version,
+        facts.file_order_version,
+        facts.artifact_algorithm_version,
+        facts.max_image_short_side,
+        facts.producer_fingerprint_sha256,
+        facts.producer_fields,
+        facts.writer_policy,
+        facts.storage_codec,
+        facts.spam_artist_threshold,
+        facts.spam_occurrence_threshold,
+        facts.validation_checkpoint,
+        facts.validation_terminal_receipt,
+        _AUTHORITY_TOKEN,
+    )
+
+
+def _input_projection_authority(
+    work: VNextUnitOfWork,
+    projection: PublicationProjectionAuthority,
+) -> ArtifactInputProjectionAuthority:
+    """Bind terminal catalog validation to one projection authority."""
+
+    checkpoint, receipt = _load_complete_stage_receipt(
+        work,
+        projection.candidate_id,
+        b"VALIDATE_CATALOG_PROJECTION",
+        cursor_maximum=2048,
+    )
+    return ArtifactInputProjectionAuthority(
+        projection,
+        checkpoint,
+        receipt,
+        _INPUT_AUTHORITY_TOKEN,
+    )
 
 
 def _prepare_artifact_input_plan(

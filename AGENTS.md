@@ -12,21 +12,21 @@ views, 28 lossless and dependency-preserving binary decompositions, 53
 sealed vertical families, 361 narrow catalog bases with no width debt,
 an exact 320-relation catalog physical-domain closure (260 mutation relations
 and 60 read-only views), 75 operational BCNF base relations, and one derived
-operational view. The generated provider installs exactly 4,645 typed bootstrap
+operational view. The generated provider installs exactly 4,646 typed bootstrap
 rows per backend.
 
 Core must not depend on Pillow, FastAPI, OPDS types, `hbrowser`, filesystem
 scanning, gallery parsing, or concrete CBZ/object-storage behavior. Those
 belong to sibling repositories or consumer adapters. Consumers use
-`VNextDatabaseAdminFacade`, `VNextCatalogFacade`, and
+`VNextDatabaseAdminFacade`, `VNextCatalogFacade`, `VNextIngestFacade`, and
 `VNextDownloadQueueFacade` rather than connector, repository, generated-schema,
 or table internals.
 
 The package has no `H2HDB`, `MigrationRunner`, numbered migration ledger, or
 legacy hand-written catalog repositories. Do not reintroduce one as a
-compatibility path. The current ingest/downloader siblings must remain outside
-the epoch-2 release set until they are ported to explicit vNext orchestration
-facades.
+compatibility path. Ingest/downloader siblings enter the epoch-2 release set
+only through explicit vNext orchestration facades and neutral public values;
+they must never regain direct repository or table access.
 
 Public administration and catalog-opening entry points always use the exact
 wheel-resident generated schema provider. A caller-injected provider is a second
@@ -144,7 +144,7 @@ the exact candidate tree that will become the commit.
 
 ## Architecture rules
 
-- Public consumers use the three `VNext*Facade` classes and immutable values
+- Public consumers use the four `VNext*Facade` classes and immutable values
   exported from `h2hdb`. Protocols live in `ports.py`; neutral data lives in
   `domain.py`.
 - Backend-specific behavior stays behind `SQLConnector`. Write common SQL once
@@ -176,9 +176,10 @@ the exact candidate tree that will become the commit.
   revision-pinned index is added to the manifest.
 - Do not derive `redownload_required` from transient joins until the manifest
   defines durable revision-scoped authority and replay semantics.
-- The artifact-preparation repository accepts a typed storage adapter. Concrete
-  filesystem/object-storage behavior and the missing complete public ingest
-  orchestration belong in the consumer integration.
+- Public ingest orchestration separates short transaction-owned issue/commit
+  calls from adapter-owned local preparation. Concrete filesystem and object-
+  storage behavior remains in consumer adapters and never enters a core DB
+  transaction.
 
 ## Schema epoch rules
 

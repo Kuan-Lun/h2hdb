@@ -45,6 +45,7 @@ from .vnext_gallery_identity_repository import GalleryIdentityRepository
 from .vnext_gallery_staging_repository import GalleryObservationStagingRepository
 from .vnext_hash_cache_repository import VNextHashCacheRepository
 from .vnext_ingest_fence_repository import IngestFenceRepository
+from .vnext_ingest_policy_repository import VNextIngestPolicyRepository
 from .vnext_maintenance_gate_repository import MaintenanceGateRepository
 from .vnext_operational_event_repository import OperationalEffectRepository
 from .vnext_physical_domains import (
@@ -220,6 +221,9 @@ _PRODUCTION_METHOD_OWNERS: Mapping[str, frozenset[str]] = MappingProxyType(
         ),
         "h2hdb.vnext_hash_cache_repository": frozenset({"VNextHashCacheRepository"}),
         "h2hdb.vnext_ingest_fence_repository": frozenset({"IngestFenceRepository"}),
+        "h2hdb.vnext_ingest_policy_repository": frozenset(
+            {"VNextIngestPolicyRepository"}
+        ),
         "h2hdb.vnext_maintenance_gate_repository": frozenset(
             {"MaintenanceGateRepository"}
         ),
@@ -576,6 +580,7 @@ _IDENTITY_WRITERS: tuple[WriterEntrypoint, ...] = (
     ArtifactPreparationRepository.confirm_prepared_artifact,
     ArtifactPreparationRepository.bind_operational_preparation,
     PublicationRepository.commit,
+    VNextIngestPolicyRepository.ensure,
 )
 
 _CANONICAL_REFERENCE_WRITERS: tuple[WriterEntrypoint, ...] = (
@@ -598,6 +603,7 @@ _CANONICAL_REFERENCE_WRITERS: tuple[WriterEntrypoint, ...] = (
     ArtifactPreparationRepository.process_artifact_input_batch,
     ArtifactPreparationRepository.persist_prepared_artifact,
     PublicationRepository.commit,
+    VNextIngestPolicyRepository.ensure,
 )
 
 _INCREMENTAL_WRITERS: tuple[WriterEntrypoint, ...] = (
@@ -689,6 +695,7 @@ _INGEST_FENCED_WRITERS: tuple[WriterEntrypoint, ...] = (
     OperationalEffectRepository.append_batch,
     OperationalEffectRepository.seal,
     PublicationRepository.commit,
+    VNextIngestPolicyRepository.ensure,
 )
 
 _FENCE_AUTHORITY_WRITERS: tuple[WriterEntrypoint, ...] = (
@@ -749,6 +756,7 @@ _ATTEMPT_IDENTITY_WRITERS: tuple[WriterEntrypoint, ...] = (
     OperationalEffectRepository.begin,
     *_CLEANUP_WRITERS,
     PublicationRepository.commit,
+    VNextIngestPolicyRepository.ensure,
 )
 
 _REVISION_ALLOCATION_WRITERS: tuple[WriterEntrypoint, ...] = (
@@ -813,6 +821,7 @@ _BOUND_BINDINGS = (
         "catalog.artifact-semantics.v1",
         (
             ArtifactPreparationRepository.register_producer,
+            VNextIngestPolicyRepository.ensure,
             ArtifactPreparationRepository.issue_input_projection_authority,
             *_ARTIFACT_BATCH_WRITERS,
             ArtifactPreparationRepository.audit_inputs,
@@ -955,8 +964,7 @@ _BOUND_BINDINGS = (
     _binding(
         "h2hdb.operational.attempt-identity.v1",
         _ATTEMPT_IDENTITY_WRITERS,
-        _contract_relations("h2hdb.operational.attempt-identity.v1")
-        - {"operational_policy"},
+        _contract_relations("h2hdb.operational.attempt-identity.v1"),
     ),
     _binding(
         "h2hdb.operational.cleanup-reachability.v1",

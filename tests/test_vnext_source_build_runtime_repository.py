@@ -806,6 +806,19 @@ def test_disk_plan_sorts_unsigned_digest_caps_pages_and_rejects_duplicates(
         with pytest.raises(SourceDiscoveryPlanError, match="duplicate"):
             SourceDiscoveryPlan.from_locators((("same",), ("same",)))
 
+        with SourceDiscoveryPlan.from_locators(locators) as first_plan:
+            first_receipt = (
+                first_plan.scan_attempt,
+                first_plan.gallery_count,
+                first_plan.tree_observation_sha256,
+            )
+        with SourceDiscoveryPlan.from_locators(locators) as rebuilt:
+            assert (
+                rebuilt.scan_attempt,
+                rebuilt.gallery_count,
+                rebuilt.tree_observation_sha256,
+            ) == first_receipt
+
         discovery_parameters = inspect.signature(
             SourceBuildRepository.prepare_discovery_batch
         ).parameters
@@ -816,6 +829,54 @@ def test_disk_plan_sorts_unsigned_digest_caps_pages_and_rejects_duplicates(
         ).parameters
         assert "cursor" not in assembly_parameters
         assert "file_count" not in assembly_parameters
+    finally:
+        connector.close()
+
+
+def test_pending_source_gallery_is_bounded_pk_driven_and_decodes_plan_position(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "pending-source-gallery.sqlite3")
+    try:
+        gate, turn, _command = _open_build(connector)
+        with SourceDiscoveryPlan.from_locators((("gallery",),)) as plan:
+            resolved = _finish_discovery(
+                connector,
+                gate,
+                turn,
+                plan,
+                now=40,
+            )
+            pending = SourceBuildRepository.get_pending_source_gallery(
+                connector,
+                build_id=b"b" * 16,
+            )
+            assert pending is not None
+            assert pending.position == 0
+            assert pending.gallery_id == resolved[0].gallery_id
+            assert pending.locator_sha256 == resolved[0].locator_sha256
+            assert plan._decode_locator(
+                pending.position,
+                pending.locator_sha256,
+            ) == ("gallery",)
+
+        query_plan = connector.fetch_all(
+            "EXPLAIN QUERY PLAN " + source_build_module._PENDING_SOURCE_GALLERY_QUERY,
+            (b"b" * 16,),
+        )
+        assert query_plan
+        details = tuple(str(row[3]) for row in query_plan)
+        assert all("SCAN " not in detail for detail in details)
+        assert any(
+            "catalog_source_build_expected_gallery" in detail
+            or "sqlite_autoindex_catalog_source_build_expected_gallery" in detail
+            for detail in details
+        )
+        assert any(
+            "catalog_source_build_galleries" in detail
+            or "sqlite_autoindex_catalog_source_build_galleries" in detail
+            for detail in details
+        )
     finally:
         connector.close()
 
@@ -884,17 +945,19 @@ def test_discovery_new_generation_assembly_and_response_loss(
             assert replay.replayed
             assert replay.committed_at == committed.committed_at
 
-            # A new repository-issued scan plan cannot be spliced into an
-            # already-bound receipt chain, even if locator bytes are equal.
+            # Rebuilding the same complete snapshot produces the same
+            # deterministic scan attempt and resumes the exact receipt chain.
             with SourceDiscoveryPlan.from_locators(
                 (("z-last",), ("nested", "畫廊"), ("a-first",))
             ) as switched:
-                with pytest.raises(SourceBuildConflictError, match="prior batches"):
-                    SourceBuildRepository.prepare_discovery_batch(
-                        connector,
-                        build_id=b"b" * 16,
-                        plan=switched,
-                    )
+                resumed = SourceBuildRepository.prepare_discovery_batch(
+                    connector,
+                    build_id=b"b" * 16,
+                    plan=switched,
+                )
+                assert resumed.terminal
+                assert resumed.start_generation == committed.committed_generation
+                assert resumed.scan_attempt == plan.scan_attempt
 
             with connector.transaction():
                 IngestFenceRepository.complete(

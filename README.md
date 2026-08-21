@@ -2,9 +2,9 @@
 
 `h2hdb` is the database and coordination core for the H2HDB multi-repository
 system. It owns the SQLite/MariaDB schema, bounded transactional workflows, and
-backend-neutral application facades. Komga and OPDS use the current catalog
-facade; ingest and downloader require separate epoch-2 orchestration ports
-before they can move to this breaking release.
+backend-neutral application facades. Komga and OPDS use the catalog facade;
+ingest uses the transaction-owning ingest facade and downloader uses the queue
+facade.
 
 It deliberately does **not** scan files, parse `galleryinfo.txt`, manipulate
 images, choose filesystem paths, serve HTTP, serialize OPDS documents, or
@@ -32,7 +32,7 @@ The current schema is a clean epoch-2 design:
 - The closed catalog physical-domain authority contains exactly 320 relations:
   260 mutation relations and 60 read-only views. The complete publication graph
   is inside that closure, including permanent finalization replay state.
-- The generated provider installs exactly 4,645 typed bootstrap rows per
+- The generated provider installs exactly 4,646 typed bootstrap rows per
   backend, including all 17 fixed 256-shard cleanup ranges.
 
 The logical sources of truth are
@@ -179,8 +179,8 @@ from h2hdb import VNextDatabaseAdminFacade, load_config
 
 config = load_config("config.json")
 admin = VNextDatabaseAdminFacade(config)
-admin.initialize()       # deployment init job only
-admin.check()            # full read-only audit
+admin.initialize()  # deployment init job only
+admin.check()  # full read-only audit
 admin.check_readiness()  # lightweight probe
 ```
 
@@ -230,9 +230,9 @@ internal coordination surfaces.
 - The durable contract needed to derive `CatalogPublication.redownload_required`
   for a pinned revision is not closed. Readers therefore do not infer it from
   transient operational rows.
-- Core defines the typed artifact-preparation/storage boundary, but a concrete
-  filesystem or object-storage adapter and complete public ingest orchestration
-  are not shipped here; the consumer integration must supply them.
+- Core defines and orchestrates the typed artifact-preparation/storage
+  boundary, but concrete filesystem and object-storage behavior remains in the
+  consumer adapter.
 
 ## Verification
 
