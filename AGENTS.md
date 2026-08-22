@@ -212,6 +212,11 @@ change on SQLite. MariaDB cases use testcontainers and are enabled with
 by Synology package build 10.11.11-1551. Report exactly when Docker is
 unavailable.
 
+## Branch discipline
+
+Do not create or switch to a development branch. All development work must be
+performed directly on the repository's primary branch (`master`).
+
 ## Working-tree discipline
 
 Preserve pre-existing uncommitted changes. Do not commit, push, publish, remove
