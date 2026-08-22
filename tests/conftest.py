@@ -8,7 +8,8 @@ import pytest
 
 from h2hdb import CoreConfig, DatabaseConfig
 
-MARIADB_IMAGE = "mariadb:11"
+MARIADB_IMAGE = "mariadb:10.11.11"
+MARIADB_VERSION_PREFIX = "10.11.11-"
 MARIADB_ROOT_PASSWORD = "h2hdb-test-root"
 MARIADB_USER = "h2hdb"
 MARIADB_PASSWORD = "h2hdb-test-password"
@@ -66,6 +67,13 @@ def mariadb_config(mariadb_container: Any) -> Iterator[CoreConfig]:
     )
     try:
         with admin_connection.cursor() as cursor:
+            cursor.execute("SELECT VERSION()")
+            version_row = cursor.fetchone()
+            assert version_row is not None
+            (server_version,) = version_row
+            assert str(server_version).startswith(
+                MARIADB_VERSION_PREFIX
+            ), server_version
             cursor.execute(
                 f"CREATE DATABASE `{database}` "
                 "CHARACTER SET utf8mb4 COLLATE utf8mb4_bin"

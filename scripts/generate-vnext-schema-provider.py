@@ -1047,60 +1047,131 @@ def _render_publication_candidate_projection_view(
         ("new_galleries", "VALIDATE_NEW_GALLERY"),
         ("changed_galleries", "VALIDATE_CHANGED_GALLERY"),
     )
-    expressions = {"candidate_id": f"certified.{q(_column_name(seal, 'candidate_id'))}"}
-    for attribute, stage in count_stages:
-        count_expression = (
-            "MAX(CASE WHEN checkpoint."
-            f"{q(_column_name(checkpoint, 'stage'))} = {literal(stage)} "
-            f"THEN receipt.{q(_column_name(receipt, 'next_processed_count'))} END)"
+
+    if backend == "sqlite":
+        inner_expressions = {
+            "candidate_id": f"certified.{q(_column_name(seal, 'candidate_id'))}"
+        }
+        for attribute, stage in count_stages:
+            checkpoint_alias = f"checkpoint_{attribute}"
+            receipt_alias = f"receipt_{attribute}"
+            inner_expressions[attribute] = (
+                f"(SELECT {receipt_alias}."
+                f"{q(_column_name(receipt, 'next_processed_count'))}\n"
+                f"   FROM {q(str(checkpoint['table']))} AS {checkpoint_alias}\n"
+                f"   JOIN {q(str(receipt['table']))} AS {receipt_alias}\n"
+                f"     ON {receipt_alias}."
+                f"{q(_column_name(receipt, 'candidate_id'))}\n"
+                f"      = {checkpoint_alias}."
+                f"{q(_column_name(checkpoint, 'candidate_id'))}\n"
+                f"    AND {receipt_alias}.{q(_column_name(receipt, 'stage'))}\n"
+                f"      = {checkpoint_alias}.{q(_column_name(checkpoint, 'stage'))}\n"
+                f"    AND {receipt_alias}."
+                f"{q(_column_name(receipt, 'committed_generation'))}\n"
+                f"      = {checkpoint_alias}."
+                f"{q(_column_name(checkpoint, 'generation'))}\n"
+                f"    AND {receipt_alias}."
+                f"{q(_column_name(receipt, 'next_cursor'))}\n"
+                f"      = {checkpoint_alias}.{q(_column_name(checkpoint, 'cursor'))}\n"
+                f"    AND {receipt_alias}."
+                f"{q(_column_name(receipt, 'next_cursor'))}\n"
+                f"      = {receipt_alias}."
+                f"{q(_column_name(receipt, 'start_cursor'))}\n"
+                f"    AND {receipt_alias}."
+                f"{q(_column_name(receipt, 'next_processed_count'))}\n"
+                f"      = {checkpoint_alias}."
+                f"{q(_column_name(checkpoint, 'processed_count'))}\n"
+                f"    AND {receipt_alias}."
+                f"{q(_column_name(receipt, 'committed_at'))}\n"
+                f"      = {checkpoint_alias}."
+                f"{q(_column_name(checkpoint, 'updated_at'))}\n"
+                f"    AND {receipt_alias}."
+                f"{q(_column_name(receipt, 'terminal'))} = 1\n"
+                f"    AND {receipt_alias}."
+                f"{q(_column_name(receipt, 'next_state'))}\n"
+                f"      = {checkpoint_alias}."
+                f"{q(_column_name(checkpoint, 'state'))}\n"
+                f"  WHERE {checkpoint_alias}."
+                f"{q(_column_name(checkpoint, 'candidate_id'))}\n"
+                f"      = certified.{q(_column_name(seal, 'candidate_id'))}\n"
+                f"    AND {checkpoint_alias}."
+                f"{q(_column_name(checkpoint, 'stage'))} = {literal(stage)}\n"
+                f"    AND {checkpoint_alias}."
+                f"{q(_column_name(checkpoint, 'state'))} "
+                f"= {state_literal('COMPLETE')})"
+            )
+        columns = _tables(relation.get("column"), "view columns")
+        inner_projection = ",\n    ".join(
+            f"{inner_expressions[str(column['attribute'])]} "
+            f"AS {q(str(column['name']))}"
+            for column in columns
         )
-        if backend == "mariadb":
-            # The exact-stage HAVING predicates below guarantee one non-NULL
-            # receipt value for every returned group.  MariaDB nevertheless
-            # exposes a bare MAX(CASE ...) as nullable in INFORMATION_SCHEMA;
-            # spell out that proven totality so the view metadata refines the
-            # non-null logical count domain without admitting a partial group.
-            count_expression = f"CAST(COALESCE({count_expression}, 0) AS UNSIGNED)"
-        expressions[attribute] = count_expression
-    stage_literals = ", ".join(literal(stage) for _, stage in count_stages)
-    exact_stage_rows = " AND ".join(
-        "SUM(CASE WHEN checkpoint."
-        f"{q(_column_name(checkpoint, 'stage'))} = {literal(stage)} "
-        "THEN 1 ELSE 0 END) = 1"
-        for _, stage in count_stages
-    )
+        expressions = {
+            str(column["attribute"]): f"exact.{q(str(column['name']))}"
+            for column in columns
+        }
+        complete_counts = "\n  AND ".join(
+            f"exact.{q(_column_name(relation, attribute))} IS NOT NULL"
+            for attribute, _ in count_stages
+        )
+        return _render_projection_view(
+            relation,
+            backend,
+            expressions,
+            f"FROM (\n"
+            f"  SELECT\n"
+            f"    {inner_projection}\n"
+            f"  FROM {q(str(seal['table']))} AS certified\n"
+            f") AS exact\n"
+            f"WHERE {complete_counts}",
+        )
+
+    expressions = {"candidate_id": f"certified.{q(_column_name(seal, 'candidate_id'))}"}
+    joins: list[str] = []
+    for attribute, stage in count_stages:
+        checkpoint_alias = f"checkpoint_{attribute}"
+        receipt_alias = f"receipt_{attribute}"
+        expressions[attribute] = (
+            f"{receipt_alias}.{q(_column_name(receipt, 'next_processed_count'))}"
+        )
+        joins.append(
+            f"JOIN {q(str(checkpoint['table']))} AS {checkpoint_alias}\n"
+            f"  ON {checkpoint_alias}."
+            f"{q(_column_name(checkpoint, 'candidate_id'))}\n"
+            f"   = certified.{q(_column_name(seal, 'candidate_id'))}\n"
+            f" AND {checkpoint_alias}.{q(_column_name(checkpoint, 'stage'))} "
+            f"= {literal(stage)}\n"
+            f" AND {checkpoint_alias}.{q(_column_name(checkpoint, 'state'))} "
+            f"= {state_literal('COMPLETE')}\n"
+            f"JOIN {q(str(receipt['table']))} AS {receipt_alias}\n"
+            f"  ON {receipt_alias}.{q(_column_name(receipt, 'candidate_id'))}\n"
+            f"   = {checkpoint_alias}."
+            f"{q(_column_name(checkpoint, 'candidate_id'))}\n"
+            f" AND {receipt_alias}.{q(_column_name(receipt, 'stage'))}\n"
+            f"   = {checkpoint_alias}.{q(_column_name(checkpoint, 'stage'))}\n"
+            f" AND {receipt_alias}."
+            f"{q(_column_name(receipt, 'committed_generation'))}\n"
+            f"   = {checkpoint_alias}."
+            f"{q(_column_name(checkpoint, 'generation'))}\n"
+            f" AND {receipt_alias}.{q(_column_name(receipt, 'next_cursor'))}\n"
+            f"   = {checkpoint_alias}.{q(_column_name(checkpoint, 'cursor'))}\n"
+            f" AND {receipt_alias}.{q(_column_name(receipt, 'next_cursor'))}\n"
+            f"   = {receipt_alias}.{q(_column_name(receipt, 'start_cursor'))}\n"
+            f" AND {receipt_alias}."
+            f"{q(_column_name(receipt, 'next_processed_count'))}\n"
+            f"   = {checkpoint_alias}."
+            f"{q(_column_name(checkpoint, 'processed_count'))}\n"
+            f" AND {receipt_alias}.{q(_column_name(receipt, 'committed_at'))}\n"
+            f"   = {checkpoint_alias}.{q(_column_name(checkpoint, 'updated_at'))}\n"
+            f" AND {receipt_alias}.{q(_column_name(receipt, 'terminal'))} = 1\n"
+            f" AND {receipt_alias}.{q(_column_name(receipt, 'next_state'))}\n"
+            f"   = {checkpoint_alias}.{q(_column_name(checkpoint, 'state'))}"
+        )
     return _render_projection_view(
         relation,
         backend,
         expressions,
-        f"FROM {q(str(seal['table']))} AS certified\n"
-        f"JOIN {q(str(checkpoint['table']))} AS checkpoint\n"
-        f"  ON checkpoint.{q(_column_name(checkpoint, 'candidate_id'))}\n"
-        f"   = certified.{q(_column_name(seal, 'candidate_id'))}\n"
-        f" AND checkpoint.{q(_column_name(checkpoint, 'stage'))} "
-        f"IN ({stage_literals})\n"
-        f" AND checkpoint.{q(_column_name(checkpoint, 'state'))} "
-        f"= {state_literal('COMPLETE')}\n"
-        f"JOIN {q(str(receipt['table']))} AS receipt\n"
-        f"  ON receipt.{q(_column_name(receipt, 'candidate_id'))}\n"
-        f"   = checkpoint.{q(_column_name(checkpoint, 'candidate_id'))}\n"
-        f" AND receipt.{q(_column_name(receipt, 'stage'))}\n"
-        f"   = checkpoint.{q(_column_name(checkpoint, 'stage'))}\n"
-        f" AND receipt.{q(_column_name(receipt, 'committed_generation'))}\n"
-        f"   = checkpoint.{q(_column_name(checkpoint, 'generation'))}\n"
-        f" AND receipt.{q(_column_name(receipt, 'next_cursor'))}\n"
-        f"   = checkpoint.{q(_column_name(checkpoint, 'cursor'))}\n"
-        f" AND receipt.{q(_column_name(receipt, 'next_cursor'))}\n"
-        f"   = receipt.{q(_column_name(receipt, 'start_cursor'))}\n"
-        f" AND receipt.{q(_column_name(receipt, 'next_processed_count'))}\n"
-        f"   = checkpoint.{q(_column_name(checkpoint, 'processed_count'))}\n"
-        f" AND receipt.{q(_column_name(receipt, 'committed_at'))}\n"
-        f"   = checkpoint.{q(_column_name(checkpoint, 'updated_at'))}\n"
-        f" AND receipt.{q(_column_name(receipt, 'terminal'))} = 1\n"
-        f" AND receipt.{q(_column_name(receipt, 'next_state'))}\n"
-        f"   = checkpoint.{q(_column_name(checkpoint, 'state'))}\n"
-        f"GROUP BY certified.{q(_column_name(seal, 'candidate_id'))}\n"
-        f"HAVING {exact_stage_rows}",
+        f"FROM {q(str(seal['table']))} AS certified\n" + "\n".join(joins),
     )
 
 

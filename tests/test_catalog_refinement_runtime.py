@@ -1278,6 +1278,33 @@ def test_active_source_head_requires_all_five_analysis_seals(tmp_path: Path) -> 
         connector.close()
 
 
+def test_publication_projection_requires_each_fixed_terminal_receipt(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_catalog_database(tmp_path / "projection-receipts.sqlite3")
+    try:
+        analysis_id = _insert_active_source_head(connector)
+        candidate_id, _receipt_id = _insert_active_publication(connector, analysis_id)
+        projection_query = (
+            "SELECT create_count, rebuild_count, delete_count, new_galleries, "
+            "changed_galleries FROM catalog_publication_candidate_projections "
+            "WHERE candidate_id = %s"
+        )
+        assert connector.fetch_all(projection_query, (candidate_id,)) == [
+            (0, 0, 0, 0, 0)
+        ]
+
+        connector.execute(
+            "DELETE FROM catalog_publication_batch_receipt_seals "
+            "WHERE candidate_id = %s AND stage = %s",
+            (candidate_id, b"VALIDATE_DELETE"),
+        )
+
+        assert connector.fetch_all(projection_query, (candidate_id,)) == []
+    finally:
+        connector.close()
+
+
 def test_incremental_impact_accepts_complete_minimum_witness_families_and_uses_lookup_indexes(
     tmp_path: Path,
 ) -> None:

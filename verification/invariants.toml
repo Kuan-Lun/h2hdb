@@ -1361,8 +1361,8 @@ id = "runtime.production.schema-epoch"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "SchemaEpochRunner constructs only an admissible empty epoch, records and revalidates exact DDL, 4,646 bootstrap seeds per backend and all 25 semantic-obligation writer bindings, resumes committed create-only slices and idempotent seeds, runs wheel validators read-only, and publishes READY by exact compare-and-swap; full check deliberately performs the documented linear scan of the single sealed publication generation chain for exact nodes, edges, commits, arithmetic, no-fork/no-gap/no-orphan and maximum-head consistency, while quick readiness remains epoch-only O(1); the default generated wheel provider completes initialize, replay, read-only full check and readiness on fresh SQLite and live MariaDB."
-assumptions = ["The live MariaDB test remains an opt-in testcontainer integration gate."]
+claim = "SchemaEpochRunner constructs only an admissible empty epoch, records and revalidates exact DDL, 4,646 bootstrap seeds per backend and all 25 semantic-obligation writer bindings, resumes committed create-only slices and idempotent seeds, runs wheel validators read-only, and publishes READY by exact compare-and-swap; full check deliberately performs the documented linear scan of the single sealed publication generation chain for exact nodes, edges, commits, arithmetic, no-fork/no-gap/no-orphan and maximum-head consistency, while quick readiness remains epoch-only O(1); the default generated wheel provider completes initialize, replay, read-only full check and readiness on fresh SQLite and MariaDB 10.11.11."
+assumptions = ["The MariaDB 10.11.11 test remains an opt-in testcontainer integration gate."]
 [[evidence.location]]
 path = "src/h2hdb/schema_epoch.py"
 symbol = "SchemaEpochRunner"
@@ -1415,8 +1415,8 @@ id = "integration.live-mariadb.schema-epoch"
 layer = "integration"
 strength = "mariadb_integration"
 directness = "direct"
-claim = "Live MariaDB integration executes the production epoch runner through empty-database READY, read-only full revalidation, committed partial-DDL resume, committed seed resume, and fail-closed rejection with advisory-lock release; the default generated provider additionally initializes, replays and validates all 4,646 MariaDB seeds and 25 resolved writer bindings."
-assumptions = ["The live MariaDB tests remain opt-in testcontainer integration gates."]
+claim = "Live MariaDB 10.11.11 integration executes the production epoch runner through empty-database READY, read-only full revalidation, committed partial-DDL resume, committed seed resume, and fail-closed rejection with advisory-lock release; the default generated provider additionally initializes, replays and validates all 4,646 MariaDB seeds, all 25 resolved writer bindings, and the non-null publication-candidate projection metadata."
+assumptions = ["The MariaDB 10.11.11 tests remain opt-in testcontainer integration gates."]
 [[evidence.location]]
 path = "tests/test_schema_epoch_mariadb.py"
 symbol = "test_mariadb_epoch_empty_database_reaches_ready_and_releases_lock"
@@ -1435,7 +1435,7 @@ id = "integration.live-mariadb.operational-workflows"
 layer = "integration"
 strength = "mariadb_integration"
 directness = "direct"
-claim = "A live MariaDB 11 test applies the complete generated schema and seeds and executes production fencing, maintenance, allocation, queue, canonical hash-cache, typed event, activation and acknowledgement workflows while tracing the SELECT FOR UPDATE statements actually sent to the server."
+claim = "A live MariaDB 10.11.11 test applies the complete generated schema and seeds and executes production fencing, maintenance, allocation, queue, canonical hash-cache, typed event, activation and acknowledgement workflows while tracing the SELECT FOR UPDATE statements actually sent to the server."
 assumptions = ["The finite workflow omits exhaustion, forced stale allocator CAS, activation joined to the publication pointer transaction, deliberate event corruption, cleanup, and true SHA-256 collision or cache eviction."]
 [[evidence.location]]
 path = "tests/test_vnext_live_mariadb_operational.py"

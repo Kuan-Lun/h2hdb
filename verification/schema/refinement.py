@@ -2295,53 +2295,113 @@ def _render_derived_view(
             ("new_galleries", "VALIDATE_NEW_GALLERY"),
             ("changed_galleries", "VALIDATE_CHANGED_GALLERY"),
         )
-        expressions = {"candidate_id": f"certified.{column(seal, 'candidate_id')}"}
-        for attribute, stage in count_stages:
-            count_expression = (
-                "MAX(CASE WHEN checkpoint."
-                f"{column(checkpoint, 'stage')} = {stage_literal(stage)} "
-                f"THEN receipt.{column(receipt, 'next_processed_count')} END)"
+
+        if backend == "sqlite":
+            inner_expressions = {
+                "candidate_id": f"certified.{column(seal, 'candidate_id')}"
+            }
+            for attribute, stage in count_stages:
+                checkpoint_alias = f"checkpoint_{attribute}"
+                receipt_alias = f"receipt_{attribute}"
+                inner_expressions[attribute] = (
+                    f"(SELECT {receipt_alias}."
+                    f"{column(receipt, 'next_processed_count')}\n"
+                    f"   FROM {table(checkpoint)} AS {checkpoint_alias}\n"
+                    f"   JOIN {table(receipt)} AS {receipt_alias}\n"
+                    f"     ON {receipt_alias}.{column(receipt, 'candidate_id')}\n"
+                    f"      = {checkpoint_alias}."
+                    f"{column(checkpoint, 'candidate_id')}\n"
+                    f"    AND {receipt_alias}.{column(receipt, 'stage')}\n"
+                    f"      = {checkpoint_alias}.{column(checkpoint, 'stage')}\n"
+                    f"    AND {receipt_alias}."
+                    f"{column(receipt, 'committed_generation')}\n"
+                    f"      = {checkpoint_alias}."
+                    f"{column(checkpoint, 'generation')}\n"
+                    f"    AND {receipt_alias}.{column(receipt, 'next_cursor')}\n"
+                    f"      = {checkpoint_alias}.{column(checkpoint, 'cursor')}\n"
+                    f"    AND {receipt_alias}.{column(receipt, 'next_cursor')}\n"
+                    f"      = {receipt_alias}.{column(receipt, 'start_cursor')}\n"
+                    f"    AND {receipt_alias}."
+                    f"{column(receipt, 'next_processed_count')}\n"
+                    f"      = {checkpoint_alias}."
+                    f"{column(checkpoint, 'processed_count')}\n"
+                    f"    AND {receipt_alias}.{column(receipt, 'committed_at')}\n"
+                    f"      = {checkpoint_alias}.{column(checkpoint, 'updated_at')}\n"
+                    f"    AND {receipt_alias}.{column(receipt, 'terminal')} = 1\n"
+                    f"    AND {receipt_alias}.{column(receipt, 'next_state')}\n"
+                    f"      = {checkpoint_alias}.{column(checkpoint, 'state')}\n"
+                    f"  WHERE {checkpoint_alias}."
+                    f"{column(checkpoint, 'candidate_id')}\n"
+                    f"      = certified.{column(seal, 'candidate_id')}\n"
+                    f"    AND {checkpoint_alias}.{column(checkpoint, 'stage')} "
+                    f"= {stage_literal(stage)}\n"
+                    f"    AND {checkpoint_alias}.{column(checkpoint, 'state')} "
+                    f"= {state_literal('COMPLETE')})"
+                )
+            inner_projection = ",\n    ".join(
+                f"{inner_expressions[item.attribute]} AS {quote(item.column)}"
+                for item in relation.columns
             )
-            if backend == "mariadb":
-                count_expression = f"CAST(COALESCE({count_expression}, 0) AS UNSIGNED)"
-            expressions[attribute] = count_expression
-        stage_literals = ", ".join(stage_literal(stage) for _, stage in count_stages)
-        exact_stage_rows = " AND ".join(
-            "SUM(CASE WHEN checkpoint."
-            f"{column(checkpoint, 'stage')} = {stage_literal(stage)} "
-            "THEN 1 ELSE 0 END) = 1"
-            for _, stage in count_stages
-        )
-        from_sql = (
-            f"FROM {table(seal)} AS certified\n"
-            f"JOIN {table(checkpoint)} AS checkpoint\n"
-            f"  ON checkpoint.{column(checkpoint, 'candidate_id')}\n"
-            f"   = certified.{column(seal, 'candidate_id')}\n"
-            f" AND checkpoint.{column(checkpoint, 'stage')} "
-            f"IN ({stage_literals})\n"
-            f" AND checkpoint.{column(checkpoint, 'state')} "
-            f"= {state_literal('COMPLETE')}\n"
-            f"JOIN {table(receipt)} AS receipt\n"
-            f"  ON receipt.{column(receipt, 'candidate_id')}\n"
-            f"   = checkpoint.{column(checkpoint, 'candidate_id')}\n"
-            f" AND receipt.{column(receipt, 'stage')}\n"
-            f"   = checkpoint.{column(checkpoint, 'stage')}\n"
-            f" AND receipt.{column(receipt, 'committed_generation')}\n"
-            f"   = checkpoint.{column(checkpoint, 'generation')}\n"
-            f" AND receipt.{column(receipt, 'next_cursor')}\n"
-            f"   = checkpoint.{column(checkpoint, 'cursor')}\n"
-            f" AND receipt.{column(receipt, 'next_cursor')}\n"
-            f"   = receipt.{column(receipt, 'start_cursor')}\n"
-            f" AND receipt.{column(receipt, 'next_processed_count')}\n"
-            f"   = checkpoint.{column(checkpoint, 'processed_count')}\n"
-            f" AND receipt.{column(receipt, 'committed_at')}\n"
-            f"   = checkpoint.{column(checkpoint, 'updated_at')}\n"
-            f" AND receipt.{column(receipt, 'terminal')} = 1\n"
-            f" AND receipt.{column(receipt, 'next_state')}\n"
-            f"   = checkpoint.{column(checkpoint, 'state')}\n"
-            f"GROUP BY certified.{column(seal, 'candidate_id')}\n"
-            f"HAVING {exact_stage_rows}"
-        )
+            expressions = {
+                item.attribute: f"exact.{quote(item.column)}"
+                for item in relation.columns
+            }
+            complete_counts = "\n  AND ".join(
+                f"exact.{column(relation, attribute)} IS NOT NULL"
+                for attribute, _ in count_stages
+            )
+            from_sql = (
+                f"FROM (\n"
+                f"  SELECT\n"
+                f"    {inner_projection}\n"
+                f"  FROM {table(seal)} AS certified\n"
+                f") AS exact\n"
+                f"WHERE {complete_counts}"
+            )
+            return _render_derived_projection(
+                relation,
+                backend,
+                expressions,
+                from_sql,
+                idempotent=idempotent,
+            )
+
+        expressions = {"candidate_id": f"certified.{column(seal, 'candidate_id')}"}
+        joins: list[str] = []
+        for attribute, stage in count_stages:
+            checkpoint_alias = f"checkpoint_{attribute}"
+            receipt_alias = f"receipt_{attribute}"
+            expressions[attribute] = (
+                f"{receipt_alias}.{column(receipt, 'next_processed_count')}"
+            )
+            joins.append(
+                f"JOIN {table(checkpoint)} AS {checkpoint_alias}\n"
+                f"  ON {checkpoint_alias}.{column(checkpoint, 'candidate_id')}\n"
+                f"   = certified.{column(seal, 'candidate_id')}\n"
+                f" AND {checkpoint_alias}.{column(checkpoint, 'stage')} "
+                f"= {stage_literal(stage)}\n"
+                f" AND {checkpoint_alias}.{column(checkpoint, 'state')} "
+                f"= {state_literal('COMPLETE')}\n"
+                f"JOIN {table(receipt)} AS {receipt_alias}\n"
+                f"  ON {receipt_alias}.{column(receipt, 'candidate_id')}\n"
+                f"   = {checkpoint_alias}.{column(checkpoint, 'candidate_id')}\n"
+                f" AND {receipt_alias}.{column(receipt, 'stage')}\n"
+                f"   = {checkpoint_alias}.{column(checkpoint, 'stage')}\n"
+                f" AND {receipt_alias}.{column(receipt, 'committed_generation')}\n"
+                f"   = {checkpoint_alias}.{column(checkpoint, 'generation')}\n"
+                f" AND {receipt_alias}.{column(receipt, 'next_cursor')}\n"
+                f"   = {checkpoint_alias}.{column(checkpoint, 'cursor')}\n"
+                f" AND {receipt_alias}.{column(receipt, 'next_cursor')}\n"
+                f"   = {receipt_alias}.{column(receipt, 'start_cursor')}\n"
+                f" AND {receipt_alias}.{column(receipt, 'next_processed_count')}\n"
+                f"   = {checkpoint_alias}.{column(checkpoint, 'processed_count')}\n"
+                f" AND {receipt_alias}.{column(receipt, 'committed_at')}\n"
+                f"   = {checkpoint_alias}.{column(checkpoint, 'updated_at')}\n"
+                f" AND {receipt_alias}.{column(receipt, 'terminal')} = 1\n"
+                f" AND {receipt_alias}.{column(receipt, 'next_state')}\n"
+                f"   = {checkpoint_alias}.{column(checkpoint, 'state')}"
+            )
+        from_sql = f"FROM {table(seal)} AS certified\n" + "\n".join(joins)
     elif pattern == "batch_receipt_derived":
         (stored,) = sources
         expressions = {

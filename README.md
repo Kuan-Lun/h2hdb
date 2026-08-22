@@ -134,6 +134,10 @@ Rebuild the local environment after toolchain changes with:
 ```
 
 For MariaDB, also set `host`, `port`, `user`, `password`, and `database`.
+The supported MariaDB baseline is 10.11.11, including Synology's
+10.11.11-1551 package build. The integration gate pins the upstream
+`mariadb:10.11.11` image and verifies the server version before creating its
+test database.
 Read-only consumers should use `"access_mode": "read-only"` and a database
 account limited to the metadata/read privileges required by schema validation
 and application reads.
@@ -263,7 +267,7 @@ has real evidence. Schema and Lean success must not be presented as strict
 coverage success.
 
 SQLite tests run locally. Set `H2HDB_TEST_MARIADB=1` with a working Docker
-daemon to include MariaDB testcontainer cases.
+daemon to include the pinned MariaDB 10.11.11 testcontainer cases.
 
 The distribution boundary can be checked with:
 
@@ -297,7 +301,7 @@ untracked files and automatically runs the complete local release gate:
 - Black, Ruff, and mypy;
 - coverage-contract and generated-schema drift checks;
 - Lean proofs and the required small TLC profiles;
-- the complete SQLite and MariaDB test suite; and
+- the complete SQLite and MariaDB 10.11.11 test suite; and
 - the installed-distribution boundary check.
 
 The gate requires the development environment, Docker for MariaDB, the Lean

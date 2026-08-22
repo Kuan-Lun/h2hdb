@@ -29,7 +29,7 @@ REQUIRED_CHECKS = (
     "coverage-contract",
     "schema-drift",
     "lean",
-    "sqlite-mariadb-tests",
+    "sqlite-mariadb-10.11.11-tests",
     "tlc-small",
     "distribution-boundary",
 )
@@ -262,7 +262,7 @@ def _run_release_gate(tree: str, version: Version, *, refresh: bool) -> None:
     test_environment = os.environ.copy()
     test_environment["H2HDB_TEST_MARIADB"] = "1"
     _run(
-        "SQLite and MariaDB tests",
+        "SQLite and MariaDB 10.11.11 tests",
         (python, "-m", "pytest"),
         environment=test_environment,
     )

@@ -24,6 +24,11 @@ dedicated account with the metadata/read privileges required by the full schema
 check and application reads. Do not create a second writable projection
 database.
 
+The MariaDB compatibility baseline is server version 10.11.11, including the
+Synology 10.11.11-1551 package build. Release integration tests pin the
+upstream `mariadb:10.11.11` image and reject a different server version before
+schema initialization.
+
 Only a deployment init job runs schema construction. Consumer containers run a
 full check at startup and may use the lightweight readiness probe separately.
 

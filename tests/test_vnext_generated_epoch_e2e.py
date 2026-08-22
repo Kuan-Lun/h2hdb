@@ -56,6 +56,27 @@ def _exercise_generated_epoch(config: CoreConfig) -> None:
         assert connector.check_table_exists("h2hdb_schema_epoch")
         assert not connector.check_table_exists("catalog_build_discoveries")
         assert not connector.check_table_exists("h2hdb_schema_migrations")
+        if config.database.sql_type == "mariadb":
+            assert (
+                connector.fetch_all(
+                    """
+                SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = %s
+                ORDER BY ORDINAL_POSITION
+                """,
+                    ("catalog_publication_candidate_projections",),
+                )
+                == [
+                    ("candidate_id", "binary(16)", "NO"),
+                    ("create_count", "bigint(21) unsigned", "NO"),
+                    ("rebuild_count", "bigint(21) unsigned", "NO"),
+                    ("delete_count", "bigint(21) unsigned", "NO"),
+                    ("new_galleries", "bigint(21) unsigned", "NO"),
+                    ("changed_galleries", "bigint(21) unsigned", "NO"),
+                ]
+            )
 
     backend = config.database.sql_type
     backends = cast(Mapping[str, Mapping[str, object]], ARTIFACT["backends"])

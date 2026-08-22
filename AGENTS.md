@@ -208,7 +208,9 @@ before opening or mutating a database. Consumers never initialize schema.
 
 Test every shared schema, transaction, connector, validator, or repository
 change on SQLite. MariaDB cases use testcontainers and are enabled with
-`H2HDB_TEST_MARIADB=1`; report exactly when Docker is unavailable.
+`H2HDB_TEST_MARIADB=1`; they pin MariaDB 10.11.11, the server version supported
+by Synology package build 10.11.11-1551. Report exactly when Docker is
+unavailable.
 
 ## Working-tree discipline
 

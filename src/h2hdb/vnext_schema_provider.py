@@ -724,7 +724,7 @@ def _canonicalize_mariadb_view_presentation(
 ) -> tuple[str, ...]:
     """Remove only MariaDB's structurally recognizable SELECT rewrites.
 
-    MariaDB 11 canonicalizes generated views in three additional ways:
+    Supported MariaDB releases canonicalize generated views in these ways:
 
     * ``NOT EXISTS`` is stored as ``!exists``;
     * a complete joined ``FROM`` table-reference and its complete ``ON``

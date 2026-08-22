@@ -1047,6 +1047,74 @@ def test_batch4_refinement_and_provider_views_are_exactly_equal(
     assert "NOT EXISTS" in endpoint_sql
 
 
+@pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
+def test_publication_candidate_projection_uses_fixed_terminal_receipt_joins(
+    backend: str,
+) -> None:
+    logical = refinement.load_logical_schema(CATALOG)
+    physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
+    relation_by_name = {
+        relation.relation: relation for relation in physical_spec.relations
+    }
+    expected = refinement._render_view(
+        relation_by_name["publication_candidate_projection"],
+        relation_by_name,
+        backend,
+        idempotent=True,
+    )
+    artifact = cast(dict[str, Any], ARTIFACT)
+    provider_slices = dict(artifact["backends"][backend]["slices"])
+    provider_statements = provider_slices["relation:publication_candidate_projection"]
+
+    assert len(provider_statements) == 1
+    assert provider_statements[0][3] == expected
+    for forbidden in (
+        "MAX(",
+        "SUM(",
+        "COUNT(",
+        "COALESCE(",
+        "GROUP BY",
+        "HAVING",
+    ):
+        assert forbidden not in expected
+
+    quote = '"' if backend == "sqlite" else "`"
+    checkpoint_table = f"{quote}catalog_publication_checkpoints{quote}"
+    receipt_table = f"{quote}catalog_publication_batch_receipts{quote}"
+    checkpoint_clause = "FROM" if backend == "sqlite" else "JOIN"
+    assert expected.count(f"{checkpoint_clause} {checkpoint_table} AS checkpoint_") == 5
+    assert expected.count(f"JOIN {receipt_table} AS receipt_") == 5
+    count_stages = (
+        ("create_count", "VALIDATE_CREATE"),
+        ("rebuild_count", "VALIDATE_REBUILD"),
+        ("delete_count", "VALIDATE_DELETE"),
+        ("new_galleries", "VALIDATE_NEW_GALLERY"),
+        ("changed_galleries", "VALIDATE_CHANGED_GALLERY"),
+    )
+    for attribute, stage in count_stages:
+        stage_literal = (
+            "X'" + stage.encode("ascii").hex().upper() + "'"
+            if backend == "sqlite"
+            else f"'{stage}'"
+        )
+        if backend == "sqlite":
+            assert (
+                f"exact.{quote}{attribute}{quote} AS {quote}{attribute}{quote}"
+            ) in expected
+            assert (f"exact.{quote}{attribute}{quote} IS NOT NULL") in expected
+            assert (
+                f"(SELECT receipt_{attribute}." f"{quote}next_processed_count{quote}"
+            ) in expected
+        else:
+            assert (
+                f"receipt_{attribute}.{quote}next_processed_count{quote} AS "
+                f"{quote}{attribute}{quote}"
+            ) in expected
+        assert (
+            f"checkpoint_{attribute}.{quote}stage{quote} = {stage_literal}"
+        ) in expected
+
+
 def test_fresh_complete_sqlite_ddl_refines_physical_spec() -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
