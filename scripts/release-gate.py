@@ -305,7 +305,7 @@ def _run_release_gate(tree: str, version: Version, *, refresh: bool) -> None:
     print(f"\nLocal release gate passed; wrote {receipt}")
 
 
-def _pre_commit(*, refresh: bool) -> None:
+def _pre_commit() -> None:
     staged_pyproject = _completed_git(
         "diff", "--cached", "--quiet", "--exit-code", "--", "pyproject.toml"
     )
@@ -331,12 +331,11 @@ def _pre_commit(*, refresh: bool) -> None:
         )
 
     _assert_no_unstaged_or_untracked_files()
-    tree = _git("write-tree")
     print(
         f"project.version {change}: {previous or '<none>'} -> {current}; "
-        "running the local release gate."
+        "staged release metadata is valid. The complete local release gate "
+        "will run before push."
     )
-    _run_release_gate(tree, current, refresh=refresh)
 
 
 def _pre_push(document: str) -> None:
@@ -360,12 +359,20 @@ def _pre_push(document: str) -> None:
             )
         tree = _git("rev-parse", f"{update.local_oid}^{{tree}}")
         if not _has_valid_receipt(tree, current):
-            raise ReleaseGateError(
-                f"Push would publish project.version {current}, but tree {tree} has no "
-                "valid local release receipt. Commit the version increase with the "
-                "installed pre-commit hook, or run "
-                "`uv run --no-sync python scripts/release-gate.py run`."
+            head = _git("rev-parse", "HEAD")
+            if update.local_oid != head:
+                raise ReleaseGateError(
+                    f"Push would publish project.version {current}, but tree {tree} "
+                    "has no valid local release receipt and is not the checked-out "
+                    "HEAD. Check out the exact commit and run "
+                    "`uv run --no-sync python scripts/release-gate.py run`."
+                )
+            _assert_clean_head()
+            print(
+                f"No valid local release receipt for version {current} ({tree}); "
+                "running the complete gate before push."
             )
+            _run_release_gate(tree, current, refresh=False)
         print(f"Validated local release receipt for version {current} ({tree}).")
 
 
@@ -392,13 +399,10 @@ def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    pre_commit = subparsers.add_parser(
-        "pre-commit", help="run the gate when the staged project.version increases"
-    )
-    pre_commit.add_argument("--refresh", action="store_true")
+    subparsers.add_parser("pre-commit", help="validate a staged project.version change")
 
     pre_push = subparsers.add_parser(
-        "pre-push", help="validate receipts for version-increasing master pushes"
+        "pre-push", help="run or validate the gate for version-increasing master pushes"
     )
     pre_push.add_argument("remote_name", nargs="?", default="")
     pre_push.add_argument("remote_url", nargs="?", default="")
@@ -416,7 +420,7 @@ def main() -> None:
     arguments = _arguments()
     try:
         if arguments.command == "pre-commit":
-            _pre_commit(refresh=bool(arguments.refresh))
+            _pre_commit()
         elif arguments.command == "pre-push":
             _pre_push(sys.stdin.read())
         elif arguments.command == "run":

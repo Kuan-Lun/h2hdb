@@ -52,10 +52,10 @@ editable-install smoke test.
 
 Install the repository Git hooks once per clone with
 `./scripts/install-git-hooks.sh`. An intentional `project.version` increase is
-a release boundary: its commit/merge hook automatically runs the complete local
-release gate and writes a receipt bound to the exact staged tree. An agent must
-not bypass these hooks with `--no-verify` or increase the version merely to test
-the gate.
+a release boundary: its commit/merge hook performs cheap version and clean-tree
+validation, while pre-push runs the complete local release gate when the exact
+committed tree lacks a valid receipt. An agent must not bypass these hooks with
+`--no-verify` or increase the version merely to test the gate.
 
 ## Manifest-first schema workflow
 
@@ -139,8 +139,8 @@ SQLite/MariaDB suite, required small TLC profiles, and the distribution-boundary
 probe. It deliberately excludes deep TLC. A successful receipt is stored in
 Git metadata and is valid only for its exact tree, project version, gate profile,
 and required-check set. Never commit or fabricate a receipt. If a version bump
-is staged, leave no unstaged or untracked files: the pre-commit hook must verify
-the exact candidate tree that will become the commit.
+is staged, leave no unstaged or untracked files: pre-commit validates the release
+metadata, and pre-push verifies the clean committed tree before publication.
 
 ## Architecture rules
 

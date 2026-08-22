@@ -83,7 +83,7 @@ def test_zero_oid_detection_accepts_only_nonempty_all_zero_values() -> None:
     assert not gate._is_zero_oid("0" * 39 + "1")
 
 
-def test_version_increase_pre_commit_runs_gate_for_the_staged_tree(
+def test_version_increase_pre_commit_defers_the_complete_gate_until_push(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -100,21 +100,60 @@ def test_version_increase_pre_commit_runs_gate_for_the_staged_tree(
         "_version_from_spec",
         lambda specification, missing_ok=False: versions[specification],
     )
-    monkeypatch.setattr(gate, "_assert_no_unstaged_or_untracked_files", lambda: None)
-    monkeypatch.setattr(gate, "_git", lambda *arguments: "candidate-tree")
+    clean_checks: list[None] = []
+    monkeypatch.setattr(
+        gate,
+        "_assert_no_unstaged_or_untracked_files",
+        lambda: clean_checks.append(None),
+    )
+    monkeypatch.setattr(
+        gate,
+        "_run_release_gate",
+        lambda *arguments, **keywords: pytest.fail(
+            "pre-commit must not run the complete release gate"
+        ),
+    )
+
+    gate._pre_commit()
+
+    assert clean_checks == [None]
+
+
+def test_version_increase_pre_push_runs_gate_when_exact_tree_lacks_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    versions = {
+        "local-oid:pyproject.toml": Version("1.1"),
+        "remote-oid:pyproject.toml": Version("1.0"),
+    }
+    monkeypatch.setattr(
+        gate,
+        "_version_from_spec",
+        lambda specification, missing_ok=False: versions[specification],
+    )
+    git_values = {
+        ("rev-parse", "local-oid^{tree}"): "candidate-tree",
+        ("rev-parse", "HEAD"): "local-oid",
+    }
+    monkeypatch.setattr(gate, "_git", lambda *arguments: git_values[arguments])
+    monkeypatch.setattr(gate, "_has_valid_receipt", lambda tree, version: False)
+    clean_checks: list[None] = []
+    monkeypatch.setattr(gate, "_assert_clean_head", lambda: clean_checks.append(None))
     calls: list[tuple[str, Version, bool]] = []
     monkeypatch.setattr(
         gate,
         "_run_release_gate",
         lambda tree, version, refresh: calls.append((tree, version, refresh)),
     )
+    update = "refs/heads/master local-oid refs/heads/master remote-oid\n"
 
-    gate._pre_commit(refresh=False)
+    gate._pre_push(update)
 
+    assert clean_checks == [None]
     assert calls == [("candidate-tree", Version("1.1"), False)]
 
 
-def test_version_increase_pre_push_requires_exact_tree_receipt(
+def test_version_increase_pre_push_reuses_exact_tree_receipt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     versions = {
@@ -127,14 +166,45 @@ def test_version_increase_pre_push_requires_exact_tree_receipt(
         lambda specification, missing_ok=False: versions[specification],
     )
     monkeypatch.setattr(gate, "_git", lambda *arguments: "candidate-tree")
+    monkeypatch.setattr(gate, "_has_valid_receipt", lambda tree, version: True)
+    monkeypatch.setattr(
+        gate,
+        "_assert_clean_head",
+        lambda: pytest.fail("a valid receipt must not require a clean worktree"),
+    )
+    monkeypatch.setattr(
+        gate,
+        "_run_release_gate",
+        lambda *arguments, **keywords: pytest.fail(
+            "a valid receipt must not rerun the release gate"
+        ),
+    )
+
+    gate._pre_push("refs/heads/master local-oid refs/heads/master remote-oid\n")
+
+
+def test_version_increase_pre_push_rejects_unchecked_out_tree_without_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    versions = {
+        "local-oid:pyproject.toml": Version("1.1"),
+        "remote-oid:pyproject.toml": Version("1.0"),
+    }
+    monkeypatch.setattr(
+        gate,
+        "_version_from_spec",
+        lambda specification, missing_ok=False: versions[specification],
+    )
+    git_values = {
+        ("rev-parse", "local-oid^{tree}"): "candidate-tree",
+        ("rev-parse", "HEAD"): "other-oid",
+    }
+    monkeypatch.setattr(gate, "_git", lambda *arguments: git_values[arguments])
     monkeypatch.setattr(gate, "_has_valid_receipt", lambda tree, version: False)
     update = "refs/heads/master local-oid refs/heads/master remote-oid\n"
 
-    with pytest.raises(gate.ReleaseGateError, match="no valid local release receipt"):
+    with pytest.raises(gate.ReleaseGateError, match="not the checked-out HEAD"):
         gate._pre_push(update)
-
-    monkeypatch.setattr(gate, "_has_valid_receipt", lambda tree, version: True)
-    gate._pre_push(update)
 
 
 def test_initial_remote_master_push_does_not_count_as_a_release(

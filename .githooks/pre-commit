@@ -6,8 +6,8 @@ cd "$repo_root"
 
 git diff --cached --check
 
-# Ordinary commits stay instant. The Python gate is needed only when the
-# candidate commit changes pyproject.toml.
+# Ordinary commits stay instant. A pyproject.toml change receives only the
+# cheap staged-version policy here; the complete release gate runs pre-push.
 if git diff --cached --quiet -- pyproject.toml; then
     exit 0
 fi

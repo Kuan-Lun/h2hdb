@@ -294,9 +294,11 @@ VS Code's built-in Git and command-line Git honor the installed hooks. GitHub
 web edits and clones where the installer has not run do not.
 
 Ordinary commits and merges do not run the expensive release suite. When the
-staged `project.version` in `pyproject.toml` increases, the pre-commit or
-pre-merge-commit hook requires the candidate tree to have no unstaged or
-untracked files and automatically runs the complete local release gate:
+staged `project.version` in `pyproject.toml` changes, the pre-commit or
+pre-merge-commit hook performs only the cheap version and clean-tree policy.
+For a version-increasing `master` push, the pre-push hook reuses a matching
+receipt or automatically runs the complete local release gate against a clean,
+checked-out `HEAD`:
 
 - Black, Ruff, and mypy;
 - coverage-contract and generated-schema drift checks;
@@ -308,9 +310,8 @@ The gate requires the development environment, Docker for MariaDB, the Lean
 toolchain declared by `lean-toolchain`, and either host Java or Docker for TLC.
 Deep TLC remains an explicit manual check. A successful gate writes a local,
 non-versioned receipt under the repository's Git metadata and binds it to the
-exact staged tree and project version. The pre-push hook allows a
-version-increasing `master` push only when that receipt is valid, so retrying
-the same commit does not rerun the suite.
+exact committed tree and project version. The push proceeds only when that
+receipt is valid, so retrying the same commit does not rerun the suite.
 
 To verify an already committed clean `HEAD` explicitly, or to force a fresh
 verification, run:
