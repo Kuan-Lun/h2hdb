@@ -541,7 +541,7 @@ class VNextCatalogReaderRepository:
             raise VNextCatalogReadError(
                 "publication hydration keys must be unique and bounded"
             )
-        selected_cte = _selected_keys_cte(len(selected))
+        selected_cte = _selected_keys_cte(len(selected), backend=self._backend)
         rows = connector.fetch_all(
             f"WITH selected(publication_key) AS ({selected_cte}), "
             "family_keys(publication_key) AS ("
@@ -773,15 +773,15 @@ class VNextCatalogReaderRepository:
             )
         return result
 
-    @staticmethod
     def _contributors_for_publications(
+        self,
         connector: SQLConnector,
         loader: _CanonicalLoader,
         *,
         revision: int,
         publication_keys: tuple[bytes, ...],
     ) -> dict[bytes, tuple[CatalogContributor, ...]]:
-        selected_cte = _selected_keys_cte(len(publication_keys))
+        selected_cte = _selected_keys_cte(len(publication_keys), backend=self._backend)
         rows = connector.fetch_all(
             f"WITH selected(publication_key) AS ({selected_cte}), "
             "family_keys(revision, publication_key, position) AS ("
@@ -906,14 +906,14 @@ class VNextCatalogReaderRepository:
             )
         return {key: tuple(values) for key, values in grouped.items()}
 
-    @staticmethod
     def _artifact_facts_for_publications(
+        self,
         connector: SQLConnector,
         *,
         revision: int,
         publication_keys: tuple[bytes, ...],
     ) -> dict[bytes, tuple[bytes, int, bytes, bytes]]:
-        selected_cte = _selected_keys_cte(len(publication_keys))
+        selected_cte = _selected_keys_cte(len(publication_keys), backend=self._backend)
         rows = connector.fetch_all(
             f"WITH selected(publication_key) AS ({selected_cte}), "
             "family_keys(revision, publication_key) AS ("
@@ -969,8 +969,8 @@ class VNextCatalogReaderRepository:
             )
         return result
 
-    @staticmethod
     def _hydrate_artifact(
+        self,
         connector: SQLConnector,
         loader: _CanonicalLoader,
         *,
@@ -980,7 +980,7 @@ class VNextCatalogReaderRepository:
         expected_artifact_sha256: bytes | None = None,
     ) -> CatalogArtifact | None:
         key = require_digest32(publication_key, field="publication_key")
-        facts = VNextCatalogReaderRepository._artifact_facts_for_publications(
+        facts = self._artifact_facts_for_publications(
             connector,
             revision=revision,
             publication_keys=(key,),
@@ -1107,9 +1107,15 @@ def _sql_placeholders(count: int) -> str:
     return ", ".join("%s" for _ in range(count))
 
 
-def _selected_keys_cte(count: int) -> str:
+def _selected_keys_cte(count: int, *, backend: str) -> str:
     if count <= 0:
         raise ValueError("selected-key count must be positive")
+    if backend not in {"sqlite", "mariadb"}:
+        raise ValueError(f"unsupported SQL backend {backend!r}")
+    parameter = "CAST(%s AS BINARY(32))" if backend == "mariadb" else "%s"
     return " UNION ALL ".join(
-        ("SELECT %s AS publication_key", *("SELECT %s" for _ in range(count - 1)))
+        (
+            f"SELECT {parameter} AS publication_key",
+            *(f"SELECT {parameter}" for _ in range(count - 1)),
+        )
     )

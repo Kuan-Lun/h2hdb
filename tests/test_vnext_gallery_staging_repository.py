@@ -654,6 +654,67 @@ def test_file_response_loss_replay_rejects_normalized_leaf_corruption_zero_write
         connector.close()
 
 
+def test_filesystem_replay_query_is_driven_by_the_binary_anchor() -> None:
+    query = staging_module._filesystem_family_query(2)
+
+    assert "WITH expected_keys" not in query
+    assert "SELECT %s AS file_key" not in query
+    assert "FROM catalog_gallery_observation_file_filesystem_anchors AS a" in query
+    assert "a.file_key IN (%s, %s)" in query
+
+
+def test_file_replay_reads_raw_binary_key_and_rejects_partial_filesystem_family(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "binary-filesystem-replay.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        build_id, gallery_id = _seed_working_gallery(connector, turn)
+        handle = _begin(connector, gate, turn, build_id, gallery_id, now=20)
+        source = FileObservation(
+            b"directory-0000",
+            FileContentReceipt.from_parts(()),
+            100,
+            1_000,
+            0,
+            0,
+        )
+        key = file_key(source.name_bytes)
+        assert key == bytes.fromhex(
+            "e8394e0eee04798de0bf3632768e6bbbc887b3e5dc3ed93de6935b7ed6db7b54"
+        )
+        command = FileBatchCommand(
+            (source,),
+            True,
+            BatchAttempt(b"f" * 16, None),
+        )
+        _put_files(connector, gate, turn, handle, command, now=21)
+        assert _put_files(connector, gate, turn, handle, command, now=22).replayed
+
+        connector.execute(
+            "DELETE FROM catalog_gallery_observation_file_filesystem_seals "
+            "WHERE gallery_id = %s AND observation_id = %s AND file_key = %s",
+            (handle.gallery_id, handle.observation_id, key),
+        )
+        before = _request_snapshot(connector)
+        with (
+            patch.object(connector, "execute", side_effect=AssertionError("write")),
+            patch.object(
+                connector,
+                "execute_affected",
+                side_effect=AssertionError("write"),
+            ),
+            pytest.raises(
+                GalleryStagingConflictError,
+                match="filesystem family is incomplete",
+            ),
+        ):
+            _put_files(connector, gate, turn, handle, command, now=23)
+        assert _request_snapshot(connector) == before
+    finally:
+        connector.close()
+
+
 def test_tag_response_loss_replay_validates_exact_canonical_payload_zero_write(
     tmp_path: Path,
 ) -> None:

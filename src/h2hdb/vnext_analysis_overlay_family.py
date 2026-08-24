@@ -792,27 +792,22 @@ def _preflight_impacted_provenance_page(
     keys = tuple(sorted({key for _gallery, key in entries}))
     if len(keys) > _MAX_PROVENANCE_PAGE_ROWS:
         raise ValueError(f"{label} page has too many distinct keys")
-    proposed = " UNION ALL ".join(
-        "SELECT %s AS key_value" if index == 0 else "SELECT %s"
-        for index, _key in enumerate(keys)
-    )
     family_sources = (anchor_table, provenance_table, witness_table, seal_table)
-    key_union = " UNION ".join(
+    key_placeholders = ", ".join("%s" for _key in keys)
+    proposed = " UNION ".join(
         f"SELECT stored.analysis_id, stored.{key_column} FROM {table} AS stored "
-        f"JOIN proposed ON proposed.key_value = stored.{key_column} "
-        "WHERE stored.analysis_id = %s"
+        "WHERE stored.analysis_id = %s "
+        f"AND stored.{key_column} IN ({key_placeholders})"
         for table in family_sources
     )
-    parameters: list[Any] = [*keys]
+    parameters: list[Any] = []
     for _table in family_sources:
-        parameters.append(analysis_id)
+        parameters.extend((analysis_id, *keys))
     page_start = entries[0][0]
     parameters.extend((page_start, _PROVENANCE_QUERY_LIMIT))
     rows = connector.fetch_all(
-        "WITH proposed(key_value) AS ("
+        "WITH proposed(analysis_id, key_value) AS ("
         + proposed
-        + "), family_keys(analysis_id, key_value) AS ("
-        + key_union
         + ") SELECT keyset.key_value, anchor.analysis_id, witness.analysis_id, "
         "witness.witness_gallery_id, seal.analysis_id, "
         "witness_provenance.analysis_id, CASE WHEN NOT EXISTS ("
@@ -825,7 +820,7 @@ def _preflight_impacted_provenance_page(
         "WHERE page_or_future.analysis_id = keyset.analysis_id "
         f"AND page_or_future.{key_column} = keyset.key_value "
         "AND page_or_future.gallery_id >= %s"
-        ") THEN 1 ELSE 0 END FROM family_keys AS keyset "
+        ") THEN 1 ELSE 0 END FROM proposed AS keyset "
         f"LEFT JOIN {anchor_table} AS anchor "
         "ON anchor.analysis_id = keyset.analysis_id "
         f"AND anchor.{key_column} = keyset.key_value "

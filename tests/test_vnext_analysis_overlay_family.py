@@ -20,8 +20,10 @@ from h2hdb.vnext_analysis_overlay_family import (
     ensure_analysis_content_owner_shadow_family,
     ensure_analysis_file_hash_decision_shadow_family,
     load_analysis_impacted_content_key_family,
+    load_analysis_impacted_gid_key_family,
     record_analysis_impacted_content_provenance,
     record_analysis_impacted_content_provenance_page,
+    record_analysis_impacted_gid_provenance_page,
     require_complete_analysis_impacted_content_keyspace,
     require_exact_analysis_impacted_content_provenance_page,
 )
@@ -113,13 +115,9 @@ def test_provenance_page_uses_one_bounded_preflight_and_one_replay_query(
     connector = _database(tmp_path / "analysis-provenance-page.sqlite3")
     try:
         analysis = b"p" * 16
-        first = b"1" * 32
-        second = b"2" * 32
-        entries = tuple(
-            (gallery, content)
-            for gallery in range(1, 129)
-            for content in (first, second)
-        )
+        contents = tuple(index.to_bytes(32, "big") for index in range(1, 257))
+        first, second = contents[:2]
+        entries = tuple(enumerate(contents, start=1))
         with patch.object(
             connector,
             "fetch_all",
@@ -131,6 +129,9 @@ def test_provenance_page_uses_one_bounded_preflight_and_one_replay_query(
                 entries=entries,
             )
         assert reads.call_count == 1
+        preflight_query, preflight_parameters = reads.call_args.args
+        assert preflight_query.count("%s") == 1_030
+        assert len(preflight_parameters) == 1_030
         assert connector.fetch_one(
             "SELECT COUNT(*) FROM catalog_a_impacted_content_provenance "
             "WHERE analysis_id = %s",
@@ -153,12 +154,12 @@ def test_provenance_page_uses_one_bounded_preflight_and_one_replay_query(
                 connector,
                 analysis_id=analysis,
                 after_gallery_id=None,
-                through_gallery_id=128,
+                through_gallery_id=256,
                 expected=entries,
             )
         assert reads.call_count == 1
 
-        later = ((129, first), (129, second))
+        later = ((257, first), (257, second))
         with patch.object(
             connector,
             "fetch_all",
@@ -176,7 +177,64 @@ def test_provenance_page_uses_one_bounded_preflight_and_one_replay_query(
             content_sha256=second,
         )
         assert second_family is not None
-        assert second_family.witness_gallery_id == 1
+        assert second_family.witness_gallery_id == 2
+    finally:
+        connector.close()
+
+
+def test_provenance_preflight_candidates_are_driven_by_typed_storage(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "analysis-provenance-typed-keys.sqlite3")
+    try:
+        analysis = b"q" * 16
+        content = bytes(range(0x80, 0xA0))
+        with patch.object(
+            connector,
+            "fetch_all",
+            wraps=connector.fetch_all,
+        ) as reads:
+            record_analysis_impacted_content_provenance_page(
+                connector,
+                analysis_id=analysis,
+                entries=((1, content),),
+            )
+        assert reads.call_count == 1
+        content_query, content_parameters = reads.call_args.args
+        assert "WITH proposed(analysis_id, key_value)" in content_query
+        assert "SELECT %s AS key_value" not in content_query
+        assert content_query.count("stored.content_sha256 IN (%s)") == 4
+        assert content_parameters[:-2] == (analysis, content) * 4
+
+        with patch.object(
+            connector,
+            "fetch_all",
+            wraps=connector.fetch_all,
+        ) as reads:
+            record_analysis_impacted_gid_provenance_page(
+                connector,
+                analysis_id=analysis,
+                entries=((1, 17),),
+            )
+        assert reads.call_count == 1
+        gid_query, gid_parameters = reads.call_args.args
+        assert "WITH proposed(analysis_id, key_value)" in gid_query
+        assert "SELECT %s AS key_value" not in gid_query
+        assert gid_query.count("stored.gid IN (%s)") == 4
+        assert gid_parameters[:-2] == (analysis, 17) * 4
+
+        content_family = load_analysis_impacted_content_key_family(
+            connector,
+            analysis_id=analysis,
+            content_sha256=content,
+        )
+        gid_family = load_analysis_impacted_gid_key_family(
+            connector,
+            analysis_id=analysis,
+            gid=17,
+        )
+        assert content_family is not None and content_family.witness_gallery_id == 1
+        assert gid_family is not None and gid_family.witness_gallery_id == 1
     finally:
         connector.close()
 

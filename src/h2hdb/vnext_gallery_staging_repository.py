@@ -2689,9 +2689,9 @@ def _require_exact_normalized_leaf_facts(
         filesystem_rows = connector.fetch_all(
             _filesystem_family_query(len(expected_filesystem)),
             (
-                *tuple(expected_filesystem),
                 handle.gallery_id,
                 handle.observation_id,
+                *tuple(expected_filesystem),
             ),
         )
         stored_filesystem: dict[bytes, tuple[bytes, bytes, bytes, bytes]] = {}
@@ -2828,21 +2828,16 @@ def _sql_placeholders(count: int) -> str:
 
 
 def _filesystem_family_query(count: int) -> str:
-    expected_keys = " UNION ALL ".join(
-        "SELECT %s AS file_key" if index == 0 else "SELECT %s" for index in range(count)
-    )
+    # Let the declared BINARY(32) anchor type every key comparison.  MariaDB
+    # may otherwise coerce raw parameter bytes in a parameter-only CTE to text.
     return (
-        f"WITH expected_keys(file_key) AS ({expected_keys}) "
-        "SELECT k.file_key, a.gallery_id, a.observation_id, a.file_key, "
+        "SELECT a.file_key, a.gallery_id, a.observation_id, a.file_key, "
         "d.gallery_id, d.observation_id, d.file_key, d.device, "
         "i.gallery_id, i.observation_id, i.file_key, i.inode, "
         "m.gallery_id, m.observation_id, m.file_key, m.modified_ns, "
         "c.gallery_id, c.observation_id, c.file_key, c.changed_ns, "
         "s.gallery_id, s.observation_id, s.file_key "
-        "FROM expected_keys AS k "
-        "LEFT JOIN catalog_gallery_observation_file_filesystem_anchors AS a "
-        "ON a.gallery_id = %s AND a.observation_id = %s "
-        "AND a.file_key = k.file_key "
+        "FROM catalog_gallery_observation_file_filesystem_anchors AS a "
         "LEFT JOIN catalog_gallery_observation_file_filesystem_devices AS d "
         "ON d.gallery_id = a.gallery_id AND d.observation_id = a.observation_id "
         "AND d.file_key = a.file_key "
@@ -2857,7 +2852,9 @@ def _filesystem_family_query(count: int) -> str:
         "AND c.file_key = a.file_key "
         "LEFT JOIN catalog_gallery_observation_file_filesystem_seals AS s "
         "ON s.gallery_id = a.gallery_id AND s.observation_id = a.observation_id "
-        "AND s.file_key = a.file_key ORDER BY k.file_key"
+        "AND s.file_key = a.file_key "
+        "WHERE a.gallery_id = %s AND a.observation_id = %s "
+        f"AND a.file_key IN ({_sql_placeholders(count)}) ORDER BY a.file_key"
     )
 
 

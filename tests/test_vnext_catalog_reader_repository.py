@@ -38,6 +38,7 @@ from h2hdb.vnext_catalog_reader_repository import (
     VNextCatalogIdentifierError,
     VNextCatalogReaderRepository,
     VNextCatalogReadError,
+    _selected_keys_cte,
 )
 from h2hdb.vnext_identity import (
     CanonicalValueChunk,
@@ -74,6 +75,20 @@ def _database(path: Path) -> SQLiteConnector:
     for seed in payload["bootstrap_seeds"]:
         connector.execute(seed["sql"], seed["parameters"])
     return connector
+
+
+def test_selected_key_cte_uses_backend_binary_types() -> None:
+    sqlite_cte = _selected_keys_cte(128, backend="sqlite")
+    mariadb_cte = _selected_keys_cte(128, backend="mariadb")
+
+    assert sqlite_cte.count("%s") == 128
+    assert "CAST(" not in sqlite_cte
+    assert mariadb_cte.count("CAST(%s AS BINARY(32))") == 128
+    assert mariadb_cte.count(" UNION ALL ") == 127
+    with pytest.raises(ValueError, match="must be positive"):
+        _selected_keys_cte(0, backend="sqlite")
+    with pytest.raises(ValueError, match="unsupported SQL backend"):
+        _selected_keys_cte(1, backend="postgresql")
 
 
 def _canonical(

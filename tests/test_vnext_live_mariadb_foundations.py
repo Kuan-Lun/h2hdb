@@ -22,6 +22,8 @@ from h2hdb.vnext_gallery_staging_repository import (
     DirectoryBatchCommand,
     DirectoryObservation,
     FileBatchCommand,
+    FileContentReceipt,
+    FileObservation,
     GalleryObservationStagingRepository,
     MatchBatchCommand,
     MetadataBatchCommand,
@@ -31,6 +33,7 @@ from h2hdb.vnext_identity import (
     GalleryObservationDirectoryFileType,
     GalleryObservationMetadata,
     encode_gallery_observation_metadata,
+    file_key,
 )
 from h2hdb.vnext_ingest_fence_repository import IngestFenceRepository, IngestTurn
 from h2hdb.vnext_maintenance_gate_repository import (
@@ -245,7 +248,11 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
                 1_000 + position,
                 position,
                 position,
-                GalleryObservationDirectoryFileType.DIRECTORY,
+                (
+                    GalleryObservationDirectoryFileType.REGULAR
+                    if position == 0
+                    else GalleryObservationDirectoryFileType.DIRECTORY
+                ),
             )
             for position in range(257)
         )
@@ -264,10 +271,30 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
             )
 
         component_receipts = []
+        file_name = b"directory-0000"
+        # The leading e8 byte followed by ASCII 39 is invalid UTF-8.  Keep this
+        # exact fixture so MariaDB replay exercises the raw BINARY(32) key path.
+        assert file_key(file_name) == bytes.fromhex(
+            "e8394e0eee04798de0bf3632768e6bbbc887b3e5dc3ed93de6935b7ed6db7b54"
+        )
+        file_command = FileBatchCommand(
+            (
+                FileObservation(
+                    file_name,
+                    FileContentReceipt.from_parts(()),
+                    100,
+                    1_000,
+                    0,
+                    0,
+                ),
+            ),
+            True,
+            BatchAttempt(b"f" * 16, None),
+        )
         component_operations: tuple[tuple[Any, Any, int], ...] = (
             (
                 GalleryObservationStagingRepository.put_files,
-                FileBatchCommand((), True, BatchAttempt(b"f" * 16, None)),
+                file_command,
                 50,
             ),
             (
@@ -288,7 +315,7 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
                 GalleryObservationStagingRepository.put_metadata,
                 MetadataBatchCommand(
                     encode_gallery_observation_metadata(
-                        GalleryObservationMetadata(1, "", "", "", 1, 2, 3, 1, 0, 0)
+                        GalleryObservationMetadata(1, "", "", "", 1, 2, 3, 1, 1, 0)
                     ),
                     True,
                     BatchAttempt(b"m" * 16, None),
@@ -309,13 +336,22 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
                     )
                 )
         with connector.transaction():
+            file_replay = GalleryObservationStagingRepository.put_files(
+                VNextUnitOfWork(connector, backend="mariadb"),
+                gate_lease=gate,
+                ingest_turn=turn,
+                handle=handle,
+                command=file_command,
+                now=54,
+            )
+        with connector.transaction():
             match = GalleryObservationStagingRepository.match_files_to_directory(
                 VNextUnitOfWork(connector, backend="mariadb"),
                 gate_lease=gate,
                 ingest_turn=turn,
                 handle=handle,
                 command=MatchBatchCommand(b"v" * 16, None),
-                now=54,
+                now=55,
             )
         with connector.transaction():
             staging_seal = GalleryObservationStagingRepository.seal(
@@ -323,7 +359,7 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
                 gate_lease=gate,
                 ingest_turn=turn,
                 handle=handle,
-                now=55,
+                now=56,
             )
 
         streamed: list[bytes] = []
@@ -360,8 +396,17 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
         assert progress.handle == handle
         assert directory_open.state == "OPEN" and directory_open.cursor == 192
         assert all(receipt.state == "COMPLETE" for receipt in component_receipts)
+        assert file_replay.replayed and file_replay == component_receipts[0].__class__(
+            component_receipts[0].request_sha256,
+            component_receipts[0].component,
+            component_receipts[0].cursor,
+            component_receipts[0].processed_byte_count,
+            component_receipts[0].state,
+            component_receipts[0].root_page_sha256,
+            True,
+        )
         assert directory_root_child_count == (2,)
-        assert match.state == "COMPLETE" and match.matched_count == 0
+        assert match.state == "COMPLETE" and match.matched_count == 1
         assert staging_seal.state == "SEALED" and not staging_seal.replayed
         assert receipt.value_sha256 == locator_command.locator_sha256
         assert b"".join(streamed) == b"".join(locator_plan.iter_payload_parts())

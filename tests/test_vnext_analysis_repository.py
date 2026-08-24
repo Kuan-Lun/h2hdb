@@ -4629,9 +4629,13 @@ def test_impacted_stage_select_counts_are_constant_for_one_and_128_rows(
     ]
     assert len(claim_queries) == 1
     assert claim_queries[0].count("%s") == 129
-    assert (
-        sum("WITH proposed(key_value)" in query for query in content_fresh_queries) == 1
-    )
+    provenance_preflights = [
+        query
+        for query in content_fresh_queries
+        if "WITH proposed(analysis_id, key_value)" in query
+    ]
+    assert len(provenance_preflights) == 1
+    assert "SELECT %s AS key_value" not in provenance_preflights[0]
     content_deletes = [
         query
         for query in many["content_fresh"][2]
