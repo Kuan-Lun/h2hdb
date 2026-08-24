@@ -20,6 +20,7 @@ from h2hdb.vnext_gallery_identity_repository import (
 from h2hdb.vnext_gallery_staging_repository import (
     BatchAttempt,
     DirectoryBatchCommand,
+    DirectoryObservation,
     FileBatchCommand,
     GalleryObservationStagingRepository,
     MatchBatchCommand,
@@ -27,6 +28,7 @@ from h2hdb.vnext_gallery_staging_repository import (
     TagBatchCommand,
 )
 from h2hdb.vnext_identity import (
+    GalleryObservationDirectoryFileType,
     GalleryObservationMetadata,
     encode_gallery_observation_metadata,
 )
@@ -235,6 +237,32 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
                 now=42,
             )
 
+        directories = tuple(
+            DirectoryObservation(
+                f"directory-{position:04d}".encode(),
+                position,
+                100 + position,
+                1_000 + position,
+                position,
+                position,
+                GalleryObservationDirectoryFileType.DIRECTORY,
+            )
+            for position in range(257)
+        )
+        with connector.transaction():
+            directory_open = GalleryObservationStagingRepository.put_directories(
+                VNextUnitOfWork(connector, backend="mariadb"),
+                gate_lease=gate,
+                ingest_turn=turn,
+                handle=handle,
+                command=DirectoryBatchCommand(
+                    directories[:192],
+                    False,
+                    BatchAttempt(b"d" * 16, None),
+                ),
+                now=49,
+            )
+
         component_receipts = []
         component_operations: tuple[tuple[Any, Any, int], ...] = (
             (
@@ -244,7 +272,11 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
             ),
             (
                 GalleryObservationStagingRepository.put_directories,
-                DirectoryBatchCommand((), True, BatchAttempt(b"d" * 16, None)),
+                DirectoryBatchCommand(
+                    directories[192:],
+                    True,
+                    BatchAttempt(b"e" * 16, b"d" * 16),
+                ),
                 51,
             ),
             (
@@ -301,6 +333,13 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
                 value_sha256=locator_command.locator_sha256,
                 consume_provisional=streamed.append,
             )
+            directory_root = component_receipts[1].root_page_sha256
+            assert directory_root is not None
+            directory_root_child_count = connector.fetch_one(
+                "SELECT COUNT(*) FROM catalog_gallery_observation_page_children "
+                "WHERE parent_sha256 = %s",
+                (directory_root,),
+            )
 
         assert source.build_id == build_id
         assert source.generation == turn.generation
@@ -319,7 +358,9 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
             True,
         )
         assert progress.handle == handle
+        assert directory_open.state == "OPEN" and directory_open.cursor == 192
         assert all(receipt.state == "COMPLETE" for receipt in component_receipts)
+        assert directory_root_child_count == (2,)
         assert match.state == "COMPLETE" and match.matched_count == 0
         assert staging_seal.state == "SEALED" and not staging_seal.replayed
         assert receipt.value_sha256 == locator_command.locator_sha256

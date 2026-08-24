@@ -2231,25 +2231,24 @@ def _load_page_descriptor_family(
     row = connector.fetch_one(
         f"SELECT anchor.page_sha256, page.page_bytes, component_fact.component, "
         f"level_fact.level, count_fact.subtree_item_count, seal.page_sha256 "
-        "FROM (SELECT %s AS page_sha256) AS requested "
-        f"LEFT JOIN {_PAGE_DESCRIPTOR_ANCHOR} AS anchor "
-        "ON anchor.page_sha256 = requested.page_sha256 "
+        f"FROM {_PAGE_DESCRIPTOR_ANCHOR} AS anchor "
         f"LEFT JOIN {_PAGE} AS page "
-        "ON page.page_sha256 = requested.page_sha256 "
+        "ON page.page_sha256 = anchor.page_sha256 "
         f"LEFT JOIN {_PAGE_DESCRIPTOR_COMPONENT} AS component_fact "
-        "ON component_fact.page_sha256 = requested.page_sha256 "
+        "ON component_fact.page_sha256 = anchor.page_sha256 "
         f"LEFT JOIN {_PAGE_DESCRIPTOR_LEVEL} AS level_fact "
-        "ON level_fact.page_sha256 = requested.page_sha256 "
+        "ON level_fact.page_sha256 = anchor.page_sha256 "
         f"LEFT JOIN {_PAGE_DESCRIPTOR_COUNT} AS count_fact "
-        "ON count_fact.page_sha256 = requested.page_sha256 "
+        "ON count_fact.page_sha256 = anchor.page_sha256 "
         f"LEFT JOIN {_PAGE_DESCRIPTOR_SEAL} AS seal "
-        "ON seal.page_sha256 = requested.page_sha256",
+        "ON seal.page_sha256 = anchor.page_sha256 "
+        "WHERE anchor.page_sha256 = %s",
         (page_sha256,),
     )
+    if not row:
+        return None
     if len(row) != 6:
         raise GalleryStagingConflictError("gallery page family has an invalid shape")
-    if all(value is None for value in row):
-        return None
     if any(value is None for value in row):
         raise GalleryStagingConflictError("gallery page family is partial or unsealed")
     if row[0] != page_sha256 or row[5] != page_sha256:
@@ -2286,23 +2285,22 @@ def _load_page_bounds_family(
 ) -> tuple[bytes, bytes] | None:
     row = connector.fetch_one(
         f"SELECT anchor.page_sha256, first_fact.first_key, last_fact.last_key, "
-        f"seal.page_sha256 FROM (SELECT %s AS page_sha256) AS requested "
-        f"LEFT JOIN {_PAGE_BOUNDS_ANCHOR} AS anchor "
-        "ON anchor.page_sha256 = requested.page_sha256 "
+        f"seal.page_sha256 FROM {_PAGE_BOUNDS_ANCHOR} AS anchor "
         f"LEFT JOIN {_PAGE_BOUNDS_FIRST} AS first_fact "
-        "ON first_fact.page_sha256 = requested.page_sha256 "
+        "ON first_fact.page_sha256 = anchor.page_sha256 "
         f"LEFT JOIN {_PAGE_BOUNDS_LAST} AS last_fact "
-        "ON last_fact.page_sha256 = requested.page_sha256 "
+        "ON last_fact.page_sha256 = anchor.page_sha256 "
         f"LEFT JOIN {_PAGE_BOUNDS_SEAL} AS seal "
-        "ON seal.page_sha256 = requested.page_sha256",
+        "ON seal.page_sha256 = anchor.page_sha256 "
+        "WHERE anchor.page_sha256 = %s",
         (page_sha256,),
     )
+    if not row:
+        return None
     if len(row) != 4:
         raise GalleryStagingConflictError(
             "gallery page bounds family has an invalid shape"
         )
-    if all(value is None for value in row):
-        return None
     if any(value is None for value in row):
         raise GalleryStagingConflictError(
             "gallery page bounds family is partial or unsealed"

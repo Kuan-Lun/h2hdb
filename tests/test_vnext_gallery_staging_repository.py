@@ -1480,10 +1480,10 @@ def test_mariadb_gallery_page_family_sql_is_static_and_seal_last() -> None:
             data: tuple[Any, ...] = (),
         ) -> tuple[Any, ...]:
             self.queries.append((query, data))
-            if "page_descriptor_anchors" in query and "requested" in query:
-                return (None, None, None, None, None, None)
-            if "page_key_bounds_anchors" in query and "requested" in query:
-                return (None, None, None, None)
+            if "FROM catalog_gallery_observation_page_descriptor_anchors" in query:
+                return ()
+            if "FROM catalog_gallery_observation_page_key_bounds_anchors" in query:
+                return ()
             if "gallery_observation_allocation_pages" in query:
                 return ()
             raise AssertionError(query)
@@ -1524,6 +1524,7 @@ def test_mariadb_gallery_page_family_sql_is_static_and_seal_last() -> None:
     )
     assert all("%s" in query and "?" not in query for query, _ in connector.queries)
     assert all("%s" in query and "?" not in query for query, _ in connector.executions)
+    assert not any("FROM (SELECT %s" in query for query, _ in connector.queries)
     assert not any("FOR UPDATE" in query for query, _ in connector.queries)
 
 
