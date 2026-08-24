@@ -2945,7 +2945,7 @@ def _publication_terminal_stage_count(
     row = _one(
         connector,
         """
-        SELECT checkpoint.generation, checkpoint.cursor,
+        SELECT checkpoint.generation, checkpoint.`cursor`,
                checkpoint.processed_count, checkpoint.state,
                checkpoint.updated_at, receipt.start_cursor,
                receipt.start_processed_count, receipt.next_cursor,
@@ -3719,7 +3719,7 @@ def _validate_publication_generation_history(connector: SQLConnector) -> None:
 
     finalization_rows = connector.fetch_all("""
         SELECT committed.receipt_id, committed.committed_at,
-               checkpoint.generation, checkpoint.cursor,
+               checkpoint.generation, checkpoint.`cursor`,
                checkpoint.processed_count, checkpoint.state,
                checkpoint.updated_at, marker.receipt_id
         FROM catalog_publication_commit_seals AS commit_seal

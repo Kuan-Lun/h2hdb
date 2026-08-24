@@ -570,7 +570,7 @@ def require_exact_analysis_state_components(
         (analysis, *stages, 0, len(stages) + 1),
     )
     checkpoint_rows = connector.fetch_all(
-        "SELECT stage, cursor, processed_count, state, updated_at "
+        "SELECT stage, `cursor`, processed_count, state, updated_at "
         "FROM catalog_analysis_checkpoints "
         f"WHERE analysis_id = %s AND stage IN ({placeholders}) "
         "ORDER BY stage LIMIT %s",
@@ -686,8 +686,9 @@ def load_analysis_exclusion_delta_family(
         "WHERE analysis_id = %s AND file_sha256 = %s) "
         "SELECT k.analysis_id, k.file_sha256, anchor.analysis_id, "
         "anchor.file_sha256, old.analysis_id, old.file_sha256, old.old_excluded, "
-        "new.analysis_id, new.file_sha256, new.new_excluded, change.analysis_id, "
-        "change.file_sha256, seal.analysis_id, seal.file_sha256 "
+        "new.analysis_id, new.file_sha256, new.new_excluded, "
+        "exclusion_change.analysis_id, exclusion_change.file_sha256, "
+        "seal.analysis_id, seal.file_sha256 "
         "FROM family_keys AS k "
         f"LEFT JOIN {_EXCLUSION_ANCHOR} AS anchor "
         "ON anchor.analysis_id = k.analysis_id AND anchor.file_sha256 = k.file_sha256 "
@@ -695,8 +696,9 @@ def load_analysis_exclusion_delta_family(
         "ON old.analysis_id = k.analysis_id AND old.file_sha256 = k.file_sha256 "
         f"LEFT JOIN {_EXCLUSION_NEW} AS new "
         "ON new.analysis_id = k.analysis_id AND new.file_sha256 = k.file_sha256 "
-        f"LEFT JOIN {_EXCLUSION_CHANGE} AS change "
-        "ON change.analysis_id = k.analysis_id AND change.file_sha256 = k.file_sha256 "
+        f"LEFT JOIN {_EXCLUSION_CHANGE} AS exclusion_change "
+        "ON exclusion_change.analysis_id = k.analysis_id "
+        "AND exclusion_change.file_sha256 = k.file_sha256 "
         f"LEFT JOIN {_EXCLUSION_SEAL} AS seal "
         "ON seal.analysis_id = k.analysis_id AND seal.file_sha256 = k.file_sha256",
         parameters,
@@ -748,8 +750,9 @@ def load_analysis_exclusion_delta_families(
         + " UNION ".join(selects)
         + ") SELECT k.analysis_id, k.file_sha256, anchor.analysis_id, "
         "anchor.file_sha256, old.analysis_id, old.file_sha256, old.old_excluded, "
-        "new.analysis_id, new.file_sha256, new.new_excluded, change.analysis_id, "
-        "change.file_sha256, seal.analysis_id, seal.file_sha256 "
+        "new.analysis_id, new.file_sha256, new.new_excluded, "
+        "exclusion_change.analysis_id, exclusion_change.file_sha256, "
+        "seal.analysis_id, seal.file_sha256 "
         "FROM family_keys AS k "
         f"LEFT JOIN {_EXCLUSION_ANCHOR} AS anchor "
         "ON anchor.analysis_id = k.analysis_id AND anchor.file_sha256 = k.file_sha256 "
@@ -757,8 +760,9 @@ def load_analysis_exclusion_delta_families(
         "ON old.analysis_id = k.analysis_id AND old.file_sha256 = k.file_sha256 "
         f"LEFT JOIN {_EXCLUSION_NEW} AS new "
         "ON new.analysis_id = k.analysis_id AND new.file_sha256 = k.file_sha256 "
-        f"LEFT JOIN {_EXCLUSION_CHANGE} AS change "
-        "ON change.analysis_id = k.analysis_id AND change.file_sha256 = k.file_sha256 "
+        f"LEFT JOIN {_EXCLUSION_CHANGE} AS exclusion_change "
+        "ON exclusion_change.analysis_id = k.analysis_id "
+        "AND exclusion_change.file_sha256 = k.file_sha256 "
         f"LEFT JOIN {_EXCLUSION_SEAL} AS seal "
         "ON seal.analysis_id = k.analysis_id AND seal.file_sha256 = k.file_sha256 "
         "ORDER BY k.file_sha256",

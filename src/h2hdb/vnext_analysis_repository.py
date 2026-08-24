@@ -4083,7 +4083,7 @@ def _gallery_file_counts(
     byte_count = 0
     while True:
         rows = work.connector.fetch_all(
-            "SELECT source_no.file_no, blob.size_bytes "
+            "SELECT source_no.file_no, content_blob.size_bytes "
             "FROM catalog_gallery_observation_file_seals AS source_seal "
             "JOIN catalog_gallery_observation_file_file_nos AS source_no "
             "ON source_no.gallery_id = source_seal.gallery_id "
@@ -4093,8 +4093,8 @@ def _gallery_file_counts(
             "ON source_sha.gallery_id = source_seal.gallery_id "
             "AND source_sha.observation_id = source_seal.observation_id "
             "AND source_sha.file_key = source_seal.file_key "
-            "JOIN catalog_content_blobs AS blob "
-            "ON blob.file_sha256 = source_sha.file_sha256 "
+            "JOIN catalog_content_blobs AS content_blob "
+            "ON content_blob.file_sha256 = source_sha.file_sha256 "
             "WHERE source_seal.gallery_id = %s "
             "AND source_seal.observation_id = %s "
             "AND source_no.file_no > %s ORDER BY source_no.file_no LIMIT %s",
@@ -4498,7 +4498,7 @@ def _initialize_checkpoint(
     )
     work.connector.execute(
         f"INSERT INTO {_CHECKPOINT_CURSOR_TABLE} "
-        "(analysis_id, stage, cursor) VALUES (%s, %s, %s)",
+        "(analysis_id, stage, `cursor`) VALUES (%s, %s, %s)",
         (*key, cursor),
     )
     work.connector.execute(
@@ -4855,10 +4855,11 @@ def _lock_checkpoint(
         generation_row[0], field="analysis checkpoint generation"
     )
     row = work.connector.fetch_one(
-        f"SELECT cursor.cursor, count.processed_count, state.state, "
+        f"SELECT checkpoint_cursor.`cursor`, count.processed_count, state.state, "
         f"updated.updated_at FROM {_CHECKPOINT_SEAL_TABLE} AS seal "
-        f"JOIN {_CHECKPOINT_CURSOR_TABLE} AS cursor "
-        "ON cursor.analysis_id = seal.analysis_id AND cursor.stage = seal.stage "
+        f"JOIN {_CHECKPOINT_CURSOR_TABLE} AS checkpoint_cursor "
+        "ON checkpoint_cursor.analysis_id = seal.analysis_id "
+        "AND checkpoint_cursor.stage = seal.stage "
         f"JOIN {_CHECKPOINT_PROCESSED_COUNT_TABLE} AS count "
         "ON count.analysis_id = seal.analysis_id AND count.stage = seal.stage "
         f"JOIN {_CHECKPOINT_STATE_TABLE} AS state "
@@ -4996,9 +4997,10 @@ def _commit_batch(
     for table, column, previous, successor in updates:
         if previous == successor:
             continue
+        sql_column = f"`{column}`" if column == "cursor" else column
         work.compare_and_swap(
-            f"UPDATE {table} SET {column} = %s "
-            f"WHERE analysis_id = %s AND stage = %s AND {column} = %s",
+            f"UPDATE {table} SET {sql_column} = %s "
+            f"WHERE analysis_id = %s AND stage = %s AND {sql_column} = %s",
             (successor, *checkpoint_key, previous),
             authority=f"analysis checkpoint {stage!r} {column}",
         )
@@ -6860,10 +6862,10 @@ def _content_candidate_validation_keys(
     boundary = 0 if after is None else require_positive_int63(after, field="gallery")
     parameters.extend((boundary, limit))
     return work.connector.fetch_all(
-        "SELECT keys.gallery_id FROM ("
+        "SELECT keyset.gallery_id FROM ("
         + " UNION ".join(subqueries)
-        + ") AS keys WHERE keys.gallery_id > %s "
-        "ORDER BY keys.gallery_id LIMIT %s",
+        + ") AS keyset WHERE keyset.gallery_id > %s "
+        "ORDER BY keyset.gallery_id LIMIT %s",
         tuple(parameters),
     )
 
@@ -7062,15 +7064,15 @@ def _content_owner_validation_keys(
         parameters.append(authority.baseline_analysis_id)
     predicate = ""
     if after is not None:
-        predicate = " WHERE keys.content_sha256 > %s"
+        predicate = " WHERE keyset.content_sha256 > %s"
         parameters.append(require_digest32(after, field="owner validation cursor"))
     parameters.append(limit)
     return work.connector.fetch_all(
-        "SELECT keys.content_sha256 FROM ("
+        "SELECT keyset.content_sha256 FROM ("
         + " UNION ".join(subqueries)
-        + ") AS keys"
+        + ") AS keyset"
         + predicate
-        + " ORDER BY keys.content_sha256 LIMIT %s",
+        + " ORDER BY keyset.content_sha256 LIMIT %s",
         tuple(parameters),
     )
 
@@ -7228,10 +7230,10 @@ def _gid_candidate_validation_keys(
     boundary = 0 if after is None else require_positive_int63(after, field="gallery")
     parameters.extend((boundary, limit))
     return work.connector.fetch_all(
-        "SELECT keys.gallery_id FROM ("
+        "SELECT keyset.gallery_id FROM ("
         + " UNION ".join(subqueries)
-        + ") AS keys WHERE keys.gallery_id > %s "
-        "ORDER BY keys.gallery_id LIMIT %s",
+        + ") AS keyset WHERE keyset.gallery_id > %s "
+        "ORDER BY keyset.gallery_id LIMIT %s",
         tuple(parameters),
     )
 
@@ -7404,9 +7406,10 @@ def _gid_winner_validation_keys(
     boundary = 0 if after is None else require_positive_int63(after, field="gid")
     parameters.extend((boundary, limit))
     return work.connector.fetch_all(
-        "SELECT keys.gid FROM ("
+        "SELECT keyset.gid FROM ("
         + " UNION ".join(subqueries)
-        + ") AS keys WHERE keys.gid > %s ORDER BY keys.gid LIMIT %s",
+        + ") AS keyset WHERE keyset.gid > %s "
+        "ORDER BY keyset.gid LIMIT %s",
         tuple(parameters),
     )
 
@@ -7837,16 +7840,16 @@ def _validation_key_rows(
             "WHERE analysis_id = %s"
         )
         parameters.append(authority.baseline_analysis_id)
-    where = "" if after is None else " WHERE keys.file_sha256 > %s"
+    where = "" if after is None else " WHERE keyset.file_sha256 > %s"
     if after is not None:
         parameters.append(require_digest32(after, field="validation cursor"))
     parameters.append(limit)
     return work.connector.fetch_all(
-        "SELECT keys.file_sha256 FROM ("
+        "SELECT keyset.file_sha256 FROM ("
         + " UNION ".join(subqueries)
-        + ") AS keys"
+        + ") AS keyset"
         + where
-        + " ORDER BY keys.file_sha256 LIMIT %s",
+        + " ORDER BY keyset.file_sha256 LIMIT %s",
         tuple(parameters),
     )
 
@@ -7939,7 +7942,7 @@ def _component_is_sealed(
             f"component {component!r} differs from its terminal receipt"
         )
     checkpoint = work.connector.fetch_one(
-        "SELECT cursor, processed_count, state, updated_at "
+        "SELECT `cursor`, processed_count, state, updated_at "
         "FROM catalog_analysis_checkpoints WHERE analysis_id = %s AND stage = %s",
         (analysis_id, stage),
     )

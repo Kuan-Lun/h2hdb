@@ -1417,21 +1417,21 @@ def _select_artifact_blobs(
     lower, upper, no_upper = _digest_bounds(cycle, cursor)
     rows = work.connector.fetch_all(
         """
-        SELECT blob.artifact_sha256
-        FROM catalog_artifact_blobs AS blob
-        WHERE blob.artifact_sha256 >= %s
-          AND (%s = 0 OR blob.artifact_sha256 > %s)
-          AND (%s = 1 OR blob.artifact_sha256 < %s)
+        SELECT artifact_blob.artifact_sha256
+        FROM catalog_artifact_blobs AS artifact_blob
+        WHERE artifact_blob.artifact_sha256 >= %s
+          AND (%s = 0 OR artifact_blob.artifact_sha256 > %s)
+          AND (%s = 1 OR artifact_blob.artifact_sha256 < %s)
           AND NOT EXISTS (
               SELECT 1 FROM catalog_artifact_location location
-              WHERE location.artifact_sha256 = blob.artifact_sha256)
+              WHERE location.artifact_sha256 = artifact_blob.artifact_sha256)
           AND NOT EXISTS (
               SELECT 1 FROM catalog_prepared_artifact_sha256s p
-              WHERE p.artifact_sha256 = blob.artifact_sha256)
+              WHERE p.artifact_sha256 = artifact_blob.artifact_sha256)
           AND NOT EXISTS (
               SELECT 1 FROM catalog_artifact_sha256s retained
-              WHERE retained.artifact_sha256 = blob.artifact_sha256)
-        ORDER BY blob.artifact_sha256
+              WHERE retained.artifact_sha256 = artifact_blob.artifact_sha256)
+        ORDER BY artifact_blob.artifact_sha256
         LIMIT %s
         """,
         (
@@ -1449,17 +1449,18 @@ def _select_artifact_blobs(
             LockRank.CHILD,
             encode_lock_key("cleanup-artifact-blob", key),
             """
-            SELECT blob.artifact_sha256 FROM catalog_artifact_blobs AS blob
-            WHERE blob.artifact_sha256 = %s
+            SELECT artifact_blob.artifact_sha256
+            FROM catalog_artifact_blobs AS artifact_blob
+            WHERE artifact_blob.artifact_sha256 = %s
               AND NOT EXISTS (
                   SELECT 1 FROM catalog_artifact_location location
-                  WHERE location.artifact_sha256 = blob.artifact_sha256)
+                  WHERE location.artifact_sha256 = artifact_blob.artifact_sha256)
               AND NOT EXISTS (
                   SELECT 1 FROM catalog_prepared_artifact_sha256s p
-                  WHERE p.artifact_sha256 = blob.artifact_sha256)
+                  WHERE p.artifact_sha256 = artifact_blob.artifact_sha256)
               AND NOT EXISTS (
                   SELECT 1 FROM catalog_artifact_sha256s retained
-                  WHERE retained.artifact_sha256 = blob.artifact_sha256)
+                  WHERE retained.artifact_sha256 = artifact_blob.artifact_sha256)
             """,
             (key,),
         )

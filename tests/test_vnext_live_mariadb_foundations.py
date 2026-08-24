@@ -17,6 +17,19 @@ from h2hdb.vnext_gallery_identity_repository import (
     GalleryIdentityRepository,
     SourceLocatorCommand,
 )
+from h2hdb.vnext_gallery_staging_repository import (
+    BatchAttempt,
+    DirectoryBatchCommand,
+    FileBatchCommand,
+    GalleryObservationStagingRepository,
+    MatchBatchCommand,
+    MetadataBatchCommand,
+    TagBatchCommand,
+)
+from h2hdb.vnext_identity import (
+    GalleryObservationMetadata,
+    encode_gallery_observation_metadata,
+)
 from h2hdb.vnext_ingest_fence_repository import IngestFenceRepository, IngestTurn
 from h2hdb.vnext_maintenance_gate_repository import (
     GateLease,
@@ -24,6 +37,7 @@ from h2hdb.vnext_maintenance_gate_repository import (
 )
 from h2hdb.vnext_source_build_repository import (
     SourceBuildRepository,
+    SourceDiscoveryPlan,
     SourceRootBuildCommand,
 )
 from h2hdb.vnext_transaction import VNextUnitOfWork
@@ -132,9 +146,57 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
                 now=23,
             )
 
+        with SourceDiscoveryPlan.from_locators((("nested", "畫廊 A"),)) as plan:
+            with connector.read_transaction():
+                discovery_batch = SourceBuildRepository.prepare_discovery_batch(
+                    connector,
+                    build_id=build_id,
+                    plan=plan,
+                )
+            resolved = []
+            for locator in discovery_batch.locators:
+                with plan.prepare_locator_upload(locator) as upload:
+                    _put_plan(connector, gate, turn, upload, now=30)
+                    with connector.transaction():
+                        resolved.append(
+                            SourceBuildRepository.resolve_discovery_locator(
+                                VNextUnitOfWork(connector, backend="mariadb"),
+                                gate_lease=gate,
+                                ingest_turn=turn,
+                                batch=discovery_batch,
+                                locator=locator,
+                                upload_plan=upload,
+                                now=33,
+                            )
+                        )
+            with connector.transaction():
+                discovery_receipt = SourceBuildRepository.commit_discovery_batch(
+                    VNextUnitOfWork(connector, backend="mariadb"),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    batch=discovery_batch,
+                    resolved=tuple(resolved),
+                    now=34,
+                )
+            with connector.read_transaction():
+                terminal_batch = SourceBuildRepository.prepare_discovery_batch(
+                    connector,
+                    build_id=build_id,
+                    plan=plan,
+                )
+            with connector.transaction():
+                terminal_receipt = SourceBuildRepository.commit_discovery_batch(
+                    VNextUnitOfWork(connector, backend="mariadb"),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    batch=terminal_batch,
+                    resolved=(),
+                    now=35,
+                )
+
         locator_command = SourceLocatorCommand(("nested", "畫廊 A"))
         locator_plan = locator_command.prepare_upload()
-        _put_plan(connector, gate, turn, locator_plan, now=30)
+        _put_plan(connector, gate, turn, locator_plan, now=36)
         with connector.transaction():
             identity = GalleryIdentityRepository.handoff_locator(
                 VNextUnitOfWork(connector, backend="mariadb"),
@@ -143,7 +205,7 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
                 build_id=build_id,
                 command=locator_command,
                 locator_plan=locator_plan,
-                now=33,
+                now=39,
             )
         with connector.transaction():
             replay = GalleryIdentityRepository.handoff_locator(
@@ -153,7 +215,83 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
                 build_id=build_id,
                 command=locator_command,
                 locator_plan=locator_plan,
-                now=34,
+                now=40,
+            )
+        with connector.transaction():
+            handle = GalleryObservationStagingRepository.begin_from_identity(
+                VNextUnitOfWork(connector, backend="mariadb"),
+                gate_lease=gate,
+                ingest_turn=turn,
+                identity=identity,
+                now=41,
+            )
+        with connector.transaction():
+            progress = GalleryObservationStagingRepository.begin_or_resume(
+                VNextUnitOfWork(connector, backend="mariadb"),
+                gate_lease=gate,
+                ingest_turn=turn,
+                build_id=identity.build_id,
+                gallery_id=identity.gallery_id,
+                now=42,
+            )
+
+        component_receipts = []
+        component_operations: tuple[tuple[Any, Any, int], ...] = (
+            (
+                GalleryObservationStagingRepository.put_files,
+                FileBatchCommand((), True, BatchAttempt(b"f" * 16, None)),
+                50,
+            ),
+            (
+                GalleryObservationStagingRepository.put_directories,
+                DirectoryBatchCommand((), True, BatchAttempt(b"d" * 16, None)),
+                51,
+            ),
+            (
+                GalleryObservationStagingRepository.put_tags,
+                TagBatchCommand((), True, BatchAttempt(b"t" * 16, None)),
+                52,
+            ),
+            (
+                GalleryObservationStagingRepository.put_metadata,
+                MetadataBatchCommand(
+                    encode_gallery_observation_metadata(
+                        GalleryObservationMetadata(1, "", "", "", 1, 2, 3, 1, 0, 0)
+                    ),
+                    True,
+                    BatchAttempt(b"m" * 16, None),
+                ),
+                53,
+            ),
+        )
+        for operation, command, now in component_operations:
+            with connector.transaction():
+                component_receipts.append(
+                    operation(
+                        VNextUnitOfWork(connector, backend="mariadb"),
+                        gate_lease=gate,
+                        ingest_turn=turn,
+                        handle=handle,
+                        command=command,
+                        now=now,
+                    )
+                )
+        with connector.transaction():
+            match = GalleryObservationStagingRepository.match_files_to_directory(
+                VNextUnitOfWork(connector, backend="mariadb"),
+                gate_lease=gate,
+                ingest_turn=turn,
+                handle=handle,
+                command=MatchBatchCommand(b"v" * 16, None),
+                now=54,
+            )
+        with connector.transaction():
+            staging_seal = GalleryObservationStagingRepository.seal(
+                VNextUnitOfWork(connector, backend="mariadb"),
+                gate_lease=gate,
+                ingest_turn=turn,
+                handle=handle,
+                now=55,
             )
 
         streamed: list[bytes] = []
@@ -167,7 +305,10 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
         assert source.build_id == build_id
         assert source.generation == turn.generation
         assert identity.gallery_id == 1
-        assert not identity.replayed
+        assert len(resolved) == 1 and not resolved[0].replayed
+        assert discovery_receipt.next_state == "OPEN"
+        assert terminal_receipt.terminal and terminal_receipt.next_state == "COMPLETE"
+        assert identity.replayed
         assert replay.replayed
         assert replay == identity.__class__(
             identity.build_id,
@@ -177,6 +318,10 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
             identity.locator_sha256,
             True,
         )
+        assert progress.handle == handle
+        assert all(receipt.state == "COMPLETE" for receipt in component_receipts)
+        assert match.state == "COMPLETE" and match.matched_count == 0
+        assert staging_seal.state == "SEALED" and not staging_seal.replayed
         assert receipt.value_sha256 == locator_command.locator_sha256
         assert b"".join(streamed) == b"".join(locator_plan.iter_payload_parts())
         assert connector.fetch_one(

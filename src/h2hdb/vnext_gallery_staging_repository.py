@@ -638,7 +638,7 @@ class GalleryObservationStagingRepository:
         for component in GalleryObservationComponent:
             work.connector.execute(
                 f"INSERT INTO {_CHECKPOINT} "
-                "(staging_id, component, level, cursor, regular_count, "
+                "(staging_id, component, level, `cursor`, regular_count, "
                 "processed_byte_count, state, updated_at) "
                 "VALUES (%s, %s, 0, 0, 0, 0, %s, %s)",
                 (staging, _COMPONENT_BYTES[component], "OPEN", timestamp),
@@ -1083,7 +1083,7 @@ class GalleryObservationStagingRepository:
                     _COMPONENT_BYTES[component],
                     0,
                 ),
-                f"SELECT cursor, regular_count, processed_byte_count, state, "
+                f"SELECT `cursor`, regular_count, processed_byte_count, state, "
                 f"updated_at FROM {_CHECKPOINT} "
                 "WHERE staging_id = %s AND component = %s AND level = 0",
                 (current.staging_id, _COMPONENT_BYTES[component]),
@@ -1460,10 +1460,10 @@ def _put_component_page(
         now=timestamp,
     )
     work.compare_and_swap(
-        f"UPDATE {_CHECKPOINT} SET cursor = %s, regular_count = %s, "
+        f"UPDATE {_CHECKPOINT} SET `cursor` = %s, regular_count = %s, "
         "processed_byte_count = %s, state = %s, updated_at = %s "
         "WHERE staging_id = %s AND component = %s AND level = 0 "
-        "AND cursor = %s AND regular_count = %s AND processed_byte_count = %s "
+        "AND `cursor` = %s AND regular_count = %s AND processed_byte_count = %s "
         "AND state = %s AND updated_at = %s",
         (
             next_cursor,
@@ -1648,7 +1648,7 @@ def _lock_checkpoint(
             _COMPONENT_BYTES[component],
             level,
         ),
-        f"SELECT cursor, regular_count, processed_byte_count, state, updated_at "
+        f"SELECT `cursor`, regular_count, processed_byte_count, state, updated_at "
         f"FROM {_CHECKPOINT} "
         "WHERE staging_id = %s AND component = %s AND level = %s",
         (staging_id, _COMPONENT_BYTES[component], level),
@@ -3269,10 +3269,10 @@ def _commit_branch(
     )
     next_cursor = checkpoint.cursor + len(children)
     work.compare_and_swap(
-        f"UPDATE {_CHECKPOINT} SET cursor = %s, processed_byte_count = 0, "
+        f"UPDATE {_CHECKPOINT} SET `cursor` = %s, processed_byte_count = 0, "
         "state = %s, updated_at = %s "
         "WHERE staging_id = %s AND component = %s AND level = %s "
-        "AND cursor = %s AND regular_count = %s AND processed_byte_count = 0 "
+        "AND `cursor` = %s AND regular_count = %s AND processed_byte_count = 0 "
         "AND state = %s AND updated_at = %s",
         (
             next_cursor,
@@ -3420,7 +3420,7 @@ def _ensure_internal_checkpoint(
     now: int,
 ) -> _Checkpoint:
     row = connector.fetch_one(
-        f"SELECT cursor, regular_count, processed_byte_count, state, updated_at "
+        f"SELECT `cursor`, regular_count, processed_byte_count, state, updated_at "
         f"FROM {_CHECKPOINT} "
         "WHERE staging_id = %s AND component = %s AND level = %s",
         (staging_id, _COMPONENT_BYTES[component], level),
@@ -3428,7 +3428,7 @@ def _ensure_internal_checkpoint(
     if not row:
         connector.execute(
             f"INSERT INTO {_CHECKPOINT} "
-            "(staging_id, component, level, cursor, regular_count, "
+            "(staging_id, component, level, `cursor`, regular_count, "
             "processed_byte_count, state, updated_at) "
             "VALUES (%s, %s, %s, 0, 0, 0, %s, %s)",
             (staging_id, _COMPONENT_BYTES[component], level, "OPEN", now),
@@ -3473,7 +3473,7 @@ def _match_batch_rows(
 ) -> tuple[list[tuple[Any, ...]], bool]:
     rows = work.connector.fetch_all(
         "SELECT fno.file_no, fs.file_key, name.name_bytes, fsha.file_sha256, "
-        "blob.size_bytes, device.device, inode.inode, modified.modified_ns, "
+        "content_blob.size_bytes, device.device, inode.inode, modified.modified_ns, "
         "changed.changed_ns "
         "FROM catalog_gallery_observation_file_seals AS fs "
         "JOIN catalog_gallery_observation_file_anchors AS fa "
@@ -3493,7 +3493,8 @@ def _match_batch_rows(
         "ON name.file_key = names.file_key "
         "JOIN catalog_file_name_identity_file_roles AS role "
         "ON role.file_key = names.file_key "
-        "JOIN catalog_content_blobs AS blob ON blob.file_sha256 = fsha.file_sha256 "
+        "JOIN catalog_content_blobs AS content_blob "
+        "ON content_blob.file_sha256 = fsha.file_sha256 "
         "JOIN catalog_gallery_observation_file_filesystem_seals AS filesystem "
         "ON filesystem.gallery_id = fs.gallery_id "
         "AND filesystem.observation_id = fs.observation_id "
@@ -4798,7 +4799,7 @@ def _read_level_zero_checkpoint(
 ) -> _Checkpoint:
     return _decode_checkpoint(
         connector.fetch_one(
-            f"SELECT cursor, regular_count, processed_byte_count, state, updated_at "
+            f"SELECT `cursor`, regular_count, processed_byte_count, state, updated_at "
             f"FROM {_CHECKPOINT} "
             "WHERE staging_id = %s AND component = %s AND level = 0",
             (staging_id, _COMPONENT_BYTES[component]),

@@ -555,8 +555,8 @@ class PublicationCatalogProjectionPlan:
         self._require_open()
         _validate_stage_cursor(_CURSOR_CATALOG_CHILD, cursor)
         rows = self._database.execute(
-            "SELECT cursor, kind, publication_key, subkey FROM children "
-            "WHERE cursor > ? ORDER BY cursor LIMIT ?",
+            "SELECT `cursor`, kind, publication_key, subkey FROM children "
+            "WHERE `cursor` > ? ORDER BY `cursor` LIMIT ?",
             (sqlite3.Binary(cursor), _CATALOG_BATCH_ROWS),
         ).fetchall()
         return tuple(
@@ -1789,7 +1789,7 @@ def _initialize_projection_plan_database(database: sqlite3.Connection) -> None:
             UNIQUE (publication_key, tag_id)
         ) WITHOUT ROWID;
         CREATE TABLE children (
-            cursor BLOB PRIMARY KEY,
+            `cursor` BLOB PRIMARY KEY,
             kind INTEGER NOT NULL,
             publication_key BLOB NOT NULL,
             subkey BLOB NOT NULL
@@ -2553,7 +2553,7 @@ def _populate_projection_children(database: sqlite3.Connection) -> int:
         nonlocal count
         cursor = _encode_catalog_child_cursor(kind, publication_key, subkey)
         database.execute(
-            "INSERT INTO children (cursor, kind, publication_key, subkey) "
+            "INSERT INTO children (`cursor`, kind, publication_key, subkey) "
             "VALUES (?, ?, ?, ?)",
             (
                 sqlite3.Binary(cursor),
@@ -4474,14 +4474,16 @@ def _lock_publication_checkpoint(
         (candidate_id, spec.name),
     )
     row = work.connector.fetch_one(
-        "SELECT anchor.candidate_id, generation.generation, cursor.cursor, "
+        "SELECT anchor.candidate_id, generation.generation, "
+        "checkpoint_cursor.`cursor`, "
         "count.processed_count, state.state, updated.updated_at, seal.candidate_id "
         f"FROM {_PUBLICATION_CHECKPOINT_ANCHOR_TABLE} AS anchor "
         f"LEFT JOIN {_PUBLICATION_CHECKPOINT_GENERATION_TABLE} AS generation "
         "ON generation.candidate_id = anchor.candidate_id "
         "AND generation.stage = anchor.stage "
-        f"LEFT JOIN {_PUBLICATION_CHECKPOINT_CURSOR_TABLE} AS cursor "
-        "ON cursor.candidate_id = anchor.candidate_id AND cursor.stage = anchor.stage "
+        f"LEFT JOIN {_PUBLICATION_CHECKPOINT_CURSOR_TABLE} AS checkpoint_cursor "
+        "ON checkpoint_cursor.candidate_id = anchor.candidate_id "
+        "AND checkpoint_cursor.stage = anchor.stage "
         f"LEFT JOIN {_PUBLICATION_CHECKPOINT_COUNT_TABLE} AS count "
         "ON count.candidate_id = anchor.candidate_id AND count.stage = anchor.stage "
         f"LEFT JOIN {_PUBLICATION_CHECKPOINT_STATE_TABLE} AS state "
@@ -4515,14 +4517,16 @@ def _read_publication_checkpoint(
     spec: _StageSpec,
 ) -> _Checkpoint:
     row = work.connector.fetch_one(
-        "SELECT generation.generation, cursor.cursor, count.processed_count, "
+        "SELECT generation.generation, checkpoint_cursor.`cursor`, "
+        "count.processed_count, "
         "state.state, updated.updated_at "
         f"FROM {_PUBLICATION_CHECKPOINT_SEAL_TABLE} AS seal "
         f"JOIN {_PUBLICATION_CHECKPOINT_GENERATION_TABLE} AS generation "
         "ON generation.candidate_id = seal.candidate_id "
         "AND generation.stage = seal.stage "
-        f"JOIN {_PUBLICATION_CHECKPOINT_CURSOR_TABLE} AS cursor "
-        "ON cursor.candidate_id = seal.candidate_id AND cursor.stage = seal.stage "
+        f"JOIN {_PUBLICATION_CHECKPOINT_CURSOR_TABLE} AS checkpoint_cursor "
+        "ON checkpoint_cursor.candidate_id = seal.candidate_id "
+        "AND checkpoint_cursor.stage = seal.stage "
         f"JOIN {_PUBLICATION_CHECKPOINT_COUNT_TABLE} AS count "
         "ON count.candidate_id = seal.candidate_id AND count.stage = seal.stage "
         f"JOIN {_PUBLICATION_CHECKPOINT_STATE_TABLE} AS state "
@@ -4812,8 +4816,8 @@ def _commit_candidate_batch(
     checkpoint_key = (authority.candidate.candidate_id, stage)
     if next_cursor != checkpoint.cursor:
         work.compare_and_swap(
-            f"UPDATE {_PUBLICATION_CHECKPOINT_CURSOR_TABLE} SET cursor = %s "
-            "WHERE candidate_id = %s AND stage = %s AND cursor = %s",
+            f"UPDATE {_PUBLICATION_CHECKPOINT_CURSOR_TABLE} SET `cursor` = %s "
+            "WHERE candidate_id = %s AND stage = %s AND `cursor` = %s",
             (next_cursor, *checkpoint_key, checkpoint.cursor),
             authority=f"publication candidate stage {stage!r} cursor",
         )
@@ -5169,14 +5173,15 @@ def _require_exact_candidate_checkpoints(
     now: int,
 ) -> None:
     rows = work.connector.fetch_all(
-        "SELECT anchor.stage, generation.generation, cursor.cursor, "
+        "SELECT anchor.stage, generation.generation, checkpoint_cursor.`cursor`, "
         "count.processed_count, state.state, updated.updated_at, seal.stage "
         f"FROM {_PUBLICATION_CHECKPOINT_ANCHOR_TABLE} AS anchor "
         f"LEFT JOIN {_PUBLICATION_CHECKPOINT_GENERATION_TABLE} AS generation "
         "ON generation.candidate_id = anchor.candidate_id "
         "AND generation.stage = anchor.stage "
-        f"LEFT JOIN {_PUBLICATION_CHECKPOINT_CURSOR_TABLE} AS cursor "
-        "ON cursor.candidate_id = anchor.candidate_id AND cursor.stage = anchor.stage "
+        f"LEFT JOIN {_PUBLICATION_CHECKPOINT_CURSOR_TABLE} AS checkpoint_cursor "
+        "ON checkpoint_cursor.candidate_id = anchor.candidate_id "
+        "AND checkpoint_cursor.stage = anchor.stage "
         f"LEFT JOIN {_PUBLICATION_CHECKPOINT_COUNT_TABLE} AS count "
         "ON count.candidate_id = anchor.candidate_id AND count.stage = anchor.stage "
         f"LEFT JOIN {_PUBLICATION_CHECKPOINT_STATE_TABLE} AS state "
@@ -5253,8 +5258,9 @@ def _initialize_candidate_checkpoints(
         (_PUBLICATION_CHECKPOINT_STATE_TABLE, "state", _CHECKPOINT_OPEN),
         (_PUBLICATION_CHECKPOINT_UPDATED_AT_TABLE, "updated_at", timestamp),
     ):
+        sql_column = f"`{column}`" if column == "cursor" else column
         affected = work.connector.execute_affected(
-            f"INSERT INTO {table} (candidate_id, stage, {column}) "
+            f"INSERT INTO {table} (candidate_id, stage, {sql_column}) "
             f"SELECT %s, stage, %s FROM {_PUBLICATION_STAGE_SEAL_TABLE} "
             "ORDER BY stage",
             (candidate_id, value),

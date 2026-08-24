@@ -958,7 +958,7 @@ def _load_terminal_validation_receipt(
         "ON terminal.candidate_id = checkpoint.candidate_id "
         "AND terminal.stage = checkpoint.stage "
         "AND terminal.committed_generation = checkpoint.generation "
-        "AND terminal.next_cursor = checkpoint.cursor "
+        "AND terminal.next_cursor = checkpoint.`cursor` "
         "AND terminal.next_cursor = terminal.start_cursor "
         "AND terminal.next_processed_count = checkpoint.processed_count "
         "AND terminal.committed_at = checkpoint.updated_at "

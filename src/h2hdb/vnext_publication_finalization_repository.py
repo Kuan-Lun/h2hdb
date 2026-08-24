@@ -687,7 +687,7 @@ class PublicationFinalizationRepository:
 _ITEM_SELECT = (
     "SELECT seal.candidate_id, seal.publication_key, digest.artifact_sha256, "
     "codec.storage_codec_version, generation.storage_generation, "
-    "token.protection_token, state.state, blob.size_bytes, "
+    "token.protection_token, state.state, artifact_blob.size_bytes, "
     "location.artifact_locator_sha256, codec_seal.storage_codec_version, "
     "adapter.adapter_id "
 )
@@ -709,8 +709,8 @@ _ITEM_JOINS = (
     "LEFT JOIN catalog_prepared_artifact_states AS state "
     "ON state.candidate_id = seal.candidate_id "
     "AND state.publication_key = seal.publication_key "
-    "LEFT JOIN catalog_artifact_blobs AS blob "
-    "ON blob.artifact_sha256 = digest.artifact_sha256 "
+    "LEFT JOIN catalog_artifact_blobs AS artifact_blob "
+    "ON artifact_blob.artifact_sha256 = digest.artifact_sha256 "
     "LEFT JOIN catalog_artifact_location AS location "
     "ON location.artifact_sha256 = digest.artifact_sha256 "
     "LEFT JOIN catalog_artifact_storage_codec_seals AS codec_seal "
