@@ -877,6 +877,72 @@ def test_begin_response_loss_replays_sole_working_root_and_compares_request(
     connector.close()
 
 
+def test_begin_rejects_forged_source_working_assignment(tmp_path: Path) -> None:
+    connector = _generated_database(tmp_path / "begin-source-assignment.sqlite3")
+    gate, turn = _authorities(connector)
+    _seed_completed_analysis(connector, turn, with_base=False)
+    assert (
+        connector.execute_affected(
+            "UPDATE operational_source_working_builds SET assigned_at = %s "
+            "WHERE slot = %s",
+            (14, 1),
+        )
+        == 1
+    )
+
+    with pytest.raises(PublicationCandidateConflictError, match="assignment|creation"):
+        _begin(connector, gate, turn)
+
+    assert connector.fetch_one(
+        "SELECT build_id, assigned_at FROM operational_source_working_builds "
+        "WHERE slot = %s",
+        (1,),
+    ) == (_BUILD, 14)
+    assert not connector.fetch_one("SELECT 1 FROM catalog_publication_candidates")
+    assert connector.fetch_one(
+        "SELECT next_revision FROM operational_revision_allocators WHERE stream = %s",
+        ("CATALOG",),
+    ) == (1,)
+    connector.close()
+
+
+def test_begin_resume_rejects_forged_catalog_working_assignment(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "resume-catalog-assignment.sqlite3")
+    gate, turn = _authorities(connector)
+    _seed_completed_analysis(connector, turn, with_base=False)
+    _begin(connector, gate, turn)
+    assert (
+        connector.execute_affected(
+            "UPDATE operational_catalog_working_candidates SET assigned_at = %s "
+            "WHERE slot = %s",
+            (99, 1),
+        )
+        == 1
+    )
+
+    with pytest.raises(PublicationCandidateConflictError, match="assignment|creation"):
+        _begin(connector, gate, turn, now=101)
+
+    assert connector.fetch_one(
+        "SELECT candidate_id, assigned_at FROM "
+        "operational_catalog_working_candidates WHERE slot = %s",
+        (1,),
+    ) == (_CANDIDATE, 99)
+    assert connector.fetch_one(
+        "SELECT candidate_id FROM catalog_publication_candidates "
+        "WHERE candidate_id = %s",
+        (_CANDIDATE,),
+    ) == (_CANDIDATE,)
+    assert not connector.fetch_one(
+        "SELECT candidate_id FROM catalog_publication_candidate_projection_seals "
+        "WHERE candidate_id = %s",
+        (_CANDIDATE,),
+    )
+    connector.close()
+
+
 def test_forged_artifact_policy_canonical_preimage_fails_without_reservation(
     tmp_path: Path,
 ) -> None:
@@ -913,8 +979,7 @@ def test_begin_rejects_permanent_candidate_identity_after_transient_cleanup(
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=True)
     connector.execute(
-        "INSERT INTO catalog_publication_commit_finalizations "
-        "(receipt_id) VALUES (%s)",
+        "INSERT INTO catalog_publication_commit_finalizations (receipt_id) VALUES (%s)",
         (_BASE_RECEIPT,),
     )
     connector.execute(
@@ -1165,6 +1230,102 @@ def test_empty_selection_and_independent_validation_use_terminal_empty_receipts(
         "WHERE candidate_id = %s",
         (_CANDIDATE,),
     ) == (2,)
+    connector.close()
+
+
+@pytest.mark.parametrize("capability", ["source", "catalog"])
+def test_publication_batch_rejects_forged_working_assignment(
+    tmp_path: Path,
+    capability: str,
+) -> None:
+    connector = _generated_database(tmp_path / f"batch-{capability}-assignment.sqlite3")
+    gate, turn = _authorities(connector)
+    _seed_completed_analysis(connector, turn, with_base=False)
+    _begin(connector, gate, turn)
+    if capability == "source":
+        table = "operational_source_working_builds"
+        expected = (_BUILD, 14)
+        query = (
+            "SELECT build_id, assigned_at FROM operational_source_working_builds "
+            "WHERE slot = %s"
+        )
+        assigned_at = 14
+    else:
+        table = "operational_catalog_working_candidates"
+        expected = (_CANDIDATE, 99)
+        query = (
+            "SELECT candidate_id, assigned_at FROM "
+            "operational_catalog_working_candidates WHERE slot = %s"
+        )
+        assigned_at = 99
+    assert (
+        connector.execute_affected(
+            f"UPDATE {table} SET assigned_at = %s WHERE slot = %s",
+            (assigned_at, 1),
+        )
+        == 1
+    )
+
+    with (
+        connector.transaction(),
+        pytest.raises(PublicationCandidateConflictError, match="assignment|creation"),
+    ):
+        PublicationCandidateRepository.process_selection_batch(
+            VNextUnitOfWork(connector, backend="sqlite"),
+            gate_lease=gate,
+            ingest_turn=turn,
+            candidate_id=_CANDIDATE,
+            batch_key=b"forged-working",
+            now=101,
+        )
+
+    assert connector.fetch_one(query, (1,)) == expected
+    assert not connector.fetch_one(
+        "SELECT 1 FROM catalog_publication_batch_receipts WHERE candidate_id = %s",
+        (_CANDIDATE,),
+    )
+    connector.close()
+
+
+@pytest.mark.parametrize("capability", ["source", "catalog"])
+def test_projection_receipt_revalidation_requires_exact_working_assignment(
+    tmp_path: Path,
+    capability: str,
+) -> None:
+    connector = _generated_database(
+        tmp_path / f"projection-revalidate-{capability}-assignment.sqlite3"
+    )
+    gate, turn = _authorities(connector)
+    _seed_completed_analysis(connector, turn, with_base=False)
+    _begin(connector, gate, turn)
+    _complete_selection(connector, gate, turn)
+    with connector.transaction():
+        authority = PublicationCandidateRepository.issue_projection_authority(
+            VNextUnitOfWork(connector, backend="sqlite"),
+            gate_lease=gate,
+            ingest_turn=turn,
+            candidate_id=_CANDIDATE,
+            now=110,
+        )
+    table = (
+        "operational_source_working_builds"
+        if capability == "source"
+        else "operational_catalog_working_candidates"
+    )
+    assert (
+        connector.execute_affected(
+            f"UPDATE {table} SET assigned_at = assigned_at - 1 WHERE slot = %s",
+            (1,),
+        )
+        == 1
+    )
+
+    with pytest.raises(PublicationCandidateNotReadyError, match="working-root"):
+        PublicationCandidateRepository.prepare_catalog_projection(
+            connector,
+            backend="sqlite",
+            authority=authority,
+        )
     connector.close()
 
 

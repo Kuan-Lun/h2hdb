@@ -1907,6 +1907,24 @@ class FileContentReceipt:
         return cls(digest.digest(), size, _FILE_CONTENT_RECEIPT_TOKEN)
 
 
+def _file_content_receipt_from_frozen_facts(
+    file_sha256: bytes,
+    size_bytes: int,
+) -> FileContentReceipt:
+    """Restore a receipt from an already verified core-owned frozen record.
+
+    This deliberately remains outside ``__all__`` and the package facade.  It
+    is not a consumer forge surface: the frozen-observation spool validates
+    its versioned record receipt before calling this internal constructor.
+    """
+
+    return FileContentReceipt(
+        require_digest32(file_sha256, field="frozen file_sha256"),
+        require_int63(size_bytes, field="frozen file size_bytes"),
+        _FILE_CONTENT_RECEIPT_TOKEN,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class FileObservation:
     """One source FILE fact with a content-derived receipt."""

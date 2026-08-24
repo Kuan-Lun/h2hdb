@@ -19,13 +19,13 @@ __all__ = [
     "VNextPreparedPublicationStep",
     "VNextPreparedSource",
     "VNextPreparedSourceStep",
+    "VNextSourceManifestMismatchError",
 ]
 
 import secrets
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from hashlib import sha256
 from time import time_ns
 from typing import TypeVar
 
@@ -35,7 +35,6 @@ from .domain import (
     VNextCurrentProjectionPage,
     VNextIngestAdvanceResult,
     VNextIngestCompletionReceipt,
-    VNextIngestGalleryObservation,
     VNextIngestPage,
     VNextIngestPhase,
     VNextIngestPolicy,
@@ -87,7 +86,6 @@ from .vnext_gallery_staging_repository import (
 from .vnext_identity import (
     GalleryObservationComponent,
     encode_source_relative_locator,
-    iter_gallery_observation_metadata_stream,
     source_root_digest,
 )
 from .vnext_ingest_analysis import (
@@ -122,9 +120,15 @@ from .vnext_source_build_repository import (
     PendingSourceGallery,
     ResolvedDiscoveryLocator,
     SourceBuildHandoff,
+    SourceBuildManifestSummary,
     SourceBuildRepository,
     SourceDiscoveryPlan,
     SourceRootBuildCommand,
+    source_build_snapshot_attempt_id,
+)
+from .vnext_source_observation_spool import (
+    FrozenGalleryObservation,
+    FrozenSourceObservationSpool,
 )
 from .vnext_transaction import VNextUnitOfWork
 
@@ -133,7 +137,6 @@ _PREPARED_SOURCE_TOKEN = object()
 _ISSUED_SOURCE_STEP_TOKEN = object()
 _PREPARED_SOURCE_STEP_TOKEN = object()
 _SOURCE_LOCATOR_PAGE_LIMIT = 256
-_SOURCE_BUILD_ATTEMPT_PREFIX = b"h2hdb-vnext-ingest-source-build-attempt-v1\0"
 
 
 def _now_microseconds() -> int:
@@ -153,6 +156,10 @@ class VNextCurrentProjectionContinuationError(
 
 class VNextCurrentProjectionUnavailableError(VNextCurrentProjectionError):
     """The requested current or pinned publication receipt is unavailable."""
+
+
+class VNextSourceManifestMismatchError(RuntimeError):
+    """The replayed source bytes differ from their complete frozen preflight."""
 
 
 class _SourceAction(StrEnum):
@@ -203,7 +210,7 @@ class _SourceMachine:
     sealed: bool = False
     pending_gallery: PendingSourceGallery | None = None
     locator_components: tuple[str, ...] | None = None
-    observation: VNextIngestGalleryObservation | None = None
+    observation: FrozenGalleryObservation | None = None
     staging_handle: GalleryStagingHandle | None = None
     file_after: bytes | None = None
     directory_after: bytes | None = None
@@ -278,25 +285,28 @@ class VNextPreparedSource:
     __slots__ = (
         "_active_issue",
         "_active_step",
-        "_adapter",
         "_closed",
         "_machine",
+        "_manifest_summary",
         "_plan",
+        "_snapshot",
         "_source_root_components",
     )
 
     def __init__(
         self,
         *,
-        adapter: VNextIngestSourceAdapter,
+        snapshot: FrozenSourceObservationSpool,
         plan: SourceDiscoveryPlan,
+        manifest_summary: SourceBuildManifestSummary,
         source_root_components: tuple[str, ...],
         _constructor_token: object,
     ) -> None:
         if _constructor_token is not _PREPARED_SOURCE_TOKEN:
             raise TypeError("use VNextIngestFacade.prepare_source")
-        self._adapter = adapter
+        self._snapshot = snapshot
         self._plan = plan
+        self._manifest_summary = manifest_summary
         self._source_root_components = source_root_components
         self._closed = False
         self._machine = _SourceMachine()
@@ -311,7 +321,10 @@ class VNextPreparedSource:
             if self._machine.locator_upload is not None:
                 self._machine.locator_upload.close()
             _close_source_step_payload(self._active_step)
-            self._plan.close()
+            try:
+                self._snapshot.close()
+            finally:
+                self._plan.close()
 
     def __enter__(self) -> VNextPreparedSource:
         self._require_open()
@@ -323,6 +336,7 @@ class VNextPreparedSource:
     def _require_open(self) -> None:
         if self._closed:
             raise ValueError("prepared source is closed")
+        self._snapshot._require_open()
         self._plan._require_open()
 
 
@@ -368,12 +382,25 @@ class VNextIngestFacade:
         # SourceDiscoveryPlan validates the root-independent locator codec and
         # owns cleanup if page consumption fails midway.
         plan = SourceDiscoveryPlan.from_locators(_iter_source_locators(adapter))
-        return VNextPreparedSource(
-            adapter=adapter,
-            plan=plan,
-            source_root_components=root,
-            _constructor_token=_PREPARED_SOURCE_TOKEN,
-        )
+        snapshot: FrozenSourceObservationSpool | None = None
+        try:
+            snapshot = FrozenSourceObservationSpool.freeze(
+                adapter,
+                plan=plan,
+                source_root_components=root,
+            )
+            return VNextPreparedSource(
+                snapshot=snapshot,
+                plan=plan,
+                manifest_summary=snapshot.manifest_summary,
+                source_root_components=root,
+                _constructor_token=_PREPARED_SOURCE_TOKEN,
+            )
+        except BaseException:
+            if snapshot is not None:
+                snapshot.close()
+            plan.close()
+            raise
 
     def issue_source_step(
         self,
@@ -456,10 +483,11 @@ class VNextIngestFacade:
             policy = machine.policy
             if policy is None:
                 raise RuntimeError("source policy binding is absent")
-            build_id = _source_build_attempt_id(source, policy)
+            build_id = _source_build_attempt_id(source)
             command = SourceRootBuildCommand(
                 source._source_root_components,
                 build_id,
+                source._manifest_summary,
             )
             upload = command.prepare_root_upload()
             payload = (build_id, command, upload, upload.iter_pages())
@@ -498,16 +526,11 @@ class VNextIngestFacade:
                     pending.position,
                     pending.locator_sha256,
                 )
-                observation = source._adapter.observe_gallery(decoded_locator)
-                if not isinstance(observation, VNextIngestGalleryObservation):
-                    raise TypeError(
-                        "observe_gallery must return VNextIngestGalleryObservation"
-                    )
-                observation.__post_init__()
-                if observation.locator_components != decoded_locator:
-                    raise ValueError(
-                        "gallery observation locator differs from its plan"
-                    )
+                observation = source._snapshot.open_gallery(
+                    position=pending.position,
+                    locator_sha256=pending.locator_sha256,
+                    locator_components=decoded_locator,
+                )
                 payload = (pending, decoded_locator, observation)
                 local_action = _SourceAction.STAGING_SELECT
         elif action in {
@@ -753,7 +776,7 @@ class VNextIngestFacade:
                     raise TypeError("ASSEMBLY source step has an invalid attempt")
                 if machine.build_id is None:
                     raise RuntimeError("source build is not initialized")
-                return SourceBuildRepository.assemble_batch(
+                receipt = SourceBuildRepository.assemble_batch(
                     work,
                     gate_lease=gate,
                     ingest_turn=turn.ingest_turn,
@@ -761,9 +784,37 @@ class VNextIngestFacade:
                     attempt=attempt,
                     now=now,
                 )
+                if receipt.terminal:
+                    _require_source_manifest_summary(
+                        receipt,
+                        source._manifest_summary,
+                    )
+                return receipt
             raise RuntimeError(f"unsupported source action {action.value}")
 
-        outcome = self.__write(commit)
+        try:
+            outcome = self.__write(commit)
+        except VNextSourceManifestMismatchError:
+            build_id = machine.build_id
+            if build_id is None:
+                raise RuntimeError(
+                    "source manifest mismatch has no build authority"
+                ) from None
+            # The failed terminal assembly transaction has already rolled back.
+            # Release only the exact OPEN build still mapped to this live
+            # generation; SourceBuildRepository.abandon retains the generation
+            # mapping as response-loss evidence and rejects foreign authority.
+            self.__write(
+                lambda work: SourceBuildRepository.abandon(
+                    work,
+                    gate_lease=gate,
+                    ingest_turn=turn.ingest_turn,
+                    build_id=build_id,
+                    now=now,
+                )
+            )
+            source.close()
+            raise
         processed_rows, replayed = _apply_source_outcome(
             source,
             prepared_step,
@@ -1265,14 +1316,11 @@ def _resume_authority(
 
 def _source_build_attempt_id(
     source: VNextPreparedSource,
-    policy: VNextResolvedIngestPolicy,
 ) -> bytes:
-    digest = sha256(_SOURCE_BUILD_ATTEMPT_PREFIX)
-    digest.update(source_root_digest(source._source_root_components))
-    digest.update(source._plan.gallery_count.to_bytes(8, "big"))
-    digest.update(source._plan.tree_observation_sha256)
-    digest.update(policy.manifest_policy_id.to_bytes(8, "big"))
-    return digest.digest()[:16]
+    return source_build_snapshot_attempt_id(
+        source_root_digest(source._source_root_components),
+        source._manifest_summary,
+    )
 
 
 def _require_root_upload(machine: _SourceMachine) -> CanonicalValueUploadPlan:
@@ -1335,7 +1383,7 @@ def _prepare_observation_component(
         raise RuntimeError("gallery observation is absent")
     attempt = BatchAttempt(secrets.token_bytes(16), machine.previous_operation_id)
     if action is _SourceAction.FILE_PAGE:
-        file_page = source._adapter.list_file_observations(
+        file_page = source._snapshot.list_file_observations(
             observation,
             after_name_bytes=machine.file_after,
             limit=256,
@@ -1351,7 +1399,7 @@ def _prepare_observation_component(
             file_next_after,
         )
     if action is _SourceAction.DIRECTORY_PAGE:
-        directory_page = source._adapter.list_directory_observations(
+        directory_page = source._snapshot.list_directory_observations(
             observation,
             after_name_bytes=machine.directory_after,
             limit=192,
@@ -1371,7 +1419,7 @@ def _prepare_observation_component(
             directory_next_after,
         )
     if action is _SourceAction.TAG_PAGE:
-        tag_page = source._adapter.list_tag_observations(
+        tag_page = source._snapshot.list_tag_observations(
             observation,
             after_ordinal=machine.tag_after,
             limit=256,
@@ -1454,40 +1502,13 @@ def _require_tag_component_page(
     return page.next_after
 
 
-def _iter_metadata_chunks(
-    observation: VNextIngestGalleryObservation,
-) -> Iterator[tuple[bytes, bool]]:
-    def raw_chunks() -> Iterator[bytes]:
-        buffer = bytearray()
-        for part in iter_gallery_observation_metadata_stream(observation.metadata):
-            offset = 0
-            while offset < len(part):
-                consumed = min(32_768 - len(buffer), len(part) - offset)
-                buffer.extend(part[offset : offset + consumed])
-                offset += consumed
-                if len(buffer) == 32_768:
-                    yield bytes(buffer)
-                    buffer.clear()
-        if buffer:
-            yield bytes(buffer)
-
-    chunks = raw_chunks()
-    try:
-        current = next(chunks)
-    except StopIteration as error:
-        raise RuntimeError("gallery metadata stream is unexpectedly empty") from error
-    for following in chunks:
-        yield current, False
-        current = following
-    yield current, True
-
-
 def _resume_staging_machine(
-    machine: _SourceMachine,
+    source: VNextPreparedSource,
     progress: GalleryStagingProgress,
 ) -> None:
-    """Restore local adapter cursors from fixed-size repository authority."""
+    """Restore frozen-spool cursors from fixed-size repository authority."""
 
+    machine = source._machine
     progress.handle.__post_init__()
     machine.staging_handle = progress.handle
     machine.file_after = None
@@ -1529,21 +1550,10 @@ def _resume_staging_machine(
                 observation = machine.observation
                 if observation is None:
                     raise RuntimeError("gallery observation is absent")
-                chunks = _iter_metadata_chunks(observation)
-                consumed_bytes = 0
-                while consumed_bytes < component_progress.cursor:
-                    try:
-                        chunk, _terminal = next(chunks)
-                    except StopIteration as error:
-                        raise RuntimeError(
-                            "durable METADATA cursor exceeds the local observation"
-                        ) from error
-                    consumed_bytes += len(chunk)
-                if consumed_bytes != component_progress.cursor:
-                    raise RuntimeError(
-                        "durable METADATA cursor splits a canonical chunk"
-                    )
-                machine.metadata_chunks = chunks
+                machine.metadata_chunks = source._snapshot.iter_metadata_chunks(
+                    observation,
+                    start_offset=component_progress.cursor,
+                )
                 machine.action = _SourceAction.METADATA_PAGE
             _require_resumed_component_cursor(component_progress)
         elif first_open is not None and (
@@ -1658,7 +1668,16 @@ def _apply_source_outcome(
                 raise RuntimeError("terminal discovery returned an invalid receipt")
             machine.discovered_galleries = outcome.next_processed_count
             replayed = outcome.replayed
-            machine.action = _SourceAction.STAGING_FIND
+            if batch.sealed_replay:
+                if not outcome.replayed:
+                    raise RuntimeError(
+                        "sealed discovery did not replay its durable receipt"
+                    )
+                machine.staged_galleries = outcome.next_processed_count
+                machine.sealed = True
+                machine.action = _SourceAction.COMPLETE
+            else:
+                machine.action = _SourceAction.STAGING_FIND
         else:
             machine.discovery_batch = batch
             machine.resolved = []
@@ -1720,7 +1739,7 @@ def _apply_source_outcome(
         if (
             not isinstance(pending, PendingSourceGallery)
             or not isinstance(locator, tuple)
-            or not isinstance(observation, VNextIngestGalleryObservation)
+            or not isinstance(observation, FrozenGalleryObservation)
         ):
             raise RuntimeError("pending gallery local observation types are invalid")
         machine.pending_gallery = pending
@@ -1734,7 +1753,7 @@ def _apply_source_outcome(
     elif action is _SourceAction.STAGING_BEGIN:
         if not isinstance(outcome, GalleryStagingProgress):
             raise RuntimeError("gallery staging begin returned invalid progress")
-        _resume_staging_machine(machine, outcome)
+        _resume_staging_machine(source, outcome)
     elif action in {
         _SourceAction.FILE_PAGE,
         _SourceAction.DIRECTORY_PAGE,
@@ -1780,7 +1799,10 @@ def _apply_source_outcome(
                 if observation is None:
                     raise RuntimeError("gallery observation is absent")
                 machine.previous_operation_id = None
-                machine.metadata_chunks = _iter_metadata_chunks(observation)
+                machine.metadata_chunks = source._snapshot.iter_metadata_chunks(
+                    observation,
+                    start_offset=0,
+                )
                 machine.action = _SourceAction.METADATA_PAGE
             else:
                 if not isinstance(component_step.next_after, int):
@@ -1877,6 +1899,22 @@ def _close_source_step_payload(step: VNextPreparedSourceStep | None) -> None:
             for item in payload:
                 if isinstance(item, CanonicalValueUploadPlan):
                     item.close()
+
+
+def _require_source_manifest_summary(
+    receipt: AssemblyBatchReceipt,
+    expected: SourceBuildManifestSummary,
+) -> None:
+    actual = SourceBuildManifestSummary(
+        receipt.next_manifest_chain_sha256,
+        receipt.next_gallery_count,
+        receipt.next_file_count,
+        receipt.next_byte_count,
+    )
+    if actual != expected:
+        raise VNextSourceManifestMismatchError(
+            "durable source build manifest differs from its frozen preflight snapshot"
+        )
 
 
 def _iter_source_locators(

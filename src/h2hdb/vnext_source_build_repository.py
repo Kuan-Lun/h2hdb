@@ -20,11 +20,18 @@ __all__ = [
     "SourceBuildConflictError",
     "SourceBuildAbandonment",
     "SourceBuildHandoff",
+    "SourceBuildManifestSummary",
     "SourceBuildNotReadyError",
     "SourceBuildRepository",
     "SourceDiscoveryPlan",
     "SourceDiscoveryPlanError",
     "SourceRootBuildCommand",
+    "require_source_build_publication_identity",
+    "source_build_identity",
+    "source_build_legacy_identity",
+    "source_build_recovery_identity",
+    "source_build_snapshot_attempt_id",
+    "source_manifest_chain_step",
 ]
 
 import secrets
@@ -37,6 +44,10 @@ from tempfile import TemporaryDirectory
 from typing import Any
 
 from .vnext_allocator_repository import IdentityStream, VNextAllocatorRepository
+from .vnext_analysis_family import (
+    AnalysisFamilyCollisionError,
+    load_analysis_run_family,
+)
 from .vnext_canonical_value_family import load_sealed_value_identity
 from .vnext_canonical_value_repository import (
     CanonicalValueUploadPlan,
@@ -104,6 +115,10 @@ _DISCOVERY_AUDIT_PREFIX = b"h2hdb-vnext-source-build-discovery-audit-v1\0"
 _DISCOVERY_BATCH_PREFIX = b"h2hdb-vnext-source-build-discovery-batch-v1\0"
 _DISCOVERY_ATTEMPT_PREFIX = b"h2hdb-vnext-source-build-discovery-attempt-v1\0"
 _MANIFEST_AUDIT_PREFIX = b"h2hdb-vnext-source-build-manifest-audit-v1\0"
+_SNAPSHOT_ATTEMPT_PREFIX = b"h2hdb-vnext-source-snapshot-attempt-v2\0"
+_SOURCE_BUILD_ID_PREFIX = b"h2hdb-vnext-source-build-identity-v2\0"
+_SOURCE_BUILD_RECOVERY_ID_PREFIX = b"h2hdb-vnext-source-build-recovery-v3\0"
+_LEGACY_SOURCE_BUILD_ID_PREFIX = b"h2hdb-vnext-ingest-source-build-attempt-v1\0"
 _EMPTY_MANIFEST_CHAIN = bytes.fromhex(
     "121f20d26c10f4c5ce6e621dc5e41b7da2c4028af840caa7547265068f2458e3"
 )
@@ -113,10 +128,24 @@ _ASSEMBLY_ATTEMPT_TOKEN = object()
 
 _PUBLICATION_COMMIT_HEAD_TABLE = "catalog_publication_commit_head_receipts"
 _PUBLICATION_COMMIT_SEAL_TABLE = "catalog_publication_commit_seals"
+_PUBLICATION_COMMIT_CANDIDATE_TABLE = "catalog_publication_commit_candidates"
 _PUBLICATION_COMMIT_SOURCE_TABLE = "catalog_publication_commit_source_revisions"
 _PUBLICATION_COMMIT_GENERATION_TABLE = "catalog_publication_commit_generations"
 _PUBLICATION_COMMIT_COMMITTED_AT_TABLE = "catalog_publication_commit_committed_ats"
+_PUBLICATION_COMMIT_VIEW = "catalog_publication_commits"
+_PUBLICATION_CANDIDATE_TABLE = "catalog_publication_candidates"
+_PUBLICATION_CANDIDATE_BASE_COMMIT_TABLE = (
+    "catalog_publication_candidate_base_publication_commits"
+)
+_PUBLICATION_RECEIPT_VIEW = "catalog_publication_receipts"
 _SOURCE_REVISION_CHANNEL_TABLE = "catalog_source_revision_channels"
+_SOURCE_REVISION_PROVENANCE_TABLE = "catalog_source_revision_provenance"
+_ANALYSIS_RUN_VIEW = "catalog_analysis_runs"
+_ANALYSIS_RUN_BUILD_TABLE = "catalog_analysis_run_build_ids"
+_ANALYSIS_SNAPSHOT_MANIFEST_TABLE = "catalog_analysis_snapshot_manifest"
+_PUBLICATION_CANDIDATE_ANALYSIS_TABLE = "catalog_publication_candidate_analysis_ids"
+_CATALOG_WORKING_CANDIDATE_TABLE = "operational_catalog_working_candidates"
+_OPERATIONAL_PREPARATION_TABLE = "operational_operational_preparations"
 _SOURCE_BUILD_BASE_COMMIT_TABLE = "catalog_source_build_base_publication_commits"
 _PENDING_SOURCE_GALLERY_QUERY = (
     "SELECT expected.position, expected.gallery_id, coordinate.locator_sha256 "
@@ -202,6 +231,7 @@ class DiscoveryBatch:
     start_processed_count: int
     locators: tuple[PreparedDiscoveryLocator, ...]
     terminal: bool
+    sealed_replay: bool
     _plan_capability: object = field(repr=False, compare=False)
     _batch_capability: object = field(repr=False, compare=False)
     _constructor_token: object = field(repr=False, compare=False)
@@ -232,6 +262,10 @@ class DiscoveryBatch:
             raise TypeError("discovery terminal must be bool")
         if self.terminal != (not self.locators):
             raise ValueError("only an empty discovery page is terminal")
+        if type(self.sealed_replay) is not bool:
+            raise TypeError("discovery sealed_replay must be bool")
+        if self.sealed_replay and not self.terminal:
+            raise ValueError("a sealed discovery replay must be terminal")
         if self._constructor_token is not _DISCOVERY_BATCH_TOKEN:
             raise TypeError("use SourceBuildRepository.prepare_discovery_batch")
 
@@ -330,6 +364,41 @@ class AssemblyBatchReceipt:
     committed_generation: int
     committed_at: int
     replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SourceBuildManifestSummary:
+    """Base-independent immutable content summary of one source snapshot."""
+
+    manifest_sha256: bytes
+    gallery_count: int
+    file_count: int
+    byte_count: int
+
+    def __post_init__(self) -> None:
+        manifest = require_digest32(
+            self.manifest_sha256,
+            field="source manifest summary manifest_sha256",
+        )
+        for field_name in ("gallery_count", "file_count", "byte_count"):
+            value = require_int63(
+                getattr(self, field_name),
+                field=f"source manifest summary {field_name}",
+            )
+            if value < 0:
+                raise ValueError(
+                    f"source manifest summary {field_name} must be non-negative"
+                )
+        if self.gallery_count == 0 and (
+            manifest != _EMPTY_MANIFEST_CHAIN
+            or self.file_count != 0
+            or self.byte_count != 0
+        ):
+            raise ValueError("empty source manifest summary is not canonical")
+
+    @classmethod
+    def empty(cls) -> SourceBuildManifestSummary:
+        return cls(_EMPTY_MANIFEST_CHAIN, 0, 0, 0)
 
 
 class SourceDiscoveryPlan:
@@ -603,12 +672,32 @@ class SourceDiscoveryPlan:
             raise ValueError("source discovery plan is closed")
 
 
+def source_build_snapshot_attempt_id(
+    source_root_sha256: bytes,
+    manifest_summary: SourceBuildManifestSummary,
+) -> bytes:
+    """Derive the base-independent identity of one exact source snapshot."""
+
+    root = require_digest32(source_root_sha256, field="source_root_sha256")
+    if type(manifest_summary) is not SourceBuildManifestSummary:
+        raise TypeError("manifest_summary must be an exact SourceBuildManifestSummary")
+    manifest_summary.__post_init__()
+    digest = sha256(_SNAPSHOT_ATTEMPT_PREFIX)
+    digest.update(root)
+    digest.update(manifest_summary.manifest_sha256)
+    digest.update(manifest_summary.gallery_count.to_bytes(8, "big"))
+    digest.update(manifest_summary.file_count.to_bytes(8, "big"))
+    digest.update(manifest_summary.byte_count.to_bytes(8, "big"))
+    return digest.digest()[:16]
+
+
 @dataclass(frozen=True, slots=True)
 class SourceRootBuildCommand:
     """Public source-root command; scope keys are deliberately absent."""
 
     source_root_components: tuple[str, ...]
     build_attempt_id: bytes
+    manifest_summary: SourceBuildManifestSummary | None = None
     source_root_sha256: bytes = field(init=False)
     source_root_byte_count: int = field(init=False)
     source_root_payload_sha256: bytes = field(init=False)
@@ -637,6 +726,19 @@ class SourceRootBuildCommand:
             source_root_digest(self.source_root_components),
         )
         require_uuid16(self.build_attempt_id, field="build_attempt_id")
+        if self.manifest_summary is not None:
+            if type(self.manifest_summary) is not SourceBuildManifestSummary:
+                raise TypeError(
+                    "manifest_summary must be an exact SourceBuildManifestSummary"
+                )
+            self.manifest_summary.__post_init__()
+            if self.build_attempt_id != source_build_snapshot_attempt_id(
+                self.source_root_sha256,
+                self.manifest_summary,
+            ):
+                raise ValueError(
+                    "build_attempt_id differs from the exact source snapshot"
+                )
 
     def prepare_root_upload(self) -> CanonicalValueUploadPlan:
         return CanonicalValueUploadPlan.from_parts(
@@ -678,11 +780,105 @@ class SourceBuildAbandonment:
 
 
 @dataclass(frozen=True, slots=True)
+class _SourceBuildSelection:
+    build_id: bytes
+    created_at: int | None = None
+
+    def __post_init__(self) -> None:
+        require_uuid16(self.build_id, field="selected source build_id")
+        if self.created_at is not None:
+            require_int63(self.created_at, field="selected source build created_at")
+
+
+@dataclass(frozen=True, slots=True)
 class _SourceHead:
     receipt_id: bytes
     revision: int
     generation: int
     committed_at: int
+
+
+@dataclass(frozen=True, slots=True)
+class _FinalizedSourceHead:
+    receipt_id: bytes
+    source_revision: int
+    generation: int
+    finalized_at: int
+    analysis_id: bytes
+    build_id: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _SealedSourcePublication:
+    receipt_id: bytes
+    source_revision: int
+    generation: int
+    committed_at: int
+    analysis_id: bytes
+    build_id: bytes
+
+
+def _require_locked_working_root_coherence(
+    connector: Any,
+    *,
+    source_working: tuple[Any, ...],
+    catalog_working: tuple[Any, ...],
+) -> None:
+    """Prove a live catalog root belongs to its exact SEALED source root."""
+
+    if not catalog_working:
+        return
+    if len(catalog_working) != 3 or catalog_working[0] != 1:
+        raise SourceBuildConflictError("catalog working root is malformed")
+    if len(source_working) != 3 or source_working[0] != 1:
+        raise SourceBuildConflictError(
+            "catalog working root has no exact source working root"
+        )
+    build_id = require_uuid16(
+        source_working[1],
+        field="catalog working source build_id",
+    )
+    source_family = _load_source_build_or_conflict(connector, build_id)
+    if (
+        source_family.state != "SEALED"
+        or require_int63(
+            source_working[2],
+            field="catalog working source assigned_at",
+        )
+        != source_family.created_at
+    ):
+        raise SourceBuildConflictError(
+            "catalog working root names a non-SEALED or misassigned source build"
+        )
+    candidate_id = require_uuid16(
+        catalog_working[1],
+        field="catalog working candidate_id",
+    )
+    assigned_at = require_int63(
+        catalog_working[2],
+        field="catalog working assigned_at",
+    )
+    candidate = connector.fetch_one(
+        f"SELECT candidate.analysis_id, candidate.created_at, "
+        f"analysis.build_id, analysis.state "
+        f"FROM {_PUBLICATION_CANDIDATE_TABLE} AS candidate "
+        f"JOIN {_ANALYSIS_RUN_VIEW} AS analysis "
+        "ON analysis.analysis_id = candidate.analysis_id "
+        "WHERE candidate.candidate_id = %s",
+        (candidate_id,),
+    )
+    if len(candidate) != 4:
+        raise SourceBuildConflictError("catalog working candidate is incomplete")
+    require_uuid16(candidate[0], field="catalog working candidate analysis_id")
+    if (
+        require_int63(candidate[1], field="catalog working candidate created_at")
+        != assigned_at
+        or candidate[2] != build_id
+        or candidate[3] != "COMPLETE"
+    ):
+        raise SourceBuildConflictError(
+            "catalog working candidate differs from its source build"
+        )
 
 
 class SourceBuildRepository:
@@ -738,6 +934,18 @@ class SourceBuildRepository:
             "FROM operational_source_working_builds WHERE slot = %s",
             (1,),
         )
+        catalog_working = work.lock_row(
+            LockRank.WORKING_ROOT,
+            encode_lock_key("source-working-candidate", 1),
+            f"SELECT slot, candidate_id, assigned_at "
+            f"FROM {_CATALOG_WORKING_CANDIDATE_TABLE} WHERE slot = %s",
+            (1,),
+        )
+        _require_locked_working_root_coherence(
+            connector,
+            source_working=working,
+            catalog_working=catalog_working,
+        )
 
         manifest_policy_id = _manifest_policy_id(connector)
         _require_registry_value(
@@ -758,8 +966,12 @@ class SourceBuildRepository:
             "WHERE generation = %s",
             (generation,),
         )
+        mapped_build = None
         if mapping:
+            if len(mapping) != 1:
+                raise SourceBuildConflictError("source generation mapping is malformed")
             mapped_build = require_uuid16(mapping[0], field="mapped build_id")
+        if mapped_build is not None and command.manifest_summary is None:
             _validate_existing_handoff(
                 connector,
                 build_id=mapped_build,
@@ -767,6 +979,7 @@ class SourceBuildRepository:
                 scope=scope,
                 source_root_sha256=expected_root,
                 manifest_policy_id=manifest_policy_id,
+                manifest_summary=command.manifest_summary,
                 working=working,
             )
             _require_sealed_root_identity(
@@ -807,11 +1020,6 @@ class SourceBuildRepository:
                 True,
             )
 
-        if working and working[1] != command.build_attempt_id:
-            raise SourceBuildConflictError(
-                "the sole source working slot belongs to another build"
-            )
-
         # The root identity is the consumer prerequisite.  Its upload claim is
         # checked before all inserts and remains until the last statement.
         claim = work.lock_row(
@@ -831,6 +1039,147 @@ class SourceBuildRepository:
             root_page_sha256=root_plan.root_page_sha256,
         )
         base_source = _lock_source_head(work, _DEFAULT_CHANNEL)
+        if mapped_build is None and command.manifest_summary is not None:
+            _require_latest_source_generation_authority(
+                connector,
+                generation=generation,
+                source_working=working,
+                catalog_working=catalog_working,
+                base_source=base_source,
+            )
+        selection = _select_source_build_id(
+            work,
+            command=command,
+            scope=scope,
+            manifest_policy_id=manifest_policy_id,
+            base_source=base_source,
+            generation=generation,
+            working=working,
+            catalog_working=catalog_working,
+        )
+        build_id = selection.build_id
+
+        if mapped_build is not None:
+            if mapped_build == build_id:
+                _validate_existing_handoff(
+                    connector,
+                    build_id=mapped_build,
+                    generation=generation,
+                    scope=scope,
+                    source_root_sha256=expected_root,
+                    manifest_policy_id=manifest_policy_id,
+                    manifest_summary=command.manifest_summary,
+                    working=working,
+                )
+                affected = connector.execute_affected(
+                    "DELETE FROM operational_canonical_value_uploads "
+                    "WHERE generation = %s AND value_sha256 = %s",
+                    (generation, expected_root),
+                )
+                if affected != 1:
+                    raise SourceBuildNotReadyError(
+                        "replayed source-root claim changed before release"
+                    )
+                return SourceBuildHandoff(
+                    mapped_build,
+                    generation,
+                    scope,
+                    expected_root,
+                    manifest_policy_id,
+                    True,
+                )
+
+            stale_mapping = _load_finalized_source_build_publication(
+                connector,
+                expected_build_id=mapped_build,
+            )
+            if (
+                base_source is None
+                or stale_mapping.receipt_id == base_source.receipt_id
+                or stale_mapping.source_revision >= base_source.revision
+                or working
+                != (
+                    1,
+                    mapped_build,
+                    _load_source_build_or_conflict(
+                        connector,
+                        mapped_build,
+                    ).created_at,
+                )
+            ):
+                raise SourceBuildConflictError(
+                    "obsolete source generation mapping lacks exact historical "
+                    "publication authority"
+                )
+            deleted_working = connector.execute_affected(
+                "DELETE FROM operational_source_working_builds "
+                "WHERE slot = %s AND build_id = %s AND assigned_at = %s",
+                (1, mapped_build, working[2]),
+            )
+            deleted_mapping = connector.execute_affected(
+                "DELETE FROM operational_source_build_generations "
+                "WHERE generation = %s AND build_id = %s",
+                (generation, mapped_build),
+            )
+            if deleted_working != 1 or deleted_mapping != 1:
+                raise SourceBuildConflictError(
+                    "obsolete source generation authority changed before rebase"
+                )
+            working = ()
+
+        if working and working[1] != build_id:
+            if len(working) != 3 or working[0] != 1:
+                raise SourceBuildConflictError(
+                    "the sole source working slot is malformed"
+                )
+            stale_build = require_uuid16(
+                working[1],
+                field="stale source working build_id",
+            )
+            stale_assigned_at = require_int63(
+                working[2],
+                field="stale source working assigned_at",
+            )
+            stale_family = _load_source_build_or_conflict(connector, stale_build)
+            if stale_assigned_at != stale_family.created_at:
+                raise SourceBuildConflictError(
+                    "stale source working assignment differs from build created_at"
+                )
+            if stale_family.state == "OPEN":
+                _abandon_stale_open_working_build(
+                    work,
+                    current_generation=generation,
+                    build_id=stale_build,
+                    assigned_at=stale_assigned_at,
+                    created_at=stale_family.created_at,
+                )
+            else:
+                stale_source_head = _load_finalized_source_build_publication(
+                    connector,
+                    expected_build_id=stale_build,
+                )
+                if (
+                    base_source is None
+                    or stale_source_head.source_revision > base_source.revision
+                    or stale_source_head.generation > base_source.generation
+                    or (
+                        stale_source_head.source_revision == base_source.revision
+                        and stale_source_head.receipt_id != base_source.receipt_id
+                    )
+                ):
+                    raise SourceBuildConflictError(
+                        "stale finalized source working authority changed"
+                    )
+                affected = connector.execute_affected(
+                    "DELETE FROM operational_source_working_builds "
+                    "WHERE slot = %s AND build_id = %s AND assigned_at = %s",
+                    (1, stale_build, stale_assigned_at),
+                )
+                if affected != 1:
+                    raise SourceBuildConflictError(
+                        "stale finalized source working root changed before release"
+                    )
+            working = ()
 
         _insert_or_validate_scope(
             connector,
@@ -840,20 +1189,35 @@ class SourceBuildRepository:
         try:
             durable_build = load_source_build_family(
                 connector,
-                build_id=command.build_attempt_id,
+                build_id=build_id,
             )
         except ManifestFamilyCollisionError as error:
             raise SourceBuildConflictError(str(error)) from error
         if durable_build is None:
-            created_at = database_unix_microseconds(work)
+            created_at = (
+                database_unix_microseconds(work)
+                if selection.created_at is None
+                else selection.created_at
+            )
+            if base_source is not None and created_at < base_source.committed_at:
+                raise SourceBuildNotReadyError(
+                    "database source-build time precedes the locked publication base"
+                )
             _insert_or_validate_build(
                 connector,
-                build_id=command.build_attempt_id,
+                build_id=build_id,
                 scope=scope,
                 manifest_policy_id=manifest_policy_id,
                 created_at=created_at,
             )
         else:
+            if (
+                selection.created_at is not None
+                and durable_build.created_at != selection.created_at
+            ):
+                raise SourceBuildConflictError(
+                    "recovery source build creation time differs from selection"
+                )
             _require_exact(
                 "successor-generation source build immutable fields",
                 (durable_build.scope_key, durable_build.manifest_policy_id),
@@ -871,14 +1235,14 @@ class SourceBuildRepository:
                 "SELECT build_id, channel FROM catalog_source_build_channel "
                 "WHERE build_id = %s"
             ),
-            select_data=(command.build_attempt_id,),
+            select_data=(build_id,),
             insert_sql=(
                 "INSERT INTO catalog_source_build_channel "
                 "(build_id, channel) VALUES (%s, %s)"
             ),
-            expected=(command.build_attempt_id, _DEFAULT_CHANNEL),
+            expected=(build_id, _DEFAULT_CHANNEL),
         )
-        if base_source is not None:
+        if durable_build is None and base_source is not None:
             _insert_or_validate(
                 connector,
                 label="source build base publication commit",
@@ -886,23 +1250,61 @@ class SourceBuildRepository:
                     f"SELECT build_id, base_receipt_id "
                     f"FROM {_SOURCE_BUILD_BASE_COMMIT_TABLE} WHERE build_id = %s"
                 ),
-                select_data=(command.build_attempt_id,),
+                select_data=(build_id,),
                 insert_sql=(
                     f"INSERT INTO {_SOURCE_BUILD_BASE_COMMIT_TABLE} "
                     "(build_id, base_receipt_id) VALUES (%s, %s)"
                 ),
-                expected=(command.build_attempt_id, base_source.receipt_id),
+                expected=(build_id, base_source.receipt_id),
             )
+        elif durable_build is not None:
+            published = (
+                None
+                if (durable_build.state != "SEALED" or command.manifest_summary is None)
+                else _find_finalized_source_build_publication(
+                    connector,
+                    expected_build_id=build_id,
+                )
+            )
+            base_receipt_id = _validate_build_base_source(
+                connector,
+                build_id=build_id,
+                published_receipt_id=(
+                    None if published is None else published.receipt_id
+                ),
+                require_lineage=command.manifest_summary is not None,
+            )
+            if command.manifest_summary is not None:
+                _require_snapshot_build_identity(
+                    connector,
+                    build_id=build_id,
+                    snapshot_attempt_id=command.build_attempt_id,
+                    source_root_sha256=command.source_root_sha256,
+                    scope=scope,
+                    manifest_policy_id=manifest_policy_id,
+                    base_receipt_id=base_receipt_id,
+                    published_receipt_id=(
+                        None if published is None else published.receipt_id
+                    ),
+                )
+                if durable_build.state == "SEALED" and (
+                    _load_build_manifest_summary(connector, build_id=build_id)
+                    != command.manifest_summary
+                ):
+                    raise SourceBuildConflictError(
+                        "existing source build manifest differs from the frozen "
+                        "snapshot"
+                    )
         if durable_build is None:
             _insert_or_validate_checkpoints(
                 connector,
-                build_id=command.build_attempt_id,
+                build_id=build_id,
                 created_at=created_at,
             )
         else:
             _require_checkpoint_pair(
                 connector,
-                build_id=command.build_attempt_id,
+                build_id=build_id,
                 build_state=durable_build.state,
             )
         _insert_or_validate(
@@ -917,7 +1319,7 @@ class SourceBuildRepository:
                 "INSERT INTO operational_source_build_generations "
                 "(build_id, generation) VALUES (%s, %s)"
             ),
-            expected=(command.build_attempt_id, generation),
+            expected=(build_id, generation),
         )
         _insert_or_validate(
             connector,
@@ -931,7 +1333,7 @@ class SourceBuildRepository:
                 "INSERT INTO operational_source_working_builds "
                 "(slot, build_id, assigned_at) VALUES (%s, %s, %s)"
             ),
-            expected=(1, command.build_attempt_id, created_at),
+            expected=(1, build_id, created_at),
         )
 
         affected = connector.execute_affected(
@@ -944,7 +1346,7 @@ class SourceBuildRepository:
                 "source-root claim changed before durable consumer handoff"
             )
         return SourceBuildHandoff(
-            command.build_attempt_id,
+            build_id,
             generation,
             scope,
             expected_root,
@@ -1049,8 +1451,6 @@ class SourceBuildRepository:
             raise TypeError("plan must be SourceDiscoveryPlan")
         plan._require_open()
         build_row = _load_source_build_or_conflict(connector, build)
-        if build_row.state != "OPEN":
-            raise SourceBuildNotReadyError("discovery requires an OPEN source build")
         checkpoint = connector.fetch_one(
             "SELECT generation, cursor_bytes, processed_count, state "
             "FROM operational_source_build_discovery_checkpoints "
@@ -1104,8 +1504,19 @@ class SourceBuildRepository:
                 start_cursor=terminal_receipt.start_cursor,
                 start_processed_count=terminal_receipt.start_processed_count,
             )
+            sealed_replay = build_row.state == "SEALED"
+            if sealed_replay:
+                _require_checkpoint_pair(
+                    connector,
+                    build_id=build,
+                    build_state="SEALED",
+                )
+            elif build_row.state != "OPEN":
+                raise SourceBuildConflictError(
+                    "terminal discovery belongs to an invalid source build state"
+                )
             batch_capability = object()
-            return DiscoveryBatch(
+            batch = DiscoveryBatch(
                 build,
                 terminal_receipt.batch_key,
                 plan.scan_attempt,
@@ -1116,10 +1527,20 @@ class SourceBuildRepository:
                 terminal_receipt.start_processed_count,
                 (),
                 True,
+                sealed_replay,
                 plan._capability,
                 batch_capability,
                 _DISCOVERY_BATCH_TOKEN,
             )
+            _require_discovery_replay_state(
+                connector,
+                checkpoint=checkpoint,
+                receipt=terminal_receipt,
+                batch=batch,
+            )
+            return batch
+        if build_row.state != "OPEN":
+            raise SourceBuildNotReadyError("discovery requires an OPEN source build")
         _require_discovery_plan_binding(
             connector,
             build_id=build,
@@ -1145,6 +1566,7 @@ class SourceBuildRepository:
             processed_count,
             locators,
             not locators,
+            False,
             plan._capability,
             batch_capability,
             _DISCOVERY_BATCH_TOKEN,
@@ -1365,9 +1787,8 @@ class SourceBuildRepository:
             work,
             generation=generation,
             build_id=batch.build_id,
+            allow_sealed=True,
         )
-        if state != "OPEN":
-            raise SourceBuildNotReadyError("discovery requires an OPEN source build")
         checkpoint = work.lock_row(
             LockRank.CHECKPOINT,
             encode_lock_key("source-discovery-checkpoint", batch.build_id),
@@ -1377,6 +1798,10 @@ class SourceBuildRepository:
             (batch.build_id,),
         )
         connector = work.connector
+        if batch.sealed_replay != (state == "SEALED"):
+            raise SourceBuildConflictError(
+                "discovery sealed_replay flag differs from durable build state"
+            )
         stored = connector.fetch_one(
             _DISCOVERY_RECEIPT_SELECT + " WHERE build_id = %s AND batch_key = %s",
             (batch.build_id, batch.batch_key),
@@ -1391,6 +1816,13 @@ class SourceBuildRepository:
                 batch=batch,
             )
             return receipt
+
+        if state != "OPEN":
+            raise SourceBuildNotReadyError("new discovery work requires an OPEN build")
+        if batch.sealed_replay:
+            raise SourceBuildConflictError(
+                "sealed discovery replay has no durable terminal receipt"
+            )
 
         start_generation, start_cursor, start_count = _validate_discovery_checkpoint(
             checkpoint[:4],
@@ -1726,7 +2158,7 @@ class SourceBuildRepository:
                 byte_count,
                 field="assembly byte count",
             )
-            next_chain = _manifest_chain_step(
+            next_chain = source_manifest_chain_step(
                 next_chain,
                 position=position,
                 gallery_key_bytes=gallery_key_bytes,
@@ -2046,6 +2478,10 @@ def _require_checkpoint_cross_state(
     )
     if assembly_count > discovery_count:
         raise SourceBuildConflictError("assembly checkpoint exceeds discovery")
+    if build_state == "SEALED" and assembly_count != discovery_count:
+        raise SourceBuildConflictError(
+            "SEALED build assembly count differs from discovery"
+        )
     discovery_row = connector.fetch_one(
         "SELECT scan_attempt, gallery_count, tree_observation_sha256, completed_at "
         "FROM catalog_source_build_discoveries WHERE build_id = %s",
@@ -2709,7 +3145,7 @@ def _validate_assembly_row(
     )
 
 
-def _manifest_chain_step(
+def source_manifest_chain_step(
     prior_chain: bytes,
     *,
     position: int,
@@ -2719,6 +3155,8 @@ def _manifest_chain_step(
     file_count: int,
     byte_count: int,
 ) -> bytes:
+    """Advance the canonical build-manifest chain by one positioned gallery."""
+
     digest = sha256(_MANIFEST_AUDIT_PREFIX)
     digest.update(require_digest32(prior_chain, field="prior manifest chain"))
     digest.update(require_int63(position, field="position").to_bytes(8, "big"))
@@ -3094,6 +3532,1026 @@ def _insert_or_validate(
         connector.execute(insert_sql, expected)
 
 
+def _derive_source_build_id(
+    *,
+    snapshot_attempt_id: bytes,
+    scope: bytes,
+    manifest_policy_id: int,
+    base_receipt_id: bytes | None,
+) -> bytes:
+    attempt = require_uuid16(
+        snapshot_attempt_id,
+        field="source snapshot attempt_id",
+    )
+    stable_scope = require_digest32(scope, field="source build scope_key")
+    policy = require_positive_int63(
+        manifest_policy_id,
+        field="source build manifest_policy_id",
+    )
+    digest = sha256(_SOURCE_BUILD_ID_PREFIX)
+    digest.update(attempt)
+    digest.update(stable_scope)
+    digest.update(policy.to_bytes(8, "big"))
+    if base_receipt_id is None:
+        digest.update(b"\x00")
+    else:
+        digest.update(b"\x01")
+        digest.update(
+            require_uuid16(
+                base_receipt_id,
+                field="source build base receipt_id",
+            )
+        )
+    return digest.digest()[:16]
+
+
+def source_build_identity(
+    *,
+    snapshot_attempt_id: bytes,
+    scope: bytes,
+    manifest_policy_id: int,
+    base_receipt_id: bytes | None,
+) -> bytes:
+    """Derive one exact source-build identity from immutable authority."""
+
+    return _derive_source_build_id(
+        snapshot_attempt_id=snapshot_attempt_id,
+        scope=scope,
+        manifest_policy_id=manifest_policy_id,
+        base_receipt_id=base_receipt_id,
+    )
+
+
+def source_build_recovery_identity(
+    *,
+    snapshot_attempt_id: bytes,
+    scope: bytes,
+    manifest_policy_id: int,
+    base_receipt_id: bytes | None,
+    created_at: int,
+) -> bytes:
+    """Derive one recovery incarnation from its immutable creation fact."""
+
+    canonical = source_build_identity(
+        snapshot_attempt_id=snapshot_attempt_id,
+        scope=scope,
+        manifest_policy_id=manifest_policy_id,
+        base_receipt_id=base_receipt_id,
+    )
+    timestamp = require_int63(created_at, field="recovery source build created_at")
+    digest = sha256(_SOURCE_BUILD_RECOVERY_ID_PREFIX)
+    digest.update(canonical)
+    digest.update(timestamp.to_bytes(8, "big"))
+    return digest.digest()[:16]
+
+
+def source_build_legacy_identity(
+    source_root_sha256: bytes,
+    gallery_count: int,
+    tree_observation_sha256: bytes,
+    manifest_policy_id: int,
+) -> bytes:
+    """Reconstruct the retired v1 locator-only identity from durable facts."""
+
+    root = require_digest32(source_root_sha256, field="source_root_sha256")
+    count = require_int63(gallery_count, field="legacy source gallery_count")
+    if count < 0:
+        raise ValueError("legacy source gallery_count must be non-negative")
+    tree = require_digest32(
+        tree_observation_sha256,
+        field="legacy source tree_observation_sha256",
+    )
+    policy = require_positive_int63(
+        manifest_policy_id,
+        field="legacy source manifest_policy_id",
+    )
+    digest = sha256(_LEGACY_SOURCE_BUILD_ID_PREFIX)
+    digest.update(root)
+    digest.update(count.to_bytes(8, "big"))
+    digest.update(tree)
+    digest.update(policy.to_bytes(8, "big"))
+    return digest.digest()[:16]
+
+
+def _legacy_source_build_identity(
+    connector: Any,
+    *,
+    build_id: bytes,
+    source_root_sha256: bytes,
+    manifest_policy_id: int,
+) -> bytes:
+    """Reconstruct the retired v1 locator-only identity for safe migration."""
+
+    build = require_uuid16(build_id, field="legacy source build_id")
+    row = connector.fetch_one(
+        "SELECT gallery_count, tree_observation_sha256 "
+        "FROM catalog_source_build_discoveries WHERE build_id = %s",
+        (build,),
+    )
+    if len(row) != 2:
+        raise SourceBuildConflictError(
+            "legacy source build lacks its complete durable discovery identity"
+        )
+    return source_build_legacy_identity(
+        source_root_sha256,
+        row[0],
+        row[1],
+        manifest_policy_id,
+    )
+
+
+def _require_snapshot_build_identity(
+    connector: Any,
+    *,
+    build_id: bytes,
+    snapshot_attempt_id: bytes,
+    source_root_sha256: bytes,
+    scope: bytes,
+    manifest_policy_id: int,
+    base_receipt_id: bytes | None,
+    published_receipt_id: bytes | None,
+) -> None:
+    build = require_uuid16(build_id, field="source build_id")
+    derived = source_build_identity(
+        snapshot_attempt_id=snapshot_attempt_id,
+        scope=scope,
+        manifest_policy_id=manifest_policy_id,
+        base_receipt_id=base_receipt_id,
+    )
+    if derived == build:
+        return
+    family = _load_source_build_or_conflict(connector, build)
+    if (
+        source_build_recovery_identity(
+            snapshot_attempt_id=snapshot_attempt_id,
+            scope=scope,
+            manifest_policy_id=manifest_policy_id,
+            base_receipt_id=base_receipt_id,
+            created_at=family.created_at,
+        )
+        == build
+    ):
+        return
+    legacy = _legacy_source_build_identity(
+        connector,
+        build_id=build,
+        source_root_sha256=source_root_sha256,
+        manifest_policy_id=manifest_policy_id,
+    )
+    if legacy != build or (published_receipt_id is None and family.state != "SEALED"):
+        raise SourceBuildConflictError(
+            "source build identity differs from its frozen snapshot and durable base"
+        )
+    historical_base = _load_historical_source_head_at_build_creation(
+        connector,
+        build_id=build,
+    )
+    if historical_base != base_receipt_id:
+        raise SourceBuildConflictError(
+            "legacy source build base differs from the exact channel head at "
+            "build creation"
+        )
+
+
+def require_source_build_publication_identity(
+    connector: Any,
+    *,
+    build_id: bytes,
+    base_receipt_id: bytes | None,
+) -> None:
+    """Reconstruct one SEALED build ID from its complete durable authority."""
+
+    build = _load_source_build_or_conflict(
+        connector,
+        require_uuid16(build_id, field="publication source build_id"),
+    )
+    if build.state != "SEALED":
+        raise SourceBuildConflictError("publication source build is not exactly SEALED")
+    try:
+        scope = load_source_scope(connector, build.scope_key)
+    except CatalogRegistryNotReadyError as error:
+        raise SourceBuildConflictError(
+            "publication source build scope is absent or unsealed"
+        ) from error
+    except CatalogRegistryConflictError as error:
+        raise SourceBuildConflictError(
+            "publication source build scope contains conflicting facts"
+        ) from error
+    summary = _load_build_manifest_summary(
+        connector,
+        build_id=build.build_id,
+    )
+    attempt_id = source_build_snapshot_attempt_id(
+        scope.source_root_sha256,
+        summary,
+    )
+    if (
+        source_build_identity(
+            snapshot_attempt_id=attempt_id,
+            scope=build.scope_key,
+            manifest_policy_id=build.manifest_policy_id,
+            base_receipt_id=base_receipt_id,
+        )
+        == build.build_id
+    ):
+        return
+    if (
+        source_build_recovery_identity(
+            snapshot_attempt_id=attempt_id,
+            scope=build.scope_key,
+            manifest_policy_id=build.manifest_policy_id,
+            base_receipt_id=base_receipt_id,
+            created_at=build.created_at,
+        )
+        == build.build_id
+    ):
+        return
+    if (
+        _legacy_source_build_identity(
+            connector,
+            build_id=build.build_id,
+            source_root_sha256=scope.source_root_sha256,
+            manifest_policy_id=build.manifest_policy_id,
+        )
+        != build.build_id
+    ):
+        raise SourceBuildConflictError(
+            "publication source build identity differs from its durable snapshot "
+            "and base"
+        )
+    if (
+        _load_historical_source_head_at_build_creation(
+            connector,
+            build_id=build.build_id,
+        )
+        != base_receipt_id
+    ):
+        raise SourceBuildConflictError(
+            "legacy publication source build base differs from the exact channel "
+            "head at build creation"
+        )
+
+
+def _load_build_manifest_summary(
+    connector: Any,
+    *,
+    build_id: bytes,
+) -> SourceBuildManifestSummary:
+    try:
+        manifest = load_build_manifest_family(connector, build_id=build_id)
+    except ManifestFamilyCollisionError as error:
+        raise SourceBuildConflictError(str(error)) from error
+    if manifest is None:
+        raise SourceBuildConflictError(
+            "finalized source publication build has no exact manifest"
+        )
+    try:
+        manifest.__post_init__()
+        return SourceBuildManifestSummary(
+            manifest.manifest_sha256,
+            manifest.gallery_count,
+            manifest.file_count,
+            manifest.byte_count,
+        )
+    except (TypeError, ValueError) as error:
+        raise SourceBuildConflictError(
+            "source publication build manifest summary is not canonical"
+        ) from error
+
+
+def _abandon_stale_open_working_build(
+    work: VNextUnitOfWork,
+    *,
+    current_generation: int,
+    build_id: bytes,
+    assigned_at: int,
+    created_at: int,
+) -> None:
+    """Reclaim only an OPEN root fenced behind the current generation.
+
+    ``handoff_root`` already holds the sole working-row lock.  A successfully
+    authorized newer ingest generation proves that every prior generation is
+    expired or complete; retaining the old mapping provides immutable audit
+    evidence while the OPEN state transition prevents future reuse.
+    """
+
+    generation = require_positive_int63(
+        current_generation,
+        field="stale OPEN recovery current_generation",
+    )
+    build = require_uuid16(build_id, field="stale OPEN recovery build_id")
+    assigned = require_int63(
+        assigned_at,
+        field="stale OPEN recovery assigned_at",
+    )
+    created = require_int63(
+        created_at,
+        field="stale OPEN recovery created_at",
+    )
+    if assigned != created:
+        raise SourceBuildConflictError(
+            "stale OPEN source working root assignment differs from its build"
+        )
+    prior = work.connector.fetch_one(
+        "SELECT generation FROM operational_source_build_generations "
+        "WHERE build_id = %s ORDER BY generation DESC LIMIT 1",
+        (build,),
+    )
+    if len(prior) != 1:
+        raise SourceBuildConflictError(
+            "stale OPEN source working root has no exact generation authority"
+        )
+    prior_generation = require_positive_int63(
+        prior[0],
+        field="stale OPEN recovery prior_generation",
+    )
+    if prior_generation >= generation:
+        raise SourceBuildConflictError(
+            "stale OPEN source working root is not fenced by this generation"
+        )
+    deleted = work.connector.execute_affected(
+        "DELETE FROM operational_source_working_builds "
+        "WHERE slot = %s AND build_id = %s AND assigned_at = %s",
+        (1, build, assigned),
+    )
+    if deleted != 1:
+        raise SourceBuildConflictError(
+            "stale OPEN source working root changed before recovery"
+        )
+    work.compare_and_swap(
+        "UPDATE catalog_source_build_states SET state = %s "
+        "WHERE build_id = %s AND state = %s",
+        ("ABANDONED", build, "OPEN"),
+        authority="stale OPEN source build recovery",
+    )
+
+
+def _matching_working_snapshot_build(
+    connector: Any,
+    *,
+    command: SourceRootBuildCommand,
+    scope: bytes,
+    manifest_policy_id: int,
+    base_receipt_id: bytes | None,
+    generation: int,
+    working: tuple[Any, ...],
+) -> bytes | None:
+    """Return only an exact live build for this complete frozen snapshot."""
+
+    if not working:
+        return None
+    if len(working) != 3 or working[0] != 1:
+        raise SourceBuildConflictError("the sole source working slot is malformed")
+    build_id = require_uuid16(
+        working[1],
+        field="recovery source working build_id",
+    )
+    assigned_at = require_int63(
+        working[2],
+        field="recovery source working assigned_at",
+    )
+    family = _load_source_build_or_conflict(connector, build_id)
+    if assigned_at != family.created_at:
+        raise SourceBuildConflictError(
+            "recovery source working assignment differs from build created_at"
+        )
+    if family.state == "ABANDONED":
+        raise SourceBuildConflictError(
+            "ABANDONED source build retained its source working root"
+        )
+    channel = connector.fetch_one(
+        "SELECT channel FROM catalog_source_build_channel WHERE build_id = %s",
+        (build_id,),
+    )
+    _require_exact(
+        "working snapshot source build channel",
+        channel,
+        (_DEFAULT_CHANNEL,),
+    )
+    if family.state not in {"OPEN", "SEALED"}:
+        raise SourceBuildConflictError(
+            "recovery source working build is not OPEN or SEALED"
+        )
+    latest = connector.fetch_one(
+        "SELECT generation FROM operational_source_build_generations "
+        "WHERE build_id = %s ORDER BY generation DESC LIMIT 1",
+        (build_id,),
+    )
+    if len(latest) != 1:
+        raise SourceBuildConflictError(
+            "recovery source working build has no exact generation authority"
+        )
+    latest_generation = require_positive_int63(
+        latest[0],
+        field="recovery source working latest generation",
+    )
+    if latest_generation > generation:
+        raise SourceBuildConflictError(
+            "recovery source working build belongs to a future generation"
+        )
+    if family.scope_key != scope or family.manifest_policy_id != manifest_policy_id:
+        return None
+    pinned_base = _validate_build_base_source(
+        connector,
+        build_id=build_id,
+        require_lineage=True,
+    )
+    if pinned_base != base_receipt_id:
+        return None
+    if family.state == "OPEN":
+        canonical = source_build_identity(
+            snapshot_attempt_id=command.build_attempt_id,
+            scope=scope,
+            manifest_policy_id=manifest_policy_id,
+            base_receipt_id=base_receipt_id,
+        )
+        recovery = source_build_recovery_identity(
+            snapshot_attempt_id=command.build_attempt_id,
+            scope=scope,
+            manifest_policy_id=manifest_policy_id,
+            base_receipt_id=base_receipt_id,
+            created_at=family.created_at,
+        )
+        if build_id not in {canonical, recovery}:
+            return None
+        _require_snapshot_build_identity(
+            connector,
+            build_id=build_id,
+            snapshot_attempt_id=command.build_attempt_id,
+            source_root_sha256=command.source_root_sha256,
+            scope=scope,
+            manifest_policy_id=manifest_policy_id,
+            base_receipt_id=base_receipt_id,
+            published_receipt_id=None,
+        )
+        return build_id
+
+    if (
+        _load_build_manifest_summary(connector, build_id=build_id)
+        != command.manifest_summary
+    ):
+        return None
+    require_source_build_publication_identity(
+        connector,
+        build_id=build_id,
+        base_receipt_id=base_receipt_id,
+    )
+    return build_id
+
+
+def _is_exact_retired_sealed_source_build(
+    connector: Any,
+    *,
+    build_id: bytes,
+    generation: int,
+    source_working: tuple[Any, ...],
+) -> bool:
+    """Prove one bounded, terminal analysis-abandonment incarnation.
+
+    ``LIMIT 2`` distinguishes zero, one, and multiple policy runs through the
+    existing ``build_id`` index.  Cleanup-compacted zero-analysis builds remain
+    fail-closed until SOURCE_BUILD cleanup removes their durable family; the
+    same shape is otherwise indistinguishable from a lost live working root.
+    """
+
+    build = require_uuid16(build_id, field="retired source build_id")
+    current_generation = require_positive_int63(
+        generation,
+        field="retired source build current generation",
+    )
+    source_family = _load_source_build_or_conflict(connector, build)
+    if source_family.state != "SEALED":
+        return False
+    rows = connector.fetch_all(
+        f"SELECT analysis_id FROM {_ANALYSIS_RUN_BUILD_TABLE} "
+        "WHERE build_id = %s LIMIT 2",
+        (build,),
+    )
+    if not rows:
+        return False
+    if len(rows) > 1:
+        raise SourceBuildConflictError(
+            "retired source build has multiple analysis runs"
+        )
+    if len(rows[0]) != 1:
+        raise SourceBuildConflictError(
+            "retired source build analysis identity is malformed"
+        )
+    analysis_id = require_uuid16(
+        rows[0][0],
+        field="retired source build analysis_id",
+    )
+    try:
+        family = load_analysis_run_family(
+            connector,
+            analysis_id=analysis_id,
+        )
+    except AnalysisFamilyCollisionError as error:
+        raise SourceBuildConflictError(str(error)) from error
+    if family is None or family.build_id != build:
+        raise SourceBuildConflictError(
+            "retired source build analysis family is missing or changed"
+        )
+    if family.state != "ABANDONED":
+        return False
+    if family.completed_at is not None:
+        raise SourceBuildConflictError(
+            "ABANDONED source build analysis retained a completion time"
+        )
+    if source_working and len(source_working) != 3:
+        raise SourceBuildConflictError("retired source working authority is malformed")
+    if source_working and source_working[1] == build:
+        raise SourceBuildConflictError(
+            "ABANDONED analysis retained its source working root"
+        )
+    blockers: tuple[tuple[str, str, bytes, str], ...] = (
+        (
+            _ANALYSIS_SNAPSHOT_MANIFEST_TABLE,
+            "analysis_id",
+            analysis_id,
+            "snapshot manifest",
+        ),
+        (
+            _PUBLICATION_CANDIDATE_ANALYSIS_TABLE,
+            "analysis_id",
+            analysis_id,
+            "publication candidate",
+        ),
+        (
+            _SOURCE_REVISION_PROVENANCE_TABLE,
+            "analysis_id",
+            analysis_id,
+            "source revision provenance",
+        ),
+        (
+            _OPERATIONAL_PREPARATION_TABLE,
+            "build_id",
+            build,
+            "operational preparation",
+        ),
+    )
+    for table, column, value, label in blockers:
+        if connector.fetch_one(
+            f"SELECT 1 FROM {table} WHERE {column} = %s LIMIT 1",
+            (value,),
+        ):
+            raise SourceBuildConflictError(
+                f"ABANDONED analysis retained a {label} authority"
+            )
+    latest = connector.fetch_one(
+        "SELECT generation FROM operational_source_build_generations "
+        "WHERE build_id = %s ORDER BY generation DESC LIMIT 1",
+        (build,),
+    )
+    if len(latest) != 1:
+        raise SourceBuildConflictError(
+            "retired SEALED source build has no exact generation authority"
+        )
+    prior_generation = require_positive_int63(
+        latest[0],
+        field="retired source build latest generation",
+    )
+    if prior_generation >= current_generation:
+        raise SourceBuildConflictError(
+            "retired SEALED source build is not fenced by this generation"
+        )
+    channel = connector.fetch_one(
+        "SELECT channel FROM catalog_source_build_channel WHERE build_id = %s",
+        (build,),
+    )
+    _require_exact(
+        "retired SEALED source build channel",
+        channel,
+        (_DEFAULT_CHANNEL,),
+    )
+    base_receipt_id = _validate_build_base_source(
+        connector,
+        build_id=build,
+        require_lineage=True,
+    )
+    require_source_build_publication_identity(
+        connector,
+        build_id=build,
+        base_receipt_id=base_receipt_id,
+    )
+    return True
+
+
+def _require_abandoned_source_build_has_no_descendants(
+    connector: Any,
+    *,
+    build_id: bytes,
+) -> None:
+    """Reject an ABANDONED source build with any downstream authority."""
+
+    build = require_uuid16(build_id, field="ABANDONED source build_id")
+    family = _load_source_build_or_conflict(connector, build)
+    if family.state != "ABANDONED":
+        raise SourceBuildConflictError(
+            "source abandonment proof names a non-ABANDONED build"
+        )
+    channel = connector.fetch_one(
+        "SELECT channel FROM catalog_source_build_channel WHERE build_id = %s",
+        (build,),
+    )
+    _require_exact(
+        "ABANDONED source build channel",
+        channel,
+        (_DEFAULT_CHANNEL,),
+    )
+    _validate_build_base_source(
+        connector,
+        build_id=build,
+        require_lineage=True,
+    )
+    if connector.fetch_one(
+        f"SELECT analysis_id FROM {_ANALYSIS_RUN_BUILD_TABLE} "
+        "WHERE build_id = %s LIMIT 1",
+        (build,),
+    ):
+        raise SourceBuildConflictError(
+            "ABANDONED source build retained an analysis run"
+        )
+    if connector.fetch_one(
+        f"SELECT preparation_id FROM {_OPERATIONAL_PREPARATION_TABLE} "
+        "WHERE build_id = %s LIMIT 1",
+        (build,),
+    ):
+        raise SourceBuildConflictError(
+            "ABANDONED source build retained an operational preparation"
+        )
+    try:
+        manifest = load_build_manifest_family(connector, build_id=build)
+    except ManifestFamilyCollisionError as error:
+        raise SourceBuildConflictError(str(error)) from error
+    if manifest is not None:
+        raise SourceBuildConflictError(
+            "ABANDONED source build retained a sealed build manifest"
+        )
+
+
+def _require_latest_source_generation_authority(
+    connector: Any,
+    *,
+    generation: int,
+    source_working: tuple[Any, ...],
+    catalog_working: tuple[Any, ...],
+    base_source: _SourceHead | None,
+) -> None:
+    """Reject a lost working root for the immediately preceding source build."""
+
+    current_generation = require_positive_int63(
+        generation,
+        field="source handoff generation",
+    )
+    latest = connector.fetch_one(
+        "SELECT generation, build_id FROM operational_source_build_generations "
+        "WHERE generation < %s ORDER BY generation DESC LIMIT 1",
+        (current_generation,),
+    )
+    if not latest:
+        return
+    if len(latest) != 2:
+        raise SourceBuildConflictError(
+            "latest prior source generation mapping is malformed"
+        )
+    prior_generation = require_positive_int63(
+        latest[0],
+        field="latest prior source generation",
+    )
+    build = require_uuid16(
+        latest[1],
+        field="latest prior source build_id",
+    )
+    if prior_generation >= current_generation:
+        raise SourceBuildConflictError(
+            "latest prior source generation is not fenced by this handoff"
+        )
+    family = _load_source_build_or_conflict(connector, build)
+    if source_working:
+        if len(source_working) != 3 or source_working[0] != 1:
+            raise SourceBuildConflictError(
+                "latest prior source working root is malformed"
+            )
+        if source_working[1] != build:
+            raise SourceBuildConflictError(
+                "latest prior source generation differs from the retained "
+                "working authority"
+            )
+        _require_exact(
+            "latest prior source working root",
+            source_working,
+            (1, build, family.created_at),
+        )
+        if family.state == "ABANDONED":
+            raise SourceBuildConflictError(
+                "ABANDONED latest prior source build retained its working root"
+            )
+        return
+    if catalog_working:
+        raise SourceBuildConflictError(
+            "latest prior source build lost its source working root while a "
+            "catalog working candidate remains"
+        )
+    if family.state == "ABANDONED":
+        _require_abandoned_source_build_has_no_descendants(
+            connector,
+            build_id=build,
+        )
+        return
+    if family.state != "SEALED" or base_source is None:
+        if family.state == "SEALED" and _is_exact_retired_sealed_source_build(
+            connector,
+            build_id=build,
+            generation=current_generation,
+            source_working=source_working,
+        ):
+            return
+        raise SourceBuildConflictError(
+            "latest prior source build lost its exact working or finalized "
+            "publication authority"
+        )
+    sealed_head = _load_sealed_source_publication_by_receipt(
+        connector,
+        receipt_id=base_source.receipt_id,
+    )
+    if sealed_head.build_id == build:
+        finalized = _load_finalized_source_publication_by_receipt(
+            connector,
+            receipt_id=base_source.receipt_id,
+            expected_build_id=build,
+        )
+        if (
+            finalized.source_revision != base_source.revision
+            or finalized.generation != base_source.generation
+        ):
+            raise SourceBuildConflictError(
+                "latest prior source publication differs from the locked common head"
+            )
+        published_base = _validate_build_base_source(
+            connector,
+            build_id=build,
+            published_receipt_id=finalized.receipt_id,
+            require_lineage=True,
+        )
+        require_source_build_publication_identity(
+            connector,
+            build_id=build,
+            base_receipt_id=published_base,
+        )
+        return
+    if _is_exact_retired_sealed_source_build(
+        connector,
+        build_id=build,
+        generation=current_generation,
+        source_working=source_working,
+    ):
+        return
+    raise SourceBuildConflictError(
+        "latest prior source build lost its exact working or finalized "
+        "publication authority"
+    )
+
+
+def _select_source_build_id(
+    work: VNextUnitOfWork,
+    *,
+    command: SourceRootBuildCommand,
+    scope: bytes,
+    manifest_policy_id: int,
+    base_source: _SourceHead | None,
+    generation: int,
+    working: tuple[Any, ...],
+    catalog_working: tuple[Any, ...],
+) -> _SourceBuildSelection:
+    """Reuse only the exact current snapshot; otherwise derive its successor."""
+
+    connector = work.connector
+    summary = command.manifest_summary
+    if summary is None:
+        # Compatibility for the low-level repository protocol.  Production
+        # orchestration always supplies the complete frozen snapshot summary.
+        return _SourceBuildSelection(command.build_attempt_id)
+
+    summary.__post_init__()
+    if command.build_attempt_id != source_build_snapshot_attempt_id(
+        command.source_root_sha256,
+        summary,
+    ):
+        raise SourceBuildConflictError(
+            "source snapshot attempt differs from its complete manifest summary"
+        )
+    if base_source is not None:
+        current = _load_finalized_source_head(
+            connector,
+            expected_build_id=None,
+        )
+        if (
+            current.receipt_id != base_source.receipt_id
+            or current.source_revision != base_source.revision
+            or current.generation != base_source.generation
+        ):
+            raise SourceBuildConflictError(
+                "current source publication proof differs from the locked head"
+            )
+        current_build = _load_source_build_or_conflict(connector, current.build_id)
+        if current_build.state != "SEALED":
+            raise SourceBuildConflictError(
+                "current source publication names a non-SEALED build"
+            )
+        current_channel = connector.fetch_one(
+            "SELECT channel FROM catalog_source_build_channel WHERE build_id = %s",
+            (current.build_id,),
+        )
+        _require_exact(
+            "current source publication build channel",
+            current_channel,
+            (_DEFAULT_CHANNEL,),
+        )
+        try:
+            current_scope = load_source_scope(connector, current_build.scope_key)
+        except CatalogRegistryNotReadyError as error:
+            raise SourceBuildConflictError(
+                "current source publication scope is absent or unsealed"
+            ) from error
+        except CatalogRegistryConflictError as error:
+            raise SourceBuildConflictError(
+                "current source publication scope contains conflicting facts"
+            ) from error
+        current_summary = _load_build_manifest_summary(
+            connector,
+            build_id=current.build_id,
+        )
+        current_base_receipt = _validate_build_base_source(
+            connector,
+            build_id=current.build_id,
+            published_receipt_id=current.receipt_id,
+        )
+        _require_snapshot_build_identity(
+            connector,
+            build_id=current.build_id,
+            snapshot_attempt_id=source_build_snapshot_attempt_id(
+                current_scope.source_root_sha256,
+                current_summary,
+            ),
+            source_root_sha256=current_scope.source_root_sha256,
+            scope=current_build.scope_key,
+            manifest_policy_id=current_build.manifest_policy_id,
+            base_receipt_id=current_base_receipt,
+            published_receipt_id=current.receipt_id,
+        )
+        if (
+            current_build.scope_key == scope
+            and current_build.manifest_policy_id == manifest_policy_id
+            and current_summary == summary
+        ):
+            return _SourceBuildSelection(current.build_id)
+
+    canonical = _derive_source_build_id(
+        snapshot_attempt_id=command.build_attempt_id,
+        scope=scope,
+        manifest_policy_id=manifest_policy_id,
+        base_receipt_id=None if base_source is None else base_source.receipt_id,
+    )
+    base_receipt_id = None if base_source is None else base_source.receipt_id
+    resumed = _matching_working_snapshot_build(
+        connector,
+        command=command,
+        scope=scope,
+        manifest_policy_id=manifest_policy_id,
+        base_receipt_id=base_receipt_id,
+        generation=generation,
+        working=working,
+    )
+    if resumed is not None:
+        return _SourceBuildSelection(resumed)
+    try:
+        canonical_family = load_source_build_family(
+            connector,
+            build_id=canonical,
+        )
+    except ManifestFamilyCollisionError as error:
+        raise SourceBuildConflictError(str(error)) from error
+    if canonical_family is not None:
+        _require_exact(
+            "canonical source build immutable fields",
+            (canonical_family.scope_key, canonical_family.manifest_policy_id),
+            (scope, manifest_policy_id),
+        )
+    if canonical_family is None:
+        return _SourceBuildSelection(canonical)
+
+    if canonical_family.state == "ABANDONED":
+        _require_abandoned_source_build_has_no_descendants(
+            connector,
+            build_id=canonical,
+        )
+    elif not _is_exact_retired_sealed_source_build(
+        connector,
+        build_id=canonical,
+        generation=generation,
+        source_working=working,
+    ):
+        state = canonical_family.state
+        raise SourceBuildConflictError(
+            f"existing canonical {state} source build lost its exact live "
+            "or retirement authority"
+        )
+
+    if canonical_family is not None:
+        canonical_channel = connector.fetch_one(
+            "SELECT channel FROM catalog_source_build_channel WHERE build_id = %s",
+            (canonical,),
+        )
+        _require_exact(
+            "retired canonical source build channel",
+            canonical_channel,
+            (_DEFAULT_CHANNEL,),
+        )
+        canonical_base = _validate_build_base_source(
+            connector,
+            build_id=canonical,
+            require_lineage=True,
+        )
+        if canonical_base != base_receipt_id:
+            raise SourceBuildConflictError(
+                "retired canonical source build differs from the locked "
+                "publication base"
+            )
+
+    created_at = database_unix_microseconds(work)
+    if base_source is not None and created_at < base_source.committed_at:
+        raise SourceBuildNotReadyError(
+            "database source-build time precedes the locked publication base"
+        )
+    recovery = source_build_recovery_identity(
+        snapshot_attempt_id=command.build_attempt_id,
+        scope=scope,
+        manifest_policy_id=manifest_policy_id,
+        base_receipt_id=base_receipt_id,
+        created_at=created_at,
+    )
+    try:
+        recovery_family = load_source_build_family(
+            connector,
+            build_id=recovery,
+        )
+    except ManifestFamilyCollisionError as error:
+        raise SourceBuildConflictError(str(error)) from error
+    if recovery_family is not None:
+        _require_exact(
+            "existing recovery source build immutable fields",
+            (
+                recovery_family.scope_key,
+                recovery_family.manifest_policy_id,
+                recovery_family.created_at,
+            ),
+            (scope, manifest_policy_id, created_at),
+        )
+        recovery_channel = connector.fetch_one(
+            "SELECT channel FROM catalog_source_build_channel WHERE build_id = %s",
+            (recovery,),
+        )
+        _require_exact(
+            "existing recovery source build channel",
+            recovery_channel,
+            (_DEFAULT_CHANNEL,),
+        )
+        recovery_base = _validate_build_base_source(
+            connector,
+            build_id=recovery,
+            require_lineage=True,
+        )
+        if recovery_base != base_receipt_id:
+            raise SourceBuildConflictError(
+                "existing recovery source build differs from the locked "
+                "publication base"
+            )
+        if recovery_family.state == "ABANDONED":
+            _require_abandoned_source_build_has_no_descendants(
+                connector,
+                build_id=recovery,
+            )
+            raise SourceBuildNotReadyError(
+                "database source-build clock has not advanced beyond the "
+                "ABANDONED recovery incarnation"
+            )
+        if _is_exact_retired_sealed_source_build(
+            connector,
+            build_id=recovery,
+            generation=generation,
+            source_working=working,
+        ):
+            raise SourceBuildNotReadyError(
+                "database source-build clock has not advanced beyond the "
+                "analysis-retired recovery incarnation"
+            )
+        raise SourceBuildConflictError(
+            "recovery source build exists without its exact working authority"
+        )
+    return _SourceBuildSelection(recovery, created_at)
+
+
 def _lock_source_head(
     work: VNextUnitOfWork,
     channel: bytes,
@@ -3149,11 +4607,357 @@ def _lock_source_head(
     )
 
 
+def _load_finalized_source_head(
+    connector: Any,
+    *,
+    expected_build_id: bytes | None,
+) -> _FinalizedSourceHead:
+    head = connector.fetch_one(
+        f"SELECT receipt_id FROM {_PUBLICATION_COMMIT_HEAD_TABLE} WHERE channel = %s",
+        (_DEFAULT_CHANNEL,),
+    )
+    if len(head) != 1:
+        raise SourceBuildConflictError(
+            "foreign source working root is not a finalized current head"
+        )
+    return _load_finalized_source_publication_by_receipt(
+        connector,
+        receipt_id=require_uuid16(head[0], field="finalized source head receipt_id"),
+        expected_build_id=expected_build_id,
+    )
+
+
+def _load_finalized_source_build_publication(
+    connector: Any,
+    *,
+    expected_build_id: bytes,
+) -> _FinalizedSourceHead:
+    publication = _find_finalized_source_build_publication(
+        connector,
+        expected_build_id=expected_build_id,
+    )
+    if publication is None:
+        raise SourceBuildConflictError(
+            "stale source working build lacks one exact publication candidate proof"
+        )
+    return publication
+
+
+def _find_finalized_source_build_publication(
+    connector: Any,
+    *,
+    expected_build_id: bytes,
+) -> _FinalizedSourceHead | None:
+    build = require_uuid16(
+        expected_build_id,
+        field="finalized source publication build_id",
+    )
+    rows = connector.fetch_all(
+        f"SELECT committed.receipt_id FROM {_PUBLICATION_COMMIT_CANDIDATE_TABLE} "
+        "AS committed "
+        f"JOIN {_PUBLICATION_CANDIDATE_TABLE} AS candidate "
+        "ON candidate.candidate_id = committed.candidate_id "
+        f"JOIN {_ANALYSIS_RUN_VIEW} AS analysis "
+        "ON analysis.analysis_id = candidate.analysis_id "
+        "WHERE analysis.build_id = %s LIMIT 2",
+        (build,),
+    )
+    if not rows:
+        return None
+    if len(rows) != 1 or len(rows[0]) != 1:
+        raise SourceBuildConflictError(
+            "stale source working build lacks one exact publication candidate proof"
+        )
+    return _load_finalized_source_publication_by_receipt(
+        connector,
+        receipt_id=require_uuid16(
+            rows[0][0],
+            field="finalized source publication receipt_id",
+        ),
+        expected_build_id=build,
+    )
+
+
+def _load_finalized_source_publication_by_receipt(
+    connector: Any,
+    *,
+    receipt_id: bytes,
+    expected_build_id: bytes | None,
+) -> _FinalizedSourceHead:
+    receipt_key = require_uuid16(
+        receipt_id,
+        field="finalized source publication receipt_id",
+    )
+    expected_build = (
+        None
+        if expected_build_id is None
+        else require_uuid16(
+            expected_build_id,
+            field="finalized source publication build_id",
+        )
+    )
+    row = connector.fetch_one(
+        "SELECT committed_candidate.receipt_id, source.source_revision, "
+        "generation.generation, "
+        "receipt.state, receipt.finalized_at, committed_candidate.candidate_id, "
+        "candidate.analysis_id, candidate_analysis.build_id, "
+        "candidate_analysis.state, provenance.analysis_id, "
+        "provenance_analysis.build_id, provenance_analysis.state "
+        f"FROM {_PUBLICATION_COMMIT_CANDIDATE_TABLE} AS committed_candidate "
+        f"JOIN {_PUBLICATION_COMMIT_SEAL_TABLE} AS seal "
+        "ON seal.receipt_id = committed_candidate.receipt_id "
+        f"JOIN {_PUBLICATION_CANDIDATE_TABLE} AS candidate "
+        "ON candidate.candidate_id = committed_candidate.candidate_id "
+        f"JOIN {_ANALYSIS_RUN_VIEW} AS candidate_analysis "
+        "ON candidate_analysis.analysis_id = candidate.analysis_id "
+        f"JOIN {_PUBLICATION_COMMIT_SOURCE_TABLE} AS source "
+        "ON source.receipt_id = committed_candidate.receipt_id "
+        f"JOIN {_PUBLICATION_COMMIT_GENERATION_TABLE} AS generation "
+        "ON generation.receipt_id = committed_candidate.receipt_id "
+        f"JOIN {_PUBLICATION_RECEIPT_VIEW} AS receipt "
+        "ON receipt.receipt_id = committed_candidate.receipt_id "
+        f"JOIN {_SOURCE_REVISION_PROVENANCE_TABLE} AS provenance "
+        "ON provenance.source_revision = source.source_revision "
+        f"JOIN {_ANALYSIS_RUN_VIEW} AS provenance_analysis "
+        "ON provenance_analysis.analysis_id = provenance.analysis_id "
+        "WHERE committed_candidate.receipt_id = %s",
+        (receipt_key,),
+    )
+    if len(row) != 12:
+        raise SourceBuildConflictError(
+            "source publication lacks complete candidate and provenance proofs"
+        )
+    stored_receipt = require_uuid16(
+        row[0],
+        field="finalized source publication receipt_id",
+    )
+    if stored_receipt != receipt_key:
+        raise SourceBuildConflictError("finalized source publication receipt differs")
+    source_revision = require_positive_int63(
+        row[1],
+        field="finalized source publication revision",
+    )
+    generation = require_positive_int63(
+        row[2],
+        field="finalized source publication generation",
+    )
+    if row[3] != "PROJECTION_FINALIZED" or row[4] is None:
+        raise SourceBuildConflictError(
+            "source working root publication is not projection-finalized"
+        )
+    finalized_at = require_int63(
+        row[4],
+        field="finalized source publication finalized_at",
+    )
+    require_uuid16(row[5], field="finalized source publication candidate_id")
+    candidate_analysis_id = require_uuid16(
+        row[6],
+        field="finalized source publication candidate analysis_id",
+    )
+    candidate_build = require_uuid16(
+        row[7],
+        field="finalized source publication candidate analysis build_id",
+    )
+    provenance_analysis_id = require_uuid16(
+        row[9],
+        field="finalized source publication provenance analysis_id",
+    )
+    provenance_build = require_uuid16(
+        row[10],
+        field="finalized source publication provenance analysis build_id",
+    )
+    if (
+        candidate_analysis_id != provenance_analysis_id
+        or candidate_build != provenance_build
+        or row[8] != "COMPLETE"
+        or row[11] != "COMPLETE"
+        or (expected_build is not None and candidate_build != expected_build)
+    ):
+        raise SourceBuildConflictError(
+            "finalized source publication candidate and provenance build proofs differ"
+        )
+    return _FinalizedSourceHead(
+        stored_receipt,
+        source_revision,
+        generation,
+        finalized_at,
+        candidate_analysis_id,
+        candidate_build,
+    )
+
+
+def _load_sealed_source_publication_by_receipt(
+    connector: Any,
+    *,
+    receipt_id: bytes,
+) -> _SealedSourcePublication:
+    """Load one common sealed commit through two independent build proofs."""
+
+    receipt_key = require_uuid16(
+        receipt_id,
+        field="sealed source publication receipt_id",
+    )
+    row = connector.fetch_one(
+        "SELECT committed.receipt_id, committed.source_revision, "
+        "committed.generation, committed.committed_at, "
+        "committed.candidate_id, candidate.analysis_id, "
+        "candidate_analysis.build_id, candidate_analysis.state, "
+        "provenance.analysis_id, provenance_analysis.build_id, "
+        "provenance_analysis.state, descriptor.channel "
+        f"FROM {_PUBLICATION_COMMIT_VIEW} AS committed "
+        f"LEFT JOIN {_PUBLICATION_CANDIDATE_TABLE} AS candidate "
+        "ON candidate.candidate_id = committed.candidate_id "
+        f"LEFT JOIN {_ANALYSIS_RUN_VIEW} AS candidate_analysis "
+        "ON candidate_analysis.analysis_id = candidate.analysis_id "
+        f"LEFT JOIN {_SOURCE_REVISION_PROVENANCE_TABLE} AS provenance "
+        "ON provenance.source_revision = committed.source_revision "
+        f"LEFT JOIN {_ANALYSIS_RUN_VIEW} AS provenance_analysis "
+        "ON provenance_analysis.analysis_id = provenance.analysis_id "
+        f"LEFT JOIN {_SOURCE_REVISION_CHANNEL_TABLE} AS descriptor "
+        "ON descriptor.source_revision = committed.source_revision "
+        "WHERE committed.receipt_id = %s",
+        (receipt_key,),
+    )
+    if len(row) != 12 or any(value is None for value in row):
+        raise SourceBuildConflictError(
+            "sealed source publication lacks complete candidate and provenance proofs"
+        )
+    stored_receipt = require_uuid16(
+        row[0],
+        field="sealed source publication receipt_id",
+    )
+    if stored_receipt != receipt_key:
+        raise SourceBuildConflictError("sealed source publication receipt differs")
+    source_revision = require_positive_int63(
+        row[1],
+        field="sealed source publication source_revision",
+    )
+    generation = require_positive_int63(
+        row[2],
+        field="sealed source publication generation",
+    )
+    committed_at = require_int63(
+        row[3],
+        field="sealed source publication committed_at",
+    )
+    require_uuid16(row[4], field="sealed source publication candidate_id")
+    candidate_analysis = require_uuid16(
+        row[5],
+        field="sealed source publication candidate analysis_id",
+    )
+    candidate_build = require_uuid16(
+        row[6],
+        field="sealed source publication candidate build_id",
+    )
+    provenance_analysis = require_uuid16(
+        row[8],
+        field="sealed source publication provenance analysis_id",
+    )
+    provenance_build = require_uuid16(
+        row[9],
+        field="sealed source publication provenance build_id",
+    )
+    channel = require_bounded_bytes(
+        row[11],
+        field="sealed source publication channel",
+        minimum=1,
+        maximum=64,
+    )
+    if (
+        candidate_analysis != provenance_analysis
+        or candidate_build != provenance_build
+        or row[7] != "COMPLETE"
+        or row[10] != "COMPLETE"
+        or channel != _DEFAULT_CHANNEL
+    ):
+        raise SourceBuildConflictError(
+            "sealed source publication candidate and provenance build proofs differ"
+        )
+    return _SealedSourcePublication(
+        stored_receipt,
+        source_revision,
+        generation,
+        committed_at,
+        candidate_analysis,
+        candidate_build,
+    )
+
+
+def _load_historical_source_head_at_build_creation(
+    connector: Any,
+    *,
+    build_id: bytes,
+) -> bytes | None:
+    """Recover the exact sealed channel head visible to a retired v1 build."""
+
+    build = _load_source_build_or_conflict(
+        connector,
+        require_uuid16(build_id, field="legacy source build_id"),
+    )
+    channel = connector.fetch_one(
+        "SELECT channel FROM catalog_source_build_channel WHERE build_id = %s",
+        (build.build_id,),
+    )
+    if channel != (_DEFAULT_CHANNEL,):
+        raise SourceBuildConflictError(
+            "legacy source build lacks its exact default-channel authority"
+        )
+    row = connector.fetch_one(
+        "SELECT committed.receipt_id, committed.source_revision, "
+        "committed.generation, committed.committed_at "
+        f"FROM {_PUBLICATION_COMMIT_VIEW} AS committed "
+        f"JOIN {_SOURCE_REVISION_CHANNEL_TABLE} AS descriptor "
+        "ON descriptor.source_revision = committed.source_revision "
+        "WHERE descriptor.channel = %s AND committed.committed_at <= %s "
+        "ORDER BY committed.source_revision DESC LIMIT 1",
+        (_DEFAULT_CHANNEL, build.created_at),
+    )
+    if not row:
+        return None
+    if len(row) != 4:
+        raise SourceBuildConflictError(
+            "legacy source build historical channel head is malformed"
+        )
+    publication = _load_sealed_source_publication_by_receipt(
+        connector,
+        receipt_id=require_uuid16(
+            row[0],
+            field="legacy source build historical receipt_id",
+        ),
+    )
+    if (
+        publication.source_revision
+        != require_positive_int63(
+            row[1],
+            field="legacy source build historical source_revision",
+        )
+        or publication.generation
+        != require_positive_int63(
+            row[2],
+            field="legacy source build historical generation",
+        )
+        or publication.committed_at
+        != require_int63(
+            row[3],
+            field="legacy source build historical committed_at",
+        )
+        or publication.committed_at > build.created_at
+        or publication.build_id == build.build_id
+    ):
+        raise SourceBuildConflictError(
+            "legacy source build historical channel head authority differs"
+        )
+    return publication.receipt_id
+
+
 def _validate_build_base_source(
     connector: Any,
     *,
     build_id: bytes,
-) -> None:
+    published_receipt_id: bytes | None = None,
+    require_lineage: bool = False,
+) -> bytes | None:
+    build = require_uuid16(build_id, field="source build base build_id")
     row = connector.fetch_one(
         f"SELECT base.base_receipt_id, seal.receipt_id, source.source_revision, "
         "generation.generation, descriptor.channel "
@@ -3167,23 +4971,67 @@ def _validate_build_base_source(
         f"LEFT JOIN {_SOURCE_REVISION_CHANNEL_TABLE} AS descriptor "
         "ON descriptor.source_revision = source.source_revision "
         "WHERE base.build_id = %s",
-        (build_id,),
+        (build,),
     )
-    if not row:
-        return
-    if len(row) != 5 or any(value is None for value in row):
-        raise SourceBuildConflictError(
-            "source build base commit lacks its immutable sealed authority"
+    receipt_id: bytes | None = None
+    if row:
+        if len(row) != 5 or any(value is None for value in row):
+            raise SourceBuildConflictError(
+                "source build base commit lacks its immutable sealed authority"
+            )
+        receipt_id = require_uuid16(row[0], field="source build base receipt_id")
+        if row[1] != receipt_id:
+            raise SourceBuildConflictError("source build base commit is not sealed")
+        require_positive_int63(row[2], field="source build base source revision")
+        require_positive_int63(row[3], field="source build base generation")
+        if row[4] != _DEFAULT_CHANNEL:
+            raise SourceBuildConflictError(
+                "source build base commit belongs to another channel"
+            )
+        if require_lineage or published_receipt_id is not None:
+            base_publication = _load_sealed_source_publication_by_receipt(
+                connector,
+                receipt_id=receipt_id,
+            )
+            if base_publication.build_id == build:
+                raise SourceBuildConflictError(
+                    "source build cannot use its own publication as its base"
+                )
+
+    if published_receipt_id is not None:
+        published = require_uuid16(
+            published_receipt_id,
+            field="source build publication receipt_id",
         )
-    receipt_id = require_uuid16(row[0], field="source build base receipt_id")
-    if row[1] != receipt_id:
-        raise SourceBuildConflictError("source build base commit is not sealed")
-    require_positive_int63(row[2], field="source build base source revision")
-    require_positive_int63(row[3], field="source build base generation")
-    if row[4] != _DEFAULT_CHANNEL:
-        raise SourceBuildConflictError(
-            "source build base commit belongs to another channel"
+        candidate_base = connector.fetch_one(
+            "SELECT committed.candidate_id, base.base_receipt_id "
+            f"FROM {_PUBLICATION_COMMIT_CANDIDATE_TABLE} AS committed "
+            f"LEFT JOIN {_PUBLICATION_CANDIDATE_BASE_COMMIT_TABLE} AS base "
+            "ON base.candidate_id = committed.candidate_id "
+            "WHERE committed.receipt_id = %s",
+            (published,),
         )
+        if len(candidate_base) != 2:
+            raise SourceBuildConflictError(
+                "source build publication lacks its exact candidate base authority"
+            )
+        require_uuid16(
+            candidate_base[0],
+            field="source build publication candidate_id",
+        )
+        pinned_base = (
+            None
+            if candidate_base[1] is None
+            else require_uuid16(
+                candidate_base[1],
+                field="source build publication candidate base_receipt_id",
+            )
+        )
+        if pinned_base != receipt_id or published == receipt_id:
+            raise SourceBuildConflictError(
+                "source build durable base differs from its publication candidate"
+            )
+    return receipt_id
 
 
 def _validate_existing_handoff(
@@ -3194,6 +5042,7 @@ def _validate_existing_handoff(
     scope: bytes,
     source_root_sha256: bytes,
     manifest_policy_id: int,
+    manifest_summary: SourceBuildManifestSummary | None,
     working: tuple[Any, ...],
 ) -> None:
     try:
@@ -3240,7 +5089,49 @@ def _validate_existing_handoff(
         (build_id,),
     )
     _require_exact("replayed source channel", channel, (_DEFAULT_CHANNEL,))
-    _validate_build_base_source(connector, build_id=build_id)
+    published = (
+        None
+        if build.state != "SEALED" or manifest_summary is None
+        else _find_finalized_source_build_publication(
+            connector,
+            expected_build_id=build_id,
+        )
+    )
+    base_receipt_id = _validate_build_base_source(
+        connector,
+        build_id=build_id,
+        published_receipt_id=(None if published is None else published.receipt_id),
+        require_lineage=manifest_summary is not None,
+    )
+    if manifest_summary is not None:
+        if type(manifest_summary) is not SourceBuildManifestSummary:
+            raise TypeError(
+                "manifest_summary must be an exact SourceBuildManifestSummary"
+            )
+        manifest_summary.__post_init__()
+        attempt_id = source_build_snapshot_attempt_id(
+            source_root_sha256,
+            manifest_summary,
+        )
+        _require_snapshot_build_identity(
+            connector,
+            build_id=build_id,
+            snapshot_attempt_id=attempt_id,
+            source_root_sha256=source_root_sha256,
+            scope=scope,
+            manifest_policy_id=manifest_policy_id,
+            base_receipt_id=base_receipt_id,
+            published_receipt_id=(None if published is None else published.receipt_id),
+        )
+        if build.state == "SEALED":
+            stored_summary = _load_build_manifest_summary(
+                connector,
+                build_id=build_id,
+            )
+            if stored_summary != manifest_summary:
+                raise SourceBuildConflictError(
+                    "replayed source build manifest differs from the frozen snapshot"
+                )
     mapping = connector.fetch_one(
         "SELECT build_id, generation FROM operational_source_build_generations "
         "WHERE generation = %s",

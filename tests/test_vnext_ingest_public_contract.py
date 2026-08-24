@@ -190,8 +190,6 @@ def test_public_observations_and_source_adapter_are_repository_independent() -> 
 
 
 def test_prepare_source_uses_canonical_locator_key_order() -> None:
-    observation = VNextIngestGalleryObservation(("b",), _metadata())
-
     class Source:
         source_root_components = ("root",)
 
@@ -210,7 +208,10 @@ def test_prepare_source_uses_canonical_locator_key_order() -> None:
             self,
             locator_components: tuple[str, ...],
         ) -> VNextIngestGalleryObservation:
-            return observation
+            return VNextIngestGalleryObservation(
+                locator_components,
+                replace(_metadata(), source_file_count=0, page_count=0),
+            )
 
         def list_file_observations(
             self,
@@ -555,6 +556,177 @@ def test_source_step_commit_accepts_renewed_same_authority_and_rejects_forgery(
         assert result.source_receipt.sealed
 
 
+def test_fresh_runtime_replays_the_same_sealed_source_snapshot(
+    tmp_path: Path,
+) -> None:
+    metadata = GalleryObservationMetadata(
+        gid=7,
+        title="empty",
+        comment="",
+        upload_account="uploader",
+        upload_time=1,
+        download_time=2,
+        modified_time=3,
+        scan_observation_version=1,
+        source_file_count=0,
+        page_count=0,
+    )
+
+    class EmptyGallerySource:
+        source_root_components = ("same-root",)
+
+        def list_gallery_locators(
+            self,
+            *,
+            after_locator: tuple[str, ...] | None,
+            limit: int,
+        ) -> VNextIngestPage[tuple[str, ...]]:
+            assert after_locator is None and limit == 256
+            return VNextIngestPage((("gallery",),), None, True)
+
+        def observe_gallery(
+            self,
+            locator_components: tuple[str, ...],
+        ) -> VNextIngestGalleryObservation:
+            assert locator_components == ("gallery",)
+            return VNextIngestGalleryObservation(locator_components, metadata)
+
+        def list_file_observations(
+            self,
+            observation: VNextIngestGalleryObservation,
+            *,
+            after_name_bytes: bytes | None,
+            limit: int,
+        ) -> VNextIngestPage[FileObservation]:
+            assert after_name_bytes is None and limit == 256
+            return VNextIngestPage((), None, True)
+
+        def list_directory_observations(
+            self,
+            observation: VNextIngestGalleryObservation,
+            *,
+            after_name_bytes: bytes | None,
+            limit: int,
+        ) -> VNextIngestPage[DirectoryObservation]:
+            assert after_name_bytes is None and limit == 192
+            return VNextIngestPage((), None, True)
+
+        def list_tag_observations(
+            self,
+            observation: VNextIngestGalleryObservation,
+            *,
+            after_ordinal: int | None,
+            limit: int,
+        ) -> VNextIngestPage[TagObservation]:
+            assert after_ordinal is None and limit == 256
+            return VNextIngestPage((), None, True)
+
+    def policy() -> VNextIngestPolicy:
+        return VNextIngestPolicy(
+            producer=VNextArtifactProducer(
+                writer_id=b"writer",
+                python_abi=b"cp313",
+                pillow_build=b"pillow-11",
+                libjpeg_build=b"libjpeg-turbo-3",
+                zlib_build=b"zlib-1.3",
+            ),
+            storage=VNextArtifactStoragePolicy(adapter_id=b"managed-filesystem"),
+        )
+
+    def drive(
+        facade: VNextIngestFacade,
+        session: VNextIngestSession,
+        resolved_policy: Any,
+    ) -> Any:
+        with facade.prepare_source(EmptyGallerySource()) as source:
+            for _ in range(40):
+                issued = facade.issue_source_step(session, resolved_policy, source)
+                local = facade.prepare_source_step(source, issued)
+                result = facade.commit_source_step(session, local)
+                if result.terminal:
+                    return result
+        pytest.fail("same source snapshot did not reach its sealed build")
+
+    path = tmp_path / "ingest-source-sealed-replay.sqlite3"
+    _generated_database(path)
+    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    now = 100
+    first_facade = VNextIngestFacade(config, clock=lambda: now)
+    first_session = first_facade.try_claim_ingest(True, 100_000)
+    assert first_session is not None
+    first_policy = first_facade.ensure_policy(first_session, policy())
+    first = drive(first_facade, first_session, first_policy)
+    first_facade.complete_ingest(first_session)
+    with SQLiteConnector(str(path)) as connector:
+        sealed_source_snapshot = (
+            connector.fetch_all(
+                "SELECT * FROM operational_source_build_discovery_batch_receipts "
+                "ORDER BY build_id, start_generation"
+            ),
+            connector.fetch_all(
+                "SELECT * FROM operational_source_build_assembly_batch_receipts "
+                "ORDER BY build_id, start_generation"
+            ),
+            connector.fetch_all(
+                "SELECT * FROM catalog_source_build_galleries "
+                "ORDER BY build_id, gallery_id"
+            ),
+            connector.fetch_all(
+                "SELECT * FROM catalog_gallery_observations "
+                "ORDER BY gallery_id, observation_id"
+            ),
+            connector.fetch_all(
+                "SELECT * FROM catalog_source_build_base_publication_commits "
+                "ORDER BY build_id"
+            ),
+            connector.fetch_all(
+                "SELECT * FROM catalog_source_build_base_source ORDER BY build_id"
+            ),
+        )
+
+    now = 200
+    second_facade = VNextIngestFacade(config, clock=lambda: now)
+    second_session = second_facade.try_claim_ingest(True, 100_000)
+    assert second_session is not None
+    second_policy = second_facade.ensure_policy(second_session, policy())
+    second = drive(second_facade, second_session, second_policy)
+
+    assert first.source_receipt is not None
+    assert second.source_receipt is not None
+    assert second.source_receipt.build_id == first.source_receipt.build_id
+    assert second.source_receipt.discovered_galleries == 1
+    assert second.source_receipt.staged_galleries == 1
+    assert second.source_receipt.sealed
+    assert second.replayed
+    assert second.source_receipt.replayed
+    with SQLiteConnector(str(path)) as connector:
+        assert (
+            connector.fetch_all(
+                "SELECT * FROM operational_source_build_discovery_batch_receipts "
+                "ORDER BY build_id, start_generation"
+            ),
+            connector.fetch_all(
+                "SELECT * FROM operational_source_build_assembly_batch_receipts "
+                "ORDER BY build_id, start_generation"
+            ),
+            connector.fetch_all(
+                "SELECT * FROM catalog_source_build_galleries "
+                "ORDER BY build_id, gallery_id"
+            ),
+            connector.fetch_all(
+                "SELECT * FROM catalog_gallery_observations "
+                "ORDER BY gallery_id, observation_id"
+            ),
+            connector.fetch_all(
+                "SELECT * FROM catalog_source_build_base_publication_commits "
+                "ORDER BY build_id"
+            ),
+            connector.fetch_all(
+                "SELECT * FROM catalog_source_build_base_source ORDER BY build_id"
+            ),
+        ) == sealed_source_snapshot
+
+
 def test_source_three_stage_flow_discovers_stages_and_seals_one_empty_gallery(
     tmp_path: Path,
 ) -> None:
@@ -881,7 +1053,12 @@ def test_source_staging_crash_resume_uses_durable_component_and_match_cursors(
     drive_until(lambda _result: match_checkpoint() == (256, "OPEN"))
     drive_until(lambda result: result.terminal)
 
-    assert adapter.file_afters == [None, file_names[255]]
+    # Four fresh prepared-source handles each freeze exactly one complete live
+    # read (None, f0255).  Durable staging and every response-loss continuation
+    # replay only those private spools and never return to the live adapter.
+    assert len(adapter.file_afters) == 8
+    assert adapter.file_afters.count(None) == 4
+    assert adapter.file_afters.count(file_names[255]) == 4
     with SQLiteConnector(str(path)) as connector:
         build = connector.fetch_one(
             "SELECT state FROM catalog_source_build_states ORDER BY build_id LIMIT 1"

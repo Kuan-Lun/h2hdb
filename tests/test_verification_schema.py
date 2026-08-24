@@ -782,7 +782,9 @@ def test_batch3b_vertical_families_preserve_views_and_sealed_authority() -> None
     )
     assert build_timestamp.projection_attribute == "computed_at"
     assert "database-owned created_at" in source_build.write_obligation
-    assert "repository-issued build_id" in source_build.write_obligation
+    assert "derives its snapshot-attempt identity" in source_build.write_obligation
+    assert "canonical v2 build identity" in source_build.write_obligation
+    assert "recovery incarnation uses v3 identity" in source_build.write_obligation
     assert (
         "GalleryObservationStagingRepository.seal"
         in family_by_name["gallery_manifest_vertical"].write_obligation

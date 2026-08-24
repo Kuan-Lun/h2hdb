@@ -576,6 +576,7 @@ class _BeginAuthority:
     analysis_id: bytes
     build_id: bytes
     analysis_completed_at: int
+    build_created_at: int
     build_sealed_at: int
     channel: bytes
     snapshot_manifest_sha256: bytes
@@ -647,10 +648,10 @@ class PublicationCandidateRepository:
             raise PublicationCandidateNotReadyError(
                 "live ingest generation is not mapped to the analysis build"
             )
-        if source_working is None or source_working[1] != authority.build_id:
-            raise PublicationCandidateNotReadyError(
-                "analysis build does not own the sole source working root"
-            )
+        source_working = _require_source_working_capability(
+            authority,
+            source_working,
+        )
         if timestamp < max(
             authority.analysis_completed_at,
             authority.build_sealed_at,
@@ -1381,14 +1382,8 @@ def _require_projection_candidate_exact(
         raise PublicationCandidateNotReadyError(
             "live generation is not mapped to the candidate build"
         )
-    if source_working is None or source_working[1] != begin.build_id:
-        raise PublicationCandidateNotReadyError(
-            "candidate build no longer owns the source working root"
-        )
-    if catalog_working is None or catalog_working[1] != candidate.candidate_id:
-        raise PublicationCandidateNotReadyError(
-            "candidate no longer owns the catalog working root"
-        )
+    source_working = _require_source_working_capability(begin, source_working)
+    catalog_working = _require_catalog_working_capability(candidate, catalog_working)
     if now < max(
         candidate.created_at,
         source_working[2],
@@ -1539,18 +1534,26 @@ def _load_projection_authority(
             "projection authority generation mapping changed"
         )
     source_working = work.connector.fetch_one(
-        f"SELECT build_id FROM {_SOURCE_WORKING_TABLE} WHERE slot = %s",
+        f"SELECT slot, build_id, assigned_at FROM {_SOURCE_WORKING_TABLE} "
+        "WHERE slot = %s",
         (1,),
     )
     catalog_working = work.connector.fetch_one(
-        f"SELECT candidate_id FROM {_CATALOG_WORKING_TABLE} WHERE slot = %s",
+        f"SELECT slot, candidate_id, assigned_at FROM {_CATALOG_WORKING_TABLE} "
+        "WHERE slot = %s",
         (1,),
     )
-    if source_working != (receipt.build_id,) or catalog_working != (
+    if source_working != (
+        1,
+        receipt.build_id,
+        begin.build_created_at,
+    ) or catalog_working != (
+        1,
         receipt.candidate_id,
+        receipt.candidate_created_at,
     ):
         raise PublicationCandidateNotReadyError(
-            "projection authority lost a sole working root"
+            "projection authority lost an exact working-root capability"
         )
     base_source, base_catalog = _load_candidate_bases(work, receipt.candidate_id)
     if (
@@ -3650,11 +3653,14 @@ def _lock_begin_authority(
     if run.state != "COMPLETE" or run.completed_at is None:
         raise PublicationCandidateNotReadyError("candidate analysis is not COMPLETE")
     query = (
-        "SELECT b.state, sealed.sealed_at, bc.channel, sm.snapshot_manifest_sha256, "
+        "SELECT b.state, created.created_at, sealed.sealed_at, bc.channel, "
+        "sm.snapshot_manifest_sha256, "
         "m_gallery.gallery_count, "
         "m_file.file_count, m_byte.byte_count, ap.policy_component_sha256 "
         "FROM catalog_source_build_descriptor_seals b_seal "
         "JOIN catalog_source_build_states b ON b.build_id = b_seal.build_id "
+        "JOIN catalog_source_build_created_ats created "
+        "ON created.build_id = b.build_id "
         "JOIN catalog_source_build_sealed_ats sealed ON sealed.build_id = b.build_id "
         "JOIN catalog_source_build_channel bc ON bc.build_id = b.build_id "
         f"JOIN {_ANALYSIS_MANIFEST_TABLE} sm ON sm.analysis_id = %s "
@@ -3673,27 +3679,32 @@ def _lock_begin_authority(
         query,
         (analysis, artifact_policy_id, run.build_id),
     )
-    if len(row) != 8:
+    if len(row) != 9:
         raise PublicationCandidateNotReadyError(
             "analysis, build, snapshot binding, or registered policy is missing"
         )
     build_id = run.build_id
     completed_at = run.completed_at
-    if row[0] != "SEALED" or row[1] is None:
+    if row[0] != "SEALED" or row[1] is None or row[2] is None:
         raise PublicationCandidateNotReadyError("candidate source build is not SEALED")
-    sealed_at = require_int63(row[1], field="candidate build sealed_at")
+    created_at = require_int63(row[1], field="candidate build created_at")
+    sealed_at = require_int63(row[2], field="candidate build sealed_at")
+    if created_at > sealed_at:
+        raise PublicationCandidateConflictError(
+            "candidate source build was sealed before creation"
+        )
     if sealed_at > completed_at:
         raise PublicationCandidateConflictError(
             "analysis completed before its source build was sealed"
         )
     channel = require_bounded_bytes(
-        row[2], field="candidate derived channel", minimum=1, maximum=64
+        row[3], field="candidate derived channel", minimum=1, maximum=64
     )
-    snapshot = require_digest32(row[3], field="candidate snapshot manifest")
+    snapshot = require_digest32(row[4], field="candidate snapshot manifest")
     for field, value in (
-        ("snapshot gallery_count", row[4]),
-        ("snapshot file_count", row[5]),
-        ("snapshot byte_count", row[6]),
+        ("snapshot gallery_count", row[5]),
+        ("snapshot file_count", row[6]),
+        ("snapshot byte_count", row[7]),
     ):
         require_int63(value, field=field)
     try:
@@ -3714,7 +3725,7 @@ def _lock_begin_authority(
             "analysis snapshot uses an unregistered canonical domain"
         )
 
-    policy_component = require_digest32(row[7], field="artifact policy component")
+    policy_component = require_digest32(row[8], field="artifact policy component")
     try:
         display = load_display_title_policy(
             work.connector,
@@ -3835,6 +3846,7 @@ def _lock_begin_authority(
         analysis_id,
         build_id,
         completed_at,
+        created_at,
         sealed_at,
         channel,
         snapshot,
@@ -3920,6 +3932,36 @@ def _lock_catalog_working(
     )
 
 
+def _require_source_working_capability(
+    authority: _BeginAuthority,
+    working: tuple[int, bytes, int] | None,
+) -> tuple[int, bytes, int]:
+    if working is None or working[1] != authority.build_id:
+        raise PublicationCandidateNotReadyError(
+            "candidate build no longer owns the source working root"
+        )
+    if working != (1, authority.build_id, authority.build_created_at):
+        raise PublicationCandidateConflictError(
+            "source working assignment differs from build creation"
+        )
+    return working
+
+
+def _require_catalog_working_capability(
+    candidate: _CandidateRow,
+    working: tuple[int, bytes, int] | None,
+) -> tuple[int, bytes, int]:
+    if working is None or working[1] != candidate.candidate_id:
+        raise PublicationCandidateNotReadyError(
+            "candidate no longer owns the catalog working root"
+        )
+    if working != (1, candidate.candidate_id, candidate.created_at):
+        raise PublicationCandidateConflictError(
+            "catalog working assignment differs from candidate creation"
+        )
+    return working
+
+
 def _candidate_graph_state(
     work: VNextUnitOfWork,
     candidate_id: bytes,
@@ -3988,8 +4030,7 @@ def _lock_candidate_collision(
     transient = work.lock_row(
         LockRank.WORKING_ROOT,
         encode_lock_key("publication-candidate", 4, candidate_id),
-        f"SELECT candidate_id FROM {_CANDIDATE_ANCHOR_TABLE} "
-        "WHERE candidate_id = %s",
+        f"SELECT candidate_id FROM {_CANDIDATE_ANCHOR_TABLE} WHERE candidate_id = %s",
         (candidate_id,),
     )
     permanent = work.lock_row(
@@ -4366,14 +4407,8 @@ def _prepare_candidate_batch(
         raise PublicationCandidateNotReadyError(
             "live ingest generation is not mapped to the candidate build"
         )
-    if source_working is None or source_working[1] != begin.build_id:
-        raise PublicationCandidateNotReadyError(
-            "candidate build no longer owns the source working root"
-        )
-    if catalog_working is None or catalog_working[1] != candidate.candidate_id:
-        raise PublicationCandidateNotReadyError(
-            "candidate no longer owns the catalog working root"
-        )
+    source_working = _require_source_working_capability(begin, source_working)
+    catalog_working = _require_catalog_working_capability(candidate, catalog_working)
     if timestamp < max(
         candidate.created_at,
         source_working[2],

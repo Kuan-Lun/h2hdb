@@ -61,8 +61,16 @@ from .vnext_maintenance_gate_repository import (
     GateMode,
     MaintenanceGateRepository,
 )
+from .vnext_manifest_family import (
+    ManifestFamilyCollisionError,
+    load_source_build_family,
+)
 from .vnext_publication_finalization_repository import (
     _initialize_finalization_checkpoint,
+)
+from .vnext_source_build_repository import (
+    SourceBuildConflictError,
+    require_source_build_publication_identity,
 )
 from .vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 
@@ -290,8 +298,130 @@ class _PublishedCommit:
     finalized_at: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class _PublishedLineage:
+    analysis_id: bytes
+    build_id: bytes
+
+
 class PublicationRepository:
     """Publish a sealed candidate and recover its immutable receipt."""
+
+    @staticmethod
+    def release_replayed_source_working(
+        work: VNextUnitOfWork,
+        *,
+        gate_lease: GateLease,
+        ingest_turn: IngestTurn,
+        build_id: bytes,
+        receipt_id: bytes,
+        now: int,
+    ) -> bool:
+        """Release a transient source root after an already-published replay.
+
+        A fresh ingest generation must temporarily reacquire the source working
+        slot while it revalidates a sealed build and its completed analysis.
+        The original publication commit already released its own working roots,
+        so the terminal publication replay owns this exact successor-generation
+        cleanup.  An absent slot is the response-loss replay and performs no
+        write.
+        """
+
+        build = require_uuid16(build_id, field="replayed publication build_id")
+        receipt = require_uuid16(
+            receipt_id,
+            field="replayed publication receipt_id",
+        )
+        timestamp = require_int63(now, field="replayed publication completed_at")
+        ingest_generation = _authorize(
+            work,
+            gate_lease,
+            ingest_turn,
+            now=timestamp,
+        )
+        _require_schema_authorities(work)
+
+        published = _load_published_commit_by_receipt(work.connector, receipt)
+        _validate_published_commit(work.connector, published)
+        if published.finalized_at is None:
+            raise PublicationNotReadyError(
+                "replayed publication is not projection-finalized"
+            )
+        lineage = _require_replayed_publication_lineage(
+            work.connector,
+            published=published,
+        )
+        if lineage.build_id != build:
+            raise PublicationCorruptionError(
+                "replayed publication source-provenance lineage changed"
+            )
+        _require_replayed_publication_base(
+            work.connector,
+            published=published,
+            build_id=lineage.build_id,
+        )
+        mapping = _lock_generation_mapping(work, ingest_generation)
+        if mapping != build:
+            raise PublicationNotReadyError(
+                "live ingest generation is not mapped to the replayed build"
+            )
+        working = work.lock_row(
+            LockRank.WORKING_ROOT,
+            encode_lock_key("publication-replay-source", 1),
+            f"SELECT slot, build_id, assigned_at FROM {_SOURCE_WORKING_TABLE} "
+            "WHERE slot = %s",
+            (1,),
+        )
+        if working and len(working) != 3:
+            raise PublicationCorruptionError(
+                "replayed source working root is malformed"
+            )
+        if working:
+            slot = require_positive_int63(working[0], field="replayed source slot")
+            mapped_build = require_uuid16(
+                working[1],
+                field="replayed source working build_id",
+            )
+            require_int63(working[2], field="replayed source assigned_at")
+            if slot != 1 or mapped_build != build:
+                raise PublicationNotReadyError(
+                    "replayed publication does not own the source working slot"
+                )
+            _require_source_working_assignment(
+                work.connector,
+                build_id=build,
+                assigned_at=working[2],
+            )
+
+        head = _lock_publication_commit_head(work, published.channel)
+        if head is None or (
+            head.receipt_id,
+            head.revision,
+            head.source_revision,
+            head.generation,
+            head.committed_at,
+        ) != (
+            published.receipt_id,
+            published.revision,
+            published.source_revision,
+            published.generation,
+            published.committed_at,
+        ):
+            raise PublicationHeadRaceError(
+                "replayed publication is no longer the common head"
+            )
+        if not working:
+            return False
+        _delete_working_root(
+            work,
+            table=_SOURCE_WORKING_TABLE,
+            label="replayed source working build",
+            slot=slot,
+            identity_column="build_id",
+            identity=build,
+            assigned_at=working[2],
+        )
+        return True
 
     @staticmethod
     def commit(
@@ -320,6 +450,16 @@ class PublicationRepository:
         published = _load_published_commit_by_candidate(work.connector, candidate_key)
         if published is not None:
             _validate_published_commit(work.connector, published)
+            if _replayed_publication_requires_live_lineage(work, published=published):
+                lineage = _require_replayed_publication_lineage(
+                    work.connector,
+                    published=published,
+                )
+                _require_replayed_publication_base(
+                    work.connector,
+                    published=published,
+                    build_id=lineage.build_id,
+                )
             return _commit_receipt(published, replayed=True)
 
         candidate = _lock_candidate(work, candidate_key)
@@ -343,6 +483,11 @@ class PublicationRepository:
             build_id=candidate.build_id,
             candidate_base=candidate_base,
         )
+        _require_source_build_identity(
+            work.connector,
+            build_id=candidate.build_id,
+            base_receipt_id=candidate_base,
+        )
 
         if mapping != candidate.build_id:
             raise PublicationNotReadyError(
@@ -352,10 +497,19 @@ class PublicationRepository:
             raise PublicationNotReadyError(
                 "the candidate build does not own the source working slot"
             )
+        _require_source_working_assignment(
+            work.connector,
+            build_id=candidate.build_id,
+            assigned_at=source_working[2],
+        )
         if catalog_working is None or catalog_working[1] != candidate.candidate_id:
             raise PublicationNotReadyError(
                 "the candidate does not own the catalog working slot"
             )
+        _require_catalog_working_assignment(
+            candidate=candidate,
+            assigned_at=catalog_working[2],
+        )
         if timestamp < max(
             candidate.created_at,
             candidate.analysis_completed_at,
@@ -433,8 +587,7 @@ class PublicationRepository:
             (source_revision, candidate.snapshot_manifest_sha256),
         )
         connector.execute(
-            f"INSERT INTO {_SOURCE_REVISION_SEAL_TABLE} "
-            "(source_revision) VALUES (%s)",
+            f"INSERT INTO {_SOURCE_REVISION_SEAL_TABLE} (source_revision) VALUES (%s)",
             (source_revision,),
         )
         connector.execute(
@@ -466,6 +619,7 @@ class PublicationRepository:
             slot=source_working[0],
             identity_column="build_id",
             identity=candidate.build_id,
+            assigned_at=source_working[2],
         )
         _delete_working_root(
             work,
@@ -474,6 +628,7 @@ class PublicationRepository:
             slot=catalog_working[0],
             identity_column="candidate_id",
             identity=candidate.candidate_id,
+            assigned_at=catalog_working[2],
         )
 
         return PublicationCommitReceipt(
@@ -494,6 +649,219 @@ class PublicationRepository:
             None,
             False,
         )
+
+
+def _require_replayed_publication_lineage(
+    connector: Any,
+    *,
+    published: _PublishedCommit,
+) -> _PublishedLineage:
+    """Rebuild receipt lineage without consulting the transient candidate."""
+
+    row = connector.fetch_one(
+        "SELECT committed_candidate.candidate_id, source.source_revision, "
+        "provenance.analysis_id, analysis.build_id, analysis.state, "
+        "analysis_manifest.snapshot_manifest_sha256, build_channel.channel "
+        f"FROM {_COMMIT_CANDIDATE_TABLE} AS committed_candidate "
+        f"LEFT JOIN {_COMMIT_SOURCE_REVISION_TABLE} AS source "
+        "ON source.receipt_id = committed_candidate.receipt_id "
+        f"LEFT JOIN {_SOURCE_PROVENANCE_TABLE} AS provenance "
+        "ON provenance.source_revision = source.source_revision "
+        "LEFT JOIN catalog_analysis_runs AS analysis "
+        "ON analysis.analysis_id = provenance.analysis_id "
+        f"LEFT JOIN {_ANALYSIS_MANIFEST_TABLE} AS analysis_manifest "
+        "ON analysis_manifest.analysis_id = provenance.analysis_id "
+        "LEFT JOIN catalog_source_build_channel AS build_channel "
+        "ON build_channel.build_id = analysis.build_id "
+        "WHERE committed_candidate.receipt_id = %s",
+        (published.receipt_id,),
+    )
+    if len(row) != 7:
+        raise PublicationCorruptionError(
+            "replayed publication source-provenance lineage is incomplete"
+        )
+    try:
+        analysis_id = require_uuid16(
+            row[2],
+            field="replayed publication provenance analysis_id",
+        )
+        build_id = require_uuid16(
+            row[3],
+            field="replayed publication provenance build_id",
+        )
+    except (TypeError, ValueError) as error:
+        raise PublicationCorruptionError(
+            "replayed publication source-provenance lineage is malformed"
+        ) from error
+    if (
+        row[0],
+        row[1],
+        row[4],
+        row[5],
+        row[6],
+    ) != (
+        published.candidate_id,
+        published.source_revision,
+        "COMPLETE",
+        published.snapshot_manifest_sha256,
+        published.channel,
+    ):
+        raise PublicationCorruptionError(
+            "replayed publication source-provenance lineage proofs differ"
+        )
+    return _PublishedLineage(analysis_id, build_id)
+
+
+def _replayed_publication_requires_live_lineage(
+    work: VNextUnitOfWork,
+    *,
+    published: _PublishedCommit,
+) -> bool:
+    """Distinguish the active source from self-contained inactive history."""
+
+    head = _lock_publication_commit_head(work, published.channel)
+    if head is None or head.generation < published.generation:
+        raise PublicationCorruptionError(
+            "replayed publication is inconsistent with the common head"
+        )
+    successor = work.connector.fetch_one(
+        f"SELECT edge.successor_generation, generation.receipt_id, "
+        "seal.receipt_id, descriptor.channel "
+        f"FROM {_GENERATION_SUCCESSOR_TABLE} AS edge "
+        f"LEFT JOIN {_COMMIT_GENERATION_TABLE} AS generation "
+        "ON generation.generation = edge.successor_generation "
+        f"LEFT JOIN {_COMMIT_SEAL_TABLE} AS seal "
+        "ON seal.receipt_id = generation.receipt_id "
+        f"LEFT JOIN {_COMMIT_SOURCE_REVISION_TABLE} AS source "
+        "ON source.receipt_id = generation.receipt_id "
+        f"LEFT JOIN {_SOURCE_REVISION_CHANNEL_TABLE} AS descriptor "
+        "ON descriptor.source_revision = source.source_revision "
+        "WHERE edge.predecessor_generation = %s",
+        (published.generation,),
+    )
+    if head.generation == published.generation:
+        if (
+            head.receipt_id,
+            head.revision,
+            head.source_revision,
+            head.committed_at,
+        ) != (
+            published.receipt_id,
+            published.revision,
+            published.source_revision,
+            published.committed_at,
+        ) or successor:
+            raise PublicationCorruptionError(
+                "replayed active publication differs from the common head"
+            )
+        return True
+
+    if len(successor) != 4 or any(value is None for value in successor):
+        raise PublicationCorruptionError(
+            "replayed inactive publication lacks one exact sealed successor"
+        )
+    if (
+        successor[0] != published.generation + 1
+        or successor[1] != successor[2]
+        or successor[3] != published.channel
+    ):
+        raise PublicationCorruptionError(
+            "replayed inactive publication successor is malformed"
+        )
+    provenance = work.connector.fetch_one(
+        f"SELECT analysis_id FROM {_SOURCE_PROVENANCE_TABLE} "
+        "WHERE source_revision = %s",
+        (published.source_revision,),
+    )
+    if not provenance:
+        return False
+    if len(provenance) != 1:
+        raise PublicationCorruptionError(
+            "replayed inactive publication provenance is malformed"
+        )
+    return True
+
+
+def _require_replayed_publication_base(
+    connector: Any,
+    *,
+    published: _PublishedCommit,
+    build_id: bytes,
+) -> None:
+    """Prove the durable build pin names the commit generation predecessor."""
+
+    build_row = connector.fetch_one(
+        f"SELECT base_receipt_id FROM {_BUILD_BASE_COMMIT_TABLE} WHERE build_id = %s",
+        (build_id,),
+    )
+    if build_row:
+        if len(build_row) != 1:
+            raise PublicationCorruptionError(
+                "replayed source build base commit is malformed"
+            )
+        build_base = require_uuid16(
+            build_row[0],
+            field="replayed source build base receipt_id",
+        )
+    else:
+        build_base = None
+
+    predecessor: bytes | None = None
+    if published.generation > 1:
+        row = connector.fetch_one(
+            f"SELECT generation.receipt_id, seal.receipt_id, descriptor.channel "
+            f"FROM {_COMMIT_GENERATION_TABLE} AS generation "
+            f"LEFT JOIN {_COMMIT_SEAL_TABLE} AS seal "
+            "ON seal.receipt_id = generation.receipt_id "
+            f"LEFT JOIN {_COMMIT_SOURCE_REVISION_TABLE} AS source "
+            "ON source.receipt_id = generation.receipt_id "
+            f"LEFT JOIN {_SOURCE_REVISION_CHANNEL_TABLE} AS descriptor "
+            "ON descriptor.source_revision = source.source_revision "
+            "WHERE generation.generation = %s",
+            (published.generation - 1,),
+        )
+        if len(row) != 3 or any(value is None for value in row):
+            raise PublicationCorruptionError(
+                "replayed publication lacks one exact sealed predecessor commit"
+            )
+        predecessor = require_uuid16(
+            row[0],
+            field="replayed publication predecessor receipt_id",
+        )
+        if row[1] != predecessor or row[2] != published.channel:
+            raise PublicationCorruptionError(
+                "replayed publication predecessor seal or channel differs"
+            )
+
+    if build_base != predecessor or predecessor == published.receipt_id:
+        raise PublicationCorruptionError(
+            "replayed publication source-build base differs from the exact "
+            "generation predecessor"
+        )
+    _require_source_build_identity(
+        connector,
+        build_id=build_id,
+        base_receipt_id=predecessor,
+    )
+
+
+def _require_source_build_identity(
+    connector: Any,
+    *,
+    build_id: bytes,
+    base_receipt_id: bytes | None,
+) -> None:
+    try:
+        require_source_build_publication_identity(
+            connector,
+            build_id=build_id,
+            base_receipt_id=base_receipt_id,
+        )
+    except SourceBuildConflictError as error:
+        raise PublicationCorruptionError(
+            "publication source build identity differs from its durable snapshot "
+            "and exact predecessor"
+        ) from error
 
 
 def _authorize(
@@ -788,6 +1156,42 @@ def _lock_source_working(
     return slot, mapped, assigned_at
 
 
+def _require_source_working_assignment(
+    connector: Any,
+    *,
+    build_id: bytes,
+    assigned_at: int,
+) -> None:
+    build = require_uuid16(build_id, field="source working build_id")
+    assigned = require_int63(assigned_at, field="source working assigned_at")
+    try:
+        family = load_source_build_family(connector, build_id=build)
+    except ManifestFamilyCollisionError as error:
+        raise PublicationCorruptionError(
+            "source working build family is partial or conflicting"
+        ) from error
+    if family is None or family.state != "SEALED":
+        raise PublicationCorruptionError(
+            "source working root does not name one exact SEALED build"
+        )
+    if assigned != family.created_at:
+        raise PublicationCorruptionError(
+            "source working assignment differs from build created_at"
+        )
+
+
+def _require_catalog_working_assignment(
+    *,
+    candidate: _Candidate,
+    assigned_at: int,
+) -> None:
+    assigned = require_int63(assigned_at, field="catalog working assigned_at")
+    if assigned != candidate.created_at:
+        raise PublicationCorruptionError(
+            "catalog working assignment differs from candidate created_at"
+        )
+
+
 def _lock_catalog_working(
     work: VNextUnitOfWork, candidate_id: bytes
 ) -> tuple[int, bytes, int] | None:
@@ -873,7 +1277,7 @@ def _lock_projection_seal(
     marker = work.lock_row(
         LockRank.CHECKPOINT,
         encode_lock_key("publication", 0, candidate_id),
-        f"SELECT candidate_id FROM {_PROJECTION_SEAL_TABLE} " "WHERE candidate_id = %s",
+        f"SELECT candidate_id FROM {_PROJECTION_SEAL_TABLE} WHERE candidate_id = %s",
         (candidate_id,),
     )
     if marker != (candidate_id,):
@@ -1320,8 +1724,7 @@ def _advance_publication_commit_head(
 ) -> None:
     if base is None:
         work.connector.execute(
-            f"INSERT INTO {_COMMIT_HEAD_TABLE} "
-            "(channel, receipt_id) VALUES (%s, %s)",
+            f"INSERT INTO {_COMMIT_HEAD_TABLE} (channel, receipt_id) VALUES (%s, %s)",
             (channel, receipt_id),
         )
         return
@@ -1341,10 +1744,12 @@ def _delete_working_root(
     slot: int,
     identity_column: str,
     identity: bytes,
+    assigned_at: int,
 ) -> None:
     affected = work.connector.execute_affected(
-        f"DELETE FROM {table} WHERE slot = %s AND {identity_column} = %s",
-        (slot, identity),
+        f"DELETE FROM {table} WHERE slot = %s AND {identity_column} = %s "
+        "AND assigned_at = %s",
+        (slot, identity, assigned_at),
     )
     if affected != 1:
         raise PublicationHeadRaceError(f"{label} changed during publication")

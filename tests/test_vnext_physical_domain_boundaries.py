@@ -616,6 +616,7 @@ def test_forged_discovery_locator_is_rejected_before_sql() -> None:
         0,
         (locator,),
         False,
+        False,
         plan_capability,
         object(),
         _DISCOVERY_BATCH_TOKEN,

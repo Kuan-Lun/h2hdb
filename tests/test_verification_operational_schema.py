@@ -1325,6 +1325,48 @@ def test_cleanup_fk_descendant_and_root_codec_mutations_fail_closed() -> None:
             missing_intermediary, physical
         )
 
+    for kind, fragment, error in (
+        (
+            "SOURCE_BUILD",
+            "sole ABANDONED analysis retirement family",
+            "successor-fence retention",
+        ),
+        (
+            "ANALYSIS_RUN",
+            "source_build_base_publication_commit.base_receipt_id",
+            "base provenance retention",
+        ),
+        (
+            "ANALYSIS_RUN",
+            "globally latest source_build_generation",
+            "latest analysis retirement retention",
+        ),
+        (
+            "ANALYSIS_RUN",
+            "ABANDONED analysis and a sibling run",
+            "multi-analysis retirement retention",
+        ),
+        (
+            "PUBLICATION_CANDIDATE",
+            "publication_commit_candidate.candidate_id",
+            "base candidate retention",
+        ),
+    ):
+        missing_recovery_root = deepcopy(logical)
+        target = next(
+            value
+            for value in missing_recovery_root["cleanup_target"]
+            if value["target_kind"] == kind
+        )
+        target["retention_roots"] = [
+            root for root in target["retention_roots"] if fragment not in root
+        ]
+        with pytest.raises(ValueError, match=error):
+            operational_refinement.check_cleanup_reachability_v1(
+                missing_recovery_root,
+                physical,
+            )
+
 
 def test_cleanup_runtime_predicates_and_exact_key_codecs() -> None:
     facts = operational_refinement.PreparationCleanupFacts

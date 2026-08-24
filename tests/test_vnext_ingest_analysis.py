@@ -43,6 +43,11 @@ from h2hdb.vnext_maintenance_gate_repository import (
     GateLease,
     MaintenanceGateRepository,
 )
+from h2hdb.vnext_source_build_repository import (
+    SourceBuildManifestSummary,
+    source_build_identity,
+    source_build_snapshot_attempt_id,
+)
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
 
@@ -121,6 +126,28 @@ def _orchestrator(path: Path) -> VNextIngestAnalysisOrchestrator:
     )
 
 
+def _snapshot_build_id(
+    connector: SQLiteConnector,
+    *,
+    scope: bytes,
+    summary: SourceBuildManifestSummary,
+) -> bytes:
+    source_root = connector.fetch_one(
+        "SELECT source_root_sha256 FROM catalog_source_scopes WHERE scope_key = %s",
+        (scope,),
+    )
+    assert len(source_root) == 1
+    return source_build_identity(
+        snapshot_attempt_id=source_build_snapshot_attempt_id(
+            source_root[0],
+            summary,
+        ),
+        scope=scope,
+        manifest_policy_id=1,
+        base_receipt_id=None,
+    )
+
+
 def _drive(
     orchestrator: VNextIngestAnalysisOrchestrator,
     session: VNextIngestSession,
@@ -156,13 +183,19 @@ def _seed_empty(path: Path) -> tuple[bytes, GateLease, IngestTurn]:
         gate, turn = _authorities(connector)
         with connector.transaction():
             scope = _seed_root(connector)
-            build_id = b"e" * 16
+            summary = SourceBuildManifestSummary.empty()
+            build_id = _snapshot_build_id(
+                connector,
+                scope=scope,
+                summary=summary,
+            )
             _seed_build(
                 connector,
                 build_id=build_id,
                 scope=scope,
                 manifest_byte=7,
                 gallery_count=0,
+                manifest_sha256=summary.manifest_sha256,
             )
             _map_working_build(
                 connector,
@@ -381,13 +414,19 @@ def test_issued_gallery_page_is_hard_capped_at_128(tmp_path: Path) -> None:
         gate, turn = _authorities(connector)
         with connector.transaction():
             scope = _seed_root(connector)
-            build_id = b"c" * 16
+            summary = SourceBuildManifestSummary(b"\x08" * 32, 129, 0, 0)
+            build_id = _snapshot_build_id(
+                connector,
+                scope=scope,
+                summary=summary,
+            )
             _seed_build(
                 connector,
                 build_id=build_id,
                 scope=scope,
                 manifest_byte=8,
                 gallery_count=129,
+                manifest_sha256=summary.manifest_sha256,
             )
             for gallery_id in range(1, 130):
                 _seed_gallery(

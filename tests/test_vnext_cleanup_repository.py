@@ -884,6 +884,491 @@ def _analysis_run_family_rows(
     )
 
 
+def test_analysis_cleanup_retains_only_latest_abandoned_recovery_proof(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "analysis-latest-recovery-retention.sqlite3")
+    try:
+        seed_analysis_policy(connector)
+        old_scope = _seed_source_build_scope(connector, discriminator=95)
+        latest_scope = _seed_source_build_scope(connector, discriminator=96)
+        successor_scope = _seed_source_build_scope(connector, discriminator=97)
+        old_build = b"O" * 16
+        latest_build = b"L" * 16
+        successor_build = b"S" * 16
+        old_analysis = bytes((95,)) + b"o" * 15
+        latest_analysis = bytes((95,)) + b"l" * 15
+        for build_id, scope_key, created_at in (
+            (old_build, old_scope, 1),
+            (latest_build, latest_scope, 2),
+            (successor_build, successor_scope, 3),
+        ):
+            seed_source_build(
+                connector,
+                build_id=build_id,
+                scope_key=scope_key,
+                manifest_policy_id=1,
+                state="SEALED",
+                created_at=created_at,
+                sealed_at=created_at,
+            )
+        for analysis_id, build_id, started_at in (
+            (old_analysis, old_build, 1),
+            (latest_analysis, latest_build, 2),
+        ):
+            seed_analysis_run(
+                connector,
+                analysis_id=analysis_id,
+                build_id=build_id,
+                policy_id=1,
+                input_manifest_sha256=bytes((started_at,)) * 32,
+                started_at=started_at,
+                state="ABANDONED",
+            )
+        _fixture_rows(
+            connector,
+            [
+                (
+                    "INSERT INTO operational_ingest_generations "
+                    "(generation, started_at, completed_at) VALUES (%s, %s, %s)",
+                    (1, 1, 1),
+                ),
+                (
+                    "INSERT INTO operational_ingest_generations "
+                    "(generation, started_at, completed_at) VALUES (%s, %s, %s)",
+                    (2, 2, 2),
+                ),
+                (
+                    "INSERT INTO operational_source_build_generations "
+                    "(build_id, generation) VALUES (%s, %s)",
+                    (old_build, 1),
+                ),
+                (
+                    "INSERT INTO operational_source_build_generations "
+                    "(build_id, generation) VALUES (%s, %s)",
+                    (latest_build, 2),
+                ),
+            ],
+        )
+
+        gate = _exclusive(connector)
+        latest_before = _analysis_run_family_rows(connector, latest_analysis)
+        first_cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.ANALYSIS_RUN,
+            old_analysis[0],
+            max_rows=32,
+        )
+        _drain(connector, gate, first_cycle)
+        assert not any(_analysis_run_family_rows(connector, old_analysis))
+        assert _analysis_run_family_rows(connector, latest_analysis) == latest_before
+
+        _fixture_rows(
+            connector,
+            [
+                (
+                    "INSERT INTO operational_ingest_generations "
+                    "(generation, started_at, completed_at) VALUES (%s, %s, %s)",
+                    (3, 3, 3),
+                ),
+                (
+                    "INSERT INTO operational_source_build_generations "
+                    "(build_id, generation) VALUES (%s, %s)",
+                    (successor_build, 3),
+                ),
+            ],
+        )
+        second_cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.ANALYSIS_RUN,
+            latest_analysis[0],
+            max_rows=32,
+            now=100,
+        )
+        _drain(connector, gate, second_cycle, now=101)
+        assert not any(_analysis_run_family_rows(connector, latest_analysis))
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize("sibling_state", ("COMPLETE", "ABANDONED"))
+def test_analysis_cleanup_never_launders_abandoned_multi_policy_history(
+    tmp_path: Path,
+    sibling_state: str,
+) -> None:
+    connector = _database(
+        tmp_path / f"analysis-abandoned-sibling-{sibling_state.lower()}.sqlite3"
+    )
+    try:
+        scope_key = _seed_source_build_scope(connector, discriminator=102)
+        seed_analysis_policy(connector)
+        seed_analysis_policy(connector, policy_id=2, algorithm_version=2)
+        build_id = b"M" * 16
+        abandoned = bytes((102,)) + b"a" * 15
+        sibling = bytes((102,)) + b"s" * 15
+        seed_source_build(
+            connector,
+            build_id=build_id,
+            scope_key=scope_key,
+            manifest_policy_id=1,
+            state="SEALED",
+            created_at=1,
+            sealed_at=1,
+        )
+        seed_analysis_run(
+            connector,
+            analysis_id=abandoned,
+            build_id=build_id,
+            policy_id=1,
+            input_manifest_sha256=b"a" * 32,
+            started_at=1,
+            state="ABANDONED",
+        )
+        seed_analysis_run(
+            connector,
+            analysis_id=sibling,
+            build_id=build_id,
+            policy_id=2,
+            input_manifest_sha256=b"s" * 32,
+            started_at=2,
+            state=sibling_state,
+            completed_at=3 if sibling_state == "COMPLETE" else None,
+        )
+        newer_scope = _seed_source_build_scope(connector, discriminator=108)
+        newer_build = bytes((108,)) + b"n" * 15
+        seed_source_build(
+            connector,
+            build_id=newer_build,
+            scope_key=newer_scope,
+            manifest_policy_id=1,
+            state="ABANDONED",
+            created_at=4,
+        )
+        _fixture_rows(
+            connector,
+            [
+                (
+                    "INSERT INTO operational_ingest_generations "
+                    "(generation, started_at, completed_at) VALUES (%s, %s, %s)",
+                    (1, 1, 1),
+                ),
+                (
+                    "INSERT INTO operational_ingest_generations "
+                    "(generation, started_at, completed_at) VALUES (%s, %s, %s)",
+                    (2, 2, 2),
+                ),
+                (
+                    "INSERT INTO operational_source_build_generations "
+                    "(build_id, generation) VALUES (%s, %s)",
+                    (build_id, 1),
+                ),
+                (
+                    "INSERT INTO operational_source_build_generations "
+                    "(build_id, generation) VALUES (%s, %s)",
+                    (newer_build, 2),
+                ),
+            ],
+        )
+        before = {
+            abandoned: _analysis_run_family_rows(connector, abandoned),
+            sibling: _analysis_run_family_rows(connector, sibling),
+        }
+
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.ANALYSIS_RUN,
+            abandoned[0],
+            max_rows=32,
+        )
+        _drain(connector, gate, cycle)
+        assert _analysis_run_family_rows(connector, abandoned) == before[abandoned]
+        assert _analysis_run_family_rows(connector, sibling) == before[sibling]
+
+        source_cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.SOURCE_BUILD,
+            newer_build[0],
+            max_rows=32,
+            now=100,
+        )
+        _drain(connector, gate, source_cycle, now=101)
+        assert (
+            connector.fetch_one(
+                "SELECT build_id FROM catalog_source_build_anchors WHERE build_id = %s",
+                (newer_build,),
+            )
+            == ()
+        )
+    finally:
+        connector.close()
+
+
+def test_candidate_cleanup_retains_historical_source_build_base_lineage(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "candidate-source-base-retention.sqlite3")
+    try:
+        candidate_id = bytes((103,)) + b"c" * 15
+        receipt_id = b"R" * 16
+        base_build = b"B" * 16
+        _seed_cleanup_candidate(connector, candidate_id=candidate_id)
+        _fixture_rows(
+            connector,
+            [
+                (
+                    "INSERT INTO catalog_publication_commit_candidates "
+                    "(receipt_id, candidate_id) VALUES (%s, %s)",
+                    (receipt_id, candidate_id),
+                ),
+                (
+                    "INSERT INTO catalog_publication_commit_finalizations "
+                    "(receipt_id) VALUES (%s)",
+                    (receipt_id,),
+                ),
+                (
+                    "INSERT INTO catalog_source_build_base_publication_commits "
+                    "(build_id, base_receipt_id) VALUES (%s, %s)",
+                    (base_build, receipt_id),
+                ),
+            ],
+        )
+        before = _candidate_definition_rows(
+            connector,
+            candidate_id=candidate_id,
+        )
+
+        gate = _exclusive(connector)
+        first_cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_CANDIDATE,
+            candidate_id[0],
+            max_rows=32,
+        )
+        _drain(connector, gate, first_cycle)
+        assert (
+            _candidate_definition_rows(connector, candidate_id=candidate_id) == before
+        )
+
+        connector.execute(
+            "DELETE FROM catalog_source_build_base_publication_commits "
+            "WHERE build_id = %s",
+            (base_build,),
+        )
+        second_cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_CANDIDATE,
+            candidate_id[0],
+            max_rows=32,
+            now=100,
+        )
+        _drain(connector, gate, second_cycle, now=101)
+        assert not any(_candidate_definition_rows(connector, candidate_id=candidate_id))
+    finally:
+        connector.close()
+
+
+def test_analysis_cleanup_retains_historical_source_build_base_provenance(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "analysis-source-base-retention.sqlite3")
+    try:
+        scope_key = _seed_source_build_scope(connector, discriminator=104)
+        seed_analysis_policy(connector)
+        analysis_id = bytes((104,)) + b"a" * 15
+        analysis_build = b"A" * 16
+        base_build = b"B" * 16
+        receipt_id = b"R" * 16
+        seed_source_build(
+            connector,
+            build_id=analysis_build,
+            scope_key=scope_key,
+            manifest_policy_id=1,
+            state="SEALED",
+            created_at=1,
+            sealed_at=1,
+        )
+        seed_analysis_run(
+            connector,
+            analysis_id=analysis_id,
+            build_id=analysis_build,
+            policy_id=1,
+            input_manifest_sha256=b"m" * 32,
+            started_at=1,
+            state="COMPLETE",
+            completed_at=2,
+        )
+        _fixture_rows(
+            connector,
+            [
+                (
+                    "INSERT INTO catalog_publication_commit_source_revisions "
+                    "(receipt_id, source_revision) VALUES (%s, %s)",
+                    (receipt_id, 1),
+                ),
+                (
+                    "INSERT INTO catalog_source_revision_provenance "
+                    "(source_revision, analysis_id) VALUES (%s, %s)",
+                    (1, analysis_id),
+                ),
+                (
+                    "INSERT INTO catalog_source_build_base_publication_commits "
+                    "(build_id, base_receipt_id) VALUES (%s, %s)",
+                    (base_build, receipt_id),
+                ),
+            ],
+        )
+        before = _analysis_run_family_rows(connector, analysis_id)
+
+        gate = _exclusive(connector)
+        first_cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.ANALYSIS_RUN,
+            analysis_id[0],
+            max_rows=32,
+        )
+        _drain(connector, gate, first_cycle)
+        assert _analysis_run_family_rows(connector, analysis_id) == before
+
+        connector.execute(
+            "DELETE FROM catalog_source_build_base_publication_commits "
+            "WHERE build_id = %s",
+            (base_build,),
+        )
+        second_cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.ANALYSIS_RUN,
+            analysis_id[0],
+            max_rows=32,
+            now=100,
+        )
+        _drain(connector, gate, second_cycle, now=101)
+        assert not any(_analysis_run_family_rows(connector, analysis_id))
+    finally:
+        connector.close()
+
+
+def test_source_cleanup_preserves_newer_mapping_until_older_retirement_is_gone(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "source-retirement-mapping-order.sqlite3")
+    try:
+        older_scope = _seed_source_build_scope(connector, discriminator=105)
+        newer_scope = _seed_source_build_scope(connector, discriminator=106)
+        older_build = bytes((105,)) + b"a" * 15
+        newer_build = bytes((106,)) + b"z" * 15
+        older_analysis = bytes((107,)) + b"a" * 15
+        for build_id, scope_key, created_at, state in (
+            (older_build, older_scope, 1, "SEALED"),
+            (newer_build, newer_scope, 2, "ABANDONED"),
+        ):
+            seed_source_build(
+                connector,
+                build_id=build_id,
+                scope_key=scope_key,
+                manifest_policy_id=1,
+                state=state,
+                created_at=created_at,
+                sealed_at=created_at if state == "SEALED" else None,
+            )
+        seed_analysis_policy(connector)
+        seed_analysis_run(
+            connector,
+            analysis_id=older_analysis,
+            build_id=older_build,
+            policy_id=1,
+            input_manifest_sha256=b"a" * 32,
+            started_at=1,
+            state="ABANDONED",
+        )
+        _fixture_rows(
+            connector,
+            [
+                (
+                    "INSERT INTO operational_ingest_generations "
+                    "(generation, started_at, completed_at) VALUES (%s, %s, %s)",
+                    (1, 1, 1),
+                ),
+                (
+                    "INSERT INTO operational_ingest_generations "
+                    "(generation, started_at, completed_at) VALUES (%s, %s, %s)",
+                    (2, 2, 2),
+                ),
+                (
+                    "INSERT INTO operational_source_build_generations "
+                    "(build_id, generation) VALUES (%s, %s)",
+                    (older_build, 1),
+                ),
+                (
+                    "INSERT INTO operational_source_build_generations "
+                    "(build_id, generation) VALUES (%s, %s)",
+                    (newer_build, 2),
+                ),
+            ],
+        )
+
+        gate = _exclusive(connector)
+        blocked_cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.SOURCE_BUILD,
+            newer_build[0],
+            max_rows=32,
+        )
+        _drain(connector, gate, blocked_cycle)
+        assert connector.fetch_one(
+            "SELECT build_id FROM operational_source_build_generations "
+            "WHERE generation = %s",
+            (2,),
+        ) == (newer_build,)
+
+        analysis_cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.ANALYSIS_RUN,
+            older_analysis[0],
+            max_rows=32,
+            now=100,
+        )
+        _drain(connector, gate, analysis_cycle, now=101)
+        assert not any(_analysis_run_family_rows(connector, older_analysis))
+
+        released_cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.SOURCE_BUILD,
+            newer_build[0],
+            max_rows=32,
+            now=200,
+        )
+        _drain(connector, gate, released_cycle, now=201)
+        assert (
+            connector.fetch_one(
+                "SELECT build_id FROM operational_source_build_generations "
+                "WHERE generation = %s",
+                (2,),
+            )
+            == ()
+        )
+        assert (
+            connector.fetch_one(
+                "SELECT build_id FROM catalog_source_build_anchors WHERE build_id = %s",
+                (newer_build,),
+            )
+            == ()
+        )
+    finally:
+        connector.close()
+
+
 def _observation_vertical_rows(
     connector: SQLiteConnector,
 ) -> tuple[list[tuple[object, ...]], ...]:

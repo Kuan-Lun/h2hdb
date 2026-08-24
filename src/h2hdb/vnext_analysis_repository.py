@@ -127,6 +127,13 @@ from .vnext_manifest_family import (
     load_snapshot_manifest_family,
     load_source_build_family,
 )
+from .vnext_source_build_repository import (
+    SourceBuildManifestSummary,
+    source_build_identity,
+    source_build_legacy_identity,
+    source_build_recovery_identity,
+    source_build_snapshot_attempt_id,
+)
 from .vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 
 _STAGE_CHANGED_GALLERY = b"changed_gallery"
@@ -201,6 +208,11 @@ _RECEIPT_NEXT_CURSOR_TABLE = "catalog_analysis_batch_receipt_next_cursors"
 _RECEIPT_ROW_COUNT_TABLE = "catalog_analysis_batch_receipt_row_counts"
 _RECEIPT_COMMITTED_AT_TABLE = "catalog_analysis_batch_receipt_committed_ats"
 _RECEIPT_SEAL_TABLE = "catalog_analysis_batch_receipt_seals"
+_ANALYSIS_RUN_BUILD_TABLE = "catalog_analysis_run_build_ids"
+_PUBLICATION_CANDIDATE_ANALYSIS_TABLE = "catalog_publication_candidate_analysis_ids"
+_SOURCE_REVISION_PROVENANCE_TABLE = "catalog_source_revision_provenance"
+_CATALOG_WORKING_CANDIDATE_TABLE = "operational_catalog_working_candidates"
+_OPERATIONAL_PREPARATION_TABLE = "operational_operational_preparations"
 _EFFECTIVE_CONTENT_DOMAIN = b"effective_content_v1"
 _SNAPSHOT_DOMAIN = b"source_snapshot_manifest_v1"
 _METADATA_PREFIX = b"h2hdb-vnext-gallery-observation-metadata\0"
@@ -950,9 +962,6 @@ class AnalysisRepository:
         policy = _load_policy(work, policy_key)
         input_digest = _analysis_input_digest(manifest, manifest_counts, policy)
 
-        baseline = _derive_baseline(work, build_id=build)
-        layout = _derive_layout(work, baseline=baseline, policy=policy)
-
         try:
             existing_family = load_analysis_run_family_by_identity(
                 work.connector,
@@ -968,11 +977,38 @@ class AnalysisRepository:
                 )
             existing_id = existing_family.analysis_id
             persisted = _load_layout(work, existing_id)
-            expected_anchor = existing_id if layout[0] is None else layout[0]
-            expected_ancestry = tuple(
-                existing_id if ancestor is None else ancestor for ancestor in layout[2]
+            persisted_baseline = persisted[0]
+            try:
+                pinned_baseline, _revision, _generation, _channel = (
+                    _derive_pinned_baseline(work, build_id=build)
+                )
+                if pinned_baseline != persisted_baseline:
+                    raise AnalysisCorruptionError(
+                        "analysis natural-key replay differs from its pinned "
+                        "source-build baseline"
+                    )
+                replay_layout = _derive_layout(
+                    work,
+                    baseline=persisted_baseline,
+                    policy=policy,
+                )
+            except AnalysisNotReadyError as error:
+                raise AnalysisCorruptionError(
+                    "analysis natural-key replay lost its sealed baseline"
+                ) from error
+            expected_anchor = (
+                existing_id if replay_layout[0] is None else replay_layout[0]
             )
-            expected = (baseline, expected_anchor, layout[1], expected_ancestry)
+            expected_ancestry = tuple(
+                existing_id if ancestor is None else ancestor
+                for ancestor in replay_layout[2]
+            )
+            expected = (
+                persisted_baseline,
+                expected_anchor,
+                replay_layout[1],
+                expected_ancestry,
+            )
             if persisted != expected:
                 raise AnalysisCorruptionError(
                     "analysis natural-key replay changed its baseline or ancestry"
@@ -982,12 +1018,15 @@ class AnalysisRepository:
                 build,
                 policy_key,
                 input_digest,
-                baseline,
+                persisted_baseline,
                 expected_anchor,
-                layout[1],
+                replay_layout[1],
                 existing_family.state,
                 True,
             )
+
+        baseline = _derive_baseline(work, build_id=build)
+        layout = _derive_layout(work, baseline=baseline, policy=policy)
 
         started_at = database_unix_microseconds(work)
         if started_at < source_sealed_at:
@@ -1161,7 +1200,15 @@ class AnalysisRepository:
         working = work.lock_row(
             LockRank.WORKING_ROOT,
             encode_lock_key("analysis-working-build", 1),
-            "SELECT build_id FROM operational_source_working_builds WHERE slot = %s",
+            "SELECT build_id, assigned_at FROM operational_source_working_builds "
+            "WHERE slot = %s",
+            (1,),
+        )
+        catalog_working = work.lock_row(
+            LockRank.WORKING_ROOT,
+            encode_lock_key("analysis-working-candidate", 1),
+            f"SELECT candidate_id FROM {_CATALOG_WORKING_CANDIDATE_TABLE} "
+            "WHERE slot = %s",
             (1,),
         )
         binding = work.connector.fetch_one(
@@ -1169,8 +1216,54 @@ class AnalysisRepository:
             "FROM catalog_analysis_snapshot_manifest WHERE analysis_id = %s",
             (analysis,),
         )
+        if family.state not in {"OPEN", "ABANDONED"}:
+            raise AnalysisNotReadyError(
+                f"analysis run cannot be abandoned from {family.state}"
+            )
+        related = work.connector.fetch_all(
+            f"SELECT analysis_id FROM {_ANALYSIS_RUN_BUILD_TABLE} "
+            "WHERE build_id = %s LIMIT 2",
+            (family.build_id,),
+        )
+        blockers = (
+            (
+                _PUBLICATION_CANDIDATE_ANALYSIS_TABLE,
+                "analysis_id",
+                analysis,
+                "publication candidate",
+            ),
+            (
+                _SOURCE_REVISION_PROVENANCE_TABLE,
+                "analysis_id",
+                analysis,
+                "source revision provenance",
+            ),
+            (
+                _OPERATIONAL_PREPARATION_TABLE,
+                "build_id",
+                family.build_id,
+                "operational preparation",
+            ),
+        )
+        blocking_authority = next(
+            (
+                label
+                for table, column, value, label in blockers
+                if work.connector.fetch_one(
+                    f"SELECT 1 FROM {table} WHERE {column} = %s LIMIT 1",
+                    (value,),
+                )
+            ),
+            None,
+        )
         if family.state == "ABANDONED":
-            if working or binding or family.completed_at is not None:
+            if (
+                related != [(analysis,)]
+                or working
+                or binding
+                or family.completed_at is not None
+                or blocking_authority is not None
+            ):
                 raise AnalysisCorruptionError(
                     "ABANDONED analysis retained terminal-incompatible state"
                 )
@@ -1186,13 +1279,38 @@ class AnalysisRepository:
                 "ABANDONED",
                 True,
             )
-        if family.state != "OPEN":
-            raise AnalysisNotReadyError(
-                f"analysis run cannot be abandoned from {family.state}"
+        created = work.connector.fetch_one(
+            "SELECT created_at FROM catalog_source_build_created_ats "
+            "WHERE build_id = %s",
+            (family.build_id,),
+        )
+        if len(created) != 1:
+            raise AnalysisCorruptionError(
+                "analysis abandonment lost its source build creation time"
             )
-        if working != (family.build_id,) or binding or family.completed_at is not None:
+        expected_working = (
+            family.build_id,
+            require_int63(
+                created[0],
+                field="analysis abandonment source build created_at",
+            ),
+        )
+        if working != expected_working or binding or family.completed_at is not None:
             raise AnalysisNotReadyError(
                 "analysis abandonment lost its exact unbound working root"
+            )
+        if related != [(analysis,)]:
+            raise AnalysisNotReadyError(
+                "analysis abandonment requires the target to be the sole run "
+                "for its source build"
+            )
+        if catalog_working:
+            raise AnalysisNotReadyError(
+                "analysis abandonment awaits the live catalog working candidate"
+            )
+        if blocking_authority is not None:
+            raise AnalysisCorruptionError(
+                f"OPEN analysis retained a {blocking_authority} authority"
             )
         cas_analysis_run_state(
             work,
@@ -1203,8 +1321,8 @@ class AnalysisRepository:
         )
         deleted = work.connector.execute_affected(
             "DELETE FROM operational_source_working_builds "
-            "WHERE slot = %s AND build_id = %s",
-            (1, family.build_id),
+            "WHERE slot = %s AND build_id = %s AND assigned_at = %s",
+            (1, family.build_id, expected_working[1]),
         )
         if deleted != 1:
             raise AnalysisCorruptionError(
@@ -3162,7 +3280,7 @@ def _authorize_analysis(
     state_row = work.lock_row(
         LockRank.WORKING_ROOT,
         encode_lock_key("analysis-run", analysis),
-        "SELECT state FROM catalog_analysis_run_states " "WHERE analysis_id = %s",
+        "SELECT state FROM catalog_analysis_run_states WHERE analysis_id = %s",
         (analysis,),
     )
     if len(state_row) != 1:
@@ -4269,33 +4387,23 @@ def _iter_snapshot_winners(
 
 
 def _derive_baseline(work: VNextUnitOfWork, *, build_id: bytes) -> bytes | None:
-    base = work.connector.fetch_one(
-        "SELECT base_source_revision, base_source_generation "
-        "FROM catalog_source_build_base_source WHERE build_id = %s",
-        (build_id,),
+    baseline, revision, generation, channel = _derive_pinned_baseline(
+        work,
+        build_id=build_id,
     )
-    if not base:
+    if baseline is None:
         return None
-    if len(base) != 2 or base[1] is None:
-        raise AnalysisCorruptionError(
-            "source build baseline lacks its immutable generation mapping"
-        )
-    revision = require_positive_int63(base[0], field="base source revision")
-    generation = require_positive_int63(base[1], field="base source generation")
-    channel = work.connector.fetch_one(
-        "SELECT channel FROM catalog_source_build_channel WHERE build_id = %s",
-        (build_id,),
-    )
-    if len(channel) != 1:
-        raise AnalysisNotReadyError("source build channel is missing")
+    assert revision is not None
+    assert generation is not None
+    assert channel is not None
     head = work.connector.fetch_one(
         "SELECT registry.channel, head.source_revision, head.generation, "
         "head.advanced_at FROM catalog_channel_registry AS registry "
         "LEFT JOIN catalog_source_heads AS head ON head.channel = registry.channel "
         "WHERE registry.channel = %s",
-        (channel[0],),
+        (channel,),
     )
-    if len(head) != 4 or head[0] != channel[0]:
+    if len(head) != 4 or head[0] != channel:
         raise AnalysisCorruptionError("source head channel registry row is malformed")
     if any(value is None for value in head[1:]):
         raise AnalysisCorruptionError("source head vertical family is incomplete")
@@ -4303,14 +4411,315 @@ def _derive_baseline(work: VNextUnitOfWork, *, build_id: bytes) -> bytes | None:
         raise AnalysisNotReadyError(
             "source build baseline is stale against its channel head"
         )
-    provenance = work.connector.fetch_one(
-        "SELECT analysis_id FROM catalog_source_revision_provenance "
-        "WHERE source_revision = %s",
-        (revision,),
+    return baseline
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceBuildIdentityAuthority:
+    snapshot_attempt_id: bytes
+    source_root_sha256: bytes
+    scope: bytes
+    manifest_policy_id: int
+    created_at: int
+
+    def derive(self, base_receipt_id: bytes | None) -> bytes:
+        return source_build_identity(
+            snapshot_attempt_id=self.snapshot_attempt_id,
+            scope=self.scope,
+            manifest_policy_id=self.manifest_policy_id,
+            base_receipt_id=base_receipt_id,
+        )
+
+    def derive_recovery(self, base_receipt_id: bytes | None) -> bytes:
+        return source_build_recovery_identity(
+            snapshot_attempt_id=self.snapshot_attempt_id,
+            scope=self.scope,
+            manifest_policy_id=self.manifest_policy_id,
+            base_receipt_id=base_receipt_id,
+            created_at=self.created_at,
+        )
+
+
+def _load_source_build_identity_authority(
+    work: VNextUnitOfWork,
+    *,
+    build_id: bytes,
+) -> _SourceBuildIdentityAuthority:
+    try:
+        source_build = load_source_build_family(
+            work.connector,
+            build_id=build_id,
+        )
+        manifest = load_build_manifest_family(
+            work.connector,
+            build_id=build_id,
+        )
+    except ManifestFamilyCollisionError as error:
+        raise AnalysisCorruptionError(str(error)) from error
+    if source_build is None or manifest is None:
+        raise AnalysisCorruptionError(
+            "source build lacks its immutable sealed identity"
+        )
+    root = work.connector.fetch_one(
+        "SELECT source_root_sha256 "
+        "FROM catalog_source_scope_source_root_sha256s WHERE scope_key = %s",
+        (source_build.scope_key,),
     )
-    if len(provenance) != 1:
-        raise AnalysisNotReadyError("active source baseline has no analysis provenance")
-    baseline = require_uuid16(provenance[0], field="baseline analysis_id")
+    if len(root) != 1:
+        raise AnalysisCorruptionError("source build lacks its immutable source root")
+    source_root_sha256 = require_digest32(
+        root[0],
+        field="source build source_root_sha256",
+    )
+    summary = SourceBuildManifestSummary(
+        manifest.manifest_sha256,
+        manifest.gallery_count,
+        manifest.file_count,
+        manifest.byte_count,
+    )
+    return _SourceBuildIdentityAuthority(
+        source_build_snapshot_attempt_id(source_root_sha256, summary),
+        source_root_sha256,
+        source_build.scope_key,
+        source_build.manifest_policy_id,
+        source_build.created_at,
+    )
+
+
+def _require_exact_legacy_source_build_identity(
+    work: VNextUnitOfWork,
+    *,
+    build_id: bytes,
+    authority: _SourceBuildIdentityAuthority,
+) -> None:
+    discovery = work.connector.fetch_one(
+        "SELECT gallery_count, tree_observation_sha256 "
+        "FROM catalog_source_build_discoveries WHERE build_id = %s",
+        (build_id,),
+    )
+    if len(discovery) != 2:
+        raise AnalysisCorruptionError(
+            "source build identity is neither exact v2 nor provable legacy v1"
+        )
+    try:
+        legacy_build = source_build_legacy_identity(
+            authority.source_root_sha256,
+            discovery[0],
+            discovery[1],
+            authority.manifest_policy_id,
+        )
+    except (TypeError, ValueError) as error:
+        raise AnalysisCorruptionError(
+            "legacy source build discovery identity is malformed"
+        ) from error
+    if legacy_build != build_id:
+        raise AnalysisCorruptionError(
+            "source build identity is neither exact v2 nor retired v1"
+        )
+
+
+def _load_historical_publication_head(
+    work: VNextUnitOfWork,
+    *,
+    channel: bytes,
+    created_at: int,
+) -> tuple[int, bytes] | None:
+    """Load only the channel head that was visible at build creation."""
+
+    row = work.connector.fetch_one(
+        "SELECT source.source_revision, committed.receipt_id "
+        "FROM catalog_publication_commits AS committed "
+        "JOIN catalog_publication_commit_source_revisions AS source "
+        "ON source.receipt_id = committed.receipt_id "
+        "JOIN catalog_source_revision_channels AS descriptor "
+        "ON descriptor.source_revision = source.source_revision "
+        "WHERE descriptor.channel = %s "
+        "AND committed.committed_at <= %s "
+        "ORDER BY source.source_revision DESC LIMIT 1",
+        (channel, created_at),
+    )
+    if not row:
+        return None
+    if len(row) != 2:
+        raise AnalysisCorruptionError(
+            "historical publication authority row is malformed"
+        )
+    revision = require_positive_int63(
+        row[0],
+        field="historical publication source_revision",
+    )
+    receipt_id = require_uuid16(
+        row[1],
+        field="historical publication receipt_id",
+    )
+    return revision, receipt_id
+
+
+def _derive_pinned_baseline(
+    work: VNextUnitOfWork,
+    *,
+    build_id: bytes,
+) -> tuple[bytes | None, int | None, int | None, bytes | None]:
+    """Derive a build's immutable baseline without consulting the live head.
+
+    Existing natural-key analysis replay can legitimately happen after a later
+    publication has advanced the channel.  Its authority is the publication
+    receipt pinned by the source build, not whichever receipt is live now.
+    Conversely, a missing pin is valid only when the immutable v2 build
+    identity proves a base-free snapshot.  Legacy low-level builds predate that
+    identity contract, so they additionally prove that no different build had
+    a sealed publication on the channel when this build was created.
+    """
+
+    build = require_uuid16(build_id, field="baseline source build_id")
+    channel = work.connector.fetch_one(
+        "SELECT channel FROM catalog_source_build_channel WHERE build_id = %s",
+        (build,),
+    )
+    if len(channel) != 1:
+        raise AnalysisNotReadyError("source build channel is missing")
+    source_channel = require_bounded_bytes(
+        channel[0],
+        field="source build channel",
+        minimum=1,
+        maximum=64,
+    )
+
+    base = work.connector.fetch_one(
+        "SELECT base.base_receipt_id, seal.receipt_id, source.source_revision, "
+        "generation.generation, descriptor.channel, "
+        "committed_candidate.candidate_id, candidate.analysis_id, "
+        "candidate_analysis.build_id, candidate_analysis.state, "
+        "provenance.analysis_id, provenance_analysis.build_id, "
+        "provenance_analysis.state "
+        "FROM catalog_source_build_base_publication_commits AS base "
+        "LEFT JOIN catalog_publication_commit_seals AS seal "
+        "ON seal.receipt_id = base.base_receipt_id "
+        "LEFT JOIN catalog_publication_commit_source_revisions AS source "
+        "ON source.receipt_id = base.base_receipt_id "
+        "LEFT JOIN catalog_publication_commit_generations AS generation "
+        "ON generation.receipt_id = base.base_receipt_id "
+        "LEFT JOIN catalog_source_revision_channels AS descriptor "
+        "ON descriptor.source_revision = source.source_revision "
+        "LEFT JOIN catalog_publication_commit_candidates AS committed_candidate "
+        "ON committed_candidate.receipt_id = base.base_receipt_id "
+        "LEFT JOIN catalog_publication_candidates AS candidate "
+        "ON candidate.candidate_id = committed_candidate.candidate_id "
+        "LEFT JOIN catalog_analysis_runs AS candidate_analysis "
+        "ON candidate_analysis.analysis_id = candidate.analysis_id "
+        "LEFT JOIN catalog_source_revision_provenance AS provenance "
+        "ON provenance.source_revision = source.source_revision "
+        "LEFT JOIN catalog_analysis_runs AS provenance_analysis "
+        "ON provenance_analysis.analysis_id = provenance.analysis_id "
+        "WHERE base.build_id = %s",
+        (build,),
+    )
+    if not base:
+        identity_authority = _load_source_build_identity_authority(
+            work,
+            build_id=build,
+        )
+        if (
+            identity_authority.derive(None) == build
+            or identity_authority.derive_recovery(None) == build
+        ):
+            return None, None, None, source_channel
+        _require_exact_legacy_source_build_identity(
+            work,
+            build_id=build,
+            authority=identity_authority,
+        )
+
+        historical = _load_historical_publication_head(
+            work,
+            channel=source_channel,
+            created_at=identity_authority.created_at,
+        )
+        if historical is not None:
+            _revision, receipt_id = historical
+            if (
+                identity_authority.derive(receipt_id) == build
+                or identity_authority.derive_recovery(receipt_id) == build
+            ):
+                raise AnalysisCorruptionError(
+                    "v2 source build lost its pinned publication baseline"
+                )
+            raise AnalysisCorruptionError(
+                "non-genesis source build lost its pinned publication baseline"
+            )
+        return None, None, None, source_channel
+    if len(base) != 12 or any(value is None for value in base):
+        raise AnalysisCorruptionError(
+            "source build baseline lacks its immutable sealed authority"
+        )
+    receipt_id = require_uuid16(base[0], field="base publication receipt_id")
+    if base[1] != receipt_id:
+        raise AnalysisCorruptionError("source build baseline receipt is not sealed")
+    revision = require_positive_int63(base[2], field="base source revision")
+    generation = require_positive_int63(base[3], field="base source generation")
+    if base[4] != source_channel:
+        raise AnalysisCorruptionError(
+            "source build baseline belongs to another channel"
+        )
+    require_uuid16(base[5], field="base publication candidate_id")
+    candidate_analysis = require_uuid16(
+        base[6],
+        field="base publication candidate analysis_id",
+    )
+    candidate_build = require_uuid16(
+        base[7],
+        field="base publication candidate build_id",
+    )
+    provenance_analysis = require_uuid16(
+        base[9],
+        field="base publication provenance analysis_id",
+    )
+    provenance_build = require_uuid16(
+        base[10],
+        field="base publication provenance build_id",
+    )
+    if (
+        candidate_analysis != provenance_analysis
+        or candidate_build != provenance_build
+        or candidate_build == build
+        or base[8] != "COMPLETE"
+        or base[11] != "COMPLETE"
+    ):
+        raise AnalysisCorruptionError(
+            "source build baseline candidate and provenance lineage proofs differ"
+        )
+
+    identity_authority = _load_source_build_identity_authority(
+        work,
+        build_id=build,
+    )
+    if (
+        identity_authority.derive(receipt_id) != build
+        and identity_authority.derive_recovery(receipt_id) != build
+    ):
+        if (
+            identity_authority.derive(None) == build
+            or identity_authority.derive_recovery(None) == build
+        ):
+            raise AnalysisCorruptionError(
+                "base-bearing source build differs from its durable v2 identity"
+            )
+        _require_exact_legacy_source_build_identity(
+            work,
+            build_id=build,
+            authority=identity_authority,
+        )
+        historical = _load_historical_publication_head(
+            work,
+            channel=source_channel,
+            created_at=identity_authority.created_at,
+        )
+        historical_receipt = None if historical is None else historical[1]
+        if historical_receipt != receipt_id:
+            raise AnalysisCorruptionError(
+                "legacy source build baseline was not the channel head at creation"
+            )
+    baseline = provenance_analysis
     try:
         baseline_run = load_analysis_run_family(
             work.connector,
@@ -4321,7 +4730,7 @@ def _derive_baseline(work: VNextUnitOfWork, *, build_id: bytes) -> bytes | None:
     if baseline_run is None or baseline_run.state != "COMPLETE":
         raise AnalysisNotReadyError("baseline analysis is not COMPLETE")
     _require_exact_component_seals(work, baseline)
-    return baseline
+    return baseline, revision, generation, source_channel
 
 
 def _derive_layout(
@@ -5584,7 +5993,7 @@ def _require_replay_key_rows(
             else require_positive_int63(row[0], field="replayed materialized integer")
         )
         if not work.connector.fetch_one(
-            f"SELECT 1 FROM {table} " f"WHERE analysis_id = %s AND {key_column} = %s",
+            f"SELECT 1 FROM {table} WHERE analysis_id = %s AND {key_column} = %s",
             (analysis_id, key),
         ):
             raise AnalysisCorruptionError(
@@ -7388,7 +7797,7 @@ def _gid_winner_validation_keys(
     limit: int,
 ) -> list[tuple[Any, ...]]:
     subqueries = [
-        "SELECT gid FROM catalog_analysis_impacted_gid " "WHERE analysis_id = %s",
+        "SELECT gid FROM catalog_analysis_impacted_gid WHERE analysis_id = %s",
         "SELECT gid FROM catalog_analysis_gid_winner_shadows WHERE analysis_id = %s",
         "SELECT gid FROM catalog_analysis_gid_winner_tombstones WHERE analysis_id = %s",
     ]
@@ -7679,7 +8088,7 @@ def _evaluate_file_decision(
 ) -> _Decision | None:
     digest = require_digest32(file_sha256, field="file_sha256")
     occurrence_row = work.connector.fetch_one(
-        "SELECT SUM(occurrence.occurrence_count) "
+        "SELECT CAST(SUM(occurrence.occurrence_count) AS UNSIGNED) "
         "FROM catalog_source_build_galleries AS member "
         "JOIN catalog_gallery_observation_file_hash_occurrences AS occurrence "
         "ON occurrence.gallery_id = member.gallery_id "

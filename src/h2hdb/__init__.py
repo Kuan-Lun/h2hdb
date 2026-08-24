@@ -74,6 +74,7 @@ __all__ = [
     "VNextPreparedPublicationStep",
     "VNextPreparedSource",
     "VNextPreparedSourceStep",
+    "VNextSourceManifestMismatchError",
     "VNextIngestSession",
     "VNextIngestSourceAdapter",
     "VNextIngestSourceReceipt",
@@ -171,6 +172,7 @@ from .vnext_ingest_facade import (
     VNextPreparedPublicationStep,
     VNextPreparedSource,
     VNextPreparedSourceStep,
+    VNextSourceManifestMismatchError,
 )
 from .vnext_queue_repository import (
     DeletionRequestReceipt,

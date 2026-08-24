@@ -227,6 +227,12 @@ Each facade call owns a fresh connection and one bounded read or write
 transaction. Repository methods that accept connectors or units of work remain
 internal coordination surfaces.
 
+`VNextIngestFacade.prepare_source()` consumes the source adapter once, outside
+every database transaction, and freezes the exact observation pages in a
+private disk-backed spool. The manifest preflight and later bounded staging
+steps therefore read the same immutable bytes even if the live source changes
+mid-run; closing the prepared-source handle removes the temporary spool.
+
 ### Deliberate current limits
 
 - A nonblank catalog search query fails closed until a normalized,

@@ -1174,7 +1174,7 @@ end H2HDB.Verification.VNextSchema
 namespace H2HDB.Verification.VNextSchema
 
 /- BEGIN GENERATED CATALOG CONTRACTS -/
-def catalogManifestSha256 : String := "4b507e8cbd9961c063067dce38a1ce9de5484dd3d0da8c98b5fd6b67ada3ce9c"
+def catalogManifestSha256 : String := "c2ea4c6c6049caeefa54787a9a8a7f33076663b2c57899c664bc87a65d0276a0"
 
 /-! This section is mechanically generated from catalog.toml. -/
 

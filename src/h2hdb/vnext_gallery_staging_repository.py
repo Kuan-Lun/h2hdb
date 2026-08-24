@@ -23,6 +23,8 @@ __all__ = [
     "FileBatchCommand",
     "FileObservation",
     "GalleryObservationStagingRepository",
+    "GalleryObservationComponentRoot",
+    "GalleryObservationComponentRootBuilder",
     "GalleryStagingConflictError",
     "GalleryStagingHandle",
     "GalleryStagingNotReadyError",
@@ -465,6 +467,186 @@ class _FrontierPage:
     position: int
     page_sha256: bytes
     subtree_item_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class GalleryObservationComponentRoot:
+    """Fixed-size result of the production component-tree codec.
+
+    The corresponding builder retains only the base-256 Merkle frontier.  It
+    deliberately does not retain leaf entries or encoded pages after their
+    digest has entered that frontier.
+    """
+
+    component: GalleryObservationComponent
+    root_page_sha256: bytes
+    item_count: int
+    regular_count: int
+    byte_count: int
+
+    def __post_init__(self) -> None:
+        if type(self.component) is not GalleryObservationComponent:
+            raise TypeError("component must be GalleryObservationComponent")
+        require_digest32(self.root_page_sha256, field="component root_page_sha256")
+        for field_name in ("item_count", "regular_count", "byte_count"):
+            value = require_int63(getattr(self, field_name), field=field_name)
+            if value < 0:
+                raise ValueError(f"{field_name} must be non-negative")
+        if (
+            self.component is not GalleryObservationComponent.DIRECTORY
+            and self.regular_count != 0
+        ):
+            raise ValueError("only DIRECTORY roots have a regular_count")
+        if (
+            self.component is not GalleryObservationComponent.FILE
+            and self.byte_count != 0
+        ):
+            raise ValueError("only FILE roots have a byte_count")
+
+
+@dataclass(frozen=True, slots=True)
+class _PureFrontierPage:
+    page_sha256: bytes
+    subtree_item_count: int
+
+
+class GalleryObservationComponentRootBuilder:
+    """Pure bounded-memory twin of the durable component frontier writer."""
+
+    __slots__ = (
+        "_byte_count",
+        "_component",
+        "_frontier",
+        "_item_count",
+        "_regular_count",
+        "_root",
+    )
+
+    def __init__(self, component: GalleryObservationComponent) -> None:
+        if type(component) is not GalleryObservationComponent:
+            raise TypeError("component must be GalleryObservationComponent")
+        self._component = component
+        self._frontier: list[list[_PureFrontierPage]] = [[] for _level in range(9)]
+        self._item_count = 0
+        self._regular_count = 0
+        self._byte_count = 0
+        self._root: GalleryObservationComponentRoot | None = None
+
+    def append_page(
+        self,
+        entries: Sequence[Any],
+        *,
+        terminal: bool,
+    ) -> None:
+        """Consume one adapter-shaped leaf page using the durable leaf codec."""
+
+        if self._root is not None:
+            raise ValueError("component root builder is already complete")
+        if type(terminal) is not bool:
+            raise TypeError("component page terminal must be bool")
+        prepared = _prepare_leaf(self._component, self._item_count, entries)
+        _require_leaf_batch_shape(
+            prepared,
+            terminal=terminal,
+            start=self._item_count,
+        )
+        self._item_count = _checked_int63_add(
+            self._item_count,
+            prepared.item_count,
+            field_name=f"{self._component.name} preflight item count",
+        )
+        self._regular_count = _checked_int63_add(
+            self._regular_count,
+            prepared.regular_count,
+            field_name="DIRECTORY preflight regular count",
+        )
+        self._byte_count = _checked_int63_add(
+            self._byte_count,
+            prepared.byte_count_delta,
+            field_name="FILE preflight byte count",
+        )
+        self._push(
+            0,
+            _PureFrontierPage(prepared.page_sha256, prepared.item_count),
+        )
+        if terminal:
+            root = self._finish()
+            self._root = GalleryObservationComponentRoot(
+                self._component,
+                root.page_sha256,
+                self._item_count,
+                self._regular_count,
+                self._byte_count,
+            )
+
+    def finish(self) -> GalleryObservationComponentRoot:
+        """Return the root only after an exact terminal page was consumed."""
+
+        if self._root is None:
+            raise ValueError("component root builder has no terminal page")
+        return self._root
+
+    def _push(self, level: int, page: _PureFrontierPage) -> None:
+        if not 0 <= level <= 8:
+            raise OverflowError("gallery observation tree exceeds level eight")
+        pending = self._frontier[level]
+        if len(pending) < 255:
+            pending.append(page)
+            return
+        children = (*pending, page)
+        pending.clear()
+        self._push(level + 1, self._branch(level + 1, children))
+
+    def _branch(
+        self,
+        level: int,
+        children: Sequence[_PureFrontierPage],
+    ) -> _PureFrontierPage:
+        if not 1 <= len(children) <= 256:
+            raise ValueError("branch fanout must be in 1..256")
+        if level > 8:
+            raise OverflowError("gallery observation tree exceeds level eight")
+        total = 0
+        for child in children:
+            total = _checked_int63_add(
+                total,
+                child.subtree_item_count,
+                field_name="gallery observation subtree count",
+            )
+        page = GalleryObservationPage(
+            self._component,
+            GalleryObservationNodeKind.BRANCH,
+            level,
+            total,
+            tuple(
+                GalleryObservationBranchEntry(
+                    child.page_sha256,
+                    child.subtree_item_count,
+                )
+                for child in children
+            ),
+        )
+        page_bytes = encode_gallery_observation_page(page)
+        return _PureFrontierPage(
+            gallery_observation_page_digest(page_bytes),
+            total,
+        )
+
+    def _finish(self) -> _PureFrontierPage:
+        while True:
+            nonempty = [level for level, pages in enumerate(self._frontier) if pages]
+            total_pages = sum(len(self._frontier[level]) for level in nonempty)
+            if total_pages == 1:
+                return self._frontier[nonempty[0]][0]
+            if not nonempty:  # pragma: no cover - append_page always pushes first
+                raise ValueError("component frontier is empty")
+            level = min(nonempty)
+            children = tuple(self._frontier[level])
+            higher_exists = any(candidate > level for candidate in nonempty)
+            if len(children) == 1 and not higher_exists:
+                return children[0]
+            self._frontier[level].clear()
+            self._push(level + 1, self._branch(level + 1, children))
 
 
 class GalleryObservationStagingRepository:

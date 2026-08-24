@@ -84,6 +84,7 @@ def seed_build_manifest(
     file_count: int,
     byte_count: int,
     computed_at: int,
+    discovery_tree_observation_sha256: bytes = b"t" * 32,
 ) -> BuildManifestFamily:
     discovery_count = connector.fetch_one(
         "SELECT gallery_count FROM catalog_source_build_discovery_gallery_counts "
@@ -111,7 +112,7 @@ def seed_build_manifest(
         connector.execute(
             "INSERT INTO catalog_source_build_discovery_tree_observation_sha256s "
             "(build_id, tree_observation_sha256) VALUES (%s, %s)",
-            (build_id, b"t" * 32),
+            (build_id, discovery_tree_observation_sha256),
         )
         connector.execute(
             "INSERT INTO catalog_source_build_discovery_completed_ats "

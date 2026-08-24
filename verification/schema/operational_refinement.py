@@ -2054,19 +2054,72 @@ def check_cleanup_reachability_v1(
                 }
             ]:
                 raise ValueError("gallery staging cleanup liveness blocker drifts")
+        if kind == "SOURCE_BUILD":
+            retention_roots = _required_texts(
+                target,
+                "retention_roots",
+                "cleanup target SOURCE_BUILD",
+            )
+            if not any(
+                "sole ABANDONED analysis retirement family" in root
+                and "illegal ABANDONED-plus-sibling families" in root
+                for root in retention_roots
+            ):
+                raise ValueError("source-build successor-fence retention drifts")
         if kind == "ANALYSIS_RUN":
+            retention_roots = _required_texts(
+                target,
+                "retention_roots",
+                "cleanup target ANALYSIS_RUN",
+            )
+            if not any(
+                "source_build_base_publication_commit.base_receipt_id" in root
+                and "source_revision_provenance.analysis_id" in root
+                for root in retention_roots
+            ):
+                raise ValueError("source-build base provenance retention drifts")
+            if not any(
+                "sole ABANDONED analysis" in root
+                and "globally latest source_build_generation" in root
+                for root in retention_roots
+            ):
+                raise ValueError("latest analysis retirement retention drifts")
+            if not any(
+                "ABANDONED analysis and a sibling run" in root
+                and "whole-family repair" in root
+                for root in retention_roots
+            ):
+                raise ValueError("multi-analysis retirement retention drifts")
             if target.get("conditional_blockers") != [
-                "source_head.source_revision->source_revision_provenance.analysis_id when the revision is the active channel head"
+                "source_head.source_revision->source_revision_provenance.analysis_id when the revision is the active channel head",
+                "a source-build base receipt retains its exact provenance analysis even after that receipt ceases to be the active head",
+                "a latest-mapped sole ABANDONED run is released only by a strictly newer source-build mapping; any ABANDONED-plus-sibling family remains fail-closed and is never automatically released",
             ]:
                 raise ValueError("active source-head provenance blocker drifts")
             if target.get("state_rule") != (
                 "OPEN is never cleanup-eligible; only COMPLETE or ABANDONED may be "
-                "selected, and ABANDONED requires the exact fenced owner to have "
-                "atomically removed the locked working root during the "
-                "OPEN-to-ABANDONED CAS"
+                "selected. A valid OPEN-to-ABANDONED CAS requires the target to be "
+                "the sole run for its build, the exact source working assignment to "
+                "equal the build's database-owned created_at, and no catalog working "
+                "candidate, snapshot binding, publication candidate, source-revision "
+                "provenance, or operational preparation; it atomically removes that "
+                "exact working root. Cleanup retains the globally latest sole "
+                "ABANDONED proof until a successor mapping and permanently retains "
+                "every illegal ABANDONED-plus-sibling family for explicit repair"
             ):
                 raise ValueError("analysis cleanup state rule drifts")
         if kind == "PUBLICATION_CANDIDATE":
+            retention_roots = _required_texts(
+                target,
+                "retention_roots",
+                "cleanup target PUBLICATION_CANDIDATE",
+            )
+            if not any(
+                "publication_commit_candidate.candidate_id" in root
+                and "source_build_base_publication_commit.base_receipt_id" in root
+                for root in retention_roots
+            ):
+                raise ValueError("source-build base candidate retention drifts")
             if target.get("semantic_blockers") != [
                 {
                     "relation": "prepared_artifact_state",

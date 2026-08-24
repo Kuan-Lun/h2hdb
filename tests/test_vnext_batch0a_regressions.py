@@ -2,14 +2,18 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import patch
 
 import pytest
 import test_catalog_refinement_runtime as refinement_support
+import test_vnext_cleanup_repository as cleanup_support
 import test_vnext_publication_repository as publication_support
 
 import h2hdb.vnext_publication_repository as publication_module
 from h2hdb import catalog_refinement
 from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.vnext_cleanup_repository import CleanupTargetKind
+from h2hdb.vnext_maintenance_gate_repository import MaintenanceGateRepository
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
 
@@ -34,6 +38,28 @@ def _application_state(
         )
         for name in names
     )
+
+
+def _delete_transient_candidate_definition(
+    connector: SQLiteConnector,
+) -> None:
+    connector.execute("PRAGMA foreign_keys = OFF")
+    for table in (
+        "catalog_publication_candidate_base_publication_commits",
+        "catalog_publication_candidate_definition_seals",
+        "catalog_publication_candidate_created_ats",
+        "catalog_publication_candidate_artifacts_required",
+        "catalog_publication_candidate_display_title_policy_ids",
+        "catalog_publication_candidate_artifact_policy_ids",
+        "catalog_publication_candidate_reserved_revisions",
+        "catalog_publication_candidate_analysis_ids",
+        "catalog_publication_candidate_anchors",
+    ):
+        connector.execute(
+            f"DELETE FROM {table} WHERE candidate_id = %s",
+            (publication_support._CANDIDATE,),
+        )
+    connector.execute("PRAGMA foreign_keys = ON")
 
 
 @pytest.mark.parametrize(
@@ -127,35 +153,22 @@ def test_ready_rejects_common_chain_corruption(
         connector.close()
 
 
+@pytest.mark.parametrize("with_base", [False, True], ids=["genesis", "successor"])
 def test_commit_replay_is_read_only_after_transient_candidate_cleanup(
     tmp_path: Path,
+    with_base: bool,
 ) -> None:
     connector = publication_support._generated_database(
-        tmp_path / "cleanup-replay.sqlite3"
+        tmp_path / f"cleanup-replay-{with_base}.sqlite3"
     )
     try:
         gate, turn = publication_support._authorities(connector)
-        publication_support._seed_candidate(connector, turn)
+        publication_support._seed_candidate(connector, turn, with_base=with_base)
         committed = publication_support._commit(connector, gate, turn)
 
         # Candidate cleanup is allowed to remove the transient preparation graph;
-        # the permanent candidate member remains the replay identity.
-        connector.execute("PRAGMA foreign_keys = OFF")
-        for table in (
-            "catalog_publication_candidate_definition_seals",
-            "catalog_publication_candidate_created_ats",
-            "catalog_publication_candidate_artifacts_required",
-            "catalog_publication_candidate_display_title_policy_ids",
-            "catalog_publication_candidate_artifact_policy_ids",
-            "catalog_publication_candidate_reserved_revisions",
-            "catalog_publication_candidate_analysis_ids",
-            "catalog_publication_candidate_anchors",
-        ):
-            connector.execute(
-                f"DELETE FROM {table} WHERE candidate_id = %s",
-                (publication_support._CANDIDATE,),
-            )
-        connector.execute("PRAGMA foreign_keys = ON")
+        # the sealed commit member and source lineage remain replay authority.
+        _delete_transient_candidate_definition(connector)
         before = _application_state(connector)
 
         replay = publication_support._commit(connector, gate, turn, now=101)
@@ -164,6 +177,180 @@ def test_commit_replay_is_read_only_after_transient_candidate_cleanup(
         assert replay.receipt_id == committed.receipt_id
         assert replay.candidate_id == committed.candidate_id
         assert _application_state(connector) == before
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize(
+    ("corruption", "error_match"),
+    (
+        ("provenance", "lineage|provenance"),
+        ("build-base", "base|predecessor"),
+    ),
+)
+def test_commit_replay_after_candidate_cleanup_rejects_durable_corruption(
+    tmp_path: Path,
+    corruption: str,
+    error_match: str,
+) -> None:
+    connector = publication_support._generated_database(
+        tmp_path / f"cleanup-replay-corrupt-{corruption}.sqlite3"
+    )
+    try:
+        gate, turn = publication_support._authorities(connector)
+        publication_support._seed_candidate(connector, turn, with_base=True)
+        committed = publication_support._commit(connector, gate, turn)
+        _delete_transient_candidate_definition(connector)
+
+        if corruption == "provenance":
+            connector.execute(
+                "DELETE FROM catalog_source_revision_provenance "
+                "WHERE source_revision = %s",
+                (committed.source_revision,),
+            )
+        else:
+            connector.execute(
+                "DELETE FROM catalog_source_build_base_publication_commits "
+                "WHERE build_id = %s",
+                (publication_support._BUILD,),
+            )
+        before = _application_state(connector)
+
+        with pytest.raises(
+            publication_module.PublicationCorruptionError,
+            match=error_match,
+        ):
+            publication_support._commit(connector, gate, turn, now=101)
+
+        assert _application_state(connector) == before
+        assert connector.fetch_one(
+            "SELECT candidate_id FROM catalog_publication_commit_candidates "
+            "WHERE receipt_id = %s",
+            (committed.receipt_id,),
+        ) == (committed.candidate_id,)
+    finally:
+        connector.close()
+
+
+def test_inactive_commit_replays_after_optional_lineage_and_build_cleanup(
+    tmp_path: Path,
+) -> None:
+    connector = publication_support._generated_database(
+        tmp_path / "inactive-cleanup-replay.sqlite3"
+    )
+    try:
+        gate, turn = publication_support._authorities(connector)
+        publication_support._seed_candidate(connector, turn, with_base=True)
+        publication_support._commit(connector, gate, turn)
+
+        # Generation one is now inactive.  Its fixture has no optional
+        # provenance/analysis, and cleanup may prune the remaining operational
+        # preparation followed by its source build.
+        with connector.transaction():
+            MaintenanceGateRepository.release(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate,
+                now=101,
+            )
+        with (
+            connector.transaction(),
+            patch(
+                "h2hdb.vnext_maintenance_gate_repository._new_owner_token",
+                return_value=b"e" * 16,
+            ),
+        ):
+            cleanup_gate = MaintenanceGateRepository.claim_exclusive(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                now=102,
+                lease_duration=1_000_000,
+            )
+
+        preparation_cycle = cleanup_support._begin(
+            connector,
+            cleanup_gate,
+            CleanupTargetKind.OPERATIONAL_PREPARATION,
+            ord("p"),
+            max_rows=32,
+            now=103,
+        )
+        cleanup_support._drain(
+            connector,
+            cleanup_gate,
+            preparation_cycle,
+            now=104,
+        )
+        build_cycle = cleanup_support._begin(
+            connector,
+            cleanup_gate,
+            CleanupTargetKind.SOURCE_BUILD,
+            ord("z"),
+            max_rows=32,
+            now=120,
+        )
+        cleanup_support._drain(
+            connector,
+            cleanup_gate,
+            build_cycle,
+            now=121,
+        )
+        assert not connector.fetch_one(
+            "SELECT build_id FROM catalog_source_build_anchors WHERE build_id = %s",
+            (b"z" * 16,),
+        )
+
+        with connector.transaction():
+            MaintenanceGateRepository.release(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                cleanup_gate,
+                now=150,
+            )
+        with (
+            connector.transaction(),
+            patch(
+                "h2hdb.vnext_maintenance_gate_repository._new_owner_token",
+                return_value=b"r" * 16,
+            ),
+        ):
+            replay_gate = MaintenanceGateRepository.claim_shared(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                now=151,
+                lease_duration=1_000_000,
+            )
+
+        before = _application_state(connector)
+        with connector.transaction():
+            replay = publication_module.PublicationRepository.commit(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=replay_gate,
+                ingest_turn=turn,
+                candidate_id=b"x" * 16,
+                now=152,
+            )
+        assert replay.replayed
+        assert replay.receipt_id == b"h" * 16
+        assert _application_state(connector) == before
+
+        connector.execute("PRAGMA foreign_keys = OFF")
+        connector.execute(
+            "DELETE FROM catalog_publication_commit_artifact_policies "
+            "WHERE receipt_id = %s",
+            (replay.receipt_id,),
+        )
+        connector.execute("PRAGMA foreign_keys = ON")
+        corrupted = _application_state(connector)
+        with pytest.raises(
+            publication_module.PublicationCorruptionError,
+            match="commit|descriptor|malformed",
+        ):
+            with connector.transaction():
+                publication_module.PublicationRepository.commit(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=replay_gate,
+                    ingest_turn=turn,
+                    candidate_id=replay.candidate_id,
+                    now=153,
+                )
+        assert _application_state(connector) == corrupted
     finally:
         connector.close()
 

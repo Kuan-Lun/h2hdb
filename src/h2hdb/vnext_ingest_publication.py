@@ -1211,7 +1211,18 @@ def _commit_action(
         _resume_authority(work, session, now)
         return payload
     if action is _Action.COMPLETE:
-        return _resume_authority(work, session, now)
+        root = cast(_Root, payload)
+        if root.receipt_id is None:
+            raise RuntimeError("completed publication root has no receipt")
+        PublicationRepository.release_replayed_source_working(
+            work,
+            gate_lease=gate,
+            ingest_turn=turn,
+            build_id=root.build_id,
+            receipt_id=root.receipt_id,
+            now=now,
+        )
+        return root
     if action is _Action.BEGIN:
         beginning = cast(_BeginWithPolicy, payload)
         root = beginning.root

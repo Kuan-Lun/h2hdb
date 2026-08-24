@@ -2025,6 +2025,22 @@ AND NOT EXISTS (
     SELECT 1 FROM operational_gallery_observation_stagings x
     WHERE x.build_id = r.build_id)
 AND NOT EXISTS (
+    SELECT 1 FROM operational_source_build_generations older
+    JOIN catalog_analysis_run_build_ids retired_build
+      ON retired_build.build_id = older.build_id
+    JOIN catalog_analysis_run_states retired
+      ON retired.analysis_id = retired_build.analysis_id
+    WHERE older.build_id <> r.build_id
+      AND retired.state = 'ABANDONED'
+      AND NOT EXISTS (
+          SELECT 1 FROM catalog_analysis_run_build_ids sibling
+          WHERE sibling.build_id = retired_build.build_id
+            AND sibling.analysis_id <> retired.analysis_id)
+      AND older.generation < (
+          SELECT MIN(current.generation)
+          FROM operational_source_build_generations current
+          WHERE current.build_id = r.build_id))
+AND NOT EXISTS (
     SELECT 1 FROM operational_source_build_generations m
     LEFT JOIN operational_ingest_generations g ON g.generation = m.generation
     WHERE m.build_id = r.build_id
@@ -2052,6 +2068,34 @@ EXISTS (
     WHERE terminal.analysis_id = r.analysis_id
       AND terminal.state IN ('COMPLETE', 'ABANDONED'))
 AND NOT EXISTS (
+    SELECT 1 FROM catalog_analysis_run_build_ids member
+    JOIN catalog_analysis_run_build_ids retired_member
+      ON retired_member.build_id = member.build_id
+    JOIN catalog_analysis_run_states retired
+      ON retired.analysis_id = retired_member.analysis_id
+    WHERE member.analysis_id = r.analysis_id
+      AND retired.state = 'ABANDONED'
+      AND EXISTS (
+          SELECT 1 FROM catalog_analysis_run_build_ids sibling
+          WHERE sibling.build_id = member.build_id
+            AND sibling.analysis_id <> retired.analysis_id))
+AND NOT EXISTS (
+    SELECT 1
+    FROM catalog_analysis_run_states retired
+    JOIN catalog_analysis_run_build_ids build
+      ON build.analysis_id = retired.analysis_id
+    JOIN operational_source_build_generations mapped
+      ON mapped.build_id = build.build_id
+    WHERE retired.analysis_id = r.analysis_id
+      AND retired.state = 'ABANDONED'
+      AND NOT EXISTS (
+          SELECT 1 FROM operational_source_build_generations newer
+          WHERE newer.generation > mapped.generation)
+      AND NOT EXISTS (
+          SELECT 1 FROM catalog_analysis_run_build_ids sibling
+          WHERE sibling.build_id = build.build_id
+            AND sibling.analysis_id <> retired.analysis_id))
+AND NOT EXISTS (
     SELECT 1 FROM catalog_analysis_run_build_ids build
     JOIN operational_source_working_builds working
       ON working.build_id = build.build_id
@@ -2073,6 +2117,13 @@ AND NOT EXISTS (
     JOIN catalog_source_revision_provenance p
       ON p.source_revision = committed.source_revision
     WHERE p.analysis_id = r.analysis_id)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_source_revision_provenance p
+    JOIN catalog_publication_commit_source_revisions committed
+      ON committed.source_revision = p.source_revision
+    JOIN catalog_source_build_base_publication_commits base
+      ON base.base_receipt_id = committed.receipt_id
+    WHERE p.analysis_id = r.analysis_id)
 """
 
 _PUBLICATION_CANDIDATE_ELIGIBILITY = """
@@ -2093,6 +2144,11 @@ AND NOT EXISTS (
         OR EXISTS (
             SELECT 1 FROM catalog_publication_commit_head_receipts head
             WHERE head.receipt_id = committed.receipt_id)))
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_publication_commit_candidates committed
+    JOIN catalog_source_build_base_publication_commits base
+      ON base.base_receipt_id = committed.receipt_id
+    WHERE committed.candidate_id = r.candidate_id)
 """
 
 
