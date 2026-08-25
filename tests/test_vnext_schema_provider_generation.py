@@ -381,22 +381,6 @@ def test_generated_batch7_artifact_delta_views_use_occurrences_and_inputs(
             ),
         ),
         (
-            "gallery_identity",
-            "catalog_gallery_identities",
-            (
-                "gallery_identity_anchor",
-                "gallery_identity_seal",
-                "gallery_identity_coordinate",
-                "gallery_identity_gallery_key",
-            ),
-            (
-                "catalog_gallery_identity_anchors",
-                "catalog_gallery_identity_seals",
-                "catalog_gallery_identity_coordinates",
-                "catalog_gallery_identity_gallery_keys",
-            ),
-        ),
-        (
             "file_name_identity",
             "catalog_file_name_identities",
             (

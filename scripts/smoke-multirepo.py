@@ -50,6 +50,24 @@ def _assert_no_legacy_migration_ledger(database_path: Path) -> None:
     assert row is None
 
 
+def _assert_gallery_identity_recomposition(database_path: Path) -> None:
+    removed = {
+        "catalog_gallery_identity_anchors",
+        "catalog_gallery_identity_coordinates",
+        "catalog_gallery_identity_gallery_keys",
+        "catalog_gallery_identity_seals",
+    }
+    with sqlite3.connect(database_path) as connection:
+        names = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert "catalog_gallery_identities" in names
+    assert removed.isdisjoint(names)
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory(prefix="h2hdb-multirepo-") as temporary:
         root = Path(temporary).resolve()
@@ -72,6 +90,7 @@ def main() -> None:
         readiness = admin.check_readiness()
         assert readiness.state == "READY"
         _assert_no_legacy_migration_ledger(database_path)
+        _assert_gallery_identity_recomposition(database_path)
 
         queue = VNextDownloadQueueFacade(writer_config, clock=lambda: 1)
         request = queue.request_download(101, "https://example.invalid/g/101")

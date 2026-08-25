@@ -46,28 +46,39 @@ def _relation(
     return checker.RelationShape(table, primary_key, key + values)
 
 
-def test_current_width_policy_is_exact_closed_world_and_debt_free() -> None:
+def test_current_width_policy_is_exact_closed_world_with_one_approved_bcnf_table() -> (
+    None
+):
     report = checker.check_current_policy()
 
     assert report.is_policy_clean
-    assert report.is_fully_narrow
-    assert len(report.relations) == 361
-    assert report.violations == ()
-    assert checker.GRANDFATHERED_WIDE_RELATIONS == {}
+    assert not report.is_fully_narrow
+    assert len(report.relations) == 358
+    assert tuple(relation.table for relation in report.violations) == (
+        "catalog_gallery_identities",
+    )
+    assert checker.APPROVED_WIDE_BCNF_RELATIONS == {
+        "catalog_gallery_identities": (
+            "gallery_key",
+            "scope_key",
+            "locator_sha256",
+        )
+    }
     assert {relation.table for relation in report.relations} == set(
         checker.NARROW_LAYOUT_DECLARATIONS
-    )
+    ) | set(checker.APPROVED_WIDE_BCNF_RELATIONS)
 
     rendered = report.render()
-    assert "relations=361, narrow=361, wide=0" in rendered
-    assert "Width violations (complete):\n  (none)" in rendered
+    assert "relations=358, narrow=357, wide=1" in rendered
+    assert "Approved wide relations (complete):" in rendered
+    assert "catalog_gallery_identities" in rendered
 
 
-def test_complete_mode_is_mandatory_after_verticalization() -> None:
-    report = checker.check_current_policy(require_complete=True)
+def test_approved_wide_bcnf_relation_is_part_of_normal_policy() -> None:
+    report = checker.check_current_policy()
 
     assert report.is_policy_clean
-    assert report.is_fully_narrow
+    assert not report.is_fully_narrow
 
 
 def test_composite_primary_key_plus_one_value_is_narrow() -> None:
@@ -83,7 +94,7 @@ def test_composite_primary_key_plus_one_value_is_narrow() -> None:
 
     report = checker.evaluate_policy(
         (relation,),
-        grandfathered={},
+        approved_wide_bcnf={},
         declarations={relation.table: declaration},
     )
 
@@ -156,7 +167,7 @@ def test_new_or_changed_width_violation_fails_with_complete_report() -> None:
     second = _relation("catalog_second", ("id",), ("x", "y", "z"))
     report = checker.evaluate_policy(
         (first, second),
-        grandfathered={"catalog_first": ("left", "right")},
+        approved_wide_bcnf={"catalog_first": ("left", "right")},
         declarations={},
     )
 
@@ -172,24 +183,24 @@ def test_new_or_changed_width_violation_fails_with_complete_report() -> None:
 
     changed = checker.evaluate_policy(
         (first,),
-        grandfathered={"catalog_first": ("left", "different")},
+        approved_wide_bcnf={"catalog_first": ("left", "different")},
         declarations={},
     )
-    assert "grandfathered non-key columns changed" in changed.render()
+    assert "approved-wide non-key columns changed" in changed.render()
 
 
-def test_resolved_width_debt_requires_baseline_and_metadata_update() -> None:
+def test_resolved_approved_exception_requires_policy_metadata_update() -> None:
     relation = _relation("catalog_resolved", ("id",), ("value",))
 
     report = checker.evaluate_policy(
         (relation,),
-        grandfathered={"catalog_resolved": ("old_a", "old_b")},
+        approved_wide_bcnf={"catalog_resolved": ("old_a", "old_b")},
         declarations={},
     )
 
     assert not report.is_policy_clean
     assert report.is_fully_narrow
-    assert "width debt is resolved" in report.render()
+    assert "approved-wide exception is no longer wide" in report.render()
 
 
 def test_ordinary_value_cannot_be_hidden_in_physical_primary_key() -> None:
@@ -205,7 +216,7 @@ def test_ordinary_value_cannot_be_hidden_in_physical_primary_key() -> None:
 
     report = checker.evaluate_policy(
         (relation,),
-        grandfathered={},
+        approved_wide_bcnf={},
         declarations={relation.table: declaration},
     )
 
@@ -224,7 +235,7 @@ def test_tuple_blob_requires_rejected_packing_metadata() -> None:
 
     report = checker.evaluate_policy(
         (relation,),
-        grandfathered={},
+        approved_wide_bcnf={},
         declarations={relation.table: declaration},
     )
 
@@ -245,7 +256,7 @@ def test_json_and_eav_cannot_disguise_multiple_values_as_one_column() -> None:
     )
     json_report = checker.evaluate_policy(
         (json_relation,),
-        grandfathered={},
+        approved_wide_bcnf={},
         declarations={json_relation.table: json_declaration},
     )
     assert "JSON storage is forbidden" in json_report.render()
@@ -261,7 +272,7 @@ def test_json_and_eav_cannot_disguise_multiple_values_as_one_column() -> None:
     )
     eav_report = checker.evaluate_policy(
         (eav_relation,),
-        grandfathered={},
+        approved_wide_bcnf={},
         declarations={eav_relation.table: eav_declaration},
     )
     assert "generic attribute/value columns form an EAV layout" in eav_report.render()

@@ -408,8 +408,8 @@ writer_hook = "h2hdb.cleanup.canonical_value.v1"
 retention_roots = ["catalog retention_target CANONICAL_VALUE external blockers and retained outliving references, operational hash_cache_observation exact digest FKs, and every active canonical_value_upload claim; source scopes reach this root only through source_scope_source_root_sha256.source_root_sha256 = canonical_value_allocation_anchor.value_sha256, never through scope_key; any build or gallery consumer of any same-root scope retains all such scope families and the root, while no consumer permits each scope's seal, identity, identity-policy, provider, root fact, and anchor to be deleted atomically before canonical page families and allocation facts"]
 retained_fk_edges = [
   { relation = "source_build_scope_key", attributes = ["scope_key"] },
-  { relation = "gallery_identity_coordinate", attributes = ["scope_key"] },
-  { relation = "gallery_identity_coordinate", attributes = ["locator_sha256"] },
+  { relation = "gallery_identity", attributes = ["scope_key"] },
+  { relation = "gallery_identity", attributes = ["locator_sha256"] },
   { relation = "gallery_observation", attributes = ["observation_identity_sha256"] },
   { relation = "gallery_observation_tag", attributes = ["tag_id"] },
   { relation = "gallery_observation_artist", attributes = ["artist_tag_id"] },
@@ -531,7 +531,7 @@ target_kind = "GALLERY_IDENTITY"
 mode = "SWEEP"
 sweep_shard_count = 256
 selection_order_id = "gallery_id_mod_256_then_gallery_id_v1"
-root_relation = "gallery_identity_anchor"
+root_relation = "gallery_identity"
 root_key = ["gallery_id"]
 key_codec = "target_kind_tag16_u64be_zero8_v1"
 eligible_predicate_id = "gallery_identity_unreferenced_v1"
@@ -543,7 +543,7 @@ operational_blockers = [{ relation = "gallery_redownload_state", attributes = ["
 phases = [
   { phase = "GI_OBSERVATION_ALLOCATOR", order = 1, relations = ["gallery_observation_allocator"] },
   { phase = "GI_SOURCE_NAME_ACCESS", order = 2, relations = ["gallery_source_name_access"] },
-  { phase = "GI_ROOT", order = 3, relations = ["gallery_identity_seal", "gallery_identity_gallery_key", "gallery_identity_coordinate", "gallery_identity_anchor"] },
+  { phase = "GI_ROOT", order = 3, relations = ["gallery_identity"] },
 ]
 
 [[cleanup_target]]
@@ -2500,26 +2500,6 @@ attributes = ["receipt_id", "artifact_policy_id"]
 declared_keys = [["receipt_id"]]
 
 [[external_relation]]
-name = "gallery_identity_anchor"
-attributes = ["gallery_id"]
-declared_keys = [["gallery_id"]]
-
-[[external_relation]]
-name = "gallery_identity_coordinate"
-attributes = ["scope_key", "locator_sha256", "gallery_id"]
-declared_keys = [["scope_key", "locator_sha256"], ["gallery_id"]]
-
-[[external_relation]]
-name = "gallery_identity_gallery_key"
-attributes = ["gallery_id", "gallery_key"]
-declared_keys = [["gallery_id"], ["gallery_key"]]
-
-[[external_relation]]
-name = "gallery_identity_seal"
-attributes = ["gallery_id"]
-declared_keys = [["gallery_id"]]
-
-[[external_relation]]
 name = "gallery_identity"
 attributes = ["gallery_id", "gallery_key", "scope_key", "locator_sha256"]
 declared_keys = [["gallery_id"], ["gallery_key"], ["scope_key", "locator_sha256"]]
@@ -3373,7 +3353,7 @@ fds = [
   { determinant = ["gallery_id"], dependent = ["next_observation_id", "updated_at"] },
 ]
 foreign_keys = [
-  { attributes = ["gallery_id"], relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
+  { attributes = ["gallery_id"], relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
 ]
 rationale = "One portable positive-int63 observation namespace per gallery. It starts at one with gallery allocation and advances by exact current-value CAS without reuse or a redundant lockstep generation."
 
@@ -3683,7 +3663,7 @@ fds = [
   { determinant = ["gallery_id"], dependent = ["redownload_at", "through_source_revision", "updated_at"] },
 ]
 foreign_keys = [
-  { attributes = ["gallery_id"], relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
+  { attributes = ["gallery_id"], relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
   { attributes = ["through_source_revision"], relation = "publication_commit_source_revision", referenced_attributes = ["source_revision"] },
 ]
 required_indexes = [

@@ -1915,65 +1915,6 @@ mariadb_type = "BIGINT UNSIGNED"
 nullable = false
 
 [[external_stub]]
-relation = "gallery_identity_anchor"
-table = "catalog_gallery_identity_anchors"
-primary_key = ["gallery_id"]
-unique_keys = []
-[[external_stub.column]]
-name = "gallery_id"
-sqlite_type = "INTEGER"
-mariadb_type = "BIGINT UNSIGNED"
-nullable = false
-
-[[external_stub]]
-relation = "gallery_identity_coordinate"
-table = "catalog_gallery_identity_coordinates"
-primary_key = ["scope_key", "locator_sha256"]
-unique_keys = [["gallery_id"]]
-[[external_stub.column]]
-name = "scope_key"
-sqlite_type = "BLOB"
-mariadb_type = "BINARY(32)"
-nullable = false
-[[external_stub.column]]
-name = "locator_sha256"
-sqlite_type = "BLOB"
-mariadb_type = "BINARY(32)"
-nullable = false
-[[external_stub.column]]
-name = "gallery_id"
-sqlite_type = "INTEGER"
-mariadb_type = "BIGINT UNSIGNED"
-nullable = false
-
-[[external_stub]]
-relation = "gallery_identity_gallery_key"
-table = "catalog_gallery_identity_gallery_keys"
-primary_key = ["gallery_id"]
-unique_keys = [["gallery_key"]]
-[[external_stub.column]]
-name = "gallery_id"
-sqlite_type = "INTEGER"
-mariadb_type = "BIGINT UNSIGNED"
-nullable = false
-[[external_stub.column]]
-name = "gallery_key"
-sqlite_type = "BLOB"
-mariadb_type = "BINARY(32)"
-nullable = false
-
-[[external_stub]]
-relation = "gallery_identity_seal"
-table = "catalog_gallery_identity_seals"
-primary_key = ["gallery_id"]
-unique_keys = []
-[[external_stub.column]]
-name = "gallery_id"
-sqlite_type = "INTEGER"
-mariadb_type = "BIGINT UNSIGNED"
-nullable = false
-
-[[external_stub]]
 relation = "gallery_identity"
 table = "catalog_gallery_identities"
 primary_key = ["gallery_id"]
@@ -4338,7 +4279,7 @@ mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
 [[relation.foreign_key]]
 name = "fk_gallery_observation_allocator_1"
 attributes = ["gallery_id"]
-referenced_relation = "gallery_identity_seal"
+referenced_relation = "gallery_identity"
 referenced_attributes = ["gallery_id"]
 [[relation.check]]
 name = "ck_gallery_observation_allocator_updated_at_nonneg"
@@ -5595,7 +5536,7 @@ mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" }
 [[relation.foreign_key]]
 name = "fk_gallery_redownload_state_1"
 attributes = ["gallery_id"]
-referenced_relation = "gallery_identity_seal"
+referenced_relation = "gallery_identity"
 referenced_attributes = ["gallery_id"]
 [[relation.foreign_key]]
 name = "fk_gallery_redownload_state_2"

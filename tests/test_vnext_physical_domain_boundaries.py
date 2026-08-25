@@ -64,10 +64,6 @@ _EXPECTED_CATALOG_PHYSICAL_DOMAIN_RELATIONS = frozenset(
         "canonical_value_page_descriptor",
         "canonical_value_page_parent",
         "source_locator_identity",
-        "gallery_identity_anchor",
-        "gallery_identity_coordinate",
-        "gallery_identity_gallery_key",
-        "gallery_identity_seal",
         "gallery_identity",
         "file_name_identity_anchor",
         "file_name_identity_name_bytes",
@@ -377,7 +373,6 @@ _EXPECTED_CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS = frozenset(
         "canonical_value_allocation",
         "canonical_value_page",
         "canonical_value_page_descriptor",
-        "gallery_identity",
         "file_name_identity",
         "gallery_observation_file",
         "tag_term",
@@ -478,9 +473,9 @@ def test_closed_writer_families_match_the_generated_contract_and_real_symbols() 
         _EXPECTED_CATALOG_PHYSICAL_DOMAIN_RELATIONS
         - _EXPECTED_CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS
     )
-    assert len(CATALOG_PHYSICAL_DOMAIN_RELATIONS) == 320
-    assert len(CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS) == 60
-    assert len(CATALOG_PHYSICAL_DOMAIN_MUTATION_RELATIONS) == 260
+    assert len(CATALOG_PHYSICAL_DOMAIN_RELATIONS) == 316
+    assert len(CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS) == 59
+    assert len(CATALOG_PHYSICAL_DOMAIN_MUTATION_RELATIONS) == 257
     assert OPERATIONAL_PHYSICAL_DOMAIN_MUTATION_RELATIONS == (
         OPERATIONAL_PHYSICAL_DOMAIN_RELATIONS - {"schema_epoch_control"}
     )

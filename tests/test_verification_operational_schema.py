@@ -202,7 +202,7 @@ def test_operational_contract_is_closed_world_bcnf_and_scope_separated() -> None
     assert not report.lossless_decompositions
     assert not report.dependency_preserving_decompositions
     assert all(not checker.bcnf_violations(value) for value in contract.relations)
-    assert len(contract.external_relations) == 68
+    assert len(contract.external_relations) == 64
     assert {
         "canonical_value_allocation",
         "canonical_value_page",
@@ -212,10 +212,7 @@ def test_operational_contract_is_closed_world_bcnf_and_scope_separated() -> None
         "gallery_observation_allocation_page",
         "gallery_observation_page_descriptor",
         "gallery_observation_file_filesystem",
-        "gallery_identity_anchor",
-        "gallery_identity_coordinate",
-        "gallery_identity_gallery_key",
-        "gallery_identity_seal",
+        "gallery_identity",
         "file_name_identity_anchor",
         "file_name_identity_name_bytes",
         "file_name_identity_file_role",
@@ -1046,7 +1043,7 @@ def test_source_build_authority_is_fail_closed_across_manifests() -> None:
         foreign_keys=tuple(
             foreign_key
             for foreign_key in expected_membership.foreign_keys
-            if foreign_key.relation != "gallery_identity_seal"
+            if foreign_key.relation != "gallery_identity"
         ),
     )
     drifted_catalog = replace(

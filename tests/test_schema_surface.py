@@ -344,9 +344,8 @@ def test_catalog_hot_paths_do_not_read_b2_wide_views() -> None:
     assert references.isdisjoint(wide_views)
 
 
-def test_catalog_hot_paths_do_not_read_b3a_wide_views() -> None:
+def test_catalog_hot_paths_do_not_read_remaining_b3a_wide_views() -> None:
     wide_views = {
-        "catalog_gallery_identities",
         "catalog_file_name_identities",
         "catalog_gallery_observation_files",
         "catalog_tag_terms",

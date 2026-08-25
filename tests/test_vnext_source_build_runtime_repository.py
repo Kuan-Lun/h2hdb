@@ -4190,7 +4190,7 @@ def test_assembly_missing_dependency_and_scope_corruption_are_zero_write(
                 source_root_sha256=resolved[0].locator_sha256,
             ).scope_key
             connector.execute(
-                "UPDATE catalog_gallery_identity_coordinates SET scope_key = %s "
+                "UPDATE catalog_gallery_identities SET scope_key = %s "
                 "WHERE gallery_id = %s",
                 (other_scope, resolved[0].gallery_id),
             )

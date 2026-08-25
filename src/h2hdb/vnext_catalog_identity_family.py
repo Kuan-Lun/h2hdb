@@ -1,10 +1,11 @@
-"""Exact storage protocol for the small sealed catalog identity families.
+"""Exact storage protocol for the small catalog identity families.
 
-The historical wide relations exposed by this module's four families are
-read-only views.  Production writers use the narrow base relations directly,
-insert every completion seal last, and treat an existing incomplete family as
-corruption rather than repairing it in place.  Batch loaders use one set query
-per family so a page never turns into one query per atomic fact.
+Gallery identity is one BCNF base relation.  The other historical wide
+relations exposed by this module are read-only views over sealed vertical
+families.  Production writers use base relations directly, insert completion
+seals last where applicable, and treat an existing incomplete vertical family
+as corruption rather than repairing it in place.  Batch loaders use one set
+query per family so a page never turns into one query per atomic fact.
 """
 
 from __future__ import annotations
@@ -49,10 +50,7 @@ from .vnext_identity import (
 
 _BATCH_LIMIT = 256
 
-_GALLERY_ANCHOR = "catalog_gallery_identity_anchors"
-_GALLERY_COORDINATE = "catalog_gallery_identity_coordinates"
-_GALLERY_KEY = "catalog_gallery_identity_gallery_keys"
-_GALLERY_SEAL = "catalog_gallery_identity_seals"
+_GALLERY_IDENTITY = "catalog_gallery_identities"
 
 _FILE_NAME_ANCHOR = "catalog_file_name_identity_anchors"
 _FILE_NAME_BYTES = "catalog_file_name_identity_name_bytes"
@@ -192,13 +190,8 @@ def load_gallery_identities(
     clause = f"gallery_id IN ({_placeholders(len(ids))})"
     return _gallery_rows(
         connector,
-        candidate_sql=(
-            f"SELECT gallery_id FROM {_GALLERY_ANCHOR} WHERE {clause} UNION "
-            f"SELECT gallery_id FROM {_GALLERY_COORDINATE} WHERE {clause} UNION "
-            f"SELECT gallery_id FROM {_GALLERY_KEY} WHERE {clause} UNION "
-            f"SELECT gallery_id FROM {_GALLERY_SEAL} WHERE {clause}"
-        ),
-        parameters=ids * 4,
+        candidate_sql=f"SELECT gallery_id FROM {_GALLERY_IDENTITY} WHERE {clause}",
+        parameters=ids,
     )
 
 
@@ -214,22 +207,17 @@ def load_gallery_identity_candidates(
     locator = require_digest32(locator_sha256, field="locator_sha256")
     stable = require_digest32(gallery_key, field="gallery_key")
     branches = [
-        f"SELECT gallery_id FROM {_GALLERY_COORDINATE} "
+        f"SELECT gallery_id FROM {_GALLERY_IDENTITY} "
         "WHERE scope_key = %s AND locator_sha256 = %s",
-        f"SELECT gallery_id FROM {_GALLERY_KEY} WHERE gallery_key = %s",
+        f"SELECT gallery_id FROM {_GALLERY_IDENTITY} WHERE gallery_key = %s",
     ]
     parameters: tuple[Any, ...] = (scope, locator, stable)
     if gallery_id is not None:
         exact_id = require_positive_int63(gallery_id, field="gallery_id")
-        branches.extend(
-            (
-                f"SELECT gallery_id FROM {_GALLERY_ANCHOR} WHERE gallery_id = %s",
-                f"SELECT gallery_id FROM {_GALLERY_COORDINATE} WHERE gallery_id = %s",
-                f"SELECT gallery_id FROM {_GALLERY_KEY} WHERE gallery_id = %s",
-                f"SELECT gallery_id FROM {_GALLERY_SEAL} WHERE gallery_id = %s",
-            )
+        branches.append(
+            f"SELECT gallery_id FROM {_GALLERY_IDENTITY} WHERE gallery_id = %s"
         )
-        parameters += (exact_id,) * 4
+        parameters += (exact_id,)
     return tuple(
         _gallery_rows(
             connector,
@@ -247,29 +235,21 @@ def _gallery_rows(
 ) -> dict[int, GalleryIdentity]:
     rows = connector.fetch_all(
         "WITH candidate_ids(gallery_id) AS (" + candidate_sql + ") "
-        "SELECT k.gallery_id, a.gallery_id, c.scope_key, c.locator_sha256, "
-        "c.gallery_id, g.gallery_id, g.gallery_key, s.gallery_id "
+        "SELECT i.gallery_id, i.gallery_key, i.scope_key, i.locator_sha256 "
         "FROM candidate_ids AS k "
-        f"LEFT JOIN {_GALLERY_ANCHOR} AS a ON a.gallery_id = k.gallery_id "
-        f"LEFT JOIN {_GALLERY_COORDINATE} AS c ON c.gallery_id = k.gallery_id "
-        f"LEFT JOIN {_GALLERY_KEY} AS g ON g.gallery_id = k.gallery_id "
-        f"LEFT JOIN {_GALLERY_SEAL} AS s ON s.gallery_id = k.gallery_id "
-        "ORDER BY k.gallery_id",
+        f"JOIN {_GALLERY_IDENTITY} AS i ON i.gallery_id = k.gallery_id "
+        "ORDER BY i.gallery_id",
         parameters,
     )
     result: dict[int, GalleryIdentity] = {}
     for row in rows:
-        if len(row) != 8:
-            raise CatalogIdentityPartialFamilyError(
-                "gallery identity family has an invalid physical shape"
+        if len(row) != 4:
+            raise CatalogIdentityCollisionError(
+                "gallery identity has an invalid physical shape"
             )
         gallery_id = require_positive_int63(row[0], field="gallery_id")
-        if any(row[index] != gallery_id for index in (1, 4, 5, 7)):
-            raise CatalogIdentityPartialFamilyError(
-                "gallery identity has an existing incomplete sealed family"
-            )
         try:
-            identity = GalleryIdentity(gallery_id, row[6], row[2], row[3])
+            identity = GalleryIdentity(gallery_id, row[1], row[2], row[3])
         except (TypeError, ValueError) as error:
             raise CatalogIdentityCollisionError(
                 "gallery identity contains invalid immutable facts"
@@ -304,21 +284,15 @@ def ensure_gallery_identity(
             )
         return False
     connector.execute(
-        f"INSERT INTO {_GALLERY_ANCHOR} (gallery_id) VALUES (%s)",
-        (identity.gallery_id,),
-    )
-    connector.execute(
-        f"INSERT INTO {_GALLERY_COORDINATE} "
-        "(scope_key, locator_sha256, gallery_id) VALUES (%s, %s, %s)",
-        (identity.scope_key, identity.locator_sha256, identity.gallery_id),
-    )
-    connector.execute(
-        f"INSERT INTO {_GALLERY_KEY} (gallery_id, gallery_key) VALUES (%s, %s)",
-        (identity.gallery_id, identity.gallery_key),
-    )
-    connector.execute(
-        f"INSERT INTO {_GALLERY_SEAL} (gallery_id) VALUES (%s)",
-        (identity.gallery_id,),
+        f"INSERT INTO {_GALLERY_IDENTITY} "
+        "(gallery_id, gallery_key, scope_key, locator_sha256) "
+        "VALUES (%s, %s, %s, %s)",
+        (
+            identity.gallery_id,
+            identity.gallery_key,
+            identity.scope_key,
+            identity.locator_sha256,
+        ),
     )
     return True
 

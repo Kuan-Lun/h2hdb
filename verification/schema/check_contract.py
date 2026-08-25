@@ -1955,7 +1955,7 @@ def validate_cross_manifest_contracts(
         and _has_fk(
             expected_membership,
             ("gallery_id",),
-            "gallery_identity_seal",
+            "gallery_identity",
             ("gallery_id",),
         )
     ):
@@ -1986,7 +1986,7 @@ def validate_cross_manifest_contracts(
     expected_identity_edge = RetentionForeignKeyBoundary(
         relation="source_build_expected_gallery",
         attributes=("gallery_id",),
-        referenced_relation="gallery_identity_seal",
+        referenced_relation="gallery_identity",
         referenced_attributes=("gallery_id",),
     )
     if (
@@ -2050,7 +2050,7 @@ _DATA_RETENTION_TARGETS: Mapping[str, tuple[str, tuple[str, ...]]] = {
     "CONTENT_BLOB": ("content_blob", ("file_sha256",)),
     "FILE_NAME_IDENTITY": ("file_name_identity_anchor", ("file_key",)),
     "PUBLICATION_IDENTITY": ("publication_identity", ("publication_key",)),
-    "GALLERY_IDENTITY": ("gallery_identity_anchor", ("gallery_id",)),
+    "GALLERY_IDENTITY": ("gallery_identity", ("gallery_id",)),
     "SOURCE_GALLERY_NAME_GID": (
         "source_gallery_name_gid",
         ("source_gallery_name",),
@@ -7121,7 +7121,7 @@ _ANALYSIS_CONTENT_CANDIDATE_ORDERING_RULE_V1 = (
     "tuple (prefer_not_already_uploaded, title_scalar_count, download_time, derived "
     "gid, derived scope_key, derived locator_sha256), all descending; derive gid "
     "through gallery_source_name_access joined to source_gallery_name_gid and "
-    "scope_key/locator_sha256 through gallery_identity_coordinate; no persisted "
+    "scope_key/locator_sha256 through gallery_identity; no persisted "
     "packed priority or audit digest is authority"
 )
 _ANALYSIS_GID_CANDIDATE_ORDERING_RULE_V1 = (
@@ -7267,7 +7267,7 @@ def _validate_analysis_candidate_contract(
         == ("gid", "scope_key", "locator_sha256")
         and candidate.content_gid_access_relation == "gallery_source_name_access"
         and candidate.content_gid_relation == "source_gallery_name_gid"
-        and candidate.content_coordinate_relation == "gallery_identity_coordinate"
+        and candidate.content_coordinate_relation == "gallery_identity"
         and candidate.gid_candidate_membership_relation
         == "analysis_gid_candidate_resolved"
         and candidate.gid_winner_selection_relation == "analysis_gid_winner_selection"

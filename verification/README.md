@@ -10,11 +10,11 @@ recurring semantic validator and production writer binding.
 
 The generated contract currently contains:
 
-- 361 data-plane base relations checked as BCNF, plus 82 executable logical
-  views and 53 reusable sealed vertical families;
+- 358 data-plane base relations checked as BCNF, plus 81 executable logical
+  views and 52 reusable sealed vertical families;
 - 28 explicitly checked lossless and dependency-preserving decompositions;
-- an exact 320-relation catalog physical-domain closure, split into 260
-  mutation relations and 60 read-only views;
+- an exact 316-relation catalog physical-domain closure, split into 257
+  mutation relations and 59 read-only views;
 - 75 operational BCNF base relations plus one derived activation view for
   fencing, downloader-to-ingest handoff, staging, allocation, receipts,
   maintenance, queues, caches, and bounded cleanup;
@@ -25,11 +25,12 @@ The generated contract currently contains:
 
 There are no declared BCNF exceptions among base tables. BCNF does not impose
 the narrower product layout: a separate closed-world gate requires every
-physical `catalog_*` base table to be its semantic primary key plus at most one
-atomic non-key column. It currently reports all 361 bases compliant and no
-width exceptions; views are excluded and may deliberately expose
-denormalized read shapes. The counts above are checked from the manifests
-rather than copied into the runtime provider by hand.
+ordinary physical `catalog_*` base table to be its semantic primary key plus at
+most one atomic non-key column. It reports 357 narrow bases and one exact
+approved-wide BCNF relation, `catalog_gallery_identities`, whose three
+candidate keys cover every nontrivial dependency. Views are excluded and may
+deliberately expose denormalized read shapes. The counts above are checked from
+the manifests rather than copied into the runtime provider by hand.
 
 Full `SchemaAdmin.check()` deliberately scans the single sealed publication
 generation chain to prove exact node/edge/commit-set equality, successor

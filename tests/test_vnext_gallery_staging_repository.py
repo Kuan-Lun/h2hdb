@@ -1984,7 +1984,7 @@ def test_metadata_vertical_mariadb_sql_shape_uses_server_derived_name() -> None:
             data: tuple[Any, ...] = (),
         ) -> tuple[Any, ...]:
             self.queries.append((query, data))
-            if "FROM catalog_gallery_identity_seals AS seal" in query:
+            if "FROM catalog_gallery_identities AS identity" in query:
                 return (b"l" * 32, b"server-gallery")
             return ()
 
@@ -2016,10 +2016,9 @@ def test_metadata_vertical_mariadb_sql_shape_uses_server_derived_name() -> None:
     )
 
     derived_query, derived_data = recorder.queries[0]
-    assert "JOIN catalog_gallery_identity_coordinates AS coordinate" in derived_query
-    assert "JOIN catalog_gallery_identity_gallery_keys AS gallery_key" in derived_query
+    assert "FROM catalog_gallery_identities AS identity" in derived_query
     assert "JOIN catalog_source_locator_identity AS locator" in derived_query
-    assert "seal.gallery_id = %s" in derived_query
+    assert "identity.gallery_id = %s" in derived_query
     assert derived_data == (1,)
     ordered_tables = (
         "catalog_gallery_upload_times",

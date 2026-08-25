@@ -595,25 +595,6 @@ rationale = "Represent a nonempty page's lower and upper ordering bounds as sepa
 write_obligation = "for every nonempty decoded page derive exact first_key and last_key, require unsigned bytewise first_key less than or equal to last_key, insert or exact-compare the bounds anchor and both facts, and insert the PK-only bounds seal last; for the unique empty leaf insert no bounds-family row"
 
 [[vertical_family]]
-name = "gallery_identity_vertical"
-anchor_relation = "gallery_identity_anchor"
-seal_relation = "gallery_identity_seal"
-view_relation = "gallery_identity"
-key_attributes = ["gallery_id"]
-visibility = "sealed_total"
-members = [
-  { relation = "gallery_identity_coordinate", key_attributes = ["scope_key", "locator_sha256"], value_attribute = "gallery_id", join = { source_relation = "gallery_identity_seal", source_attributes = ["gallery_id"], member_attributes = ["gallery_id"] }, project = true },
-  { relation = "gallery_identity_gallery_key", key_attributes = ["gallery_id"], value_attribute = "gallery_key", join = { source_relation = "gallery_identity_seal", source_attributes = ["gallery_id"], member_attributes = ["gallery_id"] }, project = true },
-]
-semantic_fds = [
-  { determinant = ["gallery_id"], dependent = ["gallery_key", "scope_key", "locator_sha256"] },
-  { determinant = ["gallery_key"], dependent = ["gallery_id", "scope_key", "locator_sha256"] },
-  { determinant = ["scope_key", "locator_sha256"], dependent = ["gallery_id", "gallery_key"] },
-]
-rationale = "Keep the stable source-scope/locator coordinate and its domain-separated gallery key in independent narrow relations keyed through the join surrogate. The coordinate primary key and gallery_id alternate key are both semantic; the gallery-key fact is also one-to-one, and the seal hides every partial family."
-write_obligation = "derive gallery_key from the exact scope_key and locator_sha256 frame, allocate or exact-compare gallery_id, insert the anchor, coordinate, and gallery-key fact, reject every coordinate, digest, or surrogate mismatch with zero durable writes, and insert the PK-only gallery identity seal last before any observation, analysis, publication, or operational row may reference the gallery"
-
-[[vertical_family]]
 name = "file_name_identity_vertical"
 anchor_relation = "file_name_identity_anchor"
 seal_relation = "file_name_identity_seal"
@@ -1122,7 +1103,7 @@ members = [
 semantic_fds = [
   { determinant = ["analysis_id", "gallery_id"], dependent = ["content_sha256", "prefer_not_already_uploaded", "title_scalar_count", "download_time"] },
 ]
-rationale = "Store the content-owner candidate's independent semantic facts atomically; GID, scope key, and locator digest are derived from sealed gallery identity at comparison time and no packed priority or candidate audit digest is persisted."
+rationale = "Store the content-owner candidate's independent semantic facts atomically; GID, scope key, and locator digest are derived from the immutable gallery_identity row at comparison time and no packed priority or candidate audit digest is persisted."
 write_obligation = "stream and validate the title scalar count, derive every comparator atom from the immutable snapshot, insert or exact-compare the anchor and four fact rows, then insert the PK-only seal last"
 
 [[vertical_family]]
@@ -1484,8 +1465,8 @@ root_relation = "canonical_value_allocation_anchor"
 root_key = ["value_sha256"]
 external_blockers = [
   { relation = "source_build_scope_key", attributes = ["scope_key"], referenced_relation = "source_scope_seal", referenced_attributes = ["scope_key"] },
-  { relation = "gallery_identity_coordinate", attributes = ["scope_key"], referenced_relation = "source_scope_seal", referenced_attributes = ["scope_key"] },
-  { relation = "gallery_identity_coordinate", attributes = ["locator_sha256"], referenced_relation = "source_locator_identity", referenced_attributes = ["locator_sha256"] },
+  { relation = "gallery_identity", attributes = ["scope_key"], referenced_relation = "source_scope_seal", referenced_attributes = ["scope_key"] },
+  { relation = "gallery_identity", attributes = ["locator_sha256"], referenced_relation = "source_locator_identity", referenced_attributes = ["locator_sha256"] },
   { relation = "gallery_observation", attributes = ["observation_identity_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
   { relation = "gallery_observation_tag", attributes = ["tag_id"], referenced_relation = "tag_term_seal", referenced_attributes = ["tag_id"] },
   { relation = "gallery_observation_artist", attributes = ["artist_tag_id"], referenced_relation = "tag_term_seal", referenced_attributes = ["tag_id"] },
@@ -1607,29 +1588,27 @@ child_phases = []
 
 [[retention_target]]
 target = "GALLERY_IDENTITY"
-root_relation = "gallery_identity_anchor"
+root_relation = "gallery_identity"
 root_key = ["gallery_id"]
 external_blockers = [
-  { relation = "gallery_observation_allocation", attributes = ["gallery_id"], referenced_relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
-  { relation = "analysis_changed_gallery", attributes = ["gallery_id"], referenced_relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
-  { relation = "analysis_impacted_gallery", attributes = ["gallery_id"], referenced_relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
-  { relation = "analysis_content_owner_candidate_shadow_anchor", attributes = ["gallery_id"], referenced_relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
-  { relation = "analysis_content_owner_shadow_owner_gallery_id", attributes = ["owner_gallery_id"], referenced_relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
-  { relation = "analysis_content_owner_candidate_tombstone", attributes = ["gallery_id"], referenced_relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
-  { relation = "analysis_gid_candidate_shadow", attributes = ["gallery_id"], referenced_relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
-  { relation = "analysis_gid_candidate_tombstone", attributes = ["gallery_id"], referenced_relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
-  { relation = "analysis_gid_winner_selection", attributes = ["winner_gallery_id"], referenced_relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
-  { relation = "source_build_expected_gallery", attributes = ["gallery_id"], referenced_relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
-  { relation = "publication_selection", attributes = ["gallery_id"], referenced_relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
+  { relation = "gallery_observation_allocation", attributes = ["gallery_id"], referenced_relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
+  { relation = "analysis_changed_gallery", attributes = ["gallery_id"], referenced_relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
+  { relation = "analysis_impacted_gallery", attributes = ["gallery_id"], referenced_relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
+  { relation = "analysis_content_owner_candidate_shadow_anchor", attributes = ["gallery_id"], referenced_relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
+  { relation = "analysis_content_owner_shadow_owner_gallery_id", attributes = ["owner_gallery_id"], referenced_relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
+  { relation = "analysis_content_owner_candidate_tombstone", attributes = ["gallery_id"], referenced_relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
+  { relation = "analysis_gid_candidate_shadow", attributes = ["gallery_id"], referenced_relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
+  { relation = "analysis_gid_candidate_tombstone", attributes = ["gallery_id"], referenced_relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
+  { relation = "analysis_gid_winner_selection", attributes = ["winner_gallery_id"], referenced_relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
+  { relation = "source_build_expected_gallery", attributes = ["gallery_id"], referenced_relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
+  { relation = "publication_selection", attributes = ["gallery_id"], referenced_relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
   { relation = "gallery_observation_metadata_seal", attributes = ["gallery_id"], referenced_relation = "gallery_source_name_access", referenced_attributes = ["gallery_id"] },
 ]
 retained_outliving = []
 semantic_blockers = []
-derived_views = ["gallery_identity", "analysis_content_owner_candidate_resolved", "analysis_content_owner_resolved", "analysis_gid_candidate_resolved", "analysis_gid_winner_shadow", "analysis_gid_winner_resolved"]
+derived_views = ["analysis_content_owner_candidate_resolved", "analysis_content_owner_resolved", "analysis_gid_candidate_resolved", "analysis_gid_winner_shadow", "analysis_gid_winner_resolved"]
 child_phases = [
   ["gallery_source_name_access"],
-  ["gallery_identity_seal"],
-  ["gallery_identity_gallery_key", "gallery_identity_coordinate"],
 ]
 
 [[retention_target]]
@@ -1665,8 +1644,8 @@ content_stored_order_attributes = ["prefer_not_already_uploaded", "title_scalar_
 content_derived_order_attributes = ["gid", "scope_key", "locator_sha256"]
 content_gid_access_relation = "gallery_source_name_access"
 content_gid_relation = "source_gallery_name_gid"
-content_coordinate_relation = "gallery_identity_coordinate"
-content_ordering_rule = "within each content_sha256 group select the unsigned lexicographically greatest tuple (prefer_not_already_uploaded, title_scalar_count, download_time, derived gid, derived scope_key, derived locator_sha256), all descending; derive gid through gallery_source_name_access joined to source_gallery_name_gid and scope_key/locator_sha256 through gallery_identity_coordinate; no persisted packed priority or audit digest is authority"
+content_coordinate_relation = "gallery_identity"
+content_ordering_rule = "within each content_sha256 group select the unsigned lexicographically greatest tuple (prefer_not_already_uploaded, title_scalar_count, download_time, derived gid, derived scope_key, derived locator_sha256), all descending; derive gid through gallery_source_name_access joined to source_gallery_name_gid and scope_key/locator_sha256 through gallery_identity; no persisted packed priority or audit digest is authority"
 gid_candidate_membership_relation = "analysis_gid_candidate_resolved"
 gid_winner_selection_relation = "analysis_gid_winner_selection"
 gid_winner_shadow_relation = "analysis_gid_winner_shadow"
@@ -2452,7 +2431,7 @@ ready_check = "catalog_refinement.check_identity_codecs_v1"
 writer_hook = "catalog_writer.validate_identity_codecs"
 writer_hook_version = 1
 scope = "catalog.identity-codecs"
-relations = ["canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "canonical_value_identity", "source_scope", "source_locator_identity", "gallery_identity_anchor", "gallery_identity_coordinate", "gallery_identity_gallery_key", "gallery_identity_seal", "gallery_identity", "file_name_identity_anchor", "file_name_identity_name_bytes", "file_name_identity_file_role", "file_name_identity_seal", "file_name_identity", "gallery_observation_allocation", "gallery_observation_page", "gallery_observation_allocation_page", "gallery_observation_page_descriptor", "gallery_observation_page_key_bounds", "gallery_observation_page_child", "gallery_observation_tree_root", "gallery_observation", "publication_identity"]
+relations = ["canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "canonical_value_identity", "source_scope", "source_locator_identity", "gallery_identity", "file_name_identity_anchor", "file_name_identity_name_bytes", "file_name_identity_file_role", "file_name_identity_seal", "file_name_identity", "gallery_observation_allocation", "gallery_observation_page", "gallery_observation_allocation_page", "gallery_observation_page_descriptor", "gallery_observation_page_key_bounds", "gallery_observation_page_child", "gallery_observation_tree_root", "gallery_observation", "publication_identity"]
 covers = [
   "machine_contract.identity-codecs",
   "canonical_digest_contract.write_obligation",
@@ -2483,7 +2462,7 @@ ready_check = "catalog_refinement.check_canonical_reference_domains_v1"
 writer_hook = "catalog_writer.validate_canonical_reference_domain"
 writer_hook_version = 1
 scope = "catalog.canonical-reference-domains"
-relations = ["canonical_digest_policy", "canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "canonical_value_identity", "gallery_identity_coordinate", "tag_term_identity"]
+relations = ["canonical_digest_policy", "canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "canonical_value_identity", "gallery_identity", "tag_term_identity"]
 covers = [
   "machine_contract.canonical-reference-domains",
   "canonical_digest_contract.read_obligation",
@@ -2653,7 +2632,7 @@ ready_check = "catalog_refinement.check_physical_domains_v1"
 writer_hook = "catalog_writer.validate_physical_domain"
 writer_hook_version = 1
 scope = "catalog.physical-domains"
-relations = ["canonical_value_allocation_anchor", "canonical_value_allocation_digest_domain", "canonical_value_allocation_byte_count", "canonical_value_allocation_allocated_at", "canonical_value_allocation_seal", "canonical_value_allocation", "canonical_value_page_anchor", "canonical_value_page_payload", "canonical_value_page_coordinate", "canonical_value_page_subtree_item_count", "canonical_value_page_seal", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "source_locator_identity", "source_build_anchor", "source_build_scope_key", "source_build_manifest_policy_id", "source_build_state", "source_build_created_at", "source_build_descriptor_seal", "source_build_sealed_at", "source_build", "source_build_discovery_gallery_count", "build_manifest_anchor", "build_manifest_manifest_sha256", "build_manifest_file_count", "build_manifest_byte_count", "build_manifest_seal", "build_manifest", "gallery_identity_anchor", "gallery_identity_coordinate", "gallery_identity_gallery_key", "gallery_identity_seal", "gallery_identity", "file_name_identity_anchor", "file_name_identity_name_bytes", "file_name_identity_file_role", "file_name_identity_seal", "file_name_identity", "gallery_observation_file_anchor", "gallery_observation_file_file_no", "gallery_observation_file_file_sha256", "gallery_observation_file_seal", "gallery_observation_file", "gallery_manifest_anchor", "gallery_manifest_manifest_sha256", "gallery_manifest_computed_at", "gallery_manifest_seal", "gallery_manifest", "tag_term_anchor", "tag_term_identity", "tag_term_seal", "tag_term", "source_snapshot_manifest_identity_anchor", "source_snapshot_manifest_identity_gallery_count", "source_snapshot_manifest_identity_file_count", "source_snapshot_manifest_identity_byte_count", "source_snapshot_manifest_identity_seal", "source_snapshot_manifest_identity", "publication_identity", "artifact_location", "artifact_producer_fingerprint_anchor", "artifact_producer_fingerprint_algorithm_version", "artifact_producer_fingerprint_equivalence_class", "artifact_producer_fingerprint_identity", "artifact_producer_fingerprint_seal", "artifact_producer_fingerprint", "artifact_storage_codec", "artifact_semantic_input_anchor", "artifact_semantic_input_source_manifest_component_sha256", "artifact_semantic_input_member_plan_component_sha256", "artifact_semantic_input_effective_content_component_sha256", "artifact_semantic_input_selected_component_sha256", "artifact_semantic_input_owner_component_sha256", "artifact_semantic_input_policy_component_sha256", "artifact_semantic_input_identity", "artifact_semantic_input_seal", "artifact_semantic_input", "prepared_artifact_anchor", "prepared_artifact_sha256", "prepared_artifact_storage_codec_version", "prepared_artifact_storage_generation", "prepared_artifact_protection_token", "prepared_artifact_state", "prepared_artifact_seal", "prepared_artifact", "catalog_artifact_anchor", "catalog_artifact_sha256", "catalog_artifact_semantics_sha256", "catalog_artifact_seal", "catalog_artifact", "gallery_observation_page", "gallery_observation_allocation_page", "gallery_observation_page_descriptor_anchor", "gallery_observation_page_descriptor_component", "gallery_observation_page_descriptor_level", "gallery_observation_page_descriptor_subtree_item_count", "gallery_observation_page_descriptor_seal", "gallery_observation_page_descriptor", "gallery_observation_page_key_bounds_anchor", "gallery_observation_page_key_bounds_first_key", "gallery_observation_page_key_bounds_last_key", "gallery_observation_page_key_bounds_seal", "gallery_observation_page_key_bounds", "gallery_observation_page_child", "gallery_observation_discovery_fingerprint", "analysis_run_anchor", "analysis_run_build_id", "analysis_run_policy_id", "analysis_run_input_manifest_sha256", "analysis_run_identity", "analysis_run_started_at", "analysis_run_state", "analysis_run_descriptor_seal", "analysis_run_completed_at", "analysis_run", "analysis_state_anchor", "analysis_state_component_anchor", "analysis_state_component_row_count", "analysis_state_component_sealed_at", "analysis_state_component_completion_seal", "analysis_state_component_seal", "analysis_exclusion_delta_anchor", "analysis_exclusion_delta_old_excluded", "analysis_exclusion_delta_new_excluded", "analysis_exclusion_delta_change", "analysis_exclusion_delta_seal", "analysis_exclusion_delta", "analysis_file_hash_decision_shadow_anchor", "analysis_file_hash_decision_shadow_occurrence_count", "analysis_file_hash_decision_shadow_artist_count", "analysis_file_hash_decision_shadow_maximum_gallery_artist_count", "analysis_file_hash_decision_shadow_seal", "analysis_file_hash_decision_shadow", "analysis_content_owner_candidate_shadow_anchor", "analysis_content_owner_candidate_shadow_content_sha256", "analysis_content_owner_candidate_shadow_prefer_not_already_uploaded", "analysis_content_owner_candidate_shadow_title_scalar_count", "analysis_content_owner_candidate_shadow_download_time", "analysis_content_owner_candidate_shadow_seal", "analysis_content_owner_candidate_shadow", "analysis_content_owner_shadow_anchor", "analysis_content_owner_shadow_owner_gallery_id", "analysis_content_owner_shadow_seal", "analysis_content_owner_shadow", "analysis_impacted_content_anchor", "analysis_impacted_content_provenance", "analysis_impacted_content_witness", "analysis_impacted_content_seal", "analysis_impacted_content", "analysis_impacted_gid_anchor", "analysis_impacted_gid_provenance", "analysis_impacted_gid_witness", "analysis_impacted_gid_seal", "analysis_impacted_gid", "analysis_gid_candidate_shadow", "analysis_gid_candidate_tombstone", "analysis_gid_candidate_resolved", "analysis_gid_winner_selection", "analysis_gid_winner_shadow", "analysis_gid_winner_tombstone", "analysis_gid_winner_resolved", "analysis_batch_receipt_page_limit", "analysis_checkpoint", "publication_checkpoint", "publication_batch_receipt", "publication_candidate_anchor", "publication_candidate_analysis_id", "publication_candidate_reserved_revision", "publication_candidate_artifact_policy_id", "publication_candidate_display_title_policy_id", "publication_candidate_artifacts_required", "publication_candidate_created_at", "publication_candidate_definition_seal", "publication_candidate", "publication_candidate_projection_seal", "publication_candidate_projection", "publication_candidate_base_publication_commit", "publication_candidate_base_catalog", "publication_candidate_base_source", "publication_selection", "publication_stage_anchor", "publication_stage_order", "publication_stage_cursor_codec", "publication_stage_seal", "publication_stage", "publication_checkpoint_anchor", "publication_checkpoint_generation", "publication_checkpoint_cursor", "publication_checkpoint_processed_count", "publication_checkpoint_state", "publication_checkpoint_updated_at", "publication_checkpoint_seal", "publication_batch_receipt_anchor", "publication_batch_receipt_coordinate", "publication_batch_receipt_start_cursor", "publication_batch_receipt_start_processed_count", "publication_batch_receipt_next_cursor", "publication_batch_receipt_row_count", "publication_batch_receipt_committed_at", "publication_batch_receipt_seal", "publication_batch_receipt_stored", "publication_finalization_checkpoint_anchor", "publication_finalization_checkpoint_generation", "publication_finalization_checkpoint_cursor", "publication_finalization_checkpoint_processed_count", "publication_finalization_checkpoint_state", "publication_finalization_checkpoint_updated_at", "publication_finalization_checkpoint_seal", "publication_finalization_checkpoint", "publication_finalization_batch_receipt_anchor", "publication_finalization_batch_receipt_coordinate", "publication_finalization_batch_receipt_start_cursor", "publication_finalization_batch_receipt_start_processed_count", "publication_finalization_batch_receipt_next_cursor", "publication_finalization_batch_receipt_row_count", "publication_finalization_batch_receipt_committed_at", "publication_finalization_batch_receipt_seal", "publication_finalization_batch_receipt_stored", "publication_finalization_batch_receipt", "artifact_zip_writer_policy_anchor", "artifact_zip_writer_policy_zip_codec_version", "artifact_zip_writer_policy_compression_method", "artifact_zip_writer_policy_compression_level", "artifact_zip_writer_policy_dos_date", "artifact_zip_writer_policy_dos_time", "artifact_zip_writer_policy_unix_mode", "artifact_zip_writer_policy_general_purpose_flags", "artifact_zip_writer_policy_create_system", "artifact_zip_writer_policy_archive_name_codec_version", "artifact_zip_writer_policy_artifact_name_codec_version", "artifact_zip_writer_policy_identity", "artifact_zip_writer_policy_seal", "artifact_zip_writer_policy", "artifact_storage_codec_anchor", "artifact_storage_codec_adapter_id", "artifact_storage_codec_locator_codec_version", "artifact_storage_codec_protection_token_codec_version", "artifact_storage_codec_seal", "artifact_policy_semantics_anchor", "artifact_policy_semantics_artifact_algorithm_version", "artifact_policy_semantics_max_image_short_side", "artifact_policy_semantics_producer_fingerprint_sha256", "artifact_policy_semantics_identity", "artifact_policy_semantics_seal", "artifact_policy_semantics", "artifact_policy", "artifact_input", "artifact_delta_old", "artifact_delta_new", "artifact_operation", "artifact_blob", "catalog_revision_anchor", "catalog_revision_publication_count", "catalog_revision_descriptor_seal", "catalog_revision_descriptor", "catalog_revision", "catalog_revision_generation", "publication_generation_node", "publication_generation_successor", "display_title_policy_anchor", "display_title_policy_algorithm_version", "display_title_policy_title_sort_policy_id", "display_title_policy_identity", "display_title_policy_seal", "display_title_policy", "title_sort_policy_anchor", "title_sort_policy_algorithm_version", "title_sort_policy_unicode_data_version", "title_sort_policy_identity", "title_sort_policy_seal", "title_sort_policy", "display_title_choice", "title_sort", "catalog_publication_anchor", "catalog_publication_gallery_id", "catalog_publication_summary_sha256", "catalog_publication_language_sha256", "catalog_publication_modified_at", "catalog_publication_seal", "catalog_publication", "catalog_publication_order", "catalog_publication_title_anchor", "catalog_publication_title_source_title_sha256", "catalog_publication_title_source_gallery_name", "catalog_publication_title_seal", "catalog_publication_title", "catalog_publication_content", "contributor_role_registry", "catalog_contributor_anchor", "catalog_contributor_name_sha256", "catalog_contributor_role", "catalog_contributor_identity", "catalog_contributor_seal", "catalog_contributor", "catalog_subject", "publication_commit_anchor", "publication_commit_candidate", "publication_commit_catalog_revision", "publication_commit_source_revision", "publication_commit_generation", "publication_commit_operational_preparation", "publication_commit_operational_policy", "publication_commit_artifact_policy", "publication_commit_display_title_policy", "publication_commit_new_galleries", "publication_commit_changed_galleries", "publication_commit_removed_galleries", "publication_commit_duplicate_losers", "publication_commit_committed_at", "publication_commit_seal", "publication_commit", "publication_commit_finalization", "publication_commit_head_receipt", "publication_commit_head", "publication_receipt", "publication_head_revision", "publication_head_advanced_at", "publication_head"]
+relations = ["canonical_value_allocation_anchor", "canonical_value_allocation_digest_domain", "canonical_value_allocation_byte_count", "canonical_value_allocation_allocated_at", "canonical_value_allocation_seal", "canonical_value_allocation", "canonical_value_page_anchor", "canonical_value_page_payload", "canonical_value_page_coordinate", "canonical_value_page_subtree_item_count", "canonical_value_page_seal", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "source_locator_identity", "source_build_anchor", "source_build_scope_key", "source_build_manifest_policy_id", "source_build_state", "source_build_created_at", "source_build_descriptor_seal", "source_build_sealed_at", "source_build", "source_build_discovery_gallery_count", "build_manifest_anchor", "build_manifest_manifest_sha256", "build_manifest_file_count", "build_manifest_byte_count", "build_manifest_seal", "build_manifest", "gallery_identity", "file_name_identity_anchor", "file_name_identity_name_bytes", "file_name_identity_file_role", "file_name_identity_seal", "file_name_identity", "gallery_observation_file_anchor", "gallery_observation_file_file_no", "gallery_observation_file_file_sha256", "gallery_observation_file_seal", "gallery_observation_file", "gallery_manifest_anchor", "gallery_manifest_manifest_sha256", "gallery_manifest_computed_at", "gallery_manifest_seal", "gallery_manifest", "tag_term_anchor", "tag_term_identity", "tag_term_seal", "tag_term", "source_snapshot_manifest_identity_anchor", "source_snapshot_manifest_identity_gallery_count", "source_snapshot_manifest_identity_file_count", "source_snapshot_manifest_identity_byte_count", "source_snapshot_manifest_identity_seal", "source_snapshot_manifest_identity", "publication_identity", "artifact_location", "artifact_producer_fingerprint_anchor", "artifact_producer_fingerprint_algorithm_version", "artifact_producer_fingerprint_equivalence_class", "artifact_producer_fingerprint_identity", "artifact_producer_fingerprint_seal", "artifact_producer_fingerprint", "artifact_storage_codec", "artifact_semantic_input_anchor", "artifact_semantic_input_source_manifest_component_sha256", "artifact_semantic_input_member_plan_component_sha256", "artifact_semantic_input_effective_content_component_sha256", "artifact_semantic_input_selected_component_sha256", "artifact_semantic_input_owner_component_sha256", "artifact_semantic_input_policy_component_sha256", "artifact_semantic_input_identity", "artifact_semantic_input_seal", "artifact_semantic_input", "prepared_artifact_anchor", "prepared_artifact_sha256", "prepared_artifact_storage_codec_version", "prepared_artifact_storage_generation", "prepared_artifact_protection_token", "prepared_artifact_state", "prepared_artifact_seal", "prepared_artifact", "catalog_artifact_anchor", "catalog_artifact_sha256", "catalog_artifact_semantics_sha256", "catalog_artifact_seal", "catalog_artifact", "gallery_observation_page", "gallery_observation_allocation_page", "gallery_observation_page_descriptor_anchor", "gallery_observation_page_descriptor_component", "gallery_observation_page_descriptor_level", "gallery_observation_page_descriptor_subtree_item_count", "gallery_observation_page_descriptor_seal", "gallery_observation_page_descriptor", "gallery_observation_page_key_bounds_anchor", "gallery_observation_page_key_bounds_first_key", "gallery_observation_page_key_bounds_last_key", "gallery_observation_page_key_bounds_seal", "gallery_observation_page_key_bounds", "gallery_observation_page_child", "gallery_observation_discovery_fingerprint", "analysis_run_anchor", "analysis_run_build_id", "analysis_run_policy_id", "analysis_run_input_manifest_sha256", "analysis_run_identity", "analysis_run_started_at", "analysis_run_state", "analysis_run_descriptor_seal", "analysis_run_completed_at", "analysis_run", "analysis_state_anchor", "analysis_state_component_anchor", "analysis_state_component_row_count", "analysis_state_component_sealed_at", "analysis_state_component_completion_seal", "analysis_state_component_seal", "analysis_exclusion_delta_anchor", "analysis_exclusion_delta_old_excluded", "analysis_exclusion_delta_new_excluded", "analysis_exclusion_delta_change", "analysis_exclusion_delta_seal", "analysis_exclusion_delta", "analysis_file_hash_decision_shadow_anchor", "analysis_file_hash_decision_shadow_occurrence_count", "analysis_file_hash_decision_shadow_artist_count", "analysis_file_hash_decision_shadow_maximum_gallery_artist_count", "analysis_file_hash_decision_shadow_seal", "analysis_file_hash_decision_shadow", "analysis_content_owner_candidate_shadow_anchor", "analysis_content_owner_candidate_shadow_content_sha256", "analysis_content_owner_candidate_shadow_prefer_not_already_uploaded", "analysis_content_owner_candidate_shadow_title_scalar_count", "analysis_content_owner_candidate_shadow_download_time", "analysis_content_owner_candidate_shadow_seal", "analysis_content_owner_candidate_shadow", "analysis_content_owner_shadow_anchor", "analysis_content_owner_shadow_owner_gallery_id", "analysis_content_owner_shadow_seal", "analysis_content_owner_shadow", "analysis_impacted_content_anchor", "analysis_impacted_content_provenance", "analysis_impacted_content_witness", "analysis_impacted_content_seal", "analysis_impacted_content", "analysis_impacted_gid_anchor", "analysis_impacted_gid_provenance", "analysis_impacted_gid_witness", "analysis_impacted_gid_seal", "analysis_impacted_gid", "analysis_gid_candidate_shadow", "analysis_gid_candidate_tombstone", "analysis_gid_candidate_resolved", "analysis_gid_winner_selection", "analysis_gid_winner_shadow", "analysis_gid_winner_tombstone", "analysis_gid_winner_resolved", "analysis_batch_receipt_page_limit", "analysis_checkpoint", "publication_checkpoint", "publication_batch_receipt", "publication_candidate_anchor", "publication_candidate_analysis_id", "publication_candidate_reserved_revision", "publication_candidate_artifact_policy_id", "publication_candidate_display_title_policy_id", "publication_candidate_artifacts_required", "publication_candidate_created_at", "publication_candidate_definition_seal", "publication_candidate", "publication_candidate_projection_seal", "publication_candidate_projection", "publication_candidate_base_publication_commit", "publication_candidate_base_catalog", "publication_candidate_base_source", "publication_selection", "publication_stage_anchor", "publication_stage_order", "publication_stage_cursor_codec", "publication_stage_seal", "publication_stage", "publication_checkpoint_anchor", "publication_checkpoint_generation", "publication_checkpoint_cursor", "publication_checkpoint_processed_count", "publication_checkpoint_state", "publication_checkpoint_updated_at", "publication_checkpoint_seal", "publication_batch_receipt_anchor", "publication_batch_receipt_coordinate", "publication_batch_receipt_start_cursor", "publication_batch_receipt_start_processed_count", "publication_batch_receipt_next_cursor", "publication_batch_receipt_row_count", "publication_batch_receipt_committed_at", "publication_batch_receipt_seal", "publication_batch_receipt_stored", "publication_finalization_checkpoint_anchor", "publication_finalization_checkpoint_generation", "publication_finalization_checkpoint_cursor", "publication_finalization_checkpoint_processed_count", "publication_finalization_checkpoint_state", "publication_finalization_checkpoint_updated_at", "publication_finalization_checkpoint_seal", "publication_finalization_checkpoint", "publication_finalization_batch_receipt_anchor", "publication_finalization_batch_receipt_coordinate", "publication_finalization_batch_receipt_start_cursor", "publication_finalization_batch_receipt_start_processed_count", "publication_finalization_batch_receipt_next_cursor", "publication_finalization_batch_receipt_row_count", "publication_finalization_batch_receipt_committed_at", "publication_finalization_batch_receipt_seal", "publication_finalization_batch_receipt_stored", "publication_finalization_batch_receipt", "artifact_zip_writer_policy_anchor", "artifact_zip_writer_policy_zip_codec_version", "artifact_zip_writer_policy_compression_method", "artifact_zip_writer_policy_compression_level", "artifact_zip_writer_policy_dos_date", "artifact_zip_writer_policy_dos_time", "artifact_zip_writer_policy_unix_mode", "artifact_zip_writer_policy_general_purpose_flags", "artifact_zip_writer_policy_create_system", "artifact_zip_writer_policy_archive_name_codec_version", "artifact_zip_writer_policy_artifact_name_codec_version", "artifact_zip_writer_policy_identity", "artifact_zip_writer_policy_seal", "artifact_zip_writer_policy", "artifact_storage_codec_anchor", "artifact_storage_codec_adapter_id", "artifact_storage_codec_locator_codec_version", "artifact_storage_codec_protection_token_codec_version", "artifact_storage_codec_seal", "artifact_policy_semantics_anchor", "artifact_policy_semantics_artifact_algorithm_version", "artifact_policy_semantics_max_image_short_side", "artifact_policy_semantics_producer_fingerprint_sha256", "artifact_policy_semantics_identity", "artifact_policy_semantics_seal", "artifact_policy_semantics", "artifact_policy", "artifact_input", "artifact_delta_old", "artifact_delta_new", "artifact_operation", "artifact_blob", "catalog_revision_anchor", "catalog_revision_publication_count", "catalog_revision_descriptor_seal", "catalog_revision_descriptor", "catalog_revision", "catalog_revision_generation", "publication_generation_node", "publication_generation_successor", "display_title_policy_anchor", "display_title_policy_algorithm_version", "display_title_policy_title_sort_policy_id", "display_title_policy_identity", "display_title_policy_seal", "display_title_policy", "title_sort_policy_anchor", "title_sort_policy_algorithm_version", "title_sort_policy_unicode_data_version", "title_sort_policy_identity", "title_sort_policy_seal", "title_sort_policy", "display_title_choice", "title_sort", "catalog_publication_anchor", "catalog_publication_gallery_id", "catalog_publication_summary_sha256", "catalog_publication_language_sha256", "catalog_publication_modified_at", "catalog_publication_seal", "catalog_publication", "catalog_publication_order", "catalog_publication_title_anchor", "catalog_publication_title_source_title_sha256", "catalog_publication_title_source_gallery_name", "catalog_publication_title_seal", "catalog_publication_title", "catalog_publication_content", "contributor_role_registry", "catalog_contributor_anchor", "catalog_contributor_name_sha256", "catalog_contributor_role", "catalog_contributor_identity", "catalog_contributor_seal", "catalog_contributor", "catalog_subject", "publication_commit_anchor", "publication_commit_candidate", "publication_commit_catalog_revision", "publication_commit_source_revision", "publication_commit_generation", "publication_commit_operational_preparation", "publication_commit_operational_policy", "publication_commit_artifact_policy", "publication_commit_display_title_policy", "publication_commit_new_galleries", "publication_commit_changed_galleries", "publication_commit_removed_galleries", "publication_commit_duplicate_losers", "publication_commit_committed_at", "publication_commit_seal", "publication_commit", "publication_commit_finalization", "publication_commit_head_receipt", "publication_commit_head", "publication_receipt", "publication_head_revision", "publication_head_advanced_at", "publication_head"]
 covers = [
   "machine_contract.physical-domains",
   "byte_domain.source_gallery_name.runtime_obligation",
@@ -2698,7 +2677,7 @@ ready_check = "catalog_refinement.check_retention_contract_v1"
 writer_hook = "catalog_writer.validate_retention_transition"
 writer_hook_version = 1
 scope = "catalog.retention"
-relations = ["source_head", "publication_head", "publication_candidate", "publication_receipt", "source_build", "analysis_run", "source_revision", "source_revision_provenance", "source_snapshot_manifest_identity", "analysis_snapshot_manifest", "canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "canonical_value_identity", "gallery_identity_anchor", "gallery_identity_coordinate", "gallery_identity_gallery_key", "gallery_identity_seal", "gallery_identity", "file_name_identity_anchor", "file_name_identity_name_bytes", "file_name_identity_file_role", "file_name_identity_seal", "file_name_identity", "gallery_observation_allocation", "gallery_observation_file_anchor", "gallery_observation_file_file_no", "gallery_observation_file_file_sha256", "gallery_observation_file_seal", "gallery_observation_file", "gallery_observation", "gallery_observation_tree_root", "gallery_observation_page", "gallery_observation_allocation_page", "gallery_observation_page_descriptor", "gallery_observation_page_key_bounds", "gallery_observation_page_child", "tag_term_anchor", "tag_term_identity", "tag_term_seal", "tag_term", "catalog_revision"]
+relations = ["source_head", "publication_head", "publication_candidate", "publication_receipt", "source_build", "analysis_run", "source_revision", "source_revision_provenance", "source_snapshot_manifest_identity", "analysis_snapshot_manifest", "canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "canonical_value_identity", "gallery_identity", "file_name_identity_anchor", "file_name_identity_name_bytes", "file_name_identity_file_role", "file_name_identity_seal", "file_name_identity", "gallery_observation_allocation", "gallery_observation_file_anchor", "gallery_observation_file_file_no", "gallery_observation_file_file_sha256", "gallery_observation_file_seal", "gallery_observation_file", "gallery_observation", "gallery_observation_tree_root", "gallery_observation_page", "gallery_observation_allocation_page", "gallery_observation_page_descriptor", "gallery_observation_page_key_bounds", "gallery_observation_page_child", "tag_term_anchor", "tag_term_identity", "tag_term_seal", "tag_term", "catalog_revision"]
 covers = ["machine_contract.retention", "canonical_value_page_contract.cleanup_rule", "gallery_observation_page_contract.cleanup_rule"]
 description = "Validate active/working/pending-receipt/overlay-descendant blockers and enforce the exported child-first phase DAG before pruning any candidate, revision, analysis, or source-build state; delete source_revision_provenance as an ANALYSIS_RUN child while retaining the self-contained source revision and manifest."
 
@@ -2733,7 +2712,7 @@ relations = ["artifact_semantic_input_effective_content_component_sha256", "arti
 [[canonical_reference_role]]
 attribute = "locator_sha256"
 digest_domain = "source_relative_locator_v1"
-relations = ["gallery_identity_coordinate", "source_locator_identity"]
+relations = ["gallery_identity", "source_locator_identity"]
 
 [[canonical_reference_role]]
 attribute = "language_sha256"
@@ -4295,7 +4274,7 @@ fds = [
 ]
 foreign_keys = [
   { attributes = ["build_id"], relation = "source_build_descriptor_seal", referenced_attributes = ["build_id"] },
-  { attributes = ["gallery_id"], relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
+  { attributes = ["gallery_id"], relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
 ]
 rationale = "Complete expected source membership uploaded in bounded transactions from one provider-private typed discovery spool. position is server-derived zero-based order by exact unsigned locator_sha256 bytes; the alternate key rejects duplicate locators/galleries. This persisted set, not an audit digest or caller count, is assembly authority."
 
@@ -4313,57 +4292,8 @@ foreign_keys = [
 rationale = "Type the exact canonical source-relative locator payload and expose only its validated final UTF-8 segment. Full nested locators may share a leaf name, so source_gallery_name is deliberately not a candidate key."
 
 [[relation]]
-name = "gallery_identity_anchor"
-kind = "source_of_truth"
-attributes = ["gallery_id"]
-declared_keys = [["gallery_id"]]
-fds = []
-rationale = "Allocate one opaque positive gallery join surrogate before its stable location and gallery-key facts."
-
-[[relation]]
-name = "gallery_identity_coordinate"
-kind = "source_of_truth"
-attributes = ["scope_key", "locator_sha256", "gallery_id"]
-declared_keys = [["scope_key", "locator_sha256"], ["gallery_id"]]
-fds = [
-  { determinant = ["scope_key", "locator_sha256"], dependent = ["gallery_id"] },
-  { determinant = ["gallery_id"], dependent = ["scope_key", "locator_sha256"] },
-]
-foreign_keys = [
-  { attributes = ["gallery_id"], relation = "gallery_identity_anchor", referenced_attributes = ["gallery_id"] },
-  { attributes = ["scope_key"], relation = "source_scope_seal", referenced_attributes = ["scope_key"] },
-  { attributes = ["locator_sha256"], relation = "source_locator_identity", referenced_attributes = ["locator_sha256"] },
-]
-rationale = "Map the true source-scope/locator location key one-to-one to its gallery surrogate without repeating the gallery digest."
-
-[[relation]]
-name = "gallery_identity_gallery_key"
-kind = "source_of_truth"
-attributes = ["gallery_id", "gallery_key"]
-declared_keys = [["gallery_id"], ["gallery_key"]]
-fds = [
-  { determinant = ["gallery_id"], dependent = ["gallery_key"] },
-  { determinant = ["gallery_key"], dependent = ["gallery_id"] },
-]
-foreign_keys = [{ attributes = ["gallery_id"], relation = "gallery_identity_anchor", referenced_attributes = ["gallery_id"] }]
-rationale = "Store the one-to-one domain-separated stable gallery digest as the sole fact beside its surrogate."
-
-[[relation]]
-name = "gallery_identity_seal"
-kind = "source_of_truth"
-attributes = ["gallery_id"]
-declared_keys = [["gallery_id"]]
-fds = []
-foreign_keys = [
-  { attributes = ["gallery_id"], relation = "gallery_identity_anchor", referenced_attributes = ["gallery_id"] },
-  { attributes = ["gallery_id"], relation = "gallery_identity_coordinate", referenced_attributes = ["gallery_id"] },
-  { attributes = ["gallery_id"], relation = "gallery_identity_gallery_key", referenced_attributes = ["gallery_id"] },
-]
-rationale = "PK-only completion seal inserted after the stable coordinate and gallery-key facts agree."
-
-[[relation]]
 name = "gallery_identity"
-kind = "controlled_materialization"
+kind = "source_of_truth"
 attributes = ["gallery_id", "gallery_key", "scope_key", "locator_sha256"]
 declared_keys = [["gallery_id"], ["gallery_key"], ["scope_key", "locator_sha256"]]
 fds = [
@@ -4371,9 +4301,14 @@ fds = [
   { determinant = ["gallery_key"], dependent = ["gallery_id", "scope_key", "locator_sha256"] },
   { determinant = ["scope_key", "locator_sha256"], dependent = ["gallery_id", "gallery_key"] },
 ]
-foreign_keys = [{ attributes = ["gallery_id"], relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] }]
-rationale = "Preserve the historical gallery location shape only for complete collision-checked identity families."
-materialization = { authoritative = false, storage = "logical_view", rationale = "Join the stable coordinate and gallery-key facts only through the PK-only completion seal.", derived_from = ["gallery_identity_anchor", "gallery_identity_coordinate", "gallery_identity_gallery_key", "gallery_identity_seal"], refresh_strategy = "read-only non-materialized sealed vertical join" }
+foreign_keys = [
+  { attributes = ["scope_key"], relation = "source_scope_seal", referenced_attributes = ["scope_key"] },
+  { attributes = ["locator_sha256"], relation = "source_locator_identity", referenced_attributes = ["locator_sha256"] },
+]
+required_indexes = [
+  { name = "ix_gallery_identity_locator_sha256", attributes = ["locator_sha256"] },
+]
+rationale = "Store each immutable gallery surrogate, domain-separated gallery digest, and exact source-scope/locator coordinate in one BCNF relation. gallery_id, gallery_key, and (scope_key, locator_sha256) are all candidate keys, so every nontrivial dependency has a superkey determinant while the single row makes partial identity families unrepresentable."
 
 [[relation]]
 name = "gallery_observation_allocation"
@@ -4384,7 +4319,7 @@ fds = [
   { determinant = ["gallery_id", "observation_id"], dependent = ["allocated_at"] },
 ]
 foreign_keys = [
-  { attributes = ["gallery_id"], relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
+  { attributes = ["gallery_id"], relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
 ]
 rationale = "Allocate a gallery-local positive observation ID before any staged child is written. Allocation alone is never readable observation authority; the immutable gallery_observation seal is inserted last."
 
@@ -4614,7 +4549,7 @@ fds = [
   { determinant = ["gallery_id"], dependent = ["source_gallery_name"] },
 ]
 foreign_keys = [
-  { attributes = ["gallery_id"], relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
+  { attributes = ["gallery_id"], relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
   { attributes = ["source_gallery_name"], relation = "source_gallery_name_gid", referenced_attributes = ["source_gallery_name"] },
 ]
 materialization = { authoritative = false, rationale = "Provide one FK-addressable narrow access path from a gallery location to its exact parser basename without repeating GID or upload time.", derived_from = ["gallery_identity", "source_locator_identity", "source_gallery_name_gid"], refresh_strategy = "insert or exact-compare only the source_gallery_name obtained by joining gallery_identity.locator_sha256 to source_locator_identity after its deterministic basename-to-GID row exists" }
@@ -5871,7 +5806,7 @@ fds = [
 ]
 foreign_keys = [
   { attributes = ["analysis_id"], relation = "analysis_run_descriptor_seal", referenced_attributes = ["analysis_id"] },
-  { attributes = ["gallery_id"], relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
+  { attributes = ["gallery_id"], relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
 ]
 materialization = { authoritative = false, rationale = "Durably store only the exact added, removed, or observation-replaced gallery delta; target and old membership are joined directly from analysis_run.build_id and analysis_baseline without a copied union table.", derived_from = ["analysis_run", "analysis_baseline", "source_build_gallery"], refresh_strategy = "compare the two immutable build memberships in receipted keyset batches, persist only differences, and freeze before impact expansion" }
 
@@ -5956,7 +5891,7 @@ declared_keys = [["analysis_id", "gallery_id"]]
 fds = []
 foreign_keys = [
   { attributes = ["analysis_id"], relation = "analysis_run_descriptor_seal", referenced_attributes = ["analysis_id"] },
-  { attributes = ["gallery_id"], relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
+  { attributes = ["gallery_id"], relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
 ]
 materialization = { authoritative = false, rationale = "Persist only the transitive old-or-new gallery workset whose effective multiset, owner group, GID winner, or artifact input can change after global spam deltas.", derived_from = ["analysis_changed_gallery", "analysis_exclusion_delta", "gallery_observation_file_hash_occurrence", "analysis_baseline", "source_build_gallery"], refresh_strategy = "expand only affected keys to a fixed point in receipted bounded batches under analysis_checkpoint, then freeze" }
 
@@ -6179,7 +6114,7 @@ declared_keys = [["analysis_id", "gallery_id"]]
 fds = []
 foreign_keys = [
   { attributes = ["analysis_id"], relation = "analysis_run_descriptor_seal", referenced_attributes = ["analysis_id"] },
-  { attributes = ["gallery_id"], relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
+  { attributes = ["gallery_id"], relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
 ]
 rationale = "Allocate one changed content-owner candidate family for an impacted gallery."
 
@@ -6258,7 +6193,7 @@ declared_keys = [["analysis_id", "gallery_id"]]
 fds = []
 foreign_keys = [
   { attributes = ["analysis_id"], relation = "analysis_run_descriptor_seal", referenced_attributes = ["analysis_id"] },
-  { attributes = ["gallery_id"], relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
+  { attributes = ["gallery_id"], relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
 ]
 materialization = { authoritative = false, rationale = "Suppress inherited content candidates removed by the exact old/new snapshot delta.", derived_from = ["analysis_impacted_gallery", "analysis_content_owner_candidate_resolved"], refresh_strategy = "write exactly one sealed shadow family or tombstone per affected gallery", overlay_role = "tombstone", state_component = "content_owner_candidate", mutually_exclusive_with = "analysis_content_owner_candidate_shadow", exactness = "changed_keys_or_full_compaction" }
 
@@ -6272,7 +6207,7 @@ fds = [
 ]
 foreign_keys = [
   { attributes = ["analysis_id"], relation = "analysis_run_descriptor_seal", referenced_attributes = ["analysis_id"] },
-  { attributes = ["gallery_id"], relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
+  { attributes = ["gallery_id"], relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
   { attributes = ["content_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
 ]
 materialization = { authoritative = false, rationale = "Expose exactly one nearest-ancestor content candidate for every eligible gallery.", derived_from = ["analysis_state_ancestry", "analysis_content_owner_candidate_shadow", "analysis_content_owner_candidate_tombstone"], refresh_strategy = "logical bounded-depth view; minimum ancestor depth wins and tombstone suppresses the key", overlay_role = "resolved", state_component = "content_owner_candidate", resolution = "minimum_ancestor_depth", max_overlay_depth = 16, storage = "logical_view" }
@@ -6300,7 +6235,7 @@ fds = [
 ]
 foreign_keys = [
   { attributes = ["analysis_id", "content_sha256"], relation = "analysis_content_owner_shadow_anchor", referenced_attributes = ["analysis_id", "content_sha256"] },
-  { attributes = ["owner_gallery_id"], relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
+  { attributes = ["owner_gallery_id"], relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
 ]
 materialization = { authoritative = false, rationale = "Store only the exact selected owner gallery, with per-analysis owner uniqueness.", derived_from = ["analysis_content_owner_candidate_resolved", "analysis_impacted_content"], refresh_strategy = "insert the exact maximum candidate and exact-compare on replay" }
 
@@ -6353,7 +6288,7 @@ fds = [
 ]
 foreign_keys = [
   { attributes = ["analysis_id"], relation = "analysis_run_descriptor_seal", referenced_attributes = ["analysis_id"] },
-  { attributes = ["owner_gallery_id"], relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
+  { attributes = ["owner_gallery_id"], relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
   { attributes = ["content_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
 ]
 materialization = { authoritative = false, rationale = "Expose one stable owner for every complete content group, equal to the full evaluator.", derived_from = ["analysis_state_ancestry", "analysis_content_owner_shadow", "analysis_content_owner_tombstone"], refresh_strategy = "logical bounded-depth view; minimum ancestor depth wins and tombstone suppresses the key", overlay_role = "resolved", state_component = "content_owner", resolution = "minimum_ancestor_depth", max_overlay_depth = 16, storage = "logical_view" }
@@ -6366,7 +6301,7 @@ declared_keys = [["analysis_id", "gallery_id"]]
 fds = []
 foreign_keys = [
   { attributes = ["analysis_id"], relation = "analysis_run_descriptor_seal", referenced_attributes = ["analysis_id"] },
-  { attributes = ["gallery_id"], relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
+  { attributes = ["gallery_id"], relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
 ]
 materialization = { authoritative = false, rationale = "Store only changed GID-candidate membership, or every eligible membership at depth-zero compaction; GID and comparator facts remain derivable from pinned immutable authority.", derived_from = ["analysis_impacted_gallery", "analysis_content_owner_resolved", "analysis_run_build_id", "source_build_gallery", "gallery_observation_metadata"], refresh_strategy = "write exactly one membership row or tombstone per affected gallery after deriving eligibility from the analysis-pinned build; replay exact-compares the complete selected membership page and never persists GID, comparator bytes, or audit digests", overlay_role = "shadow", state_component = "gid_candidate", mutually_exclusive_with = "analysis_gid_candidate_tombstone", exactness = "changed_keys_or_full_compaction" }
 
@@ -6378,7 +6313,7 @@ declared_keys = [["analysis_id", "gallery_id"]]
 fds = []
 foreign_keys = [
   { attributes = ["analysis_id"], relation = "analysis_run_descriptor_seal", referenced_attributes = ["analysis_id"] },
-  { attributes = ["gallery_id"], relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
+  { attributes = ["gallery_id"], relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
 ]
 materialization = { authoritative = false, rationale = "Suppress inherited GID-candidate membership removed by the exact old/new snapshot delta.", derived_from = ["analysis_impacted_gallery", "analysis_gid_candidate_resolved"], refresh_strategy = "write exactly one membership row or tombstone per affected gallery", overlay_role = "tombstone", state_component = "gid_candidate", mutually_exclusive_with = "analysis_gid_candidate_shadow", exactness = "changed_keys_or_full_compaction" }
 
@@ -6390,7 +6325,7 @@ declared_keys = [["analysis_id", "gallery_id"]]
 fds = []
 foreign_keys = [
   { attributes = ["analysis_id"], relation = "analysis_run_descriptor_seal", referenced_attributes = ["analysis_id"] },
-  { attributes = ["gallery_id"], relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
+  { attributes = ["gallery_id"], relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
 ]
 materialization = { authoritative = false, rationale = "Expose exactly one nearest-ancestor membership for every eligible gallery without copying its derivable GID or comparator.", derived_from = ["analysis_state_ancestry", "analysis_gid_candidate_shadow", "analysis_gid_candidate_tombstone"], refresh_strategy = "logical bounded-depth membership view; minimum ancestor depth wins and tombstone suppresses the key", overlay_role = "resolved", state_component = "gid_candidate", resolution = "minimum_ancestor_depth", max_overlay_depth = 16, storage = "logical_view" }
 
@@ -6402,9 +6337,9 @@ declared_keys = [["analysis_id", "winner_gallery_id"]]
 fds = []
 foreign_keys = [
   { attributes = ["analysis_id"], relation = "analysis_run_descriptor_seal", referenced_attributes = ["analysis_id"] },
-  { attributes = ["winner_gallery_id"], relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
+  { attributes = ["winner_gallery_id"], relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
 ]
-materialization = { authoritative = false, rationale = "Persist only the selected gallery for a changed GID group; the group GID is functionally determined by immutable gallery metadata and must not be duplicated in this BCNF base.", derived_from = ["analysis_gid_candidate_resolved", "analysis_impacted_gid", "analysis_content_owner_candidate_resolved", "analysis_run_build_id", "source_build_gallery", "gallery_observation_metadata", "gallery_identity_coordinate"], refresh_strategy = "for every frozen impacted GID, select the exact five-atom descending maximum from its complete resolved membership; insert only winner_gallery_id and exact-compare the derived logical winner on replay" }
+materialization = { authoritative = false, rationale = "Persist only the selected gallery for a changed GID group; the group GID is functionally determined by immutable gallery metadata and must not be duplicated in this BCNF base.", derived_from = ["analysis_gid_candidate_resolved", "analysis_impacted_gid", "analysis_content_owner_candidate_resolved", "analysis_run_build_id", "source_build_gallery", "gallery_observation_metadata", "gallery_identity"], refresh_strategy = "for every frozen impacted GID, select the exact five-atom descending maximum from its complete resolved membership; insert only winner_gallery_id and exact-compare the derived logical winner on replay" }
 
 [[relation]]
 name = "analysis_gid_winner_shadow"
@@ -6418,7 +6353,7 @@ fds = [
 ]
 foreign_keys = [
   { attributes = ["analysis_id"], relation = "analysis_run_descriptor_seal", referenced_attributes = ["analysis_id"] },
-  { attributes = ["winner_gallery_id"], relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
+  { attributes = ["winner_gallery_id"], relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
   { attributes = ["analysis_id", "gid"], relation = "analysis_impacted_gid", referenced_attributes = ["analysis_id", "gid"] },
 ]
 materialization = { authoritative = false, storage = "logical_view", view_pattern = "analysis_gid_winner_keyset", rationale = "Derive each changed winner GID from its selected gallery through the analysis-pinned build and immutable metadata, then require the same key in the frozen impacted-GID set.", derived_from = ["analysis_gid_winner_selection", "analysis_impacted_gid", "analysis_run_build_id", "source_build_gallery", "gallery_observation_metadata"], refresh_strategy = "read-only exact set join; every raw selection must produce exactly one current metadata GID and exactly one impacted-GID key, with runtime terminal validation rejecting duplicates, orphans, noncandidates, and nonmaximal selections", overlay_role = "shadow", state_component = "gid_winner", mutually_exclusive_with = "analysis_gid_winner_tombstone", exactness = "changed_keys_or_full_compaction" }
@@ -6446,7 +6381,7 @@ fds = [
 ]
 foreign_keys = [
   { attributes = ["analysis_id"], relation = "analysis_run_descriptor_seal", referenced_attributes = ["analysis_id"] },
-  { attributes = ["winner_gallery_id"], relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
+  { attributes = ["winner_gallery_id"], relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
 ]
 materialization = { authoritative = false, rationale = "Expose exactly one derived winner for every complete eligible GID, equal to the five-atom full evaluator without a persisted audit digest.", derived_from = ["analysis_state_ancestry", "analysis_gid_winner_shadow", "analysis_gid_winner_tombstone"], refresh_strategy = "logical bounded-depth view; minimum ancestor depth wins and tombstone suppresses the key", overlay_role = "resolved", state_component = "gid_winner", resolution = "minimum_ancestor_depth", max_overlay_depth = 16, storage = "logical_view" }
 
@@ -6979,7 +6914,7 @@ fds = [
 ]
 foreign_keys = [
   { attributes = ["candidate_id"], relation = "publication_candidate_definition_seal", referenced_attributes = ["candidate_id"] },
-  { attributes = ["gallery_id"], relation = "gallery_identity_seal", referenced_attributes = ["gallery_id"] },
+  { attributes = ["gallery_id"], relation = "gallery_identity", referenced_attributes = ["gallery_id"] },
   { attributes = ["publication_key"], relation = "publication_identity", referenced_attributes = ["publication_key"] },
 ]
 materialization = { authoritative = false, rationale = "Freeze only the complete selected winner identity set from canonical resolved owner/GID state and publication-key.v1 before artifact preparation; no not-yet-built catalog item audit digest is invented at selection time.", derived_from = ["publication_candidate", "source_build_gallery", "gallery_observation_file", "file_name_identity", "analysis_file_hash_decision_resolved", "gallery_observation_metadata", "analysis_content_owner_resolved", "analysis_gid_winner_resolved", "gallery_identity", "publication_identity"], refresh_strategy = "BUILD_SELECTION evaluates the exact content-owner-and-GID-winner intersection in bounded gallery_id pages; VALIDATE_SELECTION independently merge-compares every identity field and its terminal processed_count becomes publication_count" }

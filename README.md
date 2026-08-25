@@ -15,22 +15,23 @@ sibling packages.
 
 The current schema is a clean epoch-2 design:
 
-- 361 catalog data-plane base relations checked as BCNF, plus 82 generated
-  logical views for read-oriented projections. Fifty-three generic sealed vertical
-  families keep every new base at its semantic key plus at most one value.
+- 358 catalog data-plane base relations checked as BCNF, plus 81 generated
+  logical views for read-oriented projections. Fifty-two generic sealed vertical
+  families keep ordinary bases at their semantic key plus at most one value.
 - 28 declared decompositions, each checked as lossless and
   dependency-preserving.
-- 75 operational control-plane base relations checked as BCNF, plus one
-  derived activation view. The base count includes the epoch-control relation;
-  the generated CREATE-only provider owns the other 74 bases and the view.
+- 75 operational control-plane base relations checked as BCNF, one of which is
+  the separately created epoch-control relation, plus one derived activation
+  view. The complete epoch therefore contains 358 + 75 = 433 base tables.
 - One generated physical schema for SQLite and MariaDB, with backend-specific
   SQL rendered from the same closed-world manifests.
-- A separate physical-width gate requires each `catalog_*` base table to have
-  its semantic primary key plus at most one atomic non-key value. It currently
-  reports all 361 bases compliant with no width debt;
-  logical views are excluded from that policy.
-- The closed catalog physical-domain authority contains exactly 320 relations:
-  260 mutation relations and 60 read-only views. The complete publication graph
+- A separate physical-width gate requires each ordinary `catalog_*` base table
+  to have its semantic primary key plus at most one atomic non-key value. It
+  reports 357 narrow bases and one exact approved-wide BCNF exception:
+  `catalog_gallery_identities`, which stores the immutable gallery key and
+  source coordinate together; logical views are excluded from that policy.
+- The closed catalog physical-domain authority contains exactly 316 relations:
+  257 mutation relations and 59 read-only views. The complete publication graph
   is inside that closure, including permanent finalization replay state.
 - The generated provider installs exactly 4,646 typed bootstrap rows per
   backend, including all 17 fixed 256-shard cleanup ranges.

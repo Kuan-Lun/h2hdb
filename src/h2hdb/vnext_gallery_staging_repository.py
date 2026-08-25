@@ -4385,17 +4385,11 @@ def _persist_metadata_facts(
 
 def _derive_source_gallery_name(connector: Any, *, gallery_id: int) -> bytes:
     row = connector.fetch_one(
-        "SELECT coordinate.locator_sha256, locator.source_gallery_name "
-        "FROM catalog_gallery_identity_seals AS seal "
-        "JOIN catalog_gallery_identity_anchors AS anchor "
-        "ON anchor.gallery_id = seal.gallery_id "
-        "JOIN catalog_gallery_identity_coordinates AS coordinate "
-        "ON coordinate.gallery_id = seal.gallery_id "
-        "JOIN catalog_gallery_identity_gallery_keys AS gallery_key "
-        "ON gallery_key.gallery_id = seal.gallery_id "
+        "SELECT identity.locator_sha256, locator.source_gallery_name "
+        "FROM catalog_gallery_identities AS identity "
         "JOIN catalog_source_locator_identity AS locator "
-        "ON locator.locator_sha256 = coordinate.locator_sha256 "
-        "WHERE seal.gallery_id = %s",
+        "ON locator.locator_sha256 = identity.locator_sha256 "
+        "WHERE identity.gallery_id = %s",
         (gallery_id,),
     )
     if len(row) != 2:

@@ -7,11 +7,12 @@ Guidance for coding agents working in the `h2hdb` core repository.
 This package owns the SQLite/MariaDB connectors, greenfield schema epoch,
 normalized catalog and operational relations, bounded transactions, durable
 coordination state, and public application facades. The supported schema is
-epoch 2/version 1: 361 catalog BCNF base relations, 82 intentional logical
-views, 28 lossless and dependency-preserving binary decompositions, 53
-sealed vertical families, 361 narrow catalog bases with no width debt,
-an exact 320-relation catalog physical-domain closure (260 mutation relations
-and 60 read-only views), 75 operational BCNF base relations, and one derived
+epoch 2/version 1: 358 catalog BCNF base relations, 81 intentional logical
+views, 28 lossless and dependency-preserving binary decompositions, 52
+sealed vertical families, 357 narrow catalog bases plus one intentional wide
+BCNF `gallery_identity` base, an exact 316-relation catalog physical-domain
+closure (257 mutation relations and 59 read-only views), 75 operational BCNF
+base relations, and one derived
 operational view. The generated provider installs exactly 4,646 typed bootstrap
 rows per backend.
 
@@ -95,11 +96,14 @@ the generated runtime-provider artifact. A relation-count change must be
 reflected consistently in manifests, checks, and documentation.
 
 BCNF and physical width are separate gates. Every physical `catalog_*` base
-table is intended to contain its semantic primary key plus at most one atomic
-non-key column; logical views are exempt. The current narrow-layout checker
-records all 361 bases as compliant and has no width-debt ledger. Never hide an
-ordinary value in a primary key, packed scalar, JSON, or
-EAV representation to make that count appear smaller.
+table except `catalog_gallery_identities` is intended to contain its semantic
+primary key plus at most one atomic non-key column; logical views are exempt.
+The gallery identity exception deliberately keeps `gallery_key`, `scope_key`,
+and `locator_sha256` beside `gallery_id`, with all three semantic candidate keys
+declared and checked as BCNF. The current width checker records 357 narrow bases
+and that one exact approved-wide shape. Never hide an ordinary value in a
+primary key, packed scalar, JSON, or EAV representation to make a count appear
+smaller.
 
 ## Formal verification
 

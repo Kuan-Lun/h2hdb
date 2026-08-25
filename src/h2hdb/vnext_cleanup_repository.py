@@ -3391,7 +3391,7 @@ AND NOT EXISTS (SELECT 1 FROM operational_gallery_redownload_states x
 
 
 def _gallery_identity_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
-    root = "catalog_gallery_identity_anchors"
+    root = "catalog_gallery_identities"
     key = ("gallery_id",)
     return {
         "GI_OBSERVATION_ALLOCATOR": (
@@ -3410,23 +3410,7 @@ def _gallery_identity_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                 key,
             ),
         ),
-        "GI_ROOT": (
-            _owned_spec(
-                root,
-                key,
-                root,
-                key,
-                delete_sql=(
-                    "DELETE FROM catalog_gallery_identity_seals WHERE gallery_id = %s",
-                    "DELETE FROM catalog_gallery_identity_gallery_keys "
-                    "WHERE gallery_id = %s",
-                    "DELETE FROM catalog_gallery_identity_coordinates "
-                    "WHERE gallery_id = %s",
-                    "DELETE FROM catalog_gallery_identity_anchors "
-                    "WHERE gallery_id = %s",
-                ),
-            ),
-        ),
+        "GI_ROOT": (_owned_spec(root, key, root, key),),
     }
 
 
@@ -3502,10 +3486,10 @@ AND NOT EXISTS (
     WHERE scope_root.source_root_sha256 = r.value_sha256)
 AND NOT EXISTS (
     SELECT 1 FROM catalog_source_scope_source_root_sha256s scope_root
-    JOIN catalog_gallery_identity_coordinates gallery
+    JOIN catalog_gallery_identities gallery
       ON gallery.scope_key = scope_root.scope_key
     WHERE scope_root.source_root_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_gallery_identity_coordinates x
+AND NOT EXISTS (SELECT 1 FROM catalog_gallery_identities x
                 WHERE x.locator_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_gallery_observations x
                 WHERE x.observation_identity_sha256 = r.value_sha256)

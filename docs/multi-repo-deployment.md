@@ -8,14 +8,15 @@ or operational tables directly.
 
 ## Database ownership
 
-There is one epoch-2/version-1 database. Its 361 catalog BCNF base relations,
-82 intentional catalog views, 75 operational BCNF base relations, and one
-operational activation view are generated
-for both SQLite and MariaDB from the same logical manifests.
-The catalog graph has 53 sealed vertical families, 28 checked decompositions,
-361 narrow bases with zero width debt, and an exact 320-relation physical
-authority closure (260 mutation relations plus 60 read-only views). Each
-backend receives exactly 4,646 typed bootstrap rows.
+There is one epoch-2/version-1 database. Its 358 catalog BCNF base relations,
+81 intentional catalog views, 75 operational BCNF base relations, and one
+operational activation view are generated for both SQLite and MariaDB from the
+same logical manifests. One of the 75 operational bases is the separately
+created epoch-control relation, so the database has 358 + 75 = 433 base tables.
+The catalog graph has 52 sealed vertical families, 28 checked decompositions,
+357 narrow bases plus the intentional wide BCNF gallery identity base, and an
+exact 316-relation physical authority closure (257 mutation relations plus 59
+read-only views). Each backend receives exactly 4,646 typed bootstrap rows.
 
 Ingest and coordination workers receive read-write credentials. Catalog-serving
 consumers use read-only credentials and `VNextCatalogFacade`. For SQLite, mount

@@ -3311,24 +3311,10 @@ def test_shared_metadata_cleanup_follows_identity_name_and_gid_reachability(
                     (source_name, gid),
                 ),
                 (
-                    "INSERT INTO catalog_gallery_identity_anchors (gallery_id) "
-                    "VALUES (65)",
-                    (),
-                ),
-                (
-                    "INSERT INTO catalog_gallery_identity_coordinates "
-                    "(scope_key, locator_sha256, gallery_id) VALUES (%s, %s, 65)",
-                    (b"s" * 32, b"l" * 32),
-                ),
-                (
-                    "INSERT INTO catalog_gallery_identity_gallery_keys "
-                    "(gallery_id, gallery_key) VALUES (65, %s)",
-                    (b"g" * 32,),
-                ),
-                (
-                    "INSERT INTO catalog_gallery_identity_seals (gallery_id) "
-                    "VALUES (65)",
-                    (),
+                    "INSERT INTO catalog_gallery_identities "
+                    "(gallery_id, gallery_key, scope_key, locator_sha256) "
+                    "VALUES (65, %s, %s, %s)",
+                    (b"g" * 32, b"s" * 32, b"l" * 32),
                 ),
                 (
                     "INSERT INTO catalog_gallery_source_name_accesses "
@@ -3399,42 +3385,18 @@ def test_gallery_identity_cleanup_retains_witness_only_partial_impact_families(
         _fixture_rows(
             connector,
             [
-                *[
-                    (
-                        "INSERT INTO catalog_gallery_identity_anchors (gallery_id) "
-                        "VALUES (%s)",
-                        (gallery_id,),
-                    )
-                    for gallery_id in (content_gallery_id, gid_gallery_id)
-                ],
                 (
-                    "INSERT INTO catalog_gallery_identity_coordinates "
-                    "(scope_key, locator_sha256, gallery_id) VALUES (%s, %s, %s)",
-                    (b"s" * 32, b"c" * 32, content_gallery_id),
+                    "INSERT INTO catalog_gallery_identities "
+                    "(gallery_id, gallery_key, scope_key, locator_sha256) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (content_gallery_id, b"k" * 32, b"s" * 32, b"c" * 32),
                 ),
                 (
-                    "INSERT INTO catalog_gallery_identity_coordinates "
-                    "(scope_key, locator_sha256, gallery_id) VALUES (%s, %s, %s)",
-                    (b"t" * 32, b"g" * 32, gid_gallery_id),
+                    "INSERT INTO catalog_gallery_identities "
+                    "(gallery_id, gallery_key, scope_key, locator_sha256) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (gid_gallery_id, b"l" * 32, b"t" * 32, b"g" * 32),
                 ),
-                (
-                    "INSERT INTO catalog_gallery_identity_gallery_keys "
-                    "(gallery_id, gallery_key) VALUES (%s, %s)",
-                    (content_gallery_id, b"k" * 32),
-                ),
-                (
-                    "INSERT INTO catalog_gallery_identity_gallery_keys "
-                    "(gallery_id, gallery_key) VALUES (%s, %s)",
-                    (gid_gallery_id, b"l" * 32),
-                ),
-                *[
-                    (
-                        "INSERT INTO catalog_gallery_identity_seals (gallery_id) "
-                        "VALUES (%s)",
-                        (gallery_id,),
-                    )
-                    for gallery_id in (content_gallery_id, gid_gallery_id)
-                ],
                 (
                     "INSERT INTO catalog_a_impacted_content_witnesses "
                     "(analysis_id, content_sha256, witness_gallery_id) "
@@ -3466,7 +3428,7 @@ def test_gallery_identity_cleanup_retains_witness_only_partial_impact_families(
         blocked = _drain(connector, gate, blocked_cycle)
         assert blocked[-1].deleted_count == 0
         assert connector.fetch_all(
-            "SELECT gallery_id FROM catalog_gallery_identity_anchors "
+            "SELECT gallery_id FROM catalog_gallery_identities "
             "WHERE MOD(gallery_id, 256) = %s ORDER BY gallery_id",
             (content_gallery_id,),
         ) == [(content_gallery_id,), (gid_gallery_id,)]
@@ -3493,7 +3455,7 @@ def test_gallery_identity_cleanup_retains_witness_only_partial_impact_families(
         assert unblocked[-1].deleted_count == 2
         assert (
             connector.fetch_all(
-                "SELECT gallery_id FROM catalog_gallery_identity_anchors "
+                "SELECT gallery_id FROM catalog_gallery_identities "
                 "WHERE MOD(gallery_id, 256) = %s ORDER BY gallery_id",
                 (content_gallery_id,),
             )
@@ -3658,7 +3620,7 @@ def test_canonical_source_root_cleanup_waits_for_every_scope_consumer_then_delet
         assert "JOIN catalog_source_build_scope_keys build" in (
             cleanup_module._CANONICAL_VALUE_ELIGIBILITY
         )
-        assert "JOIN catalog_gallery_identity_coordinates gallery" in (
+        assert "JOIN catalog_gallery_identities gallery" in (
             cleanup_module._CANONICAL_VALUE_ELIGIBILITY
         )
 
@@ -3713,13 +3675,7 @@ def test_canonical_source_root_cleanup_waits_for_every_scope_consumer_then_delet
         assert results[-1].deleted_count == 0
         assert _source_scope_family_rows(connector) == before[-1]
 
-        for table in (
-            "catalog_gallery_identity_seals",
-            "catalog_gallery_identity_gallery_keys",
-            "catalog_gallery_identity_coordinates",
-            "catalog_gallery_identity_anchors",
-        ):
-            connector.execute(f"DELETE FROM {table} WHERE gallery_id = 1")
+        connector.execute("DELETE FROM catalog_gallery_identities WHERE gallery_id = 1")
         unreferenced_cycle = _begin(
             connector,
             gate,
@@ -4679,24 +4635,10 @@ def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
             connector,
             [
                 (
-                    "INSERT INTO catalog_gallery_identity_anchors (gallery_id) "
-                    "VALUES (34)",
-                    (),
-                ),
-                (
-                    "INSERT INTO catalog_gallery_identity_coordinates "
-                    "(scope_key, locator_sha256, gallery_id) VALUES (%s, %s, 34)",
-                    (b"s" * 32, b"l" * 32),
-                ),
-                (
-                    "INSERT INTO catalog_gallery_identity_gallery_keys "
-                    "(gallery_id, gallery_key) VALUES (34, %s)",
-                    (b"g" * 32,),
-                ),
-                (
-                    "INSERT INTO catalog_gallery_identity_seals (gallery_id) "
-                    "VALUES (34)",
-                    (),
+                    "INSERT INTO catalog_gallery_identities "
+                    "(gallery_id, gallery_key, scope_key, locator_sha256) "
+                    "VALUES (34, %s, %s, %s)",
+                    (b"g" * 32, b"s" * 32, b"l" * 32),
                 ),
                 (
                     "INSERT INTO operational_gallery_observation_allocators "
@@ -5122,24 +5064,10 @@ def test_live_generation_upload_incoming_page_and_redownload_roots_block(
                     (parent, page),
                 ),
                 (
-                    "INSERT INTO catalog_gallery_identity_anchors (gallery_id) "
-                    "VALUES (44)",
-                    (),
-                ),
-                (
-                    "INSERT INTO catalog_gallery_identity_coordinates "
-                    "(scope_key, locator_sha256, gallery_id) VALUES (%s, %s, 44)",
-                    (b"x" * 32, b"l" * 32),
-                ),
-                (
-                    "INSERT INTO catalog_gallery_identity_gallery_keys "
-                    "(gallery_id, gallery_key) VALUES (44, %s)",
-                    (b"g" * 32,),
-                ),
-                (
-                    "INSERT INTO catalog_gallery_identity_seals (gallery_id) "
-                    "VALUES (44)",
-                    (),
+                    "INSERT INTO catalog_gallery_identities "
+                    "(gallery_id, gallery_key, scope_key, locator_sha256) "
+                    "VALUES (44, %s, %s, %s)",
+                    (b"g" * 32, b"x" * 32, b"l" * 32),
                 ),
                 (
                     "INSERT INTO operational_gallery_redownload_states "

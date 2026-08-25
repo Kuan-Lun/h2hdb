@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Enforce the catalog base-table width policy during verticalization.
+"""Enforce the catalog base-table width policy and explicit exceptions.
 
 This is deliberately separate from the BCNF checker.  BCNF constrains
 functional dependencies; it does not require a relation to have only one
@@ -7,9 +7,11 @@ non-key attribute.  The product policy checked here is stricter and purely
 physical: every ``catalog_*`` base table has a primary key plus at most one
 atomic value column.  Views are excluded, so read models may remain wide.
 
-The current epoch has completed that verticalization.  The empty debt ledger
-rejects any new wide relation, while the closed semantic-role registry rejects
-a hidden value moved into the primary key or an undeclared base table.
+The current epoch intentionally denormalizes the pure-gallery identity family
+into one BCNF relation.  The exact exception registry admits only that reviewed
+shape and rejects any additional or changed wide relation, while the closed
+semantic-role registry rejects a hidden value moved into the primary key or an
+undeclared base table.
 """
 
 from __future__ import annotations
@@ -91,7 +93,7 @@ class NarrowPhysicalReport:
             "Catalog base-table width report: "
             f"relations={len(self.relations)}, narrow={narrow_count}, "
             f"wide={len(self.violations)}",
-            "Width violations (complete):",
+            "Approved wide relations (complete):",
         ]
         if not self.violations:
             lines.append("  (none)")
@@ -110,16 +112,22 @@ class NarrowPhysicalReport:
         return "\n".join(lines)
 
 
-# Temporary debt ledger.  Exact value tuples are intentional: adding a column
-# to an existing exception must fail just like introducing a new exception.
-# Removing/splitting an exception also fails until this ledger is updated and
-# every resulting narrow table receives a NarrowLayoutDeclaration below.
-GRANDFATHERED_WIDE_RELATIONS: Mapping[str, tuple[str, ...]] = {}
+# Exact approved-wide registry. Adding a column to the reviewed BCNF exception
+# must fail just like introducing a second wide relation. Removing or splitting
+# the exception also fails until this registry and the resulting narrow layout
+# declarations are updated together.
+APPROVED_WIDE_BCNF_RELATIONS: Mapping[str, tuple[str, ...]] = {
+    "catalog_gallery_identities": (
+        "gallery_key",
+        "scope_key",
+        "locator_sha256",
+    ),
+}
 
 
 # Closed-world semantic-role declarations for all base tables that already meet
 # the width limit.  New tables must be consciously classified here.  When a
-# grandfathered table is split, remove its debt entry and declare each narrow
+# approved-wide table is split, remove its exception and declare each narrow
 # result, including its true semantic key and its sole atomic value (if any).
 _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
     "catalog_canonical_digest_policies": NarrowLayoutDeclaration(
@@ -1044,10 +1052,10 @@ def _layout_problems(
 def evaluate_policy(
     relations: Sequence[RelationShape],
     *,
-    grandfathered: Mapping[str, tuple[str, ...]] = GRANDFATHERED_WIDE_RELATIONS,
+    approved_wide_bcnf: Mapping[str, tuple[str, ...]] = APPROVED_WIDE_BCNF_RELATIONS,
     declarations: Mapping[str, NarrowLayoutDeclaration] = NARROW_LAYOUT_DECLARATIONS,
 ) -> NarrowPhysicalReport:
-    """Compare a catalog shape against the exact transition debt ledger."""
+    """Compare a catalog shape against the exact width-policy registry."""
 
     ordered_relations = tuple(sorted(relations, key=lambda relation: relation.table))
     relation_by_table: dict[str, RelationShape] = {}
@@ -1057,17 +1065,17 @@ def evaluate_policy(
             problems.append(f"duplicate relation shape for {relation.table}")
         relation_by_table[relation.table] = relation
 
-    debt_tables = set(grandfathered)
+    approved_wide_tables = set(approved_wide_bcnf)
     declared_tables = set(declarations)
-    overlap = debt_tables & declared_tables
+    overlap = approved_wide_tables & declared_tables
     if overlap:
         problems.append(
-            "tables cannot be both grandfathered and narrow-declared: "
+            "tables cannot be both approved-wide BCNF and narrow-declared: "
             f"{sorted(overlap)!r}"
         )
 
     actual_tables = set(relation_by_table)
-    policy_tables = debt_tables | declared_tables
+    policy_tables = approved_wide_tables | declared_tables
     for table in sorted(actual_tables - policy_tables):
         problems.append(f"{table}: missing closed-world narrow-layout metadata")
     for table in sorted(policy_tables - actual_tables):
@@ -1075,24 +1083,24 @@ def evaluate_policy(
 
     violations = width_violations(ordered_relations)
     violation_by_table = {relation.table: relation for relation in violations}
-    for table in sorted(debt_tables):
-        debt_relation = relation_by_table.get(table)
-        if debt_relation is None:
+    for table in sorted(approved_wide_tables):
+        approved_relation = relation_by_table.get(table)
+        if approved_relation is None:
             continue
         violation = violation_by_table.get(table)
         if violation is None:
             problems.append(
-                f"{table}: width debt is resolved; remove its grandfather entry "
+                f"{table}: approved-wide exception is no longer wide; remove it "
                 "and add an exact narrow layout declaration"
             )
             continue
-        expected = tuple(grandfathered[table])
+        expected = tuple(approved_wide_bcnf[table])
         if violation.non_key_columns != expected:
             problems.append(
-                f"{table}: grandfathered non-key columns changed; "
+                f"{table}: approved-wide non-key columns changed; "
                 f"expected={expected!r}, actual={violation.non_key_columns!r}"
             )
-    for table in sorted(set(violation_by_table) - debt_tables):
+    for table in sorted(set(violation_by_table) - approved_wide_tables):
         problems.append(
             f"{table}: new width violation with non-key columns "
             f"{violation_by_table[table].non_key_columns!r}"
@@ -1108,15 +1116,10 @@ def evaluate_policy(
     )
 
 
-def check_current_policy(*, require_complete: bool = False) -> NarrowPhysicalReport:
+def check_current_policy() -> NarrowPhysicalReport:
     report = evaluate_policy(load_catalog_base_relations())
     if not report.is_policy_clean:
         raise NarrowPhysicalError(report.render())
-    if require_complete and not report.is_fully_narrow:
-        raise NarrowPhysicalError(
-            report.render()
-            + "\nComplete narrow mode requires zero grandfathered width violations."
-        )
     return report
 
 
@@ -1125,16 +1128,11 @@ def main() -> None:
         description="Check catalog base tables for primary-key-plus-one-value layout"
     )
     parser.add_argument(
-        "--require-complete",
-        action="store_true",
-        help="reject all grandfathered wide tables after verticalization finishes",
-    )
-    parser.add_argument(
         "--quiet", action="store_true", help="print only when the check fails"
     )
     arguments = parser.parse_args()
     try:
-        report = check_current_policy(require_complete=arguments.require_complete)
+        report = check_current_policy()
     except NarrowPhysicalError as error:
         raise SystemExit(str(error)) from error
     if not arguments.quiet:

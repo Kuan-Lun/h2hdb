@@ -14,6 +14,14 @@ from h2hdb import (
 )
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.repository import RepositoryContext
+from h2hdb.sql_connector import DatabaseDuplicateKeyError, SQLConnector
+
+_REMOVED_GALLERY_IDENTITY_TABLES = (
+    "catalog_gallery_identity_anchors",
+    "catalog_gallery_identity_coordinates",
+    "catalog_gallery_identity_gallery_keys",
+    "catalog_gallery_identity_seals",
+)
 
 
 def _read_only(config: CoreConfig) -> CoreConfig:
@@ -24,6 +32,100 @@ def _read_only(config: CoreConfig) -> CoreConfig:
             )
         }
     )
+
+
+def _assert_gallery_identity_schema(connector: SQLConnector, backend: str) -> None:
+    assert connector.check_table_exists("catalog_gallery_identities")
+    assert all(
+        not connector.check_table_exists(table)
+        for table in _REMOVED_GALLERY_IDENTITY_TABLES
+    )
+
+    if backend == "mariadb":
+        assert connector.fetch_one("""
+            SELECT COUNT(*)
+            FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_TYPE = 'BASE TABLE'
+            """) == (433,)
+        mariadb_foreign_keys = connector.fetch_all(
+            """
+            SELECT CONSTRAINT_NAME, COLUMN_NAME,
+                   REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
+            FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = %s
+              AND REFERENCED_TABLE_NAME IS NOT NULL
+            ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION
+            """,
+            ("catalog_gallery_identities",),
+        )
+        assert mariadb_foreign_keys == [
+            (
+                "fk_gallery_identity_1",
+                "scope_key",
+                "catalog_source_scope_seals",
+                "scope_key",
+            ),
+            (
+                "fk_gallery_identity_2",
+                "locator_sha256",
+                "catalog_source_locator_identity",
+                "locator_sha256",
+            ),
+        ]
+        raw_indexes = connector.fetch_all(
+            """
+            SELECT INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME
+            FROM INFORMATION_SCHEMA.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = %s
+            ORDER BY INDEX_NAME, SEQ_IN_INDEX
+            """,
+            ("catalog_gallery_identities",),
+        )
+        mariadb_indexes: dict[str, tuple[int, list[str]]] = {}
+        for name, non_unique, _position, column in raw_indexes:
+            key = str(name)
+            if key not in mariadb_indexes:
+                mariadb_indexes[key] = (int(non_unique), [])
+            mariadb_indexes[key][1].append(str(column))
+        assert (0, ["gallery_key"]) in mariadb_indexes.values()
+        assert (0, ["scope_key", "locator_sha256"]) in mariadb_indexes.values()
+        assert (1, ["locator_sha256"]) in mariadb_indexes.values()
+        return
+
+    assert connector.fetch_one("""
+        SELECT COUNT(*)
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name NOT LIKE 'sqlite_%'
+        """) == (433,)
+    sqlite_foreign_keys = {
+        (str(row[2]), str(row[3]), str(row[4]))
+        for row in connector.fetch_all(
+            'PRAGMA foreign_key_list("catalog_gallery_identities")'
+        )
+    }
+    assert sqlite_foreign_keys == {
+        ("catalog_source_scope_seals", "scope_key", "scope_key"),
+        (
+            "catalog_source_locator_identity",
+            "locator_sha256",
+            "locator_sha256",
+        ),
+    }
+    sqlite_indexes: list[tuple[int, tuple[str, ...]]] = []
+    for row in connector.fetch_all('PRAGMA index_list("catalog_gallery_identities")'):
+        name = str(row[1])
+        columns = tuple(
+            str(column[2])
+            for column in connector.fetch_all(f'PRAGMA index_info("{name}")')
+        )
+        sqlite_indexes.append((int(row[2]), columns))
+    assert (1, ("gallery_key",)) in sqlite_indexes
+    assert (1, ("scope_key", "locator_sha256")) in sqlite_indexes
+    assert (0, ("locator_sha256",)) in sqlite_indexes
 
 
 def _exercise_generated_epoch(config: CoreConfig) -> None:
@@ -56,6 +158,7 @@ def _exercise_generated_epoch(config: CoreConfig) -> None:
         assert connector.check_table_exists("h2hdb_schema_epoch")
         assert not connector.check_table_exists("catalog_build_discoveries")
         assert not connector.check_table_exists("h2hdb_schema_migrations")
+        _assert_gallery_identity_schema(connector, config.database.sql_type)
         if config.database.sql_type == "mariadb":
             assert (
                 connector.fetch_all(
@@ -77,6 +180,17 @@ def _exercise_generated_epoch(config: CoreConfig) -> None:
                     ("changed_galleries", "bigint(21) unsigned", "NO"),
                 ]
             )
+
+    writable_context = RepositoryContext.from_config(config)
+    with writable_context.SQLConnector() as connector:
+        with pytest.raises(DatabaseDuplicateKeyError):
+            with connector.transaction():
+                connector.execute(
+                    "INSERT INTO catalog_gallery_identities "
+                    "(gallery_id, gallery_key, scope_key, locator_sha256) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (1, b"g" * 32, b"s" * 32, b"l" * 32),
+                )
 
     backend = config.database.sql_type
     backends = cast(Mapping[str, Mapping[str, object]], ARTIFACT["backends"])

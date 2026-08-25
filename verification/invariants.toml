@@ -397,7 +397,7 @@ directness = "direct"
 claim = "Lean proves for arbitrary finite candidate groups that an exact GID winner is a candidate, dominates every candidate, and is unique by gallery under stable-identity antisymmetry; it also proves that immutable pinned metadata makes gallery-to-GID membership functional."
 assumptions = [
   "The runtime set join refines the manifest-declared five-atom lexicographic dominance relation.",
-  "The sealed gallery identity coordinate makes equal full comparison tuples identify the same gallery within a GID group.",
+  "The immutable gallery_identity BCNF row and its declared candidate keys make equal full comparison tuples identify the same gallery within a GID group.",
 ]
 [[evidence.location]]
 path = "verification/lean/VNextSchema.lean"
@@ -1446,7 +1446,7 @@ id = "runtime.production.writer-bindings"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The wheel-owned closed registry installs all 25 exact obligation, hook-name and version bindings whose families contain canonical public production repository methods, typed transaction owners and mutation relations inside the generated authority closure. Physical-domain bindings additionally install the closed guard tuples; nine boundary tests prove the exact 53 catalog, nine operational and one schema-epoch writer families, the 320-relation catalog physical-domain authority set with exactly 260 mutation relations, and the exact exclusion of all 60 read-only catalog views from mutation authority while rejecting forged values before SQL or event derivation."
+claim = "The wheel-owned closed registry installs all 25 exact obligation, hook-name and version bindings whose families contain canonical public production repository methods, typed transaction owners and mutation relations inside the generated authority closure. Physical-domain bindings additionally install the closed guard tuples; nine boundary tests prove the exact 54 catalog, nine operational and one schema-epoch writer families, the 316-relation catalog physical-domain authority set with exactly 257 mutation relations, and the exact exclusion of all 59 read-only catalog views from mutation authority while rejecting forged values before SQL or event derivation."
 assumptions = ["Binding evidence identifies the complete mutation-owner family; each referenced repository evidence record establishes the corresponding runtime semantics at those entrypoints. The adversarial boundary set is representative and does not constitute the exhaustive cross-backend fault matrix required by the fault layer."]
 [[evidence.location]]
 path = "src/h2hdb/catalog_writer.py"

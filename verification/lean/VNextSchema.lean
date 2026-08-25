@@ -1174,7 +1174,7 @@ end H2HDB.Verification.VNextSchema
 namespace H2HDB.Verification.VNextSchema
 
 /- BEGIN GENERATED CATALOG CONTRACTS -/
-def catalogManifestSha256 : String := "c2ea4c6c6049caeefa54787a9a8a7f33076663b2c57899c664bc87a65d0276a0"
+def catalogManifestSha256 : String := "bd959f282c3016c0185bb8c367ef93e72d06fb3250d978972353ca084eb656b2"
 
 /-! This section is mechanically generated from catalog.toml. -/
 
@@ -3466,190 +3466,6 @@ theorem source_locator_identity_bcnf_check :
 theorem source_locator_identity_bcnf : BCNF source_locator_identity_contract :=
   bcnfCheck_sound source_locator_identity_contract source_locator_identity_bcnf_check
 
-def gallery_identity_anchor_contract : RelationContract where
-  name := "gallery_identity_anchor"
-  attributes := ["gallery_id"]
-  declaredKeys := [["gallery_id"]]
-  declaredFDs := [
-  ]
-
-theorem gallery_identity_anchor_schema_well_formed :
-    schemaWellFormedCheck gallery_identity_anchor_contract = true := by
-  native_decide
-
-theorem gallery_identity_anchor_candidate_keys_check :
-    keysDetermineAllCheck gallery_identity_anchor_contract = true := by
-  native_decide
-
-theorem gallery_identity_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_identity_anchor_contract :=
-  keysDetermineAllCheck_sound gallery_identity_anchor_contract
-    gallery_identity_anchor_candidate_keys_check
-
-theorem gallery_identity_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_identity_anchor_contract = true := by
-  native_decide
-
-theorem gallery_identity_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_identity_anchor_contract :=
-  declaredKeysMinimalCheck_sound gallery_identity_anchor_contract
-    gallery_identity_anchor_candidate_keys_minimal_check
-
-theorem gallery_identity_anchor_closure_fixed_check :
-    closureFixedPointCheck gallery_identity_anchor_contract = true := by
-  native_decide
-
-theorem gallery_identity_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_identity_anchor_contract :=
-  closureFixedPointCheck_sound gallery_identity_anchor_contract
-    gallery_identity_anchor_closure_fixed_check
-
-theorem gallery_identity_anchor_bcnf_check :
-    bcnfCheck gallery_identity_anchor_contract = true := by
-  native_decide
-
-theorem gallery_identity_anchor_bcnf : BCNF gallery_identity_anchor_contract :=
-  bcnfCheck_sound gallery_identity_anchor_contract gallery_identity_anchor_bcnf_check
-
-def gallery_identity_coordinate_contract : RelationContract where
-  name := "gallery_identity_coordinate"
-  attributes := ["scope_key", "locator_sha256", "gallery_id"]
-  declaredKeys := [["scope_key", "locator_sha256"], ["gallery_id"]]
-  declaredFDs := [
-    { determinant := ["scope_key", "locator_sha256"], dependent := ["gallery_id"] },
-    { determinant := ["gallery_id"], dependent := ["scope_key", "locator_sha256"] }
-  ]
-
-theorem gallery_identity_coordinate_schema_well_formed :
-    schemaWellFormedCheck gallery_identity_coordinate_contract = true := by
-  native_decide
-
-theorem gallery_identity_coordinate_candidate_keys_check :
-    keysDetermineAllCheck gallery_identity_coordinate_contract = true := by
-  native_decide
-
-theorem gallery_identity_coordinate_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_identity_coordinate_contract :=
-  keysDetermineAllCheck_sound gallery_identity_coordinate_contract
-    gallery_identity_coordinate_candidate_keys_check
-
-theorem gallery_identity_coordinate_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_identity_coordinate_contract = true := by
-  native_decide
-
-theorem gallery_identity_coordinate_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_identity_coordinate_contract :=
-  declaredKeysMinimalCheck_sound gallery_identity_coordinate_contract
-    gallery_identity_coordinate_candidate_keys_minimal_check
-
-theorem gallery_identity_coordinate_closure_fixed_check :
-    closureFixedPointCheck gallery_identity_coordinate_contract = true := by
-  native_decide
-
-theorem gallery_identity_coordinate_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_identity_coordinate_contract :=
-  closureFixedPointCheck_sound gallery_identity_coordinate_contract
-    gallery_identity_coordinate_closure_fixed_check
-
-theorem gallery_identity_coordinate_bcnf_check :
-    bcnfCheck gallery_identity_coordinate_contract = true := by
-  native_decide
-
-theorem gallery_identity_coordinate_bcnf : BCNF gallery_identity_coordinate_contract :=
-  bcnfCheck_sound gallery_identity_coordinate_contract gallery_identity_coordinate_bcnf_check
-
-def gallery_identity_gallery_key_contract : RelationContract where
-  name := "gallery_identity_gallery_key"
-  attributes := ["gallery_id", "gallery_key"]
-  declaredKeys := [["gallery_id"], ["gallery_key"]]
-  declaredFDs := [
-    { determinant := ["gallery_id"], dependent := ["gallery_key"] },
-    { determinant := ["gallery_key"], dependent := ["gallery_id"] }
-  ]
-
-theorem gallery_identity_gallery_key_schema_well_formed :
-    schemaWellFormedCheck gallery_identity_gallery_key_contract = true := by
-  native_decide
-
-theorem gallery_identity_gallery_key_candidate_keys_check :
-    keysDetermineAllCheck gallery_identity_gallery_key_contract = true := by
-  native_decide
-
-theorem gallery_identity_gallery_key_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_identity_gallery_key_contract :=
-  keysDetermineAllCheck_sound gallery_identity_gallery_key_contract
-    gallery_identity_gallery_key_candidate_keys_check
-
-theorem gallery_identity_gallery_key_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_identity_gallery_key_contract = true := by
-  native_decide
-
-theorem gallery_identity_gallery_key_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_identity_gallery_key_contract :=
-  declaredKeysMinimalCheck_sound gallery_identity_gallery_key_contract
-    gallery_identity_gallery_key_candidate_keys_minimal_check
-
-theorem gallery_identity_gallery_key_closure_fixed_check :
-    closureFixedPointCheck gallery_identity_gallery_key_contract = true := by
-  native_decide
-
-theorem gallery_identity_gallery_key_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_identity_gallery_key_contract :=
-  closureFixedPointCheck_sound gallery_identity_gallery_key_contract
-    gallery_identity_gallery_key_closure_fixed_check
-
-theorem gallery_identity_gallery_key_bcnf_check :
-    bcnfCheck gallery_identity_gallery_key_contract = true := by
-  native_decide
-
-theorem gallery_identity_gallery_key_bcnf : BCNF gallery_identity_gallery_key_contract :=
-  bcnfCheck_sound gallery_identity_gallery_key_contract gallery_identity_gallery_key_bcnf_check
-
-def gallery_identity_seal_contract : RelationContract where
-  name := "gallery_identity_seal"
-  attributes := ["gallery_id"]
-  declaredKeys := [["gallery_id"]]
-  declaredFDs := [
-  ]
-
-theorem gallery_identity_seal_schema_well_formed :
-    schemaWellFormedCheck gallery_identity_seal_contract = true := by
-  native_decide
-
-theorem gallery_identity_seal_candidate_keys_check :
-    keysDetermineAllCheck gallery_identity_seal_contract = true := by
-  native_decide
-
-theorem gallery_identity_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_identity_seal_contract :=
-  keysDetermineAllCheck_sound gallery_identity_seal_contract
-    gallery_identity_seal_candidate_keys_check
-
-theorem gallery_identity_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_identity_seal_contract = true := by
-  native_decide
-
-theorem gallery_identity_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_identity_seal_contract :=
-  declaredKeysMinimalCheck_sound gallery_identity_seal_contract
-    gallery_identity_seal_candidate_keys_minimal_check
-
-theorem gallery_identity_seal_closure_fixed_check :
-    closureFixedPointCheck gallery_identity_seal_contract = true := by
-  native_decide
-
-theorem gallery_identity_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_identity_seal_contract :=
-  closureFixedPointCheck_sound gallery_identity_seal_contract
-    gallery_identity_seal_closure_fixed_check
-
-theorem gallery_identity_seal_bcnf_check :
-    bcnfCheck gallery_identity_seal_contract = true := by
-  native_decide
-
-theorem gallery_identity_seal_bcnf : BCNF gallery_identity_seal_contract :=
-  bcnfCheck_sound gallery_identity_seal_contract gallery_identity_seal_bcnf_check
-
 def gallery_identity_contract : RelationContract where
   name := "gallery_identity"
   attributes := ["gallery_id", "gallery_key", "scope_key", "locator_sha256"]
@@ -3690,6 +3506,13 @@ theorem gallery_identity_closure_reached_fixed_point :
     ClosureReachedFixedPoint gallery_identity_contract :=
   closureFixedPointCheck_sound gallery_identity_contract
     gallery_identity_closure_fixed_check
+
+theorem gallery_identity_bcnf_check :
+    bcnfCheck gallery_identity_contract = true := by
+  native_decide
+
+theorem gallery_identity_bcnf : BCNF gallery_identity_contract :=
+  bcnfCheck_sound gallery_identity_contract gallery_identity_bcnf_check
 
 def gallery_observation_allocation_contract : RelationContract where
   name := "gallery_observation_allocation"
@@ -21055,10 +20878,6 @@ def manifestContracts : List RelationContract := [
   source_build_discovery_contract,
   source_build_expected_gallery_contract,
   source_locator_identity_contract,
-  gallery_identity_anchor_contract,
-  gallery_identity_coordinate_contract,
-  gallery_identity_gallery_key_contract,
-  gallery_identity_seal_contract,
   gallery_identity_contract,
   gallery_observation_allocation_contract,
   gallery_observation_page_contract,
@@ -21450,7 +21269,7 @@ def manifestContracts : List RelationContract := [
 ]
 
 theorem manifest_relation_count :
-    manifestContracts.length = 443 := by
+    manifestContracts.length = 439 := by
   native_decide
 
 /-! Closed catalog physical-domain authority from the manifest. -/
@@ -21486,10 +21305,6 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   build_manifest_byte_count_contract,
   build_manifest_seal_contract,
   build_manifest_contract,
-  gallery_identity_anchor_contract,
-  gallery_identity_coordinate_contract,
-  gallery_identity_gallery_key_contract,
-  gallery_identity_seal_contract,
   gallery_identity_contract,
   file_name_identity_anchor_contract,
   file_name_identity_name_bytes_contract,
@@ -21804,10 +21619,7 @@ def catalogPhysicalDomainMutationContracts : List RelationContract := [
   build_manifest_file_count_contract,
   build_manifest_byte_count_contract,
   build_manifest_seal_contract,
-  gallery_identity_anchor_contract,
-  gallery_identity_coordinate_contract,
-  gallery_identity_gallery_key_contract,
-  gallery_identity_seal_contract,
+  gallery_identity_contract,
   file_name_identity_anchor_contract,
   file_name_identity_name_bytes_contract,
   file_name_identity_file_role_contract,
@@ -22047,7 +21859,6 @@ def catalogPhysicalDomainReadOnlyViewContracts : List RelationContract := [
   canonical_value_page_descriptor_contract,
   source_build_contract,
   build_manifest_contract,
-  gallery_identity_contract,
   file_name_identity_contract,
   gallery_observation_file_contract,
   gallery_manifest_contract,
@@ -22105,15 +21916,15 @@ def catalogPhysicalDomainReadOnlyViewContracts : List RelationContract := [
 ]
 
 theorem catalog_physical_domain_relation_count :
-    catalogPhysicalDomainContracts.length = 320 := by
+    catalogPhysicalDomainContracts.length = 316 := by
   native_decide
 
 theorem catalog_physical_domain_mutation_relation_count :
-    catalogPhysicalDomainMutationContracts.length = 260 := by
+    catalogPhysicalDomainMutationContracts.length = 257 := by
   native_decide
 
 theorem catalog_physical_domain_read_only_view_count :
-    catalogPhysicalDomainReadOnlyViewContracts.length = 60 := by
+    catalogPhysicalDomainReadOnlyViewContracts.length = 59 := by
   native_decide
 
 theorem catalog_physical_domain_has_no_duplicates :
@@ -23740,70 +23551,6 @@ theorem gallery_observation_page_key_bounds_vertical_dependency_preserving :
     VerticalFamilyDependencyPreserving gallery_observation_page_key_bounds_vertical_contract :=
   verticalFamilyDependencyPreservationCheck_sound gallery_observation_page_key_bounds_vertical_contract
     gallery_observation_page_key_bounds_vertical_dependency_preservation_check
-
-def gallery_identity_vertical_contract : VerticalFamilyContract where
-  name := "gallery_identity_vertical"
-  anchorRelation := "gallery_identity_anchor"
-  sealRelation := "gallery_identity_seal"
-  keyAttributes := ["gallery_id"]
-  anchorAttributes := ["gallery_id"]
-  sealAttributes := ["gallery_id"]
-  semanticAttributes := ["gallery_id", "scope_key", "locator_sha256", "gallery_key"]
-  semanticFDs := [
-    { determinant := ["gallery_id"], dependent := ["gallery_key", "scope_key", "locator_sha256"] },
-    { determinant := ["gallery_key"], dependent := ["gallery_id", "scope_key", "locator_sha256"] },
-    { determinant := ["scope_key", "locator_sha256"], dependent := ["gallery_id", "gallery_key"] }
-  ]
-  viewAttributes := ["gallery_id", "gallery_key", "scope_key", "locator_sha256"]
-  viewFDs := [
-    { determinant := ["gallery_id"], dependent := ["gallery_key", "scope_key", "locator_sha256"] },
-    { determinant := ["gallery_key"], dependent := ["gallery_id", "scope_key", "locator_sha256"] },
-    { determinant := ["scope_key", "locator_sha256"], dependent := ["gallery_id", "gallery_key"] }
-  ]
-  members := [
-    { relationName := "gallery_identity_coordinate", keyAttributes := ["scope_key", "locator_sha256"], valueAttribute := "gallery_id", projectionAttribute := "gallery_id", attributes := ["scope_key", "locator_sha256", "gallery_id"], declaredKeys := [["scope_key", "locator_sha256"], ["gallery_id"]], declaredFDs := [{ determinant := ["scope_key", "locator_sha256"], dependent := ["gallery_id"] }, { determinant := ["gallery_id"], dependent := ["scope_key", "locator_sha256"] }], sourceRelation := "gallery_identity_seal", sourceRelationAttributes := ["gallery_id"], sourceAttributes := ["gallery_id"], memberAttributes := ["gallery_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "gallery_identity_gallery_key", keyAttributes := ["gallery_id"], valueAttribute := "gallery_key", projectionAttribute := "gallery_key", attributes := ["gallery_id", "gallery_key"], declaredKeys := [["gallery_id"], ["gallery_key"]], declaredFDs := [{ determinant := ["gallery_id"], dependent := ["gallery_key"] }, { determinant := ["gallery_key"], dependent := ["gallery_id"] }], sourceRelation := "gallery_identity_seal", sourceRelationAttributes := ["gallery_id"], sourceAttributes := ["gallery_id"], memberAttributes := ["gallery_id"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem gallery_identity_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck gallery_identity_vertical_contract = true := by
-  native_decide
-
-theorem gallery_identity_vertical_view_projection :
-    VerticalFamilyViewProjection gallery_identity_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound gallery_identity_vertical_contract
-    gallery_identity_vertical_view_projection_check
-
-theorem gallery_identity_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck gallery_identity_vertical_contract = true := by
-  native_decide
-
-theorem gallery_identity_vertical_well_formed :
-    VerticalFamilyWellFormed gallery_identity_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound gallery_identity_vertical_contract
-    gallery_identity_vertical_well_formed_check
-
-theorem gallery_identity_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck gallery_identity_vertical_contract = true := by
-  native_decide
-
-theorem gallery_identity_vertical_lossless :
-    VerticalFamilyLossless gallery_identity_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound gallery_identity_vertical_contract
-    gallery_identity_vertical_lossless_join_check
-
-theorem gallery_identity_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck gallery_identity_vertical_contract = true := by
-  native_decide
-
-theorem gallery_identity_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving gallery_identity_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound gallery_identity_vertical_contract
-    gallery_identity_vertical_dependency_preservation_check
 
 def file_name_identity_vertical_contract : VerticalFamilyContract where
   name := "file_name_identity_vertical"
@@ -27073,10 +26820,7 @@ theorem all_manifest_base_relations_bcnf :
     BCNF source_build_discovery_seal_contract ∧
     BCNF source_build_expected_gallery_contract ∧
     BCNF source_locator_identity_contract ∧
-    BCNF gallery_identity_anchor_contract ∧
-    BCNF gallery_identity_coordinate_contract ∧
-    BCNF gallery_identity_gallery_key_contract ∧
-    BCNF gallery_identity_seal_contract ∧
+    BCNF gallery_identity_contract ∧
     BCNF gallery_observation_allocation_contract ∧
     BCNF gallery_observation_page_contract ∧
     BCNF gallery_observation_allocation_page_contract ∧
@@ -27434,10 +27178,7 @@ theorem all_manifest_base_relations_bcnf :
     source_build_discovery_seal_bcnf,
     source_build_expected_gallery_bcnf,
     source_locator_identity_bcnf,
-    gallery_identity_anchor_bcnf,
-    gallery_identity_coordinate_bcnf,
-    gallery_identity_gallery_key_bcnf,
-    gallery_identity_seal_bcnf,
+    gallery_identity_bcnf,
     gallery_observation_allocation_bcnf,
     gallery_observation_page_bcnf,
     gallery_observation_allocation_page_bcnf,
@@ -27806,10 +27547,6 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes source_build_discovery_contract ∧
     KeysDetermineAllAttributes source_build_expected_gallery_contract ∧
     KeysDetermineAllAttributes source_locator_identity_contract ∧
-    KeysDetermineAllAttributes gallery_identity_anchor_contract ∧
-    KeysDetermineAllAttributes gallery_identity_coordinate_contract ∧
-    KeysDetermineAllAttributes gallery_identity_gallery_key_contract ∧
-    KeysDetermineAllAttributes gallery_identity_seal_contract ∧
     KeysDetermineAllAttributes gallery_identity_contract ∧
     KeysDetermineAllAttributes gallery_observation_allocation_contract ∧
     KeysDetermineAllAttributes gallery_observation_page_contract ∧
@@ -28249,10 +27986,6 @@ theorem all_manifest_candidate_keys_determine_attributes :
     source_build_discovery_candidate_keys_determine_all_attributes,
     source_build_expected_gallery_candidate_keys_determine_all_attributes,
     source_locator_identity_candidate_keys_determine_all_attributes,
-    gallery_identity_anchor_candidate_keys_determine_all_attributes,
-    gallery_identity_coordinate_candidate_keys_determine_all_attributes,
-    gallery_identity_gallery_key_candidate_keys_determine_all_attributes,
-    gallery_identity_seal_candidate_keys_determine_all_attributes,
     gallery_identity_candidate_keys_determine_all_attributes,
     gallery_observation_allocation_candidate_keys_determine_all_attributes,
     gallery_observation_page_candidate_keys_determine_all_attributes,

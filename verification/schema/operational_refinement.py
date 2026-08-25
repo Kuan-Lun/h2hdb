@@ -1758,7 +1758,7 @@ _CLEANUP_TARGET_SHAPES = {
         ("PI_ROOT",),
     ),
     "GALLERY_IDENTITY": (
-        "gallery_identity_anchor",
+        "gallery_identity",
         ("gallery_id",),
         "target_kind_tag16_u64be_zero8_v1",
         "gallery_identity_unreferenced_v1",
@@ -5036,10 +5036,6 @@ def _external_runtime_only_key(stub: ExternalStub, key: tuple[str, ...]) -> bool
 def _sqlite_external_checks(stub: ExternalStub) -> tuple[str, ...]:
     portable_max = 9223372036854775807
     if stub.relation in {
-        "gallery_identity_anchor",
-        "gallery_identity_coordinate",
-        "gallery_identity_gallery_key",
-        "gallery_identity_seal",
         "gallery_identity",
     }:
         return (f'CHECK ("gallery_id" >= 1 AND "gallery_id" <= {portable_max})',)
@@ -5088,10 +5084,6 @@ def _sqlite_external_checks(stub: ExternalStub) -> tuple[str, ...]:
 def _mariadb_external_checks(stub: ExternalStub) -> tuple[str, ...]:
     portable_max = 9223372036854775807
     if stub.relation in {
-        "gallery_identity_anchor",
-        "gallery_identity_coordinate",
-        "gallery_identity_gallery_key",
-        "gallery_identity_seal",
         "gallery_identity",
     }:
         return (f"CHECK (`gallery_id` >= 1 AND `gallery_id` <= {portable_max})",)

@@ -348,8 +348,8 @@ def test_physical_spec_is_closed_world_and_uses_real_overlay_views() -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
 
-    assert len(logical.relations) == 443
-    assert len(physical_spec.implemented_relations) == 443
+    assert len(logical.relations) == 439
+    assert len(physical_spec.implemented_relations) == 439
     assert len(physical_spec.pending_relations) == 0
     assert set(physical_spec.source_slice) == {
         relation.relation for relation in physical_spec.implemented_relations
@@ -1181,7 +1181,7 @@ def test_fresh_complete_sqlite_ddl_refines_physical_spec() -> None:
     assert report.conforms
     assert report.fully_conforms
     assert not report.ddl_only
-    assert len(report.checked_relations) == 443
+    assert len(report.checked_relations) == 439
     assert len(report.pending_relations) == 0
     assert report.mismatches == ()
     assert report.render().splitlines()[0] == (
@@ -1225,18 +1225,8 @@ def test_vertical_metadata_view_requires_every_member_before_seal() -> None:
         scope_key = sqlite3.Binary(bytes([1]) * 32)
         locator_sha256 = sqlite3.Binary(bytes([2]) * 32)
         connection.execute(
-            "INSERT INTO catalog_gallery_identity_anchors VALUES (?)", (1,)
-        )
-        connection.execute(
-            "INSERT INTO catalog_gallery_identity_coordinates VALUES (?, ?, ?)",
-            (scope_key, locator_sha256, 1),
-        )
-        connection.execute(
-            "INSERT INTO catalog_gallery_identity_gallery_keys VALUES (?, ?)",
-            (1, digest),
-        )
-        connection.execute(
-            "INSERT INTO catalog_gallery_identity_seals VALUES (?)", (1,)
+            "INSERT INTO catalog_gallery_identities VALUES (?, ?, ?, ?)",
+            (1, digest, scope_key, locator_sha256),
         )
         connection.execute(
             "INSERT INTO catalog_gallery_observation_allocations VALUES (?, ?, ?)",
@@ -1375,20 +1365,6 @@ def test_vertical_metadata_view_requires_every_member_before_seal() -> None:
             "catalog_gallery_observation_file_filesystem_seals",
             "catalog_gallery_observation_file_filesystem",
             (1, 2, b"k" * 32, b"d" * 8, b"i" * 8, b"m" * 8, b"c" * 8),
-        ),
-        (
-            "catalog_gallery_identity_anchors",
-            (1,),
-            (
-                (
-                    "catalog_gallery_identity_coordinates",
-                    (b"s" * 32, b"l" * 32, 1),
-                ),
-                ("catalog_gallery_identity_gallery_keys", (1, b"g" * 32)),
-            ),
-            "catalog_gallery_identity_seals",
-            "catalog_gallery_identities",
-            (1, b"g" * 32, b"s" * 32, b"l" * 32),
         ),
         (
             "catalog_file_name_identity_anchors",
@@ -2572,7 +2548,7 @@ def test_mariadb_renderer_preserves_exact_binary_types_checks_and_views() -> Non
         sum(
             value.startswith("CREATE SQL SECURITY INVOKER VIEW") for value in statements
         )
-        == 82
+        == 81
     )
     assert "`analysis_id` BINARY(16) NOT NULL" in ddl
     assert "`locator_sha256` BINARY(32) NOT NULL" in ddl

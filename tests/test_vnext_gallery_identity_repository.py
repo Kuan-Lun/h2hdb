@@ -326,10 +326,7 @@ def test_stale_fence_and_immutable_locator_conflict_are_zero_write(
     ("method_name", "fragment"),
     (
         ("execute", "INSERT INTO catalog_source_locator_identity"),
-        ("execute", "INSERT INTO catalog_gallery_identity_anchors"),
-        ("execute", "INSERT INTO catalog_gallery_identity_coordinates"),
-        ("execute", "INSERT INTO catalog_gallery_identity_gallery_keys"),
-        ("execute", "INSERT INTO catalog_gallery_identity_seals"),
+        ("execute", "INSERT INTO catalog_gallery_identities"),
         ("execute", "INSERT INTO operational_gallery_observation_allocators"),
         ("execute_affected", "DELETE FROM operational_canonical_value_uploads"),
     ),

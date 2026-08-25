@@ -52,22 +52,17 @@ def _assert_one_set_read(recorder: _Recorder, relations: tuple[str, ...]) -> Non
         assert relation in query
 
 
-def test_four_family_loaders_are_one_set_read_and_validate_exact_tuples() -> None:
+def test_identity_loaders_are_one_set_read_and_validate_exact_tuples() -> None:
     scope = b"s" * 32
     locator = b"l" * 32
     stable = gallery_key(scope, locator)
-    gallery = _Recorder([(1, 1, scope, locator, 1, 1, stable, 1)])
+    gallery = _Recorder([(1, stable, scope, locator)])
     assert load_gallery_identities(gallery, gallery_ids=(1,)) == {
         1: GalleryIdentity(1, stable, scope, locator)
     }
     _assert_one_set_read(
         gallery,
-        (
-            "catalog_gallery_identity_anchors",
-            "catalog_gallery_identity_coordinates",
-            "catalog_gallery_identity_gallery_keys",
-            "catalog_gallery_identity_seals",
-        ),
+        ("catalog_gallery_identities",),
     )
 
     name = b"001.jpg"
@@ -142,16 +137,7 @@ def test_four_family_loaders_are_one_set_read_and_validate_exact_tuples() -> Non
     )
 
 
-def test_four_family_loaders_fail_closed_on_any_partial_family() -> None:
-    scope = b"s" * 32
-    locator = b"l" * 32
-    stable = gallery_key(scope, locator)
-    with pytest.raises(CatalogIdentityPartialFamilyError):
-        load_gallery_identities(
-            _Recorder([(1, 1, scope, locator, 1, 1, stable, None)]),
-            gallery_ids=(1,),
-        )
-
+def test_vertical_identity_loaders_fail_closed_on_any_partial_family() -> None:
     name = b"001.jpg"
     key = file_key(name)
     with pytest.raises(CatalogIdentityPartialFamilyError):
@@ -205,29 +191,18 @@ def test_gallery_loader_recomputes_stable_key_and_rejects_valid_width_corruption
     locator = b"l" * 32
     with pytest.raises(CatalogIdentityCollisionError, match="invalid immutable"):
         load_gallery_identities(
-            _Recorder([(1, 1, scope, locator, 1, 1, b"x" * 32, 1)]),
+            _Recorder([(1, b"x" * 32, scope, locator)]),
             gallery_ids=(1,),
         )
 
 
-def test_four_family_writers_reject_candidate_collisions_without_writes() -> None:
+def test_identity_writers_reject_candidate_collisions_without_writes() -> None:
     scope = b"s" * 32
     locator = b"l" * 32
     other_scope = b"t" * 32
     other_locator = b"m" * 32
     gallery = _Recorder(
-        [
-            (
-                1,
-                1,
-                other_scope,
-                other_locator,
-                1,
-                1,
-                gallery_key(other_scope, other_locator),
-                1,
-            )
-        ]
+        [(1, gallery_key(other_scope, other_locator), other_scope, other_locator)]
     )
     with pytest.raises(CatalogIdentityCollisionError, match="collides"):
         ensure_gallery_identity(
@@ -282,7 +257,7 @@ def test_four_family_writers_reject_candidate_collisions_without_writes() -> Non
     assert tag.executions == []
 
 
-def test_four_family_writers_use_one_candidate_read_and_insert_seal_last() -> None:
+def test_identity_writers_use_one_candidate_read_and_complete_insert() -> None:
     scope = b"s" * 32
     locator = b"l" * 32
     gallery = _Recorder([])
@@ -290,8 +265,9 @@ def test_four_family_writers_use_one_candidate_read_and_insert_seal_last() -> No
         gallery,
         identity=GalleryIdentity(1, gallery_key(scope, locator), scope, locator),
     )
-    _assert_one_set_read(gallery, ("catalog_gallery_identity_seals",))
-    assert "catalog_gallery_identity_seals" in gallery.executions[-1][0]
+    _assert_one_set_read(gallery, ("catalog_gallery_identities",))
+    assert len(gallery.executions) == 1
+    assert "catalog_gallery_identities" in gallery.executions[0][0]
 
     first_name = b"001.jpg"
     second_name = b"002.jpg"

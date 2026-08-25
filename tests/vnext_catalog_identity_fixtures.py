@@ -12,22 +12,10 @@ def seed_gallery_identity(
     locator_sha256: bytes,
 ) -> None:
     connector.execute(
-        "INSERT INTO catalog_gallery_identity_anchors (gallery_id) VALUES (%s)",
-        (gallery_id,),
-    )
-    connector.execute(
-        "INSERT INTO catalog_gallery_identity_coordinates "
-        "(scope_key, locator_sha256, gallery_id) VALUES (%s, %s, %s)",
-        (scope_key, locator_sha256, gallery_id),
-    )
-    connector.execute(
-        "INSERT INTO catalog_gallery_identity_gallery_keys "
-        "(gallery_id, gallery_key) VALUES (%s, %s)",
-        (gallery_id, gallery_key),
-    )
-    connector.execute(
-        "INSERT INTO catalog_gallery_identity_seals (gallery_id) VALUES (%s)",
-        (gallery_id,),
+        "INSERT INTO catalog_gallery_identities "
+        "(gallery_id, gallery_key, scope_key, locator_sha256) "
+        "VALUES (%s, %s, %s, %s)",
+        (gallery_id, gallery_key, scope_key, locator_sha256),
     )
 
 

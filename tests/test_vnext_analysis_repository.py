@@ -215,7 +215,7 @@ class _GidComparatorConnector:
     ) -> list[tuple[Any, ...]]:
         assert "catalog_analysis_gid_candidate_resolved" in sql
         assert "catalog_analysis_content_owner_candidate_resolved" in sql
-        assert "catalog_gallery_identity_coordinates" in sql
+        assert "catalog_gallery_identities" in sql
         last_gallery = int(parameters[-2])
         limit = int(parameters[-1])
         self.page_limits.append(limit)

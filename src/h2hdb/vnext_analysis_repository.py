@@ -4125,10 +4125,8 @@ def _iter_snapshot_galleries(
             "member.gallery_id, member.observation_id, metadata.gid, "
             "scan_count.source_file_count "
             "FROM catalog_source_build_galleries AS member "
-            "JOIN catalog_gallery_identity_seals AS identity_seal "
-            "ON identity_seal.gallery_id = member.gallery_id "
-            "JOIN catalog_gallery_identity_gallery_keys AS identity "
-            "ON identity.gallery_id = identity_seal.gallery_id "
+            "JOIN catalog_gallery_identities AS identity "
+            "ON identity.gallery_id = member.gallery_id "
             "JOIN catalog_gallery_observations AS observation "
             "ON observation.gallery_id = member.gallery_id "
             "AND observation.observation_id = member.observation_id "
@@ -4296,10 +4294,8 @@ def _iter_snapshot_owners(
             "SELECT owner.content_sha256, owner.owner_gallery_id, "
             "identity.gallery_key "
             "FROM catalog_analysis_content_owner_resolved AS owner "
-            "JOIN catalog_gallery_identity_seals AS identity_seal "
-            "ON identity_seal.gallery_id = owner.owner_gallery_id "
-            "JOIN catalog_gallery_identity_gallery_keys AS identity "
-            "ON identity.gallery_id = identity_seal.gallery_id "
+            "JOIN catalog_gallery_identities AS identity "
+            "ON identity.gallery_id = owner.owner_gallery_id "
             "WHERE owner.analysis_id = %s"
             + predicate
             + " ORDER BY owner.content_sha256 LIMIT %s",
@@ -4355,10 +4351,8 @@ def _iter_snapshot_winners(
             "ON metadata.gallery_id = member.gallery_id "
             "AND metadata.observation_id = member.observation_id "
             "AND metadata.gid = winner.gid "
-            "JOIN catalog_gallery_identity_seals AS identity_seal "
-            "ON identity_seal.gallery_id = winner.winner_gallery_id "
-            "JOIN catalog_gallery_identity_gallery_keys AS identity "
-            "ON identity.gallery_id = identity_seal.gallery_id "
+            "JOIN catalog_gallery_identities AS identity "
+            "ON identity.gallery_id = winner.winner_gallery_id "
             "WHERE winner.analysis_id = %s AND winner.gid > %s "
             "ORDER BY winner.gid LIMIT %s",
             (
@@ -7301,10 +7295,8 @@ def _evaluate_content_owner(
             "JOIN catalog_gallery_observation_metadata AS metadata "
             "ON metadata.gallery_id = member.gallery_id "
             "AND metadata.observation_id = member.observation_id "
-            "JOIN catalog_gallery_identity_seals AS identity_seal "
-            "ON identity_seal.gallery_id = candidate.gallery_id "
-            "JOIN catalog_gallery_identity_coordinates AS identity "
-            "ON identity.gallery_id = identity_seal.gallery_id "
+            "JOIN catalog_gallery_identities AS identity "
+            "ON identity.gallery_id = candidate.gallery_id "
             "WHERE candidate.analysis_id = %s AND candidate.content_sha256 = %s "
             "AND candidate.gallery_id > %s ORDER BY candidate.gallery_id LIMIT %s",
             (
@@ -7670,10 +7662,8 @@ def _evaluate_gid_winner(
             "ON metadata.gallery_id = member.gallery_id "
             "AND metadata.observation_id = member.observation_id "
             "AND metadata.gid = %s "
-            "JOIN catalog_gallery_identity_seals AS identity_seal "
-            "ON identity_seal.gallery_id = candidate.gallery_id "
-            "JOIN catalog_gallery_identity_coordinates AS identity "
-            "ON identity.gallery_id = identity_seal.gallery_id "
+            "JOIN catalog_gallery_identities AS identity "
+            "ON identity.gallery_id = candidate.gallery_id "
             "WHERE candidate.analysis_id = %s "
             "AND candidate.gallery_id > %s ORDER BY candidate.gallery_id LIMIT %s",
             (

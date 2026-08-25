@@ -2169,10 +2169,8 @@ def _load_source_directory(
 ) -> Path:
     row = work.connector.fetch_one(
         "SELECT gallery.scope_key, gallery.locator_sha256 "
-        "FROM catalog_gallery_identity_seals AS gallery_seal "
-        "JOIN catalog_gallery_identity_coordinates AS gallery "
-        "ON gallery.gallery_id = gallery_seal.gallery_id "
-        "WHERE gallery_seal.gallery_id = %s",
+        "FROM catalog_gallery_identities AS gallery "
+        "WHERE gallery.gallery_id = %s",
         (authority.gallery_id,),
     )
     if len(row) != 2:
@@ -3146,18 +3144,14 @@ def _build_input_plan(
     while True:
         rows = work.connector.fetch_all(
             "SELECT selection.publication_key, selection.gallery_id, pub.gid, "
-            "gallery.gallery_key, gallery_coordinate.scope_key, "
+            "gallery.gallery_key, gallery.scope_key, "
             "member.observation_id, "
             "observation.observation_identity_sha256 "
             "FROM catalog_publication_selections AS selection "
             "JOIN catalog_publication_identities AS pub "
             "ON pub.publication_key = selection.publication_key "
-            "JOIN catalog_gallery_identity_seals AS gallery_seal "
-            "ON gallery_seal.gallery_id = selection.gallery_id "
-            "JOIN catalog_gallery_identity_gallery_keys AS gallery "
-            "ON gallery.gallery_id = gallery_seal.gallery_id "
-            "JOIN catalog_gallery_identity_coordinates AS gallery_coordinate "
-            "ON gallery_coordinate.gallery_id = gallery_seal.gallery_id "
+            "JOIN catalog_gallery_identities AS gallery "
+            "ON gallery.gallery_id = selection.gallery_id "
             "JOIN catalog_source_build_galleries AS member "
             "ON member.build_id = %s AND member.gallery_id = selection.gallery_id "
             "JOIN catalog_gallery_observations AS observation "
@@ -5029,7 +5023,7 @@ def _load_authority_facts(
         contract = _load_projection_contract(work, projection)
     rows = work.connector.fetch_all(
         "SELECT selection.publication_key, selection.gallery_id, pub.gid, "
-        "gallery.gallery_key, gallery_coordinate.scope_key, member.observation_id, "
+        "gallery.gallery_key, gallery.scope_key, member.observation_id, "
         "observation.observation_identity_sha256, "
         "input.artifact_semantics_sha256, operation.operation, "
         "semantics.source_manifest_component_sha256, "
@@ -5041,12 +5035,8 @@ def _load_authority_facts(
         "FROM catalog_publication_selections AS selection "
         "JOIN catalog_publication_identities AS pub "
         "ON pub.publication_key = selection.publication_key "
-        "JOIN catalog_gallery_identity_seals AS gallery_seal "
-        "ON gallery_seal.gallery_id = selection.gallery_id "
-        "JOIN catalog_gallery_identity_gallery_keys AS gallery "
-        "ON gallery.gallery_id = gallery_seal.gallery_id "
-        "JOIN catalog_gallery_identity_coordinates AS gallery_coordinate "
-        "ON gallery_coordinate.gallery_id = gallery_seal.gallery_id "
+        "JOIN catalog_gallery_identities AS gallery "
+        "ON gallery.gallery_id = selection.gallery_id "
         "JOIN catalog_source_build_galleries AS member "
         "ON member.build_id = %s AND member.gallery_id = selection.gallery_id "
         "JOIN catalog_gallery_observations AS observation "
@@ -5160,16 +5150,12 @@ def _load_owner_facts(
         "JOIN catalog_analysis_content_owner_resolved AS owner "
         "ON owner.analysis_id = content.analysis_id "
         "AND owner.content_sha256 = content.content_sha256 "
-        "JOIN catalog_gallery_identity_seals AS owner_gallery_seal "
-        "ON owner_gallery_seal.gallery_id = owner.owner_gallery_id "
-        "JOIN catalog_gallery_identity_gallery_keys AS owner_gallery "
-        "ON owner_gallery.gallery_id = owner_gallery_seal.gallery_id "
+        "JOIN catalog_gallery_identities AS owner_gallery "
+        "ON owner_gallery.gallery_id = owner.owner_gallery_id "
         "JOIN catalog_analysis_gid_winner_resolved AS winner "
         "ON winner.analysis_id = content.analysis_id AND winner.gid = %s "
-        "JOIN catalog_gallery_identity_seals AS winner_gallery_seal "
-        "ON winner_gallery_seal.gallery_id = winner.winner_gallery_id "
-        "JOIN catalog_gallery_identity_gallery_keys AS winner_gallery "
-        "ON winner_gallery.gallery_id = winner_gallery_seal.gallery_id "
+        "JOIN catalog_gallery_identities AS winner_gallery "
+        "ON winner_gallery.gallery_id = winner.winner_gallery_id "
         "WHERE content.analysis_id = %s AND content.gallery_id = %s LIMIT 2",
         (gid, analysis_id, gallery_id),
     )
