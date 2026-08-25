@@ -155,9 +155,7 @@ _PUBLICATION_TITLE_TABLE = "catalog_publication_titles"
 _PUBLICATION_CONTENT_TABLE = "catalog_publication_contents"
 _CONTRIBUTOR_TABLE = "catalog_contributors"
 _SUBJECT_TABLE = "catalog_subjects"
-_CATALOG_ARTIFACT_SHA256_TABLE = "catalog_artifact_sha256s"
-_CATALOG_ARTIFACT_SEMANTICS_TABLE = "catalog_artifact_semantics_sha256s"
-_CATALOG_ARTIFACT_SEAL_TABLE = "catalog_artifact_seals"
+_CATALOG_ARTIFACT_TABLE = "catalog_artifacts"
 
 _BUILD_GENERATION_TABLE = "operational_source_build_generations"
 _SOURCE_WORKING_TABLE = "operational_source_working_builds"
@@ -3387,21 +3385,15 @@ def _catalog_child_kind_rows(
             raise PublicationCandidateConflictError(
                 "catalog artifact singleton boundary must have an empty subkey"
             )
-        predicate = " AND seal.publication_key > %s"
+        predicate = " AND artifact.publication_key > %s"
         parameters.append(after_key)
     parameters.append(limit)
     raw = connector.fetch_all(
-        "SELECT seal.publication_key "
-        f"FROM {_CATALOG_ARTIFACT_SEAL_TABLE} AS seal "
-        f"JOIN {_CATALOG_ARTIFACT_SHA256_TABLE} AS digest "
-        "ON digest.revision = seal.revision "
-        "AND digest.publication_key = seal.publication_key "
-        f"JOIN {_CATALOG_ARTIFACT_SEMANTICS_TABLE} AS semantics "
-        "ON semantics.revision = seal.revision "
-        "AND semantics.publication_key = seal.publication_key "
-        "WHERE seal.revision = %s"
+        "SELECT artifact.publication_key "
+        f"FROM {_CATALOG_ARTIFACT_TABLE} AS artifact "
+        "WHERE artifact.revision = %s"
         + predicate
-        + " ORDER BY seal.publication_key LIMIT %s",
+        + " ORDER BY artifact.publication_key LIMIT %s",
         tuple(parameters),
     )
     return tuple(

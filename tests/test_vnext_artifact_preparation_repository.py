@@ -986,7 +986,7 @@ def test_authority_audit_and_canonical_storage_receipt(
         assert not adapter.called
     assert not adapter.called
     assert not connector.fetch_one("SELECT 1 FROM catalog_artifact_blobs")
-    assert not connector.fetch_one("SELECT 1 FROM catalog_prepared_artifact_seals")
+    assert not connector.fetch_one("SELECT 1 FROM catalog_prepared_artifacts")
     connector.close()
 
 
@@ -1151,11 +1151,11 @@ def test_storage_adapter_cannot_mutate_verified_archive(tmp_path: Path) -> None:
             )
         assert adapter.called
     assert connector.fetch_one(
-        "SELECT state FROM catalog_prepared_artifact_states "
+        "SELECT state FROM catalog_prepared_artifacts "
         "WHERE candidate_id = %s AND publication_key = %s",
         (_CANDIDATE, publication_key),
     ) == ("PENDING",)
-    assert not connector.fetch_one("SELECT 1 FROM catalog_artifact_seals")
+    assert not connector.fetch_one("SELECT 1 FROM catalog_artifacts")
     connector.close()
 
 
@@ -1248,11 +1248,11 @@ def test_storage_failure_leaves_exact_pending_intent_for_retry(
 
         assert failing_adapter.protection_tokens == [intent.protection_token]
         assert connector.fetch_one(
-            "SELECT state FROM catalog_prepared_artifact_states "
+            "SELECT state FROM catalog_prepared_artifacts "
             "WHERE candidate_id = %s AND publication_key = %s",
             (_CANDIDATE, publication_key),
         ) == ("PENDING",)
-        assert not connector.fetch_one("SELECT 1 FROM catalog_artifact_seals")
+        assert not connector.fetch_one("SELECT 1 FROM catalog_artifacts")
         assert not connector.fetch_one(
             "SELECT 1 FROM operational_publication_candidate_preparations"
         )
@@ -1281,15 +1281,15 @@ def test_storage_failure_leaves_exact_pending_intent_for_retry(
         assert evidence.intent == replay
         assert retry_adapter.protection_tokens == [intent.protection_token]
         assert connector.fetch_one(
-            "SELECT state FROM catalog_prepared_artifact_states "
+            "SELECT state FROM catalog_prepared_artifacts "
             "WHERE candidate_id = %s AND publication_key = %s",
             (_CANDIDATE, publication_key),
         ) == ("PENDING",)
-        assert not connector.fetch_one("SELECT 1 FROM catalog_artifact_seals")
+        assert not connector.fetch_one("SELECT 1 FROM catalog_artifacts")
     connector.close()
 
 
-def test_partial_prepared_family_is_rejected_without_repair(tmp_path: Path) -> None:
+def test_prepared_artifact_requires_one_complete_atomic_row(tmp_path: Path) -> None:
     connector, gate, turn, publication_key, now = _database_through_stage_seven(
         tmp_path
     )
@@ -1312,39 +1312,15 @@ def test_partial_prepared_family_is_rejected_without_repair(tmp_path: Path) -> N
         backend="sqlite",
         audit=audit,
         adapter=_RecordingStorageAdapter(),
-    ) as receipt:
-        connector.execute(
-            "INSERT INTO catalog_prepared_artifact_anchors "
-            "(candidate_id, publication_key) VALUES (%s, %s)",
-            (_CANDIDATE, publication_key),
-        )
-        with pytest.raises(
-            ArtifactPreparationConflictError,
-            match="partial or internally inconsistent",
-        ):
-            with connector.transaction():
-                ArtifactPreparationRepository.persist_prepared_artifact(
-                    VNextUnitOfWork(connector, backend="sqlite"),
-                    gate_lease=gate,
-                    ingest_turn=turn,
-                    receipt=receipt,
-                    now=now + 1,
-                )
-        assert connector.fetch_one(
-            "SELECT candidate_id, publication_key "
-            "FROM catalog_prepared_artifact_anchors"
-        ) == (_CANDIDATE, publication_key)
-        for table in (
-            "catalog_prepared_artifact_sha256s",
-            "catalog_prepared_artifact_storage_codec_versions",
-            "catalog_prepared_artifact_storage_generations",
-            "catalog_prepared_artifact_protection_tokens",
-            "catalog_prepared_artifact_states",
-            "catalog_prepared_artifact_seals",
-            "catalog_artifact_blobs",
-            "catalog_artifact_location",
-        ):
-            assert not connector.fetch_one(f"SELECT 1 FROM {table}")
+    ) as _receipt:
+        with pytest.raises(DatabaseDuplicateKeyError):
+            connector.execute(
+                "INSERT INTO catalog_prepared_artifacts "
+                "(candidate_id, publication_key) VALUES (%s, %s)",
+                (_CANDIDATE, publication_key),
+            )
+        assert not connector.fetch_one("SELECT 1 FROM catalog_prepared_artifacts")
+        assert not connector.fetch_one("SELECT 1 FROM catalog_artifact_blobs")
     connector.close()
 
 
@@ -1566,7 +1542,7 @@ def test_nonterminal_checkpoint_fails_closed_without_writes(tmp_path: Path) -> N
                 publication_key=publication_key,
                 now=110,
             )
-    assert not connector.fetch_one("SELECT 1 FROM catalog_prepared_artifact_seals")
+    assert not connector.fetch_one("SELECT 1 FROM catalog_prepared_artifacts")
     connector.close()
 
 
@@ -1971,8 +1947,13 @@ def test_persistence_collision_forgery_and_each_statement_fault_roll_back(
             with connector.transaction():
                 connector.execute(
                     "INSERT INTO catalog_artifact_blobs "
-                    "(artifact_sha256, size_bytes) VALUES (%s, %s)",
-                    (receipt.artifact_sha256, receipt.size_bytes + 1),
+                    "(artifact_sha256, size_bytes, artifact_locator_sha256) "
+                    "VALUES (%s, %s, %s)",
+                    (
+                        receipt.artifact_sha256,
+                        receipt.size_bytes + 1,
+                        receipt.artifact_locator_sha256,
+                    ),
                 )
                 ArtifactPreparationRepository.persist_prepared_artifact(
                     VNextUnitOfWork(connector, backend="sqlite"),
@@ -1985,14 +1966,7 @@ def test_persistence_collision_forgery_and_each_statement_fault_roll_back(
 
         insert_faults = (
             "INSERT INTO catalog_artifact_blobs ",
-            "INSERT INTO catalog_artifact_location ",
-            "INSERT INTO catalog_prepared_artifact_anchors ",
-            "INSERT INTO catalog_prepared_artifact_sha256s ",
-            "INSERT INTO catalog_prepared_artifact_storage_codec_versions ",
-            "INSERT INTO catalog_prepared_artifact_storage_generations ",
-            "INSERT INTO catalog_prepared_artifact_protection_tokens ",
-            "INSERT INTO catalog_prepared_artifact_states ",
-            "INSERT INTO catalog_prepared_artifact_seals ",
+            "INSERT INTO catalog_prepared_artifacts ",
         )
         original_execute = connector.execute
         for index, fragment in enumerate(insert_faults):
@@ -2025,14 +1999,7 @@ def test_persistence_collision_forgery_and_each_statement_fault_roll_back(
                     )
             for table in (
                 "catalog_artifact_blobs",
-                "catalog_artifact_location",
-                "catalog_prepared_artifact_anchors",
-                "catalog_prepared_artifact_sha256s",
-                "catalog_prepared_artifact_storage_codec_versions",
-                "catalog_prepared_artifact_storage_generations",
-                "catalog_prepared_artifact_protection_tokens",
-                "catalog_prepared_artifact_states",
-                "catalog_prepared_artifact_seals",
+                "catalog_prepared_artifacts",
             ):
                 assert not connector.fetch_one(f"SELECT 1 FROM {table}")
         now += len(insert_faults)
@@ -2094,7 +2061,7 @@ def test_persistence_collision_forgery_and_each_statement_fault_roll_back(
             query: str,
             data: tuple[object, ...] = (),
         ) -> int:
-            if "UPDATE catalog_prepared_artifact_states " in query:
+            if "UPDATE catalog_prepared_artifacts " in query:
                 raise RuntimeError("fault at prepared state CAS")
             return original_execute_affected(query, data)
 
@@ -2119,10 +2086,7 @@ def test_persistence_collision_forgery_and_each_statement_fault_roll_back(
                 )
 
         confirm_faults = (
-            "INSERT INTO catalog_artifact_anchors ",
-            "INSERT INTO catalog_artifact_sha256s ",
-            "INSERT INTO catalog_artifact_semantics_sha256s ",
-            "INSERT INTO catalog_artifact_seals ",
+            "INSERT INTO catalog_artifacts ",
             "INSERT INTO operational_publication_candidate_preparations ",
         )
         original_execute = connector.execute
@@ -2158,15 +2122,12 @@ def test_persistence_collision_forgery_and_each_statement_fault_roll_back(
                         now=now + 3 + index,
                     )
             assert connector.fetch_one(
-                "SELECT state FROM catalog_prepared_artifact_states "
+                "SELECT state FROM catalog_prepared_artifacts "
                 "WHERE candidate_id = %s AND publication_key = %s",
                 (_CANDIDATE, publication_key),
             ) == ("PENDING",)
             for table in (
-                "catalog_artifact_anchors",
-                "catalog_artifact_sha256s",
-                "catalog_artifact_semantics_sha256s",
-                "catalog_artifact_seals",
+                "catalog_artifacts",
                 "operational_publication_candidate_preparations",
             ):
                 assert not connector.fetch_one(f"SELECT 1 FROM {table}")
@@ -2184,7 +2145,7 @@ def test_persistence_collision_forgery_and_each_statement_fault_roll_back(
             )
     assert not persisted.replayed
     connector.execute(
-        "UPDATE catalog_prepared_artifact_protection_tokens "
+        "UPDATE catalog_prepared_artifacts "
         "SET protection_token = %s "
         "WHERE candidate_id = %s AND publication_key = %s",
         (b"x" * 184, _CANDIDATE, publication_key),
@@ -2610,23 +2571,11 @@ def test_mariadb_prepared_family_duplicate_recovery_uses_locking_narrow_sql() ->
     raced_row = (
         candidate,
         publication,
-        candidate,
-        publication,
         artifact,
-        candidate,
-        publication,
         1,
-        candidate,
-        publication,
         generation,
-        candidate,
-        publication,
         token,
-        candidate,
-        publication,
         "PENDING",
-        candidate,
-        publication,
         size_bytes,
         locator,
     )
@@ -2643,7 +2592,7 @@ def test_mariadb_prepared_family_duplicate_recovery_uses_locking_narrow_sql() ->
         ) -> tuple[object, ...]:
             del data
             self.queries.append(query)
-            if "WITH family_keys(candidate_id, publication_key)" in query and (
+            if "FROM catalog_prepared_artifacts AS prepared" in query and (
                 "FOR UPDATE" in query
             ):
                 return raced_row
@@ -2667,13 +2616,13 @@ def test_mariadb_prepared_family_duplicate_recovery_uses_locking_narrow_sql() ->
     assert loaded == family
     assert not created
     assert len(connector.mutations) == 1
-    assert "catalog_prepared_artifact_anchors" in connector.mutations[0]
+    assert "catalog_prepared_artifacts" in connector.mutations[0]
     assert any("FOR UPDATE" in query for query in connector.queries)
     assert all("%s" in query and "?" not in query for query in connector.queries)
     normalized = " ".join(connector.queries).lower()
     assert " as natural" not in normalized
     assert " as keys" not in normalized
-    assert "catalog_prepared_artifacts " not in normalized
+    assert "catalog_prepared_artifact_anchors" not in normalized
 
 
 def test_mariadb_artifact_contract_loaders_use_plain_static_narrow_sql() -> None:
@@ -3061,9 +3010,10 @@ def _exact_delta_database(path: Path) -> tuple[SQLiteConnector, bytes]:
         "revision INTEGER NOT NULL, position INTEGER NOT NULL, "
         "publication_key BLOB NOT NULL, PRIMARY KEY (revision, position), "
         "UNIQUE (revision, publication_key))",
-        "CREATE TABLE catalog_artifact_sha256s ("
+        "CREATE TABLE catalog_artifacts ("
         "revision INTEGER NOT NULL, publication_key BLOB NOT NULL, "
-        "artifact_sha256 BLOB NOT NULL, PRIMARY KEY (revision, publication_key))",
+        "artifact_sha256 BLOB NOT NULL, artifact_semantics_sha256 BLOB NOT NULL, "
+        "PRIMARY KEY (revision, publication_key))",
     ):
         connector.execute(statement)
 
@@ -3144,9 +3094,15 @@ def _exact_delta_database(path: Path) -> tuple[SQLiteConnector, bytes]:
             (revision, 0, publication_key),
         )
         connector.execute(
-            "INSERT INTO catalog_artifact_sha256s "
-            "(revision, publication_key, artifact_sha256) VALUES (%s, %s, %s)",
-            (revision, publication_key, sha256(b"artifact").digest()),
+            "INSERT INTO catalog_artifacts "
+            "(revision, publication_key, artifact_sha256, "
+            "artifact_semantics_sha256) VALUES (%s, %s, %s, %s)",
+            (
+                revision,
+                publication_key,
+                sha256(b"artifact").digest(),
+                sha256(b"semantics").digest(),
+            ),
         )
     return connector, publication_key
 
@@ -3378,7 +3334,7 @@ def _mutate_exact_delta_case(
         return 1
     if case == "artifact-only":
         connector.execute(
-            "UPDATE catalog_artifact_sha256s SET artifact_sha256 = %s "
+            "UPDATE catalog_artifacts SET artifact_sha256 = %s "
             "WHERE revision = %s AND publication_key = %s",
             (sha256(b"changed-artifact").digest(), 2, publication_key),
         )

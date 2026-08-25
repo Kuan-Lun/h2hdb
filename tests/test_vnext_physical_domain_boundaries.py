@@ -106,7 +106,6 @@ _EXPECTED_CATALOG_PHYSICAL_DOMAIN_RELATIONS = frozenset(
         "source_snapshot_manifest_identity_seal",
         "source_snapshot_manifest_identity",
         "publication_identity",
-        "artifact_location",
         "artifact_producer_fingerprint_anchor",
         "artifact_producer_fingerprint_algorithm_version",
         "artifact_producer_fingerprint_equivalence_class",
@@ -114,28 +113,6 @@ _EXPECTED_CATALOG_PHYSICAL_DOMAIN_RELATIONS = frozenset(
         "artifact_producer_fingerprint_seal",
         "artifact_producer_fingerprint",
         "artifact_storage_codec",
-        "artifact_semantic_input_anchor",
-        "artifact_semantic_input_source_manifest_component_sha256",
-        "artifact_semantic_input_member_plan_component_sha256",
-        "artifact_semantic_input_effective_content_component_sha256",
-        "artifact_semantic_input_selected_component_sha256",
-        "artifact_semantic_input_owner_component_sha256",
-        "artifact_semantic_input_policy_component_sha256",
-        "artifact_semantic_input_identity",
-        "artifact_semantic_input_seal",
-        "artifact_semantic_input",
-        "prepared_artifact_anchor",
-        "prepared_artifact_sha256",
-        "prepared_artifact_storage_codec_version",
-        "prepared_artifact_storage_generation",
-        "prepared_artifact_protection_token",
-        "prepared_artifact_state",
-        "prepared_artifact_seal",
-        "catalog_artifact_anchor",
-        "catalog_artifact_sha256",
-        "catalog_artifact_semantics_sha256",
-        "catalog_artifact_seal",
-        "catalog_artifact",
         "gallery_observation_page",
         "gallery_observation_allocation_page",
         "gallery_observation_page_descriptor_anchor",
@@ -364,7 +341,9 @@ _EXPECTED_CATALOG_PHYSICAL_DOMAIN_RELATIONS = frozenset(
         "publication_head_revision",
         "publication_head_advanced_at",
         "publication_head",
+        "artifact_semantic_input",
         "prepared_artifact",
+        "catalog_artifact",
     }
 )
 
@@ -382,9 +361,6 @@ _EXPECTED_CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS = frozenset(
         "source_snapshot_manifest_identity",
         "artifact_producer_fingerprint",
         "artifact_storage_codec",
-        "artifact_semantic_input",
-        "prepared_artifact",
-        "catalog_artifact",
         "gallery_observation_page_descriptor",
         "gallery_observation_page_key_bounds",
         "analysis_run",
@@ -473,9 +449,9 @@ def test_closed_writer_families_match_the_generated_contract_and_real_symbols() 
         _EXPECTED_CATALOG_PHYSICAL_DOMAIN_RELATIONS
         - _EXPECTED_CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS
     )
-    assert len(CATALOG_PHYSICAL_DOMAIN_RELATIONS) == 316
-    assert len(CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS) == 59
-    assert len(CATALOG_PHYSICAL_DOMAIN_MUTATION_RELATIONS) == 257
+    assert len(CATALOG_PHYSICAL_DOMAIN_RELATIONS) == 295
+    assert len(CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS) == 56
+    assert len(CATALOG_PHYSICAL_DOMAIN_MUTATION_RELATIONS) == 239
     assert OPERATIONAL_PHYSICAL_DOMAIN_MUTATION_RELATIONS == (
         OPERATIONAL_PHYSICAL_DOMAIN_RELATIONS - {"schema_epoch_control"}
     )

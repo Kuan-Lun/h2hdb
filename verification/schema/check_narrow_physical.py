@@ -117,10 +117,33 @@ class NarrowPhysicalReport:
 # the exception also fails until this registry and the resulting narrow layout
 # declarations are updated together.
 APPROVED_WIDE_BCNF_RELATIONS: Mapping[str, tuple[str, ...]] = {
+    "catalog_artifact_blobs": (
+        "size_bytes",
+        "artifact_locator_sha256",
+    ),
+    "catalog_artifact_semantic_inputs": (
+        "source_manifest_component_sha256",
+        "member_plan_component_sha256",
+        "effective_content_component_sha256",
+        "selected_component_sha256",
+        "owner_component_sha256",
+        "policy_component_sha256",
+    ),
+    "catalog_artifacts": (
+        "artifact_sha256",
+        "artifact_semantics_sha256",
+    ),
     "catalog_gallery_identities": (
         "gallery_key",
         "scope_key",
         "locator_sha256",
+    ),
+    "catalog_prepared_artifacts": (
+        "artifact_sha256",
+        "storage_codec_version",
+        "storage_generation",
+        "protection_token",
+        "state",
     ),
 }
 
@@ -588,104 +611,13 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
         semantic_key=("artifact_policy_id",),
         semantic_value=("policy_component_sha256",),
     ),
-    "catalog_artifact_semantic_input_anchors": NarrowLayoutDeclaration(
-        semantic_key=("artifact_semantics_sha256",),
-        semantic_value=(),
-    ),
-    "catalog_artifact_semantic_source_manifest_sha256s": NarrowLayoutDeclaration(
-        semantic_key=("artifact_semantics_sha256",),
-        semantic_value=("source_manifest_component_sha256",),
-    ),
-    "catalog_artifact_semantic_member_plan_sha256s": NarrowLayoutDeclaration(
-        semantic_key=("artifact_semantics_sha256",),
-        semantic_value=("member_plan_component_sha256",),
-    ),
-    "catalog_artifact_semantic_effective_content_sha256s": NarrowLayoutDeclaration(
-        semantic_key=("artifact_semantics_sha256",),
-        semantic_value=("effective_content_component_sha256",),
-    ),
-    "catalog_artifact_semantic_selected_sha256s": NarrowLayoutDeclaration(
-        semantic_key=("artifact_semantics_sha256",),
-        semantic_value=("selected_component_sha256",),
-    ),
-    "catalog_artifact_semantic_owner_sha256s": NarrowLayoutDeclaration(
-        semantic_key=("artifact_semantics_sha256",),
-        semantic_value=("owner_component_sha256",),
-    ),
-    "catalog_artifact_semantic_policy_sha256s": NarrowLayoutDeclaration(
-        semantic_key=("artifact_semantics_sha256",),
-        semantic_value=("policy_component_sha256",),
-    ),
-    "catalog_artifact_semantic_input_identities": NarrowLayoutDeclaration(
-        semantic_key=(
-            "source_manifest_component_sha256",
-            "member_plan_component_sha256",
-            "effective_content_component_sha256",
-            "selected_component_sha256",
-            "owner_component_sha256",
-            "policy_component_sha256",
-        ),
-        semantic_value=("artifact_semantics_sha256",),
-    ),
-    "catalog_artifact_semantic_input_seals": NarrowLayoutDeclaration(
-        semantic_key=("artifact_semantics_sha256",),
-        semantic_value=(),
-    ),
     "catalog_candidate_artifact_inputs": NarrowLayoutDeclaration(
         semantic_key=("candidate_id", "publication_key"),
         semantic_value=("artifact_semantics_sha256",),
     ),
-    "catalog_prepared_artifact_anchors": NarrowLayoutDeclaration(
-        semantic_key=("candidate_id", "publication_key"),
-        semantic_value=(),
-    ),
-    "catalog_prepared_artifact_sha256s": NarrowLayoutDeclaration(
-        semantic_key=("candidate_id", "publication_key"),
-        semantic_value=("artifact_sha256",),
-    ),
-    "catalog_prepared_artifact_storage_codec_versions": NarrowLayoutDeclaration(
-        semantic_key=("candidate_id", "publication_key"),
-        semantic_value=("storage_codec_version",),
-    ),
-    "catalog_prepared_artifact_storage_generations": NarrowLayoutDeclaration(
-        semantic_key=("candidate_id", "publication_key"),
-        semantic_value=("storage_generation",),
-    ),
-    "catalog_prepared_artifact_protection_tokens": NarrowLayoutDeclaration(
-        semantic_key=("candidate_id", "publication_key"),
-        semantic_value=("protection_token",),
-    ),
-    "catalog_prepared_artifact_states": NarrowLayoutDeclaration(
-        semantic_key=("candidate_id", "publication_key"),
-        semantic_value=("state",),
-    ),
-    "catalog_prepared_artifact_seals": NarrowLayoutDeclaration(
-        semantic_key=("candidate_id", "publication_key"),
-        semantic_value=(),
-    ),
-    "catalog_artifact_anchors": NarrowLayoutDeclaration(
-        semantic_key=("revision", "publication_key"),
-        semantic_value=(),
-    ),
-    "catalog_artifact_sha256s": NarrowLayoutDeclaration(
-        semantic_key=("revision", "publication_key"),
-        semantic_value=("artifact_sha256",),
-    ),
-    "catalog_artifact_semantics_sha256s": NarrowLayoutDeclaration(
-        semantic_key=("revision", "publication_key"),
-        semantic_value=("artifact_semantics_sha256",),
-    ),
-    "catalog_artifact_seals": NarrowLayoutDeclaration(
-        semantic_key=("revision", "publication_key"),
-        semantic_value=(),
-    ),
     "catalog_artifact_operations": NarrowLayoutDeclaration(
         semantic_key=("candidate_id", "publication_key"),
         semantic_value=("operation",),
-    ),
-    "catalog_artifact_blobs": NarrowLayoutDeclaration(
-        semantic_key=("artifact_sha256",),
-        semantic_value=("size_bytes",),
     ),
     "catalog_display_title_choices": NarrowLayoutDeclaration(
         semantic_key=(
@@ -710,10 +642,6 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
     "catalog_subjects": NarrowLayoutDeclaration(
         semantic_key=("revision", "publication_key", "position"),
         semantic_value=("tag_id",),
-    ),
-    "catalog_artifact_location": NarrowLayoutDeclaration(
-        semantic_key=("artifact_sha256",),
-        semantic_value=("artifact_locator_sha256",),
     ),
     "catalog_source_build_base_publication_commits": NarrowLayoutDeclaration(
         semantic_key=("build_id",),

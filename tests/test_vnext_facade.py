@@ -538,14 +538,10 @@ def _catalog_fixture(connector: SQLiteConnector) -> dict[str, object]:
         encode_artifact_locator(artifact_locator_components(artifact_sha256)),
     )
     connector.execute(
-        "INSERT INTO catalog_artifact_blobs (artifact_sha256, size_bytes) "
-        "VALUES (%s, %s)",
-        (artifact_sha256, len(artifact_bytes)),
-    )
-    connector.execute(
-        "INSERT INTO catalog_artifact_location "
-        "(artifact_sha256, artifact_locator_sha256) VALUES (%s, %s)",
-        (artifact_sha256, artifact_locator),
+        "INSERT INTO catalog_artifact_blobs "
+        "(artifact_sha256, size_bytes, artifact_locator_sha256) "
+        "VALUES (%s, %s, %s)",
+        (artifact_sha256, len(artifact_bytes), artifact_locator),
     )
     ensure_catalog_artifact_family(
         connector,

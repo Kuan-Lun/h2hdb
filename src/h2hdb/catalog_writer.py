@@ -840,7 +840,7 @@ _BOUND_BINDINGS = (
                 "artifact_delta_new",
                 "artifact_operation",
                 "prepared_artifact",
-                "artifact_location",
+                "artifact_blob",
                 "publication_identity",
             }
         )

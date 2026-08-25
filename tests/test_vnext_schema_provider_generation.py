@@ -159,96 +159,29 @@ def test_generated_metadata_view_is_a_sealed_vertical_join(backend: str) -> None
 
 @pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
 @pytest.mark.parametrize(
-    ("relation_name", "table", "dependencies", "physical_dependencies"),
+    ("relation_name", "table"),
     [
-        (
-            "artifact_semantic_input",
-            "catalog_artifact_semantic_input",
-            (
-                "artifact_semantic_input_anchor",
-                "artifact_semantic_input_seal",
-                "artifact_semantic_input_source_manifest_component_sha256",
-                "artifact_semantic_input_member_plan_component_sha256",
-                "artifact_semantic_input_effective_content_component_sha256",
-                "artifact_semantic_input_selected_component_sha256",
-                "artifact_semantic_input_owner_component_sha256",
-                "artifact_semantic_input_policy_component_sha256",
-                "artifact_semantic_input_identity",
-            ),
-            (
-                "catalog_artifact_semantic_input_anchors",
-                "catalog_artifact_semantic_input_seals",
-                "catalog_artifact_semantic_source_manifest_sha256s",
-                "catalog_artifact_semantic_member_plan_sha256s",
-                "catalog_artifact_semantic_effective_content_sha256s",
-                "catalog_artifact_semantic_selected_sha256s",
-                "catalog_artifact_semantic_owner_sha256s",
-                "catalog_artifact_semantic_policy_sha256s",
-                "catalog_artifact_semantic_input_identities",
-            ),
-        ),
-        (
-            "prepared_artifact",
-            "catalog_prepared_artifacts",
-            (
-                "prepared_artifact_anchor",
-                "prepared_artifact_seal",
-                "prepared_artifact_sha256",
-                "prepared_artifact_storage_codec_version",
-                "prepared_artifact_storage_generation",
-                "prepared_artifact_protection_token",
-                "prepared_artifact_state",
-            ),
-            (
-                "catalog_prepared_artifact_anchors",
-                "catalog_prepared_artifact_seals",
-                "catalog_prepared_artifact_sha256s",
-                "catalog_prepared_artifact_storage_codec_versions",
-                "catalog_prepared_artifact_storage_generations",
-                "catalog_prepared_artifact_protection_tokens",
-                "catalog_prepared_artifact_states",
-            ),
-        ),
-        (
-            "catalog_artifact",
-            "catalog_artifacts",
-            (
-                "catalog_artifact_anchor",
-                "catalog_artifact_seal",
-                "catalog_artifact_sha256",
-                "catalog_artifact_semantics_sha256",
-            ),
-            (
-                "catalog_artifact_anchors",
-                "catalog_artifact_seals",
-                "catalog_artifact_sha256s",
-                "catalog_artifact_semantics_sha256s",
-            ),
-        ),
+        ("artifact_semantic_input", "catalog_artifact_semantic_inputs"),
+        ("prepared_artifact", "catalog_prepared_artifacts"),
+        ("catalog_artifact", "catalog_artifacts"),
+        ("artifact_blob", "catalog_artifact_blobs"),
     ],
 )
-def test_generated_batch7_artifact_views_are_sealed_vertical_joins(
+def test_generated_recomposed_artifact_relations_are_base_tables(
     backend: str,
     relation_name: str,
     table: str,
-    dependencies: tuple[str, ...],
-    physical_dependencies: tuple[str, ...],
 ) -> None:
     payload = ARTIFACT_DATA["backends"][backend]
     relation = next(
         value for value in payload["relations"] if value["relation"] == relation_name
     )
-    assert relation["kind"] == "view"
+    assert relation["kind"] == "table"
     assert relation["table"] == table
-    assert relation["view_dependencies"] == dependencies
+    assert relation["view_dependencies"] == ()
     statements = dict(payload["slices"])[f"relation:{relation_name}"]
-    assert len(statements) == 1
-    _statement_id, object_kind, object_name, sql = statements[0]
-    assert object_kind == "view"
-    assert object_name == table
-    for physical_dependency in physical_dependencies:
-        assert physical_dependency in sql
-    assert "catalog_artifact_identity" not in sql
+    assert statements[0][1:3] == ("table", table)
+    assert all(statement[1] in {"table", "index"} for statement in statements)
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "mariadb"])

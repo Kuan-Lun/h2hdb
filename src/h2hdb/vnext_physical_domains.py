@@ -104,7 +104,6 @@ CATALOG_PHYSICAL_DOMAIN_RELATIONS = frozenset(
         "source_snapshot_manifest_identity_seal",
         "source_snapshot_manifest_identity",
         "publication_identity",
-        "artifact_location",
         "artifact_producer_fingerprint_anchor",
         "artifact_producer_fingerprint_algorithm_version",
         "artifact_producer_fingerprint_equivalence_class",
@@ -112,27 +111,7 @@ CATALOG_PHYSICAL_DOMAIN_RELATIONS = frozenset(
         "artifact_producer_fingerprint_seal",
         "artifact_producer_fingerprint",
         "artifact_storage_codec",
-        "artifact_semantic_input_anchor",
-        "artifact_semantic_input_source_manifest_component_sha256",
-        "artifact_semantic_input_member_plan_component_sha256",
-        "artifact_semantic_input_effective_content_component_sha256",
-        "artifact_semantic_input_selected_component_sha256",
-        "artifact_semantic_input_owner_component_sha256",
-        "artifact_semantic_input_policy_component_sha256",
-        "artifact_semantic_input_identity",
-        "artifact_semantic_input_seal",
         "artifact_semantic_input",
-        "prepared_artifact_anchor",
-        "prepared_artifact_sha256",
-        "prepared_artifact_storage_codec_version",
-        "prepared_artifact_storage_generation",
-        "prepared_artifact_protection_token",
-        "prepared_artifact_state",
-        "prepared_artifact_seal",
-        "catalog_artifact_anchor",
-        "catalog_artifact_sha256",
-        "catalog_artifact_semantics_sha256",
-        "catalog_artifact_seal",
         "catalog_artifact",
         "gallery_observation_page",
         "gallery_observation_allocation_page",
@@ -366,8 +345,8 @@ CATALOG_PHYSICAL_DOMAIN_RELATIONS = frozenset(
     }
 )
 
-# These compatibility and derived relations are generated non-materialized
-# views.  They remain inside the physical-domain authority closure so the
+# These derived relations are generated non-materialized views. They remain
+# inside the physical-domain authority closure so the
 # contract covers their exact output domains, but no writer family may claim
 # them as a mutation target.
 CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS = frozenset(
@@ -384,9 +363,6 @@ CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS = frozenset(
         "source_snapshot_manifest_identity",
         "artifact_producer_fingerprint",
         "artifact_storage_codec",
-        "artifact_semantic_input",
-        "prepared_artifact",
-        "catalog_artifact",
         "gallery_observation_page_descriptor",
         "gallery_observation_page_key_bounds",
         "analysis_run",

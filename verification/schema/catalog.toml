@@ -851,67 +851,6 @@ rationale = "The producer-policy triple remains the collision-checked natural id
 write_obligation = "require the sealed ZIP writer policy, sealed producer fingerprint, and canonical policy payload; insert or exact-compare the digest anchor and three atomic facts; insert the full triple identity with exact congruence FKs, reject every collision mismatch, and insert the PK-only seal last"
 
 [[vertical_family]]
-name = "artifact_semantic_input_vertical"
-anchor_relation = "artifact_semantic_input_anchor"
-seal_relation = "artifact_semantic_input_seal"
-view_relation = "artifact_semantic_input"
-key_attributes = ["artifact_semantics_sha256"]
-visibility = "sealed_total"
-members = [
-  { relation = "artifact_semantic_input_source_manifest_component_sha256", key_attributes = ["artifact_semantics_sha256"], value_attribute = "source_manifest_component_sha256", join = { source_relation = "artifact_semantic_input_seal", source_attributes = ["artifact_semantics_sha256"], member_attributes = ["artifact_semantics_sha256"] }, project = true },
-  { relation = "artifact_semantic_input_member_plan_component_sha256", key_attributes = ["artifact_semantics_sha256"], value_attribute = "member_plan_component_sha256", join = { source_relation = "artifact_semantic_input_seal", source_attributes = ["artifact_semantics_sha256"], member_attributes = ["artifact_semantics_sha256"] }, project = true },
-  { relation = "artifact_semantic_input_effective_content_component_sha256", key_attributes = ["artifact_semantics_sha256"], value_attribute = "effective_content_component_sha256", join = { source_relation = "artifact_semantic_input_seal", source_attributes = ["artifact_semantics_sha256"], member_attributes = ["artifact_semantics_sha256"] }, project = true },
-  { relation = "artifact_semantic_input_selected_component_sha256", key_attributes = ["artifact_semantics_sha256"], value_attribute = "selected_component_sha256", join = { source_relation = "artifact_semantic_input_seal", source_attributes = ["artifact_semantics_sha256"], member_attributes = ["artifact_semantics_sha256"] }, project = true },
-  { relation = "artifact_semantic_input_owner_component_sha256", key_attributes = ["artifact_semantics_sha256"], value_attribute = "owner_component_sha256", join = { source_relation = "artifact_semantic_input_seal", source_attributes = ["artifact_semantics_sha256"], member_attributes = ["artifact_semantics_sha256"] }, project = true },
-  { relation = "artifact_semantic_input_policy_component_sha256", key_attributes = ["artifact_semantics_sha256"], value_attribute = "policy_component_sha256", join = { source_relation = "artifact_semantic_input_seal", source_attributes = ["artifact_semantics_sha256"], member_attributes = ["artifact_semantics_sha256"] }, project = true },
-  { relation = "artifact_semantic_input_identity", key_attributes = ["source_manifest_component_sha256", "member_plan_component_sha256", "effective_content_component_sha256", "selected_component_sha256", "owner_component_sha256", "policy_component_sha256"], value_attribute = "artifact_semantics_sha256", join = { source_relation = "artifact_semantic_input_seal", source_attributes = ["artifact_semantics_sha256"], member_attributes = ["artifact_semantics_sha256"] }, project = false },
-]
-semantic_fds = [
-  { determinant = ["artifact_semantics_sha256"], dependent = ["source_manifest_component_sha256", "member_plan_component_sha256", "effective_content_component_sha256", "selected_component_sha256", "owner_component_sha256", "policy_component_sha256"] },
-  { determinant = ["source_manifest_component_sha256", "member_plan_component_sha256", "effective_content_component_sha256", "selected_component_sha256", "owner_component_sha256", "policy_component_sha256"], dependent = ["artifact_semantics_sha256"] },
-]
-rationale = "Keep each of the six canonical component digests in one direct semantic-digest-keyed fact while a cold six-component identity preserves collision-checked tuple equivalence."
-write_obligation = "derive artifact_semantics_sha256 from the exact registered six-component frame; insert or exact-compare the anchor and six atomic facts, insert the full natural identity with congruence foreign keys to every fact, reject either-key collisions, and insert the PK-only seal last"
-
-[[vertical_family]]
-name = "prepared_artifact_vertical"
-anchor_relation = "prepared_artifact_anchor"
-seal_relation = "prepared_artifact_seal"
-view_relation = "prepared_artifact"
-key_attributes = ["candidate_id", "publication_key"]
-visibility = "sealed_total"
-members = [
-  { relation = "prepared_artifact_sha256", key_attributes = ["candidate_id", "publication_key"], value_attribute = "artifact_sha256", join = { source_relation = "prepared_artifact_seal", source_attributes = ["candidate_id", "publication_key"], member_attributes = ["candidate_id", "publication_key"] }, project = true },
-  { relation = "prepared_artifact_storage_codec_version", key_attributes = ["candidate_id", "publication_key"], value_attribute = "storage_codec_version", join = { source_relation = "prepared_artifact_seal", source_attributes = ["candidate_id", "publication_key"], member_attributes = ["candidate_id", "publication_key"] }, project = true },
-  { relation = "prepared_artifact_storage_generation", key_attributes = ["candidate_id", "publication_key"], value_attribute = "storage_generation", join = { source_relation = "prepared_artifact_seal", source_attributes = ["candidate_id", "publication_key"], member_attributes = ["candidate_id", "publication_key"] }, project = true },
-  { relation = "prepared_artifact_protection_token", key_attributes = ["candidate_id", "publication_key"], value_attribute = "protection_token", join = { source_relation = "prepared_artifact_seal", source_attributes = ["candidate_id", "publication_key"], member_attributes = ["candidate_id", "publication_key"] }, project = true },
-  { relation = "prepared_artifact_state", key_attributes = ["candidate_id", "publication_key"], value_attribute = "state", join = { source_relation = "prepared_artifact_seal", source_attributes = ["candidate_id", "publication_key"], member_attributes = ["candidate_id", "publication_key"] }, project = true },
-]
-semantic_fds = [
-  { determinant = ["candidate_id", "publication_key"], dependent = ["artifact_sha256", "storage_codec_version", "storage_generation", "protection_token", "state"] },
-  { determinant = ["protection_token"], dependent = ["candidate_id", "publication_key", "artifact_sha256", "storage_codec_version", "storage_generation", "state"] },
-]
-rationale = "Persist a complete storage intent before external protection: immutable byte, codec, generation, and unique token facts remain independent, while the only mutable fact is the explicit PENDING/PREPARED/COMMITTED state."
-write_obligation = "after exact artifact bytes and locator authority exist, insert or exact-compare anchor, artifact digest, storage codec, storage generation, and the repository-derived unique protection token; insert state PENDING and the completion seal last in one short fenced transaction before calling external protect; response-loss retry reloads the durable token and generation; the registered external adapter implements one monotone per-token lifecycle in which protect is idempotent, release is terminal, and a delayed protect can never resurrect a released token; protection acknowledgement compare-and-swaps only PENDING to PREPARED and ordinary publication finalization releases PREPARED tokens before compare-and-swapping them to COMMITTED; bounded inactive-and-unpublished orphan reconciliation under the exact live EXCLUSIVE maintenance gate issues an immutable keyset page solely from current sealed candidate, artifact, locator, codec, generation, token, adapter, and state facts, commits exact page revalidation before calling external terminal tombstones outside every database transaction, then accepts only the repository-issued opaque acknowledgement, relocks and exact-compares every page and family fact under the same EXCLUSIVE gate, and compare-and-swaps either PENDING or PREPARED to COMMITTED; response-loss release retry reuses the same durable tokens, an all-COMMITTED acknowledgement replay performs zero DML, and every immutable-fact mismatch or partially COMMITTED page fails closed"
-
-[[vertical_family]]
-name = "catalog_artifact_vertical"
-anchor_relation = "catalog_artifact_anchor"
-seal_relation = "catalog_artifact_seal"
-view_relation = "catalog_artifact"
-key_attributes = ["revision", "publication_key"]
-visibility = "sealed_total"
-members = [
-  { relation = "catalog_artifact_sha256", key_attributes = ["revision", "publication_key"], value_attribute = "artifact_sha256", join = { source_relation = "catalog_artifact_seal", source_attributes = ["revision", "publication_key"], member_attributes = ["revision", "publication_key"] }, project = true },
-  { relation = "catalog_artifact_semantics_sha256", key_attributes = ["revision", "publication_key"], value_attribute = "artifact_semantics_sha256", join = { source_relation = "catalog_artifact_seal", source_attributes = ["revision", "publication_key"], member_attributes = ["revision", "publication_key"] }, project = true },
-]
-semantic_fds = [
-  { determinant = ["revision", "publication_key"], dependent = ["artifact_sha256", "artifact_semantics_sha256"] },
-]
-rationale = "Use the true catalog occurrence key and store only independent artifact-byte and semantic identities; artifact IDs and publication modified time are strict codec/parent-derived values, not occurrence facts."
-write_obligation = "only after external protection is acknowledged and the reserved catalog publication exists, insert or exact-compare the occurrence anchor and its artifact-byte and semantic facts, then insert the PK-only seal last; response-loss replay requires the complete family and never repairs a partial occurrence"
-
-[[vertical_family]]
 name = "publication_candidate_vertical"
 anchor_relation = "publication_candidate_anchor"
 seal_relation = "publication_candidate_definition_seal"
@@ -1341,13 +1280,12 @@ root_key = ["candidate_id"]
 external_blockers = []
 retained_outliving = []
 semantic_blockers = [
-  { relation = "prepared_artifact_state", attributes = ["candidate_id"], root_attributes = ["candidate_id"], blocking_predicate = "state IN ('PENDING','PREPARED')", nonblocking_state = "COMMITTED", semantic_obligation_id = "catalog.retention.v1", release_obligation_id = "catalog.artifact-semantics.v1" },
+  { relation = "prepared_artifact", attributes = ["candidate_id"], root_attributes = ["candidate_id"], blocking_predicate = "state IN ('PENDING','PREPARED')", nonblocking_state = "COMMITTED", semantic_obligation_id = "catalog.retention.v1", release_obligation_id = "catalog.artifact-semantics.v1" },
 ]
-derived_views = ["publication_candidate", "publication_candidate_projection", "publication_candidate_base_catalog", "publication_candidate_base_source", "publication_checkpoint", "publication_batch_receipt_stored", "publication_batch_receipt", "artifact_delta_old", "artifact_delta_new", "prepared_artifact"]
+derived_views = ["publication_candidate", "publication_candidate_projection", "publication_candidate_base_catalog", "publication_candidate_base_source", "publication_checkpoint", "publication_batch_receipt_stored", "publication_batch_receipt", "artifact_delta_old", "artifact_delta_new"]
 child_phases = [
-  ["publication_candidate_projection_seal", "publication_batch_receipt_seal", "prepared_artifact_seal", "artifact_operation"],
-  ["prepared_artifact_state", "prepared_artifact_protection_token", "prepared_artifact_storage_generation", "prepared_artifact_storage_codec_version", "prepared_artifact_sha256"],
-  ["prepared_artifact_anchor"],
+  ["publication_candidate_projection_seal", "publication_batch_receipt_seal", "artifact_operation"],
+  ["prepared_artifact"],
   ["artifact_input"],
   ["publication_batch_receipt_coordinate", "publication_batch_receipt_start_cursor", "publication_batch_receipt_start_processed_count", "publication_batch_receipt_next_cursor", "publication_batch_receipt_row_count", "publication_batch_receipt_committed_at"],
   ["publication_batch_receipt_anchor"],
@@ -1449,15 +1387,13 @@ target = "ARTIFACT_BLOB"
 root_relation = "artifact_blob"
 root_key = ["artifact_sha256"]
 external_blockers = [
-  { relation = "prepared_artifact_sha256", attributes = ["artifact_sha256"], referenced_relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
-  { relation = "catalog_artifact_sha256", attributes = ["artifact_sha256"], referenced_relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
+  { relation = "prepared_artifact", attributes = ["artifact_sha256"], referenced_relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
+  { relation = "catalog_artifact", attributes = ["artifact_sha256"], referenced_relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
 ]
 retained_outliving = []
 semantic_blockers = []
 derived_views = ["artifact_delta_old"]
-child_phases = [
-  ["artifact_location"],
-]
+child_phases = []
 
 [[retention_target]]
 target = "CANONICAL_VALUE"
@@ -1479,16 +1415,16 @@ external_blockers = [
   { relation = "analysis_content_owner_tombstone", attributes = ["content_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
   { relation = "publication_candidate_artifact_policy_id", attributes = ["artifact_policy_id"], referenced_relation = "artifact_policy", referenced_attributes = ["artifact_policy_id"] },
   { relation = "publication_commit_artifact_policy", attributes = ["artifact_policy_id"], referenced_relation = "artifact_policy", referenced_attributes = ["artifact_policy_id"] },
-  { relation = "artifact_semantic_input_anchor", attributes = ["artifact_semantics_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
-  { relation = "artifact_semantic_input_source_manifest_component_sha256", attributes = ["source_manifest_component_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
-  { relation = "artifact_semantic_input_member_plan_component_sha256", attributes = ["member_plan_component_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
-  { relation = "artifact_semantic_input_effective_content_component_sha256", attributes = ["effective_content_component_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
-  { relation = "artifact_semantic_input_selected_component_sha256", attributes = ["selected_component_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
-  { relation = "artifact_semantic_input_owner_component_sha256", attributes = ["owner_component_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
-  { relation = "artifact_input", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input_seal", referenced_attributes = ["artifact_semantics_sha256"] },
-  { relation = "catalog_artifact_semantics_sha256", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input_seal", referenced_attributes = ["artifact_semantics_sha256"] },
+  { relation = "artifact_semantic_input", attributes = ["artifact_semantics_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { relation = "artifact_semantic_input", attributes = ["source_manifest_component_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { relation = "artifact_semantic_input", attributes = ["member_plan_component_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { relation = "artifact_semantic_input", attributes = ["effective_content_component_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { relation = "artifact_semantic_input", attributes = ["selected_component_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { relation = "artifact_semantic_input", attributes = ["owner_component_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { relation = "artifact_input", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input", referenced_attributes = ["artifact_semantics_sha256"] },
+  { relation = "catalog_artifact", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input", referenced_attributes = ["artifact_semantics_sha256"] },
   { relation = "catalog_publication_content", attributes = ["content_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
-  { relation = "artifact_location", attributes = ["artifact_locator_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { relation = "artifact_blob", attributes = ["artifact_locator_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
 ]
 retained_outliving = [
   { relation = "display_title_choice", attributes = ["source_title_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
@@ -1505,12 +1441,9 @@ machine_gates = [
   { id = "operational.canonical_value_upload(generation,value_sha256)", semantic_obligation_id = "catalog.retention.v1" },
   { id = "operational.canonical_value_maintenance_fence", semantic_obligation_id = "catalog.retention.v1" },
 ]
-derived_views = ["analysis_content_owner_candidate_resolved", "analysis_content_owner_resolved", "source_scope", "tag_term", "artifact_policy_semantics", "artifact_semantic_input", "artifact_delta_old", "artifact_delta_new", "source_snapshot_manifest_identity", "canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor"]
+derived_views = ["analysis_content_owner_candidate_resolved", "analysis_content_owner_resolved", "source_scope", "tag_term", "artifact_policy_semantics", "artifact_delta_old", "artifact_delta_new", "source_snapshot_manifest_identity", "canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor"]
 child_phases = [
-  ["source_scope_seal", "source_scope_identity", "source_scope_identity_policy_version", "source_scope_source_root_sha256", "source_scope_source_provider", "source_scope_anchor", "source_locator_identity", "tag_term_seal", "tag_term_identity", "tag_term_anchor", "source_snapshot_manifest_identity_seal", "source_snapshot_manifest_identity_gallery_count", "source_snapshot_manifest_identity_file_count", "source_snapshot_manifest_identity_byte_count", "source_snapshot_manifest_identity_anchor", "artifact_policy", "artifact_semantic_input_seal"],
-  ["artifact_semantic_input_identity"],
-  ["artifact_semantic_input_source_manifest_component_sha256", "artifact_semantic_input_member_plan_component_sha256", "artifact_semantic_input_effective_content_component_sha256", "artifact_semantic_input_selected_component_sha256", "artifact_semantic_input_owner_component_sha256", "artifact_semantic_input_policy_component_sha256"],
-  ["artifact_semantic_input_anchor"],
+  ["source_scope_seal", "source_scope_identity", "source_scope_identity_policy_version", "source_scope_source_root_sha256", "source_scope_source_provider", "source_scope_anchor", "source_locator_identity", "tag_term_seal", "tag_term_identity", "tag_term_anchor", "source_snapshot_manifest_identity_seal", "source_snapshot_manifest_identity_gallery_count", "source_snapshot_manifest_identity_file_count", "source_snapshot_manifest_identity_byte_count", "source_snapshot_manifest_identity_anchor", "artifact_policy", "artifact_semantic_input"],
   ["artifact_policy_semantics_seal", "artifact_policy_semantics_identity", "artifact_policy_semantics_producer_fingerprint_sha256", "artifact_policy_semantics_max_image_short_side", "artifact_policy_semantics_artifact_algorithm_version", "artifact_policy_semantics_anchor"],
   ["canonical_value_identity"],
   ["canonical_value_page_parent", "canonical_value_page_seal"],
@@ -1949,7 +1882,7 @@ golden_name_hex = "6832682d372e63627a"
 runtime_obligation = "derive artifact_name only from the exact positive GID with artifact_name(gid); reject caller bytes, plus signs, zero, leading zeros, whitespace, alternate extensions, Unicode decimal digits, and names above the signed-int63 domain; require canonical positive GID encode/decode round-trip with exact EOF, and clamp every artifact-name encode or decode page to a server batch cap of 128"
 
 [artifact_locator_contract]
-relation = "artifact_location"
+relation = "artifact_blob"
 artifact_attribute = "artifact_sha256"
 locator_attribute = "artifact_locator_sha256"
 storage_codec_version = 1
@@ -2542,7 +2475,7 @@ ready_check = "catalog_refinement.check_artifact_semantics_v1"
 writer_hook = "catalog_writer.validate_artifact_semantics"
 writer_hook_version = 1
 scope = "catalog.artifact-semantics"
-relations = ["artifact_zip_writer_policy", "artifact_producer_fingerprint_anchor", "artifact_producer_fingerprint_algorithm_version", "artifact_producer_fingerprint_equivalence_class", "artifact_producer_fingerprint_identity", "artifact_producer_fingerprint_seal", "artifact_producer_fingerprint", "artifact_storage_codec", "artifact_policy_semantics", "artifact_policy", "artifact_semantic_input", "artifact_input", "artifact_delta_old", "artifact_delta_new", "prepared_artifact", "artifact_location", "publication_identity"]
+relations = ["artifact_zip_writer_policy", "artifact_producer_fingerprint_anchor", "artifact_producer_fingerprint_algorithm_version", "artifact_producer_fingerprint_equivalence_class", "artifact_producer_fingerprint_identity", "artifact_producer_fingerprint_seal", "artifact_producer_fingerprint", "artifact_storage_codec", "artifact_policy_semantics", "artifact_policy", "artifact_semantic_input", "artifact_input", "artifact_delta_old", "artifact_delta_new", "artifact_blob", "prepared_artifact", "publication_identity"]
 covers = [
   "machine_contract.artifact-semantics",
   "artifact_delta_contract.rebuild_rule",
@@ -2567,7 +2500,7 @@ ready_check = "catalog_refinement.check_publication_atomicity_v1"
 writer_hook = "catalog_writer.validate_publication_transition"
 writer_hook_version = 1
 scope = "catalog.publication-atomicity"
-relations = ["publication_candidate", "publication_candidate_projection_seal", "publication_candidate_base_publication_commit", "publication_candidate_base_source", "publication_candidate_base_catalog", "publication_selection", "publication_stage", "publication_checkpoint", "publication_batch_receipt", "artifact_input", "artifact_operation", "prepared_artifact", "publication_commit", "publication_commit_finalization", "publication_receipt", "publication_commit_head_receipt", "publication_head_revision", "publication_head_advanced_at", "publication_head", "analysis_snapshot_manifest", "source_revision_descriptor_seal", "source_revision", "canonical_value_allocation", "canonical_value_page", "canonical_value_identity", "catalog_revision_descriptor_seal", "catalog_revision", "catalog_publication", "catalog_publication_order", "artifact_location", "catalog_artifact"]
+relations = ["publication_candidate", "publication_candidate_projection_seal", "publication_candidate_base_publication_commit", "publication_candidate_base_source", "publication_candidate_base_catalog", "publication_selection", "publication_stage", "publication_checkpoint", "publication_batch_receipt", "artifact_input", "artifact_operation", "artifact_blob", "prepared_artifact", "publication_commit", "publication_commit_finalization", "publication_receipt", "publication_commit_head_receipt", "publication_head_revision", "publication_head_advanced_at", "publication_head", "analysis_snapshot_manifest", "source_revision_descriptor_seal", "source_revision", "canonical_value_allocation", "canonical_value_page", "canonical_value_identity", "catalog_revision_descriptor_seal", "catalog_revision", "catalog_publication", "catalog_publication_order", "catalog_artifact"]
 covers = [
   "machine_contract.publication-atomicity",
   "publication_atomic_contract.selection_rule",
@@ -2632,7 +2565,303 @@ ready_check = "catalog_refinement.check_physical_domains_v1"
 writer_hook = "catalog_writer.validate_physical_domain"
 writer_hook_version = 1
 scope = "catalog.physical-domains"
-relations = ["canonical_value_allocation_anchor", "canonical_value_allocation_digest_domain", "canonical_value_allocation_byte_count", "canonical_value_allocation_allocated_at", "canonical_value_allocation_seal", "canonical_value_allocation", "canonical_value_page_anchor", "canonical_value_page_payload", "canonical_value_page_coordinate", "canonical_value_page_subtree_item_count", "canonical_value_page_seal", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "source_locator_identity", "source_build_anchor", "source_build_scope_key", "source_build_manifest_policy_id", "source_build_state", "source_build_created_at", "source_build_descriptor_seal", "source_build_sealed_at", "source_build", "source_build_discovery_gallery_count", "build_manifest_anchor", "build_manifest_manifest_sha256", "build_manifest_file_count", "build_manifest_byte_count", "build_manifest_seal", "build_manifest", "gallery_identity", "file_name_identity_anchor", "file_name_identity_name_bytes", "file_name_identity_file_role", "file_name_identity_seal", "file_name_identity", "gallery_observation_file_anchor", "gallery_observation_file_file_no", "gallery_observation_file_file_sha256", "gallery_observation_file_seal", "gallery_observation_file", "gallery_manifest_anchor", "gallery_manifest_manifest_sha256", "gallery_manifest_computed_at", "gallery_manifest_seal", "gallery_manifest", "tag_term_anchor", "tag_term_identity", "tag_term_seal", "tag_term", "source_snapshot_manifest_identity_anchor", "source_snapshot_manifest_identity_gallery_count", "source_snapshot_manifest_identity_file_count", "source_snapshot_manifest_identity_byte_count", "source_snapshot_manifest_identity_seal", "source_snapshot_manifest_identity", "publication_identity", "artifact_location", "artifact_producer_fingerprint_anchor", "artifact_producer_fingerprint_algorithm_version", "artifact_producer_fingerprint_equivalence_class", "artifact_producer_fingerprint_identity", "artifact_producer_fingerprint_seal", "artifact_producer_fingerprint", "artifact_storage_codec", "artifact_semantic_input_anchor", "artifact_semantic_input_source_manifest_component_sha256", "artifact_semantic_input_member_plan_component_sha256", "artifact_semantic_input_effective_content_component_sha256", "artifact_semantic_input_selected_component_sha256", "artifact_semantic_input_owner_component_sha256", "artifact_semantic_input_policy_component_sha256", "artifact_semantic_input_identity", "artifact_semantic_input_seal", "artifact_semantic_input", "prepared_artifact_anchor", "prepared_artifact_sha256", "prepared_artifact_storage_codec_version", "prepared_artifact_storage_generation", "prepared_artifact_protection_token", "prepared_artifact_state", "prepared_artifact_seal", "prepared_artifact", "catalog_artifact_anchor", "catalog_artifact_sha256", "catalog_artifact_semantics_sha256", "catalog_artifact_seal", "catalog_artifact", "gallery_observation_page", "gallery_observation_allocation_page", "gallery_observation_page_descriptor_anchor", "gallery_observation_page_descriptor_component", "gallery_observation_page_descriptor_level", "gallery_observation_page_descriptor_subtree_item_count", "gallery_observation_page_descriptor_seal", "gallery_observation_page_descriptor", "gallery_observation_page_key_bounds_anchor", "gallery_observation_page_key_bounds_first_key", "gallery_observation_page_key_bounds_last_key", "gallery_observation_page_key_bounds_seal", "gallery_observation_page_key_bounds", "gallery_observation_page_child", "gallery_observation_discovery_fingerprint", "analysis_run_anchor", "analysis_run_build_id", "analysis_run_policy_id", "analysis_run_input_manifest_sha256", "analysis_run_identity", "analysis_run_started_at", "analysis_run_state", "analysis_run_descriptor_seal", "analysis_run_completed_at", "analysis_run", "analysis_state_anchor", "analysis_state_component_anchor", "analysis_state_component_row_count", "analysis_state_component_sealed_at", "analysis_state_component_completion_seal", "analysis_state_component_seal", "analysis_exclusion_delta_anchor", "analysis_exclusion_delta_old_excluded", "analysis_exclusion_delta_new_excluded", "analysis_exclusion_delta_change", "analysis_exclusion_delta_seal", "analysis_exclusion_delta", "analysis_file_hash_decision_shadow_anchor", "analysis_file_hash_decision_shadow_occurrence_count", "analysis_file_hash_decision_shadow_artist_count", "analysis_file_hash_decision_shadow_maximum_gallery_artist_count", "analysis_file_hash_decision_shadow_seal", "analysis_file_hash_decision_shadow", "analysis_content_owner_candidate_shadow_anchor", "analysis_content_owner_candidate_shadow_content_sha256", "analysis_content_owner_candidate_shadow_prefer_not_already_uploaded", "analysis_content_owner_candidate_shadow_title_scalar_count", "analysis_content_owner_candidate_shadow_download_time", "analysis_content_owner_candidate_shadow_seal", "analysis_content_owner_candidate_shadow", "analysis_content_owner_shadow_anchor", "analysis_content_owner_shadow_owner_gallery_id", "analysis_content_owner_shadow_seal", "analysis_content_owner_shadow", "analysis_impacted_content_anchor", "analysis_impacted_content_provenance", "analysis_impacted_content_witness", "analysis_impacted_content_seal", "analysis_impacted_content", "analysis_impacted_gid_anchor", "analysis_impacted_gid_provenance", "analysis_impacted_gid_witness", "analysis_impacted_gid_seal", "analysis_impacted_gid", "analysis_gid_candidate_shadow", "analysis_gid_candidate_tombstone", "analysis_gid_candidate_resolved", "analysis_gid_winner_selection", "analysis_gid_winner_shadow", "analysis_gid_winner_tombstone", "analysis_gid_winner_resolved", "analysis_batch_receipt_page_limit", "analysis_checkpoint", "publication_checkpoint", "publication_batch_receipt", "publication_candidate_anchor", "publication_candidate_analysis_id", "publication_candidate_reserved_revision", "publication_candidate_artifact_policy_id", "publication_candidate_display_title_policy_id", "publication_candidate_artifacts_required", "publication_candidate_created_at", "publication_candidate_definition_seal", "publication_candidate", "publication_candidate_projection_seal", "publication_candidate_projection", "publication_candidate_base_publication_commit", "publication_candidate_base_catalog", "publication_candidate_base_source", "publication_selection", "publication_stage_anchor", "publication_stage_order", "publication_stage_cursor_codec", "publication_stage_seal", "publication_stage", "publication_checkpoint_anchor", "publication_checkpoint_generation", "publication_checkpoint_cursor", "publication_checkpoint_processed_count", "publication_checkpoint_state", "publication_checkpoint_updated_at", "publication_checkpoint_seal", "publication_batch_receipt_anchor", "publication_batch_receipt_coordinate", "publication_batch_receipt_start_cursor", "publication_batch_receipt_start_processed_count", "publication_batch_receipt_next_cursor", "publication_batch_receipt_row_count", "publication_batch_receipt_committed_at", "publication_batch_receipt_seal", "publication_batch_receipt_stored", "publication_finalization_checkpoint_anchor", "publication_finalization_checkpoint_generation", "publication_finalization_checkpoint_cursor", "publication_finalization_checkpoint_processed_count", "publication_finalization_checkpoint_state", "publication_finalization_checkpoint_updated_at", "publication_finalization_checkpoint_seal", "publication_finalization_checkpoint", "publication_finalization_batch_receipt_anchor", "publication_finalization_batch_receipt_coordinate", "publication_finalization_batch_receipt_start_cursor", "publication_finalization_batch_receipt_start_processed_count", "publication_finalization_batch_receipt_next_cursor", "publication_finalization_batch_receipt_row_count", "publication_finalization_batch_receipt_committed_at", "publication_finalization_batch_receipt_seal", "publication_finalization_batch_receipt_stored", "publication_finalization_batch_receipt", "artifact_zip_writer_policy_anchor", "artifact_zip_writer_policy_zip_codec_version", "artifact_zip_writer_policy_compression_method", "artifact_zip_writer_policy_compression_level", "artifact_zip_writer_policy_dos_date", "artifact_zip_writer_policy_dos_time", "artifact_zip_writer_policy_unix_mode", "artifact_zip_writer_policy_general_purpose_flags", "artifact_zip_writer_policy_create_system", "artifact_zip_writer_policy_archive_name_codec_version", "artifact_zip_writer_policy_artifact_name_codec_version", "artifact_zip_writer_policy_identity", "artifact_zip_writer_policy_seal", "artifact_zip_writer_policy", "artifact_storage_codec_anchor", "artifact_storage_codec_adapter_id", "artifact_storage_codec_locator_codec_version", "artifact_storage_codec_protection_token_codec_version", "artifact_storage_codec_seal", "artifact_policy_semantics_anchor", "artifact_policy_semantics_artifact_algorithm_version", "artifact_policy_semantics_max_image_short_side", "artifact_policy_semantics_producer_fingerprint_sha256", "artifact_policy_semantics_identity", "artifact_policy_semantics_seal", "artifact_policy_semantics", "artifact_policy", "artifact_input", "artifact_delta_old", "artifact_delta_new", "artifact_operation", "artifact_blob", "catalog_revision_anchor", "catalog_revision_publication_count", "catalog_revision_descriptor_seal", "catalog_revision_descriptor", "catalog_revision", "catalog_revision_generation", "publication_generation_node", "publication_generation_successor", "display_title_policy_anchor", "display_title_policy_algorithm_version", "display_title_policy_title_sort_policy_id", "display_title_policy_identity", "display_title_policy_seal", "display_title_policy", "title_sort_policy_anchor", "title_sort_policy_algorithm_version", "title_sort_policy_unicode_data_version", "title_sort_policy_identity", "title_sort_policy_seal", "title_sort_policy", "display_title_choice", "title_sort", "catalog_publication_anchor", "catalog_publication_gallery_id", "catalog_publication_summary_sha256", "catalog_publication_language_sha256", "catalog_publication_modified_at", "catalog_publication_seal", "catalog_publication", "catalog_publication_order", "catalog_publication_title_anchor", "catalog_publication_title_source_title_sha256", "catalog_publication_title_source_gallery_name", "catalog_publication_title_seal", "catalog_publication_title", "catalog_publication_content", "contributor_role_registry", "catalog_contributor_anchor", "catalog_contributor_name_sha256", "catalog_contributor_role", "catalog_contributor_identity", "catalog_contributor_seal", "catalog_contributor", "catalog_subject", "publication_commit_anchor", "publication_commit_candidate", "publication_commit_catalog_revision", "publication_commit_source_revision", "publication_commit_generation", "publication_commit_operational_preparation", "publication_commit_operational_policy", "publication_commit_artifact_policy", "publication_commit_display_title_policy", "publication_commit_new_galleries", "publication_commit_changed_galleries", "publication_commit_removed_galleries", "publication_commit_duplicate_losers", "publication_commit_committed_at", "publication_commit_seal", "publication_commit", "publication_commit_finalization", "publication_commit_head_receipt", "publication_commit_head", "publication_receipt", "publication_head_revision", "publication_head_advanced_at", "publication_head"]
+relations = [
+  "canonical_value_allocation_anchor",
+  "canonical_value_allocation_digest_domain",
+  "canonical_value_allocation_byte_count",
+  "canonical_value_allocation_allocated_at",
+  "canonical_value_allocation_seal",
+  "canonical_value_allocation",
+  "canonical_value_page_anchor",
+  "canonical_value_page_payload",
+  "canonical_value_page_coordinate",
+  "canonical_value_page_subtree_item_count",
+  "canonical_value_page_seal",
+  "canonical_value_page",
+  "canonical_value_page_descriptor",
+  "canonical_value_page_parent",
+  "source_locator_identity",
+  "source_build_anchor",
+  "source_build_scope_key",
+  "source_build_manifest_policy_id",
+  "source_build_state",
+  "source_build_created_at",
+  "source_build_descriptor_seal",
+  "source_build_sealed_at",
+  "source_build",
+  "source_build_discovery_gallery_count",
+  "build_manifest_anchor",
+  "build_manifest_manifest_sha256",
+  "build_manifest_file_count",
+  "build_manifest_byte_count",
+  "build_manifest_seal",
+  "build_manifest",
+  "gallery_identity",
+  "file_name_identity_anchor",
+  "file_name_identity_name_bytes",
+  "file_name_identity_file_role",
+  "file_name_identity_seal",
+  "file_name_identity",
+  "gallery_observation_file_anchor",
+  "gallery_observation_file_file_no",
+  "gallery_observation_file_file_sha256",
+  "gallery_observation_file_seal",
+  "gallery_observation_file",
+  "gallery_manifest_anchor",
+  "gallery_manifest_manifest_sha256",
+  "gallery_manifest_computed_at",
+  "gallery_manifest_seal",
+  "gallery_manifest",
+  "tag_term_anchor",
+  "tag_term_identity",
+  "tag_term_seal",
+  "tag_term",
+  "source_snapshot_manifest_identity_anchor",
+  "source_snapshot_manifest_identity_gallery_count",
+  "source_snapshot_manifest_identity_file_count",
+  "source_snapshot_manifest_identity_byte_count",
+  "source_snapshot_manifest_identity_seal",
+  "source_snapshot_manifest_identity",
+  "publication_identity",
+  "artifact_producer_fingerprint_anchor",
+  "artifact_producer_fingerprint_algorithm_version",
+  "artifact_producer_fingerprint_equivalence_class",
+  "artifact_producer_fingerprint_identity",
+  "artifact_producer_fingerprint_seal",
+  "artifact_producer_fingerprint",
+  "artifact_storage_codec",
+  "artifact_semantic_input",
+  "prepared_artifact",
+  "catalog_artifact",
+  "gallery_observation_page",
+  "gallery_observation_allocation_page",
+  "gallery_observation_page_descriptor_anchor",
+  "gallery_observation_page_descriptor_component",
+  "gallery_observation_page_descriptor_level",
+  "gallery_observation_page_descriptor_subtree_item_count",
+  "gallery_observation_page_descriptor_seal",
+  "gallery_observation_page_descriptor",
+  "gallery_observation_page_key_bounds_anchor",
+  "gallery_observation_page_key_bounds_first_key",
+  "gallery_observation_page_key_bounds_last_key",
+  "gallery_observation_page_key_bounds_seal",
+  "gallery_observation_page_key_bounds",
+  "gallery_observation_page_child",
+  "gallery_observation_discovery_fingerprint",
+  "analysis_run_anchor",
+  "analysis_run_build_id",
+  "analysis_run_policy_id",
+  "analysis_run_input_manifest_sha256",
+  "analysis_run_identity",
+  "analysis_run_started_at",
+  "analysis_run_state",
+  "analysis_run_descriptor_seal",
+  "analysis_run_completed_at",
+  "analysis_run",
+  "analysis_state_anchor",
+  "analysis_state_component_anchor",
+  "analysis_state_component_row_count",
+  "analysis_state_component_sealed_at",
+  "analysis_state_component_completion_seal",
+  "analysis_state_component_seal",
+  "analysis_exclusion_delta_anchor",
+  "analysis_exclusion_delta_old_excluded",
+  "analysis_exclusion_delta_new_excluded",
+  "analysis_exclusion_delta_change",
+  "analysis_exclusion_delta_seal",
+  "analysis_exclusion_delta",
+  "analysis_file_hash_decision_shadow_anchor",
+  "analysis_file_hash_decision_shadow_occurrence_count",
+  "analysis_file_hash_decision_shadow_artist_count",
+  "analysis_file_hash_decision_shadow_maximum_gallery_artist_count",
+  "analysis_file_hash_decision_shadow_seal",
+  "analysis_file_hash_decision_shadow",
+  "analysis_content_owner_candidate_shadow_anchor",
+  "analysis_content_owner_candidate_shadow_content_sha256",
+  "analysis_content_owner_candidate_shadow_prefer_not_already_uploaded",
+  "analysis_content_owner_candidate_shadow_title_scalar_count",
+  "analysis_content_owner_candidate_shadow_download_time",
+  "analysis_content_owner_candidate_shadow_seal",
+  "analysis_content_owner_candidate_shadow",
+  "analysis_content_owner_shadow_anchor",
+  "analysis_content_owner_shadow_owner_gallery_id",
+  "analysis_content_owner_shadow_seal",
+  "analysis_content_owner_shadow",
+  "analysis_impacted_content_anchor",
+  "analysis_impacted_content_provenance",
+  "analysis_impacted_content_witness",
+  "analysis_impacted_content_seal",
+  "analysis_impacted_content",
+  "analysis_impacted_gid_anchor",
+  "analysis_impacted_gid_provenance",
+  "analysis_impacted_gid_witness",
+  "analysis_impacted_gid_seal",
+  "analysis_impacted_gid",
+  "analysis_gid_candidate_shadow",
+  "analysis_gid_candidate_tombstone",
+  "analysis_gid_candidate_resolved",
+  "analysis_gid_winner_selection",
+  "analysis_gid_winner_shadow",
+  "analysis_gid_winner_tombstone",
+  "analysis_gid_winner_resolved",
+  "analysis_batch_receipt_page_limit",
+  "analysis_checkpoint",
+  "publication_checkpoint",
+  "publication_batch_receipt",
+  "publication_candidate_anchor",
+  "publication_candidate_analysis_id",
+  "publication_candidate_reserved_revision",
+  "publication_candidate_artifact_policy_id",
+  "publication_candidate_display_title_policy_id",
+  "publication_candidate_artifacts_required",
+  "publication_candidate_created_at",
+  "publication_candidate_definition_seal",
+  "publication_candidate",
+  "publication_candidate_projection_seal",
+  "publication_candidate_projection",
+  "publication_candidate_base_publication_commit",
+  "publication_candidate_base_catalog",
+  "publication_candidate_base_source",
+  "publication_selection",
+  "publication_stage_anchor",
+  "publication_stage_order",
+  "publication_stage_cursor_codec",
+  "publication_stage_seal",
+  "publication_stage",
+  "publication_checkpoint_anchor",
+  "publication_checkpoint_generation",
+  "publication_checkpoint_cursor",
+  "publication_checkpoint_processed_count",
+  "publication_checkpoint_state",
+  "publication_checkpoint_updated_at",
+  "publication_checkpoint_seal",
+  "publication_batch_receipt_anchor",
+  "publication_batch_receipt_coordinate",
+  "publication_batch_receipt_start_cursor",
+  "publication_batch_receipt_start_processed_count",
+  "publication_batch_receipt_next_cursor",
+  "publication_batch_receipt_row_count",
+  "publication_batch_receipt_committed_at",
+  "publication_batch_receipt_seal",
+  "publication_batch_receipt_stored",
+  "publication_finalization_checkpoint_anchor",
+  "publication_finalization_checkpoint_generation",
+  "publication_finalization_checkpoint_cursor",
+  "publication_finalization_checkpoint_processed_count",
+  "publication_finalization_checkpoint_state",
+  "publication_finalization_checkpoint_updated_at",
+  "publication_finalization_checkpoint_seal",
+  "publication_finalization_checkpoint",
+  "publication_finalization_batch_receipt_anchor",
+  "publication_finalization_batch_receipt_coordinate",
+  "publication_finalization_batch_receipt_start_cursor",
+  "publication_finalization_batch_receipt_start_processed_count",
+  "publication_finalization_batch_receipt_next_cursor",
+  "publication_finalization_batch_receipt_row_count",
+  "publication_finalization_batch_receipt_committed_at",
+  "publication_finalization_batch_receipt_seal",
+  "publication_finalization_batch_receipt_stored",
+  "publication_finalization_batch_receipt",
+  "artifact_zip_writer_policy_anchor",
+  "artifact_zip_writer_policy_zip_codec_version",
+  "artifact_zip_writer_policy_compression_method",
+  "artifact_zip_writer_policy_compression_level",
+  "artifact_zip_writer_policy_dos_date",
+  "artifact_zip_writer_policy_dos_time",
+  "artifact_zip_writer_policy_unix_mode",
+  "artifact_zip_writer_policy_general_purpose_flags",
+  "artifact_zip_writer_policy_create_system",
+  "artifact_zip_writer_policy_archive_name_codec_version",
+  "artifact_zip_writer_policy_artifact_name_codec_version",
+  "artifact_zip_writer_policy_identity",
+  "artifact_zip_writer_policy_seal",
+  "artifact_zip_writer_policy",
+  "artifact_storage_codec_anchor",
+  "artifact_storage_codec_adapter_id",
+  "artifact_storage_codec_locator_codec_version",
+  "artifact_storage_codec_protection_token_codec_version",
+  "artifact_storage_codec_seal",
+  "artifact_policy_semantics_anchor",
+  "artifact_policy_semantics_artifact_algorithm_version",
+  "artifact_policy_semantics_max_image_short_side",
+  "artifact_policy_semantics_producer_fingerprint_sha256",
+  "artifact_policy_semantics_identity",
+  "artifact_policy_semantics_seal",
+  "artifact_policy_semantics",
+  "artifact_policy",
+  "artifact_input",
+  "artifact_delta_old",
+  "artifact_delta_new",
+  "artifact_operation",
+  "artifact_blob",
+  "catalog_revision_anchor",
+  "catalog_revision_publication_count",
+  "catalog_revision_descriptor_seal",
+  "catalog_revision_descriptor",
+  "catalog_revision",
+  "catalog_revision_generation",
+  "publication_generation_node",
+  "publication_generation_successor",
+  "display_title_policy_anchor",
+  "display_title_policy_algorithm_version",
+  "display_title_policy_title_sort_policy_id",
+  "display_title_policy_identity",
+  "display_title_policy_seal",
+  "display_title_policy",
+  "title_sort_policy_anchor",
+  "title_sort_policy_algorithm_version",
+  "title_sort_policy_unicode_data_version",
+  "title_sort_policy_identity",
+  "title_sort_policy_seal",
+  "title_sort_policy",
+  "display_title_choice",
+  "title_sort",
+  "catalog_publication_anchor",
+  "catalog_publication_gallery_id",
+  "catalog_publication_summary_sha256",
+  "catalog_publication_language_sha256",
+  "catalog_publication_modified_at",
+  "catalog_publication_seal",
+  "catalog_publication",
+  "catalog_publication_order",
+  "catalog_publication_title_anchor",
+  "catalog_publication_title_source_title_sha256",
+  "catalog_publication_title_source_gallery_name",
+  "catalog_publication_title_seal",
+  "catalog_publication_title",
+  "catalog_publication_content",
+  "contributor_role_registry",
+  "catalog_contributor_anchor",
+  "catalog_contributor_name_sha256",
+  "catalog_contributor_role",
+  "catalog_contributor_identity",
+  "catalog_contributor_seal",
+  "catalog_contributor",
+  "catalog_subject",
+  "publication_commit_anchor",
+  "publication_commit_candidate",
+  "publication_commit_catalog_revision",
+  "publication_commit_source_revision",
+  "publication_commit_generation",
+  "publication_commit_operational_preparation",
+  "publication_commit_operational_policy",
+  "publication_commit_artifact_policy",
+  "publication_commit_display_title_policy",
+  "publication_commit_new_galleries",
+  "publication_commit_changed_galleries",
+  "publication_commit_removed_galleries",
+  "publication_commit_duplicate_losers",
+  "publication_commit_committed_at",
+  "publication_commit_seal",
+  "publication_commit",
+  "publication_commit_finalization",
+  "publication_commit_head_receipt",
+  "publication_commit_head",
+  "publication_receipt",
+  "publication_head_revision",
+  "publication_head_advanced_at",
+  "publication_head",
+]
 covers = [
   "machine_contract.physical-domains",
   "byte_domain.source_gallery_name.runtime_obligation",
@@ -2687,12 +2916,12 @@ description = "Validate active/working/pending-receipt/overlay-descendant blocke
 [[canonical_reference_role]]
 attribute = "artifact_semantics_sha256"
 digest_domain = "artifact_semantics_v1"
-relations = ["artifact_delta_new", "artifact_delta_old", "artifact_input", "artifact_semantic_input", "artifact_semantic_input_anchor", "artifact_semantic_input_effective_content_component_sha256", "artifact_semantic_input_identity", "artifact_semantic_input_member_plan_component_sha256", "artifact_semantic_input_owner_component_sha256", "artifact_semantic_input_policy_component_sha256", "artifact_semantic_input_seal", "artifact_semantic_input_selected_component_sha256", "artifact_semantic_input_source_manifest_component_sha256", "catalog_artifact_semantics_sha256"]
+relations = ["artifact_delta_new", "artifact_delta_old", "artifact_input", "artifact_semantic_input", "catalog_artifact"]
 
 [[canonical_reference_role]]
 attribute = "artifact_locator_sha256"
 digest_domain = "artifact_locator_bytes_v1"
-relations = ["artifact_location"]
+relations = ["artifact_blob"]
 
 [[canonical_reference_role]]
 attribute = "content_sha256"
@@ -2707,7 +2936,7 @@ relations = ["catalog_contributor_name_sha256", "catalog_contributor_identity"]
 [[canonical_reference_role]]
 attribute = "effective_content_component_sha256"
 digest_domain = "artifact_effective_content_v1"
-relations = ["artifact_semantic_input_effective_content_component_sha256", "artifact_semantic_input_identity"]
+relations = ["artifact_semantic_input"]
 
 [[canonical_reference_role]]
 attribute = "locator_sha256"
@@ -2722,7 +2951,7 @@ relations = ["catalog_publication_language_sha256"]
 [[canonical_reference_role]]
 attribute = "member_plan_component_sha256"
 digest_domain = "artifact_member_plan_v1"
-relations = ["artifact_semantic_input_identity", "artifact_semantic_input_member_plan_component_sha256"]
+relations = ["artifact_semantic_input"]
 
 [[canonical_reference_role]]
 attribute = "observation_identity_sha256"
@@ -2732,17 +2961,17 @@ relations = ["gallery_observation"]
 [[canonical_reference_role]]
 attribute = "owner_component_sha256"
 digest_domain = "artifact_owner_v1"
-relations = ["artifact_semantic_input_identity", "artifact_semantic_input_owner_component_sha256"]
+relations = ["artifact_semantic_input"]
 
 [[canonical_reference_role]]
 attribute = "policy_component_sha256"
 digest_domain = "artifact_policy_v2"
-relations = ["artifact_policy", "artifact_policy_semantics", "artifact_policy_semantics_anchor", "artifact_policy_semantics_artifact_algorithm_version", "artifact_policy_semantics_identity", "artifact_policy_semantics_max_image_short_side", "artifact_policy_semantics_producer_fingerprint_sha256", "artifact_policy_semantics_seal", "artifact_semantic_input_identity", "artifact_semantic_input_policy_component_sha256"]
+relations = ["artifact_policy", "artifact_policy_semantics", "artifact_policy_semantics_anchor", "artifact_policy_semantics_artifact_algorithm_version", "artifact_policy_semantics_identity", "artifact_policy_semantics_max_image_short_side", "artifact_policy_semantics_producer_fingerprint_sha256", "artifact_policy_semantics_seal", "artifact_semantic_input"]
 
 [[canonical_reference_role]]
 attribute = "selected_component_sha256"
 digest_domain = "artifact_selected_v1"
-relations = ["artifact_semantic_input_identity", "artifact_semantic_input_selected_component_sha256"]
+relations = ["artifact_semantic_input"]
 
 [[canonical_reference_role]]
 attribute = "sort_title_sha256"
@@ -2752,7 +2981,7 @@ relations = ["title_sort"]
 [[canonical_reference_role]]
 attribute = "source_manifest_component_sha256"
 digest_domain = "artifact_source_manifest_v1"
-relations = ["artifact_semantic_input_identity", "artifact_semantic_input_source_manifest_component_sha256"]
+relations = ["artifact_semantic_input"]
 
 [[canonical_reference_role]]
 attribute = "source_root_sha256"
@@ -7798,129 +8027,8 @@ foreign_keys = [
 rationale = "Map the compact policy surrogate one-to-one to its canonical semantic identity without repeating semantic tuple columns."
 
 [[relation]]
-name = "artifact_semantic_input_anchor"
-kind = "source_of_truth"
-attributes = ["artifact_semantics_sha256"]
-declared_keys = [["artifact_semantics_sha256"]]
-fds = []
-foreign_keys = [{ attributes = ["artifact_semantics_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] }]
-rationale = "Allocate one collision-checked artifact semantic family without repeating component identities."
-
-[[relation]]
-name = "artifact_semantic_input_source_manifest_component_sha256"
-kind = "source_of_truth"
-attributes = ["artifact_semantics_sha256", "source_manifest_component_sha256"]
-declared_keys = [["artifact_semantics_sha256"]]
-referential_unique_keys = [["artifact_semantics_sha256", "source_manifest_component_sha256"]]
-fds = [{ determinant = ["artifact_semantics_sha256"], dependent = ["source_manifest_component_sha256"] }]
-foreign_keys = [
-  { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input_anchor", referenced_attributes = ["artifact_semantics_sha256"] },
-  { attributes = ["source_manifest_component_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
-]
-
-[[relation]]
-name = "artifact_semantic_input_member_plan_component_sha256"
-kind = "source_of_truth"
-attributes = ["artifact_semantics_sha256", "member_plan_component_sha256"]
-declared_keys = [["artifact_semantics_sha256"]]
-referential_unique_keys = [["artifact_semantics_sha256", "member_plan_component_sha256"]]
-fds = [{ determinant = ["artifact_semantics_sha256"], dependent = ["member_plan_component_sha256"] }]
-foreign_keys = [
-  { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input_anchor", referenced_attributes = ["artifact_semantics_sha256"] },
-  { attributes = ["member_plan_component_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
-]
-
-[[relation]]
-name = "artifact_semantic_input_effective_content_component_sha256"
-kind = "source_of_truth"
-attributes = ["artifact_semantics_sha256", "effective_content_component_sha256"]
-declared_keys = [["artifact_semantics_sha256"]]
-referential_unique_keys = [["artifact_semantics_sha256", "effective_content_component_sha256"]]
-fds = [{ determinant = ["artifact_semantics_sha256"], dependent = ["effective_content_component_sha256"] }]
-foreign_keys = [
-  { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input_anchor", referenced_attributes = ["artifact_semantics_sha256"] },
-  { attributes = ["effective_content_component_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
-]
-
-[[relation]]
-name = "artifact_semantic_input_selected_component_sha256"
-kind = "source_of_truth"
-attributes = ["artifact_semantics_sha256", "selected_component_sha256"]
-declared_keys = [["artifact_semantics_sha256"]]
-referential_unique_keys = [["artifact_semantics_sha256", "selected_component_sha256"]]
-fds = [{ determinant = ["artifact_semantics_sha256"], dependent = ["selected_component_sha256"] }]
-foreign_keys = [
-  { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input_anchor", referenced_attributes = ["artifact_semantics_sha256"] },
-  { attributes = ["selected_component_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
-]
-
-[[relation]]
-name = "artifact_semantic_input_owner_component_sha256"
-kind = "source_of_truth"
-attributes = ["artifact_semantics_sha256", "owner_component_sha256"]
-declared_keys = [["artifact_semantics_sha256"]]
-referential_unique_keys = [["artifact_semantics_sha256", "owner_component_sha256"]]
-fds = [{ determinant = ["artifact_semantics_sha256"], dependent = ["owner_component_sha256"] }]
-foreign_keys = [
-  { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input_anchor", referenced_attributes = ["artifact_semantics_sha256"] },
-  { attributes = ["owner_component_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
-]
-
-[[relation]]
-name = "artifact_semantic_input_policy_component_sha256"
-kind = "source_of_truth"
-attributes = ["artifact_semantics_sha256", "policy_component_sha256"]
-declared_keys = [["artifact_semantics_sha256"]]
-referential_unique_keys = [["artifact_semantics_sha256", "policy_component_sha256"]]
-fds = [{ determinant = ["artifact_semantics_sha256"], dependent = ["policy_component_sha256"] }]
-foreign_keys = [
-  { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input_anchor", referenced_attributes = ["artifact_semantics_sha256"] },
-  { attributes = ["policy_component_sha256"], relation = "artifact_policy_semantics_seal", referenced_attributes = ["policy_component_sha256"] },
-]
-
-[[relation]]
-name = "artifact_semantic_input_identity"
-kind = "source_of_truth"
-attributes = ["source_manifest_component_sha256", "member_plan_component_sha256", "effective_content_component_sha256", "selected_component_sha256", "owner_component_sha256", "policy_component_sha256", "artifact_semantics_sha256"]
-declared_keys = [
-  ["source_manifest_component_sha256", "member_plan_component_sha256", "effective_content_component_sha256", "selected_component_sha256", "owner_component_sha256", "policy_component_sha256"],
-  ["artifact_semantics_sha256"],
-]
-fds = [
-  { determinant = ["artifact_semantics_sha256"], dependent = ["source_manifest_component_sha256", "member_plan_component_sha256", "effective_content_component_sha256", "selected_component_sha256", "owner_component_sha256", "policy_component_sha256"] },
-  { determinant = ["source_manifest_component_sha256", "member_plan_component_sha256", "effective_content_component_sha256", "selected_component_sha256", "owner_component_sha256", "policy_component_sha256"], dependent = ["artifact_semantics_sha256"] },
-]
-foreign_keys = [
-  { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input_anchor", referenced_attributes = ["artifact_semantics_sha256"] },
-  { attributes = ["artifact_semantics_sha256", "source_manifest_component_sha256"], relation = "artifact_semantic_input_source_manifest_component_sha256", referenced_attributes = ["artifact_semantics_sha256", "source_manifest_component_sha256"] },
-  { attributes = ["artifact_semantics_sha256", "member_plan_component_sha256"], relation = "artifact_semantic_input_member_plan_component_sha256", referenced_attributes = ["artifact_semantics_sha256", "member_plan_component_sha256"] },
-  { attributes = ["artifact_semantics_sha256", "effective_content_component_sha256"], relation = "artifact_semantic_input_effective_content_component_sha256", referenced_attributes = ["artifact_semantics_sha256", "effective_content_component_sha256"] },
-  { attributes = ["artifact_semantics_sha256", "selected_component_sha256"], relation = "artifact_semantic_input_selected_component_sha256", referenced_attributes = ["artifact_semantics_sha256", "selected_component_sha256"] },
-  { attributes = ["artifact_semantics_sha256", "owner_component_sha256"], relation = "artifact_semantic_input_owner_component_sha256", referenced_attributes = ["artifact_semantics_sha256", "owner_component_sha256"] },
-  { attributes = ["artifact_semantics_sha256", "policy_component_sha256"], relation = "artifact_semantic_input_policy_component_sha256", referenced_attributes = ["artifact_semantics_sha256", "policy_component_sha256"] },
-]
-rationale = "Cold six-component natural identity whose composite foreign keys enforce exact congruence with every hot fact."
-
-[[relation]]
-name = "artifact_semantic_input_seal"
-kind = "source_of_truth"
-attributes = ["artifact_semantics_sha256"]
-declared_keys = [["artifact_semantics_sha256"]]
-fds = []
-foreign_keys = [
-  { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input_anchor", referenced_attributes = ["artifact_semantics_sha256"] },
-  { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input_source_manifest_component_sha256", referenced_attributes = ["artifact_semantics_sha256"] },
-  { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input_member_plan_component_sha256", referenced_attributes = ["artifact_semantics_sha256"] },
-  { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input_effective_content_component_sha256", referenced_attributes = ["artifact_semantics_sha256"] },
-  { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input_selected_component_sha256", referenced_attributes = ["artifact_semantics_sha256"] },
-  { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input_owner_component_sha256", referenced_attributes = ["artifact_semantics_sha256"] },
-  { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input_policy_component_sha256", referenced_attributes = ["artifact_semantics_sha256"] },
-  { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input_identity", referenced_attributes = ["artifact_semantics_sha256"] },
-]
-
-[[relation]]
 name = "artifact_semantic_input"
-kind = "controlled_materialization"
+kind = "source_of_truth"
 attributes = ["artifact_semantics_sha256", "source_manifest_component_sha256", "member_plan_component_sha256", "effective_content_component_sha256", "selected_component_sha256", "owner_component_sha256", "policy_component_sha256"]
 declared_keys = [
   ["artifact_semantics_sha256"],
@@ -7930,9 +8038,16 @@ fds = [
   { determinant = ["artifact_semantics_sha256"], dependent = ["source_manifest_component_sha256", "member_plan_component_sha256", "effective_content_component_sha256", "selected_component_sha256", "owner_component_sha256", "policy_component_sha256"] },
   { determinant = ["source_manifest_component_sha256", "member_plan_component_sha256", "effective_content_component_sha256", "selected_component_sha256", "owner_component_sha256", "policy_component_sha256"], dependent = ["artifact_semantics_sha256"] },
 ]
-foreign_keys = [{ attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input_seal", referenced_attributes = ["artifact_semantics_sha256"] }]
-rationale = "Expose the historical complete semantic tuple only through the sealed family."
-materialization = { authoritative = false, storage = "logical_view", rationale = "Read-only compatibility projection over the complete six-component semantic family.", derived_from = ["artifact_semantic_input_anchor", "artifact_semantic_input_source_manifest_component_sha256", "artifact_semantic_input_member_plan_component_sha256", "artifact_semantic_input_effective_content_component_sha256", "artifact_semantic_input_selected_component_sha256", "artifact_semantic_input_owner_component_sha256", "artifact_semantic_input_policy_component_sha256", "artifact_semantic_input_identity", "artifact_semantic_input_seal"], refresh_strategy = "read-only non-materialized sealed vertical join" }
+foreign_keys = [
+  { attributes = ["artifact_semantics_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { attributes = ["source_manifest_component_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { attributes = ["member_plan_component_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { attributes = ["effective_content_component_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { attributes = ["selected_component_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { attributes = ["owner_component_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { attributes = ["policy_component_sha256"], relation = "artifact_policy_semantics_seal", referenced_attributes = ["policy_component_sha256"] },
+]
+rationale = "Store the complete collision-checked six-component semantic identity in one BCNF relation. Both the semantic digest and the six-component tuple are candidate keys, so recomposition removes the vertical family without introducing a non-key determinant."
 
 [[relation]]
 name = "artifact_input"
@@ -7946,7 +8061,7 @@ declared_keys = [["candidate_id", "publication_key"]]
 fds = [{ determinant = ["candidate_id", "publication_key"], dependent = ["artifact_semantics_sha256"] }]
 foreign_keys = [
   { attributes = ["candidate_id", "publication_key"], relation = "publication_selection", referenced_attributes = ["candidate_id", "publication_key"] },
-  { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input_seal", referenced_attributes = ["artifact_semantics_sha256"] },
+  { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input", referenced_attributes = ["artifact_semantics_sha256"] },
 ]
 materialization = { authoritative = false, rationale = "Map each candidate publication key directly to one global exact six-component semantic identity; the candidate key is already the true identity and no hashed surrogate is stored.", derived_from = ["publication_candidate", "publication_selection", "artifact_semantic_input"], refresh_strategy = "replace impacted candidate keys in receipted bounded batches, validate the exact semantic identity and candidate-pinned policy component, then freeze" }
 
@@ -7965,7 +8080,7 @@ fds = [
 ]
 foreign_keys = [
   { attributes = ["candidate_id"], relation = "publication_candidate_definition_seal", referenced_attributes = ["candidate_id"] },
-  { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input_seal", referenced_attributes = ["artifact_semantics_sha256"] },
+  { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input", referenced_attributes = ["artifact_semantics_sha256"] },
   { attributes = ["artifact_sha256"], relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
 ]
 materialization = { authoritative = false, storage = "logical_view", view_pattern = "artifact_delta_old", rationale = "Derive exact old artifact membership from the candidate-pinned optional base revision and sealed catalog occurrence; absence makes the entire old side empty at genesis.", derived_from = ["publication_candidate", "publication_candidate_base_catalog", "catalog_artifact"], refresh_strategy = "read-only non-materialized join from the common sealed base receipt to sealed catalog occurrences" }
@@ -7984,7 +8099,7 @@ fds = [
 ]
 foreign_keys = [
   { attributes = ["candidate_id", "publication_key"], relation = "artifact_input", referenced_attributes = ["candidate_id", "publication_key"] },
-  { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input_seal", referenced_attributes = ["artifact_semantics_sha256"] },
+  { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input", referenced_attributes = ["artifact_semantics_sha256"] },
 ]
 materialization = { authoritative = false, storage = "logical_view", view_pattern = "artifact_delta_new", rationale = "Expose desired new artifact presence directly from the artifact input key and semantic identity; no copied surrogate row exists.", derived_from = ["artifact_input"], refresh_strategy = "read-only non-materialized projection of artifact_input" }
 
@@ -8004,95 +8119,30 @@ materialization = { authoritative = false, rationale = "Classify the union of ol
 [[relation]]
 name = "artifact_blob"
 kind = "source_of_truth"
-attributes = ["artifact_sha256", "size_bytes"]
-declared_keys = [["artifact_sha256"]]
+attributes = ["artifact_sha256", "size_bytes", "artifact_locator_sha256"]
+declared_keys = [["artifact_sha256"], ["artifact_locator_sha256"]]
 fds = [
-  { determinant = ["artifact_sha256"], dependent = ["size_bytes"] },
+  { determinant = ["artifact_sha256"], dependent = ["size_bytes", "artifact_locator_sha256"] },
+  { determinant = ["artifact_locator_sha256"], dependent = ["artifact_sha256", "size_bytes"] },
 ]
-
-[[relation]]
-name = "prepared_artifact_anchor"
-kind = "source_of_truth"
-attributes = ["candidate_id", "publication_key"]
-declared_keys = [["candidate_id", "publication_key"]]
-fds = []
-foreign_keys = [{ attributes = ["candidate_id", "publication_key"], relation = "publication_selection", referenced_attributes = ["candidate_id", "publication_key"] }]
-
-[[relation]]
-name = "prepared_artifact_sha256"
-kind = "source_of_truth"
-attributes = ["candidate_id", "publication_key", "artifact_sha256"]
-declared_keys = [["candidate_id", "publication_key"]]
-fds = [{ determinant = ["candidate_id", "publication_key"], dependent = ["artifact_sha256"] }]
-foreign_keys = [
-  { attributes = ["candidate_id", "publication_key"], relation = "prepared_artifact_anchor", referenced_attributes = ["candidate_id", "publication_key"] },
-  { attributes = ["artifact_sha256"], relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
-]
-
-[[relation]]
-name = "prepared_artifact_storage_codec_version"
-kind = "source_of_truth"
-attributes = ["candidate_id", "publication_key", "storage_codec_version"]
-declared_keys = [["candidate_id", "publication_key"]]
-fds = [{ determinant = ["candidate_id", "publication_key"], dependent = ["storage_codec_version"] }]
-foreign_keys = [
-  { attributes = ["candidate_id", "publication_key"], relation = "prepared_artifact_anchor", referenced_attributes = ["candidate_id", "publication_key"] },
-  { attributes = ["storage_codec_version"], relation = "artifact_storage_codec_seal", referenced_attributes = ["storage_codec_version"] },
-]
-
-[[relation]]
-name = "prepared_artifact_storage_generation"
-kind = "source_of_truth"
-attributes = ["candidate_id", "publication_key", "storage_generation"]
-declared_keys = [["candidate_id", "publication_key"]]
-fds = [{ determinant = ["candidate_id", "publication_key"], dependent = ["storage_generation"] }]
-foreign_keys = [{ attributes = ["candidate_id", "publication_key"], relation = "prepared_artifact_anchor", referenced_attributes = ["candidate_id", "publication_key"] }]
-
-[[relation]]
-name = "prepared_artifact_protection_token"
-kind = "source_of_truth"
-attributes = ["candidate_id", "publication_key", "protection_token"]
-declared_keys = [["candidate_id", "publication_key"], ["protection_token"]]
-fds = [
-  { determinant = ["candidate_id", "publication_key"], dependent = ["protection_token"] },
-  { determinant = ["protection_token"], dependent = ["candidate_id", "publication_key"] },
-]
-foreign_keys = [{ attributes = ["candidate_id", "publication_key"], relation = "prepared_artifact_anchor", referenced_attributes = ["candidate_id", "publication_key"] }]
-
-[[relation]]
-name = "prepared_artifact_state"
-kind = "source_of_truth"
-attributes = ["candidate_id", "publication_key", "state"]
-declared_keys = [["candidate_id", "publication_key"]]
-fds = [{ determinant = ["candidate_id", "publication_key"], dependent = ["state"] }]
-foreign_keys = [{ attributes = ["candidate_id", "publication_key"], relation = "prepared_artifact_anchor", referenced_attributes = ["candidate_id", "publication_key"] }]
-
-[[relation]]
-name = "prepared_artifact_seal"
-kind = "source_of_truth"
-attributes = ["candidate_id", "publication_key"]
-declared_keys = [["candidate_id", "publication_key"]]
-fds = []
-foreign_keys = [
-  { attributes = ["candidate_id", "publication_key"], relation = "prepared_artifact_anchor", referenced_attributes = ["candidate_id", "publication_key"] },
-  { attributes = ["candidate_id", "publication_key"], relation = "prepared_artifact_sha256", referenced_attributes = ["candidate_id", "publication_key"] },
-  { attributes = ["candidate_id", "publication_key"], relation = "prepared_artifact_storage_codec_version", referenced_attributes = ["candidate_id", "publication_key"] },
-  { attributes = ["candidate_id", "publication_key"], relation = "prepared_artifact_storage_generation", referenced_attributes = ["candidate_id", "publication_key"] },
-  { attributes = ["candidate_id", "publication_key"], relation = "prepared_artifact_protection_token", referenced_attributes = ["candidate_id", "publication_key"] },
-  { attributes = ["candidate_id", "publication_key"], relation = "prepared_artifact_state", referenced_attributes = ["candidate_id", "publication_key"] },
-]
+foreign_keys = [{ attributes = ["artifact_locator_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] }]
+rationale = "Store immutable byte size and its mandatory content-addressed locator together. Artifact and locator digests are alternate candidate keys, so the total one-to-one recomposition remains BCNF."
 
 [[relation]]
 name = "prepared_artifact"
-kind = "controlled_materialization"
+kind = "source_of_truth"
 attributes = ["candidate_id", "publication_key", "artifact_sha256", "storage_codec_version", "storage_generation", "protection_token", "state"]
 declared_keys = [["candidate_id", "publication_key"], ["protection_token"]]
 fds = [
   { determinant = ["candidate_id", "publication_key"], dependent = ["artifact_sha256", "storage_codec_version", "storage_generation", "protection_token", "state"] },
   { determinant = ["protection_token"], dependent = ["candidate_id", "publication_key", "artifact_sha256", "storage_codec_version", "storage_generation", "state"] },
 ]
-foreign_keys = [{ attributes = ["candidate_id", "publication_key"], relation = "prepared_artifact_seal", referenced_attributes = ["candidate_id", "publication_key"] }]
-materialization = { authoritative = false, storage = "logical_view", rationale = "Expose only complete durable intents and their current explicit state through the family seal.", derived_from = ["prepared_artifact_anchor", "prepared_artifact_sha256", "prepared_artifact_storage_codec_version", "prepared_artifact_storage_generation", "prepared_artifact_protection_token", "prepared_artifact_state", "prepared_artifact_seal"], refresh_strategy = "read-only non-materialized sealed vertical join; only the state satellite changes by exact CAS" }
+foreign_keys = [
+  { attributes = ["candidate_id", "publication_key"], relation = "publication_selection", referenced_attributes = ["candidate_id", "publication_key"] },
+  { attributes = ["artifact_sha256"], relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
+  { attributes = ["storage_codec_version"], relation = "artifact_storage_codec_seal", referenced_attributes = ["storage_codec_version"] },
+]
+rationale = "Persist each complete storage intent in one BCNF relation. Candidate/publication and the repository-derived protection token are alternate keys; immutable intent facts and mutable lifecycle state remain functionally determined by both."
 
 [[relation]]
 name = "catalog_revision_anchor"
@@ -8653,75 +8703,18 @@ foreign_keys = [
 rationale = "Catalog subjects retain the immutable exact tag identity and a deterministic order. The alternate revision/publication/tag key forbids duplicate semantic subjects; namespace and value bytes are read from the permanently retained tag_term identity without duplicated scheme/code/name dependents."
 
 [[relation]]
-name = "artifact_location"
-kind = "source_of_truth"
-attributes = ["artifact_sha256", "artifact_locator_sha256"]
-declared_keys = [["artifact_sha256"], ["artifact_locator_sha256"]]
-fds = [
-  { determinant = ["artifact_sha256"], dependent = ["artifact_locator_sha256"] },
-  { determinant = ["artifact_locator_sha256"], dependent = ["artifact_sha256"] },
-]
-foreign_keys = [
-  { attributes = ["artifact_sha256"], relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
-  { attributes = ["artifact_locator_sha256"], relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
-]
-rationale = "Normalize the registered content-addressed locator identity at the immutable artifact-byte level. artifact_sha256 and the canonical digest of ('sha256', lowerhex[0:2], lowerhex64+'.cbz') are equivalent keys; strict artifact IDs are encoded and decoded from immutable publication GID plus artifact_sha256 and no caller locator is authority."
-
-[[relation]]
-name = "catalog_artifact_anchor"
-kind = "source_of_truth"
-attributes = ["revision", "publication_key"]
-declared_keys = [["revision", "publication_key"]]
-fds = []
-foreign_keys = [
-  { attributes = ["revision"], relation = "catalog_revision_descriptor_seal", referenced_attributes = ["revision"] },
-  { attributes = ["revision", "publication_key"], relation = "catalog_publication_seal", referenced_attributes = ["revision", "publication_key"] },
-]
-rationale = "Allocate one artifact occurrence at its true catalog-publication key."
-
-[[relation]]
-name = "catalog_artifact_sha256"
-kind = "source_of_truth"
-attributes = ["revision", "publication_key", "artifact_sha256"]
-declared_keys = [["revision", "publication_key"]]
-fds = [{ determinant = ["revision", "publication_key"], dependent = ["artifact_sha256"] }]
-foreign_keys = [
-  { attributes = ["revision", "publication_key"], relation = "catalog_artifact_anchor", referenced_attributes = ["revision", "publication_key"] },
-  { attributes = ["artifact_sha256"], relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
-]
-
-[[relation]]
-name = "catalog_artifact_semantics_sha256"
-kind = "source_of_truth"
-attributes = ["revision", "publication_key", "artifact_semantics_sha256"]
-declared_keys = [["revision", "publication_key"]]
-fds = [{ determinant = ["revision", "publication_key"], dependent = ["artifact_semantics_sha256"] }]
-foreign_keys = [
-  { attributes = ["revision", "publication_key"], relation = "catalog_artifact_anchor", referenced_attributes = ["revision", "publication_key"] },
-  { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input_seal", referenced_attributes = ["artifact_semantics_sha256"] },
-]
-
-[[relation]]
-name = "catalog_artifact_seal"
-kind = "source_of_truth"
-attributes = ["revision", "publication_key"]
-declared_keys = [["revision", "publication_key"]]
-fds = []
-foreign_keys = [
-  { attributes = ["revision", "publication_key"], relation = "catalog_artifact_anchor", referenced_attributes = ["revision", "publication_key"] },
-  { attributes = ["revision", "publication_key"], relation = "catalog_artifact_sha256", referenced_attributes = ["revision", "publication_key"] },
-  { attributes = ["revision", "publication_key"], relation = "catalog_artifact_semantics_sha256", referenced_attributes = ["revision", "publication_key"] },
-]
-
-[[relation]]
 name = "catalog_artifact"
-kind = "controlled_materialization"
+kind = "source_of_truth"
 attributes = ["revision", "publication_key", "artifact_sha256", "artifact_semantics_sha256"]
 declared_keys = [["revision", "publication_key"]]
 fds = [{ determinant = ["revision", "publication_key"], dependent = ["artifact_sha256", "artifact_semantics_sha256"] }]
-foreign_keys = [{ attributes = ["revision", "publication_key"], relation = "catalog_artifact_seal", referenced_attributes = ["revision", "publication_key"] }]
-rationale = "Expose complete catalog artifact occurrences without storing strict-codec artifact IDs or publication-derived modified time."
-materialization = { authoritative = false, storage = "logical_view", rationale = "Read-only complete occurrence projection from artifact byte and semantic facts.", derived_from = ["catalog_artifact_anchor", "catalog_artifact_sha256", "catalog_artifact_semantics_sha256", "catalog_artifact_seal"], refresh_strategy = "read-only non-materialized sealed vertical join" }
+foreign_keys = [
+  { attributes = ["revision"], relation = "catalog_revision_descriptor_seal", referenced_attributes = ["revision"] },
+  { attributes = ["revision", "publication_key"], relation = "catalog_publication_seal", referenced_attributes = ["revision", "publication_key"] },
+  { attributes = ["artifact_sha256"], relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
+  { attributes = ["artifact_semantics_sha256"], relation = "artifact_semantic_input", referenced_attributes = ["artifact_semantics_sha256"] },
+]
+rationale = "Store each complete catalog artifact occurrence in one BCNF relation at its true revision/publication key; strict-codec artifact IDs and publication-derived modified time remain derived."
 
 [[relation]]
 name = "publication_commit_anchor"
@@ -9266,34 +9259,23 @@ universal_attributes = [
   "publication_key",
   "artifact_sha256",
   "size_bytes",
+  "artifact_locator_sha256",
   "storage_codec_version",
   "storage_generation",
   "protection_token",
   "state",
 ]
 fds = [
-  { determinant = ["artifact_sha256"], dependent = ["size_bytes"] },
+  { determinant = ["artifact_sha256"], dependent = ["size_bytes", "artifact_locator_sha256"] },
+  { determinant = ["artifact_locator_sha256"], dependent = ["artifact_sha256", "size_bytes"] },
   { determinant = ["candidate_id", "publication_key"], dependent = ["artifact_sha256", "storage_codec_version", "storage_generation", "protection_token", "state"] },
   { determinant = ["protection_token"], dependent = ["candidate_id", "publication_key", "artifact_sha256", "storage_codec_version", "storage_generation", "state"] },
 ]
 projections = [
-  { relation = "artifact_blob", attributes = ["artifact_sha256", "size_bytes"] },
+  { relation = "artifact_blob", attributes = ["artifact_sha256", "size_bytes", "artifact_locator_sha256"] },
   { relation = "prepared_artifact", attributes = ["candidate_id", "publication_key", "artifact_sha256", "storage_codec_version", "storage_generation", "protection_token", "state"] },
 ]
 rationale = "Separate immutable artifact byte facts from durable provider intent state; candidate/publication and the fixed self-describing protection token are alternate preparation keys, while storage generation is an explicit exact-decoded fact."
-
-[[decomposition]]
-name = "artifact_payload_and_content_addressed_location"
-universal_attributes = ["artifact_sha256", "size_bytes", "artifact_locator_sha256"]
-fds = [
-  { determinant = ["artifact_sha256"], dependent = ["size_bytes", "artifact_locator_sha256"] },
-  { determinant = ["artifact_locator_sha256"], dependent = ["artifact_sha256", "size_bytes"] },
-]
-projections = [
-  { relation = "artifact_blob", attributes = ["artifact_sha256", "size_bytes"] },
-  { relation = "artifact_location", attributes = ["artifact_sha256", "artifact_locator_sha256"] },
-]
-rationale = "Separate immutable byte size from the deterministic storage-address identity. artifact_sha256 is the lossless shared key and the exact managed-filesystem locator digest is an alternate identity for the same blob."
 
 [[decomposition]]
 name = "artifact_policy_and_registered_producer"
@@ -9318,17 +9300,19 @@ universal_attributes = [
   "publication_key",
   "artifact_sha256",
   "size_bytes",
+  "artifact_locator_sha256",
   "artifact_semantics_sha256",
 ]
 fds = [
-  { determinant = ["artifact_sha256"], dependent = ["size_bytes"] },
+  { determinant = ["artifact_sha256"], dependent = ["size_bytes", "artifact_locator_sha256"] },
+  { determinant = ["artifact_locator_sha256"], dependent = ["artifact_sha256", "size_bytes"] },
   { determinant = ["revision", "publication_key"], dependent = ["artifact_sha256", "artifact_semantics_sha256"] },
 ]
 projections = [
-  { relation = "artifact_blob", attributes = ["artifact_sha256", "size_bytes"] },
+  { relation = "artifact_blob", attributes = ["artifact_sha256", "size_bytes", "artifact_locator_sha256"] },
   { relation = "catalog_artifact", attributes = ["revision", "publication_key", "artifact_sha256", "artifact_semantics_sha256"] },
 ]
-rationale = "Separate immutable byte size from each sealed revision/publication occurrence. The occurrence carries the shared artifact digest, making the join lossless without storing a generated artifact ID."
+rationale = "Separate immutable byte and mandatory locator facts from each catalog occurrence. The occurrence carries the shared artifact digest, making the join lossless without storing a generated artifact ID."
 
 [[decomposition]]
 name = "artifact_semantics_and_catalog_occurrence"

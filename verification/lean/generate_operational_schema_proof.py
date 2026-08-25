@@ -855,7 +855,7 @@ def _machine_contract_model(manifest: dict[str, object]) -> str:
     candidate_cleanup = cleanup_targets_by_kind.get("PUBLICATION_CANDIDATE")
     if candidate_cleanup is None or candidate_cleanup.get("semantic_blockers") != [
         {
-            "relation": "prepared_artifact_state",
+            "relation": "prepared_artifact",
             "attributes": ["candidate_id"],
             "root_attributes": ["candidate_id"],
             "blocking_predicate": "state IN ('PENDING','PREPARED')",

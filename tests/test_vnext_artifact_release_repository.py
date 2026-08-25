@@ -8,7 +8,12 @@ import pytest
 
 from h2hdb import vnext_identity as identity
 from h2hdb._generated_vnext_schema import ARTIFACT
+from h2hdb.sql_connector import DatabaseDuplicateKeyError
 from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.vnext_artifact_family import (
+    ArtifactFamilyCollisionError,
+    load_prepared_artifact_family_by_token,
+)
 from h2hdb.vnext_artifact_release_repository import (
     ArtifactReleaseAcknowledgement,
     ArtifactReleaseCommitReceipt,
@@ -119,52 +124,23 @@ def _seed_family(
         [
             (
                 "INSERT INTO catalog_artifact_blobs "
-                "(artifact_sha256, size_bytes) VALUES (%s, %s)",
-                (artifact_sha256, size_bytes),
-            ),
-            (
-                "INSERT INTO catalog_artifact_location "
-                "(artifact_sha256, artifact_locator_sha256) VALUES (%s, %s)",
-                (artifact_sha256, locator_sha256),
-            ),
-            (
-                "INSERT INTO catalog_prepared_artifact_anchors "
-                "(candidate_id, publication_key) VALUES (%s, %s)",
-                (candidate_id, publication_key),
-            ),
-            (
-                "INSERT INTO catalog_prepared_artifact_sha256s "
-                "(candidate_id, publication_key, artifact_sha256) "
+                "(artifact_sha256, size_bytes, artifact_locator_sha256) "
                 "VALUES (%s, %s, %s)",
-                (candidate_id, publication_key, artifact_sha256),
+                (artifact_sha256, size_bytes, locator_sha256),
             ),
             (
-                "INSERT INTO catalog_prepared_artifact_storage_codec_versions "
-                "(candidate_id, publication_key, storage_codec_version) "
-                "VALUES (%s, %s, 1)",
-                (candidate_id, publication_key),
-            ),
-            (
-                "INSERT INTO catalog_prepared_artifact_storage_generations "
-                "(candidate_id, publication_key, storage_generation) "
-                "VALUES (%s, %s, %s)",
-                (candidate_id, publication_key, storage_generation),
-            ),
-            (
-                "INSERT INTO catalog_prepared_artifact_protection_tokens "
-                "(candidate_id, publication_key, protection_token) "
-                "VALUES (%s, %s, %s)",
-                (candidate_id, publication_key, token),
-            ),
-            (
-                "INSERT INTO catalog_prepared_artifact_states "
-                "(candidate_id, publication_key, state) VALUES (%s, %s, %s)",
-                (candidate_id, publication_key, state),
-            ),
-            (
-                "INSERT INTO catalog_prepared_artifact_seals "
-                "(candidate_id, publication_key) VALUES (%s, %s)",
-                (candidate_id, publication_key),
+                "INSERT INTO catalog_prepared_artifacts "
+                "(candidate_id, publication_key, artifact_sha256, "
+                "storage_codec_version, storage_generation, protection_token, state) "
+                "VALUES (%s, %s, %s, 1, %s, %s, %s)",
+                (
+                    candidate_id,
+                    publication_key,
+                    artifact_sha256,
+                    storage_generation,
+                    token,
+                    state,
+                ),
             ),
         ],
     )
@@ -187,6 +163,95 @@ def _issue(
             page_limit=page_limit,
             now=now,
         )
+
+
+def test_token_lookup_revalidates_total_blob_authority(tmp_path: Path) -> None:
+    connector = _database(tmp_path / "prepared-token-authority.sqlite3")
+    try:
+        candidate_id = b"a" * 16
+        publication_key = b"p" * 32
+        artifact_sha256 = b"c" * 32
+        _seed_candidate(connector, candidate_id=candidate_id, reserved_revision=1)
+        token = _seed_family(
+            connector,
+            candidate_id=candidate_id,
+            publication_key=publication_key,
+            artifact_sha256=artifact_sha256,
+            state="PENDING",
+        )
+        loaded = load_prepared_artifact_family_by_token(
+            connector,
+            protection_token=token,
+        )
+        assert loaded is not None and loaded.protection_token == token
+        connector.execute("PRAGMA foreign_keys = OFF")
+        try:
+            connector.execute(
+                "UPDATE catalog_artifact_blobs SET size_bytes = size_bytes + 1 "
+                "WHERE artifact_sha256 = %s",
+                (artifact_sha256,),
+            )
+        finally:
+            connector.execute("PRAGMA foreign_keys = ON")
+        with pytest.raises(ArtifactFamilyCollisionError, match="blob or locator"):
+            load_prepared_artifact_family_by_token(
+                connector,
+                protection_token=token,
+            )
+    finally:
+        connector.close()
+
+
+def test_wide_artifact_relations_enforce_alternate_candidate_keys(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "artifact-wide-candidate-keys.sqlite3")
+    try:
+        components = tuple(bytes((index,)) * 32 for index in range(1, 7))
+        connector.execute("PRAGMA foreign_keys = OFF")
+        try:
+            connector.execute(
+                "INSERT INTO catalog_artifact_semantic_inputs "
+                "(artifact_semantics_sha256, source_manifest_component_sha256, "
+                "member_plan_component_sha256, effective_content_component_sha256, "
+                "selected_component_sha256, owner_component_sha256, "
+                "policy_component_sha256) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (b"s" * 32, *components),
+            )
+            with pytest.raises(DatabaseDuplicateKeyError):
+                connector.execute(
+                    "INSERT INTO catalog_artifact_semantic_inputs "
+                    "(artifact_semantics_sha256, source_manifest_component_sha256, "
+                    "member_plan_component_sha256, "
+                    "effective_content_component_sha256, "
+                    "selected_component_sha256, owner_component_sha256, "
+                    "policy_component_sha256) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    (b"x" * 32, *components),
+                )
+            connector.execute(
+                "INSERT INTO catalog_artifact_blobs "
+                "(artifact_sha256, size_bytes, artifact_locator_sha256) "
+                "VALUES (%s, 1, %s)",
+                (b"a" * 32, b"l" * 32),
+            )
+            with pytest.raises(DatabaseDuplicateKeyError):
+                connector.execute(
+                    "INSERT INTO catalog_artifact_blobs "
+                    "(artifact_sha256, size_bytes, artifact_locator_sha256) "
+                    "VALUES (%s, 2, %s)",
+                    (b"b" * 32, b"l" * 32),
+                )
+        finally:
+            connector.execute("PRAGMA foreign_keys = ON")
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM catalog_artifact_semantic_inputs"
+        ) == (1,)
+        assert connector.fetch_one("SELECT COUNT(*) FROM catalog_artifact_blobs") == (
+            1,
+        )
+    finally:
+        connector.close()
 
 
 def _commit(
@@ -296,7 +361,7 @@ def test_response_loss_reuses_tokens_and_commit_replay_is_zero_write(
         assert not committed.replayed
         assert connector.fetch_all(
             "SELECT publication_key, state "
-            "FROM catalog_prepared_artifact_states WHERE candidate_id = %s "
+            "FROM catalog_prepared_artifacts WHERE candidate_id = %s "
             "ORDER BY publication_key",
             (candidate_id,),
         ) == [
@@ -432,7 +497,7 @@ def test_candidate_race_after_external_release_blocks_state_until_retry(
         with pytest.raises(ArtifactReleaseUnavailableError):
             _commit(connector, acknowledgement, now=5)
         assert connector.fetch_one(
-            "SELECT state FROM catalog_prepared_artifact_states "
+            "SELECT state FROM catalog_prepared_artifacts "
             "WHERE candidate_id = %s AND publication_key = %s",
             (candidate_id, publication_key),
         ) == ("PENDING",)
@@ -502,7 +567,7 @@ def test_every_release_state_statement_rolls_back_the_complete_page(
             data: tuple[Any, ...] = (),
         ) -> int:
             nonlocal update_count
-            if query.startswith("UPDATE catalog_prepared_artifact_states"):
+            if query.startswith("UPDATE catalog_prepared_artifacts"):
                 update_count += 1
                 if update_count == fail_on_update:
                     raise RuntimeError("injected release CAS fault")
@@ -520,7 +585,7 @@ def test_every_release_state_statement_rolls_back_the_complete_page(
 
         assert connector.fetch_all(
             "SELECT publication_key, state "
-            "FROM catalog_prepared_artifact_states WHERE candidate_id = %s "
+            "FROM catalog_prepared_artifacts WHERE candidate_id = %s "
             "ORDER BY publication_key",
             (candidate_id,),
         ) == [
@@ -555,7 +620,7 @@ def test_forged_capabilities_and_corrupt_token_facts_fail_closed(
         connector.execute("PRAGMA foreign_keys = OFF")
         try:
             connector.execute(
-                "UPDATE catalog_prepared_artifact_sha256s "
+                "UPDATE catalog_prepared_artifacts "
                 "SET artifact_sha256 = %s "
                 "WHERE candidate_id = %s AND publication_key = %s",
                 (b"z" * 32, candidate_id, publication_key),
@@ -608,7 +673,7 @@ def test_mariadb_page_shape_uses_portable_placeholders_and_keyset_predicate() ->
     assert page.terminal
     assert "?" not in recorder.query
     assert "LIMIT %s" in recorder.query
-    assert "seal.candidate_id > %s" in recorder.query
+    assert "prepared.candidate_id > %s" in recorder.query
     assert "operational_catalog_working_candidates" in recorder.query
     assert "catalog_publication_commit_candidates" in recorder.query
     assert recorder.parameters == (b"c" * 16, b"c" * 16, b"p" * 32, 8)

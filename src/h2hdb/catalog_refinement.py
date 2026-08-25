@@ -1343,11 +1343,45 @@ def _validate_static_catalog_contract() -> None:
                 ("candidate_id", "publication_key"),
                 (("protection_token",),),
             ),
-            "artifact_location": (
-                "catalog_artifact_location",
-                ("artifact_sha256", "artifact_locator_sha256"),
+            "artifact_semantic_input": (
+                "catalog_artifact_semantic_inputs",
+                (
+                    "artifact_semantics_sha256",
+                    "source_manifest_component_sha256",
+                    "member_plan_component_sha256",
+                    "effective_content_component_sha256",
+                    "selected_component_sha256",
+                    "owner_component_sha256",
+                    "policy_component_sha256",
+                ),
+                ("artifact_semantics_sha256",),
+                (
+                    (
+                        "source_manifest_component_sha256",
+                        "member_plan_component_sha256",
+                        "effective_content_component_sha256",
+                        "selected_component_sha256",
+                        "owner_component_sha256",
+                        "policy_component_sha256",
+                    ),
+                ),
+            ),
+            "artifact_blob": (
+                "catalog_artifact_blobs",
+                ("artifact_sha256", "size_bytes", "artifact_locator_sha256"),
                 ("artifact_sha256",),
                 (("artifact_locator_sha256",),),
+            ),
+            "catalog_artifact": (
+                "catalog_artifacts",
+                (
+                    "revision",
+                    "publication_key",
+                    "artifact_sha256",
+                    "artifact_semantics_sha256",
+                ),
+                ("revision", "publication_key"),
+                (),
             ),
             "analysis_stage": (
                 "catalog_analysis_stages",

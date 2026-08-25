@@ -232,9 +232,6 @@ def test_catalog_contract_is_valid_and_covers_vnext_workflows() -> None:
         "artifact_zip_writer_policy_vertical",
         "artifact_storage_codec_vertical",
         "artifact_policy_semantics_vertical",
-        "artifact_semantic_input_vertical",
-        "prepared_artifact_vertical",
-        "catalog_artifact_vertical",
         "publication_candidate_vertical",
         "catalog_publication_vertical",
         "catalog_publication_title_vertical",
@@ -249,7 +246,7 @@ def test_catalog_contract_is_valid_and_covers_vnext_workflows() -> None:
         "analysis_impacted_content_vertical",
         "analysis_impacted_gid_vertical",
     )
-    assert len(contract.vertical_families) == 52
+    assert len(contract.vertical_families) == 49
     assert report.generation_streams == ()
     assert contract.publication_commit_contract is not None
     assert len(contract.batch_receipt_projections) == 3
@@ -361,8 +358,8 @@ def test_catalog_contract_is_valid_and_covers_vnext_workflows() -> None:
         "UNCHANGED",
     }
     component_relation = relation_by_name[delta_contract.semantic_component_relation]
-    assert component_relation.materialization is not None
-    assert component_relation.materialization["storage"] == "logical_view"
+    assert component_relation.kind == "source_of_truth"
+    assert component_relation.materialization is None
     assert component_relation.attributes == (
         "artifact_semantics_sha256",
         "source_manifest_component_sha256",
@@ -833,7 +830,7 @@ def test_b8_physical_domain_closes_the_complete_publication_graph() -> None:
         if obligation.id == "catalog.physical-domains.v1"
     )
     assert publication_graph <= set(physical_domains.relations)
-    assert len(physical_domains.relations) == 316
+    assert len(physical_domains.relations) == 295
 
     invalid_domains = replace(
         physical_domains,
@@ -861,9 +858,9 @@ def test_generated_lean_closes_the_catalog_physical_domain_partition() -> None:
     catalog_lean = CATALOG_LEAN.read_text(encoding="utf-8")
     operational_lean = OPERATIONAL_LEAN.read_text(encoding="utf-8")
 
-    assert "catalogPhysicalDomainContracts.length = 316" in catalog_lean
-    assert "catalogPhysicalDomainMutationContracts.length = 257" in catalog_lean
-    assert "catalogPhysicalDomainReadOnlyViewContracts.length = 59" in catalog_lean
+    assert "catalogPhysicalDomainContracts.length = 295" in catalog_lean
+    assert "catalogPhysicalDomainMutationContracts.length = 239" in catalog_lean
+    assert "catalogPhysicalDomainReadOnlyViewContracts.length = 56" in catalog_lean
     assert "catalog_physical_domain_has_no_duplicates" in catalog_lean
     assert "catalog_physical_domain_is_manifest_closed" in catalog_lean
     assert "catalog_physical_domain_partition_is_exact" in catalog_lean
@@ -1905,7 +1902,7 @@ def test_long_value_boundary_rejects_direct_payload_key_promotion() -> None:
     (
         ("catalog_publication_summary_sha256", "summary_sha256"),
         ("catalog_publication_language_sha256", "language_sha256"),
-        ("artifact_location", "artifact_locator_sha256"),
+        ("artifact_blob", "artifact_locator_sha256"),
     ),
 )
 def test_unbounded_publication_and_locator_values_require_canonical_fks(
@@ -3636,8 +3633,8 @@ def test_cli_returns_zero_for_catalog_and_nonzero_for_invalid_contract(
         text=True,
     )
     assert valid.returncode == 0, valid.stderr
-    assert "358 BCNF base relations" in valid.stdout
-    assert "81 intentional logical views" in valid.stdout
+    assert "340 BCNF base relations" in valid.stdout
+    assert "78 intentional logical views" in valid.stdout
     assert f"{len(contract.decompositions)} lossless decompositions" in valid.stdout
     assert (
         f"{len(contract.decompositions)} dependency-preserving decompositions"

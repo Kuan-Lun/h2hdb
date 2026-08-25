@@ -1622,8 +1622,7 @@ _CLEANUP_TARGET_SHAPES = {
         "h2hdb.cleanup.publication_candidate.v1",
         (
             "PC_SEALS",
-            "PC_PREPARED_VALUES",
-            "PC_PREPARED_ANCHOR",
+            "PC_PREPARED",
             "PC_INPUT",
             "PC_BATCH_VALUES",
             "PC_BATCH_ANCHOR",
@@ -1686,7 +1685,7 @@ _CLEANUP_TARGET_SHAPES = {
         "artifact_blob_unreferenced_v1",
         "artifact_blob_retention_roots_v1",
         "h2hdb.cleanup.artifact_blob.v1",
-        ("AB_LOCATIONS", "AB_ROOT"),
+        ("AB_ROOT",),
     ),
     "CANONICAL_VALUE": (
         "canonical_value_allocation_anchor",
@@ -2028,11 +2027,14 @@ def check_cleanup_reachability_v1(
         if root not in child_relations or root not in tuple(phases[-1]["relations"]):
             raise ValueError(f"cleanup target {kind} root is not in its terminal phase")
         if kind in {"ARTIFACT_BLOB", "CANONICAL_VALUE"}:
-            owned = set(
-                _required_texts(
-                    target, "owned_prunable_intermediates", f"cleanup target {kind}"
+            raw_owned = target.get("owned_prunable_intermediates")
+            if not isinstance(raw_owned, list) or not all(
+                isinstance(value, str) and value for value in raw_owned
+            ):
+                raise ValueError(
+                    f"cleanup target {kind}.owned_prunable_intermediates must be a string array"
                 )
-            )
+            owned = set(raw_owned)
             if owned != child_relations - {root}:
                 raise ValueError(
                     f"cleanup target {kind} prunable intermediary coverage drifts"
@@ -2122,7 +2124,7 @@ def check_cleanup_reachability_v1(
                 raise ValueError("source-build base candidate retention drifts")
             if target.get("semantic_blockers") != [
                 {
-                    "relation": "prepared_artifact_state",
+                    "relation": "prepared_artifact",
                     "attributes": ["candidate_id"],
                     "root_attributes": ["candidate_id"],
                     "blocking_predicate": "state IN ('PENDING','PREPARED')",
@@ -2136,13 +2138,13 @@ def check_cleanup_reachability_v1(
                 )
             if target.get("conditional_blockers") != [
                 {
-                    "relation": "prepared_artifact_state",
+                    "relation": "prepared_artifact",
                     "candidate_attribute": "candidate_id",
                     "state_attribute": "state",
                     "blocking_states": ["PENDING", "PREPARED"],
                     "release_acknowledged_state": "COMMITTED",
-                    "release_token_relation": "prepared_artifact_protection_token",
-                    "rule": "under the locked candidate, initial eligibility, every phase batch, and final completion recheck reject every PENDING or PREPARED row; bounded orphan reconciliation must issue an immutable keyset page from current sealed family facts under the exact live EXCLUSIVE gate, commit exact candidate, page, family, and token revalidation before invoking the registered adapter's terminal release outside every database transaction, then revalidate under that gate and compare-and-swap either PENDING or PREPARED to COMMITTED from only the repository-issued opaque acknowledgement; response-loss retries reuse the same tokens, late protect cannot defeat the terminal tombstone, all-COMMITTED replay performs zero DML, and only COMMITTED permits child-first deletion",
+                    "release_token_relation": "prepared_artifact",
+                    "rule": "under the locked candidate, initial eligibility, every phase batch, and final completion recheck reject every PENDING or PREPARED row; bounded orphan reconciliation must issue an immutable keyset page from current complete prepared rows under the exact live EXCLUSIVE gate, commit exact candidate and row revalidation before invoking the registered adapter's terminal release outside every database transaction, then revalidate under that gate and compare-and-swap either PENDING or PREPARED to COMMITTED from only the repository-issued opaque acknowledgement; response-loss retries reuse the same tokens, late protect cannot defeat the terminal tombstone, all-COMMITTED replay performs zero DML, and only COMMITTED permits child-first deletion",
                 }
             ]:
                 raise ValueError("candidate cleanup external-protection blocker drifts")

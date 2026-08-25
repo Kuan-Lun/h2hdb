@@ -50,34 +50,15 @@ def test_mariadb_selected_cte_preserves_binary_publication_keys(
         with connector.transaction():
             connector.execute(
                 "INSERT INTO catalog_artifact_blobs "
-                "(artifact_sha256, size_bytes) VALUES (%s, %s)",
-                (artifact_sha256, 123),
-            )
-            connector.execute(
-                "INSERT INTO catalog_artifact_location "
-                "(artifact_sha256, artifact_locator_sha256) VALUES (%s, %s)",
-                (artifact_sha256, locator_sha256),
-            )
-            connector.execute(
-                "INSERT INTO catalog_artifact_anchors "
-                "(revision, publication_key) VALUES (%s, %s)",
-                (1, publication_key),
-            )
-            connector.execute(
-                "INSERT INTO catalog_artifact_sha256s "
-                "(revision, publication_key, artifact_sha256) VALUES (%s, %s, %s)",
-                (1, publication_key, artifact_sha256),
-            )
-            connector.execute(
-                "INSERT INTO catalog_artifact_semantics_sha256s "
-                "(revision, publication_key, artifact_semantics_sha256) "
+                "(artifact_sha256, size_bytes, artifact_locator_sha256) "
                 "VALUES (%s, %s, %s)",
-                (1, publication_key, semantics_sha256),
+                (artifact_sha256, 123, locator_sha256),
             )
             connector.execute(
-                "INSERT INTO catalog_artifact_seals "
-                "(revision, publication_key) VALUES (%s, %s)",
-                (1, publication_key),
+                "INSERT INTO catalog_artifacts "
+                "(revision, publication_key, artifact_sha256, "
+                "artifact_semantics_sha256) VALUES (%s, %s, %s, %s)",
+                (1, publication_key, artifact_sha256, semantics_sha256),
             )
         connector.execute("SET FOREIGN_KEY_CHECKS = 1")
 

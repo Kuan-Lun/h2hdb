@@ -1349,68 +1349,6 @@ def _select_publication_identities(
     return _Mutation(keys[-1] if keys else cursor, keys)
 
 
-def _select_artifact_locations(
-    work: VNextUnitOfWork, cycle: CleanupCycle, cursor: bytes
-) -> _Mutation:
-    lower, upper, no_upper = _digest_bounds(cycle, cursor)
-    rows = work.connector.fetch_all(
-        """
-        SELECT location.artifact_sha256
-        FROM catalog_artifact_location AS location
-        WHERE location.artifact_sha256 >= %s
-          AND (%s = 0 OR location.artifact_sha256 > %s)
-          AND (%s = 1 OR location.artifact_sha256 < %s)
-          AND NOT EXISTS (
-              SELECT 1 FROM catalog_prepared_artifact_sha256s p
-              WHERE p.artifact_sha256 = location.artifact_sha256)
-          AND NOT EXISTS (
-              SELECT 1 FROM catalog_artifact_sha256s retained
-              WHERE retained.artifact_sha256 = location.artifact_sha256)
-        ORDER BY location.artifact_sha256
-        LIMIT %s
-        """,
-        (
-            lower,
-            0 if cursor else 1,
-            cursor,
-            no_upper,
-            upper,
-            cycle.max_rows_per_transaction,
-        ),
-    )
-    keys = tuple(
-        require_digest32(row[0], field="artifact location digest") for row in rows
-    )
-    for digest in keys:
-        locked = work.lock_row(
-            LockRank.CHILD,
-            encode_lock_key("cleanup-artifact-location", digest),
-            """
-            SELECT location.artifact_sha256
-            FROM catalog_artifact_location AS location
-            WHERE location.artifact_sha256 = %s
-              AND NOT EXISTS (
-                  SELECT 1 FROM catalog_prepared_artifact_sha256s p
-                  WHERE p.artifact_sha256 = location.artifact_sha256)
-              AND NOT EXISTS (
-                  SELECT 1 FROM catalog_artifact_sha256s retained
-                  WHERE retained.artifact_sha256 = location.artifact_sha256)
-            """,
-            (digest,),
-        )
-        if locked != (digest,):
-            raise CleanupRetentionBlockedError("artifact blob gained a retention root")
-        if (
-            work.connector.execute_affected(
-                "DELETE FROM catalog_artifact_location WHERE artifact_sha256 = %s",
-                (digest,),
-            )
-            != 1
-        ):
-            raise CleanupUnavailableError("artifact location changed during cleanup")
-    return _Mutation(keys[-1] if keys else cursor, keys)
-
-
 def _select_artifact_blobs(
     work: VNextUnitOfWork, cycle: CleanupCycle, cursor: bytes
 ) -> _Mutation:
@@ -1423,13 +1361,10 @@ def _select_artifact_blobs(
           AND (%s = 0 OR artifact_blob.artifact_sha256 > %s)
           AND (%s = 1 OR artifact_blob.artifact_sha256 < %s)
           AND NOT EXISTS (
-              SELECT 1 FROM catalog_artifact_location location
-              WHERE location.artifact_sha256 = artifact_blob.artifact_sha256)
-          AND NOT EXISTS (
-              SELECT 1 FROM catalog_prepared_artifact_sha256s p
+              SELECT 1 FROM catalog_prepared_artifacts p
               WHERE p.artifact_sha256 = artifact_blob.artifact_sha256)
           AND NOT EXISTS (
-              SELECT 1 FROM catalog_artifact_sha256s retained
+              SELECT 1 FROM catalog_artifacts retained
               WHERE retained.artifact_sha256 = artifact_blob.artifact_sha256)
         ORDER BY artifact_blob.artifact_sha256
         LIMIT %s
@@ -1453,13 +1388,10 @@ def _select_artifact_blobs(
             FROM catalog_artifact_blobs AS artifact_blob
             WHERE artifact_blob.artifact_sha256 = %s
               AND NOT EXISTS (
-                  SELECT 1 FROM catalog_artifact_location location
-                  WHERE location.artifact_sha256 = artifact_blob.artifact_sha256)
-              AND NOT EXISTS (
-                  SELECT 1 FROM catalog_prepared_artifact_sha256s p
+                  SELECT 1 FROM catalog_prepared_artifacts p
                   WHERE p.artifact_sha256 = artifact_blob.artifact_sha256)
               AND NOT EXISTS (
-                  SELECT 1 FROM catalog_artifact_sha256s retained
+                  SELECT 1 FROM catalog_artifacts retained
                   WHERE retained.artifact_sha256 = artifact_blob.artifact_sha256)
             """,
             (key,),
@@ -2131,7 +2063,7 @@ NOT EXISTS (
     SELECT 1 FROM operational_catalog_working_candidates x
     WHERE x.candidate_id = r.candidate_id)
 AND NOT EXISTS (
-    SELECT 1 FROM catalog_prepared_artifact_states protected
+    SELECT 1 FROM catalog_prepared_artifacts protected
     WHERE protected.candidate_id = r.candidate_id
       AND protected.state IN ('PENDING', 'PREPARED'))
 AND NOT EXISTS (
@@ -2453,30 +2385,17 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         return _owned_spec(table, pk, root, key)
 
     prepared_source = (
-        "catalog_prepared_artifact_anchors AS c "
+        "catalog_prepared_artifacts AS c "
         "JOIN catalog_publication_candidate_anchors AS r "
         "ON r.candidate_id = c.candidate_id"
     )
     prepared_key = ("candidate_id", "publication_key")
-    prepared_seal = _indirect_spec(
-        "catalog_prepared_artifact_seals",
-        prepared_key,
-        prepared_source,
-    )
-    prepared_values = _indirect_spec(
-        "catalog_prepared_artifact_states",
+    prepared = _indirect_spec(
+        "catalog_prepared_artifacts",
         prepared_key,
         prepared_source,
         delete_sql=(
-            "DELETE FROM catalog_prepared_artifact_states "
-            "WHERE candidate_id = %s AND publication_key = %s",
-            "DELETE FROM catalog_prepared_artifact_protection_tokens "
-            "WHERE candidate_id = %s AND publication_key = %s",
-            "DELETE FROM catalog_prepared_artifact_storage_generations "
-            "WHERE candidate_id = %s AND publication_key = %s",
-            "DELETE FROM catalog_prepared_artifact_storage_codec_versions "
-            "WHERE candidate_id = %s AND publication_key = %s",
-            "DELETE FROM catalog_prepared_artifact_sha256s "
+            "DELETE FROM catalog_prepared_artifacts "
             "WHERE candidate_id = %s AND publication_key = %s",
         ),
     )
@@ -2492,13 +2411,9 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                 "catalog_publication_batch_receipt_seals",
                 ("candidate_id", "stage", "start_generation"),
             ),
-            prepared_seal,
             direct("catalog_artifact_operations", ("candidate_id", "publication_key")),
         ),
-        "PC_PREPARED_VALUES": (prepared_values,),
-        "PC_PREPARED_ANCHOR": (
-            direct("catalog_prepared_artifact_anchors", prepared_key),
-        ),
+        "PC_PREPARED": (prepared,),
         "PC_INPUT": (
             direct(
                 "catalog_candidate_artifact_inputs",
@@ -3540,21 +3455,21 @@ AND NOT EXISTS (
     JOIN catalog_artifact_policies policy
       ON policy.artifact_policy_id = committed.artifact_policy_id
     WHERE policy.policy_component_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_artifact_semantic_source_manifest_sha256s x
+AND NOT EXISTS (SELECT 1 FROM catalog_artifact_semantic_inputs x
                 WHERE x.source_manifest_component_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_artifact_semantic_member_plan_sha256s x
+AND NOT EXISTS (SELECT 1 FROM catalog_artifact_semantic_inputs x
                 WHERE x.member_plan_component_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_artifact_semantic_effective_content_sha256s x
+AND NOT EXISTS (SELECT 1 FROM catalog_artifact_semantic_inputs x
                 WHERE x.effective_content_component_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_artifact_semantic_selected_sha256s x
+AND NOT EXISTS (SELECT 1 FROM catalog_artifact_semantic_inputs x
                 WHERE x.selected_component_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_artifact_semantic_owner_sha256s x
+AND NOT EXISTS (SELECT 1 FROM catalog_artifact_semantic_inputs x
                 WHERE x.owner_component_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_artifact_semantic_policy_sha256s x
+AND NOT EXISTS (SELECT 1 FROM catalog_artifact_semantic_inputs x
                 WHERE x.policy_component_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_candidate_artifact_inputs x
                 WHERE x.artifact_semantics_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_artifact_semantics_sha256s x
+AND NOT EXISTS (SELECT 1 FROM catalog_artifacts x
                 WHERE x.artifact_semantics_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_publication_contents x
                 WHERE x.content_sha256 = r.value_sha256)
@@ -3566,7 +3481,7 @@ AND NOT EXISTS (SELECT 1 FROM catalog_publication_language_sha256s x
                 WHERE x.language_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_publication_title_source_title_sha256s x
                 WHERE x.source_title_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_artifact_location x
+AND NOT EXISTS (SELECT 1 FROM catalog_artifact_blobs x
                 WHERE x.artifact_locator_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_display_title_choices x
                 WHERE x.source_title_sha256 = r.value_sha256
@@ -3650,29 +3565,13 @@ def _canonical_value_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         "ON r.value_sha256 = c.policy_component_sha256",
     )
     semantic = _indirect_spec(
-        "catalog_artifact_semantic_input_anchors",
+        "catalog_artifact_semantic_inputs",
         ("artifact_semantics_sha256",),
-        "catalog_artifact_semantic_input_anchors AS c "
+        "catalog_artifact_semantic_inputs AS c "
         "JOIN catalog_canonical_value_allocation_anchors AS r "
         "ON r.value_sha256 = c.artifact_semantics_sha256",
         delete_sql=(
-            "DELETE FROM catalog_artifact_semantic_input_seals "
-            "WHERE artifact_semantics_sha256 = %s",
-            "DELETE FROM catalog_artifact_semantic_input_identities "
-            "WHERE artifact_semantics_sha256 = %s",
-            "DELETE FROM catalog_artifact_semantic_source_manifest_sha256s "
-            "WHERE artifact_semantics_sha256 = %s",
-            "DELETE FROM catalog_artifact_semantic_member_plan_sha256s "
-            "WHERE artifact_semantics_sha256 = %s",
-            "DELETE FROM catalog_artifact_semantic_effective_content_sha256s "
-            "WHERE artifact_semantics_sha256 = %s",
-            "DELETE FROM catalog_artifact_semantic_selected_sha256s "
-            "WHERE artifact_semantics_sha256 = %s",
-            "DELETE FROM catalog_artifact_semantic_owner_sha256s "
-            "WHERE artifact_semantics_sha256 = %s",
-            "DELETE FROM catalog_artifact_semantic_policy_sha256s "
-            "WHERE artifact_semantics_sha256 = %s",
-            "DELETE FROM catalog_artifact_semantic_input_anchors "
+            "DELETE FROM catalog_artifact_semantic_inputs "
             "WHERE artifact_semantics_sha256 = %s",
         ),
     )
@@ -3907,11 +3806,8 @@ _STRATEGIES: dict[CleanupTargetKind, _Strategy] = {
         CleanupTargetKind.GALLERY_OBSERVATION_STAGING
     ),
     CleanupTargetKind.ARTIFACT_BLOB: _Strategy(
-        ("AB_LOCATIONS", "AB_ROOT"),
-        (
-            _select_artifact_locations,
-            _select_artifact_blobs,
-        ),
+        ("AB_ROOT",),
+        (_select_artifact_blobs,),
     ),
     CleanupTargetKind.CANONICAL_VALUE: _static_strategy(
         CleanupTargetKind.CANONICAL_VALUE

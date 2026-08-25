@@ -281,17 +281,17 @@ class ArtifactReleaseRepository:
         if start:
             after_candidate, after_publication = _decode_cursor(start)
             cursor_clause = (
-                "AND (seal.candidate_id > %s OR "
-                "(seal.candidate_id = %s AND seal.publication_key > %s)) "
+                "AND (prepared.candidate_id > %s OR "
+                "(prepared.candidate_id = %s AND prepared.publication_key > %s)) "
             )
             parameters = (after_candidate, after_candidate, after_publication)
         rows = work.connector.fetch_all(
             _RELEASE_SELECT
             + _RELEASE_JOINS
-            + "WHERE state_row.state IN ('PENDING', 'PREPARED') "
+            + "WHERE prepared.state IN ('PENDING', 'PREPARED') "
             + _CANDIDATE_ELIGIBILITY
             + cursor_clause
-            + "ORDER BY seal.candidate_id, seal.publication_key LIMIT %s",
+            + "ORDER BY prepared.candidate_id, prepared.publication_key LIMIT %s",
             (*parameters, bound),
         )
         try:
@@ -376,7 +376,7 @@ class ArtifactReleaseRepository:
                     item.candidate_id,
                     item.publication_key,
                 ),
-                "SELECT state FROM catalog_prepared_artifact_states "
+                "SELECT state FROM catalog_prepared_artifacts "
                 "WHERE candidate_id = %s AND publication_key = %s",
                 (item.candidate_id, item.publication_key),
             )
@@ -418,7 +418,7 @@ class ArtifactReleaseRepository:
 
         for item in current_items:
             work.compare_and_swap(
-                "UPDATE catalog_prepared_artifact_states SET state = 'COMMITTED' "
+                "UPDATE catalog_prepared_artifacts SET state = 'COMMITTED' "
                 "WHERE candidate_id = %s AND publication_key = %s AND state = %s",
                 (item.candidate_id, item.publication_key, item.state),
                 authority="orphan artifact protection release",
@@ -441,49 +441,33 @@ class ArtifactReleaseRepository:
 
 
 _RELEASE_SELECT = (
-    "SELECT seal.candidate_id, seal.publication_key, digest.artifact_sha256, "
-    "codec_row.storage_codec_version, generation_row.storage_generation, "
-    "token_row.protection_token, state_row.state, blob_row.size_bytes, "
-    "location_row.artifact_locator_sha256, codec_seal.storage_codec_version, "
+    "SELECT prepared.candidate_id, prepared.publication_key, "
+    "prepared.artifact_sha256, prepared.storage_codec_version, "
+    "prepared.storage_generation, prepared.protection_token, prepared.state, "
+    "blob_row.size_bytes, blob_row.artifact_locator_sha256, "
+    "codec_seal.storage_codec_version, "
     "adapter_row.storage_codec_version, adapter_row.adapter_id "
 )
 
 _RELEASE_JOINS = (
-    "FROM catalog_prepared_artifact_seals AS seal "
+    "FROM catalog_prepared_artifacts AS prepared "
     "JOIN catalog_publication_candidate_definition_seals AS candidate_row "
-    "ON candidate_row.candidate_id = seal.candidate_id "
-    "LEFT JOIN catalog_prepared_artifact_sha256s AS digest "
-    "ON digest.candidate_id = seal.candidate_id "
-    "AND digest.publication_key = seal.publication_key "
-    "LEFT JOIN catalog_prepared_artifact_storage_codec_versions AS codec_row "
-    "ON codec_row.candidate_id = seal.candidate_id "
-    "AND codec_row.publication_key = seal.publication_key "
-    "LEFT JOIN catalog_prepared_artifact_storage_generations AS generation_row "
-    "ON generation_row.candidate_id = seal.candidate_id "
-    "AND generation_row.publication_key = seal.publication_key "
-    "LEFT JOIN catalog_prepared_artifact_protection_tokens AS token_row "
-    "ON token_row.candidate_id = seal.candidate_id "
-    "AND token_row.publication_key = seal.publication_key "
-    "JOIN catalog_prepared_artifact_states AS state_row "
-    "ON state_row.candidate_id = seal.candidate_id "
-    "AND state_row.publication_key = seal.publication_key "
+    "ON candidate_row.candidate_id = prepared.candidate_id "
     "LEFT JOIN catalog_artifact_blobs AS blob_row "
-    "ON blob_row.artifact_sha256 = digest.artifact_sha256 "
-    "LEFT JOIN catalog_artifact_location AS location_row "
-    "ON location_row.artifact_sha256 = digest.artifact_sha256 "
+    "ON blob_row.artifact_sha256 = prepared.artifact_sha256 "
     "LEFT JOIN catalog_artifact_storage_codec_seals AS codec_seal "
-    "ON codec_seal.storage_codec_version = codec_row.storage_codec_version "
+    "ON codec_seal.storage_codec_version = prepared.storage_codec_version "
     "LEFT JOIN catalog_artifact_storage_codec_adapter_ids AS adapter_row "
-    "ON adapter_row.storage_codec_version = codec_row.storage_codec_version "
+    "ON adapter_row.storage_codec_version = prepared.storage_codec_version "
 )
 
 _CANDIDATE_ELIGIBILITY = (
     "AND NOT EXISTS ("
     "SELECT 1 FROM operational_catalog_working_candidates AS working_row "
-    "WHERE working_row.candidate_id = seal.candidate_id) "
+    "WHERE working_row.candidate_id = prepared.candidate_id) "
     "AND NOT EXISTS ("
     "SELECT 1 FROM catalog_publication_commit_candidates AS commit_row "
-    "WHERE commit_row.candidate_id = seal.candidate_id) "
+    "WHERE commit_row.candidate_id = prepared.candidate_id) "
 )
 
 
@@ -543,7 +527,7 @@ def _load_exact_item(
     row = connector.fetch_one(
         _RELEASE_SELECT
         + _RELEASE_JOINS
-        + "WHERE seal.candidate_id = %s AND seal.publication_key = %s",
+        + "WHERE prepared.candidate_id = %s AND prepared.publication_key = %s",
         (candidate, publication),
     )
     if not row:

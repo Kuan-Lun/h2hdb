@@ -1,10 +1,9 @@
-"""Exact physical storage protocols for vNext artifact families.
+"""Exact physical storage protocols for the wide BCNF artifact relations.
 
-The historical artifact semantic, prepared-artifact, and catalog occurrence
-relations are read-only views.  This module is the sole narrow-family protocol:
-it loads every physical member in one set query, rejects partial families,
-inserts immutable members with the completion seal last, and isolates the only
-mutable prepared-artifact state behind an exact compare-and-swap.
+Artifact semantic inputs, prepared artifacts, and catalog occurrences are each
+stored as one authoritative row.  Their candidate keys are enforced by the
+database, inserts are atomic, and the only mutable attribute is the prepared
+artifact state guarded by an exact compare-and-swap.
 """
 
 from __future__ import annotations
@@ -40,28 +39,9 @@ from .vnext_domains import (
 )
 from .vnext_transaction import VNextUnitOfWork
 
-_SEMANTIC_ANCHOR = "catalog_artifact_semantic_input_anchors"
-_SEMANTIC_SOURCE = "catalog_artifact_semantic_source_manifest_sha256s"
-_SEMANTIC_MEMBER = "catalog_artifact_semantic_member_plan_sha256s"
-_SEMANTIC_EFFECTIVE = "catalog_artifact_semantic_effective_content_sha256s"
-_SEMANTIC_SELECTED = "catalog_artifact_semantic_selected_sha256s"
-_SEMANTIC_OWNER = "catalog_artifact_semantic_owner_sha256s"
-_SEMANTIC_POLICY = "catalog_artifact_semantic_policy_sha256s"
-_SEMANTIC_IDENTITY = "catalog_artifact_semantic_input_identities"
-_SEMANTIC_SEAL = "catalog_artifact_semantic_input_seals"
-
-_PREPARED_ANCHOR = "catalog_prepared_artifact_anchors"
-_PREPARED_SHA = "catalog_prepared_artifact_sha256s"
-_PREPARED_CODEC = "catalog_prepared_artifact_storage_codec_versions"
-_PREPARED_GENERATION = "catalog_prepared_artifact_storage_generations"
-_PREPARED_TOKEN = "catalog_prepared_artifact_protection_tokens"
-_PREPARED_STATE = "catalog_prepared_artifact_states"
-_PREPARED_SEAL = "catalog_prepared_artifact_seals"
-
-_CATALOG_ANCHOR = "catalog_artifact_anchors"
-_CATALOG_SHA = "catalog_artifact_sha256s"
-_CATALOG_SEMANTICS = "catalog_artifact_semantics_sha256s"
-_CATALOG_SEAL = "catalog_artifact_seals"
+_SEMANTIC_TABLE = "catalog_artifact_semantic_inputs"
+_PREPARED_TABLE = "catalog_prepared_artifacts"
+_CATALOG_TABLE = "catalog_artifacts"
 
 
 class ArtifactFamilyCollisionError(RuntimeError):
@@ -192,64 +172,6 @@ def _locking_suffix(*, backend: str, locking: bool) -> str:
     return " FOR UPDATE" if locking and backend == "mariadb" else ""
 
 
-def _semantic_family_row(
-    connector: Any,
-    digest: bytes,
-    *,
-    backend: str = "sqlite",
-    locking: bool = False,
-) -> tuple[Any, ...]:
-    members = (
-        _SEMANTIC_ANCHOR,
-        _SEMANTIC_SOURCE,
-        _SEMANTIC_MEMBER,
-        _SEMANTIC_EFFECTIVE,
-        _SEMANTIC_SELECTED,
-        _SEMANTIC_OWNER,
-        _SEMANTIC_POLICY,
-        _SEMANTIC_IDENTITY,
-        _SEMANTIC_SEAL,
-    )
-    key_union = " UNION ".join(
-        f"SELECT artifact_semantics_sha256 FROM {table} "
-        "WHERE artifact_semantics_sha256 = %s"
-        for table in members
-    )
-    row = connector.fetch_one(
-        "WITH family_keys(artifact_semantics_sha256) AS ("
-        + key_union
-        + ") SELECT anchor.artifact_semantics_sha256, "
-        "source.artifact_semantics_sha256, source.source_manifest_component_sha256, "
-        "member.artifact_semantics_sha256, member.member_plan_component_sha256, "
-        "effective.artifact_semantics_sha256, "
-        "effective.effective_content_component_sha256, "
-        "selected.artifact_semantics_sha256, selected.selected_component_sha256, "
-        "owner.artifact_semantics_sha256, owner.owner_component_sha256, "
-        "policy.artifact_semantics_sha256, policy.policy_component_sha256, "
-        "identity_row.artifact_semantics_sha256, "
-        "identity_row.source_manifest_component_sha256, "
-        "identity_row.member_plan_component_sha256, "
-        "identity_row.effective_content_component_sha256, "
-        "identity_row.selected_component_sha256, "
-        "identity_row.owner_component_sha256, "
-        "identity_row.policy_component_sha256, seal.artifact_semantics_sha256 "
-        "FROM family_keys AS family_key "
-        f"LEFT JOIN {_SEMANTIC_ANCHOR} AS anchor USING (artifact_semantics_sha256) "
-        f"LEFT JOIN {_SEMANTIC_SOURCE} AS source USING (artifact_semantics_sha256) "
-        f"LEFT JOIN {_SEMANTIC_MEMBER} AS member USING (artifact_semantics_sha256) "
-        f"LEFT JOIN {_SEMANTIC_EFFECTIVE} AS effective USING (artifact_semantics_sha256) "
-        f"LEFT JOIN {_SEMANTIC_SELECTED} AS selected USING (artifact_semantics_sha256) "
-        f"LEFT JOIN {_SEMANTIC_OWNER} AS owner USING (artifact_semantics_sha256) "
-        f"LEFT JOIN {_SEMANTIC_POLICY} AS policy USING (artifact_semantics_sha256) "
-        f"LEFT JOIN {_SEMANTIC_IDENTITY} AS identity_row "
-        "USING (artifact_semantics_sha256) "
-        f"LEFT JOIN {_SEMANTIC_SEAL} AS seal USING (artifact_semantics_sha256)"
-        + _locking_suffix(backend=backend, locking=locking),
-        (digest,) * len(members),
-    )
-    return tuple(row)
-
-
 def load_artifact_semantic_input_family(
     connector: Any,
     *,
@@ -261,24 +183,21 @@ def load_artifact_semantic_input_family(
         artifact_semantics_sha256,
         field="artifact_semantics_sha256",
     )
-    row = _semantic_family_row(
-        connector,
-        digest,
-        backend=backend,
-        locking=locking,
+    row = connector.fetch_one(
+        f"SELECT artifact_semantics_sha256, source_manifest_component_sha256, "
+        "member_plan_component_sha256, effective_content_component_sha256, "
+        "selected_component_sha256, owner_component_sha256, "
+        f"policy_component_sha256 FROM {_SEMANTIC_TABLE} "
+        "WHERE artifact_semantics_sha256 = %s"
+        + _locking_suffix(backend=backend, locking=locking),
+        (digest,),
     )
     if not row:
         return None
-    key_indexes = (0, 1, 3, 5, 7, 9, 11, 13, 20)
-    if len(row) != 21 or any(row[index] != digest for index in key_indexes):
-        raise ArtifactFamilyPartialError("artifact semantic input family is partial")
-    facts = (row[2], row[4], row[6], row[8], row[10], row[12])
-    if tuple(row[14:20]) != facts:
-        raise ArtifactFamilyCollisionError(
-            "artifact semantic natural identity disagrees with direct facts"
-        )
+    if len(row) != 7 or row[0] != digest:
+        raise ArtifactFamilyCollisionError("artifact semantic input row is malformed")
     try:
-        return ArtifactSemanticInputFamily(digest, *facts)
+        return ArtifactSemanticInputFamily(*row)
     except (TypeError, ValueError) as error:
         raise ArtifactFamilyCollisionError(
             "artifact semantic input family contains invalid facts"
@@ -295,7 +214,10 @@ def load_artifact_semantic_input_family_by_identity(
         for index, value in enumerate(components)
     )
     row = connector.fetch_one(
-        f"SELECT artifact_semantics_sha256 FROM {_SEMANTIC_IDENTITY} WHERE "
+        f"SELECT artifact_semantics_sha256, source_manifest_component_sha256, "
+        "member_plan_component_sha256, effective_content_component_sha256, "
+        "selected_component_sha256, owner_component_sha256, "
+        f"policy_component_sha256 FROM {_SEMANTIC_TABLE} WHERE "
         "source_manifest_component_sha256 = %s "
         "AND member_plan_component_sha256 = %s "
         "AND effective_content_component_sha256 = %s "
@@ -306,16 +228,16 @@ def load_artifact_semantic_input_family_by_identity(
     )
     if not row:
         return None
-    if len(row) != 1:
+    if len(row) != 7:
         raise ArtifactFamilyCollisionError("artifact semantic identity is malformed")
-    family = load_artifact_semantic_input_family(
-        connector,
-        artifact_semantics_sha256=row[0],
-    )
-    if family is None or family.components != exact:
-        raise ArtifactFamilyPartialError(
-            "artifact semantic natural identity has no congruent sealed family"
-        )
+    try:
+        family = ArtifactSemanticInputFamily(*row)
+    except (TypeError, ValueError) as error:
+        raise ArtifactFamilyCollisionError(
+            "artifact semantic input row contains invalid facts"
+        ) from error
+    if family.components != exact:
+        raise ArtifactFamilyCollisionError("artifact semantic identity is incongruent")
     return family
 
 
@@ -351,9 +273,12 @@ def ensure_artifact_semantic_input_family(
     digest = family.artifact_semantics_sha256
     try:
         connector.execute(
-            f"INSERT INTO {_SEMANTIC_ANCHOR} "
-            "(artifact_semantics_sha256) VALUES (%s)",
-            (digest,),
+            f"INSERT INTO {_SEMANTIC_TABLE} "
+            "(artifact_semantics_sha256, source_manifest_component_sha256, "
+            "member_plan_component_sha256, effective_content_component_sha256, "
+            "selected_component_sha256, owner_component_sha256, "
+            "policy_component_sha256) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (digest, *family.components),
         )
     except DatabaseDuplicateKeyError:
         raced = load_artifact_semantic_input_family(
@@ -367,89 +292,7 @@ def ensure_artifact_semantic_input_family(
                 "artifact semantic concurrent replay changed exact facts"
             )
         return raced, False
-    facts = (
-        (_SEMANTIC_SOURCE, "source_manifest_component_sha256", family.components[0]),
-        (_SEMANTIC_MEMBER, "member_plan_component_sha256", family.components[1]),
-        (
-            _SEMANTIC_EFFECTIVE,
-            "effective_content_component_sha256",
-            family.components[2],
-        ),
-        (_SEMANTIC_SELECTED, "selected_component_sha256", family.components[3]),
-        (_SEMANTIC_OWNER, "owner_component_sha256", family.components[4]),
-        (_SEMANTIC_POLICY, "policy_component_sha256", family.components[5]),
-    )
-    for table, column, value in facts:
-        connector.execute(
-            f"INSERT INTO {table} (artifact_semantics_sha256, {column}) "
-            "VALUES (%s, %s)",
-            (digest, value),
-        )
-    connector.execute(
-        f"INSERT INTO {_SEMANTIC_IDENTITY} "
-        "(source_manifest_component_sha256, member_plan_component_sha256, "
-        "effective_content_component_sha256, selected_component_sha256, "
-        "owner_component_sha256, policy_component_sha256, "
-        "artifact_semantics_sha256) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-        (*family.components, digest),
-    )
-    connector.execute(
-        f"INSERT INTO {_SEMANTIC_SEAL} (artifact_semantics_sha256) VALUES (%s)",
-        (digest,),
-    )
     return family, True
-
-
-def _prepared_family_row(
-    connector: Any,
-    candidate_id: bytes,
-    publication_key: bytes,
-    *,
-    backend: str = "sqlite",
-    locking: bool = False,
-) -> tuple[Any, ...]:
-    members = (
-        _PREPARED_ANCHOR,
-        _PREPARED_SHA,
-        _PREPARED_CODEC,
-        _PREPARED_GENERATION,
-        _PREPARED_TOKEN,
-        _PREPARED_STATE,
-        _PREPARED_SEAL,
-    )
-    key_union = " UNION ".join(
-        f"SELECT candidate_id, publication_key FROM {table} "
-        "WHERE candidate_id = %s AND publication_key = %s"
-        for table in members
-    )
-    row = connector.fetch_one(
-        "WITH family_keys(candidate_id, publication_key) AS ("
-        + key_union
-        + ") SELECT anchor.candidate_id, anchor.publication_key, "
-        "digest.candidate_id, digest.publication_key, digest.artifact_sha256, "
-        "codec.candidate_id, codec.publication_key, codec.storage_codec_version, "
-        "generation.candidate_id, generation.publication_key, "
-        "generation.storage_generation, token.candidate_id, token.publication_key, "
-        "token.protection_token, state.candidate_id, state.publication_key, "
-        "state.state, seal.candidate_id, seal.publication_key, "
-        "artifact_blob.size_bytes, "
-        "location.artifact_locator_sha256 FROM family_keys AS family_key "
-        f"LEFT JOIN {_PREPARED_ANCHOR} AS anchor USING (candidate_id, publication_key) "
-        f"LEFT JOIN {_PREPARED_SHA} AS digest USING (candidate_id, publication_key) "
-        f"LEFT JOIN {_PREPARED_CODEC} AS codec USING (candidate_id, publication_key) "
-        f"LEFT JOIN {_PREPARED_GENERATION} AS generation "
-        "USING (candidate_id, publication_key) "
-        f"LEFT JOIN {_PREPARED_TOKEN} AS token USING (candidate_id, publication_key) "
-        f"LEFT JOIN {_PREPARED_STATE} AS state USING (candidate_id, publication_key) "
-        f"LEFT JOIN {_PREPARED_SEAL} AS seal USING (candidate_id, publication_key) "
-        "LEFT JOIN catalog_artifact_blobs AS artifact_blob "
-        "ON artifact_blob.artifact_sha256 = digest.artifact_sha256 "
-        "LEFT JOIN catalog_artifact_location AS location "
-        "ON location.artifact_sha256 = digest.artifact_sha256"
-        + _locking_suffix(backend=backend, locking=locking),
-        (candidate_id, publication_key) * len(members),
-    )
-    return tuple(row)
 
 
 def load_prepared_artifact_family(
@@ -462,33 +305,27 @@ def load_prepared_artifact_family(
 ) -> PreparedArtifactFamily | None:
     candidate = require_uuid16(candidate_id, field="prepared candidate_id")
     publication = require_digest32(publication_key, field="prepared publication_key")
-    row = _prepared_family_row(
-        connector,
-        candidate,
-        publication,
-        backend=backend,
-        locking=locking,
+    row = connector.fetch_one(
+        f"SELECT prepared.candidate_id, prepared.publication_key, "
+        "prepared.artifact_sha256, prepared.storage_codec_version, "
+        "prepared.storage_generation, prepared.protection_token, prepared.state, "
+        "artifact_blob.size_bytes, artifact_blob.artifact_locator_sha256 "
+        f"FROM {_PREPARED_TABLE} AS prepared "
+        "LEFT JOIN catalog_artifact_blobs AS artifact_blob "
+        "ON artifact_blob.artifact_sha256 = prepared.artifact_sha256 "
+        "WHERE prepared.candidate_id = %s AND prepared.publication_key = %s"
+        + _locking_suffix(backend=backend, locking=locking),
+        (candidate, publication),
     )
     if not row:
         return None
-    key_pairs = ((0, 1), (2, 3), (5, 6), (8, 9), (11, 12), (14, 15), (17, 18))
-    if len(row) != 21 or any(
-        (row[left], row[right]) != (candidate, publication) for left, right in key_pairs
-    ):
-        raise ArtifactFamilyPartialError("prepared artifact family is partial")
+    if len(row) != 9 or tuple(row[:2]) != (candidate, publication):
+        raise ArtifactFamilyCollisionError("prepared artifact row is malformed")
     try:
-        family = PreparedArtifactFamily(
-            candidate,
-            publication,
-            row[4],
-            row[7],
-            row[10],
-            row[13],
-            row[16],
-        )
-        size_bytes = require_int63(row[19], field="prepared artifact size_bytes")
+        family = PreparedArtifactFamily(*row[:7])
+        size_bytes = require_int63(row[7], field="prepared artifact size_bytes")
         locator = require_digest32(
-            row[20],
+            row[8],
             field="prepared artifact locator",
         )
         token = identity.decode_artifact_protection_token(family.protection_token)
@@ -515,8 +352,8 @@ def load_prepared_artifact_family_by_token(
         maximum=184,
     )
     row = connector.fetch_one(
-        f"SELECT candidate_id, publication_key FROM {_PREPARED_TOKEN} "
-        "WHERE protection_token = %s",
+        f"SELECT candidate_id, publication_key "
+        f"FROM {_PREPARED_TABLE} WHERE protection_token = %s",
         (token,),
     )
     if not row:
@@ -529,8 +366,8 @@ def load_prepared_artifact_family_by_token(
         publication_key=row[1],
     )
     if family is None or family.protection_token != token:
-        raise ArtifactFamilyPartialError(
-            "prepared token identity has no congruent sealed family"
+        raise ArtifactFamilyCollisionError(
+            "prepared token identity has no congruent storage authority"
         )
     return family
 
@@ -571,9 +408,18 @@ def ensure_prepared_artifact_family(
     key = (family.candidate_id, family.publication_key)
     try:
         connector.execute(
-            f"INSERT INTO {_PREPARED_ANCHOR} (candidate_id, publication_key) "
-            "VALUES (%s, %s)",
-            key,
+            f"INSERT INTO {_PREPARED_TABLE} "
+            "(candidate_id, publication_key, artifact_sha256, "
+            "storage_codec_version, storage_generation, protection_token, state) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (
+                *key,
+                family.artifact_sha256,
+                family.storage_codec_version,
+                family.storage_generation,
+                family.protection_token,
+                family.state,
+            ),
         )
     except DatabaseDuplicateKeyError:
         raced = load_prepared_artifact_family(
@@ -588,32 +434,6 @@ def ensure_prepared_artifact_family(
                 "prepared artifact concurrent replay changed exact facts"
             )
         return raced, False
-    facts = (
-        (_PREPARED_SHA, "artifact_sha256", family.artifact_sha256),
-        (
-            _PREPARED_CODEC,
-            "storage_codec_version",
-            family.storage_codec_version,
-        ),
-        (
-            _PREPARED_GENERATION,
-            "storage_generation",
-            family.storage_generation,
-        ),
-        (_PREPARED_TOKEN, "protection_token", family.protection_token),
-        (_PREPARED_STATE, "state", family.state),
-    )
-    for table, column, value in facts:
-        connector.execute(
-            f"INSERT INTO {table} (candidate_id, publication_key, {column}) "
-            "VALUES (%s, %s, %s)",
-            (*key, value),
-        )
-    connector.execute(
-        f"INSERT INTO {_PREPARED_SEAL} (candidate_id, publication_key) "
-        "VALUES (%s, %s)",
-        key,
-    )
     return family, True
 
 
@@ -644,7 +464,7 @@ def cas_prepared_artifact_state(
             "prepared artifact state does not match transition authority"
         )
     work.compare_and_swap(
-        f"UPDATE {_PREPARED_STATE} SET state = %s "
+        f"UPDATE {_PREPARED_TABLE} SET state = %s "
         "WHERE candidate_id = %s AND publication_key = %s AND state = %s",
         (next_state, candidate, publication, expected_state),
         authority="prepared artifact state",
@@ -661,39 +481,6 @@ def cas_prepared_artifact_state(
     return updated
 
 
-def _catalog_family_row(
-    connector: Any,
-    revision: int,
-    publication_key: bytes,
-    *,
-    backend: str = "sqlite",
-    locking: bool = False,
-) -> tuple[Any, ...]:
-    members = (_CATALOG_ANCHOR, _CATALOG_SHA, _CATALOG_SEMANTICS, _CATALOG_SEAL)
-    key_union = " UNION ".join(
-        f"SELECT revision, publication_key FROM {table} "
-        "WHERE revision = %s AND publication_key = %s"
-        for table in members
-    )
-    row = connector.fetch_one(
-        "WITH family_keys(revision, publication_key) AS ("
-        + key_union
-        + ") SELECT anchor.revision, anchor.publication_key, "
-        "digest.revision, digest.publication_key, digest.artifact_sha256, "
-        "semantics.revision, semantics.publication_key, "
-        "semantics.artifact_semantics_sha256, seal.revision, seal.publication_key "
-        "FROM family_keys AS family_key "
-        f"LEFT JOIN {_CATALOG_ANCHOR} AS anchor USING (revision, publication_key) "
-        f"LEFT JOIN {_CATALOG_SHA} AS digest USING (revision, publication_key) "
-        f"LEFT JOIN {_CATALOG_SEMANTICS} AS semantics "
-        "USING (revision, publication_key) "
-        f"LEFT JOIN {_CATALOG_SEAL} AS seal USING (revision, publication_key)"
-        + _locking_suffix(backend=backend, locking=locking),
-        (revision, publication_key) * len(members),
-    )
-    return tuple(row)
-
-
 def load_catalog_artifact_family(
     connector: Any,
     *,
@@ -704,23 +491,19 @@ def load_catalog_artifact_family(
 ) -> CatalogArtifactFamily | None:
     catalog_revision = require_positive_int63(revision, field="catalog revision")
     publication = require_digest32(publication_key, field="catalog publication_key")
-    row = _catalog_family_row(
-        connector,
-        catalog_revision,
-        publication,
-        backend=backend,
-        locking=locking,
+    row = connector.fetch_one(
+        f"SELECT revision, publication_key, artifact_sha256, "
+        f"artifact_semantics_sha256 FROM {_CATALOG_TABLE} "
+        "WHERE revision = %s AND publication_key = %s"
+        + _locking_suffix(backend=backend, locking=locking),
+        (catalog_revision, publication),
     )
     if not row:
         return None
-    key_pairs = ((0, 1), (2, 3), (5, 6), (8, 9))
-    if len(row) != 10 or any(
-        (row[left], row[right]) != (catalog_revision, publication)
-        for left, right in key_pairs
-    ):
-        raise ArtifactFamilyPartialError("catalog artifact family is partial")
+    if len(row) != 4 or tuple(row[:2]) != (catalog_revision, publication):
+        raise ArtifactFamilyCollisionError("catalog artifact row is malformed")
     try:
-        return CatalogArtifactFamily(catalog_revision, publication, row[4], row[7])
+        return CatalogArtifactFamily(*row)
     except (TypeError, ValueError) as error:
         raise ArtifactFamilyCollisionError(
             "catalog artifact family contains invalid facts"
@@ -751,9 +534,10 @@ def ensure_catalog_artifact_family(
     key = (family.revision, family.publication_key)
     try:
         connector.execute(
-            f"INSERT INTO {_CATALOG_ANCHOR} (revision, publication_key) "
-            "VALUES (%s, %s)",
-            key,
+            f"INSERT INTO {_CATALOG_TABLE} "
+            "(revision, publication_key, artifact_sha256, "
+            "artifact_semantics_sha256) VALUES (%s, %s, %s, %s)",
+            (*key, family.artifact_sha256, family.artifact_semantics_sha256),
         )
     except DatabaseDuplicateKeyError:
         raced = load_catalog_artifact_family(
@@ -768,19 +552,4 @@ def ensure_catalog_artifact_family(
                 "catalog artifact concurrent replay changed exact facts"
             )
         return raced, False
-    connector.execute(
-        f"INSERT INTO {_CATALOG_SHA} "
-        "(revision, publication_key, artifact_sha256) VALUES (%s, %s, %s)",
-        (*key, family.artifact_sha256),
-    )
-    connector.execute(
-        f"INSERT INTO {_CATALOG_SEMANTICS} "
-        "(revision, publication_key, artifact_semantics_sha256) "
-        "VALUES (%s, %s, %s)",
-        (*key, family.artifact_semantics_sha256),
-    )
-    connector.execute(
-        f"INSERT INTO {_CATALOG_SEAL} (revision, publication_key) VALUES (%s, %s)",
-        key,
-    )
     return family, True

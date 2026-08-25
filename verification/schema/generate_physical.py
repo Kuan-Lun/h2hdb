@@ -875,28 +875,12 @@ TABLE_NAMES = {
     "artifact_policy_semantics_producer_fingerprint_sha256": "catalog_artifact_policy_semantics_producer_fingerprint_sha256s",
     "artifact_policy_semantics_identity": "catalog_artifact_policy_semantics_identities",
     "artifact_policy_semantics_seal": "catalog_artifact_policy_semantics_seals",
-    "artifact_semantic_input_anchor": "catalog_artifact_semantic_input_anchors",
-    "artifact_semantic_input_source_manifest_component_sha256": "catalog_artifact_semantic_source_manifest_sha256s",
-    "artifact_semantic_input_member_plan_component_sha256": "catalog_artifact_semantic_member_plan_sha256s",
-    "artifact_semantic_input_effective_content_component_sha256": "catalog_artifact_semantic_effective_content_sha256s",
-    "artifact_semantic_input_selected_component_sha256": "catalog_artifact_semantic_selected_sha256s",
-    "artifact_semantic_input_owner_component_sha256": "catalog_artifact_semantic_owner_sha256s",
-    "artifact_semantic_input_policy_component_sha256": "catalog_artifact_semantic_policy_sha256s",
-    "artifact_semantic_input_identity": "catalog_artifact_semantic_input_identities",
-    "artifact_semantic_input_seal": "catalog_artifact_semantic_input_seals",
-    "artifact_semantic_input": "catalog_artifact_semantic_input",
+    "artifact_semantic_input": "catalog_artifact_semantic_inputs",
     "artifact_input": "catalog_candidate_artifact_inputs",
     "artifact_delta_old": "catalog_artifact_delta_old",
     "artifact_delta_new": "catalog_artifact_delta_new",
     "artifact_operation": "catalog_artifact_operations",
     "artifact_blob": "catalog_artifact_blobs",
-    "prepared_artifact_anchor": "catalog_prepared_artifact_anchors",
-    "prepared_artifact_sha256": "catalog_prepared_artifact_sha256s",
-    "prepared_artifact_storage_codec_version": "catalog_prepared_artifact_storage_codec_versions",
-    "prepared_artifact_storage_generation": "catalog_prepared_artifact_storage_generations",
-    "prepared_artifact_protection_token": "catalog_prepared_artifact_protection_tokens",
-    "prepared_artifact_state": "catalog_prepared_artifact_states",
-    "prepared_artifact_seal": "catalog_prepared_artifact_seals",
     "prepared_artifact": "catalog_prepared_artifacts",
     "catalog_revision": "catalog_revisions",
     "catalog_revision_anchor": "catalog_revision_anchors",
@@ -941,10 +925,6 @@ TABLE_NAMES = {
     "catalog_contributor_identity": "catalog_contributor_identities",
     "catalog_contributor_seal": "catalog_contributor_seals",
     "catalog_subject": "catalog_subjects",
-    "catalog_artifact_anchor": "catalog_artifact_anchors",
-    "catalog_artifact_sha256": "catalog_artifact_sha256s",
-    "catalog_artifact_semantics_sha256": "catalog_artifact_semantics_sha256s",
-    "catalog_artifact_seal": "catalog_artifact_seals",
     "catalog_artifact": "catalog_artifacts",
     "publication_receipt": "catalog_publication_receipts",
     "publication_commit_anchor": "catalog_publication_commit_anchors",
@@ -1125,28 +1105,24 @@ INDEXES: dict[str, list[tuple[str, list[str], bool]]] = {
             False,
         )
     ],
-    "prepared_artifact_state": [
+    "prepared_artifact": [
         (
             "ix_prepared_artifact_state",
             ["candidate_id", "state", "publication_key"],
             False,
         ),
-    ],
-    "prepared_artifact_sha256": [
         (
             "ix_prepared_artifact_blob",
             ["artifact_sha256", "candidate_id", "publication_key"],
             False,
         ),
     ],
-    "catalog_artifact_sha256": [
+    "catalog_artifact": [
         (
             "ix_catalog_artifact_blob",
             ["artifact_sha256", "revision", "publication_key"],
             False,
         ),
-    ],
-    "catalog_artifact_semantics_sha256": [
         (
             "ix_catalog_artifact_semantics",
             ["artifact_semantics_sha256", "revision", "publication_key"],
@@ -1350,10 +1326,9 @@ def relation_checks(
         state_rule = "(state = 'OPEN' AND sealed_at IS NULL OR state IN ('SEALED', 'PUBLISHED') AND sealed_at IS NOT NULL OR state = 'ABANDONED' AND sealed_at IS NULL)"
         sqlite.append(state_rule)
         maria.append(state_rule)
-    elif name == "prepared_artifact_state":
+    elif name == "prepared_artifact":
         sqlite.append("state IN ('PENDING', 'PREPARED', 'COMMITTED')")
         maria.append("state IN ('PENDING', 'PREPARED', 'COMMITTED')")
-    elif name == "prepared_artifact_protection_token":
         sqlite.append(
             "typeof(protection_token) = 'blob' AND length(protection_token) = 184"
         )

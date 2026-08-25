@@ -357,31 +357,26 @@ def _require_exact_cursor(
 
 
 _ARTIFACT_SELECT = (
-    "SELECT artifact_seal.publication_key, publication_seal.publication_key, "
+    "SELECT artifact.publication_key, publication_seal.publication_key, "
     "title_seal.publication_key, publication_identity.gid, "
     "title_name.source_gallery_name, upload.upload_time, "
-    "artifact_digest.artifact_sha256, location.artifact_locator_sha256, "
-    "artifact_blob.size_bytes FROM catalog_artifact_seals AS artifact_seal "
+    "artifact.artifact_sha256, artifact_blob.artifact_locator_sha256, "
+    "artifact_blob.size_bytes FROM catalog_artifacts AS artifact "
     "LEFT JOIN catalog_publication_seals AS publication_seal "
-    "ON publication_seal.revision = artifact_seal.revision "
-    "AND publication_seal.publication_key = artifact_seal.publication_key "
+    "ON publication_seal.revision = artifact.revision "
+    "AND publication_seal.publication_key = artifact.publication_key "
     "LEFT JOIN catalog_publication_identities AS publication_identity "
-    "ON publication_identity.publication_key = artifact_seal.publication_key "
+    "ON publication_identity.publication_key = artifact.publication_key "
     "LEFT JOIN catalog_gallery_upload_times AS upload "
     "ON upload.gid = publication_identity.gid "
     "LEFT JOIN catalog_publication_title_seals AS title_seal "
-    "ON title_seal.revision = artifact_seal.revision "
-    "AND title_seal.publication_key = artifact_seal.publication_key "
+    "ON title_seal.revision = artifact.revision "
+    "AND title_seal.publication_key = artifact.publication_key "
     "LEFT JOIN catalog_publication_title_source_gallery_names AS title_name "
     "ON title_name.revision = title_seal.revision "
     "AND title_name.publication_key = title_seal.publication_key "
-    "LEFT JOIN catalog_artifact_sha256s AS artifact_digest "
-    "ON artifact_digest.revision = artifact_seal.revision "
-    "AND artifact_digest.publication_key = artifact_seal.publication_key "
     "LEFT JOIN catalog_artifact_blobs AS artifact_blob "
-    "ON artifact_blob.artifact_sha256 = artifact_digest.artifact_sha256 "
-    "LEFT JOIN catalog_artifact_location AS location "
-    "ON location.artifact_sha256 = artifact_digest.artifact_sha256 "
+    "ON artifact_blob.artifact_sha256 = artifact.artifact_sha256 "
 )
 
 
@@ -394,18 +389,13 @@ def _artifact_page_query(
     """Return the exact production page query for execution and plan proofs."""
 
     if cursor is None:
-        predicate = "WHERE artifact_seal.revision = %s "
+        predicate = "WHERE artifact.revision = %s "
         parameters: tuple[object, ...] = (revision, page_limit)
     else:
-        predicate = (
-            "WHERE artifact_seal.revision = %s "
-            "AND artifact_seal.publication_key > %s "
-        )
+        predicate = "WHERE artifact.revision = %s " "AND artifact.publication_key > %s "
         parameters = (revision, cursor, page_limit)
     return (
-        _ARTIFACT_SELECT
-        + predicate
-        + "ORDER BY artifact_seal.publication_key LIMIT %s",
+        _ARTIFACT_SELECT + predicate + "ORDER BY artifact.publication_key LIMIT %s",
         parameters,
     )
 
@@ -416,8 +406,8 @@ def _artifact_exact_query(
     publication_key: bytes,
 ) -> tuple[str, tuple[object, ...]]:
     return (
-        _ARTIFACT_SELECT + "WHERE artifact_seal.revision = %s "
-        "AND artifact_seal.publication_key = %s",
+        _ARTIFACT_SELECT + "WHERE artifact.revision = %s "
+        "AND artifact.publication_key = %s",
         (revision, publication_key),
     )
 

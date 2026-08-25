@@ -1200,7 +1200,7 @@ def test_operational_machine_obligations_and_genesis_are_closed_world() -> None:
     )
     assert machine.epoch_owned_relation == "schema_epoch_control"
     assert len(machine.absent_relations) == 68
-    assert len(machine.seeds) == 117
+    assert len(machine.seeds) == 115
     assert {
         value.seed_id
         for value in machine.seeds
@@ -1316,7 +1316,7 @@ def test_cleanup_fk_descendant_and_root_codec_mutations_fail_closed() -> None:
         for value in missing_intermediary["cleanup_target"]
         if value["target_kind"] == "ARTIFACT_BLOB"
     )
-    artifact["phases"][0]["relations"] = ["title_sort"]
+    artifact["phases"][0]["relations"] = ["title_sort", "artifact_blob"]
     with pytest.raises(ValueError, match="prunable intermediary coverage"):
         operational_refinement.check_cleanup_reachability_v1(
             missing_intermediary, physical

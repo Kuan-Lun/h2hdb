@@ -10,25 +10,26 @@ recurring semantic validator and production writer binding.
 
 The generated contract currently contains:
 
-- 358 data-plane base relations checked as BCNF, plus 81 executable logical
-  views and 52 reusable sealed vertical families;
-- 28 explicitly checked lossless and dependency-preserving decompositions;
-- an exact 316-relation catalog physical-domain closure, split into 257
-  mutation relations and 59 read-only views;
+- 340 data-plane base relations checked as BCNF, plus 78 executable logical
+  views and 49 reusable sealed vertical families;
+- 27 explicitly checked lossless and dependency-preserving decompositions;
+- an exact 295-relation catalog physical-domain closure, split into 239
+  mutation relations and 56 read-only views;
 - 75 operational BCNF base relations plus one derived activation view for
   fencing, downloader-to-ingest handoff, staging, allocation, receipts,
   maintenance, queues, caches, and bounded cleanup;
 - 27 versioned semantic obligations: 12 data-plane and 15 operational; and
-- 4,646 typed bootstrap rows per backend, including the real deletion-request
+- 4,644 typed bootstrap rows per backend, including the real deletion-request
   generation-zero history/head and 17 cleanup target kinds
   expanded into 256 fixed shards each.
 
 There are no declared BCNF exceptions among base tables. BCNF does not impose
 the narrower product layout: a separate closed-world gate requires every
 ordinary physical `catalog_*` base table to be its semantic primary key plus at
-most one atomic non-key column. It reports 357 narrow bases and one exact
-approved-wide BCNF relation, `catalog_gallery_identities`, whose three
-candidate keys cover every nontrivial dependency. Views are excluded and may
+most one atomic non-key column. It reports 335 narrow bases and five exact
+approved-wide BCNF recompositions: gallery identity, artifact semantic input,
+prepared artifact, catalog artifact occurrence, and artifact blob with its
+mandatory locator. Every nontrivial determinant is a candidate key. Views are excluded and may
 deliberately expose denormalized read shapes. The counts above are checked from
 the manifests rather than copied into the runtime provider by hand.
 
@@ -207,7 +208,7 @@ They do not erase the remaining exhaustive fault and cross-backend gaps.
 
 The default generated provider now completes initialize, replay, read-only full
 check, readiness, and public open on fresh SQLite and live MariaDB, validating
-all 4,646 bootstrap rows per backend. This closes the catalog and operational
+all 4,644 bootstrap rows per backend. This closes the catalog and operational
 bootstrap
 runtime/integration claims, while their row-by-row corruption and partial-commit
 fault matrices remain explicit blockers.

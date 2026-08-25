@@ -348,8 +348,8 @@ def test_physical_spec_is_closed_world_and_uses_real_overlay_views() -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
 
-    assert len(logical.relations) == 439
-    assert len(physical_spec.implemented_relations) == 439
+    assert len(logical.relations) == 418
+    assert len(physical_spec.implemented_relations) == 418
     assert len(physical_spec.pending_relations) == 0
     assert set(physical_spec.source_slice) == {
         relation.relation for relation in physical_spec.implemented_relations
@@ -578,7 +578,7 @@ def test_physical_spec_is_closed_world_and_uses_real_overlay_views() -> None:
     assert direct_occurrences == {
         "metadata_fingerprint": 1,
         "cursor": 6,
-        "protection_token": 2,
+        "protection_token": 1,
     }
     assert not any(
         "LONGBLOB" in column.mariadb.type_name
@@ -1181,7 +1181,7 @@ def test_fresh_complete_sqlite_ddl_refines_physical_spec() -> None:
     assert report.conforms
     assert report.fully_conforms
     assert not report.ddl_only
-    assert len(report.checked_relations) == 439
+    assert len(report.checked_relations) == 418
     assert len(report.pending_relations) == 0
     assert report.mismatches == ()
     assert report.render().splitlines()[0] == (
@@ -2453,12 +2453,15 @@ def test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states()
             )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
-                "INSERT INTO catalog_prepared_artifact_protection_tokens "
-                "VALUES (?, ?, ?)",
+                "INSERT INTO catalog_prepared_artifacts VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     b"q" * 16,
                     b"k" * 32,
+                    b"a" * 32,
+                    1,
+                    1,
                     b"t" * 185,
+                    "PENDING",
                 ),
             )
     finally:
@@ -2548,7 +2551,7 @@ def test_mariadb_renderer_preserves_exact_binary_types_checks_and_views() -> Non
         sum(
             value.startswith("CREATE SQL SECURITY INVOKER VIEW") for value in statements
         )
-        == 81
+        == 78
     )
     assert "`analysis_id` BINARY(16) NOT NULL" in ddl
     assert "`locator_sha256` BINARY(32) NOT NULL" in ddl

@@ -46,30 +46,57 @@ def _relation(
     return checker.RelationShape(table, primary_key, key + values)
 
 
-def test_current_width_policy_is_exact_closed_world_with_one_approved_bcnf_table() -> (
+def test_current_width_policy_is_exact_closed_world_with_five_approved_bcnf_tables() -> (
     None
 ):
     report = checker.check_current_policy()
 
     assert report.is_policy_clean
     assert not report.is_fully_narrow
-    assert len(report.relations) == 358
+    assert len(report.relations) == 340
     assert tuple(relation.table for relation in report.violations) == (
+        "catalog_artifact_blobs",
+        "catalog_artifact_semantic_inputs",
+        "catalog_artifacts",
         "catalog_gallery_identities",
+        "catalog_prepared_artifacts",
     )
     assert checker.APPROVED_WIDE_BCNF_RELATIONS == {
+        "catalog_artifact_blobs": (
+            "size_bytes",
+            "artifact_locator_sha256",
+        ),
+        "catalog_artifact_semantic_inputs": (
+            "source_manifest_component_sha256",
+            "member_plan_component_sha256",
+            "effective_content_component_sha256",
+            "selected_component_sha256",
+            "owner_component_sha256",
+            "policy_component_sha256",
+        ),
+        "catalog_artifacts": (
+            "artifact_sha256",
+            "artifact_semantics_sha256",
+        ),
         "catalog_gallery_identities": (
             "gallery_key",
             "scope_key",
             "locator_sha256",
-        )
+        ),
+        "catalog_prepared_artifacts": (
+            "artifact_sha256",
+            "storage_codec_version",
+            "storage_generation",
+            "protection_token",
+            "state",
+        ),
     }
     assert {relation.table for relation in report.relations} == set(
         checker.NARROW_LAYOUT_DECLARATIONS
     ) | set(checker.APPROVED_WIDE_BCNF_RELATIONS)
 
     rendered = report.render()
-    assert "relations=358, narrow=357, wide=1" in rendered
+    assert "relations=340, narrow=335, wide=5" in rendered
     assert "Approved wide relations (complete):" in rendered
     assert "catalog_gallery_identities" in rendered
 

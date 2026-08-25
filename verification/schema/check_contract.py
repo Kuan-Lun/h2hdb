@@ -2428,7 +2428,7 @@ def _validate_retention_target(
         exact_blocker_key = frozenset(blocker.attributes) in set(relation.declared_keys)
         release_state_left_prefix = (
             target.target == "PUBLICATION_CANDIDATE"
-            and blocker.relation == "prepared_artifact_state"
+            and blocker.relation == "prepared_artifact"
             and blocker.attributes == ("candidate_id",)
             and any(
                 key[: len(blocker.attributes)] == blocker.attributes
@@ -2450,7 +2450,7 @@ def _validate_retention_target(
     expected_semantic_blockers = (
         (
             RetentionSemanticBlocker(
-                relation="prepared_artifact_state",
+                relation="prepared_artifact",
                 attributes=("candidate_id",),
                 root_attributes=("candidate_id",),
                 blocking_predicate="state IN ('PENDING','PREPARED')",
@@ -5994,7 +5994,7 @@ def _validate_artifact_derived_identity_contracts(
             frozenset({locator.locator_attribute}),
         }
         if (
-            locator.relation != "artifact_location"
+            locator.relation != "artifact_blob"
             or locator.artifact_attribute != "artifact_sha256"
             or locator.locator_attribute != "artifact_locator_sha256"
             or locator.storage_codec_version != 1
@@ -6010,14 +6010,8 @@ def _validate_artifact_derived_identity_contracts(
         if (
             location_relation is None
             or set(location_relation.attributes)
-            != {locator.artifact_attribute, locator.locator_attribute}
+            != {locator.artifact_attribute, "size_bytes", locator.locator_attribute}
             or set(location_relation.declared_keys) != expected_location_keys
-            or not _has_fk(
-                location_relation,
-                (locator.artifact_attribute,),
-                "artifact_blob",
-                ("artifact_sha256",),
-            )
             or not _has_fk(
                 location_relation,
                 (locator.locator_attribute,),
@@ -6079,10 +6073,6 @@ def _validate_artifact_derived_identity_contracts(
     else:
         prepared = relation_by_name.get(protection.relation)
         storage = relation_by_name.get(protection.storage_codec_relation)
-        token_fact = relation_by_name.get("prepared_artifact_protection_token")
-        codec_fact = relation_by_name.get("prepared_artifact_storage_codec_version")
-        generation_fact = relation_by_name.get("prepared_artifact_storage_generation")
-        state_fact = relation_by_name.get("prepared_artifact_state")
         if (
             protection.relation != "prepared_artifact"
             or protection.storage_codec_relation != "artifact_storage_codec"
@@ -6100,19 +6090,14 @@ def _validate_artifact_derived_identity_contracts(
             prepared is None
             or "protection_token" not in prepared.attributes
             or frozenset({"protection_token"}) not in prepared.declared_keys
-            or token_fact is None
-            or frozenset({"protection_token"}) not in token_fact.declared_keys
-            or codec_fact is None
             or not _has_fk(
-                codec_fact,
+                prepared,
                 ("storage_codec_version",),
                 "artifact_storage_codec_seal",
                 ("storage_codec_version",),
             )
-            or generation_fact is None
-            or "storage_generation" not in generation_fact.attributes
-            or state_fact is None
-            or "state" not in state_fact.attributes
+            or "storage_generation" not in prepared.attributes
+            or "state" not in prepared.attributes
             or storage is None
         ):
             errors.append("prepared artifact lacks closed protection-token identity")
@@ -6302,9 +6287,7 @@ def _validate_artifact_member_plan_contract(
     if any(term not in plan.framing for term in framing_terms):
         errors.append(f"{prefix} framing is not an exact typed entry codec")
     relation = relation_by_name.get(plan.semantic_relation)
-    member_relation = relation_by_name.get(
-        "artifact_semantic_input_member_plan_component_sha256"
-    )
+    member_relation = relation
     if relation is None:
         errors.append(f"{prefix} references unknown semantic relation")
     elif (

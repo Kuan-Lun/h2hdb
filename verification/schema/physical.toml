@@ -381,15 +381,6 @@ source_slice = [
   "artifact_policy_semantics",
   "artifact_policy",
   "publication_candidate_artifact_policy_id",
-  "artifact_semantic_input_anchor",
-  "artifact_semantic_input_source_manifest_component_sha256",
-  "artifact_semantic_input_member_plan_component_sha256",
-  "artifact_semantic_input_effective_content_component_sha256",
-  "artifact_semantic_input_selected_component_sha256",
-  "artifact_semantic_input_owner_component_sha256",
-  "artifact_semantic_input_policy_component_sha256",
-  "artifact_semantic_input_identity",
-  "artifact_semantic_input_seal",
   "artifact_semantic_input",
   "artifact_blob",
   "catalog_revision_anchor",
@@ -436,13 +427,6 @@ source_slice = [
   "artifact_input",
   "artifact_delta_new",
   "artifact_operation",
-  "prepared_artifact_anchor",
-  "prepared_artifact_sha256",
-  "prepared_artifact_storage_codec_version",
-  "prepared_artifact_storage_generation",
-  "prepared_artifact_protection_token",
-  "prepared_artifact_state",
-  "prepared_artifact_seal",
   "prepared_artifact",
   "display_title_policy",
   "title_sort_policy",
@@ -470,11 +454,6 @@ source_slice = [
   "catalog_contributor_seal",
   "catalog_contributor",
   "catalog_subject",
-  "artifact_location",
-  "catalog_artifact_anchor",
-  "catalog_artifact_sha256",
-  "catalog_artifact_semantics_sha256",
-  "catalog_artifact_seal",
   "catalog_artifact",
   "publication_commit_anchor",
   "publication_finalization_checkpoint_anchor",
@@ -538,8 +517,8 @@ seed_validation_lifecycle = "building_only"
 absence_validation_lifecycle = "building_only"
 epoch_owned_relation = "schema_epoch_control"
 seeded_relations = ["canonical_digest_policy", "channel_registry", "source_provider_registry", "analysis_stage_anchor", "analysis_stage_order", "analysis_stage_cursor_codec", "analysis_stage_seal", "publication_stage_anchor", "publication_stage_order", "publication_stage_cursor_codec", "publication_stage_seal", "artifact_zip_writer_policy_anchor", "artifact_zip_writer_policy_zip_codec_version", "artifact_zip_writer_policy_compression_method", "artifact_zip_writer_policy_compression_level", "artifact_zip_writer_policy_dos_date", "artifact_zip_writer_policy_dos_time", "artifact_zip_writer_policy_unix_mode", "artifact_zip_writer_policy_general_purpose_flags", "artifact_zip_writer_policy_create_system", "artifact_zip_writer_policy_archive_name_codec_version", "artifact_zip_writer_policy_artifact_name_codec_version", "artifact_zip_writer_policy_identity", "artifact_zip_writer_policy_seal", "artifact_storage_codec_anchor", "artifact_storage_codec_adapter_id", "artifact_storage_codec_locator_codec_version", "artifact_storage_codec_protection_token_codec_version", "artifact_storage_codec_seal", "publication_generation_node", "contributor_role_registry"]
-absent_relations = ["canonical_value_allocation_anchor", "canonical_value_allocation_digest_domain", "canonical_value_allocation_byte_count", "canonical_value_allocation_allocated_at", "canonical_value_allocation_seal", "canonical_value_page_anchor", "canonical_value_page_payload", "canonical_value_page_coordinate", "canonical_value_page_subtree_item_count", "canonical_value_page_seal", "canonical_value_page_parent", "canonical_value_identity", "manifest_policy_anchor", "manifest_policy_manifest_algorithm_version", "manifest_policy_file_order_version", "manifest_policy_identity", "manifest_policy_seal", "source_build_anchor", "source_build_manifest_policy_id", "source_build_state", "source_build_created_at", "source_scope_anchor", "source_scope_source_provider", "source_scope_source_root_sha256", "source_scope_identity_policy_version", "source_scope_identity", "source_scope_seal", "source_build_scope_key", "source_build_descriptor_seal", "source_build_sealed_at", "source_build_channel", "source_build_discovery_anchor", "source_build_discovery_scan_attempt", "source_build_discovery_gallery_count", "source_build_discovery_tree_observation_sha256", "source_build_discovery_completed_at", "source_build_discovery_seal", "source_locator_identity", "gallery_identity", "source_build_expected_gallery", "gallery_observation_allocation", "gallery_observation_page_descriptor_anchor", "gallery_observation_page", "gallery_observation_page_descriptor_component", "gallery_observation_page_descriptor_level", "gallery_observation_page_descriptor_subtree_item_count", "gallery_observation_page_descriptor_seal", "gallery_observation_allocation_page", "gallery_observation_page_key_bounds_anchor", "gallery_observation_page_key_bounds_first_key", "gallery_observation_page_key_bounds_last_key", "gallery_observation_page_key_bounds_seal", "gallery_observation_page_child", "gallery_observation_tree_root", "gallery_observation", "gallery_observation_metadata_anchor", "gallery_upload_time", "source_gallery_name_gid", "gallery_source_name_access", "gallery_observation_download_time", "gallery_observation_modified_time", "gallery_observation_metadata_seal", "gallery_observation_scan_anchor", "gallery_observation_scan_observation_sha256", "gallery_observation_scan_observation_version", "gallery_observation_scan_source_file_count", "gallery_observation_scan_seal", "gallery_observation_discovery_fingerprint", "gallery_observation_metadata_digest", "gallery_observation_raw_content", "gallery_observation_page_count", "gallery_observation_directory_anchor", "gallery_observation_directory_entry_count", "gallery_observation_directory_observation_sha256", "gallery_observation_directory_seal", "gallery_observation_stat_anchor", "gallery_observation_stat_file_count", "gallery_observation_stat_byte_count", "gallery_observation_stat_seal", "source_build_gallery", "file_name_identity_anchor", "file_name_identity_name_bytes", "file_name_identity_file_role", "file_name_identity_seal", "content_blob", "gallery_observation_file_anchor", "gallery_observation_file_file_no", "gallery_observation_file_file_sha256", "gallery_observation_file_seal", "gallery_observation_file_filesystem_anchor", "gallery_observation_file_filesystem_device", "gallery_observation_file_filesystem_inode", "gallery_observation_file_filesystem_modified_ns", "gallery_observation_file_filesystem_changed_ns", "gallery_observation_file_filesystem_seal", "tag_term_anchor", "tag_term_identity", "tag_term_seal", "gallery_observation_tag", "build_manifest_anchor", "build_manifest_manifest_sha256", "build_manifest_file_count", "build_manifest_byte_count", "build_manifest_seal", "gallery_manifest_anchor", "gallery_manifest_manifest_sha256", "gallery_manifest_computed_at", "gallery_manifest_seal", "analysis_policy_anchor", "analysis_policy_algorithm_version", "analysis_policy_spam_artist_threshold", "analysis_policy_spam_occurrence_threshold", "analysis_policy_content_owner_rule_version", "analysis_policy_gid_winner_rule_version", "analysis_policy_identity", "analysis_policy_seal", "analysis_run_anchor", "analysis_run_build_id", "analysis_run_policy_id", "analysis_run_input_manifest_sha256", "analysis_run_identity", "analysis_run_started_at", "analysis_run_state", "analysis_run_descriptor_seal", "analysis_run_completed_at", "analysis_baseline", "analysis_state_ancestry", "source_snapshot_manifest_identity_anchor", "source_snapshot_manifest_identity_gallery_count", "source_snapshot_manifest_identity_file_count", "source_snapshot_manifest_identity_byte_count", "source_snapshot_manifest_identity_seal", "analysis_snapshot_manifest", "source_revision_anchor", "source_revision_channel", "source_revision_snapshot_manifest", "source_revision_descriptor_seal", "source_revision_provenance", "gallery_observation_artist", "gallery_observation_file_hash_occurrence", "analysis_changed_gallery", "analysis_changed_file_hash", "analysis_exclusion_delta_anchor", "analysis_exclusion_delta_old_excluded", "analysis_exclusion_delta_new_excluded", "analysis_exclusion_delta_change", "analysis_exclusion_delta_seal", "analysis_impacted_gallery", "analysis_impacted_content_anchor", "analysis_impacted_content_provenance", "analysis_impacted_content_witness", "analysis_impacted_content_seal", "analysis_impacted_gid_anchor", "analysis_impacted_gid_provenance", "analysis_impacted_gid_witness", "analysis_impacted_gid_seal", "analysis_file_hash_decision_shadow_anchor", "analysis_file_hash_decision_shadow_occurrence_count", "analysis_file_hash_decision_shadow_artist_count", "analysis_file_hash_decision_shadow_maximum_gallery_artist_count", "analysis_file_hash_decision_shadow_seal", "analysis_file_hash_decision_tombstone", "analysis_content_owner_candidate_shadow_anchor", "analysis_content_owner_candidate_shadow_content_sha256", "analysis_content_owner_candidate_shadow_prefer_not_already_uploaded", "analysis_content_owner_candidate_shadow_title_scalar_count", "analysis_content_owner_candidate_shadow_download_time", "analysis_content_owner_candidate_shadow_seal", "analysis_content_owner_candidate_tombstone", "analysis_content_owner_shadow_anchor", "analysis_content_owner_shadow_owner_gallery_id", "analysis_content_owner_shadow_seal", "analysis_content_owner_tombstone", "analysis_gid_candidate_shadow", "analysis_gid_candidate_tombstone", "analysis_gid_winner_selection", "analysis_gid_winner_tombstone", "analysis_state_component_anchor", "analysis_state_component_row_count", "analysis_state_component_sealed_at", "analysis_state_component_completion_seal", "analysis_checkpoint_anchor", "analysis_checkpoint_generation", "analysis_checkpoint_cursor", "analysis_checkpoint_processed_count", "analysis_checkpoint_state", "analysis_checkpoint_updated_at", "analysis_checkpoint_seal", "analysis_batch_receipt_anchor", "analysis_batch_receipt_coordinate", "analysis_batch_receipt_start_cursor", "analysis_batch_receipt_start_processed_count", "analysis_batch_receipt_page_limit", "analysis_batch_receipt_next_cursor", "analysis_batch_receipt_row_count", "analysis_batch_receipt_committed_at", "analysis_batch_receipt_seal", "publication_candidate_anchor", "publication_candidate_analysis_id", "publication_candidate_reserved_revision", "publication_candidate_artifacts_required", "publication_candidate_created_at", "artifact_producer_fingerprint_anchor", "artifact_producer_fingerprint_algorithm_version", "artifact_producer_fingerprint_equivalence_class", "artifact_producer_fingerprint_identity", "artifact_producer_fingerprint_seal", "artifact_policy_semantics_anchor", "artifact_policy_semantics_artifact_algorithm_version", "artifact_policy_semantics_max_image_short_side", "artifact_policy_semantics_producer_fingerprint_sha256", "artifact_policy_semantics_identity", "artifact_policy_semantics_seal", "artifact_policy", "publication_candidate_artifact_policy_id", "artifact_semantic_input_anchor", "artifact_semantic_input_source_manifest_component_sha256", "artifact_semantic_input_member_plan_component_sha256", "artifact_semantic_input_effective_content_component_sha256", "artifact_semantic_input_selected_component_sha256", "artifact_semantic_input_owner_component_sha256", "artifact_semantic_input_policy_component_sha256", "artifact_semantic_input_identity", "artifact_semantic_input_seal", "artifact_blob", "catalog_revision_anchor", "catalog_revision_publication_count", "catalog_revision_descriptor_seal", "publication_generation_successor", "publication_identity", "display_title_policy_anchor", "display_title_policy_algorithm_version", "title_sort_policy_anchor", "title_sort_policy_algorithm_version", "title_sort_policy_unicode_data_version", "title_sort_policy_identity", "title_sort_policy_seal", "display_title_policy_title_sort_policy_id", "display_title_policy_identity", "display_title_policy_seal", "publication_candidate_display_title_policy_id", "publication_candidate_definition_seal", "publication_candidate_projection_seal", "publication_selection", "publication_checkpoint_anchor", "publication_checkpoint_generation", "publication_checkpoint_cursor", "publication_checkpoint_processed_count", "publication_checkpoint_state", "publication_checkpoint_updated_at", "publication_checkpoint_seal", "publication_batch_receipt_anchor", "publication_batch_receipt_coordinate", "publication_batch_receipt_start_cursor", "publication_batch_receipt_start_processed_count", "publication_batch_receipt_next_cursor", "publication_batch_receipt_row_count", "publication_batch_receipt_committed_at", "publication_batch_receipt_seal", "artifact_input", "artifact_operation", "prepared_artifact_anchor", "prepared_artifact_sha256", "prepared_artifact_storage_codec_version", "prepared_artifact_storage_generation", "prepared_artifact_protection_token", "prepared_artifact_state", "prepared_artifact_seal", "display_title_choice", "title_sort", "catalog_publication_anchor", "catalog_publication_gallery_id", "catalog_publication_summary_sha256", "catalog_publication_language_sha256", "catalog_publication_modified_at", "catalog_publication_seal", "catalog_publication_order", "catalog_publication_title_anchor", "catalog_publication_title_source_title_sha256", "catalog_publication_title_source_gallery_name", "catalog_publication_title_seal", "catalog_publication_content", "catalog_contributor_anchor", "catalog_contributor_name_sha256", "catalog_contributor_role", "catalog_contributor_identity", "catalog_contributor_seal", "catalog_subject", "artifact_location", "catalog_artifact_anchor", "catalog_artifact_sha256", "catalog_artifact_semantics_sha256", "catalog_artifact_seal", "publication_commit_anchor", "publication_finalization_checkpoint_anchor", "publication_finalization_checkpoint_generation", "publication_finalization_checkpoint_cursor", "publication_finalization_checkpoint_processed_count", "publication_finalization_checkpoint_state", "publication_finalization_checkpoint_updated_at", "publication_finalization_checkpoint_seal", "publication_finalization_batch_receipt_anchor", "publication_finalization_batch_receipt_coordinate", "publication_finalization_batch_receipt_start_cursor", "publication_finalization_batch_receipt_start_processed_count", "publication_finalization_batch_receipt_next_cursor", "publication_finalization_batch_receipt_row_count", "publication_finalization_batch_receipt_committed_at", "publication_finalization_batch_receipt_seal", "publication_commit_candidate", "publication_commit_catalog_revision", "publication_commit_source_revision", "publication_commit_generation", "publication_commit_operational_preparation", "publication_commit_operational_policy", "publication_commit_artifact_policy", "publication_commit_display_title_policy", "publication_commit_new_galleries", "publication_commit_changed_galleries", "publication_commit_removed_galleries", "publication_commit_duplicate_losers", "publication_commit_committed_at", "publication_commit_seal", "source_build_base_publication_commit", "publication_candidate_base_publication_commit", "publication_commit_finalization", "publication_commit_head_receipt"]
-derived_relations = ["canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor", "manifest_policy", "source_build", "source_scope", "source_build_discovery", "gallery_observation_page_descriptor", "gallery_observation_page_key_bounds", "gallery_observation_metadata", "gallery_observation_scan", "gallery_observation_directory", "gallery_observation_stat", "file_name_identity", "gallery_observation_file", "gallery_observation_file_filesystem", "tag_term", "build_manifest", "gallery_manifest", "analysis_policy", "analysis_run", "analysis_state_anchor", "source_snapshot_manifest_identity", "source_revision_descriptor", "analysis_exclusion_delta", "analysis_impacted_content", "analysis_impacted_gid", "analysis_file_hash_decision_shadow", "analysis_file_hash_decision_resolved", "analysis_content_owner_candidate_shadow", "analysis_content_owner_candidate_resolved", "analysis_content_owner_shadow", "analysis_content_owner_resolved", "analysis_gid_candidate_resolved", "analysis_gid_winner_shadow", "analysis_gid_winner_resolved", "analysis_state_component_seal", "analysis_stage", "analysis_checkpoint", "analysis_batch_receipt_stored", "analysis_batch_receipt", "publication_stage", "artifact_zip_writer_policy", "artifact_producer_fingerprint", "artifact_storage_codec", "artifact_policy_semantics", "artifact_semantic_input", "catalog_revision_descriptor", "publication_candidate", "publication_checkpoint", "publication_batch_receipt_stored", "publication_batch_receipt", "publication_candidate_projection", "artifact_delta_new", "prepared_artifact", "display_title_policy", "title_sort_policy", "catalog_publication", "catalog_publication_title", "catalog_contributor", "catalog_artifact", "publication_finalization_checkpoint", "publication_finalization_batch_receipt_stored", "publication_finalization_batch_receipt", "publication_commit", "source_build_base_source", "source_revision", "source_revision_generation", "publication_candidate_base_catalog", "publication_candidate_base_source", "artifact_delta_old", "catalog_revision", "catalog_revision_generation", "publication_commit_head", "source_head_revision", "source_head_advanced_at", "source_head", "publication_receipt", "publication_head_revision", "publication_head_advanced_at", "publication_head"]
+absent_relations = ["canonical_value_allocation_anchor", "canonical_value_allocation_digest_domain", "canonical_value_allocation_byte_count", "canonical_value_allocation_allocated_at", "canonical_value_allocation_seal", "canonical_value_page_anchor", "canonical_value_page_payload", "canonical_value_page_coordinate", "canonical_value_page_subtree_item_count", "canonical_value_page_seal", "canonical_value_page_parent", "canonical_value_identity", "manifest_policy_anchor", "manifest_policy_manifest_algorithm_version", "manifest_policy_file_order_version", "manifest_policy_identity", "manifest_policy_seal", "source_build_anchor", "source_build_manifest_policy_id", "source_build_state", "source_build_created_at", "source_scope_anchor", "source_scope_source_provider", "source_scope_source_root_sha256", "source_scope_identity_policy_version", "source_scope_identity", "source_scope_seal", "source_build_scope_key", "source_build_descriptor_seal", "source_build_sealed_at", "source_build_channel", "source_build_discovery_anchor", "source_build_discovery_scan_attempt", "source_build_discovery_gallery_count", "source_build_discovery_tree_observation_sha256", "source_build_discovery_completed_at", "source_build_discovery_seal", "source_locator_identity", "gallery_identity", "source_build_expected_gallery", "gallery_observation_allocation", "gallery_observation_page_descriptor_anchor", "gallery_observation_page", "gallery_observation_page_descriptor_component", "gallery_observation_page_descriptor_level", "gallery_observation_page_descriptor_subtree_item_count", "gallery_observation_page_descriptor_seal", "gallery_observation_allocation_page", "gallery_observation_page_key_bounds_anchor", "gallery_observation_page_key_bounds_first_key", "gallery_observation_page_key_bounds_last_key", "gallery_observation_page_key_bounds_seal", "gallery_observation_page_child", "gallery_observation_tree_root", "gallery_observation", "gallery_observation_metadata_anchor", "gallery_upload_time", "source_gallery_name_gid", "gallery_source_name_access", "gallery_observation_download_time", "gallery_observation_modified_time", "gallery_observation_metadata_seal", "gallery_observation_scan_anchor", "gallery_observation_scan_observation_sha256", "gallery_observation_scan_observation_version", "gallery_observation_scan_source_file_count", "gallery_observation_scan_seal", "gallery_observation_discovery_fingerprint", "gallery_observation_metadata_digest", "gallery_observation_raw_content", "gallery_observation_page_count", "gallery_observation_directory_anchor", "gallery_observation_directory_entry_count", "gallery_observation_directory_observation_sha256", "gallery_observation_directory_seal", "gallery_observation_stat_anchor", "gallery_observation_stat_file_count", "gallery_observation_stat_byte_count", "gallery_observation_stat_seal", "source_build_gallery", "file_name_identity_anchor", "file_name_identity_name_bytes", "file_name_identity_file_role", "file_name_identity_seal", "content_blob", "gallery_observation_file_anchor", "gallery_observation_file_file_no", "gallery_observation_file_file_sha256", "gallery_observation_file_seal", "gallery_observation_file_filesystem_anchor", "gallery_observation_file_filesystem_device", "gallery_observation_file_filesystem_inode", "gallery_observation_file_filesystem_modified_ns", "gallery_observation_file_filesystem_changed_ns", "gallery_observation_file_filesystem_seal", "tag_term_anchor", "tag_term_identity", "tag_term_seal", "gallery_observation_tag", "build_manifest_anchor", "build_manifest_manifest_sha256", "build_manifest_file_count", "build_manifest_byte_count", "build_manifest_seal", "gallery_manifest_anchor", "gallery_manifest_manifest_sha256", "gallery_manifest_computed_at", "gallery_manifest_seal", "analysis_policy_anchor", "analysis_policy_algorithm_version", "analysis_policy_spam_artist_threshold", "analysis_policy_spam_occurrence_threshold", "analysis_policy_content_owner_rule_version", "analysis_policy_gid_winner_rule_version", "analysis_policy_identity", "analysis_policy_seal", "analysis_run_anchor", "analysis_run_build_id", "analysis_run_policy_id", "analysis_run_input_manifest_sha256", "analysis_run_identity", "analysis_run_started_at", "analysis_run_state", "analysis_run_descriptor_seal", "analysis_run_completed_at", "analysis_baseline", "analysis_state_ancestry", "source_snapshot_manifest_identity_anchor", "source_snapshot_manifest_identity_gallery_count", "source_snapshot_manifest_identity_file_count", "source_snapshot_manifest_identity_byte_count", "source_snapshot_manifest_identity_seal", "analysis_snapshot_manifest", "source_revision_anchor", "source_revision_channel", "source_revision_snapshot_manifest", "source_revision_descriptor_seal", "source_revision_provenance", "gallery_observation_artist", "gallery_observation_file_hash_occurrence", "analysis_changed_gallery", "analysis_changed_file_hash", "analysis_exclusion_delta_anchor", "analysis_exclusion_delta_old_excluded", "analysis_exclusion_delta_new_excluded", "analysis_exclusion_delta_change", "analysis_exclusion_delta_seal", "analysis_impacted_gallery", "analysis_impacted_content_anchor", "analysis_impacted_content_provenance", "analysis_impacted_content_witness", "analysis_impacted_content_seal", "analysis_impacted_gid_anchor", "analysis_impacted_gid_provenance", "analysis_impacted_gid_witness", "analysis_impacted_gid_seal", "analysis_file_hash_decision_shadow_anchor", "analysis_file_hash_decision_shadow_occurrence_count", "analysis_file_hash_decision_shadow_artist_count", "analysis_file_hash_decision_shadow_maximum_gallery_artist_count", "analysis_file_hash_decision_shadow_seal", "analysis_file_hash_decision_tombstone", "analysis_content_owner_candidate_shadow_anchor", "analysis_content_owner_candidate_shadow_content_sha256", "analysis_content_owner_candidate_shadow_prefer_not_already_uploaded", "analysis_content_owner_candidate_shadow_title_scalar_count", "analysis_content_owner_candidate_shadow_download_time", "analysis_content_owner_candidate_shadow_seal", "analysis_content_owner_candidate_tombstone", "analysis_content_owner_shadow_anchor", "analysis_content_owner_shadow_owner_gallery_id", "analysis_content_owner_shadow_seal", "analysis_content_owner_tombstone", "analysis_gid_candidate_shadow", "analysis_gid_candidate_tombstone", "analysis_gid_winner_selection", "analysis_gid_winner_tombstone", "analysis_state_component_anchor", "analysis_state_component_row_count", "analysis_state_component_sealed_at", "analysis_state_component_completion_seal", "analysis_checkpoint_anchor", "analysis_checkpoint_generation", "analysis_checkpoint_cursor", "analysis_checkpoint_processed_count", "analysis_checkpoint_state", "analysis_checkpoint_updated_at", "analysis_checkpoint_seal", "analysis_batch_receipt_anchor", "analysis_batch_receipt_coordinate", "analysis_batch_receipt_start_cursor", "analysis_batch_receipt_start_processed_count", "analysis_batch_receipt_page_limit", "analysis_batch_receipt_next_cursor", "analysis_batch_receipt_row_count", "analysis_batch_receipt_committed_at", "analysis_batch_receipt_seal", "publication_candidate_anchor", "publication_candidate_analysis_id", "publication_candidate_reserved_revision", "publication_candidate_artifacts_required", "publication_candidate_created_at", "artifact_producer_fingerprint_anchor", "artifact_producer_fingerprint_algorithm_version", "artifact_producer_fingerprint_equivalence_class", "artifact_producer_fingerprint_identity", "artifact_producer_fingerprint_seal", "artifact_policy_semantics_anchor", "artifact_policy_semantics_artifact_algorithm_version", "artifact_policy_semantics_max_image_short_side", "artifact_policy_semantics_producer_fingerprint_sha256", "artifact_policy_semantics_identity", "artifact_policy_semantics_seal", "artifact_policy", "publication_candidate_artifact_policy_id", "artifact_semantic_input", "artifact_blob", "catalog_revision_anchor", "catalog_revision_publication_count", "catalog_revision_descriptor_seal", "publication_generation_successor", "publication_identity", "display_title_policy_anchor", "display_title_policy_algorithm_version", "title_sort_policy_anchor", "title_sort_policy_algorithm_version", "title_sort_policy_unicode_data_version", "title_sort_policy_identity", "title_sort_policy_seal", "display_title_policy_title_sort_policy_id", "display_title_policy_identity", "display_title_policy_seal", "publication_candidate_display_title_policy_id", "publication_candidate_definition_seal", "publication_candidate_projection_seal", "publication_selection", "publication_checkpoint_anchor", "publication_checkpoint_generation", "publication_checkpoint_cursor", "publication_checkpoint_processed_count", "publication_checkpoint_state", "publication_checkpoint_updated_at", "publication_checkpoint_seal", "publication_batch_receipt_anchor", "publication_batch_receipt_coordinate", "publication_batch_receipt_start_cursor", "publication_batch_receipt_start_processed_count", "publication_batch_receipt_next_cursor", "publication_batch_receipt_row_count", "publication_batch_receipt_committed_at", "publication_batch_receipt_seal", "artifact_input", "artifact_operation", "prepared_artifact", "display_title_choice", "title_sort", "catalog_publication_anchor", "catalog_publication_gallery_id", "catalog_publication_summary_sha256", "catalog_publication_language_sha256", "catalog_publication_modified_at", "catalog_publication_seal", "catalog_publication_order", "catalog_publication_title_anchor", "catalog_publication_title_source_title_sha256", "catalog_publication_title_source_gallery_name", "catalog_publication_title_seal", "catalog_publication_content", "catalog_contributor_anchor", "catalog_contributor_name_sha256", "catalog_contributor_role", "catalog_contributor_identity", "catalog_contributor_seal", "catalog_subject", "catalog_artifact", "publication_commit_anchor", "publication_finalization_checkpoint_anchor", "publication_finalization_checkpoint_generation", "publication_finalization_checkpoint_cursor", "publication_finalization_checkpoint_processed_count", "publication_finalization_checkpoint_state", "publication_finalization_checkpoint_updated_at", "publication_finalization_checkpoint_seal", "publication_finalization_batch_receipt_anchor", "publication_finalization_batch_receipt_coordinate", "publication_finalization_batch_receipt_start_cursor", "publication_finalization_batch_receipt_start_processed_count", "publication_finalization_batch_receipt_next_cursor", "publication_finalization_batch_receipt_row_count", "publication_finalization_batch_receipt_committed_at", "publication_finalization_batch_receipt_seal", "publication_commit_candidate", "publication_commit_catalog_revision", "publication_commit_source_revision", "publication_commit_generation", "publication_commit_operational_preparation", "publication_commit_operational_policy", "publication_commit_artifact_policy", "publication_commit_display_title_policy", "publication_commit_new_galleries", "publication_commit_changed_galleries", "publication_commit_removed_galleries", "publication_commit_duplicate_losers", "publication_commit_committed_at", "publication_commit_seal", "source_build_base_publication_commit", "publication_candidate_base_publication_commit", "publication_commit_finalization", "publication_commit_head_receipt"]
+derived_relations = ["canonical_value_allocation", "canonical_value_page", "canonical_value_page_descriptor", "manifest_policy", "source_build", "source_scope", "source_build_discovery", "gallery_observation_page_descriptor", "gallery_observation_page_key_bounds", "gallery_observation_metadata", "gallery_observation_scan", "gallery_observation_directory", "gallery_observation_stat", "file_name_identity", "gallery_observation_file", "gallery_observation_file_filesystem", "tag_term", "build_manifest", "gallery_manifest", "analysis_policy", "analysis_run", "analysis_state_anchor", "source_snapshot_manifest_identity", "source_revision_descriptor", "analysis_exclusion_delta", "analysis_impacted_content", "analysis_impacted_gid", "analysis_file_hash_decision_shadow", "analysis_file_hash_decision_resolved", "analysis_content_owner_candidate_shadow", "analysis_content_owner_candidate_resolved", "analysis_content_owner_shadow", "analysis_content_owner_resolved", "analysis_gid_candidate_resolved", "analysis_gid_winner_shadow", "analysis_gid_winner_resolved", "analysis_state_component_seal", "analysis_stage", "analysis_checkpoint", "analysis_batch_receipt_stored", "analysis_batch_receipt", "publication_stage", "artifact_zip_writer_policy", "artifact_producer_fingerprint", "artifact_storage_codec", "artifact_policy_semantics", "catalog_revision_descriptor", "publication_candidate", "publication_checkpoint", "publication_batch_receipt_stored", "publication_batch_receipt", "publication_candidate_projection", "artifact_delta_new", "display_title_policy", "title_sort_policy", "catalog_publication", "catalog_publication_title", "catalog_contributor", "publication_finalization_checkpoint", "publication_finalization_batch_receipt_stored", "publication_finalization_batch_receipt", "publication_commit", "source_build_base_source", "source_revision", "source_revision_generation", "publication_candidate_base_catalog", "publication_candidate_base_source", "artifact_delta_old", "catalog_revision", "catalog_revision_generation", "publication_commit_head", "source_head_revision", "source_head_advanced_at", "source_head", "publication_receipt", "publication_head_revision", "publication_head_advanced_at", "publication_head"]
 absence_rule = "A fresh data plane contains exactly the schema-owned canonical digest-domain, default-channel, and filesystem-provider registry seeds and no business, work, receipt, projection, artifact, or history rows; first use creates those facts only through their fenced writer protocols."
 epoch_rule = "schema_epoch_control is external to the data plane, created and managed exclusively by SchemaEpochCatalog, and is never a data bootstrap seed."
 
@@ -1273,7 +1252,7 @@ ready_check = "catalog_refinement.check_artifact_semantics_v1"
 writer_hook = "catalog_writer.validate_artifact_semantics"
 writer_hook_version = 1
 scope = "catalog.artifact-semantics"
-relations = ["artifact_zip_writer_policy", "artifact_producer_fingerprint_anchor", "artifact_producer_fingerprint_algorithm_version", "artifact_producer_fingerprint_equivalence_class", "artifact_producer_fingerprint_identity", "artifact_producer_fingerprint_seal", "artifact_producer_fingerprint", "artifact_storage_codec", "artifact_policy_semantics", "artifact_policy", "artifact_semantic_input", "artifact_input", "artifact_delta_old", "artifact_delta_new", "prepared_artifact", "artifact_location", "publication_identity"]
+relations = ["artifact_zip_writer_policy", "artifact_producer_fingerprint_anchor", "artifact_producer_fingerprint_algorithm_version", "artifact_producer_fingerprint_equivalence_class", "artifact_producer_fingerprint_identity", "artifact_producer_fingerprint_seal", "artifact_producer_fingerprint", "artifact_storage_codec", "artifact_policy_semantics", "artifact_policy", "artifact_semantic_input", "artifact_input", "artifact_delta_old", "artifact_delta_new", "artifact_blob", "prepared_artifact", "publication_identity"]
 covers = ["machine_contract.artifact-semantics", "artifact_delta_contract.rebuild_rule", "artifact_delta_contract.unchanged_rule", "artifact_delta_contract.rename_rule", "artifact_byte_producer_contract.runtime_obligation", "artifact_member_plan_contract.runtime_obligation", "artifact_member_plan_contract.ready_obligation", "byte_domain.artifact_name.runtime_obligation", "artifact_name_contract.runtime_obligation", "artifact_locator_contract.runtime_obligation", "artifact_protection_token_contract.runtime_obligation"]
 description = "Validate all six exact component codecs, policy-v2 producer semantics, the collision-checked stored producer and six-tuple semantic identities, GID-derived names, content-addressed locators, fixed protection tokens, old/new classification, archive member naming/plan, artifact bytes, and the single composite ZIP comment envelope."
 
@@ -1286,7 +1265,7 @@ ready_check = "catalog_refinement.check_publication_atomicity_v1"
 writer_hook = "catalog_writer.validate_publication_transition"
 writer_hook_version = 1
 scope = "catalog.publication-atomicity"
-relations = ["publication_candidate", "publication_candidate_projection_seal", "publication_candidate_base_publication_commit", "publication_candidate_base_source", "publication_candidate_base_catalog", "publication_selection", "publication_stage", "publication_checkpoint", "publication_batch_receipt", "artifact_input", "artifact_operation", "prepared_artifact", "publication_commit", "publication_commit_finalization", "publication_receipt", "publication_commit_head_receipt", "publication_head_revision", "publication_head_advanced_at", "publication_head", "analysis_snapshot_manifest", "source_revision_descriptor_seal", "source_revision", "canonical_value_allocation", "canonical_value_page", "canonical_value_identity", "catalog_revision_descriptor_seal", "catalog_revision", "catalog_publication", "catalog_publication_order", "artifact_location", "catalog_artifact"]
+relations = ["publication_candidate", "publication_candidate_projection_seal", "publication_candidate_base_publication_commit", "publication_candidate_base_source", "publication_candidate_base_catalog", "publication_selection", "publication_stage", "publication_checkpoint", "publication_batch_receipt", "artifact_input", "artifact_operation", "artifact_blob", "prepared_artifact", "publication_commit", "publication_commit_finalization", "publication_receipt", "publication_commit_head_receipt", "publication_head_revision", "publication_head_advanced_at", "publication_head", "analysis_snapshot_manifest", "source_revision_descriptor_seal", "source_revision", "canonical_value_allocation", "canonical_value_page", "canonical_value_identity", "catalog_revision_descriptor_seal", "catalog_revision", "catalog_publication", "catalog_publication_order", "catalog_artifact"]
 covers = ["machine_contract.publication-atomicity", "publication_atomic_contract.selection_rule", "publication_atomic_contract.cursor_codec_rule", "publication_atomic_contract.batch_rule", "publication_atomic_contract.projection_seal_rule", "publication_atomic_contract.runtime_obligation", "publication_atomic_contract.finalization_rule", "publication_commit_contract.runtime_obligation", "publication_commit_contract.ready_obligation", "batch_receipt_projection.analysis.write_obligation", "batch_receipt_projection.publication.write_obligation", "batch_receipt_projection.publication_finalization.write_obligation", "byte_domain.publication_id.runtime_obligation", "byte_domain.stage.runtime_obligation", "byte_domain.batch_key.runtime_obligation"]
 description = "Recompute publication and artifact identities, validate the exact selected/artifact/revision projections and policy/channel pins, then atomically insert the catalog generation seal, advance the split head from revision-only bases, and persist a receipt keyed by its published catalog and source revisions."
 
@@ -1325,7 +1304,7 @@ ready_check = "catalog_refinement.check_physical_domains_v1"
 writer_hook = "catalog_writer.validate_physical_domain"
 writer_hook_version = 1
 scope = "catalog.physical-domains"
-relations = ["canonical_value_allocation_anchor", "canonical_value_allocation_digest_domain", "canonical_value_allocation_byte_count", "canonical_value_allocation_allocated_at", "canonical_value_allocation_seal", "canonical_value_allocation", "canonical_value_page_anchor", "canonical_value_page_payload", "canonical_value_page_coordinate", "canonical_value_page_subtree_item_count", "canonical_value_page_seal", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "source_locator_identity", "source_build_anchor", "source_build_scope_key", "source_build_manifest_policy_id", "source_build_state", "source_build_created_at", "source_build_descriptor_seal", "source_build_sealed_at", "source_build", "source_build_discovery_gallery_count", "build_manifest_anchor", "build_manifest_manifest_sha256", "build_manifest_file_count", "build_manifest_byte_count", "build_manifest_seal", "build_manifest", "gallery_identity", "file_name_identity_anchor", "file_name_identity_name_bytes", "file_name_identity_file_role", "file_name_identity_seal", "file_name_identity", "gallery_observation_file_anchor", "gallery_observation_file_file_no", "gallery_observation_file_file_sha256", "gallery_observation_file_seal", "gallery_observation_file", "gallery_manifest_anchor", "gallery_manifest_manifest_sha256", "gallery_manifest_computed_at", "gallery_manifest_seal", "gallery_manifest", "tag_term_anchor", "tag_term_identity", "tag_term_seal", "tag_term", "source_snapshot_manifest_identity_anchor", "source_snapshot_manifest_identity_gallery_count", "source_snapshot_manifest_identity_file_count", "source_snapshot_manifest_identity_byte_count", "source_snapshot_manifest_identity_seal", "source_snapshot_manifest_identity", "publication_identity", "artifact_location", "artifact_producer_fingerprint_anchor", "artifact_producer_fingerprint_algorithm_version", "artifact_producer_fingerprint_equivalence_class", "artifact_producer_fingerprint_identity", "artifact_producer_fingerprint_seal", "artifact_producer_fingerprint", "artifact_storage_codec", "artifact_semantic_input_anchor", "artifact_semantic_input_source_manifest_component_sha256", "artifact_semantic_input_member_plan_component_sha256", "artifact_semantic_input_effective_content_component_sha256", "artifact_semantic_input_selected_component_sha256", "artifact_semantic_input_owner_component_sha256", "artifact_semantic_input_policy_component_sha256", "artifact_semantic_input_identity", "artifact_semantic_input_seal", "artifact_semantic_input", "prepared_artifact_anchor", "prepared_artifact_sha256", "prepared_artifact_storage_codec_version", "prepared_artifact_storage_generation", "prepared_artifact_protection_token", "prepared_artifact_state", "prepared_artifact_seal", "prepared_artifact", "catalog_artifact_anchor", "catalog_artifact_sha256", "catalog_artifact_semantics_sha256", "catalog_artifact_seal", "catalog_artifact", "gallery_observation_page", "gallery_observation_allocation_page", "gallery_observation_page_descriptor_anchor", "gallery_observation_page_descriptor_component", "gallery_observation_page_descriptor_level", "gallery_observation_page_descriptor_subtree_item_count", "gallery_observation_page_descriptor_seal", "gallery_observation_page_descriptor", "gallery_observation_page_key_bounds_anchor", "gallery_observation_page_key_bounds_first_key", "gallery_observation_page_key_bounds_last_key", "gallery_observation_page_key_bounds_seal", "gallery_observation_page_key_bounds", "gallery_observation_page_child", "gallery_observation_discovery_fingerprint", "analysis_run_anchor", "analysis_run_build_id", "analysis_run_policy_id", "analysis_run_input_manifest_sha256", "analysis_run_identity", "analysis_run_started_at", "analysis_run_state", "analysis_run_descriptor_seal", "analysis_run_completed_at", "analysis_run", "analysis_state_anchor", "analysis_state_component_anchor", "analysis_state_component_row_count", "analysis_state_component_sealed_at", "analysis_state_component_completion_seal", "analysis_state_component_seal", "analysis_exclusion_delta_anchor", "analysis_exclusion_delta_old_excluded", "analysis_exclusion_delta_new_excluded", "analysis_exclusion_delta_change", "analysis_exclusion_delta_seal", "analysis_exclusion_delta", "analysis_file_hash_decision_shadow_anchor", "analysis_file_hash_decision_shadow_occurrence_count", "analysis_file_hash_decision_shadow_artist_count", "analysis_file_hash_decision_shadow_maximum_gallery_artist_count", "analysis_file_hash_decision_shadow_seal", "analysis_file_hash_decision_shadow", "analysis_content_owner_candidate_shadow_anchor", "analysis_content_owner_candidate_shadow_content_sha256", "analysis_content_owner_candidate_shadow_prefer_not_already_uploaded", "analysis_content_owner_candidate_shadow_title_scalar_count", "analysis_content_owner_candidate_shadow_download_time", "analysis_content_owner_candidate_shadow_seal", "analysis_content_owner_candidate_shadow", "analysis_content_owner_shadow_anchor", "analysis_content_owner_shadow_owner_gallery_id", "analysis_content_owner_shadow_seal", "analysis_content_owner_shadow", "analysis_impacted_content_anchor", "analysis_impacted_content_provenance", "analysis_impacted_content_witness", "analysis_impacted_content_seal", "analysis_impacted_content", "analysis_impacted_gid_anchor", "analysis_impacted_gid_provenance", "analysis_impacted_gid_witness", "analysis_impacted_gid_seal", "analysis_impacted_gid", "analysis_gid_candidate_shadow", "analysis_gid_candidate_tombstone", "analysis_gid_candidate_resolved", "analysis_gid_winner_selection", "analysis_gid_winner_shadow", "analysis_gid_winner_tombstone", "analysis_gid_winner_resolved", "analysis_batch_receipt_page_limit", "analysis_checkpoint", "publication_checkpoint", "publication_batch_receipt", "publication_candidate_anchor", "publication_candidate_analysis_id", "publication_candidate_reserved_revision", "publication_candidate_artifact_policy_id", "publication_candidate_display_title_policy_id", "publication_candidate_artifacts_required", "publication_candidate_created_at", "publication_candidate_definition_seal", "publication_candidate", "publication_candidate_projection_seal", "publication_candidate_projection", "publication_candidate_base_publication_commit", "publication_candidate_base_catalog", "publication_candidate_base_source", "publication_selection", "publication_stage_anchor", "publication_stage_order", "publication_stage_cursor_codec", "publication_stage_seal", "publication_stage", "publication_checkpoint_anchor", "publication_checkpoint_generation", "publication_checkpoint_cursor", "publication_checkpoint_processed_count", "publication_checkpoint_state", "publication_checkpoint_updated_at", "publication_checkpoint_seal", "publication_batch_receipt_anchor", "publication_batch_receipt_coordinate", "publication_batch_receipt_start_cursor", "publication_batch_receipt_start_processed_count", "publication_batch_receipt_next_cursor", "publication_batch_receipt_row_count", "publication_batch_receipt_committed_at", "publication_batch_receipt_seal", "publication_batch_receipt_stored", "publication_finalization_checkpoint_anchor", "publication_finalization_checkpoint_generation", "publication_finalization_checkpoint_cursor", "publication_finalization_checkpoint_processed_count", "publication_finalization_checkpoint_state", "publication_finalization_checkpoint_updated_at", "publication_finalization_checkpoint_seal", "publication_finalization_checkpoint", "publication_finalization_batch_receipt_anchor", "publication_finalization_batch_receipt_coordinate", "publication_finalization_batch_receipt_start_cursor", "publication_finalization_batch_receipt_start_processed_count", "publication_finalization_batch_receipt_next_cursor", "publication_finalization_batch_receipt_row_count", "publication_finalization_batch_receipt_committed_at", "publication_finalization_batch_receipt_seal", "publication_finalization_batch_receipt_stored", "publication_finalization_batch_receipt", "artifact_zip_writer_policy_anchor", "artifact_zip_writer_policy_zip_codec_version", "artifact_zip_writer_policy_compression_method", "artifact_zip_writer_policy_compression_level", "artifact_zip_writer_policy_dos_date", "artifact_zip_writer_policy_dos_time", "artifact_zip_writer_policy_unix_mode", "artifact_zip_writer_policy_general_purpose_flags", "artifact_zip_writer_policy_create_system", "artifact_zip_writer_policy_archive_name_codec_version", "artifact_zip_writer_policy_artifact_name_codec_version", "artifact_zip_writer_policy_identity", "artifact_zip_writer_policy_seal", "artifact_zip_writer_policy", "artifact_storage_codec_anchor", "artifact_storage_codec_adapter_id", "artifact_storage_codec_locator_codec_version", "artifact_storage_codec_protection_token_codec_version", "artifact_storage_codec_seal", "artifact_policy_semantics_anchor", "artifact_policy_semantics_artifact_algorithm_version", "artifact_policy_semantics_max_image_short_side", "artifact_policy_semantics_producer_fingerprint_sha256", "artifact_policy_semantics_identity", "artifact_policy_semantics_seal", "artifact_policy_semantics", "artifact_policy", "artifact_input", "artifact_delta_old", "artifact_delta_new", "artifact_operation", "artifact_blob", "catalog_revision_anchor", "catalog_revision_publication_count", "catalog_revision_descriptor_seal", "catalog_revision_descriptor", "catalog_revision", "catalog_revision_generation", "publication_generation_node", "publication_generation_successor", "display_title_policy_anchor", "display_title_policy_algorithm_version", "display_title_policy_title_sort_policy_id", "display_title_policy_identity", "display_title_policy_seal", "display_title_policy", "title_sort_policy_anchor", "title_sort_policy_algorithm_version", "title_sort_policy_unicode_data_version", "title_sort_policy_identity", "title_sort_policy_seal", "title_sort_policy", "display_title_choice", "title_sort", "catalog_publication_anchor", "catalog_publication_gallery_id", "catalog_publication_summary_sha256", "catalog_publication_language_sha256", "catalog_publication_modified_at", "catalog_publication_seal", "catalog_publication", "catalog_publication_order", "catalog_publication_title_anchor", "catalog_publication_title_source_title_sha256", "catalog_publication_title_source_gallery_name", "catalog_publication_title_seal", "catalog_publication_title", "catalog_publication_content", "contributor_role_registry", "catalog_contributor_anchor", "catalog_contributor_name_sha256", "catalog_contributor_role", "catalog_contributor_identity", "catalog_contributor_seal", "catalog_contributor", "catalog_subject", "publication_commit_anchor", "publication_commit_candidate", "publication_commit_catalog_revision", "publication_commit_source_revision", "publication_commit_generation", "publication_commit_operational_preparation", "publication_commit_operational_policy", "publication_commit_artifact_policy", "publication_commit_display_title_policy", "publication_commit_new_galleries", "publication_commit_changed_galleries", "publication_commit_removed_galleries", "publication_commit_duplicate_losers", "publication_commit_committed_at", "publication_commit_seal", "publication_commit", "publication_commit_finalization", "publication_commit_head_receipt", "publication_commit_head", "publication_receipt", "publication_head_revision", "publication_head_advanced_at", "publication_head"]
+relations = ["canonical_value_allocation_anchor", "canonical_value_allocation_digest_domain", "canonical_value_allocation_byte_count", "canonical_value_allocation_allocated_at", "canonical_value_allocation_seal", "canonical_value_allocation", "canonical_value_page_anchor", "canonical_value_page_payload", "canonical_value_page_coordinate", "canonical_value_page_subtree_item_count", "canonical_value_page_seal", "canonical_value_page", "canonical_value_page_descriptor", "canonical_value_page_parent", "source_locator_identity", "source_build_anchor", "source_build_scope_key", "source_build_manifest_policy_id", "source_build_state", "source_build_created_at", "source_build_descriptor_seal", "source_build_sealed_at", "source_build", "source_build_discovery_gallery_count", "build_manifest_anchor", "build_manifest_manifest_sha256", "build_manifest_file_count", "build_manifest_byte_count", "build_manifest_seal", "build_manifest", "gallery_identity", "file_name_identity_anchor", "file_name_identity_name_bytes", "file_name_identity_file_role", "file_name_identity_seal", "file_name_identity", "gallery_observation_file_anchor", "gallery_observation_file_file_no", "gallery_observation_file_file_sha256", "gallery_observation_file_seal", "gallery_observation_file", "gallery_manifest_anchor", "gallery_manifest_manifest_sha256", "gallery_manifest_computed_at", "gallery_manifest_seal", "gallery_manifest", "tag_term_anchor", "tag_term_identity", "tag_term_seal", "tag_term", "source_snapshot_manifest_identity_anchor", "source_snapshot_manifest_identity_gallery_count", "source_snapshot_manifest_identity_file_count", "source_snapshot_manifest_identity_byte_count", "source_snapshot_manifest_identity_seal", "source_snapshot_manifest_identity", "publication_identity", "artifact_producer_fingerprint_anchor", "artifact_producer_fingerprint_algorithm_version", "artifact_producer_fingerprint_equivalence_class", "artifact_producer_fingerprint_identity", "artifact_producer_fingerprint_seal", "artifact_producer_fingerprint", "artifact_storage_codec", "artifact_semantic_input", "prepared_artifact", "catalog_artifact", "gallery_observation_page", "gallery_observation_allocation_page", "gallery_observation_page_descriptor_anchor", "gallery_observation_page_descriptor_component", "gallery_observation_page_descriptor_level", "gallery_observation_page_descriptor_subtree_item_count", "gallery_observation_page_descriptor_seal", "gallery_observation_page_descriptor", "gallery_observation_page_key_bounds_anchor", "gallery_observation_page_key_bounds_first_key", "gallery_observation_page_key_bounds_last_key", "gallery_observation_page_key_bounds_seal", "gallery_observation_page_key_bounds", "gallery_observation_page_child", "gallery_observation_discovery_fingerprint", "analysis_run_anchor", "analysis_run_build_id", "analysis_run_policy_id", "analysis_run_input_manifest_sha256", "analysis_run_identity", "analysis_run_started_at", "analysis_run_state", "analysis_run_descriptor_seal", "analysis_run_completed_at", "analysis_run", "analysis_state_anchor", "analysis_state_component_anchor", "analysis_state_component_row_count", "analysis_state_component_sealed_at", "analysis_state_component_completion_seal", "analysis_state_component_seal", "analysis_exclusion_delta_anchor", "analysis_exclusion_delta_old_excluded", "analysis_exclusion_delta_new_excluded", "analysis_exclusion_delta_change", "analysis_exclusion_delta_seal", "analysis_exclusion_delta", "analysis_file_hash_decision_shadow_anchor", "analysis_file_hash_decision_shadow_occurrence_count", "analysis_file_hash_decision_shadow_artist_count", "analysis_file_hash_decision_shadow_maximum_gallery_artist_count", "analysis_file_hash_decision_shadow_seal", "analysis_file_hash_decision_shadow", "analysis_content_owner_candidate_shadow_anchor", "analysis_content_owner_candidate_shadow_content_sha256", "analysis_content_owner_candidate_shadow_prefer_not_already_uploaded", "analysis_content_owner_candidate_shadow_title_scalar_count", "analysis_content_owner_candidate_shadow_download_time", "analysis_content_owner_candidate_shadow_seal", "analysis_content_owner_candidate_shadow", "analysis_content_owner_shadow_anchor", "analysis_content_owner_shadow_owner_gallery_id", "analysis_content_owner_shadow_seal", "analysis_content_owner_shadow", "analysis_impacted_content_anchor", "analysis_impacted_content_provenance", "analysis_impacted_content_witness", "analysis_impacted_content_seal", "analysis_impacted_content", "analysis_impacted_gid_anchor", "analysis_impacted_gid_provenance", "analysis_impacted_gid_witness", "analysis_impacted_gid_seal", "analysis_impacted_gid", "analysis_gid_candidate_shadow", "analysis_gid_candidate_tombstone", "analysis_gid_candidate_resolved", "analysis_gid_winner_selection", "analysis_gid_winner_shadow", "analysis_gid_winner_tombstone", "analysis_gid_winner_resolved", "analysis_batch_receipt_page_limit", "analysis_checkpoint", "publication_checkpoint", "publication_batch_receipt", "publication_candidate_anchor", "publication_candidate_analysis_id", "publication_candidate_reserved_revision", "publication_candidate_artifact_policy_id", "publication_candidate_display_title_policy_id", "publication_candidate_artifacts_required", "publication_candidate_created_at", "publication_candidate_definition_seal", "publication_candidate", "publication_candidate_projection_seal", "publication_candidate_projection", "publication_candidate_base_publication_commit", "publication_candidate_base_catalog", "publication_candidate_base_source", "publication_selection", "publication_stage_anchor", "publication_stage_order", "publication_stage_cursor_codec", "publication_stage_seal", "publication_stage", "publication_checkpoint_anchor", "publication_checkpoint_generation", "publication_checkpoint_cursor", "publication_checkpoint_processed_count", "publication_checkpoint_state", "publication_checkpoint_updated_at", "publication_checkpoint_seal", "publication_batch_receipt_anchor", "publication_batch_receipt_coordinate", "publication_batch_receipt_start_cursor", "publication_batch_receipt_start_processed_count", "publication_batch_receipt_next_cursor", "publication_batch_receipt_row_count", "publication_batch_receipt_committed_at", "publication_batch_receipt_seal", "publication_batch_receipt_stored", "publication_finalization_checkpoint_anchor", "publication_finalization_checkpoint_generation", "publication_finalization_checkpoint_cursor", "publication_finalization_checkpoint_processed_count", "publication_finalization_checkpoint_state", "publication_finalization_checkpoint_updated_at", "publication_finalization_checkpoint_seal", "publication_finalization_checkpoint", "publication_finalization_batch_receipt_anchor", "publication_finalization_batch_receipt_coordinate", "publication_finalization_batch_receipt_start_cursor", "publication_finalization_batch_receipt_start_processed_count", "publication_finalization_batch_receipt_next_cursor", "publication_finalization_batch_receipt_row_count", "publication_finalization_batch_receipt_committed_at", "publication_finalization_batch_receipt_seal", "publication_finalization_batch_receipt_stored", "publication_finalization_batch_receipt", "artifact_zip_writer_policy_anchor", "artifact_zip_writer_policy_zip_codec_version", "artifact_zip_writer_policy_compression_method", "artifact_zip_writer_policy_compression_level", "artifact_zip_writer_policy_dos_date", "artifact_zip_writer_policy_dos_time", "artifact_zip_writer_policy_unix_mode", "artifact_zip_writer_policy_general_purpose_flags", "artifact_zip_writer_policy_create_system", "artifact_zip_writer_policy_archive_name_codec_version", "artifact_zip_writer_policy_artifact_name_codec_version", "artifact_zip_writer_policy_identity", "artifact_zip_writer_policy_seal", "artifact_zip_writer_policy", "artifact_storage_codec_anchor", "artifact_storage_codec_adapter_id", "artifact_storage_codec_locator_codec_version", "artifact_storage_codec_protection_token_codec_version", "artifact_storage_codec_seal", "artifact_policy_semantics_anchor", "artifact_policy_semantics_artifact_algorithm_version", "artifact_policy_semantics_max_image_short_side", "artifact_policy_semantics_producer_fingerprint_sha256", "artifact_policy_semantics_identity", "artifact_policy_semantics_seal", "artifact_policy_semantics", "artifact_policy", "artifact_input", "artifact_delta_old", "artifact_delta_new", "artifact_operation", "artifact_blob", "catalog_revision_anchor", "catalog_revision_publication_count", "catalog_revision_descriptor_seal", "catalog_revision_descriptor", "catalog_revision", "catalog_revision_generation", "publication_generation_node", "publication_generation_successor", "display_title_policy_anchor", "display_title_policy_algorithm_version", "display_title_policy_title_sort_policy_id", "display_title_policy_identity", "display_title_policy_seal", "display_title_policy", "title_sort_policy_anchor", "title_sort_policy_algorithm_version", "title_sort_policy_unicode_data_version", "title_sort_policy_identity", "title_sort_policy_seal", "title_sort_policy", "display_title_choice", "title_sort", "catalog_publication_anchor", "catalog_publication_gallery_id", "catalog_publication_summary_sha256", "catalog_publication_language_sha256", "catalog_publication_modified_at", "catalog_publication_seal", "catalog_publication", "catalog_publication_order", "catalog_publication_title_anchor", "catalog_publication_title_source_title_sha256", "catalog_publication_title_source_gallery_name", "catalog_publication_title_seal", "catalog_publication_title", "catalog_publication_content", "contributor_role_registry", "catalog_contributor_anchor", "catalog_contributor_name_sha256", "catalog_contributor_role", "catalog_contributor_identity", "catalog_contributor_seal", "catalog_contributor", "catalog_subject", "publication_commit_anchor", "publication_commit_candidate", "publication_commit_catalog_revision", "publication_commit_source_revision", "publication_commit_generation", "publication_commit_operational_preparation", "publication_commit_operational_policy", "publication_commit_artifact_policy", "publication_commit_display_title_policy", "publication_commit_new_galleries", "publication_commit_changed_galleries", "publication_commit_removed_galleries", "publication_commit_duplicate_losers", "publication_commit_committed_at", "publication_commit_seal", "publication_commit", "publication_commit_finalization", "publication_commit_head_receipt", "publication_commit_head", "publication_receipt", "publication_head_revision", "publication_head_advanced_at", "publication_head"]
 covers = ["machine_contract.physical-domains", "byte_domain.source_gallery_name.runtime_obligation", "byte_domain.name_bytes.runtime_obligation", "byte_domain.namespace.runtime_obligation", "byte_domain.unicode_data_version.runtime_obligation", "byte_domain.role.runtime_obligation", "byte_domain.metadata_fingerprint.runtime_obligation", "byte_domain.cursor.runtime_obligation", "byte_domain.start_cursor.runtime_obligation", "byte_domain.next_cursor.runtime_obligation", "byte_domain.protection_token.runtime_obligation", "byte_domain.adapter_id.runtime_obligation", "byte_domain.producer_equivalence_class.runtime_obligation", "byte_domain.writer_id.runtime_obligation", "byte_domain.python_abi.runtime_obligation", "byte_domain.pillow_build.runtime_obligation", "byte_domain.libjpeg_build.runtime_obligation", "byte_domain.zlib_build.runtime_obligation"]
 description = "Validate exact storage classes, fixed binary widths, bounded key bytes, the exact 40-byte discovery fingerprint, stage-specific cursors capped at 2048 bytes, artifact protection tokens fixed at 184 bytes, closed producer/storage/contributor-role registry fields, unsigned logical counters, zero-based file ordinals, and the shared 0..2^63-1 Unix-microsecond timestamp domain on both backends; every canonical/page/gallery/file/tag/analysis-run/component/delta/shadow/impacted-key and complete publication-graph relation from candidate definition through permanent finalization receipt, catalog publication/title/content/contributor/subject/artifact occurrence, immutable commit and derived head names its physical members plus read-only views, so no B8 writer, reader, finalizer or cleanup mutation escapes the closed authority set, while strict publication/artifact codecs derive external identifiers and arbitrary locator bytes appear only through canonical references."
 
@@ -9238,228 +9217,10 @@ check = [
 ]
 
 [[relation]]
-name = "artifact_semantic_input_anchor"
-status = "implemented"
-rationale = "Allocate one collision-checked artifact semantic family without repeating component identities."
-table = "catalog_artifact_semantic_input_anchors"
-primary_key = ["artifact_semantics_sha256"]
-unique_keys = []
-column = [
-  { attribute = "artifact_semantics_sha256", name = "artifact_semantics_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-]
-foreign_key = [
-  { name = "fk_artifact_semantic_input_anchor_1", attributes = ["artifact_semantics_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
-]
-check = [
-  { name = "ck_vnext_343_domain", sqlite_expression = "typeof(artifact_semantics_sha256) = 'blob' AND length(artifact_semantics_sha256) = 32", mariadb_expression = "octet_length(artifact_semantics_sha256) = 32" },
-]
-
-[[relation]]
-name = "artifact_semantic_input_source_manifest_component_sha256"
-status = "implemented"
-rationale = "Production physical realization of the closed-world artifact_semantic_input_source_manifest_component_sha256 relation."
-table = "catalog_artifact_semantic_source_manifest_sha256s"
-primary_key = ["artifact_semantics_sha256"]
-unique_keys = []
-referential_unique_keys = [["artifact_semantics_sha256", "source_manifest_component_sha256"]]
-column = [
-  { attribute = "artifact_semantics_sha256", name = "artifact_semantics_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-  { attribute = "source_manifest_component_sha256", name = "source_manifest_component_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-]
-foreign_key = [
-  { name = "fk_artifact_semantic_input_source_manifest_component_sha256_1", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input_anchor", referenced_attributes = ["artifact_semantics_sha256"] },
-  { name = "fk_artifact_semantic_input_source_manifest_component_sha256_2", attributes = ["source_manifest_component_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
-]
-required_index = [
-  { name = "ix_fk_artifact_semantic_input_source_manifest_comp_d72b30ea5b48", attributes = ["source_manifest_component_sha256"], unique = false },
-]
-check = [
-  { name = "ck_vnext_344_domain", sqlite_expression = "typeof(artifact_semantics_sha256) = 'blob' AND length(artifact_semantics_sha256) = 32 AND typeof(source_manifest_component_sha256) = 'blob' AND length(source_manifest_component_sha256) = 32", mariadb_expression = "octet_length(artifact_semantics_sha256) = 32 AND octet_length(source_manifest_component_sha256) = 32" },
-]
-
-[[relation]]
-name = "artifact_semantic_input_member_plan_component_sha256"
-status = "implemented"
-rationale = "Production physical realization of the closed-world artifact_semantic_input_member_plan_component_sha256 relation."
-table = "catalog_artifact_semantic_member_plan_sha256s"
-primary_key = ["artifact_semantics_sha256"]
-unique_keys = []
-referential_unique_keys = [["artifact_semantics_sha256", "member_plan_component_sha256"]]
-column = [
-  { attribute = "artifact_semantics_sha256", name = "artifact_semantics_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-  { attribute = "member_plan_component_sha256", name = "member_plan_component_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-]
-foreign_key = [
-  { name = "fk_artifact_semantic_input_member_plan_component_sha256_1", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input_anchor", referenced_attributes = ["artifact_semantics_sha256"] },
-  { name = "fk_artifact_semantic_input_member_plan_component_sha256_2", attributes = ["member_plan_component_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
-]
-required_index = [
-  { name = "ix_fk_artifact_semantic_input_member_plan_componen_f4d535b66551", attributes = ["member_plan_component_sha256"], unique = false },
-]
-check = [
-  { name = "ck_vnext_345_domain", sqlite_expression = "typeof(artifact_semantics_sha256) = 'blob' AND length(artifact_semantics_sha256) = 32 AND typeof(member_plan_component_sha256) = 'blob' AND length(member_plan_component_sha256) = 32", mariadb_expression = "octet_length(artifact_semantics_sha256) = 32 AND octet_length(member_plan_component_sha256) = 32" },
-]
-
-[[relation]]
-name = "artifact_semantic_input_effective_content_component_sha256"
-status = "implemented"
-rationale = "Production physical realization of the closed-world artifact_semantic_input_effective_content_component_sha256 relation."
-table = "catalog_artifact_semantic_effective_content_sha256s"
-primary_key = ["artifact_semantics_sha256"]
-unique_keys = []
-referential_unique_keys = [["artifact_semantics_sha256", "effective_content_component_sha256"]]
-column = [
-  { attribute = "artifact_semantics_sha256", name = "artifact_semantics_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-  { attribute = "effective_content_component_sha256", name = "effective_content_component_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-]
-foreign_key = [
-  { name = "fk_artifact_semantic_input_effective_content_component_sha256_1", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input_anchor", referenced_attributes = ["artifact_semantics_sha256"] },
-  { name = "fk_artifact_semantic_input_effective_content_component_sha256_2", attributes = ["effective_content_component_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
-]
-required_index = [
-  { name = "ix_fk_artifact_semantic_input_effective_content_co_abec7e3e3e10", attributes = ["effective_content_component_sha256"], unique = false },
-]
-check = [
-  { name = "ck_vnext_346_domain", sqlite_expression = "typeof(artifact_semantics_sha256) = 'blob' AND length(artifact_semantics_sha256) = 32 AND typeof(effective_content_component_sha256) = 'blob' AND length(effective_content_component_sha256) = 32", mariadb_expression = "octet_length(artifact_semantics_sha256) = 32 AND octet_length(effective_content_component_sha256) = 32" },
-]
-
-[[relation]]
-name = "artifact_semantic_input_selected_component_sha256"
-status = "implemented"
-rationale = "Production physical realization of the closed-world artifact_semantic_input_selected_component_sha256 relation."
-table = "catalog_artifact_semantic_selected_sha256s"
-primary_key = ["artifact_semantics_sha256"]
-unique_keys = []
-referential_unique_keys = [["artifact_semantics_sha256", "selected_component_sha256"]]
-column = [
-  { attribute = "artifact_semantics_sha256", name = "artifact_semantics_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-  { attribute = "selected_component_sha256", name = "selected_component_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-]
-foreign_key = [
-  { name = "fk_artifact_semantic_input_selected_component_sha256_1", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input_anchor", referenced_attributes = ["artifact_semantics_sha256"] },
-  { name = "fk_artifact_semantic_input_selected_component_sha256_2", attributes = ["selected_component_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
-]
-required_index = [
-  { name = "ix_fk_artifact_semantic_input_selected_component_s_145d4fdd8098", attributes = ["selected_component_sha256"], unique = false },
-]
-check = [
-  { name = "ck_vnext_347_domain", sqlite_expression = "typeof(artifact_semantics_sha256) = 'blob' AND length(artifact_semantics_sha256) = 32 AND typeof(selected_component_sha256) = 'blob' AND length(selected_component_sha256) = 32", mariadb_expression = "octet_length(artifact_semantics_sha256) = 32 AND octet_length(selected_component_sha256) = 32" },
-]
-
-[[relation]]
-name = "artifact_semantic_input_owner_component_sha256"
-status = "implemented"
-rationale = "Production physical realization of the closed-world artifact_semantic_input_owner_component_sha256 relation."
-table = "catalog_artifact_semantic_owner_sha256s"
-primary_key = ["artifact_semantics_sha256"]
-unique_keys = []
-referential_unique_keys = [["artifact_semantics_sha256", "owner_component_sha256"]]
-column = [
-  { attribute = "artifact_semantics_sha256", name = "artifact_semantics_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-  { attribute = "owner_component_sha256", name = "owner_component_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-]
-foreign_key = [
-  { name = "fk_artifact_semantic_input_owner_component_sha256_1", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input_anchor", referenced_attributes = ["artifact_semantics_sha256"] },
-  { name = "fk_artifact_semantic_input_owner_component_sha256_2", attributes = ["owner_component_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
-]
-required_index = [
-  { name = "ix_fk_artifact_semantic_input_owner_component_sha2_c5311fce0f41", attributes = ["owner_component_sha256"], unique = false },
-]
-check = [
-  { name = "ck_vnext_348_domain", sqlite_expression = "typeof(artifact_semantics_sha256) = 'blob' AND length(artifact_semantics_sha256) = 32 AND typeof(owner_component_sha256) = 'blob' AND length(owner_component_sha256) = 32", mariadb_expression = "octet_length(artifact_semantics_sha256) = 32 AND octet_length(owner_component_sha256) = 32" },
-]
-
-[[relation]]
-name = "artifact_semantic_input_policy_component_sha256"
-status = "implemented"
-rationale = "Production physical realization of the closed-world artifact_semantic_input_policy_component_sha256 relation."
-table = "catalog_artifact_semantic_policy_sha256s"
-primary_key = ["artifact_semantics_sha256"]
-unique_keys = []
-referential_unique_keys = [["artifact_semantics_sha256", "policy_component_sha256"]]
-column = [
-  { attribute = "artifact_semantics_sha256", name = "artifact_semantics_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-  { attribute = "policy_component_sha256", name = "policy_component_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-]
-foreign_key = [
-  { name = "fk_artifact_semantic_input_policy_component_sha256_1", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input_anchor", referenced_attributes = ["artifact_semantics_sha256"] },
-  { name = "fk_artifact_semantic_input_policy_component_sha256_2", attributes = ["policy_component_sha256"], referenced_relation = "artifact_policy_semantics_seal", referenced_attributes = ["policy_component_sha256"] },
-]
-required_index = [
-  { name = "ix_fk_artifact_semantic_input_policy_component_sha_ce845281fc51", attributes = ["policy_component_sha256"], unique = false },
-]
-check = [
-  { name = "ck_vnext_349_domain", sqlite_expression = "typeof(artifact_semantics_sha256) = 'blob' AND length(artifact_semantics_sha256) = 32 AND typeof(policy_component_sha256) = 'blob' AND length(policy_component_sha256) = 32", mariadb_expression = "octet_length(artifact_semantics_sha256) = 32 AND octet_length(policy_component_sha256) = 32" },
-]
-
-[[relation]]
-name = "artifact_semantic_input_identity"
-status = "implemented"
-rationale = "Cold six-component natural identity whose composite foreign keys enforce exact congruence with every hot fact."
-table = "catalog_artifact_semantic_input_identities"
-primary_key = ["source_manifest_component_sha256", "member_plan_component_sha256", "effective_content_component_sha256", "selected_component_sha256", "owner_component_sha256", "policy_component_sha256"]
-unique_keys = [["artifact_semantics_sha256"]]
-column = [
-  { attribute = "source_manifest_component_sha256", name = "source_manifest_component_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-  { attribute = "member_plan_component_sha256", name = "member_plan_component_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-  { attribute = "effective_content_component_sha256", name = "effective_content_component_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-  { attribute = "selected_component_sha256", name = "selected_component_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-  { attribute = "owner_component_sha256", name = "owner_component_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-  { attribute = "policy_component_sha256", name = "policy_component_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-  { attribute = "artifact_semantics_sha256", name = "artifact_semantics_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-]
-foreign_key = [
-  { name = "fk_artifact_semantic_input_identity_1", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input_anchor", referenced_attributes = ["artifact_semantics_sha256"] },
-  { name = "fk_artifact_semantic_input_identity_2", attributes = ["artifact_semantics_sha256", "source_manifest_component_sha256"], referenced_relation = "artifact_semantic_input_source_manifest_component_sha256", referenced_attributes = ["artifact_semantics_sha256", "source_manifest_component_sha256"] },
-  { name = "fk_artifact_semantic_input_identity_3", attributes = ["artifact_semantics_sha256", "member_plan_component_sha256"], referenced_relation = "artifact_semantic_input_member_plan_component_sha256", referenced_attributes = ["artifact_semantics_sha256", "member_plan_component_sha256"] },
-  { name = "fk_artifact_semantic_input_identity_4", attributes = ["artifact_semantics_sha256", "effective_content_component_sha256"], referenced_relation = "artifact_semantic_input_effective_content_component_sha256", referenced_attributes = ["artifact_semantics_sha256", "effective_content_component_sha256"] },
-  { name = "fk_artifact_semantic_input_identity_5", attributes = ["artifact_semantics_sha256", "selected_component_sha256"], referenced_relation = "artifact_semantic_input_selected_component_sha256", referenced_attributes = ["artifact_semantics_sha256", "selected_component_sha256"] },
-  { name = "fk_artifact_semantic_input_identity_6", attributes = ["artifact_semantics_sha256", "owner_component_sha256"], referenced_relation = "artifact_semantic_input_owner_component_sha256", referenced_attributes = ["artifact_semantics_sha256", "owner_component_sha256"] },
-  { name = "fk_artifact_semantic_input_identity_7", attributes = ["artifact_semantics_sha256", "policy_component_sha256"], referenced_relation = "artifact_semantic_input_policy_component_sha256", referenced_attributes = ["artifact_semantics_sha256", "policy_component_sha256"] },
-]
-required_index = [
-  { name = "ix_fk_artifact_semantic_input_identity_2_artifact__c8b0836e9151", attributes = ["artifact_semantics_sha256", "source_manifest_component_sha256"], unique = false },
-  { name = "ix_fk_artifact_semantic_input_identity_3_artifact__43d085433e0f", attributes = ["artifact_semantics_sha256", "member_plan_component_sha256"], unique = false },
-  { name = "ix_fk_artifact_semantic_input_identity_4_artifact__25c7f86800f0", attributes = ["artifact_semantics_sha256", "effective_content_component_sha256"], unique = false },
-  { name = "ix_fk_artifact_semantic_input_identity_5_artifact__3078afbcf754", attributes = ["artifact_semantics_sha256", "selected_component_sha256"], unique = false },
-  { name = "ix_fk_artifact_semantic_input_identity_6_artifact__72d25ebdfead", attributes = ["artifact_semantics_sha256", "owner_component_sha256"], unique = false },
-  { name = "ix_fk_artifact_semantic_input_identity_7_artifact__d6f0faa2bfca", attributes = ["artifact_semantics_sha256", "policy_component_sha256"], unique = false },
-]
-check = [
-  { name = "ck_vnext_350_domain", sqlite_expression = "typeof(artifact_semantics_sha256) = 'blob' AND length(artifact_semantics_sha256) = 32 AND typeof(effective_content_component_sha256) = 'blob' AND length(effective_content_component_sha256) = 32 AND typeof(member_plan_component_sha256) = 'blob' AND length(member_plan_component_sha256) = 32 AND typeof(owner_component_sha256) = 'blob' AND length(owner_component_sha256) = 32 AND typeof(policy_component_sha256) = 'blob' AND length(policy_component_sha256) = 32 AND typeof(selected_component_sha256) = 'blob' AND length(selected_component_sha256) = 32 AND typeof(source_manifest_component_sha256) = 'blob' AND length(source_manifest_component_sha256) = 32", mariadb_expression = "octet_length(artifact_semantics_sha256) = 32 AND octet_length(effective_content_component_sha256) = 32 AND octet_length(member_plan_component_sha256) = 32 AND octet_length(owner_component_sha256) = 32 AND octet_length(policy_component_sha256) = 32 AND octet_length(selected_component_sha256) = 32 AND octet_length(source_manifest_component_sha256) = 32" },
-]
-
-[[relation]]
-name = "artifact_semantic_input_seal"
-status = "implemented"
-rationale = "Production physical realization of the closed-world artifact_semantic_input_seal relation."
-table = "catalog_artifact_semantic_input_seals"
-primary_key = ["artifact_semantics_sha256"]
-unique_keys = []
-column = [
-  { attribute = "artifact_semantics_sha256", name = "artifact_semantics_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-]
-foreign_key = [
-  { name = "fk_artifact_semantic_input_seal_1", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input_anchor", referenced_attributes = ["artifact_semantics_sha256"] },
-  { name = "fk_artifact_semantic_input_seal_2", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input_source_manifest_component_sha256", referenced_attributes = ["artifact_semantics_sha256"] },
-  { name = "fk_artifact_semantic_input_seal_3", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input_member_plan_component_sha256", referenced_attributes = ["artifact_semantics_sha256"] },
-  { name = "fk_artifact_semantic_input_seal_4", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input_effective_content_component_sha256", referenced_attributes = ["artifact_semantics_sha256"] },
-  { name = "fk_artifact_semantic_input_seal_5", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input_selected_component_sha256", referenced_attributes = ["artifact_semantics_sha256"] },
-  { name = "fk_artifact_semantic_input_seal_6", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input_owner_component_sha256", referenced_attributes = ["artifact_semantics_sha256"] },
-  { name = "fk_artifact_semantic_input_seal_7", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input_policy_component_sha256", referenced_attributes = ["artifact_semantics_sha256"] },
-  { name = "fk_artifact_semantic_input_seal_8", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input_identity", referenced_attributes = ["artifact_semantics_sha256"] },
-]
-check = [
-  { name = "ck_vnext_351_domain", sqlite_expression = "typeof(artifact_semantics_sha256) = 'blob' AND length(artifact_semantics_sha256) = 32", mariadb_expression = "octet_length(artifact_semantics_sha256) = 32" },
-]
-
-[[relation]]
 name = "artifact_semantic_input"
 status = "implemented"
-rationale = "Read-only compatibility projection over the complete six-component semantic family."
-table = "catalog_artifact_semantic_input"
-kind = "view"
-view = { pattern = "sealed_vertical_family", family = "artifact_semantic_input_vertical", anchor_relation = "artifact_semantic_input_anchor", seal_relation = "artifact_semantic_input_seal", key_attributes = ["artifact_semantics_sha256"], members = [{ relation = "artifact_semantic_input_source_manifest_component_sha256", key_attributes = ["artifact_semantics_sha256"], value_attribute = "source_manifest_component_sha256", projection_attribute = "source_manifest_component_sha256", join = { source_relation = "artifact_semantic_input_seal", source_attributes = ["artifact_semantics_sha256"], member_attributes = ["artifact_semantics_sha256"] }, project = true, required = true }, { relation = "artifact_semantic_input_member_plan_component_sha256", key_attributes = ["artifact_semantics_sha256"], value_attribute = "member_plan_component_sha256", projection_attribute = "member_plan_component_sha256", join = { source_relation = "artifact_semantic_input_seal", source_attributes = ["artifact_semantics_sha256"], member_attributes = ["artifact_semantics_sha256"] }, project = true, required = true }, { relation = "artifact_semantic_input_effective_content_component_sha256", key_attributes = ["artifact_semantics_sha256"], value_attribute = "effective_content_component_sha256", projection_attribute = "effective_content_component_sha256", join = { source_relation = "artifact_semantic_input_seal", source_attributes = ["artifact_semantics_sha256"], member_attributes = ["artifact_semantics_sha256"] }, project = true, required = true }, { relation = "artifact_semantic_input_selected_component_sha256", key_attributes = ["artifact_semantics_sha256"], value_attribute = "selected_component_sha256", projection_attribute = "selected_component_sha256", join = { source_relation = "artifact_semantic_input_seal", source_attributes = ["artifact_semantics_sha256"], member_attributes = ["artifact_semantics_sha256"] }, project = true, required = true }, { relation = "artifact_semantic_input_owner_component_sha256", key_attributes = ["artifact_semantics_sha256"], value_attribute = "owner_component_sha256", projection_attribute = "owner_component_sha256", join = { source_relation = "artifact_semantic_input_seal", source_attributes = ["artifact_semantics_sha256"], member_attributes = ["artifact_semantics_sha256"] }, project = true, required = true }, { relation = "artifact_semantic_input_policy_component_sha256", key_attributes = ["artifact_semantics_sha256"], value_attribute = "policy_component_sha256", projection_attribute = "policy_component_sha256", join = { source_relation = "artifact_semantic_input_seal", source_attributes = ["artifact_semantics_sha256"], member_attributes = ["artifact_semantics_sha256"] }, project = true, required = true }, { relation = "artifact_semantic_input_identity", key_attributes = ["source_manifest_component_sha256", "member_plan_component_sha256", "effective_content_component_sha256", "selected_component_sha256", "owner_component_sha256", "policy_component_sha256"], value_attribute = "artifact_semantics_sha256", projection_attribute = "artifact_semantics_sha256", join = { source_relation = "artifact_semantic_input_seal", source_attributes = ["artifact_semantics_sha256"], member_attributes = ["artifact_semantics_sha256"] }, project = false, required = true }] }
+rationale = "Store the complete collision-checked six-component semantic identity in one BCNF relation. Both the semantic digest and the six-component tuple are candidate keys, so recomposition removes the vertical family without introducing a non-key determinant."
+table = "catalog_artifact_semantic_inputs"
 primary_key = ["artifact_semantics_sha256"]
 unique_keys = [["source_manifest_component_sha256", "member_plan_component_sha256", "effective_content_component_sha256", "selected_component_sha256", "owner_component_sha256", "policy_component_sha256"]]
 column = [
@@ -9472,7 +9233,23 @@ column = [
   { attribute = "policy_component_sha256", name = "policy_component_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
 ]
 foreign_key = [
-  { name = "fk_artifact_semantic_input_1", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input_seal", referenced_attributes = ["artifact_semantics_sha256"] },
+  { name = "fk_artifact_semantic_input_1", attributes = ["artifact_semantics_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { name = "fk_artifact_semantic_input_2", attributes = ["source_manifest_component_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { name = "fk_artifact_semantic_input_3", attributes = ["member_plan_component_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { name = "fk_artifact_semantic_input_4", attributes = ["effective_content_component_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { name = "fk_artifact_semantic_input_5", attributes = ["selected_component_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { name = "fk_artifact_semantic_input_6", attributes = ["owner_component_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
+  { name = "fk_artifact_semantic_input_7", attributes = ["policy_component_sha256"], referenced_relation = "artifact_policy_semantics_seal", referenced_attributes = ["policy_component_sha256"] },
+]
+required_index = [
+  { name = "ix_fk_artifact_semantic_input_3_member_plan_component_sha256", attributes = ["member_plan_component_sha256"], unique = false },
+  { name = "ix_fk_artifact_semantic_input_4_effective_content__b5b6971f3db2", attributes = ["effective_content_component_sha256"], unique = false },
+  { name = "ix_fk_artifact_semantic_input_5_selected_component_sha256", attributes = ["selected_component_sha256"], unique = false },
+  { name = "ix_fk_artifact_semantic_input_6_owner_component_sha256", attributes = ["owner_component_sha256"], unique = false },
+  { name = "ix_fk_artifact_semantic_input_7_policy_component_sha256", attributes = ["policy_component_sha256"], unique = false },
+]
+check = [
+  { name = "ck_vnext_343_domain", sqlite_expression = "typeof(artifact_semantics_sha256) = 'blob' AND length(artifact_semantics_sha256) = 32 AND typeof(effective_content_component_sha256) = 'blob' AND length(effective_content_component_sha256) = 32 AND typeof(member_plan_component_sha256) = 'blob' AND length(member_plan_component_sha256) = 32 AND typeof(owner_component_sha256) = 'blob' AND length(owner_component_sha256) = 32 AND typeof(policy_component_sha256) = 'blob' AND length(policy_component_sha256) = 32 AND typeof(selected_component_sha256) = 'blob' AND length(selected_component_sha256) = 32 AND typeof(source_manifest_component_sha256) = 'blob' AND length(source_manifest_component_sha256) = 32", mariadb_expression = "octet_length(artifact_semantics_sha256) = 32 AND octet_length(effective_content_component_sha256) = 32 AND octet_length(member_plan_component_sha256) = 32 AND octet_length(owner_component_sha256) = 32 AND octet_length(policy_component_sha256) = 32 AND octet_length(selected_component_sha256) = 32 AND octet_length(source_manifest_component_sha256) = 32" },
 ]
 
 [[relation]]
@@ -9489,13 +9266,13 @@ column = [
 ]
 foreign_key = [
   { name = "fk_artifact_input_1", attributes = ["candidate_id", "publication_key"], referenced_relation = "publication_selection", referenced_attributes = ["candidate_id", "publication_key"] },
-  { name = "fk_artifact_input_2", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input_seal", referenced_attributes = ["artifact_semantics_sha256"] },
+  { name = "fk_artifact_input_2", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input", referenced_attributes = ["artifact_semantics_sha256"] },
 ]
 required_index = [
   { name = "ix_fk_artifact_input_2_artifact_semantics_sha256", attributes = ["artifact_semantics_sha256"], unique = false },
 ]
 check = [
-  { name = "ck_vnext_353_domain", sqlite_expression = "typeof(artifact_semantics_sha256) = 'blob' AND length(artifact_semantics_sha256) = 32 AND typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(candidate_id) = 'blob' AND length(candidate_id) = 16", mariadb_expression = "octet_length(artifact_semantics_sha256) = 32 AND octet_length(publication_key) = 32 AND octet_length(candidate_id) = 16" },
+  { name = "ck_vnext_344_domain", sqlite_expression = "typeof(artifact_semantics_sha256) = 'blob' AND length(artifact_semantics_sha256) = 32 AND typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(candidate_id) = 'blob' AND length(candidate_id) = 16", mariadb_expression = "octet_length(artifact_semantics_sha256) = 32 AND octet_length(publication_key) = 32 AND octet_length(candidate_id) = 16" },
 ]
 
 [[relation]]
@@ -9515,7 +9292,7 @@ column = [
 ]
 foreign_key = [
   { name = "fk_artifact_delta_old_1", attributes = ["candidate_id"], referenced_relation = "publication_candidate_definition_seal", referenced_attributes = ["candidate_id"] },
-  { name = "fk_artifact_delta_old_2", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input_seal", referenced_attributes = ["artifact_semantics_sha256"] },
+  { name = "fk_artifact_delta_old_2", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input", referenced_attributes = ["artifact_semantics_sha256"] },
   { name = "fk_artifact_delta_old_3", attributes = ["artifact_sha256"], referenced_relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
 ]
 
@@ -9535,7 +9312,7 @@ column = [
 ]
 foreign_key = [
   { name = "fk_artifact_delta_new_1", attributes = ["candidate_id", "publication_key"], referenced_relation = "artifact_input", referenced_attributes = ["candidate_id", "publication_key"] },
-  { name = "fk_artifact_delta_new_2", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input_seal", referenced_attributes = ["artifact_semantics_sha256"] },
+  { name = "fk_artifact_delta_new_2", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input", referenced_attributes = ["artifact_semantics_sha256"] },
 ]
 
 [[relation]]
@@ -9557,178 +9334,33 @@ required_index = [
   { name = "ix_artifact_operation_kind", attributes = ["candidate_id", "operation", "publication_key"], unique = false },
 ]
 check = [
-  { name = "ck_vnext_356_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(candidate_id) = 'blob' AND length(candidate_id) = 16 AND operation IN ('CREATE', 'REBUILD', 'DELETE', 'UNCHANGED') AND length(operation) > 0", mariadb_expression = "octet_length(publication_key) = 32 AND octet_length(candidate_id) = 16 AND operation IN ('CREATE', 'REBUILD', 'DELETE', 'UNCHANGED') AND octet_length(operation) > 0" },
+  { name = "ck_vnext_347_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(candidate_id) = 'blob' AND length(candidate_id) = 16 AND operation IN ('CREATE', 'REBUILD', 'DELETE', 'UNCHANGED') AND length(operation) > 0", mariadb_expression = "octet_length(publication_key) = 32 AND octet_length(candidate_id) = 16 AND operation IN ('CREATE', 'REBUILD', 'DELETE', 'UNCHANGED') AND octet_length(operation) > 0" },
 ]
 
 [[relation]]
 name = "artifact_blob"
 status = "implemented"
-rationale = "Production physical realization of the closed-world artifact_blob relation."
+rationale = "Store immutable byte size and its mandatory content-addressed locator together. Artifact and locator digests are alternate candidate keys, so the total one-to-one recomposition remains BCNF."
 table = "catalog_artifact_blobs"
 primary_key = ["artifact_sha256"]
-unique_keys = []
+unique_keys = [["artifact_locator_sha256"]]
 column = [
   { attribute = "artifact_sha256", name = "artifact_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
   { attribute = "size_bytes", name = "size_bytes", sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }, mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" } },
-]
-check = [
-  { name = "ck_vnext_357_domain", sqlite_expression = "typeof(artifact_sha256) = 'blob' AND length(artifact_sha256) = 32 AND typeof(size_bytes) = 'integer' AND size_bytes <= 9223372036854775807 AND size_bytes >= 0", mariadb_expression = "octet_length(artifact_sha256) = 32 AND size_bytes <= 9223372036854775807 AND size_bytes >= 0" },
-]
-
-[[relation]]
-name = "prepared_artifact_anchor"
-status = "implemented"
-rationale = "Production physical realization of the closed-world prepared_artifact_anchor relation."
-table = "catalog_prepared_artifact_anchors"
-primary_key = ["candidate_id", "publication_key"]
-unique_keys = []
-column = [
-  { attribute = "candidate_id", name = "candidate_id", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" } },
-  { attribute = "publication_key", name = "publication_key", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
+  { attribute = "artifact_locator_sha256", name = "artifact_locator_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
 ]
 foreign_key = [
-  { name = "fk_prepared_artifact_anchor_1", attributes = ["candidate_id", "publication_key"], referenced_relation = "publication_selection", referenced_attributes = ["candidate_id", "publication_key"] },
+  { name = "fk_artifact_blob_1", attributes = ["artifact_locator_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
 ]
 check = [
-  { name = "ck_vnext_358_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(candidate_id) = 'blob' AND length(candidate_id) = 16", mariadb_expression = "octet_length(publication_key) = 32 AND octet_length(candidate_id) = 16" },
-]
-
-[[relation]]
-name = "prepared_artifact_sha256"
-status = "implemented"
-rationale = "Production physical realization of the closed-world prepared_artifact_sha256 relation."
-table = "catalog_prepared_artifact_sha256s"
-primary_key = ["candidate_id", "publication_key"]
-unique_keys = []
-column = [
-  { attribute = "candidate_id", name = "candidate_id", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" } },
-  { attribute = "publication_key", name = "publication_key", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-  { attribute = "artifact_sha256", name = "artifact_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-]
-foreign_key = [
-  { name = "fk_prepared_artifact_sha256_1", attributes = ["candidate_id", "publication_key"], referenced_relation = "prepared_artifact_anchor", referenced_attributes = ["candidate_id", "publication_key"] },
-  { name = "fk_prepared_artifact_sha256_2", attributes = ["artifact_sha256"], referenced_relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
-]
-required_index = [
-  { name = "ix_prepared_artifact_blob", attributes = ["artifact_sha256", "candidate_id", "publication_key"], unique = false },
-]
-check = [
-  { name = "ck_vnext_359_domain", sqlite_expression = "typeof(artifact_sha256) = 'blob' AND length(artifact_sha256) = 32 AND typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(candidate_id) = 'blob' AND length(candidate_id) = 16", mariadb_expression = "octet_length(artifact_sha256) = 32 AND octet_length(publication_key) = 32 AND octet_length(candidate_id) = 16" },
-]
-
-[[relation]]
-name = "prepared_artifact_storage_codec_version"
-status = "implemented"
-rationale = "Production physical realization of the closed-world prepared_artifact_storage_codec_version relation."
-table = "catalog_prepared_artifact_storage_codec_versions"
-primary_key = ["candidate_id", "publication_key"]
-unique_keys = []
-column = [
-  { attribute = "candidate_id", name = "candidate_id", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" } },
-  { attribute = "publication_key", name = "publication_key", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-  { attribute = "storage_codec_version", name = "storage_codec_version", sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }, mariadb = { type = "INT UNSIGNED", nullable = false, collation = "NONE" } },
-]
-foreign_key = [
-  { name = "fk_prepared_artifact_storage_codec_version_1", attributes = ["candidate_id", "publication_key"], referenced_relation = "prepared_artifact_anchor", referenced_attributes = ["candidate_id", "publication_key"] },
-  { name = "fk_prepared_artifact_storage_codec_version_2", attributes = ["storage_codec_version"], referenced_relation = "artifact_storage_codec_seal", referenced_attributes = ["storage_codec_version"] },
-]
-required_index = [
-  { name = "ix_fk_prepared_artifact_storage_codec_version_2_st_9d4249859263", attributes = ["storage_codec_version"], unique = false },
-]
-check = [
-  { name = "ck_vnext_360_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(candidate_id) = 'blob' AND length(candidate_id) = 16 AND typeof(storage_codec_version) = 'integer' AND storage_codec_version <= 9223372036854775807 AND storage_codec_version <= 4294967295 AND storage_codec_version > 0", mariadb_expression = "octet_length(publication_key) = 32 AND octet_length(candidate_id) = 16 AND storage_codec_version <= 9223372036854775807 AND storage_codec_version <= 4294967295 AND storage_codec_version > 0" },
-]
-
-[[relation]]
-name = "prepared_artifact_storage_generation"
-status = "implemented"
-rationale = "Production physical realization of the closed-world prepared_artifact_storage_generation relation."
-table = "catalog_prepared_artifact_storage_generations"
-primary_key = ["candidate_id", "publication_key"]
-unique_keys = []
-column = [
-  { attribute = "candidate_id", name = "candidate_id", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" } },
-  { attribute = "publication_key", name = "publication_key", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-  { attribute = "storage_generation", name = "storage_generation", sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }, mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" } },
-]
-foreign_key = [
-  { name = "fk_prepared_artifact_storage_generation_1", attributes = ["candidate_id", "publication_key"], referenced_relation = "prepared_artifact_anchor", referenced_attributes = ["candidate_id", "publication_key"] },
-]
-check = [
-  { name = "ck_vnext_361_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(candidate_id) = 'blob' AND length(candidate_id) = 16 AND typeof(storage_generation) = 'integer' AND storage_generation <= 9223372036854775807", mariadb_expression = "octet_length(publication_key) = 32 AND octet_length(candidate_id) = 16 AND storage_generation <= 9223372036854775807" },
-]
-
-[[relation]]
-name = "prepared_artifact_protection_token"
-status = "implemented"
-rationale = "Production physical realization of the closed-world prepared_artifact_protection_token relation."
-table = "catalog_prepared_artifact_protection_tokens"
-primary_key = ["candidate_id", "publication_key"]
-unique_keys = [["protection_token"]]
-column = [
-  { attribute = "candidate_id", name = "candidate_id", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" } },
-  { attribute = "publication_key", name = "publication_key", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-  { attribute = "protection_token", name = "protection_token", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(184)", nullable = false, collation = "NONE" } },
-]
-foreign_key = [
-  { name = "fk_prepared_artifact_protection_token_1", attributes = ["candidate_id", "publication_key"], referenced_relation = "prepared_artifact_anchor", referenced_attributes = ["candidate_id", "publication_key"] },
-]
-check = [
-  { name = "ck_vnext_362_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(candidate_id) = 'blob' AND length(candidate_id) = 16 AND typeof(protection_token) = 'blob' AND length(protection_token) = 184 AND typeof(protection_token) = 'blob' AND length(protection_token) <= 184", mariadb_expression = "octet_length(publication_key) = 32 AND octet_length(candidate_id) = 16 AND octet_length(protection_token) = 184 AND octet_length(protection_token) <= 184" },
-]
-
-[[relation]]
-name = "prepared_artifact_state"
-status = "implemented"
-rationale = "Production physical realization of the closed-world prepared_artifact_state relation."
-table = "catalog_prepared_artifact_states"
-primary_key = ["candidate_id", "publication_key"]
-unique_keys = []
-column = [
-  { attribute = "candidate_id", name = "candidate_id", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" } },
-  { attribute = "publication_key", name = "publication_key", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-  { attribute = "state", name = "state", sqlite = { type = "TEXT", nullable = false, collation = "BINARY" }, mariadb = { type = "VARCHAR(16)", nullable = false, collation = "ascii_bin" } },
-]
-foreign_key = [
-  { name = "fk_prepared_artifact_state_1", attributes = ["candidate_id", "publication_key"], referenced_relation = "prepared_artifact_anchor", referenced_attributes = ["candidate_id", "publication_key"] },
-]
-required_index = [
-  { name = "ix_prepared_artifact_state", attributes = ["candidate_id", "state", "publication_key"], unique = false },
-]
-check = [
-  { name = "ck_vnext_363_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(candidate_id) = 'blob' AND length(candidate_id) = 16 AND state IN ('PENDING', 'PREPARED', 'COMMITTED') AND length(state) > 0", mariadb_expression = "octet_length(publication_key) = 32 AND octet_length(candidate_id) = 16 AND state IN ('PENDING', 'PREPARED', 'COMMITTED') AND octet_length(state) > 0" },
-]
-
-[[relation]]
-name = "prepared_artifact_seal"
-status = "implemented"
-rationale = "Production physical realization of the closed-world prepared_artifact_seal relation."
-table = "catalog_prepared_artifact_seals"
-primary_key = ["candidate_id", "publication_key"]
-unique_keys = []
-column = [
-  { attribute = "candidate_id", name = "candidate_id", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" } },
-  { attribute = "publication_key", name = "publication_key", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-]
-foreign_key = [
-  { name = "fk_prepared_artifact_seal_1", attributes = ["candidate_id", "publication_key"], referenced_relation = "prepared_artifact_anchor", referenced_attributes = ["candidate_id", "publication_key"] },
-  { name = "fk_prepared_artifact_seal_2", attributes = ["candidate_id", "publication_key"], referenced_relation = "prepared_artifact_sha256", referenced_attributes = ["candidate_id", "publication_key"] },
-  { name = "fk_prepared_artifact_seal_3", attributes = ["candidate_id", "publication_key"], referenced_relation = "prepared_artifact_storage_codec_version", referenced_attributes = ["candidate_id", "publication_key"] },
-  { name = "fk_prepared_artifact_seal_4", attributes = ["candidate_id", "publication_key"], referenced_relation = "prepared_artifact_storage_generation", referenced_attributes = ["candidate_id", "publication_key"] },
-  { name = "fk_prepared_artifact_seal_5", attributes = ["candidate_id", "publication_key"], referenced_relation = "prepared_artifact_protection_token", referenced_attributes = ["candidate_id", "publication_key"] },
-  { name = "fk_prepared_artifact_seal_6", attributes = ["candidate_id", "publication_key"], referenced_relation = "prepared_artifact_state", referenced_attributes = ["candidate_id", "publication_key"] },
-]
-check = [
-  { name = "ck_vnext_364_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(candidate_id) = 'blob' AND length(candidate_id) = 16", mariadb_expression = "octet_length(publication_key) = 32 AND octet_length(candidate_id) = 16" },
+  { name = "ck_vnext_348_domain", sqlite_expression = "typeof(artifact_locator_sha256) = 'blob' AND length(artifact_locator_sha256) = 32 AND typeof(artifact_sha256) = 'blob' AND length(artifact_sha256) = 32 AND typeof(size_bytes) = 'integer' AND size_bytes <= 9223372036854775807 AND size_bytes >= 0", mariadb_expression = "octet_length(artifact_locator_sha256) = 32 AND octet_length(artifact_sha256) = 32 AND size_bytes <= 9223372036854775807 AND size_bytes >= 0" },
 ]
 
 [[relation]]
 name = "prepared_artifact"
 status = "implemented"
-rationale = "Expose only complete durable intents and their current explicit state through the family seal."
+rationale = "Persist each complete storage intent in one BCNF relation. Candidate/publication and the repository-derived protection token are alternate keys; immutable intent facts and mutable lifecycle state remain functionally determined by both."
 table = "catalog_prepared_artifacts"
-kind = "view"
-view = { pattern = "sealed_vertical_family", family = "prepared_artifact_vertical", anchor_relation = "prepared_artifact_anchor", seal_relation = "prepared_artifact_seal", key_attributes = ["candidate_id", "publication_key"], members = [{ relation = "prepared_artifact_sha256", key_attributes = ["candidate_id", "publication_key"], value_attribute = "artifact_sha256", projection_attribute = "artifact_sha256", join = { source_relation = "prepared_artifact_seal", source_attributes = ["candidate_id", "publication_key"], member_attributes = ["candidate_id", "publication_key"] }, project = true, required = true }, { relation = "prepared_artifact_storage_codec_version", key_attributes = ["candidate_id", "publication_key"], value_attribute = "storage_codec_version", projection_attribute = "storage_codec_version", join = { source_relation = "prepared_artifact_seal", source_attributes = ["candidate_id", "publication_key"], member_attributes = ["candidate_id", "publication_key"] }, project = true, required = true }, { relation = "prepared_artifact_storage_generation", key_attributes = ["candidate_id", "publication_key"], value_attribute = "storage_generation", projection_attribute = "storage_generation", join = { source_relation = "prepared_artifact_seal", source_attributes = ["candidate_id", "publication_key"], member_attributes = ["candidate_id", "publication_key"] }, project = true, required = true }, { relation = "prepared_artifact_protection_token", key_attributes = ["candidate_id", "publication_key"], value_attribute = "protection_token", projection_attribute = "protection_token", join = { source_relation = "prepared_artifact_seal", source_attributes = ["candidate_id", "publication_key"], member_attributes = ["candidate_id", "publication_key"] }, project = true, required = true }, { relation = "prepared_artifact_state", key_attributes = ["candidate_id", "publication_key"], value_attribute = "state", projection_attribute = "state", join = { source_relation = "prepared_artifact_seal", source_attributes = ["candidate_id", "publication_key"], member_attributes = ["candidate_id", "publication_key"] }, project = true, required = true }] }
 primary_key = ["candidate_id", "publication_key"]
 unique_keys = [["protection_token"]]
 column = [
@@ -9741,7 +9373,17 @@ column = [
   { attribute = "state", name = "state", sqlite = { type = "TEXT", nullable = false, collation = "BINARY" }, mariadb = { type = "VARCHAR(16)", nullable = false, collation = "ascii_bin" } },
 ]
 foreign_key = [
-  { name = "fk_prepared_artifact_1", attributes = ["candidate_id", "publication_key"], referenced_relation = "prepared_artifact_seal", referenced_attributes = ["candidate_id", "publication_key"] },
+  { name = "fk_prepared_artifact_1", attributes = ["candidate_id", "publication_key"], referenced_relation = "publication_selection", referenced_attributes = ["candidate_id", "publication_key"] },
+  { name = "fk_prepared_artifact_2", attributes = ["artifact_sha256"], referenced_relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
+  { name = "fk_prepared_artifact_3", attributes = ["storage_codec_version"], referenced_relation = "artifact_storage_codec_seal", referenced_attributes = ["storage_codec_version"] },
+]
+required_index = [
+  { name = "ix_prepared_artifact_state", attributes = ["candidate_id", "state", "publication_key"], unique = false },
+  { name = "ix_prepared_artifact_blob", attributes = ["artifact_sha256", "candidate_id", "publication_key"], unique = false },
+  { name = "ix_fk_prepared_artifact_3_storage_codec_version", attributes = ["storage_codec_version"], unique = false },
+]
+check = [
+  { name = "ck_vnext_349_domain", sqlite_expression = "typeof(artifact_sha256) = 'blob' AND length(artifact_sha256) = 32 AND typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(candidate_id) = 'blob' AND length(candidate_id) = 16 AND typeof(storage_codec_version) = 'integer' AND storage_codec_version <= 9223372036854775807 AND typeof(storage_generation) = 'integer' AND storage_generation <= 9223372036854775807 AND storage_codec_version <= 4294967295 AND storage_codec_version > 0 AND state IN ('PENDING', 'PREPARED', 'COMMITTED') AND typeof(protection_token) = 'blob' AND length(protection_token) = 184 AND length(state) > 0 AND typeof(protection_token) = 'blob' AND length(protection_token) <= 184", mariadb_expression = "octet_length(artifact_sha256) = 32 AND octet_length(publication_key) = 32 AND octet_length(candidate_id) = 16 AND storage_codec_version <= 9223372036854775807 AND storage_generation <= 9223372036854775807 AND storage_codec_version <= 4294967295 AND storage_codec_version > 0 AND state IN ('PENDING', 'PREPARED', 'COMMITTED') AND octet_length(protection_token) = 184 AND octet_length(state) > 0 AND octet_length(protection_token) <= 184" },
 ]
 
 [[relation]]
@@ -9755,7 +9397,7 @@ column = [
   { attribute = "revision", name = "revision", sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }, mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" } },
 ]
 check = [
-  { name = "ck_vnext_366_domain", sqlite_expression = "typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "revision <= 9223372036854775807 AND revision > 0" },
+  { name = "ck_vnext_350_domain", sqlite_expression = "typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "revision <= 9223372036854775807 AND revision > 0" },
 ]
 
 [[relation]]
@@ -9773,7 +9415,7 @@ foreign_key = [
   { name = "fk_catalog_revision_publication_count_1", attributes = ["revision"], referenced_relation = "catalog_revision_anchor", referenced_attributes = ["revision"] },
 ]
 check = [
-  { name = "ck_vnext_367_domain", sqlite_expression = "typeof(publication_count) = 'integer' AND publication_count <= 9223372036854775807 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND publication_count >= 0 AND revision > 0", mariadb_expression = "publication_count <= 9223372036854775807 AND revision <= 9223372036854775807 AND publication_count >= 0 AND revision > 0" },
+  { name = "ck_vnext_351_domain", sqlite_expression = "typeof(publication_count) = 'integer' AND publication_count <= 9223372036854775807 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND publication_count >= 0 AND revision > 0", mariadb_expression = "publication_count <= 9223372036854775807 AND revision <= 9223372036854775807 AND publication_count >= 0 AND revision > 0" },
 ]
 
 [[relation]]
@@ -9791,7 +9433,7 @@ foreign_key = [
   { name = "fk_catalog_revision_descriptor_seal_2", attributes = ["revision"], referenced_relation = "catalog_revision_publication_count", referenced_attributes = ["revision"] },
 ]
 check = [
-  { name = "ck_vnext_368_domain", sqlite_expression = "typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "revision <= 9223372036854775807 AND revision > 0" },
+  { name = "ck_vnext_352_domain", sqlite_expression = "typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "revision <= 9223372036854775807 AND revision > 0" },
 ]
 
 [[relation]]
@@ -9858,7 +9500,7 @@ column = [
   { attribute = "generation", name = "generation", sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }, mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" } },
 ]
 check = [
-  { name = "ck_vnext_372_domain", sqlite_expression = "typeof(generation) = 'integer' AND generation <= 9223372036854775807 AND generation >= 0", mariadb_expression = "generation <= 9223372036854775807 AND generation >= 0" },
+  { name = "ck_vnext_356_domain", sqlite_expression = "typeof(generation) = 'integer' AND generation <= 9223372036854775807 AND generation >= 0", mariadb_expression = "generation <= 9223372036854775807 AND generation >= 0" },
 ]
 
 [[relation]]
@@ -9877,7 +9519,7 @@ foreign_key = [
   { name = "fk_publication_generation_successor_2", attributes = ["predecessor_generation"], referenced_relation = "publication_generation_node", referenced_attributes = ["generation"] },
 ]
 check = [
-  { name = "ck_vnext_373_domain", sqlite_expression = "typeof(predecessor_generation) = 'integer' AND predecessor_generation <= 9223372036854775807 AND typeof(successor_generation) = 'integer' AND successor_generation <= 9223372036854775807 AND predecessor_generation >= 0 AND successor_generation > 0", mariadb_expression = "predecessor_generation <= 9223372036854775807 AND successor_generation <= 9223372036854775807 AND predecessor_generation >= 0 AND successor_generation > 0" },
+  { name = "ck_vnext_357_domain", sqlite_expression = "typeof(predecessor_generation) = 'integer' AND predecessor_generation <= 9223372036854775807 AND typeof(successor_generation) = 'integer' AND successor_generation <= 9223372036854775807 AND predecessor_generation >= 0 AND successor_generation > 0", mariadb_expression = "predecessor_generation <= 9223372036854775807 AND successor_generation <= 9223372036854775807 AND predecessor_generation >= 0 AND successor_generation > 0" },
 ]
 
 [[relation]]
@@ -9895,7 +9537,7 @@ foreign_key = [
   { name = "fk_publication_identity_1", attributes = ["gid"], referenced_relation = "gallery_upload_time", referenced_attributes = ["gid"] },
 ]
 check = [
-  { name = "ck_vnext_374_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(gid) = 'integer' AND gid <= 9223372036854775807 AND gid > 0", mariadb_expression = "octet_length(publication_key) = 32 AND gid <= 9223372036854775807 AND gid > 0" },
+  { name = "ck_vnext_358_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(gid) = 'integer' AND gid <= 9223372036854775807 AND gid > 0", mariadb_expression = "octet_length(publication_key) = 32 AND gid <= 9223372036854775807 AND gid > 0" },
 ]
 
 [[relation]]
@@ -9909,7 +9551,7 @@ column = [
   { attribute = "display_title_policy_id", name = "display_title_policy_id", sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }, mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" } },
 ]
 check = [
-  { name = "ck_vnext_375_domain", sqlite_expression = "typeof(display_title_policy_id) = 'integer' AND display_title_policy_id <= 9223372036854775807 AND display_title_policy_id > 0", mariadb_expression = "display_title_policy_id <= 9223372036854775807 AND display_title_policy_id > 0" },
+  { name = "ck_vnext_359_domain", sqlite_expression = "typeof(display_title_policy_id) = 'integer' AND display_title_policy_id <= 9223372036854775807 AND display_title_policy_id > 0", mariadb_expression = "display_title_policy_id <= 9223372036854775807 AND display_title_policy_id > 0" },
 ]
 
 [[relation]]
@@ -9928,7 +9570,7 @@ foreign_key = [
   { name = "fk_display_title_policy_algorithm_version_1", attributes = ["display_title_policy_id"], referenced_relation = "display_title_policy_anchor", referenced_attributes = ["display_title_policy_id"] },
 ]
 check = [
-  { name = "ck_vnext_376_domain", sqlite_expression = "typeof(display_title_algorithm_version) = 'integer' AND display_title_algorithm_version <= 9223372036854775807 AND typeof(display_title_policy_id) = 'integer' AND display_title_policy_id <= 9223372036854775807 AND display_title_algorithm_version <= 4294967295 AND display_title_algorithm_version > 0 AND display_title_policy_id > 0", mariadb_expression = "display_title_algorithm_version <= 9223372036854775807 AND display_title_policy_id <= 9223372036854775807 AND display_title_algorithm_version <= 4294967295 AND display_title_algorithm_version > 0 AND display_title_policy_id > 0" },
+  { name = "ck_vnext_360_domain", sqlite_expression = "typeof(display_title_algorithm_version) = 'integer' AND display_title_algorithm_version <= 9223372036854775807 AND typeof(display_title_policy_id) = 'integer' AND display_title_policy_id <= 9223372036854775807 AND display_title_algorithm_version <= 4294967295 AND display_title_algorithm_version > 0 AND display_title_policy_id > 0", mariadb_expression = "display_title_algorithm_version <= 9223372036854775807 AND display_title_policy_id <= 9223372036854775807 AND display_title_algorithm_version <= 4294967295 AND display_title_algorithm_version > 0 AND display_title_policy_id > 0" },
 ]
 
 [[relation]]
@@ -9951,7 +9593,7 @@ required_index = [
   { name = "ix_fk_display_title_policy_title_sort_policy_id_2__f11a8b188c16", attributes = ["title_sort_policy_id"], unique = false },
 ]
 check = [
-  { name = "ck_vnext_377_domain", sqlite_expression = "typeof(display_title_policy_id) = 'integer' AND display_title_policy_id <= 9223372036854775807 AND typeof(title_sort_policy_id) = 'integer' AND title_sort_policy_id <= 9223372036854775807 AND title_sort_policy_id <= 4294967295 AND display_title_policy_id > 0", mariadb_expression = "display_title_policy_id <= 9223372036854775807 AND title_sort_policy_id <= 9223372036854775807 AND title_sort_policy_id <= 4294967295 AND display_title_policy_id > 0" },
+  { name = "ck_vnext_361_domain", sqlite_expression = "typeof(display_title_policy_id) = 'integer' AND display_title_policy_id <= 9223372036854775807 AND typeof(title_sort_policy_id) = 'integer' AND title_sort_policy_id <= 9223372036854775807 AND title_sort_policy_id <= 4294967295 AND display_title_policy_id > 0", mariadb_expression = "display_title_policy_id <= 9223372036854775807 AND title_sort_policy_id <= 9223372036854775807 AND title_sort_policy_id <= 4294967295 AND display_title_policy_id > 0" },
 ]
 
 [[relation]]
@@ -9976,7 +9618,7 @@ required_index = [
   { name = "ix_fk_display_title_policy_identity_3_display_titl_48d7ec6403e7", attributes = ["display_title_policy_id", "title_sort_policy_id"], unique = false },
 ]
 check = [
-  { name = "ck_vnext_378_domain", sqlite_expression = "typeof(display_title_algorithm_version) = 'integer' AND display_title_algorithm_version <= 9223372036854775807 AND typeof(display_title_policy_id) = 'integer' AND display_title_policy_id <= 9223372036854775807 AND typeof(title_sort_policy_id) = 'integer' AND title_sort_policy_id <= 9223372036854775807 AND display_title_algorithm_version <= 4294967295 AND title_sort_policy_id <= 4294967295 AND display_title_algorithm_version > 0 AND display_title_policy_id > 0", mariadb_expression = "display_title_algorithm_version <= 9223372036854775807 AND display_title_policy_id <= 9223372036854775807 AND title_sort_policy_id <= 9223372036854775807 AND display_title_algorithm_version <= 4294967295 AND title_sort_policy_id <= 4294967295 AND display_title_algorithm_version > 0 AND display_title_policy_id > 0" },
+  { name = "ck_vnext_362_domain", sqlite_expression = "typeof(display_title_algorithm_version) = 'integer' AND display_title_algorithm_version <= 9223372036854775807 AND typeof(display_title_policy_id) = 'integer' AND display_title_policy_id <= 9223372036854775807 AND typeof(title_sort_policy_id) = 'integer' AND title_sort_policy_id <= 9223372036854775807 AND display_title_algorithm_version <= 4294967295 AND title_sort_policy_id <= 4294967295 AND display_title_algorithm_version > 0 AND display_title_policy_id > 0", mariadb_expression = "display_title_algorithm_version <= 9223372036854775807 AND display_title_policy_id <= 9223372036854775807 AND title_sort_policy_id <= 9223372036854775807 AND display_title_algorithm_version <= 4294967295 AND title_sort_policy_id <= 4294967295 AND display_title_algorithm_version > 0 AND display_title_policy_id > 0" },
 ]
 
 [[relation]]
@@ -9996,7 +9638,7 @@ foreign_key = [
   { name = "fk_display_title_policy_seal_4", attributes = ["display_title_policy_id"], referenced_relation = "display_title_policy_identity", referenced_attributes = ["display_title_policy_id"] },
 ]
 check = [
-  { name = "ck_vnext_379_domain", sqlite_expression = "typeof(display_title_policy_id) = 'integer' AND display_title_policy_id <= 9223372036854775807 AND display_title_policy_id > 0", mariadb_expression = "display_title_policy_id <= 9223372036854775807 AND display_title_policy_id > 0" },
+  { name = "ck_vnext_363_domain", sqlite_expression = "typeof(display_title_policy_id) = 'integer' AND display_title_policy_id <= 9223372036854775807 AND display_title_policy_id > 0", mariadb_expression = "display_title_policy_id <= 9223372036854775807 AND display_title_policy_id > 0" },
 ]
 
 [[relation]]
@@ -10028,7 +9670,7 @@ column = [
   { attribute = "title_sort_policy_id", name = "title_sort_policy_id", sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }, mariadb = { type = "INT UNSIGNED", nullable = false, collation = "NONE" } },
 ]
 check = [
-  { name = "ck_vnext_381_domain", sqlite_expression = "typeof(title_sort_policy_id) = 'integer' AND title_sort_policy_id <= 9223372036854775807 AND title_sort_policy_id <= 4294967295", mariadb_expression = "title_sort_policy_id <= 9223372036854775807 AND title_sort_policy_id <= 4294967295" },
+  { name = "ck_vnext_365_domain", sqlite_expression = "typeof(title_sort_policy_id) = 'integer' AND title_sort_policy_id <= 9223372036854775807 AND title_sort_policy_id <= 4294967295", mariadb_expression = "title_sort_policy_id <= 9223372036854775807 AND title_sort_policy_id <= 4294967295" },
 ]
 
 [[relation]]
@@ -10047,7 +9689,7 @@ foreign_key = [
   { name = "fk_title_sort_policy_algorithm_version_1", attributes = ["title_sort_policy_id"], referenced_relation = "title_sort_policy_anchor", referenced_attributes = ["title_sort_policy_id"] },
 ]
 check = [
-  { name = "ck_vnext_382_domain", sqlite_expression = "typeof(title_sort_algorithm_version) = 'integer' AND title_sort_algorithm_version <= 9223372036854775807 AND typeof(title_sort_policy_id) = 'integer' AND title_sort_policy_id <= 9223372036854775807 AND title_sort_algorithm_version <= 4294967295 AND title_sort_policy_id <= 4294967295 AND title_sort_algorithm_version > 0", mariadb_expression = "title_sort_algorithm_version <= 9223372036854775807 AND title_sort_policy_id <= 9223372036854775807 AND title_sort_algorithm_version <= 4294967295 AND title_sort_policy_id <= 4294967295 AND title_sort_algorithm_version > 0" },
+  { name = "ck_vnext_366_domain", sqlite_expression = "typeof(title_sort_algorithm_version) = 'integer' AND title_sort_algorithm_version <= 9223372036854775807 AND typeof(title_sort_policy_id) = 'integer' AND title_sort_policy_id <= 9223372036854775807 AND title_sort_algorithm_version <= 4294967295 AND title_sort_policy_id <= 4294967295 AND title_sort_algorithm_version > 0", mariadb_expression = "title_sort_algorithm_version <= 9223372036854775807 AND title_sort_policy_id <= 9223372036854775807 AND title_sort_algorithm_version <= 4294967295 AND title_sort_policy_id <= 4294967295 AND title_sort_algorithm_version > 0" },
 ]
 
 [[relation]]
@@ -10066,7 +9708,7 @@ foreign_key = [
   { name = "fk_title_sort_policy_unicode_data_version_1", attributes = ["title_sort_policy_id"], referenced_relation = "title_sort_policy_anchor", referenced_attributes = ["title_sort_policy_id"] },
 ]
 check = [
-  { name = "ck_vnext_383_domain", sqlite_expression = "typeof(unicode_data_version) = 'blob' AND length(unicode_data_version) BETWEEN 1 AND 32 AND typeof(title_sort_policy_id) = 'integer' AND title_sort_policy_id <= 9223372036854775807 AND title_sort_policy_id <= 4294967295", mariadb_expression = "octet_length(unicode_data_version) BETWEEN 1 AND 32 AND title_sort_policy_id <= 9223372036854775807 AND title_sort_policy_id <= 4294967295" },
+  { name = "ck_vnext_367_domain", sqlite_expression = "typeof(unicode_data_version) = 'blob' AND length(unicode_data_version) BETWEEN 1 AND 32 AND typeof(title_sort_policy_id) = 'integer' AND title_sort_policy_id <= 9223372036854775807 AND title_sort_policy_id <= 4294967295", mariadb_expression = "octet_length(unicode_data_version) BETWEEN 1 AND 32 AND title_sort_policy_id <= 9223372036854775807 AND title_sort_policy_id <= 4294967295" },
 ]
 
 [[relation]]
@@ -10091,7 +9733,7 @@ required_index = [
   { name = "ix_fk_title_sort_policy_identity_3_title_sort_poli_550ff51e4a73", attributes = ["title_sort_policy_id", "unicode_data_version"], unique = false },
 ]
 check = [
-  { name = "ck_vnext_384_domain", sqlite_expression = "typeof(unicode_data_version) = 'blob' AND length(unicode_data_version) BETWEEN 1 AND 32 AND typeof(title_sort_algorithm_version) = 'integer' AND title_sort_algorithm_version <= 9223372036854775807 AND typeof(title_sort_policy_id) = 'integer' AND title_sort_policy_id <= 9223372036854775807 AND title_sort_algorithm_version <= 4294967295 AND title_sort_policy_id <= 4294967295 AND title_sort_algorithm_version > 0", mariadb_expression = "octet_length(unicode_data_version) BETWEEN 1 AND 32 AND title_sort_algorithm_version <= 9223372036854775807 AND title_sort_policy_id <= 9223372036854775807 AND title_sort_algorithm_version <= 4294967295 AND title_sort_policy_id <= 4294967295 AND title_sort_algorithm_version > 0" },
+  { name = "ck_vnext_368_domain", sqlite_expression = "typeof(unicode_data_version) = 'blob' AND length(unicode_data_version) BETWEEN 1 AND 32 AND typeof(title_sort_algorithm_version) = 'integer' AND title_sort_algorithm_version <= 9223372036854775807 AND typeof(title_sort_policy_id) = 'integer' AND title_sort_policy_id <= 9223372036854775807 AND title_sort_algorithm_version <= 4294967295 AND title_sort_policy_id <= 4294967295 AND title_sort_algorithm_version > 0", mariadb_expression = "octet_length(unicode_data_version) BETWEEN 1 AND 32 AND title_sort_algorithm_version <= 9223372036854775807 AND title_sort_policy_id <= 9223372036854775807 AND title_sort_algorithm_version <= 4294967295 AND title_sort_policy_id <= 4294967295 AND title_sort_algorithm_version > 0" },
 ]
 
 [[relation]]
@@ -10111,7 +9753,7 @@ foreign_key = [
   { name = "fk_title_sort_policy_seal_4", attributes = ["title_sort_policy_id"], referenced_relation = "title_sort_policy_identity", referenced_attributes = ["title_sort_policy_id"] },
 ]
 check = [
-  { name = "ck_vnext_385_domain", sqlite_expression = "typeof(title_sort_policy_id) = 'integer' AND title_sort_policy_id <= 9223372036854775807 AND title_sort_policy_id <= 4294967295", mariadb_expression = "title_sort_policy_id <= 9223372036854775807 AND title_sort_policy_id <= 4294967295" },
+  { name = "ck_vnext_369_domain", sqlite_expression = "typeof(title_sort_policy_id) = 'integer' AND title_sort_policy_id <= 9223372036854775807 AND title_sort_policy_id <= 4294967295", mariadb_expression = "title_sort_policy_id <= 9223372036854775807 AND title_sort_policy_id <= 4294967295" },
 ]
 
 [[relation]]
@@ -10155,7 +9797,7 @@ required_index = [
   { name = "ix_fk_display_title_choice_3_title_sha256", attributes = ["title_sha256"], unique = false },
 ]
 check = [
-  { name = "ck_vnext_387_domain", sqlite_expression = "typeof(source_title_sha256) = 'blob' AND length(source_title_sha256) = 32 AND typeof(title_sha256) = 'blob' AND length(title_sha256) = 32 AND typeof(display_title_policy_id) = 'integer' AND display_title_policy_id <= 9223372036854775807 AND display_title_policy_id > 0 AND length(source_gallery_name) > 0 AND typeof(source_gallery_name) = 'blob' AND length(source_gallery_name) <= 255", mariadb_expression = "octet_length(source_title_sha256) = 32 AND octet_length(title_sha256) = 32 AND display_title_policy_id <= 9223372036854775807 AND display_title_policy_id > 0 AND octet_length(source_gallery_name) > 0 AND octet_length(source_gallery_name) <= 255" },
+  { name = "ck_vnext_371_domain", sqlite_expression = "typeof(source_title_sha256) = 'blob' AND length(source_title_sha256) = 32 AND typeof(title_sha256) = 'blob' AND length(title_sha256) = 32 AND typeof(display_title_policy_id) = 'integer' AND display_title_policy_id <= 9223372036854775807 AND display_title_policy_id > 0 AND length(source_gallery_name) > 0 AND typeof(source_gallery_name) = 'blob' AND length(source_gallery_name) <= 255", mariadb_expression = "octet_length(source_title_sha256) = 32 AND octet_length(title_sha256) = 32 AND display_title_policy_id <= 9223372036854775807 AND display_title_policy_id > 0 AND octet_length(source_gallery_name) > 0 AND octet_length(source_gallery_name) <= 255" },
 ]
 
 [[relation]]
@@ -10180,7 +9822,7 @@ required_index = [
   { name = "ix_fk_title_sort_2_title_sha256", attributes = ["title_sha256"], unique = false },
 ]
 check = [
-  { name = "ck_vnext_388_domain", sqlite_expression = "typeof(sort_title_sha256) = 'blob' AND length(sort_title_sha256) = 32 AND typeof(title_sha256) = 'blob' AND length(title_sha256) = 32 AND typeof(title_sort_policy_id) = 'integer' AND title_sort_policy_id <= 9223372036854775807 AND title_sort_policy_id <= 4294967295", mariadb_expression = "octet_length(sort_title_sha256) = 32 AND octet_length(title_sha256) = 32 AND title_sort_policy_id <= 9223372036854775807 AND title_sort_policy_id <= 4294967295" },
+  { name = "ck_vnext_372_domain", sqlite_expression = "typeof(sort_title_sha256) = 'blob' AND length(sort_title_sha256) = 32 AND typeof(title_sha256) = 'blob' AND length(title_sha256) = 32 AND typeof(title_sort_policy_id) = 'integer' AND title_sort_policy_id <= 9223372036854775807 AND title_sort_policy_id <= 4294967295", mariadb_expression = "octet_length(sort_title_sha256) = 32 AND octet_length(title_sha256) = 32 AND title_sort_policy_id <= 9223372036854775807 AND title_sort_policy_id <= 4294967295" },
 ]
 
 [[relation]]
@@ -10202,7 +9844,7 @@ required_index = [
   { name = "ix_fk_catalog_publication_anchor_2_publication_key", attributes = ["publication_key"], unique = false },
 ]
 check = [
-  { name = "ck_vnext_389_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "octet_length(publication_key) = 32 AND revision <= 9223372036854775807 AND revision > 0" },
+  { name = "ck_vnext_373_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "octet_length(publication_key) = 32 AND revision <= 9223372036854775807 AND revision > 0" },
 ]
 
 [[relation]]
@@ -10221,7 +9863,7 @@ foreign_key = [
   { name = "fk_catalog_publication_gallery_id_1", attributes = ["revision", "publication_key"], referenced_relation = "catalog_publication_anchor", referenced_attributes = ["revision", "publication_key"] },
 ]
 check = [
-  { name = "ck_vnext_390_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(gallery_id) = 'integer' AND gallery_id <= 9223372036854775807 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND gallery_id > 0 AND revision > 0", mariadb_expression = "octet_length(publication_key) = 32 AND gallery_id <= 9223372036854775807 AND revision <= 9223372036854775807 AND gallery_id > 0 AND revision > 0" },
+  { name = "ck_vnext_374_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(gallery_id) = 'integer' AND gallery_id <= 9223372036854775807 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND gallery_id > 0 AND revision > 0", mariadb_expression = "octet_length(publication_key) = 32 AND gallery_id <= 9223372036854775807 AND revision <= 9223372036854775807 AND gallery_id > 0 AND revision > 0" },
 ]
 
 [[relation]]
@@ -10244,7 +9886,7 @@ required_index = [
   { name = "ix_fk_catalog_publication_summary_sha256_2_summary_sha256", attributes = ["summary_sha256"], unique = false },
 ]
 check = [
-  { name = "ck_vnext_391_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(summary_sha256) = 'blob' AND length(summary_sha256) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "octet_length(publication_key) = 32 AND octet_length(summary_sha256) = 32 AND revision <= 9223372036854775807 AND revision > 0" },
+  { name = "ck_vnext_375_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(summary_sha256) = 'blob' AND length(summary_sha256) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "octet_length(publication_key) = 32 AND octet_length(summary_sha256) = 32 AND revision <= 9223372036854775807 AND revision > 0" },
 ]
 
 [[relation]]
@@ -10267,7 +9909,7 @@ required_index = [
   { name = "ix_fk_catalog_publication_language_sha256_2_language_sha256", attributes = ["language_sha256"], unique = false },
 ]
 check = [
-  { name = "ck_vnext_392_domain", sqlite_expression = "typeof(language_sha256) = 'blob' AND length(language_sha256) = 32 AND typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "octet_length(language_sha256) = 32 AND octet_length(publication_key) = 32 AND revision <= 9223372036854775807 AND revision > 0" },
+  { name = "ck_vnext_376_domain", sqlite_expression = "typeof(language_sha256) = 'blob' AND length(language_sha256) = 32 AND typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "octet_length(language_sha256) = 32 AND octet_length(publication_key) = 32 AND revision <= 9223372036854775807 AND revision > 0" },
 ]
 
 [[relation]]
@@ -10289,7 +9931,7 @@ required_index = [
   { name = "ix_catalog_publication_modified", attributes = ["revision", "modified_at", "publication_key"], unique = false },
 ]
 check = [
-  { name = "ck_vnext_393_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0 AND (modified_at IS NULL OR typeof(modified_at) = 'integer' AND modified_at BETWEEN 0 AND 9223372036854775807)", mariadb_expression = "octet_length(publication_key) = 32 AND revision <= 9223372036854775807 AND revision > 0 AND (modified_at IS NULL OR modified_at <= 9223372036854775807)" },
+  { name = "ck_vnext_377_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0 AND (modified_at IS NULL OR typeof(modified_at) = 'integer' AND modified_at BETWEEN 0 AND 9223372036854775807)", mariadb_expression = "octet_length(publication_key) = 32 AND revision <= 9223372036854775807 AND revision > 0 AND (modified_at IS NULL OR modified_at <= 9223372036854775807)" },
 ]
 
 [[relation]]
@@ -10311,7 +9953,7 @@ foreign_key = [
   { name = "fk_catalog_publication_seal_5", attributes = ["revision", "publication_key"], referenced_relation = "catalog_publication_modified_at", referenced_attributes = ["revision", "publication_key"] },
 ]
 check = [
-  { name = "ck_vnext_394_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "octet_length(publication_key) = 32 AND revision <= 9223372036854775807 AND revision > 0" },
+  { name = "ck_vnext_378_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "octet_length(publication_key) = 32 AND revision <= 9223372036854775807 AND revision > 0" },
 ]
 
 [[relation]]
@@ -10351,7 +9993,7 @@ foreign_key = [
   { name = "fk_catalog_publication_order_1", attributes = ["revision", "publication_key"], referenced_relation = "catalog_publication_seal", referenced_attributes = ["revision", "publication_key"] },
 ]
 check = [
-  { name = "ck_vnext_396_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(position) = 'integer' AND position <= 9223372036854775807 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND position >= 0 AND revision > 0", mariadb_expression = "octet_length(publication_key) = 32 AND position <= 9223372036854775807 AND revision <= 9223372036854775807 AND position >= 0 AND revision > 0" },
+  { name = "ck_vnext_380_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(position) = 'integer' AND position <= 9223372036854775807 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND position >= 0 AND revision > 0", mariadb_expression = "octet_length(publication_key) = 32 AND position <= 9223372036854775807 AND revision <= 9223372036854775807 AND position >= 0 AND revision > 0" },
 ]
 
 [[relation]]
@@ -10369,7 +10011,7 @@ foreign_key = [
   { name = "fk_catalog_publication_title_anchor_1", attributes = ["revision", "publication_key"], referenced_relation = "catalog_publication_seal", referenced_attributes = ["revision", "publication_key"] },
 ]
 check = [
-  { name = "ck_vnext_397_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "octet_length(publication_key) = 32 AND revision <= 9223372036854775807 AND revision > 0" },
+  { name = "ck_vnext_381_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "octet_length(publication_key) = 32 AND revision <= 9223372036854775807 AND revision > 0" },
 ]
 
 [[relation]]
@@ -10392,7 +10034,7 @@ required_index = [
   { name = "ix_fk_catalog_publication_title_source_title_sha25_2f780ecc49bd", attributes = ["source_title_sha256"], unique = false },
 ]
 check = [
-  { name = "ck_vnext_398_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(source_title_sha256) = 'blob' AND length(source_title_sha256) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "octet_length(publication_key) = 32 AND octet_length(source_title_sha256) = 32 AND revision <= 9223372036854775807 AND revision > 0" },
+  { name = "ck_vnext_382_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(source_title_sha256) = 'blob' AND length(source_title_sha256) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "octet_length(publication_key) = 32 AND octet_length(source_title_sha256) = 32 AND revision <= 9223372036854775807 AND revision > 0" },
 ]
 
 [[relation]]
@@ -10411,7 +10053,7 @@ foreign_key = [
   { name = "fk_catalog_publication_title_source_gallery_name_1", attributes = ["revision", "publication_key"], referenced_relation = "catalog_publication_title_anchor", referenced_attributes = ["revision", "publication_key"] },
 ]
 check = [
-  { name = "ck_vnext_399_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0 AND length(source_gallery_name) > 0 AND typeof(source_gallery_name) = 'blob' AND length(source_gallery_name) <= 255", mariadb_expression = "octet_length(publication_key) = 32 AND revision <= 9223372036854775807 AND revision > 0 AND octet_length(source_gallery_name) > 0 AND octet_length(source_gallery_name) <= 255" },
+  { name = "ck_vnext_383_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0 AND length(source_gallery_name) > 0 AND typeof(source_gallery_name) = 'blob' AND length(source_gallery_name) <= 255", mariadb_expression = "octet_length(publication_key) = 32 AND revision <= 9223372036854775807 AND revision > 0 AND octet_length(source_gallery_name) > 0 AND octet_length(source_gallery_name) <= 255" },
 ]
 
 [[relation]]
@@ -10431,7 +10073,7 @@ foreign_key = [
   { name = "fk_catalog_publication_title_seal_3", attributes = ["revision", "publication_key"], referenced_relation = "catalog_publication_title_source_gallery_name", referenced_attributes = ["revision", "publication_key"] },
 ]
 check = [
-  { name = "ck_vnext_400_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "octet_length(publication_key) = 32 AND revision <= 9223372036854775807 AND revision > 0" },
+  { name = "ck_vnext_384_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "octet_length(publication_key) = 32 AND revision <= 9223372036854775807 AND revision > 0" },
 ]
 
 [[relation]]
@@ -10473,7 +10115,7 @@ required_index = [
   { name = "ix_fk_catalog_publication_content_2_content_sha256", attributes = ["content_sha256"], unique = false },
 ]
 check = [
-  { name = "ck_vnext_402_domain", sqlite_expression = "typeof(content_sha256) = 'blob' AND length(content_sha256) = 32 AND typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "octet_length(content_sha256) = 32 AND octet_length(publication_key) = 32 AND revision <= 9223372036854775807 AND revision > 0" },
+  { name = "ck_vnext_386_domain", sqlite_expression = "typeof(content_sha256) = 'blob' AND length(content_sha256) = 32 AND typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "octet_length(content_sha256) = 32 AND octet_length(publication_key) = 32 AND revision <= 9223372036854775807 AND revision > 0" },
 ]
 
 [[relation]]
@@ -10487,7 +10129,7 @@ column = [
   { attribute = "role", name = "role", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "VARBINARY(64)", nullable = false, collation = "NONE" } },
 ]
 check = [
-  { name = "ck_vnext_403_domain", sqlite_expression = "typeof(role) = 'blob' AND length(role) <= 64", mariadb_expression = "octet_length(role) <= 64" },
+  { name = "ck_vnext_387_domain", sqlite_expression = "typeof(role) = 'blob' AND length(role) <= 64", mariadb_expression = "octet_length(role) <= 64" },
 ]
 
 [[relation]]
@@ -10506,7 +10148,7 @@ foreign_key = [
   { name = "fk_catalog_contributor_anchor_1", attributes = ["revision", "publication_key"], referenced_relation = "catalog_publication_seal", referenced_attributes = ["revision", "publication_key"] },
 ]
 check = [
-  { name = "ck_vnext_404_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(position) = 'integer' AND position <= 9223372036854775807 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND position >= 0 AND revision > 0", mariadb_expression = "octet_length(publication_key) = 32 AND position <= 9223372036854775807 AND revision <= 9223372036854775807 AND position >= 0 AND revision > 0" },
+  { name = "ck_vnext_388_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(position) = 'integer' AND position <= 9223372036854775807 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND position >= 0 AND revision > 0", mariadb_expression = "octet_length(publication_key) = 32 AND position <= 9223372036854775807 AND revision <= 9223372036854775807 AND position >= 0 AND revision > 0" },
 ]
 
 [[relation]]
@@ -10531,7 +10173,7 @@ required_index = [
   { name = "ix_fk_catalog_contributor_name_sha256_2_contributor_name_sha256", attributes = ["contributor_name_sha256"], unique = false },
 ]
 check = [
-  { name = "ck_vnext_405_domain", sqlite_expression = "typeof(contributor_name_sha256) = 'blob' AND length(contributor_name_sha256) = 32 AND typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(position) = 'integer' AND position <= 9223372036854775807 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND position >= 0 AND revision > 0", mariadb_expression = "octet_length(contributor_name_sha256) = 32 AND octet_length(publication_key) = 32 AND position <= 9223372036854775807 AND revision <= 9223372036854775807 AND position >= 0 AND revision > 0" },
+  { name = "ck_vnext_389_domain", sqlite_expression = "typeof(contributor_name_sha256) = 'blob' AND length(contributor_name_sha256) = 32 AND typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(position) = 'integer' AND position <= 9223372036854775807 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND position >= 0 AND revision > 0", mariadb_expression = "octet_length(contributor_name_sha256) = 32 AND octet_length(publication_key) = 32 AND position <= 9223372036854775807 AND revision <= 9223372036854775807 AND position >= 0 AND revision > 0" },
 ]
 
 [[relation]]
@@ -10556,7 +10198,7 @@ required_index = [
   { name = "ix_fk_catalog_contributor_role_2_role", attributes = ["role"], unique = false },
 ]
 check = [
-  { name = "ck_vnext_406_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(position) = 'integer' AND position <= 9223372036854775807 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND position >= 0 AND revision > 0 AND typeof(role) = 'blob' AND length(role) <= 64", mariadb_expression = "octet_length(publication_key) = 32 AND position <= 9223372036854775807 AND revision <= 9223372036854775807 AND position >= 0 AND revision > 0 AND octet_length(role) <= 64" },
+  { name = "ck_vnext_390_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(position) = 'integer' AND position <= 9223372036854775807 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND position >= 0 AND revision > 0 AND typeof(role) = 'blob' AND length(role) <= 64", mariadb_expression = "octet_length(publication_key) = 32 AND position <= 9223372036854775807 AND revision <= 9223372036854775807 AND position >= 0 AND revision > 0 AND octet_length(role) <= 64" },
 ]
 
 [[relation]]
@@ -10583,7 +10225,7 @@ required_index = [
   { name = "ix_fk_catalog_contributor_identity_3_revision_publ_f9e2fb0712a5", attributes = ["revision", "publication_key", "position", "role"], unique = false },
 ]
 check = [
-  { name = "ck_vnext_407_domain", sqlite_expression = "typeof(contributor_name_sha256) = 'blob' AND length(contributor_name_sha256) = 32 AND typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(position) = 'integer' AND position <= 9223372036854775807 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND position >= 0 AND revision > 0 AND typeof(role) = 'blob' AND length(role) <= 64", mariadb_expression = "octet_length(contributor_name_sha256) = 32 AND octet_length(publication_key) = 32 AND position <= 9223372036854775807 AND revision <= 9223372036854775807 AND position >= 0 AND revision > 0 AND octet_length(role) <= 64" },
+  { name = "ck_vnext_391_domain", sqlite_expression = "typeof(contributor_name_sha256) = 'blob' AND length(contributor_name_sha256) = 32 AND typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(position) = 'integer' AND position <= 9223372036854775807 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND position >= 0 AND revision > 0 AND typeof(role) = 'blob' AND length(role) <= 64", mariadb_expression = "octet_length(contributor_name_sha256) = 32 AND octet_length(publication_key) = 32 AND position <= 9223372036854775807 AND revision <= 9223372036854775807 AND position >= 0 AND revision > 0 AND octet_length(role) <= 64" },
 ]
 
 [[relation]]
@@ -10605,7 +10247,7 @@ foreign_key = [
   { name = "fk_catalog_contributor_seal_4", attributes = ["revision", "publication_key", "position"], referenced_relation = "catalog_contributor_identity", referenced_attributes = ["revision", "publication_key", "position"] },
 ]
 check = [
-  { name = "ck_vnext_408_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(position) = 'integer' AND position <= 9223372036854775807 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND position >= 0 AND revision > 0", mariadb_expression = "octet_length(publication_key) = 32 AND position <= 9223372036854775807 AND revision <= 9223372036854775807 AND position >= 0 AND revision > 0" },
+  { name = "ck_vnext_392_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(position) = 'integer' AND position <= 9223372036854775807 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND position >= 0 AND revision > 0", mariadb_expression = "octet_length(publication_key) = 32 AND position <= 9223372036854775807 AND revision <= 9223372036854775807 AND position >= 0 AND revision > 0" },
 ]
 
 [[relation]]
@@ -10649,120 +10291,14 @@ required_index = [
   { name = "ix_fk_catalog_subject_2_tag_id", attributes = ["tag_id"], unique = false },
 ]
 check = [
-  { name = "ck_vnext_410_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(position) = 'integer' AND position <= 9223372036854775807 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND typeof(tag_id) = 'integer' AND tag_id <= 9223372036854775807 AND position >= 0 AND revision > 0 AND tag_id > 0", mariadb_expression = "octet_length(publication_key) = 32 AND position <= 9223372036854775807 AND revision <= 9223372036854775807 AND tag_id <= 9223372036854775807 AND position >= 0 AND revision > 0 AND tag_id > 0" },
-]
-
-[[relation]]
-name = "artifact_location"
-status = "implemented"
-rationale = "Normalize the registered content-addressed locator identity at the immutable artifact-byte level. artifact_sha256 and the canonical digest of ('sha256', lowerhex[0:2], lowerhex64+'.cbz') are equivalent keys; strict artifact IDs are encoded and decoded from immutable publication GID plus artifact_sha256 and no caller locator is authority."
-table = "catalog_artifact_location"
-primary_key = ["artifact_sha256"]
-unique_keys = [["artifact_locator_sha256"]]
-column = [
-  { attribute = "artifact_sha256", name = "artifact_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-  { attribute = "artifact_locator_sha256", name = "artifact_locator_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-]
-foreign_key = [
-  { name = "fk_artifact_location_1", attributes = ["artifact_sha256"], referenced_relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
-  { name = "fk_artifact_location_2", attributes = ["artifact_locator_sha256"], referenced_relation = "canonical_value_identity", referenced_attributes = ["value_sha256"] },
-]
-check = [
-  { name = "ck_vnext_411_domain", sqlite_expression = "typeof(artifact_locator_sha256) = 'blob' AND length(artifact_locator_sha256) = 32 AND typeof(artifact_sha256) = 'blob' AND length(artifact_sha256) = 32", mariadb_expression = "octet_length(artifact_locator_sha256) = 32 AND octet_length(artifact_sha256) = 32" },
-]
-
-[[relation]]
-name = "catalog_artifact_anchor"
-status = "implemented"
-rationale = "Allocate one artifact occurrence at its true catalog-publication key."
-table = "catalog_artifact_anchors"
-primary_key = ["revision", "publication_key"]
-unique_keys = []
-column = [
-  { attribute = "revision", name = "revision", sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }, mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" } },
-  { attribute = "publication_key", name = "publication_key", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-]
-foreign_key = [
-  { name = "fk_catalog_artifact_anchor_1", attributes = ["revision"], referenced_relation = "catalog_revision_descriptor_seal", referenced_attributes = ["revision"] },
-  { name = "fk_catalog_artifact_anchor_2", attributes = ["revision", "publication_key"], referenced_relation = "catalog_publication_seal", referenced_attributes = ["revision", "publication_key"] },
-]
-check = [
-  { name = "ck_vnext_412_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "octet_length(publication_key) = 32 AND revision <= 9223372036854775807 AND revision > 0" },
-]
-
-[[relation]]
-name = "catalog_artifact_sha256"
-status = "implemented"
-rationale = "Production physical realization of the closed-world catalog_artifact_sha256 relation."
-table = "catalog_artifact_sha256s"
-primary_key = ["revision", "publication_key"]
-unique_keys = []
-column = [
-  { attribute = "revision", name = "revision", sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }, mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" } },
-  { attribute = "publication_key", name = "publication_key", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-  { attribute = "artifact_sha256", name = "artifact_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-]
-foreign_key = [
-  { name = "fk_catalog_artifact_sha256_1", attributes = ["revision", "publication_key"], referenced_relation = "catalog_artifact_anchor", referenced_attributes = ["revision", "publication_key"] },
-  { name = "fk_catalog_artifact_sha256_2", attributes = ["artifact_sha256"], referenced_relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
-]
-required_index = [
-  { name = "ix_catalog_artifact_blob", attributes = ["artifact_sha256", "revision", "publication_key"], unique = false },
-]
-check = [
-  { name = "ck_vnext_413_domain", sqlite_expression = "typeof(artifact_sha256) = 'blob' AND length(artifact_sha256) = 32 AND typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "octet_length(artifact_sha256) = 32 AND octet_length(publication_key) = 32 AND revision <= 9223372036854775807 AND revision > 0" },
-]
-
-[[relation]]
-name = "catalog_artifact_semantics_sha256"
-status = "implemented"
-rationale = "Production physical realization of the closed-world catalog_artifact_semantics_sha256 relation."
-table = "catalog_artifact_semantics_sha256s"
-primary_key = ["revision", "publication_key"]
-unique_keys = []
-column = [
-  { attribute = "revision", name = "revision", sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }, mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" } },
-  { attribute = "publication_key", name = "publication_key", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-  { attribute = "artifact_semantics_sha256", name = "artifact_semantics_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-]
-foreign_key = [
-  { name = "fk_catalog_artifact_semantics_sha256_1", attributes = ["revision", "publication_key"], referenced_relation = "catalog_artifact_anchor", referenced_attributes = ["revision", "publication_key"] },
-  { name = "fk_catalog_artifact_semantics_sha256_2", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input_seal", referenced_attributes = ["artifact_semantics_sha256"] },
-]
-required_index = [
-  { name = "ix_catalog_artifact_semantics", attributes = ["artifact_semantics_sha256", "revision", "publication_key"], unique = false },
-]
-check = [
-  { name = "ck_vnext_414_domain", sqlite_expression = "typeof(artifact_semantics_sha256) = 'blob' AND length(artifact_semantics_sha256) = 32 AND typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "octet_length(artifact_semantics_sha256) = 32 AND octet_length(publication_key) = 32 AND revision <= 9223372036854775807 AND revision > 0" },
-]
-
-[[relation]]
-name = "catalog_artifact_seal"
-status = "implemented"
-rationale = "Production physical realization of the closed-world catalog_artifact_seal relation."
-table = "catalog_artifact_seals"
-primary_key = ["revision", "publication_key"]
-unique_keys = []
-column = [
-  { attribute = "revision", name = "revision", sqlite = { type = "INTEGER", nullable = false, collation = "NONE" }, mariadb = { type = "BIGINT UNSIGNED", nullable = false, collation = "NONE" } },
-  { attribute = "publication_key", name = "publication_key", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
-]
-foreign_key = [
-  { name = "fk_catalog_artifact_seal_1", attributes = ["revision", "publication_key"], referenced_relation = "catalog_artifact_anchor", referenced_attributes = ["revision", "publication_key"] },
-  { name = "fk_catalog_artifact_seal_2", attributes = ["revision", "publication_key"], referenced_relation = "catalog_artifact_sha256", referenced_attributes = ["revision", "publication_key"] },
-  { name = "fk_catalog_artifact_seal_3", attributes = ["revision", "publication_key"], referenced_relation = "catalog_artifact_semantics_sha256", referenced_attributes = ["revision", "publication_key"] },
-]
-check = [
-  { name = "ck_vnext_415_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "octet_length(publication_key) = 32 AND revision <= 9223372036854775807 AND revision > 0" },
+  { name = "ck_vnext_394_domain", sqlite_expression = "typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(position) = 'integer' AND position <= 9223372036854775807 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND typeof(tag_id) = 'integer' AND tag_id <= 9223372036854775807 AND position >= 0 AND revision > 0 AND tag_id > 0", mariadb_expression = "octet_length(publication_key) = 32 AND position <= 9223372036854775807 AND revision <= 9223372036854775807 AND tag_id <= 9223372036854775807 AND position >= 0 AND revision > 0 AND tag_id > 0" },
 ]
 
 [[relation]]
 name = "catalog_artifact"
 status = "implemented"
-rationale = "Read-only complete occurrence projection from artifact byte and semantic facts."
+rationale = "Store each complete catalog artifact occurrence in one BCNF relation at its true revision/publication key; strict-codec artifact IDs and publication-derived modified time remain derived."
 table = "catalog_artifacts"
-kind = "view"
-view = { pattern = "sealed_vertical_family", family = "catalog_artifact_vertical", anchor_relation = "catalog_artifact_anchor", seal_relation = "catalog_artifact_seal", key_attributes = ["revision", "publication_key"], members = [{ relation = "catalog_artifact_sha256", key_attributes = ["revision", "publication_key"], value_attribute = "artifact_sha256", projection_attribute = "artifact_sha256", join = { source_relation = "catalog_artifact_seal", source_attributes = ["revision", "publication_key"], member_attributes = ["revision", "publication_key"] }, project = true, required = true }, { relation = "catalog_artifact_semantics_sha256", key_attributes = ["revision", "publication_key"], value_attribute = "artifact_semantics_sha256", projection_attribute = "artifact_semantics_sha256", join = { source_relation = "catalog_artifact_seal", source_attributes = ["revision", "publication_key"], member_attributes = ["revision", "publication_key"] }, project = true, required = true }] }
 primary_key = ["revision", "publication_key"]
 unique_keys = []
 column = [
@@ -10772,7 +10308,17 @@ column = [
   { attribute = "artifact_semantics_sha256", name = "artifact_semantics_sha256", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(32)", nullable = false, collation = "NONE" } },
 ]
 foreign_key = [
-  { name = "fk_catalog_artifact_1", attributes = ["revision", "publication_key"], referenced_relation = "catalog_artifact_seal", referenced_attributes = ["revision", "publication_key"] },
+  { name = "fk_catalog_artifact_1", attributes = ["revision"], referenced_relation = "catalog_revision_descriptor_seal", referenced_attributes = ["revision"] },
+  { name = "fk_catalog_artifact_2", attributes = ["revision", "publication_key"], referenced_relation = "catalog_publication_seal", referenced_attributes = ["revision", "publication_key"] },
+  { name = "fk_catalog_artifact_3", attributes = ["artifact_sha256"], referenced_relation = "artifact_blob", referenced_attributes = ["artifact_sha256"] },
+  { name = "fk_catalog_artifact_4", attributes = ["artifact_semantics_sha256"], referenced_relation = "artifact_semantic_input", referenced_attributes = ["artifact_semantics_sha256"] },
+]
+required_index = [
+  { name = "ix_catalog_artifact_blob", attributes = ["artifact_sha256", "revision", "publication_key"], unique = false },
+  { name = "ix_catalog_artifact_semantics", attributes = ["artifact_semantics_sha256", "revision", "publication_key"], unique = false },
+]
+check = [
+  { name = "ck_vnext_395_domain", sqlite_expression = "typeof(artifact_semantics_sha256) = 'blob' AND length(artifact_semantics_sha256) = 32 AND typeof(artifact_sha256) = 'blob' AND length(artifact_sha256) = 32 AND typeof(publication_key) = 'blob' AND length(publication_key) = 32 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "octet_length(artifact_semantics_sha256) = 32 AND octet_length(artifact_sha256) = 32 AND octet_length(publication_key) = 32 AND revision <= 9223372036854775807 AND revision > 0" },
 ]
 
 [[relation]]
@@ -10786,7 +10332,7 @@ column = [
   { attribute = "receipt_id", name = "receipt_id", sqlite = { type = "BLOB", nullable = false, collation = "NONE" }, mariadb = { type = "BINARY(16)", nullable = false, collation = "NONE" } },
 ]
 check = [
-  { name = "ck_vnext_417_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16", mariadb_expression = "octet_length(receipt_id) = 16" },
+  { name = "ck_vnext_396_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16", mariadb_expression = "octet_length(receipt_id) = 16" },
 ]
 
 [[relation]]
@@ -10804,7 +10350,7 @@ foreign_key = [
   { name = "fk_publication_commit_candidate_1", attributes = ["receipt_id"], referenced_relation = "publication_commit_anchor", referenced_attributes = ["receipt_id"] },
 ]
 check = [
-  { name = "ck_vnext_418_domain", sqlite_expression = "typeof(candidate_id) = 'blob' AND length(candidate_id) = 16 AND typeof(receipt_id) = 'blob' AND length(receipt_id) = 16", mariadb_expression = "octet_length(candidate_id) = 16 AND octet_length(receipt_id) = 16" },
+  { name = "ck_vnext_397_domain", sqlite_expression = "typeof(candidate_id) = 'blob' AND length(candidate_id) = 16 AND typeof(receipt_id) = 'blob' AND length(receipt_id) = 16", mariadb_expression = "octet_length(candidate_id) = 16 AND octet_length(receipt_id) = 16" },
 ]
 
 [[relation]]
@@ -10823,7 +10369,7 @@ foreign_key = [
   { name = "fk_publication_commit_catalog_revision_2", attributes = ["revision"], referenced_relation = "catalog_revision_descriptor_seal", referenced_attributes = ["revision"] },
 ]
 check = [
-  { name = "ck_vnext_419_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "octet_length(receipt_id) = 16 AND revision <= 9223372036854775807 AND revision > 0" },
+  { name = "ck_vnext_398_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16 AND typeof(revision) = 'integer' AND revision <= 9223372036854775807 AND revision > 0", mariadb_expression = "octet_length(receipt_id) = 16 AND revision <= 9223372036854775807 AND revision > 0" },
 ]
 
 [[relation]]
@@ -10842,7 +10388,7 @@ foreign_key = [
   { name = "fk_publication_commit_source_revision_2", attributes = ["source_revision"], referenced_relation = "source_revision_descriptor_seal", referenced_attributes = ["source_revision"] },
 ]
 check = [
-  { name = "ck_vnext_420_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16 AND typeof(source_revision) = 'integer' AND source_revision <= 9223372036854775807 AND source_revision > 0", mariadb_expression = "octet_length(receipt_id) = 16 AND source_revision <= 9223372036854775807 AND source_revision > 0" },
+  { name = "ck_vnext_399_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16 AND typeof(source_revision) = 'integer' AND source_revision <= 9223372036854775807 AND source_revision > 0", mariadb_expression = "octet_length(receipt_id) = 16 AND source_revision <= 9223372036854775807 AND source_revision > 0" },
 ]
 
 [[relation]]
@@ -10861,7 +10407,7 @@ foreign_key = [
   { name = "fk_publication_commit_generation_2", attributes = ["generation"], referenced_relation = "publication_generation_successor", referenced_attributes = ["successor_generation"] },
 ]
 check = [
-  { name = "ck_vnext_421_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16 AND typeof(generation) = 'integer' AND generation <= 9223372036854775807 AND generation > 0", mariadb_expression = "octet_length(receipt_id) = 16 AND generation <= 9223372036854775807 AND generation > 0" },
+  { name = "ck_vnext_400_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16 AND typeof(generation) = 'integer' AND generation <= 9223372036854775807 AND generation > 0", mariadb_expression = "octet_length(receipt_id) = 16 AND generation <= 9223372036854775807 AND generation > 0" },
 ]
 
 [[relation]]
@@ -10880,7 +10426,7 @@ foreign_key = [
   { name = "fk_publication_commit_operational_preparation_2", attributes = ["preparation_id"], referenced_relation = "operational_preparation_effect_seal", referenced_attributes = ["preparation_id"] },
 ]
 check = [
-  { name = "ck_vnext_422_domain", sqlite_expression = "typeof(preparation_id) = 'blob' AND length(preparation_id) = 16 AND typeof(receipt_id) = 'blob' AND length(receipt_id) = 16", mariadb_expression = "octet_length(preparation_id) = 16 AND octet_length(receipt_id) = 16" },
+  { name = "ck_vnext_401_domain", sqlite_expression = "typeof(preparation_id) = 'blob' AND length(preparation_id) = 16 AND typeof(receipt_id) = 'blob' AND length(receipt_id) = 16", mariadb_expression = "octet_length(preparation_id) = 16 AND octet_length(receipt_id) = 16" },
 ]
 
 [[relation]]
@@ -10902,7 +10448,7 @@ required_index = [
   { name = "ix_fk_publication_commit_operational_policy_2_oper_3d70c94d7a56", attributes = ["operational_policy_id"], unique = false },
 ]
 check = [
-  { name = "ck_vnext_423_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16 AND typeof(operational_policy_id) = 'integer' AND operational_policy_id <= 9223372036854775807", mariadb_expression = "octet_length(receipt_id) = 16 AND operational_policy_id <= 9223372036854775807" },
+  { name = "ck_vnext_402_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16 AND typeof(operational_policy_id) = 'integer' AND operational_policy_id <= 9223372036854775807", mariadb_expression = "octet_length(receipt_id) = 16 AND operational_policy_id <= 9223372036854775807" },
 ]
 
 [[relation]]
@@ -10924,7 +10470,7 @@ required_index = [
   { name = "ix_fk_publication_commit_artifact_policy_2_artifact_policy_id", attributes = ["artifact_policy_id"], unique = false },
 ]
 check = [
-  { name = "ck_vnext_424_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16 AND typeof(artifact_policy_id) = 'integer' AND artifact_policy_id <= 9223372036854775807 AND artifact_policy_id > 0", mariadb_expression = "octet_length(receipt_id) = 16 AND artifact_policy_id <= 9223372036854775807 AND artifact_policy_id > 0" },
+  { name = "ck_vnext_403_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16 AND typeof(artifact_policy_id) = 'integer' AND artifact_policy_id <= 9223372036854775807 AND artifact_policy_id > 0", mariadb_expression = "octet_length(receipt_id) = 16 AND artifact_policy_id <= 9223372036854775807 AND artifact_policy_id > 0" },
 ]
 
 [[relation]]
@@ -10946,7 +10492,7 @@ required_index = [
   { name = "ix_fk_publication_commit_display_title_policy_2_di_b26b8ee1669c", attributes = ["display_title_policy_id"], unique = false },
 ]
 check = [
-  { name = "ck_vnext_425_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16 AND typeof(display_title_policy_id) = 'integer' AND display_title_policy_id <= 9223372036854775807 AND display_title_policy_id > 0", mariadb_expression = "octet_length(receipt_id) = 16 AND display_title_policy_id <= 9223372036854775807 AND display_title_policy_id > 0" },
+  { name = "ck_vnext_404_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16 AND typeof(display_title_policy_id) = 'integer' AND display_title_policy_id <= 9223372036854775807 AND display_title_policy_id > 0", mariadb_expression = "octet_length(receipt_id) = 16 AND display_title_policy_id <= 9223372036854775807 AND display_title_policy_id > 0" },
 ]
 
 [[relation]]
@@ -10964,7 +10510,7 @@ foreign_key = [
   { name = "fk_publication_commit_new_galleries_1", attributes = ["receipt_id"], referenced_relation = "publication_commit_anchor", referenced_attributes = ["receipt_id"] },
 ]
 check = [
-  { name = "ck_vnext_426_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16 AND typeof(new_galleries) = 'integer' AND new_galleries <= 9223372036854775807 AND new_galleries >= 0", mariadb_expression = "octet_length(receipt_id) = 16 AND new_galleries <= 9223372036854775807 AND new_galleries >= 0" },
+  { name = "ck_vnext_405_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16 AND typeof(new_galleries) = 'integer' AND new_galleries <= 9223372036854775807 AND new_galleries >= 0", mariadb_expression = "octet_length(receipt_id) = 16 AND new_galleries <= 9223372036854775807 AND new_galleries >= 0" },
 ]
 
 [[relation]]
@@ -10982,7 +10528,7 @@ foreign_key = [
   { name = "fk_publication_commit_changed_galleries_1", attributes = ["receipt_id"], referenced_relation = "publication_commit_anchor", referenced_attributes = ["receipt_id"] },
 ]
 check = [
-  { name = "ck_vnext_427_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16 AND typeof(changed_galleries) = 'integer' AND changed_galleries <= 9223372036854775807 AND changed_galleries >= 0", mariadb_expression = "octet_length(receipt_id) = 16 AND changed_galleries <= 9223372036854775807 AND changed_galleries >= 0" },
+  { name = "ck_vnext_406_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16 AND typeof(changed_galleries) = 'integer' AND changed_galleries <= 9223372036854775807 AND changed_galleries >= 0", mariadb_expression = "octet_length(receipt_id) = 16 AND changed_galleries <= 9223372036854775807 AND changed_galleries >= 0" },
 ]
 
 [[relation]]
@@ -11000,7 +10546,7 @@ foreign_key = [
   { name = "fk_publication_commit_removed_galleries_1", attributes = ["receipt_id"], referenced_relation = "publication_commit_anchor", referenced_attributes = ["receipt_id"] },
 ]
 check = [
-  { name = "ck_vnext_428_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16 AND typeof(removed_galleries) = 'integer' AND removed_galleries <= 9223372036854775807 AND removed_galleries >= 0", mariadb_expression = "octet_length(receipt_id) = 16 AND removed_galleries <= 9223372036854775807 AND removed_galleries >= 0" },
+  { name = "ck_vnext_407_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16 AND typeof(removed_galleries) = 'integer' AND removed_galleries <= 9223372036854775807 AND removed_galleries >= 0", mariadb_expression = "octet_length(receipt_id) = 16 AND removed_galleries <= 9223372036854775807 AND removed_galleries >= 0" },
 ]
 
 [[relation]]
@@ -11018,7 +10564,7 @@ foreign_key = [
   { name = "fk_publication_commit_duplicate_losers_1", attributes = ["receipt_id"], referenced_relation = "publication_commit_anchor", referenced_attributes = ["receipt_id"] },
 ]
 check = [
-  { name = "ck_vnext_429_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16 AND typeof(duplicate_losers) = 'integer' AND duplicate_losers <= 9223372036854775807 AND duplicate_losers >= 0", mariadb_expression = "octet_length(receipt_id) = 16 AND duplicate_losers <= 9223372036854775807 AND duplicate_losers >= 0" },
+  { name = "ck_vnext_408_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16 AND typeof(duplicate_losers) = 'integer' AND duplicate_losers <= 9223372036854775807 AND duplicate_losers >= 0", mariadb_expression = "octet_length(receipt_id) = 16 AND duplicate_losers <= 9223372036854775807 AND duplicate_losers >= 0" },
 ]
 
 [[relation]]
@@ -11036,7 +10582,7 @@ foreign_key = [
   { name = "fk_publication_commit_committed_at_1", attributes = ["receipt_id"], referenced_relation = "publication_commit_anchor", referenced_attributes = ["receipt_id"] },
 ]
 check = [
-  { name = "ck_vnext_430_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16 AND (committed_at IS NULL OR typeof(committed_at) = 'integer' AND committed_at BETWEEN 0 AND 9223372036854775807)", mariadb_expression = "octet_length(receipt_id) = 16 AND (committed_at IS NULL OR committed_at <= 9223372036854775807)" },
+  { name = "ck_vnext_409_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16 AND (committed_at IS NULL OR typeof(committed_at) = 'integer' AND committed_at BETWEEN 0 AND 9223372036854775807)", mariadb_expression = "octet_length(receipt_id) = 16 AND (committed_at IS NULL OR committed_at <= 9223372036854775807)" },
 ]
 
 [[relation]]
@@ -11067,7 +10613,7 @@ foreign_key = [
   { name = "fk_publication_commit_seal_15", attributes = ["receipt_id"], referenced_relation = "publication_finalization_checkpoint_seal", referenced_attributes = ["receipt_id"] },
 ]
 check = [
-  { name = "ck_vnext_431_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16", mariadb_expression = "octet_length(receipt_id) = 16" },
+  { name = "ck_vnext_410_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16", mariadb_expression = "octet_length(receipt_id) = 16" },
 ]
 
 [[relation]]
@@ -11113,7 +10659,7 @@ foreign_key = [
   { name = "fk_publication_commit_finalization_1", attributes = ["receipt_id"], referenced_relation = "publication_commit_seal", referenced_attributes = ["receipt_id"] },
 ]
 check = [
-  { name = "ck_vnext_433_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16", mariadb_expression = "octet_length(receipt_id) = 16" },
+  { name = "ck_vnext_412_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16", mariadb_expression = "octet_length(receipt_id) = 16" },
 ]
 
 [[relation]]
@@ -11132,7 +10678,7 @@ foreign_key = [
   { name = "fk_publication_commit_head_receipt_2", attributes = ["receipt_id"], referenced_relation = "publication_commit_seal", referenced_attributes = ["receipt_id"] },
 ]
 check = [
-  { name = "ck_vnext_434_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16 AND length(channel) > 0 AND typeof(channel) = 'blob' AND length(channel) <= 64", mariadb_expression = "octet_length(receipt_id) = 16 AND octet_length(channel) > 0 AND octet_length(channel) <= 64" },
+  { name = "ck_vnext_413_domain", sqlite_expression = "typeof(receipt_id) = 'blob' AND length(receipt_id) = 16 AND length(channel) > 0 AND typeof(channel) = 'blob' AND length(channel) <= 64", mariadb_expression = "octet_length(receipt_id) = 16 AND octet_length(channel) > 0 AND octet_length(channel) <= 64" },
 ]
 
 [[relation]]

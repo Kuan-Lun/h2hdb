@@ -50,12 +50,40 @@ def _assert_no_legacy_migration_ledger(database_path: Path) -> None:
     assert row is None
 
 
-def _assert_gallery_identity_recomposition(database_path: Path) -> None:
+def _assert_wide_bcnf_recompositions(database_path: Path) -> None:
+    required = {
+        "catalog_gallery_identities",
+        "catalog_artifact_semantic_inputs",
+        "catalog_prepared_artifacts",
+        "catalog_artifacts",
+        "catalog_artifact_blobs",
+    }
     removed = {
         "catalog_gallery_identity_anchors",
         "catalog_gallery_identity_coordinates",
         "catalog_gallery_identity_gallery_keys",
         "catalog_gallery_identity_seals",
+        "catalog_artifact_semantic_input_anchors",
+        "catalog_artifact_semantic_source_manifest_sha256s",
+        "catalog_artifact_semantic_member_plan_sha256s",
+        "catalog_artifact_semantic_effective_content_sha256s",
+        "catalog_artifact_semantic_selected_sha256s",
+        "catalog_artifact_semantic_owner_sha256s",
+        "catalog_artifact_semantic_policy_sha256s",
+        "catalog_artifact_semantic_input_identities",
+        "catalog_artifact_semantic_input_seals",
+        "catalog_prepared_artifact_anchors",
+        "catalog_prepared_artifact_sha256s",
+        "catalog_prepared_artifact_storage_codec_versions",
+        "catalog_prepared_artifact_storage_generations",
+        "catalog_prepared_artifact_protection_tokens",
+        "catalog_prepared_artifact_states",
+        "catalog_prepared_artifact_seals",
+        "catalog_artifact_anchors",
+        "catalog_artifact_sha256s",
+        "catalog_artifact_semantics_sha256s",
+        "catalog_artifact_seals",
+        "catalog_artifact_location",
     }
     with sqlite3.connect(database_path) as connection:
         names = {
@@ -64,7 +92,7 @@ def _assert_gallery_identity_recomposition(database_path: Path) -> None:
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             )
         }
-    assert "catalog_gallery_identities" in names
+    assert required <= names
     assert removed.isdisjoint(names)
 
 
@@ -90,7 +118,7 @@ def main() -> None:
         readiness = admin.check_readiness()
         assert readiness.state == "READY"
         _assert_no_legacy_migration_ledger(database_path)
-        _assert_gallery_identity_recomposition(database_path)
+        _assert_wide_bcnf_recompositions(database_path)
 
         queue = VNextDownloadQueueFacade(writer_config, clock=lambda: 1)
         request = queue.request_download(101, "https://example.invalid/g/101")

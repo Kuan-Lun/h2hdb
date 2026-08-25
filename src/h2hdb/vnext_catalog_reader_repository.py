@@ -292,7 +292,7 @@ class VNextCatalogReaderRepository:
             total_row = connector.fetch_one(
                 "SELECT COUNT(*) FROM catalog_publication_order AS o "
                 "WHERE o.revision = %s AND EXISTS ("
-                "SELECT 1 FROM catalog_artifact_seals AS artifact "
+                "SELECT 1 FROM catalog_artifacts AS artifact "
                 "WHERE artifact.revision = o.revision "
                 "AND artifact.publication_key = o.publication_key)",
                 (pinned.revision,),
@@ -313,7 +313,7 @@ class VNextCatalogReaderRepository:
                 "SELECT o.position, o.publication_key "
                 "FROM catalog_publication_order AS o "
                 "WHERE o.revision = %s AND EXISTS ("
-                "SELECT 1 FROM catalog_artifact_seals AS artifact "
+                "SELECT 1 FROM catalog_artifacts AS artifact "
                 "WHERE artifact.revision = o.revision "
                 "AND artifact.publication_key = o.publication_key) "
                 "ORDER BY o.position LIMIT %s OFFSET %s",
@@ -465,7 +465,7 @@ class VNextCatalogReaderRepository:
         rows = connector.fetch_all(
             "SELECT identity.publication_key, identity.gid "
             "FROM catalog_publication_identities AS identity "
-            "JOIN catalog_artifact_seals AS artifact "
+            "JOIN catalog_artifacts AS artifact "
             "ON artifact.publication_key = identity.publication_key "
             f"WHERE artifact.revision = %s AND identity.publication_key IN "
             f"({_sql_placeholders(len(requested_keys))}) "
@@ -915,57 +915,32 @@ class VNextCatalogReaderRepository:
     ) -> dict[bytes, tuple[bytes, int, bytes, bytes]]:
         selected_cte = _selected_keys_cte(len(publication_keys), backend=self._backend)
         rows = connector.fetch_all(
-            f"WITH selected(publication_key) AS ({selected_cte}), "
-            "family_keys(revision, publication_key) AS ("
-            "SELECT a.revision, a.publication_key FROM catalog_artifact_anchors AS a "
-            "JOIN selected AS chosen ON chosen.publication_key = a.publication_key "
-            "WHERE a.revision = %s "
-            "UNION SELECT d.revision, d.publication_key FROM catalog_artifact_sha256s AS d "
-            "JOIN selected AS chosen ON chosen.publication_key = d.publication_key "
-            "WHERE d.revision = %s "
-            "UNION SELECT m.revision, m.publication_key "
-            "FROM catalog_artifact_semantics_sha256s AS m "
-            "JOIN selected AS chosen ON chosen.publication_key = m.publication_key "
-            "WHERE m.revision = %s "
-            "UNION SELECT s.revision, s.publication_key FROM catalog_artifact_seals AS s "
-            "JOIN selected AS chosen ON chosen.publication_key = s.publication_key "
-            "WHERE s.revision = %s) "
-            "SELECT family.publication_key, a.publication_key, d.artifact_sha256, "
-            "m.artifact_semantics_sha256, s.publication_key, artifact_blob.size_bytes, "
-            "location.artifact_locator_sha256 "
-            "FROM family_keys AS family "
-            "LEFT JOIN catalog_artifact_anchors AS a "
-            "ON a.revision = family.revision AND a.publication_key = family.publication_key "
-            "LEFT JOIN catalog_artifact_sha256s AS d "
-            "ON d.revision = family.revision AND d.publication_key = family.publication_key "
-            "LEFT JOIN catalog_artifact_semantics_sha256s AS m "
-            "ON m.revision = family.revision AND m.publication_key = family.publication_key "
-            "LEFT JOIN catalog_artifact_seals AS s "
-            "ON s.revision = family.revision AND s.publication_key = family.publication_key "
-            "LEFT JOIN catalog_artifact_blobs AS artifact_blob "
-            "ON artifact_blob.artifact_sha256 = d.artifact_sha256 "
-            "LEFT JOIN catalog_artifact_location AS location "
-            "ON location.artifact_sha256 = d.artifact_sha256 "
-            "ORDER BY family.publication_key",
-            (*publication_keys, revision, revision, revision, revision),
+            f"WITH selected(publication_key) AS ({selected_cte}) "
+            "SELECT artifact.publication_key, artifact.artifact_sha256, "
+            "artifact.artifact_semantics_sha256, artifact_blob_row.size_bytes, "
+            "artifact_blob_row.artifact_locator_sha256 "
+            "FROM catalog_artifacts AS artifact "
+            "JOIN selected AS chosen "
+            "ON chosen.publication_key = artifact.publication_key "
+            "LEFT JOIN catalog_artifact_blobs AS artifact_blob_row "
+            "ON artifact_blob_row.artifact_sha256 = artifact.artifact_sha256 "
+            "WHERE artifact.revision = %s ORDER BY artifact.publication_key",
+            (*publication_keys, revision),
         )
         result: dict[bytes, tuple[bytes, int, bytes, bytes]] = {}
         for row in rows:
-            if len(row) != 7 or any(value is None for value in row[1:]):
+            if len(row) != 5 or any(value is None for value in row[1:]):
                 raise VNextCatalogReadError(
-                    "catalog artifact family is partial or lacks storage facts"
+                    "catalog artifact lacks total storage facts"
                 )
             key = require_digest32(row[0], field="artifact publication_key")
-            if key in result or any(
-                require_digest32(value, field="artifact family publication_key") != key
-                for value in (row[1], row[4])
-            ):
-                raise VNextCatalogReadError("catalog artifact family keys disagree")
+            if key in result:
+                raise VNextCatalogReadError("catalog artifact key is duplicated")
             result[key] = (
-                require_digest32(row[2], field="artifact_sha256"),
-                require_int63(row[5], field="artifact size_bytes"),
-                require_digest32(row[6], field="artifact_locator_sha256"),
-                require_digest32(row[3], field="artifact_semantics_sha256"),
+                require_digest32(row[1], field="artifact_sha256"),
+                require_int63(row[3], field="artifact size_bytes"),
+                require_digest32(row[4], field="artifact_locator_sha256"),
+                require_digest32(row[2], field="artifact_semantics_sha256"),
             )
         return result
 

@@ -202,47 +202,22 @@ def _seed_prepared_artifact(
     )
     connector.execute(
         "INSERT INTO catalog_artifact_blobs "
-        "(artifact_sha256, size_bytes) VALUES (%s, %s)",
-        (artifact_sha256, size_bytes),
+        "(artifact_sha256, size_bytes, artifact_locator_sha256) "
+        "VALUES (%s, %s, %s)",
+        (artifact_sha256, size_bytes, locator_sha256),
     )
     connector.execute(
-        "INSERT INTO catalog_artifact_location "
-        "(artifact_sha256, artifact_locator_sha256) VALUES (%s, %s)",
-        (artifact_sha256, locator_sha256),
-    )
-    connector.execute(
-        "INSERT INTO catalog_prepared_artifact_anchors "
-        "(candidate_id, publication_key) VALUES (%s, %s)",
-        (_CANDIDATE, publication_key),
-    )
-    for table, column, value in (
-        ("catalog_prepared_artifact_sha256s", "artifact_sha256", artifact_sha256),
+        "INSERT INTO catalog_prepared_artifacts "
+        "(candidate_id, publication_key, artifact_sha256, storage_codec_version, "
+        "storage_generation, protection_token, state) "
+        "VALUES (%s, %s, %s, 1, %s, %s, 'PREPARED')",
         (
-            "catalog_prepared_artifact_storage_codec_versions",
-            "storage_codec_version",
-            1,
-        ),
-        (
-            "catalog_prepared_artifact_storage_generations",
-            "storage_generation",
+            _CANDIDATE,
+            publication_key,
+            artifact_sha256,
             storage_generation,
-        ),
-        (
-            "catalog_prepared_artifact_protection_tokens",
-            "protection_token",
             protection_token,
         ),
-        ("catalog_prepared_artifact_states", "state", "PREPARED"),
-    ):
-        connector.execute(
-            f"INSERT INTO {table} (candidate_id, publication_key, {column}) "
-            "VALUES (%s, %s, %s)",
-            (_CANDIDATE, publication_key, value),
-        )
-    connector.execute(
-        "INSERT INTO catalog_prepared_artifact_seals "
-        "(candidate_id, publication_key) VALUES (%s, %s)",
-        (_CANDIDATE, publication_key),
     )
     return protection_token
 
@@ -374,13 +349,7 @@ def _delete_transient_candidate_state(connector: SQLiteConnector) -> None:
         "catalog_publication_checkpoint_cursors",
         "catalog_publication_checkpoint_generations",
         "catalog_publication_checkpoint_anchors",
-        "catalog_prepared_artifact_seals",
-        "catalog_prepared_artifact_states",
-        "catalog_prepared_artifact_protection_tokens",
-        "catalog_prepared_artifact_storage_generations",
-        "catalog_prepared_artifact_storage_codec_versions",
-        "catalog_prepared_artifact_sha256s",
-        "catalog_prepared_artifact_anchors",
+        "catalog_prepared_artifacts",
     )
     connector.execute("PRAGMA foreign_keys = OFF")
     try:
@@ -582,7 +551,7 @@ def test_post_external_races_fail_closed(tmp_path: Path, race: str) -> None:
 
         if race == "mixed-state":
             connector.execute(
-                "UPDATE catalog_prepared_artifact_states SET state = 'COMMITTED' "
+                "UPDATE catalog_prepared_artifacts SET state = 'COMMITTED' "
                 "WHERE candidate_id = %s AND publication_key = %s",
                 (_CANDIDATE, publication_keys[0]),
             )
@@ -625,7 +594,7 @@ def test_post_external_races_fail_closed(tmp_path: Path, race: str) -> None:
                 (_RECEIPT,),
             ) == (1, b"", 0, "OPEN")
             assert connector.fetch_all(
-                "SELECT publication_key, state FROM catalog_prepared_artifact_states "
+                "SELECT publication_key, state FROM catalog_prepared_artifacts "
                 "WHERE candidate_id = %s ORDER BY publication_key",
                 (_CANDIDATE,),
             ) == [
@@ -721,7 +690,7 @@ def test_every_post_external_commit_mutation_rolls_back(tmp_path: Path) -> None:
                     fail_at=fail_at,
                 )
             assert connector.fetch_one(
-                "SELECT state FROM catalog_prepared_artifact_states "
+                "SELECT state FROM catalog_prepared_artifacts "
                 "WHERE candidate_id = %s",
                 (_CANDIDATE,),
             ) == ("PREPARED",)

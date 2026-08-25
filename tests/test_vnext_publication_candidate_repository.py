@@ -2131,10 +2131,8 @@ def test_mariadb_selection_and_checkpoint_sql_keep_closed_server_shape() -> None
         == ()
     )
     assert connector.query.count("%s") == 3 and "?" not in connector.query
-    assert "FROM catalog_artifact_seals AS seal" in connector.query
-    assert "JOIN catalog_artifact_sha256s AS digest" in connector.query
-    assert "JOIN catalog_artifact_semantics_sha256s AS semantics" in connector.query
-    assert "ORDER BY seal.publication_key LIMIT %s" in connector.query
+    assert "FROM catalog_artifacts AS artifact" in connector.query
+    assert "ORDER BY artifact.publication_key LIMIT %s" in connector.query
     assert "artifact_id" not in connector.query
 
     module._initialize_candidate_checkpoints(work, _CANDIDATE, now=100)

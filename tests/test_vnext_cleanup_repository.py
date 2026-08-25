@@ -37,6 +37,7 @@ from vnext_publication_fixtures import seed_publication_candidate
 import h2hdb.vnext_cleanup_repository as cleanup_module
 from h2hdb import vnext_identity as identity
 from h2hdb._generated_vnext_schema import ARTIFACT
+from h2hdb.sql_connector import DatabaseDuplicateKeyError
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_cleanup_repository import (
     CleanupBatchCommand,
@@ -684,50 +685,19 @@ def _seed_prepared_artifact_family(
     publication_key: bytes,
     artifact_sha256: bytes,
     state: str,
-    include_seal: bool = True,
 ) -> None:
-    statements: list[tuple[str, tuple[object, ...]]] = [
-        (
-            "INSERT INTO catalog_prepared_artifact_anchors "
-            "(candidate_id, publication_key) VALUES (%s, %s)",
-            (candidate_id, publication_key),
-        ),
-        (
-            "INSERT INTO catalog_prepared_artifact_sha256s "
-            "(candidate_id, publication_key, artifact_sha256) VALUES (%s, %s, %s)",
-            (candidate_id, publication_key, artifact_sha256),
-        ),
-        (
-            "INSERT INTO catalog_prepared_artifact_storage_codec_versions "
-            "(candidate_id, publication_key, storage_codec_version) "
-            "VALUES (%s, %s, 1)",
-            (candidate_id, publication_key),
-        ),
-        (
-            "INSERT INTO catalog_prepared_artifact_storage_generations "
-            "(candidate_id, publication_key, storage_generation) VALUES (%s, %s, 7)",
-            (candidate_id, publication_key),
-        ),
-        (
-            "INSERT INTO catalog_prepared_artifact_protection_tokens "
-            "(candidate_id, publication_key, protection_token) VALUES (%s, %s, %s)",
-            (candidate_id, publication_key, b"t" * 184),
-        ),
-        (
-            "INSERT INTO catalog_prepared_artifact_states "
-            "(candidate_id, publication_key, state) VALUES (%s, %s, %s)",
-            (candidate_id, publication_key, state),
-        ),
-    ]
-    if include_seal:
-        statements.append(
+    _fixture_rows(
+        connector,
+        [
             (
-                "INSERT INTO catalog_prepared_artifact_seals "
-                "(candidate_id, publication_key) VALUES (%s, %s)",
-                (candidate_id, publication_key),
-            )
-        )
-    _fixture_rows(connector, statements)
+                "INSERT INTO catalog_prepared_artifacts "
+                "(candidate_id, publication_key, artifact_sha256, "
+                "storage_codec_version, storage_generation, protection_token, state) "
+                "VALUES (%s, %s, %s, 1, 7, %s, %s)",
+                (candidate_id, publication_key, artifact_sha256, b"t" * 184, state),
+            ),
+        ],
+    )
 
 
 def _prepared_artifact_family_rows(
@@ -736,21 +706,12 @@ def _prepared_artifact_family_rows(
     candidate_id: bytes,
     publication_key: bytes,
 ) -> tuple[list[tuple[Any, ...]], ...]:
-    return tuple(
+    return (
         connector.fetch_all(
-            f"SELECT * FROM {table} "
+            "SELECT * FROM catalog_prepared_artifacts "
             "WHERE candidate_id = %s AND publication_key = %s",
             (candidate_id, publication_key),
-        )
-        for table in (
-            "catalog_prepared_artifact_seals",
-            "catalog_prepared_artifact_states",
-            "catalog_prepared_artifact_protection_tokens",
-            "catalog_prepared_artifact_storage_generations",
-            "catalog_prepared_artifact_storage_codec_versions",
-            "catalog_prepared_artifact_sha256s",
-            "catalog_prepared_artifact_anchors",
-        )
+        ),
     )
 
 
@@ -764,58 +725,12 @@ def _seed_artifact_semantic_input_family(
         connector,
         [
             (
-                "INSERT INTO catalog_artifact_semantic_input_anchors "
-                "(artifact_semantics_sha256) VALUES (%s)",
-                (artifact_semantics_sha256,),
-            ),
-            (
-                "INSERT INTO catalog_artifact_semantic_source_manifest_sha256s "
-                "(artifact_semantics_sha256, source_manifest_component_sha256) "
-                "VALUES (%s, %s)",
-                (artifact_semantics_sha256, components[0]),
-            ),
-            (
-                "INSERT INTO catalog_artifact_semantic_member_plan_sha256s "
-                "(artifact_semantics_sha256, member_plan_component_sha256) "
-                "VALUES (%s, %s)",
-                (artifact_semantics_sha256, components[1]),
-            ),
-            (
-                "INSERT INTO catalog_artifact_semantic_effective_content_sha256s "
-                "(artifact_semantics_sha256, effective_content_component_sha256) "
-                "VALUES (%s, %s)",
-                (artifact_semantics_sha256, components[2]),
-            ),
-            (
-                "INSERT INTO catalog_artifact_semantic_selected_sha256s "
-                "(artifact_semantics_sha256, selected_component_sha256) "
-                "VALUES (%s, %s)",
-                (artifact_semantics_sha256, components[3]),
-            ),
-            (
-                "INSERT INTO catalog_artifact_semantic_owner_sha256s "
-                "(artifact_semantics_sha256, owner_component_sha256) "
-                "VALUES (%s, %s)",
-                (artifact_semantics_sha256, components[4]),
-            ),
-            (
-                "INSERT INTO catalog_artifact_semantic_policy_sha256s "
-                "(artifact_semantics_sha256, policy_component_sha256) "
-                "VALUES (%s, %s)",
-                (artifact_semantics_sha256, components[5]),
-            ),
-            (
-                "INSERT INTO catalog_artifact_semantic_input_identities "
-                "(source_manifest_component_sha256, member_plan_component_sha256, "
-                "effective_content_component_sha256, selected_component_sha256, "
-                "owner_component_sha256, policy_component_sha256, "
-                "artifact_semantics_sha256) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                (*components, artifact_semantics_sha256),
-            ),
-            (
-                "INSERT INTO catalog_artifact_semantic_input_seals "
-                "(artifact_semantics_sha256) VALUES (%s)",
-                (artifact_semantics_sha256,),
+                "INSERT INTO catalog_artifact_semantic_inputs "
+                "(artifact_semantics_sha256, source_manifest_component_sha256, "
+                "member_plan_component_sha256, effective_content_component_sha256, "
+                "selected_component_sha256, owner_component_sha256, "
+                "policy_component_sha256) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (artifact_semantics_sha256, *components),
             ),
         ],
     )
@@ -826,22 +741,12 @@ def _artifact_semantic_input_family_rows(
     *,
     artifact_semantics_sha256: bytes,
 ) -> tuple[list[tuple[Any, ...]], ...]:
-    return tuple(
+    return (
         connector.fetch_all(
-            f"SELECT * FROM {table} WHERE artifact_semantics_sha256 = %s",
+            "SELECT * FROM catalog_artifact_semantic_inputs "
+            "WHERE artifact_semantics_sha256 = %s",
             (artifact_semantics_sha256,),
-        )
-        for table in (
-            "catalog_artifact_semantic_input_seals",
-            "catalog_artifact_semantic_input_identities",
-            "catalog_artifact_semantic_source_manifest_sha256s",
-            "catalog_artifact_semantic_member_plan_sha256s",
-            "catalog_artifact_semantic_effective_content_sha256s",
-            "catalog_artifact_semantic_selected_sha256s",
-            "catalog_artifact_semantic_owner_sha256s",
-            "catalog_artifact_semantic_policy_sha256s",
-            "catalog_artifact_semantic_input_anchors",
-        )
+        ),
     )
 
 
@@ -1712,8 +1617,7 @@ def test_all_fifteen_static_strategies_match_the_closed_phase_registry(
         ),
         CleanupTargetKind.PUBLICATION_CANDIDATE: (
             "PC_SEALS",
-            "PC_PREPARED_VALUES",
-            "PC_PREPARED_ANCHOR",
+            "PC_PREPARED",
             "PC_INPUT",
             "PC_BATCH_VALUES",
             "PC_BATCH_ANCHOR",
@@ -1761,10 +1665,7 @@ def test_all_fifteen_static_strategies_match_the_closed_phase_registry(
             "GOS_CLAIM",
             "GOS_ROOT",
         ),
-        CleanupTargetKind.ARTIFACT_BLOB: (
-            "AB_LOCATIONS",
-            "AB_ROOT",
-        ),
+        CleanupTargetKind.ARTIFACT_BLOB: ("AB_ROOT",),
         CleanupTargetKind.CANONICAL_VALUE: (
             "CV_DICTIONARY",
             "CV_SEMANTIC_LINK",
@@ -1848,7 +1749,7 @@ def test_first_vertical_batch_cleanup_is_exactly_child_first() -> None:
         "catalog_tag_term_anchors",
         "catalog_source_snapshot_manifest_identity_anchors",
         "catalog_artifact_policies",
-        "catalog_artifact_semantic_input_anchors",
+        "catalog_artifact_semantic_inputs",
     )
     source_scope = canonical["CV_DICTIONARY"][0]
     assert source_scope.primary_key == ("scope_key",)
@@ -1880,23 +1781,7 @@ def test_first_vertical_batch_cleanup_is_exactly_child_first() -> None:
         "catalog_artifact_policy_semantics_anchors",
     )
     assert canonical["CV_DICTIONARY"][-1].delete_sql == (
-        "DELETE FROM catalog_artifact_semantic_input_seals "
-        "WHERE artifact_semantics_sha256 = %s",
-        "DELETE FROM catalog_artifact_semantic_input_identities "
-        "WHERE artifact_semantics_sha256 = %s",
-        "DELETE FROM catalog_artifact_semantic_source_manifest_sha256s "
-        "WHERE artifact_semantics_sha256 = %s",
-        "DELETE FROM catalog_artifact_semantic_member_plan_sha256s "
-        "WHERE artifact_semantics_sha256 = %s",
-        "DELETE FROM catalog_artifact_semantic_effective_content_sha256s "
-        "WHERE artifact_semantics_sha256 = %s",
-        "DELETE FROM catalog_artifact_semantic_selected_sha256s "
-        "WHERE artifact_semantics_sha256 = %s",
-        "DELETE FROM catalog_artifact_semantic_owner_sha256s "
-        "WHERE artifact_semantics_sha256 = %s",
-        "DELETE FROM catalog_artifact_semantic_policy_sha256s "
-        "WHERE artifact_semantics_sha256 = %s",
-        "DELETE FROM catalog_artifact_semantic_input_anchors "
+        "DELETE FROM catalog_artifact_semantic_inputs "
         "WHERE artifact_semantics_sha256 = %s",
     )
 
@@ -2284,32 +2169,24 @@ def test_candidate_cleanup_deletes_committed_prepared_family_child_first(
 
         def record_delete(sql: str, data: tuple[Any, ...] = ()) -> int:
             statement = sql.lstrip()
-            if statement.startswith("DELETE FROM catalog_prepared_artifact_"):
+            if statement.startswith("DELETE FROM catalog_prepared_artifacts"):
                 family_deletes.append(statement.split()[2])
             return original_execute_affected(sql, data)
 
         with patch.object(connector, "execute_affected", side_effect=record_delete):
             results = _drain(connector, gate, cycle)
-        assert family_deletes == [
-            "catalog_prepared_artifact_seals",
-            "catalog_prepared_artifact_states",
-            "catalog_prepared_artifact_protection_tokens",
-            "catalog_prepared_artifact_storage_generations",
-            "catalog_prepared_artifact_storage_codec_versions",
-            "catalog_prepared_artifact_sha256s",
-            "catalog_prepared_artifact_anchors",
-        ]
-        assert results[-1].deleted_count == 11
+        assert family_deletes == ["catalog_prepared_artifacts"]
+        assert results[-1].deleted_count == 9
         assert _prepared_artifact_family_rows(
             connector,
             candidate_id=candidate_id,
             publication_key=publication_key,
-        ) == tuple([] for _ in range(7))
+        ) == ([],)
     finally:
         connector.close()
 
 
-def test_candidate_cleanup_rejects_partial_prepared_family_before_writes(
+def test_candidate_cleanup_has_no_partial_prepared_row_surface(
     tmp_path: Path,
 ) -> None:
     connector = _database(tmp_path / "candidate-partial-prepared.sqlite3")
@@ -2317,14 +2194,13 @@ def test_candidate_cleanup_rejects_partial_prepared_family_before_writes(
         candidate_id = bytes((22,)) + b"c" * 15
         publication_key = b"p" * 32
         _seed_cleanup_candidate(connector, candidate_id=candidate_id)
-        _seed_prepared_artifact_family(
-            connector,
-            candidate_id=candidate_id,
-            publication_key=publication_key,
-            artifact_sha256=b"a" * 32,
-            state="COMMITTED",
-            include_seal=False,
-        )
+        with pytest.raises(DatabaseDuplicateKeyError):
+            connector.execute(
+                "INSERT INTO catalog_prepared_artifacts "
+                "(candidate_id, publication_key) VALUES (%s, %s)",
+                (candidate_id, publication_key),
+            )
+        assert not connector.fetch_one("SELECT 1 FROM catalog_prepared_artifacts")
         gate = _exclusive(connector)
         cycle = _begin(
             connector,
@@ -2333,28 +2209,13 @@ def test_candidate_cleanup_rejects_partial_prepared_family_before_writes(
             22,
             max_rows=32,
         )
-        family_before = _prepared_artifact_family_rows(
-            connector,
-            candidate_id=candidate_id,
-            publication_key=publication_key,
-        )
-        protocol_before = _cleanup_protocol_snapshot(connector)
-        with pytest.raises(CleanupUnavailableError, match="cleanup row changed"):
-            _advance(connector, gate, cycle, 1, b"p" * 32, now=3)
-        assert (
-            _prepared_artifact_family_rows(
-                connector,
-                candidate_id=candidate_id,
-                publication_key=publication_key,
-            )
-            == family_before
-        )
-        assert _cleanup_protocol_snapshot(connector) == protocol_before
+        results = _drain(connector, gate, cycle)
+        assert results[-1].deleted_count == 8
     finally:
         connector.close()
 
 
-def test_candidate_prepared_value_delete_faults_roll_back_every_statement(
+def test_candidate_prepared_row_delete_fault_rolls_back_atomically(
     tmp_path: Path,
 ) -> None:
     connector = _database(tmp_path / "candidate-prepared-delete-faults.sqlite3")
@@ -2377,10 +2238,12 @@ def test_candidate_prepared_value_delete_faults_roll_back_every_statement(
             23,
             max_rows=32,
         )
-        deleted_seal = _advance(connector, gate, cycle, 1, b"s" * 32, now=3)
-        assert deleted_seal.phase == "PC_SEALS" and deleted_seal.row_count == 1
-        transitioned = _advance(connector, gate, cycle, 2, b"t" * 32, now=4)
-        assert transitioned.phase == "PC_PREPARED_VALUES"
+        transitioned = _advance_to_cleanup_phase(
+            connector,
+            gate,
+            cycle,
+            "PC_PREPARED",
+        )
         assert transitioned.generation == 1
 
         family_before = _prepared_artifact_family_rows(
@@ -2389,13 +2252,7 @@ def test_candidate_prepared_value_delete_faults_roll_back_every_statement(
             publication_key=publication_key,
         )
         protocol_before = _cleanup_protocol_snapshot(connector)
-        value_tables = (
-            "catalog_prepared_artifact_states",
-            "catalog_prepared_artifact_protection_tokens",
-            "catalog_prepared_artifact_storage_generations",
-            "catalog_prepared_artifact_storage_codec_versions",
-            "catalog_prepared_artifact_sha256s",
-        )
+        value_tables = ("catalog_prepared_artifacts",)
         original_execute_affected = connector.execute_affected
         for failed_table in value_tables:
             triggered = False
@@ -4352,17 +4209,7 @@ def test_canonical_semantic_family_delete_faults_roll_back_every_statement(
             CleanupTargetKind.CANONICAL_VALUE
         ].phases["CV_DICTIONARY"][-1]
         tables = tuple(statement.split()[2] for statement in semantic_spec.delete_sql)
-        assert tables == (
-            "catalog_artifact_semantic_input_seals",
-            "catalog_artifact_semantic_input_identities",
-            "catalog_artifact_semantic_source_manifest_sha256s",
-            "catalog_artifact_semantic_member_plan_sha256s",
-            "catalog_artifact_semantic_effective_content_sha256s",
-            "catalog_artifact_semantic_selected_sha256s",
-            "catalog_artifact_semantic_owner_sha256s",
-            "catalog_artifact_semantic_policy_sha256s",
-            "catalog_artifact_semantic_input_anchors",
-        )
+        assert tables == ("catalog_artifact_semantic_inputs",)
         original_execute_affected = connector.execute_affected
         for failed_table in tables:
             triggered = False
@@ -4415,11 +4262,11 @@ def test_canonical_semantic_family_delete_faults_roll_back_every_statement(
             (b"c" * 16, b"p" * 32),
         ),
         (
-            "catalog_artifact_semantics_sha256s",
-            "INSERT INTO catalog_artifact_semantics_sha256s "
-            "(revision, publication_key, artifact_semantics_sha256) "
-            "VALUES (1, %s, %s)",
-            (b"p" * 32,),
+            "catalog_artifacts",
+            "INSERT INTO catalog_artifacts "
+            "(revision, publication_key, artifact_sha256, artifact_semantics_sha256) "
+            "VALUES (1, %s, %s, %s)",
+            (b"p" * 32, b"a" * 32),
         ),
     ),
 )
@@ -4710,12 +4557,8 @@ def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
             [
                 (
                     "INSERT INTO catalog_artifact_blobs "
-                    "(artifact_sha256, size_bytes) VALUES (%s, 4)",
-                    (artifact,),
-                ),
-                (
-                    "INSERT INTO catalog_artifact_location "
-                    "(artifact_sha256, artifact_locator_sha256) VALUES (%s, %s)",
+                    "(artifact_sha256, size_bytes, artifact_locator_sha256) "
+                    "VALUES (%s, 4, %s)",
                     (artifact, b"l" * 32),
                 ),
             ],
@@ -4775,16 +4618,19 @@ def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
     ("blocker_table", "blocker_sql", "blocker_parameters"),
     (
         (
-            "catalog_prepared_artifact_sha256s",
-            "INSERT INTO catalog_prepared_artifact_sha256s "
-            "(candidate_id, publication_key, artifact_sha256) VALUES (%s, %s, %s)",
-            (b"c" * 16, b"p" * 32),
+            "catalog_prepared_artifacts",
+            "INSERT INTO catalog_prepared_artifacts "
+            "(candidate_id, publication_key, protection_token, artifact_sha256, "
+            "storage_codec_version, storage_generation, state) "
+            "VALUES (%s, %s, %s, %s, 1, 1, 'COMMITTED')",
+            (b"c" * 16, b"p" * 32, b"t" * 184),
         ),
         (
-            "catalog_artifact_sha256s",
-            "INSERT INTO catalog_artifact_sha256s "
-            "(revision, publication_key, artifact_sha256) VALUES (1, %s, %s)",
-            (b"p" * 32,),
+            "catalog_artifacts",
+            "INSERT INTO catalog_artifacts "
+            "(revision, publication_key, artifact_semantics_sha256, artifact_sha256) "
+            "VALUES (1, %s, %s, %s)",
+            (b"p" * 32, b"s" * 32),
         ),
     ),
 )
@@ -4802,12 +4648,8 @@ def test_artifact_blob_cleanup_retains_every_physical_sha_fact(
             [
                 (
                     "INSERT INTO catalog_artifact_blobs "
-                    "(artifact_sha256, size_bytes) VALUES (%s, 4)",
-                    (artifact_sha256,),
-                ),
-                (
-                    "INSERT INTO catalog_artifact_location "
-                    "(artifact_sha256, artifact_locator_sha256) VALUES (%s, %s)",
+                    "(artifact_sha256, size_bytes, artifact_locator_sha256) "
+                    "VALUES (%s, 4, %s)",
                     (artifact_sha256, b"l" * 32),
                 ),
                 (blocker_sql, (*blocker_parameters, artifact_sha256)),
@@ -4823,11 +4665,6 @@ def test_artifact_blob_cleanup_retains_every_physical_sha_fact(
         )
         results = _drain(connector, gate, cycle)
         assert results[-1].deleted_count == 0
-        assert connector.fetch_one(
-            "SELECT artifact_sha256 FROM catalog_artifact_location "
-            "WHERE artifact_sha256 = %s",
-            (artifact_sha256,),
-        ) == (artifact_sha256,)
         assert connector.fetch_one(
             "SELECT artifact_sha256 FROM catalog_artifact_blobs "
             "WHERE artifact_sha256 = %s",
@@ -5158,7 +4995,7 @@ def test_latest_receipt_corruption_and_stale_attempts_fail_before_writes(
         connector.close()
 
 
-def test_intermediate_empty_terminal_response_loss_is_zero_write_replay(
+def test_empty_terminal_response_loss_is_zero_write_replay(
     tmp_path: Path,
 ) -> None:
     connector = _database(tmp_path / "terminal-transition-replay.sqlite3")
@@ -5166,8 +5003,9 @@ def test_intermediate_empty_terminal_response_loss_is_zero_write_replay(
         gate = _exclusive(connector)
         cycle = _begin(connector, gate, CleanupTargetKind.ARTIFACT_BLOB, 47, max_rows=8)
         committed = _advance(connector, gate, cycle, 1, b"t" * 32, now=3)
-        assert committed.phase == "AB_ROOT"
-        assert committed.phase_complete and not committed.replayed
+        assert committed.phase is None
+        assert committed.phase_complete and committed.cycle_complete
+        assert not committed.replayed
         before = (
             connector.fetch_all(
                 "SELECT * FROM operational_cleanup_checkpoints "
@@ -5183,13 +5021,13 @@ def test_intermediate_empty_terminal_response_loss_is_zero_write_replay(
         replay = _advance(connector, gate, cycle, 1, b"t" * 32, now=4)
         assert replay == CleanupBatchResult(
             cycle=cycle,
-            phase="AB_ROOT",
-            generation=1,
+            phase=None,
+            generation=None,
             cursor=b"",
             deleted_count=0,
             row_count=0,
             phase_complete=True,
-            cycle_complete=False,
+            cycle_complete=True,
             replayed=True,
         )
         after = (
@@ -5402,10 +5240,8 @@ def test_cleanup_sql_is_bounded_static_and_has_portable_mariadb_lock_shape(
     assert "SELECT PREDICATE" not in source
     for removed_surface in (
         "CATALOG_ARTIFACT_IDENTITY",
-        "FROM CATALOG_PREPARED_ARTIFACTS",
         "FROM CATALOG_ARTIFACT_SEMANTIC_INPUT AS",
         "FROM CATALOG_ARTIFACT_DELTA_OLD",
-        "FROM CATALOG_ARTIFACTS AS",
         "DELETE FROM CATALOG_ARTIFACT_DELTA_OLD",
         "DELETE FROM CATALOG_ARTIFACT_DELTA_NEW",
     ):

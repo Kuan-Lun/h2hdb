@@ -1220,13 +1220,10 @@ class ArtifactPreparationRepository:
             after=checkpoint.cursor,
         )
         actual_rows = work.connector.fetch_all(
-            "SELECT seal.publication_key FROM catalog_prepared_artifact_seals AS seal "
-            "JOIN catalog_prepared_artifact_states AS state "
-            "ON state.candidate_id = seal.candidate_id "
-            "AND state.publication_key = seal.publication_key "
-            "WHERE seal.candidate_id = %s AND seal.publication_key > %s "
-            "AND state.state IN ('PREPARED', 'COMMITTED') "
-            "ORDER BY seal.publication_key LIMIT 128",
+            "SELECT publication_key FROM catalog_prepared_artifacts "
+            "WHERE candidate_id = %s AND publication_key > %s "
+            "AND state IN ('PREPARED', 'COMMITTED') "
+            "ORDER BY publication_key LIMIT 128",
             (mutation.candidate.candidate_id, checkpoint.cursor),
         )
         actual = tuple(
@@ -3803,7 +3800,7 @@ def _derive_delta_keys(
     old_rows: list[tuple[Any, ...]] = []
     if mutation.base_catalog is not None:
         old_rows = work.connector.fetch_all(
-            "SELECT publication_key FROM catalog_artifact_seals "
+            "SELECT publication_key FROM catalog_artifacts "
             "WHERE revision = %s AND publication_key > %s "
             "ORDER BY publication_key LIMIT 128",
             (mutation.base_catalog.revision, after),
@@ -3825,15 +3822,9 @@ def _old_artifact(
     if mutation.base_catalog is None:
         return None
     rows = work.connector.fetch_all(
-        "SELECT semantics.artifact_semantics_sha256, digest.artifact_sha256 "
-        "FROM catalog_artifact_seals AS seal "
-        "JOIN catalog_artifact_semantics_sha256s AS semantics "
-        "ON semantics.revision = seal.revision "
-        "AND semantics.publication_key = seal.publication_key "
-        "JOIN catalog_artifact_sha256s AS digest "
-        "ON digest.revision = seal.revision "
-        "AND digest.publication_key = seal.publication_key "
-        "WHERE seal.revision = %s AND seal.publication_key = %s LIMIT 2",
+        "SELECT artifact_semantics_sha256, artifact_sha256 "
+        "FROM catalog_artifacts "
+        "WHERE revision = %s AND publication_key = %s LIMIT 2",
         (mutation.base_catalog.revision, publication_key),
     )
     if not rows:
@@ -4029,12 +4020,12 @@ def _operation_keys(
         )
     elif operations == ("DELETE",):
         rows = work.connector.fetch_all(
-            "SELECT publication_key FROM catalog_artifact_seals "
+            "SELECT publication_key FROM catalog_artifacts "
             "WHERE revision = %s AND publication_key > %s "
             "AND NOT EXISTS ("
             "SELECT 1 FROM catalog_candidate_artifact_inputs input "
             "WHERE input.candidate_id = %s "
-            "AND input.publication_key = catalog_artifact_seals.publication_key) "
+            "AND input.publication_key = catalog_artifacts.publication_key) "
             "ORDER BY publication_key LIMIT 128",
             (base, after, candidate),
         )
@@ -4044,12 +4035,9 @@ def _operation_keys(
         predicates: list[str] = []
         parameters: list[Any] = [base]
         old_exists = (
-            "SELECT 1 FROM catalog_artifact_seals old_seal "
-            "JOIN catalog_artifact_semantics_sha256s old_artifact "
-            "ON old_artifact.revision = old_seal.revision "
-            "AND old_artifact.publication_key = old_seal.publication_key "
-            "WHERE old_seal.revision = %s "
-            "AND old_seal.publication_key = input.publication_key"
+            "SELECT 1 FROM catalog_artifacts old_artifact "
+            "WHERE old_artifact.revision = %s "
+            "AND old_artifact.publication_key = input.publication_key"
         )
         if "CREATE" in operations:
             predicates.append(f"NOT EXISTS ({old_exists})")
@@ -4900,23 +4888,18 @@ def _persist_artifact_byte_identities(
     _insert_or_compare(
         work,
         "catalog_artifact_blobs",
-        ("artifact_sha256", "size_bytes"),
-        (receipt.artifact_sha256, receipt.size_bytes),
-        key_where="artifact_sha256 = %s",
-        key_parameters=(receipt.artifact_sha256,),
-        conflict_label="artifact blob",
-    )
-    _insert_or_compare(
-        work,
-        "catalog_artifact_location",
-        ("artifact_sha256", "artifact_locator_sha256"),
-        (receipt.artifact_sha256, receipt.artifact_locator_sha256),
+        ("artifact_sha256", "size_bytes", "artifact_locator_sha256"),
+        (
+            receipt.artifact_sha256,
+            receipt.size_bytes,
+            receipt.artifact_locator_sha256,
+        ),
         key_where="artifact_sha256 = %s OR artifact_locator_sha256 = %s",
         key_parameters=(
             receipt.artifact_sha256,
             receipt.artifact_locator_sha256,
         ),
-        conflict_label="artifact location",
+        conflict_label="artifact blob",
     )
     try:
         ensure_prepared_artifact_family(
@@ -5027,11 +5010,11 @@ def _load_authority_facts(
         "observation.observation_identity_sha256, "
         "input.artifact_semantics_sha256, operation.operation, "
         "semantics.source_manifest_component_sha256, "
-        "semantic_member.member_plan_component_sha256, "
-        "semantic_effective.effective_content_component_sha256, "
-        "semantic_selected.selected_component_sha256, "
-        "semantic_owner.owner_component_sha256, "
-        "semantic_policy.policy_component_sha256 "
+        "semantics.member_plan_component_sha256, "
+        "semantics.effective_content_component_sha256, "
+        "semantics.selected_component_sha256, "
+        "semantics.owner_component_sha256, "
+        "semantics.policy_component_sha256 "
         "FROM catalog_publication_selections AS selection "
         "JOIN catalog_publication_identities AS pub "
         "ON pub.publication_key = selection.publication_key "
@@ -5045,26 +5028,8 @@ def _load_authority_facts(
         "JOIN catalog_candidate_artifact_inputs AS input "
         "ON input.candidate_id = selection.candidate_id "
         "AND input.publication_key = selection.publication_key "
-        "JOIN catalog_artifact_semantic_input_seals AS semantic_seal "
-        "ON semantic_seal.artifact_semantics_sha256 = input.artifact_semantics_sha256 "
-        "JOIN catalog_artifact_semantic_source_manifest_sha256s AS semantics "
-        "ON semantics.artifact_semantics_sha256 = "
-        "semantic_seal.artifact_semantics_sha256 "
-        "JOIN catalog_artifact_semantic_member_plan_sha256s AS semantic_member "
-        "ON semantic_member.artifact_semantics_sha256 = "
-        "semantic_seal.artifact_semantics_sha256 "
-        "JOIN catalog_artifact_semantic_effective_content_sha256s AS semantic_effective "
-        "ON semantic_effective.artifact_semantics_sha256 = "
-        "semantic_seal.artifact_semantics_sha256 "
-        "JOIN catalog_artifact_semantic_selected_sha256s AS semantic_selected "
-        "ON semantic_selected.artifact_semantics_sha256 = "
-        "semantic_seal.artifact_semantics_sha256 "
-        "JOIN catalog_artifact_semantic_owner_sha256s AS semantic_owner "
-        "ON semantic_owner.artifact_semantics_sha256 = "
-        "semantic_seal.artifact_semantics_sha256 "
-        "JOIN catalog_artifact_semantic_policy_sha256s AS semantic_policy "
-        "ON semantic_policy.artifact_semantics_sha256 = "
-        "semantic_seal.artifact_semantics_sha256 "
+        "JOIN catalog_artifact_semantic_inputs AS semantics "
+        "ON semantics.artifact_semantics_sha256 = input.artifact_semantics_sha256 "
         "JOIN catalog_artifact_operations AS operation "
         "ON operation.candidate_id = input.candidate_id "
         "AND operation.publication_key = input.publication_key "

@@ -610,7 +610,7 @@ class PublicationFinalizationRepository:
         try:
             for item in current_items:
                 work.compare_and_swap(
-                    "UPDATE catalog_prepared_artifact_states SET state = 'COMMITTED' "
+                    "UPDATE catalog_prepared_artifacts SET state = 'COMMITTED' "
                     "WHERE candidate_id = %s AND publication_key = %s "
                     "AND state = 'PREPARED'",
                     (item.candidate_id, item.publication_key),
@@ -685,38 +685,22 @@ class PublicationFinalizationRepository:
 
 
 _ITEM_SELECT = (
-    "SELECT seal.candidate_id, seal.publication_key, digest.artifact_sha256, "
-    "codec.storage_codec_version, generation.storage_generation, "
-    "token.protection_token, state.state, artifact_blob.size_bytes, "
-    "location.artifact_locator_sha256, codec_seal.storage_codec_version, "
+    "SELECT prepared.candidate_id, prepared.publication_key, "
+    "prepared.artifact_sha256, prepared.storage_codec_version, "
+    "prepared.storage_generation, prepared.protection_token, prepared.state, "
+    "artifact_blob.size_bytes, artifact_blob.artifact_locator_sha256, "
+    "codec_seal.storage_codec_version, "
     "adapter.adapter_id "
 )
 
 _ITEM_JOINS = (
-    "FROM catalog_prepared_artifact_seals AS seal "
-    "LEFT JOIN catalog_prepared_artifact_sha256s AS digest "
-    "ON digest.candidate_id = seal.candidate_id "
-    "AND digest.publication_key = seal.publication_key "
-    "LEFT JOIN catalog_prepared_artifact_storage_codec_versions AS codec "
-    "ON codec.candidate_id = seal.candidate_id "
-    "AND codec.publication_key = seal.publication_key "
-    "LEFT JOIN catalog_prepared_artifact_storage_generations AS generation "
-    "ON generation.candidate_id = seal.candidate_id "
-    "AND generation.publication_key = seal.publication_key "
-    "LEFT JOIN catalog_prepared_artifact_protection_tokens AS token "
-    "ON token.candidate_id = seal.candidate_id "
-    "AND token.publication_key = seal.publication_key "
-    "LEFT JOIN catalog_prepared_artifact_states AS state "
-    "ON state.candidate_id = seal.candidate_id "
-    "AND state.publication_key = seal.publication_key "
+    "FROM catalog_prepared_artifacts AS prepared "
     "LEFT JOIN catalog_artifact_blobs AS artifact_blob "
-    "ON artifact_blob.artifact_sha256 = digest.artifact_sha256 "
-    "LEFT JOIN catalog_artifact_location AS location "
-    "ON location.artifact_sha256 = digest.artifact_sha256 "
+    "ON artifact_blob.artifact_sha256 = prepared.artifact_sha256 "
     "LEFT JOIN catalog_artifact_storage_codec_seals AS codec_seal "
-    "ON codec_seal.storage_codec_version = codec.storage_codec_version "
+    "ON codec_seal.storage_codec_version = prepared.storage_codec_version "
     "LEFT JOIN catalog_artifact_storage_codec_adapter_ids AS adapter "
-    "ON adapter.storage_codec_version = codec.storage_codec_version "
+    "ON adapter.storage_codec_version = prepared.storage_codec_version "
 )
 
 
@@ -768,8 +752,8 @@ def _load_page_items(
     rows = connector.fetch_all(
         _ITEM_SELECT
         + _ITEM_JOINS
-        + "WHERE seal.candidate_id = %s AND seal.publication_key > %s "
-        "ORDER BY seal.publication_key LIMIT %s",
+        + "WHERE prepared.candidate_id = %s AND prepared.publication_key > %s "
+        "ORDER BY prepared.publication_key LIMIT %s",
         (candidate_id, cursor, page_limit),
     )
     try:
@@ -789,7 +773,7 @@ def _load_exact_item(
     row = connector.fetch_one(
         _ITEM_SELECT
         + _ITEM_JOINS
-        + "WHERE seal.candidate_id = %s AND seal.publication_key = %s",
+        + "WHERE prepared.candidate_id = %s AND prepared.publication_key = %s",
         (candidate_id, publication_key),
     )
     if not row:
@@ -900,7 +884,7 @@ def _lock_current_items(
     state_rows = work.lock_rows(
         LockRank.CHILD,
         lock_keys,
-        "SELECT publication_key, state FROM catalog_prepared_artifact_states "
+        "SELECT publication_key, state FROM catalog_prepared_artifacts "
         f"WHERE candidate_id = %s AND publication_key IN ({placeholders}) "
         "ORDER BY publication_key",
         (page.candidate_id, *(item.publication_key for item in page.items)),

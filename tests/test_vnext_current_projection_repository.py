@@ -294,13 +294,9 @@ def _seed_projection(
             )
             connector.execute(
                 "INSERT INTO catalog_artifact_blobs "
-                "(artifact_sha256, size_bytes) VALUES (%s, %s)",
-                (artifact_sha256, len(artifact_payload)),
-            )
-            connector.execute(
-                "INSERT INTO catalog_artifact_location "
-                "(artifact_sha256, artifact_locator_sha256) VALUES (%s, %s)",
-                (artifact_sha256, locator_sha256),
+                "(artifact_sha256, size_bytes, artifact_locator_sha256) "
+                "VALUES (%s, %s, %s)",
+                (artifact_sha256, len(artifact_payload), locator_sha256),
             )
             ensure_catalog_artifact_family(
                 connector,
@@ -531,7 +527,7 @@ def test_sealed_projection_corruption_is_not_silently_omitted(
             else:
                 artifact_sha256 = expected[publication_key][4]
                 connector.execute(
-                    "UPDATE catalog_artifact_location "
+                    "UPDATE catalog_artifact_blobs "
                     "SET artifact_locator_sha256 = %s WHERE artifact_sha256 = %s",
                     (b"z" * 32, artifact_sha256),
                 )
@@ -571,11 +567,10 @@ def test_sqlite_page_scan_uses_revision_publication_key_primary_index(
             artifact_scan = tuple(
                 detail
                 for detail in details
-                if "artifact_seal" in detail and "SEARCH" in detail
+                if "artifact" in detail and "SEARCH" in detail
             )
             assert any(
-                "USING COVERING INDEX sqlite_autoindex_catalog_artifact_seals_1"
-                in detail
+                "USING INDEX sqlite_autoindex_catalog_artifacts_1" in detail
                 and expected_constraint in detail
                 for detail in artifact_scan
             ), details

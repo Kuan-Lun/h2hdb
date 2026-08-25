@@ -429,14 +429,10 @@ def _artifact_fixture(
     )
     identifier = artifact_id(gid, artifact_sha256)
     connector.execute(
-        "INSERT INTO catalog_artifact_blobs (artifact_sha256, size_bytes) "
-        "VALUES (%s, %s)",
-        (artifact_sha256, len(artifact_bytes)),
-    )
-    connector.execute(
-        "INSERT INTO catalog_artifact_location "
-        "(artifact_sha256, artifact_locator_sha256) VALUES (%s, %s)",
-        (artifact_sha256, locator),
+        "INSERT INTO catalog_artifact_blobs "
+        "(artifact_sha256, size_bytes, artifact_locator_sha256) "
+        "VALUES (%s, %s, %s)",
+        (artifact_sha256, len(artifact_bytes), locator),
     )
     _, inserted = ensure_catalog_artifact_family(
         connector,
@@ -717,7 +713,7 @@ def test_artifact_name_lookup_uses_one_bounded_set_query_per_publication_family(
         )
         assert sum("FROM catalog_subjects AS s" in query for query in queries) == 1
         assert (
-            sum("FROM catalog_artifact_anchors AS a" in query for query in queries) == 1
+            sum("FROM catalog_artifacts AS artifact" in query for query in queries) == 1
         )
     finally:
         connector.close()
@@ -762,7 +758,7 @@ def test_artifact_reader_rejects_a_safe_but_noncanonical_locator(
             encode_artifact_locator(("safe", "wrong.cbz")),
         )
         connector.execute(
-            "UPDATE catalog_artifact_location SET artifact_locator_sha256 = %s "
+            "UPDATE catalog_artifact_blobs SET artifact_locator_sha256 = %s "
             "WHERE artifact_sha256 = %s",
             (wrong_locator, artifact_values["artifact_sha256"]),
         )
