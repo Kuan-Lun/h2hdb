@@ -195,6 +195,8 @@ __all__ = [
     "decode_publication_id",
     "publication_key",
     "publication_key_hex",
+    "publication_selection_occurrence_sha256",
+    "catalog_publication_occurrence_sha256",
     "validate_artifact_component_kind",
     "validate_canonical_value_identity",
     "validate_file_name",
@@ -4686,6 +4688,47 @@ def publication_key_hex(
     """Return the API-only lowercase hex form of :func:`publication_key`."""
 
     return digest_to_hex(publication_key(gid, algorithm_version=algorithm_version))
+
+
+def publication_selection_occurrence_sha256(
+    candidate_id: bytes,
+    publication_key_value: bytes,
+) -> bytes:
+    """Return the collision-checked candidate/publication occurrence identity."""
+
+    candidate = _require_fixed_bytes(
+        candidate_id,
+        length=16,
+        field_name="publication selection candidate_id",
+    )
+    publication = _require_digest(
+        publication_key_value,
+        field_name="publication selection publication_key",
+    )
+    digest = sha256(b"h2hdb-vnext-publication-selection-occurrence-v1\0")
+    digest.update(candidate)
+    digest.update(publication)
+    return digest.digest()
+
+
+def catalog_publication_occurrence_sha256(
+    revision: int,
+    publication_key_value: bytes,
+) -> bytes:
+    """Return the collision-checked revision/publication occurrence identity."""
+
+    catalog_revision = _require_positive_int63(
+        revision,
+        field_name="catalog publication occurrence revision",
+    )
+    publication = _require_digest(
+        publication_key_value,
+        field_name="catalog publication occurrence publication_key",
+    )
+    digest = sha256(b"h2hdb-vnext-catalog-publication-occurrence-v1\0")
+    digest.update(catalog_revision.to_bytes(8, "big"))
+    digest.update(publication)
+    return digest.digest()
 
 
 def artifact_id(gid: int, artifact_sha256: bytes) -> bytes:

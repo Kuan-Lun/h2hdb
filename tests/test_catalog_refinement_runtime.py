@@ -799,21 +799,17 @@ _IMPACTED_FAMILY_FIXTURES = (
         "content",
         "content_sha256",
         b"r" * 32,
-        "catalog_a_impacted_content_anchors",
+        "catalog_analysis_impacted_content",
         "catalog_a_impacted_content_provenance",
-        "catalog_a_impacted_content_witnesses",
-        "catalog_a_impacted_content_seals",
         "ix_a_impacted_content_key_gallery",
     ),
     (
         "gid",
         "gid",
         17,
-        "catalog_a_impacted_gid_anchors",
+        "catalog_analysis_impacted_gid",
         "catalog_a_impacted_gid_provenance",
-        "catalog_a_impacted_gid_witnesses",
-        "catalog_a_impacted_gid_seals",
-        "ix_a_impacted_gid_key_gallery",
+        "sqlite_autoindex_catalog_a_impacted_gid_provenance_storage_1",
     ),
 )
 
@@ -823,8 +819,13 @@ def _insert_impacted_gallery_workset(
     analysis_id: bytes,
 ) -> None:
     scope_key = vnext_identity.source_scope_key("filesystem", b"r" * 32, 1)
+    connector.execute(
+        "INSERT INTO catalog_gallery_upload_times (gid, upload_time) VALUES (%s, %s)",
+        (17, 1),
+    )
     for gallery_id in (1, 2):
         locator_sha256 = bytes((gallery_id,)) * 32
+        source_gallery_name = f"gallery-{gallery_id}".encode("ascii")
         _insert_canonical_seal(
             connector,
             value_sha256=locator_sha256,
@@ -834,7 +835,12 @@ def _insert_impacted_gallery_workset(
         connector.execute(
             "INSERT INTO catalog_source_locator_identity "
             "(locator_sha256, source_gallery_name) VALUES (%s, %s)",
-            (locator_sha256, f"gallery-{gallery_id}".encode("ascii")),
+            (locator_sha256, source_gallery_name),
+        )
+        connector.execute(
+            "INSERT INTO catalog_source_gallery_name_gids "
+            "(source_gallery_name, gid) VALUES (%s, %s)",
+            (source_gallery_name, 17),
         )
         connector.execute(
             "INSERT INTO catalog_gallery_identities "
@@ -848,6 +854,11 @@ def _insert_impacted_gallery_workset(
             ),
         )
         connector.execute(
+            "INSERT INTO catalog_gallery_source_name_accesses "
+            "(gallery_id, source_gallery_name) VALUES (%s, %s)",
+            (gallery_id, source_gallery_name),
+        )
+        connector.execute(
             "INSERT INTO catalog_analysis_impacted_galleries "
             "(analysis_id, gallery_id) VALUES (%s, %s)",
             (analysis_id, gallery_id),
@@ -857,7 +868,7 @@ def _insert_impacted_gallery_workset(
 def _insert_impacted_key_family(
     connector: SQLiteConnector,
     analysis_id: bytes,
-    fixture: tuple[str, str, bytes | int, str, str, str, str, str],
+    fixture: tuple[str, str, bytes | int, str, str, str],
     *,
     witness_gallery_id: int = 1,
 ) -> None:
@@ -865,16 +876,23 @@ def _insert_impacted_key_family(
         _family,
         key_column,
         key_value,
-        anchor_table,
+        impacted_table,
         provenance_table,
-        witness_table,
-        seal_table,
         _lookup_index,
     ) = fixture
-    connector.execute(
-        f"INSERT INTO {anchor_table} (analysis_id, {key_column}) VALUES (%s, %s)",
-        (analysis_id, key_value),
-    )
+    if _family == "gid":
+        for gallery_id in (1, 2):
+            connector.execute(
+                "INSERT INTO catalog_a_impacted_gid_provenance_storage "
+                "(analysis_id, gallery_id) VALUES (%s, %s)",
+                (analysis_id, gallery_id),
+            )
+        connector.execute(
+            "INSERT INTO catalog_analysis_impacted_gid_storage "
+            "(analysis_id, gid) VALUES (%s, %s)",
+            (analysis_id, key_value),
+        )
+        return
     for gallery_id in (1, 2):
         connector.execute(
             f"INSERT INTO {provenance_table} "
@@ -882,13 +900,9 @@ def _insert_impacted_key_family(
             (analysis_id, gallery_id, key_value),
         )
     connector.execute(
-        f"INSERT INTO {witness_table} "
+        f"INSERT INTO {impacted_table} "
         f"(analysis_id, {key_column}, witness_gallery_id) VALUES (%s, %s, %s)",
         (analysis_id, key_value, witness_gallery_id),
-    )
-    connector.execute(
-        f"INSERT INTO {seal_table} (analysis_id, {key_column}) VALUES (%s, %s)",
-        (analysis_id, key_value),
     )
 
 
@@ -925,6 +939,39 @@ def _insert_complete_analysis(
         (analysis_id, analysis_id),
     )
     _insert_analysis_seals(connector, analysis_id)
+
+
+def _insert_detached_snapshot_audit(
+    connector: SQLiteConnector,
+    *,
+    snapshot_manifest_sha256: bytes = b"h" * 32,
+) -> tuple[bytes, bytes]:
+    """Insert a valid inactive analysis whose snapshot bytes are already gone."""
+
+    source_root = b"r" * 32
+    _insert_canonical_seal(
+        connector,
+        value_sha256=source_root,
+        digest_domain=b"source_root_v1",
+        page_sha256=b"R" * 32,
+    )
+    _insert_manifest_policy(connector, 1)
+    scope_key = vnext_identity.source_scope_key("filesystem", source_root, 1)
+    _insert_source_scope(connector, scope_key=scope_key, source_root=source_root)
+    _insert_analysis_policy(connector, 1)
+    analysis_id = b"h" * 16
+    build_id = b"j" * 16
+    _insert_complete_analysis(
+        connector,
+        analysis_id=analysis_id,
+        build_id=build_id,
+    )
+    connector.execute(
+        "INSERT INTO catalog_analysis_snapshot_manifest "
+        "(analysis_id, snapshot_manifest_sha256) VALUES (%s, %s)",
+        (analysis_id, snapshot_manifest_sha256),
+    )
+    return analysis_id, build_id
 
 
 def _replace_active_analysis_chain(
@@ -1321,7 +1368,7 @@ def test_incremental_impact_accepts_complete_minimum_witness_families_and_uses_l
         assert all("MIN(" not in query.upper() for query, _data in minimum_reads)
         for fixture in _IMPACTED_FAMILY_FIXTURES:
             provenance_table = fixture[4]
-            lookup_index = fixture[7]
+            lookup_index = fixture[5]
             query, data = next(
                 item for item in minimum_reads if provenance_table in item[0]
             )
@@ -1333,38 +1380,61 @@ def test_incremental_impact_accepts_complete_minimum_witness_families_and_uses_l
 
 
 @pytest.mark.parametrize(
-    "fixture",
-    _IMPACTED_FAMILY_FIXTURES,
-    ids=tuple(fixture[0] for fixture in _IMPACTED_FAMILY_FIXTURES),
-)
-@pytest.mark.parametrize(
-    ("fault", "error_match"),
+    ("fixture", "fault", "error_match"),
     (
         (
+            _IMPACTED_FAMILY_FIXTURES[0],
             "missing_provenance",
-            "anchor lacks provenance, witness, or seal",
+            "row lacks its witness provenance",
         ),
         (
+            _IMPACTED_FAMILY_FIXTURES[0],
             "missing_witness",
-            "anchor lacks provenance, witness, or seal",
+            "row lacks its witness provenance",
         ),
         (
-            "missing_seal",
-            "anchor lacks provenance, witness, or seal",
+            _IMPACTED_FAMILY_FIXTURES[0],
+            "orphan_provenance",
+            "provenance has no atomic key row",
         ),
-        ("orphan_provenance", "provenance has no anchor"),
-        ("orphan_witness", "witness lacks its anchor or provenance"),
-        ("orphan_seal", "seal lacks its anchor or witness"),
-        ("nonminimum_witness", "witness is not the minimum provenance gallery"),
+        (
+            _IMPACTED_FAMILY_FIXTURES[0],
+            "nonminimum_witness",
+            "witness is not the minimum provenance gallery",
+        ),
+        (
+            _IMPACTED_FAMILY_FIXTURES[1],
+            "missing_provenance",
+            "key storage lacks complete derived provenance",
+        ),
+        (
+            _IMPACTED_FAMILY_FIXTURES[1],
+            "orphan_provenance",
+            "provenance has no atomic key row",
+        ),
+        (
+            _IMPACTED_FAMILY_FIXTURES[1],
+            "missing_identity_chain",
+            "provenance storage lacks its identity chain or atomic key",
+        ),
+    ),
+    ids=(
+        "content-missing-provenance",
+        "content-missing-witness",
+        "content-orphan-provenance",
+        "content-nonminimum-witness",
+        "gid-missing-provenance",
+        "gid-orphan-provenance",
+        "gid-missing-identity-chain",
     ),
 )
 def test_incremental_impact_rejects_partial_or_nonminimum_witness_families(
     tmp_path: Path,
-    fixture: tuple[str, str, bytes | int, str, str, str, str, str],
+    fixture: tuple[str, str, bytes | int, str, str, str],
     fault: str,
     error_match: str,
 ) -> None:
-    family, key_column, key_value, anchor, provenance, witness, seal, _index = fixture
+    family, key_column, key_value, impacted, provenance, _index = fixture
     connector = _generated_catalog_database(
         tmp_path / f"impacted-key-{family}-{fault}.sqlite3"
     )
@@ -1375,44 +1445,45 @@ def test_incremental_impact_rejects_partial_or_nonminimum_witness_families(
         _insert_impacted_key_family(connector, analysis_id, fixture)
 
         connector.execute("PRAGMA foreign_keys = OFF")
-        if fault == "missing_provenance":
-            for table in (seal, witness, provenance):
-                connector.execute(
-                    f"DELETE FROM {table} WHERE analysis_id = %s AND {key_column} = %s",
-                    (analysis_id, key_value),
-                )
-        elif fault == "missing_witness":
-            for table in (seal, witness):
-                connector.execute(
-                    f"DELETE FROM {table} WHERE analysis_id = %s AND {key_column} = %s",
-                    (analysis_id, key_value),
-                )
-        elif fault == "missing_seal":
+        if family == "gid" and fault == "missing_provenance":
             connector.execute(
-                f"DELETE FROM {seal} WHERE analysis_id = %s AND {key_column} = %s",
+                "DELETE FROM catalog_a_impacted_gid_provenance_storage "
+                "WHERE analysis_id = %s",
+                (analysis_id,),
+            )
+        elif family == "gid" and fault == "orphan_provenance":
+            connector.execute(
+                "DELETE FROM catalog_analysis_impacted_gid_storage "
+                "WHERE analysis_id = %s AND gid = %s",
+                (analysis_id, key_value),
+            )
+        elif family == "gid":
+            connector.execute(
+                "DELETE FROM catalog_gallery_source_name_accesses "
+                "WHERE gallery_id = %s",
+                (1,),
+            )
+        elif fault == "missing_provenance":
+            connector.execute(
+                f"DELETE FROM {provenance} WHERE analysis_id = %s "
+                f"AND {key_column} = %s",
+                (analysis_id, key_value),
+            )
+        elif fault == "missing_witness":
+            connector.execute(
+                f"UPDATE {impacted} SET witness_gallery_id = 3 "
+                f"WHERE analysis_id = %s AND {key_column} = %s",
                 (analysis_id, key_value),
             )
         elif fault == "orphan_provenance":
-            for table in (seal, witness, anchor):
-                connector.execute(
-                    f"DELETE FROM {table} WHERE analysis_id = %s AND {key_column} = %s",
-                    (analysis_id, key_value),
-                )
-        elif fault == "orphan_witness":
-            for table in (seal, provenance, anchor):
-                connector.execute(
-                    f"DELETE FROM {table} WHERE analysis_id = %s AND {key_column} = %s",
-                    (analysis_id, key_value),
-                )
-        elif fault == "orphan_seal":
-            for table in (witness, provenance, anchor):
-                connector.execute(
-                    f"DELETE FROM {table} WHERE analysis_id = %s AND {key_column} = %s",
-                    (analysis_id, key_value),
-                )
+            connector.execute(
+                f"DELETE FROM {impacted} WHERE analysis_id = %s "
+                f"AND {key_column} = %s",
+                (analysis_id, key_value),
+            )
         else:
             connector.execute(
-                f"UPDATE {witness} SET witness_gallery_id = 2 "
+                f"UPDATE {impacted} SET witness_gallery_id = 2 "
                 f"WHERE analysis_id = %s AND {key_column} = %s",
                 (analysis_id, key_value),
             )
@@ -1635,6 +1706,110 @@ def test_valid_active_publication_checks_full_history_and_bounded_active_reads(
     )
 
 
+@pytest.mark.parametrize(
+    "fault",
+    ("missing_payload", "missing_gallery_chain", "wrong_gallery_publication"),
+)
+def test_catalog_occurrence_storage_rejects_relational_corruption(
+    tmp_path: Path,
+    fault: str,
+) -> None:
+    connector = _generated_catalog_database(
+        tmp_path / f"catalog-occurrence-{fault}.sqlite3"
+    )
+    publication_key = vnext_identity.publication_key(17)
+    occurrence = vnext_identity.catalog_publication_occurrence_sha256(
+        1, publication_key
+    )
+    try:
+        connector.execute("PRAGMA foreign_keys = OFF")
+        connector.execute(
+            "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
+            "VALUES (%s, %s)",
+            (17, 1),
+        )
+        connector.execute(
+            "INSERT INTO catalog_source_gallery_name_gids "
+            "(source_gallery_name, gid) VALUES (%s, %s)",
+            (b"gallery-1", 17),
+        )
+        connector.execute(
+            "INSERT INTO catalog_gallery_source_name_accesses "
+            "(gallery_id, source_gallery_name) VALUES (%s, %s)",
+            (1, b"gallery-1"),
+        )
+        connector.execute(
+            "INSERT INTO catalog_publication_identities (publication_key, gid) "
+            "VALUES (%s, %s)",
+            (publication_key, 17),
+        )
+        connector.execute(
+            "INSERT INTO catalog_publication_occurrence_identities "
+            "(catalog_occurrence_sha256, revision, publication_key) "
+            "VALUES (%s, %s, %s)",
+            (occurrence, 1, publication_key),
+        )
+        connector.execute(
+            "INSERT INTO catalog_publication_storage "
+            "(catalog_occurrence_sha256, gallery_id, summary_sha256, "
+            "language_sha256, modified_at, source_title_sha256) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (occurrence, 1, b"s" * 32, b"l" * 32, 1, b"t" * 32),
+        )
+        connector.execute("PRAGMA foreign_keys = ON")
+
+        catalog_refinement._validate_catalog_occurrence_storage(
+            connector,
+            revision=1,
+        )
+
+        if fault == "missing_payload":
+            connector.execute(
+                "DELETE FROM catalog_publication_storage "
+                "WHERE catalog_occurrence_sha256 = %s",
+                (occurrence,),
+            )
+        elif fault == "missing_gallery_chain":
+            connector.execute(
+                "DELETE FROM catalog_gallery_source_name_accesses "
+                "WHERE gallery_id = %s",
+                (1,),
+            )
+        else:
+            other_publication_key = vnext_identity.publication_key(18)
+            connector.execute(
+                "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
+                "VALUES (%s, %s)",
+                (18, 1),
+            )
+            connector.execute(
+                "INSERT INTO catalog_source_gallery_name_gids "
+                "(source_gallery_name, gid) VALUES (%s, %s)",
+                (b"gallery-other", 18),
+            )
+            connector.execute(
+                "INSERT INTO catalog_publication_identities (publication_key, gid) "
+                "VALUES (%s, %s)",
+                (other_publication_key, 18),
+            )
+            connector.execute(
+                "UPDATE catalog_gallery_source_name_accesses "
+                "SET source_gallery_name = %s WHERE gallery_id = %s",
+                (b"gallery-other", 1),
+            )
+
+        with pytest.raises(
+            catalog_refinement.CatalogSemanticValidationError,
+            match="identity/storage is not congruent",
+        ):
+            catalog_refinement._validate_catalog_occurrence_storage(
+                connector,
+                revision=1,
+            )
+    finally:
+        connector.close()
+
+
 def test_active_publication_compares_descriptor_count_with_transient_projection(
     tmp_path: Path,
 ) -> None:
@@ -1682,6 +1857,106 @@ def test_active_source_rejects_analysis_output_manifest_corruption(
             match="revision manifest differs from its analysis output",
         ):
             catalog_refinement.check_source_baseline_channel_v1(connector)
+    finally:
+        connector.close()
+
+
+def test_historical_snapshot_audit_digest_does_not_require_payload(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_catalog_database(tmp_path / "historical-audit.sqlite3")
+    try:
+        _insert_detached_snapshot_audit(connector)
+
+        catalog_refinement.check_canonical_reference_domains_v1(connector)
+        catalog_refinement.check_retention_contract_v1(connector)
+    finally:
+        connector.close()
+
+
+def test_live_source_working_snapshot_pin_requires_payload(tmp_path: Path) -> None:
+    connector = _generated_catalog_database(tmp_path / "working-snapshot-pin.sqlite3")
+    try:
+        _analysis_id, build_id = _insert_detached_snapshot_audit(connector)
+        connector.execute(
+            "INSERT INTO operational_source_working_builds "
+            "(slot, build_id, assigned_at) VALUES (1, %s, 1)",
+            (build_id,),
+        )
+
+        with pytest.raises(
+            catalog_refinement.CatalogSemanticValidationError,
+            match="live source-working analysis or publication-candidate snapshot",
+        ):
+            catalog_refinement.check_retention_contract_v1(connector)
+    finally:
+        connector.close()
+
+
+def test_uncommitted_publication_candidate_snapshot_pin_requires_payload(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_catalog_database(tmp_path / "candidate-snapshot-pin.sqlite3")
+    snapshot_manifest = b"h" * 32
+    try:
+        analysis_id, _build_id = _insert_detached_snapshot_audit(
+            connector,
+            snapshot_manifest_sha256=snapshot_manifest,
+        )
+        candidate_id = b"k" * 16
+        connector.execute(
+            "INSERT INTO catalog_publication_candidate_anchors (candidate_id) "
+            "VALUES (%s)",
+            (candidate_id,),
+        )
+        connector.execute(
+            "INSERT INTO catalog_publication_candidate_analysis_ids "
+            "(candidate_id, analysis_id) VALUES (%s, %s)",
+            (candidate_id, analysis_id),
+        )
+
+        with pytest.raises(
+            catalog_refinement.CatalogSemanticValidationError,
+            match="live source-working analysis or publication-candidate snapshot",
+        ):
+            catalog_refinement.check_canonical_reference_domains_v1(connector)
+
+        _insert_canonical_seal(
+            connector,
+            value_sha256=snapshot_manifest,
+            digest_domain=b"source_snapshot_manifest_v1",
+            page_sha256=b"H" * 32,
+        )
+        _insert_snapshot_manifest_identity(
+            connector,
+            snapshot_manifest_sha256=snapshot_manifest,
+        )
+        catalog_refinement.check_canonical_reference_domains_v1(connector)
+    finally:
+        connector.close()
+
+
+def test_current_source_snapshot_pin_requires_payload(tmp_path: Path) -> None:
+    connector = _generated_catalog_database(tmp_path / "current-snapshot-pin.sqlite3")
+    try:
+        analysis_id = _insert_active_source_head(connector)
+        missing_manifest = b"x" * 32
+        connector.execute(
+            "UPDATE catalog_source_revision_snapshot_manifests "
+            "SET snapshot_manifest_sha256 = %s WHERE source_revision = 1",
+            (missing_manifest,),
+        )
+        connector.execute(
+            "UPDATE catalog_analysis_snapshot_manifest "
+            "SET snapshot_manifest_sha256 = %s WHERE analysis_id = %s",
+            (missing_manifest, analysis_id),
+        )
+
+        with pytest.raises(
+            catalog_refinement.CatalogSemanticValidationError,
+            match="active source snapshot descriptor must resolve to exactly one row",
+        ):
+            catalog_refinement.check_retention_contract_v1(connector)
     finally:
         connector.close()
 

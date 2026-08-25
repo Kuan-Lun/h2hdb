@@ -1,11 +1,9 @@
-"""Exact physical protocols for publication-owned sealed families.
+"""Exact physical protocols for publication-owned immutable facts.
 
-The public candidate, publication, title, and contributor relations are
-read-only projections.  This module owns the corresponding narrow physical
-write protocols: every member is validated as one exact immutable tuple,
-partial families fail closed, and the PK-only completion seal is always the
-last insert.  Publication identifiers and artifact names remain derived from
-the collision-checked publication-key/GID pair and are never stored here.
+Candidate and contributor relations retain their sealed-family protocols.
+Each catalog occurrence is split losslessly into a collision-checked
+revision/publication identity and one complete gallery/scalar/title payload.
+The historical publication and title row shapes are read-only projections.
 """
 
 from __future__ import annotations
@@ -18,16 +16,19 @@ __all__ = [
     "PublicationFamilyCollisionError",
     "PublicationFamilyPartialError",
     "PublicationIdentityFamily",
+    "PublicationSelectionFamily",
     "ensure_catalog_contributor_family",
     "ensure_catalog_publication_family",
     "ensure_catalog_publication_title_family",
     "ensure_publication_candidate_family",
     "ensure_publication_identity_family",
+    "ensure_publication_selection_family",
     "load_catalog_contributor_family",
     "load_catalog_publication_family",
     "load_catalog_publication_title_family",
     "load_publication_candidate_family",
     "load_publication_identity_family",
+    "load_publication_selection_family",
 ]
 
 from dataclasses import dataclass
@@ -54,17 +55,13 @@ _CANDIDATE_SEAL = "catalog_publication_candidate_definition_seals"
 
 _PUBLICATION_IDENTITY = "catalog_publication_identities"
 
-_PUBLICATION_ANCHOR = "catalog_publication_anchors"
-_PUBLICATION_GALLERY = "catalog_publication_gallery_ids"
-_PUBLICATION_SUMMARY = "catalog_publication_summary_sha256s"
-_PUBLICATION_LANGUAGE = "catalog_publication_language_sha256s"
-_PUBLICATION_MODIFIED = "catalog_publication_modified_ats"
-_PUBLICATION_SEAL = "catalog_publication_seals"
+_SELECTION_OCCURRENCE_IDENTITY = "catalog_publication_selection_occurrence_identities"
+_SELECTION_STORAGE = "catalog_publication_selection_storage"
 
-_TITLE_ANCHOR = "catalog_publication_title_anchors"
-_TITLE_SOURCE_TITLE = "catalog_publication_title_source_title_sha256s"
-_TITLE_SOURCE_GALLERY = "catalog_publication_title_source_gallery_names"
-_TITLE_SEAL = "catalog_publication_title_seals"
+_PUBLICATION_OCCURRENCE_IDENTITY = "catalog_publication_occurrence_identities"
+_PUBLICATION_STORAGE = "catalog_publication_storage"
+_PUBLICATION = "catalog_publications"
+_TITLE = "catalog_publication_titles"
 
 _CONTRIBUTOR_ANCHOR = "catalog_contributor_anchors"
 _CONTRIBUTOR_NAME = "catalog_contributor_name_sha256s"
@@ -127,6 +124,24 @@ class PublicationIdentityFamily:
 
 
 @dataclass(frozen=True, slots=True)
+class PublicationSelectionFamily:
+    candidate_id: bytes
+    gallery_id: int
+    publication_key: bytes
+
+    def __post_init__(self) -> None:
+        require_uuid16(self.candidate_id, field="publication selection candidate_id")
+        require_positive_int63(
+            self.gallery_id,
+            field="publication selection gallery_id",
+        )
+        require_digest32(
+            self.publication_key,
+            field="publication selection publication_key",
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class CatalogPublicationFamily:
     revision: int
     publication_key: bytes
@@ -134,6 +149,7 @@ class CatalogPublicationFamily:
     summary_sha256: bytes
     language_sha256: bytes
     modified_at: int
+    source_title_sha256: bytes
 
     def __post_init__(self) -> None:
         require_positive_int63(self.revision, field="catalog publication revision")
@@ -148,6 +164,10 @@ class CatalogPublicationFamily:
         require_digest32(self.summary_sha256, field="catalog publication summary")
         require_digest32(self.language_sha256, field="catalog publication language")
         require_int63(self.modified_at, field="catalog publication modified_at")
+        require_digest32(
+            self.source_title_sha256,
+            field="catalog publication source_title_sha256",
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +226,34 @@ def _locking_suffix(*, backend: str, locking: bool) -> str:
     if backend not in {"sqlite", "mariadb"}:
         raise ValueError("publication family backend is not registered")
     return " FOR UPDATE" if backend == "mariadb" and locking else ""
+
+
+def _require_gallery_publication_key(
+    connector: Any,
+    *,
+    gallery_id: int,
+    publication_key: bytes,
+) -> None:
+    """Prove the immutable gallery identity chain reaches the expected key."""
+
+    rows = connector.fetch_all(
+        "SELECT identity.publication_key "
+        "FROM catalog_gallery_source_name_accesses AS access "
+        "JOIN catalog_source_gallery_name_gids AS name_gid "
+        "ON name_gid.source_gallery_name = access.source_gallery_name "
+        "JOIN catalog_publication_identities AS identity "
+        "ON identity.gid = name_gid.gid "
+        "WHERE access.gallery_id = %s LIMIT 2",
+        (gallery_id,),
+    )
+    if len(rows) != 1 or len(rows[0]) != 1:
+        raise PublicationFamilyPartialError(
+            "gallery has no complete immutable publication identity chain"
+        )
+    if rows[0][0] != publication_key:
+        raise PublicationFamilyCollisionError(
+            "gallery derives a different publication_key"
+        )
 
 
 def _candidate_family_row(
@@ -437,6 +485,139 @@ def ensure_publication_identity_family(
     return family, True
 
 
+def load_publication_selection_family(
+    connector: Any,
+    *,
+    candidate_id: bytes,
+    publication_key: bytes,
+    backend: str = "sqlite",
+    locking: bool = False,
+) -> PublicationSelectionFamily | None:
+    candidate = require_uuid16(candidate_id, field="publication selection candidate_id")
+    publication = require_digest32(
+        publication_key,
+        field="publication selection publication_key",
+    )
+    occurrence = identity.publication_selection_occurrence_sha256(
+        candidate, publication
+    )
+    rows = connector.fetch_all(
+        "SELECT occurrence.selection_occurrence_sha256, occurrence.candidate_id, "
+        "occurrence.publication_key, stored.selection_occurrence_sha256, "
+        "stored.gallery_id, derived.publication_key "
+        f"FROM {_SELECTION_OCCURRENCE_IDENTITY} AS occurrence "
+        f"LEFT JOIN {_SELECTION_STORAGE} AS stored "
+        "ON stored.selection_occurrence_sha256 = "
+        "occurrence.selection_occurrence_sha256 "
+        "LEFT JOIN catalog_gallery_source_name_accesses AS access "
+        "ON access.gallery_id = stored.gallery_id "
+        "LEFT JOIN catalog_source_gallery_name_gids AS name_gid "
+        "ON name_gid.source_gallery_name = access.source_gallery_name "
+        "LEFT JOIN catalog_publication_identities AS derived "
+        "ON derived.gid = name_gid.gid "
+        "WHERE occurrence.selection_occurrence_sha256 = %s OR "
+        "(occurrence.candidate_id = %s AND occurrence.publication_key = %s) LIMIT 2"
+        + _locking_suffix(backend=backend, locking=locking),
+        (occurrence, candidate, publication),
+    )
+    if not rows:
+        return None
+    if len(rows) != 1:
+        raise PublicationFamilyCollisionError(
+            "publication selection occurrence resolves to multiple rows"
+        )
+    row = tuple(rows[0])
+    if len(row) != 6 or tuple(row[:4]) != (
+        occurrence,
+        candidate,
+        publication,
+        occurrence,
+    ):
+        if len(row) == 6 and tuple(row[:3]) == (
+            occurrence,
+            candidate,
+            publication,
+        ):
+            raise PublicationFamilyPartialError(
+                "publication selection occurrence has no gallery payload"
+            )
+        raise PublicationFamilyCollisionError(
+            "publication selection occurrence has an invalid shape or collision"
+        )
+    if row[5] != publication:
+        raise PublicationFamilyCollisionError(
+            "publication selection gallery derives a different publication_key"
+        )
+    try:
+        return PublicationSelectionFamily(candidate, row[4], publication)
+    except (TypeError, ValueError) as error:
+        raise PublicationFamilyCollisionError(
+            "publication selection occurrence contains invalid facts"
+        ) from error
+
+
+def ensure_publication_selection_family(
+    connector: Any,
+    family: PublicationSelectionFamily,
+    *,
+    backend: str = "sqlite",
+) -> tuple[PublicationSelectionFamily, bool]:
+    if not isinstance(family, PublicationSelectionFamily):
+        raise TypeError("family must be PublicationSelectionFamily")
+    _locking_suffix(backend=backend, locking=False)
+    _require_gallery_publication_key(
+        connector,
+        gallery_id=family.gallery_id,
+        publication_key=family.publication_key,
+    )
+    existing = load_publication_selection_family(
+        connector,
+        candidate_id=family.candidate_id,
+        publication_key=family.publication_key,
+        backend=backend,
+    )
+    if existing is not None:
+        if existing != family:
+            raise PublicationFamilyCollisionError(
+                "publication selection replay changed exact facts"
+            )
+        return existing, False
+    occurrence = identity.publication_selection_occurrence_sha256(
+        family.candidate_id, family.publication_key
+    )
+    try:
+        connector.execute(
+            f"INSERT INTO {_SELECTION_OCCURRENCE_IDENTITY} "
+            "(selection_occurrence_sha256, candidate_id, publication_key) "
+            "VALUES (%s, %s, %s)",
+            (occurrence, family.candidate_id, family.publication_key),
+        )
+        connector.execute(
+            f"INSERT INTO {_SELECTION_STORAGE} "
+            "(selection_occurrence_sha256, gallery_id) VALUES (%s, %s)",
+            (occurrence, family.gallery_id),
+        )
+    except DatabaseDuplicateKeyError as error:
+        try:
+            raced = load_publication_selection_family(
+                connector,
+                candidate_id=family.candidate_id,
+                publication_key=family.publication_key,
+                backend=backend,
+                locking=True,
+            )
+        except PublicationFamilyCollisionError:
+            raise PublicationFamilyCollisionError(
+                "publication selection concurrent replay left partial facts"
+            ) from error
+        if raced != family:
+            raise PublicationFamilyCollisionError(
+                "publication selection concurrent replay changed exact facts"
+            ) from error
+        return raced, False
+    return family, True
+
+
 def _publication_family_row(
     connector: Any,
     revision: int,
@@ -445,43 +626,35 @@ def _publication_family_row(
     backend: str,
     locking: bool,
 ) -> tuple[Any, ...]:
-    members = (
-        _PUBLICATION_ANCHOR,
-        _PUBLICATION_GALLERY,
-        _PUBLICATION_SUMMARY,
-        _PUBLICATION_LANGUAGE,
-        _PUBLICATION_MODIFIED,
-        _PUBLICATION_SEAL,
+    occurrence = identity.catalog_publication_occurrence_sha256(
+        revision, publication_key
     )
-    key_union = " UNION ".join(
-        f"SELECT revision, publication_key FROM {table} "
-        "WHERE revision = %s AND publication_key = %s"
-        for table in members
-    )
-    row = connector.fetch_one(
-        "WITH family_keys(revision, publication_key) AS ("
-        + key_union
-        + ") SELECT anchor.revision, anchor.publication_key, gallery.revision, "
-        "gallery.publication_key, gallery.gallery_id, summary.revision, "
-        "summary.publication_key, summary.summary_sha256, language.revision, "
-        "language.publication_key, language.language_sha256, modified.revision, "
-        "modified.publication_key, modified.modified_at, seal.revision, "
-        "seal.publication_key FROM family_keys AS family_key "
-        f"LEFT JOIN {_PUBLICATION_ANCHOR} AS anchor "
-        "USING (revision, publication_key) "
-        f"LEFT JOIN {_PUBLICATION_GALLERY} AS gallery "
-        "USING (revision, publication_key) "
-        f"LEFT JOIN {_PUBLICATION_SUMMARY} AS summary "
-        "USING (revision, publication_key) "
-        f"LEFT JOIN {_PUBLICATION_LANGUAGE} AS language "
-        "USING (revision, publication_key) "
-        f"LEFT JOIN {_PUBLICATION_MODIFIED} AS modified "
-        "USING (revision, publication_key) "
-        f"LEFT JOIN {_PUBLICATION_SEAL} AS seal USING (revision, publication_key)"
+    rows = connector.fetch_all(
+        "SELECT occurrence.catalog_occurrence_sha256, occurrence.revision, "
+        "occurrence.publication_key, stored.catalog_occurrence_sha256, "
+        "stored.gallery_id, stored.summary_sha256, stored.language_sha256, "
+        "stored.modified_at, stored.source_title_sha256, derived.publication_key "
+        f"FROM {_PUBLICATION_OCCURRENCE_IDENTITY} AS occurrence "
+        f"LEFT JOIN {_PUBLICATION_STORAGE} AS stored "
+        "ON stored.catalog_occurrence_sha256 = occurrence.catalog_occurrence_sha256 "
+        "LEFT JOIN catalog_gallery_source_name_accesses AS access "
+        "ON access.gallery_id = stored.gallery_id "
+        "LEFT JOIN catalog_source_gallery_name_gids AS name_gid "
+        "ON name_gid.source_gallery_name = access.source_gallery_name "
+        "LEFT JOIN catalog_publication_identities AS derived "
+        "ON derived.gid = name_gid.gid "
+        "WHERE occurrence.catalog_occurrence_sha256 = %s OR "
+        "(occurrence.revision = %s AND occurrence.publication_key = %s) LIMIT 2"
         + _locking_suffix(backend=backend, locking=locking),
-        (revision, publication_key) * len(members),
+        (occurrence, revision, publication_key),
     )
-    return tuple(row)
+    if not rows:
+        return ()
+    if len(rows) != 1:
+        raise PublicationFamilyCollisionError(
+            "catalog occurrence identity resolves to multiple rows"
+        )
+    return tuple(rows[0])
 
 
 def load_catalog_publication_family(
@@ -503,20 +676,39 @@ def load_catalog_publication_family(
     )
     if not row:
         return None
-    key_pairs = ((0, 1), (2, 3), (5, 6), (8, 9), (11, 12), (14, 15))
-    if len(row) != 16 or any(
-        (row[left], row[right]) != (catalog_revision, publication)
-        for left, right in key_pairs
+    occurrence = identity.catalog_publication_occurrence_sha256(
+        catalog_revision, publication
+    )
+    if len(row) != 10 or tuple(row[:4]) != (
+        occurrence,
+        catalog_revision,
+        publication,
+        occurrence,
     ):
-        raise PublicationFamilyPartialError("catalog publication family is partial")
+        if len(row) == 10 and tuple(row[:3]) == (
+            occurrence,
+            catalog_revision,
+            publication,
+        ):
+            raise PublicationFamilyPartialError(
+                "catalog occurrence identity has no complete payload"
+            )
+        raise PublicationFamilyCollisionError(
+            "catalog occurrence identity has an invalid shape or collision"
+        )
+    if row[9] != publication:
+        raise PublicationFamilyCollisionError(
+            "catalog occurrence gallery derives a different publication_key"
+        )
     try:
         return CatalogPublicationFamily(
             catalog_revision,
             publication,
             row[4],
+            row[5],
+            row[6],
             row[7],
-            row[10],
-            row[13],
+            row[8],
         )
     except (TypeError, ValueError) as error:
         raise PublicationFamilyCollisionError(
@@ -533,6 +725,11 @@ def ensure_catalog_publication_family(
     if not isinstance(family, CatalogPublicationFamily):
         raise TypeError("family must be CatalogPublicationFamily")
     _locking_suffix(backend=backend, locking=False)
+    _require_gallery_publication_key(
+        connector,
+        gallery_id=family.gallery_id,
+        publication_key=family.publication_key,
+    )
     existing = load_catalog_publication_family(
         connector,
         revision=family.revision,
@@ -545,28 +742,29 @@ def ensure_catalog_publication_family(
                 "catalog publication replay changed exact facts"
             )
         return existing, False
-    key = (family.revision, family.publication_key)
+    occurrence = identity.catalog_publication_occurrence_sha256(
+        family.revision, family.publication_key
+    )
     try:
         connector.execute(
-            f"INSERT INTO {_PUBLICATION_ANCHOR} (revision, publication_key) "
-            "VALUES (%s, %s)",
-            key,
+            f"INSERT INTO {_PUBLICATION_OCCURRENCE_IDENTITY} "
+            "(catalog_occurrence_sha256, revision, publication_key) "
+            "VALUES (%s, %s, %s)",
+            (occurrence, family.revision, family.publication_key),
         )
-        for table, column, value in (
-            (_PUBLICATION_GALLERY, "gallery_id", family.gallery_id),
-            (_PUBLICATION_SUMMARY, "summary_sha256", family.summary_sha256),
-            (_PUBLICATION_LANGUAGE, "language_sha256", family.language_sha256),
-            (_PUBLICATION_MODIFIED, "modified_at", family.modified_at),
-        ):
-            connector.execute(
-                f"INSERT INTO {table} (revision, publication_key, {column}) "
-                "VALUES (%s, %s, %s)",
-                (*key, value),
-            )
         connector.execute(
-            f"INSERT INTO {_PUBLICATION_SEAL} (revision, publication_key) "
-            "VALUES (%s, %s)",
-            key,
+            f"INSERT INTO {_PUBLICATION_STORAGE} "
+            "(catalog_occurrence_sha256, gallery_id, summary_sha256, "
+            "language_sha256, modified_at, source_title_sha256) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (
+                occurrence,
+                family.gallery_id,
+                family.summary_sha256,
+                family.language_sha256,
+                family.modified_at,
+                family.source_title_sha256,
+            ),
         )
     except DatabaseDuplicateKeyError as error:
         try:
@@ -579,7 +777,7 @@ def ensure_catalog_publication_family(
             )
         except PublicationFamilyCollisionError:
             raise PublicationFamilyCollisionError(
-                "catalog publication concurrent replay left partial facts"
+                "catalog publication concurrent replay did not leave the exact row"
             ) from error
         if raced != family:
             raise PublicationFamilyCollisionError(
@@ -597,27 +795,12 @@ def _title_family_row(
     backend: str,
     locking: bool,
 ) -> tuple[Any, ...]:
-    members = (_TITLE_ANCHOR, _TITLE_SOURCE_TITLE, _TITLE_SOURCE_GALLERY, _TITLE_SEAL)
-    key_union = " UNION ".join(
-        f"SELECT revision, publication_key FROM {table} "
-        "WHERE revision = %s AND publication_key = %s"
-        for table in members
-    )
     row = connector.fetch_one(
-        "WITH family_keys(revision, publication_key) AS ("
-        + key_union
-        + ") SELECT anchor.revision, anchor.publication_key, title.revision, "
-        "title.publication_key, title.source_title_sha256, gallery.revision, "
-        "gallery.publication_key, gallery.source_gallery_name, seal.revision, "
-        "seal.publication_key FROM family_keys AS family_key "
-        f"LEFT JOIN {_TITLE_ANCHOR} AS anchor USING (revision, publication_key) "
-        f"LEFT JOIN {_TITLE_SOURCE_TITLE} AS title "
-        "USING (revision, publication_key) "
-        f"LEFT JOIN {_TITLE_SOURCE_GALLERY} AS gallery "
-        "USING (revision, publication_key) "
-        f"LEFT JOIN {_TITLE_SEAL} AS seal USING (revision, publication_key)"
+        "SELECT revision, publication_key, source_title_sha256, "
+        f"source_gallery_name FROM {_TITLE} "
+        "WHERE revision = %s AND publication_key = %s"
         + _locking_suffix(backend=backend, locking=locking),
-        (revision, publication_key) * len(members),
+        (revision, publication_key),
     )
     return tuple(row)
 
@@ -641,18 +824,16 @@ def load_catalog_publication_title_family(
     )
     if not row:
         return None
-    key_pairs = ((0, 1), (2, 3), (5, 6), (8, 9))
-    if len(row) != 10 or any(
-        (row[left], row[right]) != (catalog_revision, publication)
-        for left, right in key_pairs
-    ):
-        raise PublicationFamilyPartialError("catalog title family is partial")
+    if len(row) != 4 or (row[0], row[1]) != (catalog_revision, publication):
+        raise PublicationFamilyCollisionError(
+            "catalog title row has an invalid shape or key"
+        )
     try:
         return CatalogPublicationTitleFamily(
             catalog_revision,
             publication,
-            row[4],
-            row[7],
+            row[2],
+            row[3],
         )
     except (TypeError, ValueError) as error:
         raise PublicationFamilyCollisionError(
@@ -675,54 +856,15 @@ def ensure_catalog_publication_title_family(
         publication_key=family.publication_key,
         backend=backend,
     )
-    if existing is not None:
-        if existing != family:
-            raise PublicationFamilyCollisionError(
-                "catalog title replay changed exact facts"
-            )
-        return existing, False
-    key = (family.revision, family.publication_key)
-    try:
-        connector.execute(
-            f"INSERT INTO {_TITLE_ANCHOR} (revision, publication_key) "
-            "VALUES (%s, %s)",
-            key,
+    if existing is None:
+        raise PublicationFamilyPartialError(
+            "catalog title projection has no complete occurrence payload"
         )
-        connector.execute(
-            f"INSERT INTO {_TITLE_SOURCE_TITLE} "
-            "(revision, publication_key, source_title_sha256) "
-            "VALUES (%s, %s, %s)",
-            (*key, family.source_title_sha256),
+    if existing != family:
+        raise PublicationFamilyCollisionError(
+            "catalog title replay changed exact facts"
         )
-        connector.execute(
-            f"INSERT INTO {_TITLE_SOURCE_GALLERY} "
-            "(revision, publication_key, source_gallery_name) "
-            "VALUES (%s, %s, %s)",
-            (*key, family.source_gallery_name),
-        )
-        connector.execute(
-            f"INSERT INTO {_TITLE_SEAL} (revision, publication_key) " "VALUES (%s, %s)",
-            key,
-        )
-    except DatabaseDuplicateKeyError as error:
-        try:
-            raced = load_catalog_publication_title_family(
-                connector,
-                revision=family.revision,
-                publication_key=family.publication_key,
-                backend=backend,
-                locking=True,
-            )
-        except PublicationFamilyCollisionError:
-            raise PublicationFamilyCollisionError(
-                "catalog title concurrent replay left partial facts"
-            ) from error
-        if raced != family:
-            raise PublicationFamilyCollisionError(
-                "catalog title concurrent replay changed exact facts"
-            ) from error
-        return raced, False
-    return family, True
+    return existing, False
 
 
 def _contributor_family_row(

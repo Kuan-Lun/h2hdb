@@ -2786,33 +2786,17 @@ def _seed_exact_delta_scalar(
     modified_at: int,
 ) -> None:
     connector.execute(
-        "INSERT INTO catalog_publication_anchors "
-        "(revision, publication_key) VALUES (%s, %s)",
-        (revision, publication_key),
-    )
-    for table, column, value in (
-        ("catalog_publication_gallery_ids", "gallery_id", gallery_id),
+        "INSERT INTO catalog_publications "
+        "(revision, publication_key, gallery_id, summary_sha256, "
+        "language_sha256, modified_at) VALUES (%s, %s, %s, %s, %s, %s)",
         (
-            "catalog_publication_summary_sha256s",
-            "summary_sha256",
+            revision,
+            publication_key,
+            gallery_id,
             summary_sha256,
-        ),
-        (
-            "catalog_publication_language_sha256s",
-            "language_sha256",
             language_sha256,
+            modified_at,
         ),
-        ("catalog_publication_modified_ats", "modified_at", modified_at),
-    ):
-        connector.execute(
-            f"INSERT INTO {table} (revision, publication_key, {column}) "
-            "VALUES (%s, %s, %s)",
-            (revision, publication_key, value),
-        )
-    connector.execute(
-        "INSERT INTO catalog_publication_seals "
-        "(revision, publication_key) VALUES (%s, %s)",
-        (revision, publication_key),
     )
 
 
@@ -2825,24 +2809,15 @@ def _seed_exact_delta_title(
     source_gallery_name: bytes,
 ) -> None:
     connector.execute(
-        "INSERT INTO catalog_publication_title_anchors "
-        "(revision, publication_key) VALUES (%s, %s)",
-        (revision, publication_key),
-    )
-    connector.execute(
-        "INSERT INTO catalog_publication_title_source_title_sha256s "
-        "(revision, publication_key, source_title_sha256) VALUES (%s, %s, %s)",
-        (revision, publication_key, source_title_sha256),
-    )
-    connector.execute(
-        "INSERT INTO catalog_publication_title_source_gallery_names "
-        "(revision, publication_key, source_gallery_name) VALUES (%s, %s, %s)",
-        (revision, publication_key, source_gallery_name),
-    )
-    connector.execute(
-        "INSERT INTO catalog_publication_title_seals "
-        "(revision, publication_key) VALUES (%s, %s)",
-        (revision, publication_key),
+        "INSERT INTO catalog_publication_titles "
+        "(revision, publication_key, source_title_sha256, source_gallery_name) "
+        "VALUES (%s, %s, %s, %s)",
+        (
+            revision,
+            publication_key,
+            source_title_sha256,
+            source_gallery_name,
+        ),
     )
 
 
@@ -2889,61 +2864,16 @@ def _exact_delta_database(path: Path) -> tuple[SQLiteConnector, bytes]:
     connector = SQLiteConnector(str(path))
     connector.connect()
     for statement in (
-        "CREATE TABLE catalog_publication_anchors ("
+        "CREATE TABLE catalog_publications ("
         "revision INTEGER NOT NULL, publication_key BLOB NOT NULL, "
+        "gallery_id INTEGER NOT NULL, summary_sha256 BLOB NOT NULL, "
+        "language_sha256 BLOB NOT NULL, modified_at INTEGER NOT NULL, "
+        "PRIMARY KEY (revision, publication_key), "
+        "UNIQUE (revision, gallery_id))",
+        "CREATE TABLE catalog_publication_titles ("
+        "revision INTEGER NOT NULL, publication_key BLOB NOT NULL, "
+        "source_title_sha256 BLOB NOT NULL, source_gallery_name BLOB NOT NULL, "
         "PRIMARY KEY (revision, publication_key))",
-        "CREATE TABLE catalog_publication_gallery_ids ("
-        "revision INTEGER NOT NULL, publication_key BLOB NOT NULL, "
-        "gallery_id INTEGER NOT NULL, PRIMARY KEY (revision, publication_key))",
-        "CREATE TABLE catalog_publication_summary_sha256s ("
-        "revision INTEGER NOT NULL, publication_key BLOB NOT NULL, "
-        "summary_sha256 BLOB NOT NULL, PRIMARY KEY (revision, publication_key))",
-        "CREATE TABLE catalog_publication_language_sha256s ("
-        "revision INTEGER NOT NULL, publication_key BLOB NOT NULL, "
-        "language_sha256 BLOB NOT NULL, PRIMARY KEY (revision, publication_key))",
-        "CREATE TABLE catalog_publication_modified_ats ("
-        "revision INTEGER NOT NULL, publication_key BLOB NOT NULL, "
-        "modified_at INTEGER NOT NULL, PRIMARY KEY (revision, publication_key))",
-        "CREATE TABLE catalog_publication_seals ("
-        "revision INTEGER NOT NULL, publication_key BLOB NOT NULL, "
-        "PRIMARY KEY (revision, publication_key))",
-        "CREATE VIEW catalog_publications AS SELECT seal.revision, "
-        "seal.publication_key, gallery.gallery_id, summary.summary_sha256, "
-        "language.language_sha256, modified.modified_at "
-        "FROM catalog_publication_seals AS seal "
-        "JOIN catalog_publication_anchors AS anchor USING (revision, publication_key) "
-        "JOIN catalog_publication_gallery_ids AS gallery "
-        "USING (revision, publication_key) "
-        "JOIN catalog_publication_summary_sha256s AS summary "
-        "USING (revision, publication_key) "
-        "JOIN catalog_publication_language_sha256s AS language "
-        "USING (revision, publication_key) "
-        "JOIN catalog_publication_modified_ats AS modified "
-        "USING (revision, publication_key)",
-        "CREATE TABLE catalog_publication_title_anchors ("
-        "revision INTEGER NOT NULL, publication_key BLOB NOT NULL, "
-        "PRIMARY KEY (revision, publication_key))",
-        "CREATE TABLE catalog_publication_title_source_title_sha256s ("
-        "revision INTEGER NOT NULL, publication_key BLOB NOT NULL, "
-        "source_title_sha256 BLOB NOT NULL, "
-        "PRIMARY KEY (revision, publication_key))",
-        "CREATE TABLE catalog_publication_title_source_gallery_names ("
-        "revision INTEGER NOT NULL, publication_key BLOB NOT NULL, "
-        "source_gallery_name BLOB NOT NULL, "
-        "PRIMARY KEY (revision, publication_key))",
-        "CREATE TABLE catalog_publication_title_seals ("
-        "revision INTEGER NOT NULL, publication_key BLOB NOT NULL, "
-        "PRIMARY KEY (revision, publication_key))",
-        "CREATE VIEW catalog_publication_titles AS SELECT seal.revision, "
-        "seal.publication_key, title.source_title_sha256, "
-        "gallery.source_gallery_name "
-        "FROM catalog_publication_title_seals AS seal "
-        "JOIN catalog_publication_title_anchors AS anchor "
-        "USING (revision, publication_key) "
-        "JOIN catalog_publication_title_source_title_sha256s AS title "
-        "USING (revision, publication_key) "
-        "JOIN catalog_publication_title_source_gallery_names AS gallery "
-        "USING (revision, publication_key)",
         "CREATE TABLE catalog_display_title_choices ("
         "display_title_policy_id INTEGER NOT NULL, "
         "source_title_sha256 BLOB NOT NULL, source_gallery_name BLOB NOT NULL, "
@@ -3115,35 +3045,34 @@ def _mutate_exact_delta_case(
     if case == "unchanged":
         return 1
     if case in {"gallery-id", "modified-at"}:
-        table, column = {
-            "gallery-id": ("catalog_publication_gallery_ids", "gallery_id"),
-            "modified-at": ("catalog_publication_modified_ats", "modified_at"),
+        column = {
+            "gallery-id": "gallery_id",
+            "modified-at": "modified_at",
         }[case]
         connector.execute(
-            f"UPDATE {table} SET {column} = %s "
+            f"UPDATE catalog_publications SET {column} = %s "
             "WHERE revision = %s AND publication_key = %s",
             (99, 2, publication_key),
         )
         return 1
     if case in {"summary", "language"}:
-        table = f"catalog_publication_{case}_sha256s"
         column = f"{case}_sha256"
         connector.execute(
-            f"UPDATE {table} SET {column} = %s "
+            f"UPDATE catalog_publications SET {column} = %s "
             "WHERE revision = %s AND publication_key = %s",
             (sha256(b"changed-" + case.encode()).digest(), 2, publication_key),
         )
         return 1
     if case == "title-current-missing":
         connector.execute(
-            "DELETE FROM catalog_publication_title_seals "
+            "DELETE FROM catalog_publication_titles "
             "WHERE revision = %s AND publication_key = %s",
             (2, publication_key),
         )
         return 1
     if case == "title-old-missing":
         connector.execute(
-            "DELETE FROM catalog_publication_title_seals "
+            "DELETE FROM catalog_publication_titles "
             "WHERE revision = %s AND publication_key = %s",
             (1, publication_key),
         )
@@ -3168,16 +3097,10 @@ def _mutate_exact_delta_case(
             (1, source_title, source_gallery_name, title),
         )
         connector.execute(
-            "UPDATE catalog_publication_title_source_title_sha256s "
-            "SET source_title_sha256 = %s WHERE revision = %s "
+            "UPDATE catalog_publication_titles SET source_title_sha256 = %s, "
+            "source_gallery_name = %s WHERE revision = %s "
             "AND publication_key = %s",
-            (source_title, 2, publication_key),
-        )
-        connector.execute(
-            "UPDATE catalog_publication_title_source_gallery_names "
-            "SET source_gallery_name = %s WHERE revision = %s "
-            "AND publication_key = %s",
-            (source_gallery_name, 2, publication_key),
+            (source_title, source_gallery_name, 2, publication_key),
         )
         return 1
     if case in {"display-title", "sort-title"}:
@@ -3416,7 +3339,7 @@ def test_exact_changed_item_keyset_returns_128_then_one(tmp_path: Path) -> None:
         tmp_path / "exact-delta-129.sqlite3"
     )
     connector.execute(
-        "UPDATE catalog_publication_summary_sha256s SET summary_sha256 = %s "
+        "UPDATE catalog_publications SET summary_sha256 = %s "
         "WHERE revision = %s AND publication_key = %s",
         (sha256(b"changed-baseline").digest(), 2, baseline_key),
     )
@@ -3491,7 +3414,7 @@ def test_sqlite_exact_changed_item_plan_uses_leading_key_searches(
     )
     details = tuple(str(row[3]).upper() for row in plan)
     assert any(
-        "CATALOG_PUBLICATION_SEALS" in detail
+        "CATALOG_PUBLICATIONS" in detail
         and "REVISION=? AND PUBLICATION_KEY>?" in detail
         for detail in details
     )

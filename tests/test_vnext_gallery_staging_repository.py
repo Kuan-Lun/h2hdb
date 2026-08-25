@@ -399,25 +399,9 @@ def _request_snapshot(connector: SQLiteConnector) -> tuple[object, ...]:
 
 
 _VERTICAL_FAMILY_TABLES = {
-    "directory": (
-        "catalog_gallery_observation_directory_anchors",
-        "catalog_gallery_observation_directory_entry_counts",
-        "catalog_gallery_observation_directory_observation_sha256s",
-        "catalog_gallery_observation_directory_seals",
-    ),
-    "stat": (
-        "catalog_gallery_observation_stat_anchors",
-        "catalog_gallery_observation_stat_file_counts",
-        "catalog_gallery_observation_stat_byte_counts",
-        "catalog_gallery_observation_stat_seals",
-    ),
-    "scan": (
-        "catalog_gallery_observation_scan_anchors",
-        "catalog_gallery_observation_scan_observation_sha256s",
-        "catalog_gallery_observation_scan_observation_versions",
-        "catalog_gallery_observation_scan_source_file_counts",
-        "catalog_gallery_observation_scan_seals",
-    ),
+    "directory": ("catalog_gallery_observation_directories",),
+    "stat": ("catalog_gallery_observation_stat",),
+    "scan": ("catalog_gallery_observation_scans",),
     "filesystem": (
         "catalog_gallery_observation_file_filesystem_anchors",
         "catalog_gallery_observation_file_filesystem_devices",
@@ -543,27 +527,11 @@ def _vertical_family_snapshot(
 ) -> tuple[list[tuple[Any, ...]], ...]:
     queries: tuple[str, ...]
     if family == "directory":
-        queries = (
-            "SELECT * FROM catalog_gallery_observation_directory_anchors",
-            "SELECT * FROM catalog_gallery_observation_directory_entry_counts",
-            "SELECT * FROM catalog_gallery_observation_directory_observation_sha256s",
-            "SELECT * FROM catalog_gallery_observation_directory_seals",
-        )
+        queries = ("SELECT * FROM catalog_gallery_observation_directories",)
     elif family == "stat":
-        queries = (
-            "SELECT * FROM catalog_gallery_observation_stat_anchors",
-            "SELECT * FROM catalog_gallery_observation_stat_file_counts",
-            "SELECT * FROM catalog_gallery_observation_stat_byte_counts",
-            "SELECT * FROM catalog_gallery_observation_stat_seals",
-        )
+        queries = ("SELECT * FROM catalog_gallery_observation_stat",)
     elif family == "scan":
-        queries = (
-            "SELECT * FROM catalog_gallery_observation_scan_anchors",
-            "SELECT * FROM catalog_gallery_observation_scan_observation_sha256s",
-            "SELECT * FROM catalog_gallery_observation_scan_observation_versions",
-            "SELECT * FROM catalog_gallery_observation_scan_source_file_counts",
-            "SELECT * FROM catalog_gallery_observation_scan_seals",
-        )
+        queries = ("SELECT * FROM catalog_gallery_observation_scans",)
     elif family == "filesystem":
         queries = (
             "SELECT * FROM catalog_gallery_observation_file_filesystem_anchors",
@@ -1474,9 +1442,7 @@ def test_mariadb_staging_authority_locks_use_for_update_in_global_order() -> Non
     assert sum("request_predecessors" in query for query in locked) == 1
 
 
-def test_mariadb_gallery_manifest_policy_is_plain_read_and_writer_is_seal_last() -> (
-    None
-):
+def test_mariadb_gallery_manifest_policy_is_plain_read_and_writer_is_atomic() -> None:
     observation_identity = b"o" * 32
 
     class RecordingConnector:
@@ -1495,7 +1461,7 @@ def test_mariadb_gallery_manifest_policy_is_plain_read_and_writer_is_seal_last()
                 return (observation_identity,)
             if "FROM catalog_manifest_policy_seals" in query:
                 return (1, 1)
-            if query.startswith("WITH family_keys(gallery_id"):
+            if "FROM catalog_gallery_manifests" in query:
                 return ()
             if "UTC_TIMESTAMP(6)" in query:
                 return (123_000_000,)
@@ -1526,7 +1492,7 @@ def test_mariadb_gallery_manifest_policy_is_plain_read_and_writer_is_seal_last()
     assert observation_query.endswith(" FOR UPDATE")
     assert "FOR UPDATE" not in policy_query
     assert any("UTC_TIMESTAMP(6)" in query for query in connector.fetches)
-    assert "catalog_gallery_manifest_seals" in connector.writes[-1]
+    assert "catalog_gallery_manifests" in connector.writes[-1]
 
 
 def test_mariadb_gallery_page_family_sql_is_static_and_seal_last() -> None:
@@ -1646,23 +1612,8 @@ def _metadata_vertical_snapshot(connector: SQLiteConnector) -> tuple[object, ...
             "FROM catalog_gallery_source_name_accesses ORDER BY gallery_id"
         ),
         connector.fetch_all(
-            "SELECT gallery_id, observation_id "
-            "FROM catalog_gallery_observation_metadata_anchors "
-            "ORDER BY gallery_id, observation_id"
-        ),
-        connector.fetch_all(
-            "SELECT gallery_id, observation_id, download_time "
-            "FROM catalog_gallery_observation_download_times "
-            "ORDER BY gallery_id, observation_id"
-        ),
-        connector.fetch_all(
-            "SELECT gallery_id, observation_id, modified_time "
-            "FROM catalog_gallery_observation_modified_times "
-            "ORDER BY gallery_id, observation_id"
-        ),
-        connector.fetch_all(
-            "SELECT gallery_id, observation_id "
-            "FROM catalog_gallery_observation_metadata_seals "
+            "SELECT gallery_id, observation_id, download_time, modified_time "
+            "FROM catalog_gallery_observation_metadata_locals "
             "ORDER BY gallery_id, observation_id"
         ),
     )
@@ -1707,10 +1658,7 @@ def test_metadata_vertical_writer_derives_narrow_facts_and_replays(
             [(12_345, 100)],
             [(b"gallery", 12_345)],
             [(gallery_id, b"gallery")],
-            [(gallery_id, handle.observation_id)],
-            [(gallery_id, handle.observation_id, 101)],
-            [(gallery_id, handle.observation_id, 102)],
-            [(gallery_id, handle.observation_id)],
+            [(gallery_id, handle.observation_id, 101, 102)],
         )
         assert _metadata_vertical_snapshot(connector) == expected
         assert connector.fetch_one(
@@ -1742,12 +1690,9 @@ def test_metadata_vertical_writer_derives_narrow_facts_and_replays(
         "catalog_gallery_upload_times",
         "catalog_source_gallery_name_gids",
         "catalog_gallery_source_name_accesses",
-        "catalog_gallery_observation_metadata_anchors",
-        "catalog_gallery_observation_download_times",
-        "catalog_gallery_observation_modified_times",
+        "catalog_gallery_observation_metadata_locals",
         "catalog_gallery_observation_metadata_digests",
         "catalog_gallery_observation_page_counts",
-        "catalog_gallery_observation_metadata_seals",
     ),
 )
 def test_metadata_vertical_insert_fault_rolls_back_every_fact(
@@ -1783,9 +1728,6 @@ def test_metadata_vertical_insert_fault_rolls_back_every_fact(
             _put_metadata(connector, gate, turn, handle, command, now=21)
         assert _request_snapshot(connector) == before
         assert _metadata_vertical_snapshot(connector) == (
-            [],
-            [],
-            [],
             [],
             [],
             [],
@@ -1930,16 +1872,16 @@ def test_metadata_vertical_corruption_mismatch_has_zero_partial_writes(
         gate, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
         handle = _begin(connector, gate, turn, build_id, gallery_id, now=20)
-        connector.execute(
-            "INSERT INTO catalog_gallery_observation_metadata_anchors "
-            "(gallery_id, observation_id) VALUES (%s, %s)",
-            (gallery_id, handle.observation_id),
-        )
-        connector.execute(
-            "INSERT INTO catalog_gallery_observation_modified_times "
-            "(gallery_id, observation_id, modified_time) VALUES (%s, %s, %s)",
-            (gallery_id, handle.observation_id, 999),
-        )
+        connector.execute("PRAGMA foreign_keys = OFF")
+        try:
+            connector.execute(
+                "INSERT INTO catalog_gallery_observation_metadata_locals "
+                "(gallery_id, observation_id, download_time, modified_time) "
+                "VALUES (%s, %s, %s, %s)",
+                (gallery_id, handle.observation_id, 21, 999),
+            )
+        finally:
+            connector.execute("PRAGMA foreign_keys = ON")
         before = _request_snapshot(connector)
         command = MetadataBatchCommand(
             encode_gallery_observation_metadata(
@@ -1951,7 +1893,7 @@ def test_metadata_vertical_corruption_mismatch_has_zero_partial_writes(
 
         with pytest.raises(
             GalleryStagingConflictError,
-            match="gallery observation modified time differs",
+            match="gallery observation metadata local differs",
         ):
             _put_metadata(connector, gate, turn, handle, command, now=21)
         assert _request_snapshot(connector) == before
@@ -1959,10 +1901,7 @@ def test_metadata_vertical_corruption_mismatch_has_zero_partial_writes(
             [],
             [],
             [],
-            [(gallery_id, handle.observation_id)],
-            [],
-            [(gallery_id, handle.observation_id, 999)],
-            [],
+            [(gallery_id, handle.observation_id, 21, 999)],
         )
         assert (
             connector.fetch_all("SELECT 1 FROM catalog_gallery_observation_metadata")
@@ -2024,10 +1963,7 @@ def test_metadata_vertical_mariadb_sql_shape_uses_server_derived_name() -> None:
         "catalog_gallery_upload_times",
         "catalog_source_gallery_name_gids",
         "catalog_gallery_source_name_accesses",
-        "catalog_gallery_observation_metadata_anchors",
-        "catalog_gallery_observation_download_times",
-        "catalog_gallery_observation_modified_times",
-        "catalog_gallery_observation_metadata_seals",
+        "catalog_gallery_observation_metadata_locals",
     )
     pilot_executions = tuple(
         (query, data)
@@ -2043,13 +1979,16 @@ def test_metadata_vertical_mariadb_sql_shape_uses_server_derived_name() -> None:
         assert "%s" in query and "?" not in query
     assert pilot_executions[1][1] == (b"server-gallery", 77)
     assert pilot_executions[2][1] == (1, b"server-gallery")
-    assert recorder.executions[-1] == pilot_executions[-1]
+    assert (
+        recorder.executions.index(pilot_executions[-1]) < len(recorder.executions) - 1
+    )
+    assert "catalog_gallery_observation_metadata_digests" in recorder.executions[-1][0]
 
 
 def test_four_vertical_family_writers_fault_replay_and_seal_visibility(
     tmp_path: Path,
 ) -> None:
-    assert sum(len(tables) for tables in _VERTICAL_FAMILY_TABLES.values()) == 19
+    assert sum(len(tables) for tables in _VERTICAL_FAMILY_TABLES.values()) == 9
     for family, tables in _VERTICAL_FAMILY_TABLES.items():
         connector = _generated_database(tmp_path / f"{family}-vertical-fault.sqlite3")
         try:
@@ -2103,7 +2042,8 @@ def test_four_vertical_family_writers_fault_replay_and_seal_visibility(
                 if sql.lstrip().startswith(f"INSERT INTO {table}")
             )
             assert inserted_tables == tables
-            assert inserted_tables[-1].endswith("_seals")
+            if family == "filesystem":
+                assert inserted_tables[-1].endswith("_seals")
             committed = _vertical_family_snapshot(connector, family)
             assert all(rows for rows in committed)
             assert len(_vertical_family_view(connector, family)) == 1
@@ -2127,19 +2067,19 @@ def test_four_vertical_family_writers_fault_replay_and_seal_visibility(
             key = (handle.gallery_id, handle.observation_id)
             if family == "directory":
                 connector.execute(
-                    "DELETE FROM catalog_gallery_observation_directory_seals "
+                    "DELETE FROM catalog_gallery_observation_directories "
                     "WHERE gallery_id = %s AND observation_id = %s",
                     key,
                 )
             elif family == "stat":
                 connector.execute(
-                    "DELETE FROM catalog_gallery_observation_stat_seals "
+                    "DELETE FROM catalog_gallery_observation_stat "
                     "WHERE gallery_id = %s AND observation_id = %s",
                     key,
                 )
             elif family == "scan":
                 connector.execute(
-                    "DELETE FROM catalog_gallery_observation_scan_seals "
+                    "DELETE FROM catalog_gallery_observation_scans "
                     "WHERE gallery_id = %s AND observation_id = %s",
                     key,
                 )
@@ -2165,38 +2105,25 @@ def test_four_vertical_family_corruption_is_zero_partial(
         key = (handle.gallery_id, handle.observation_id)
         if family == "directory":
             connector.execute(
-                "INSERT INTO catalog_gallery_observation_directory_anchors "
-                "(gallery_id, observation_id) VALUES (%s, %s)",
-                key,
-            )
-            connector.execute(
-                "INSERT INTO catalog_gallery_observation_directory_observation_sha256s "
-                "(gallery_id, observation_id, directory_observation_sha256) "
-                "VALUES (%s, %s, %s)",
-                (*key, b"x" * 32),
+                "INSERT INTO catalog_gallery_observation_directories "
+                "(gallery_id, observation_id, directory_entry_count, "
+                "directory_observation_sha256) VALUES (%s, %s, %s, %s)",
+                (*key, 999, b"x" * 32),
             )
         elif family == "stat":
             connector.execute(
-                "INSERT INTO catalog_gallery_observation_stat_anchors "
-                "(gallery_id, observation_id) VALUES (%s, %s)",
-                key,
-            )
-            connector.execute(
-                "INSERT INTO catalog_gallery_observation_stat_byte_counts "
-                "(gallery_id, observation_id, byte_count) VALUES (%s, %s, 999)",
-                key,
+                "INSERT INTO catalog_gallery_observation_stat "
+                "(gallery_id, observation_id, file_count, byte_count) "
+                "VALUES (%s, %s, %s, %s)",
+                (*key, 999, 999),
             )
         elif family == "scan":
             connector.execute(
-                "INSERT INTO catalog_gallery_observation_scan_anchors "
-                "(gallery_id, observation_id) VALUES (%s, %s)",
-                key,
-            )
-            connector.execute(
-                "INSERT INTO catalog_gallery_observation_scan_source_file_counts "
-                "(gallery_id, observation_id, source_file_count) "
-                "VALUES (%s, %s, 999)",
-                key,
+                "INSERT INTO catalog_gallery_observation_scans "
+                "(gallery_id, observation_id, scan_observation_sha256, "
+                "scan_observation_version, source_file_count) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (*key, b"x" * 32, 999, 999),
             )
         else:
             connector.execute(
@@ -2216,7 +2143,10 @@ def test_four_vertical_family_corruption_is_zero_partial(
             with connector.transaction():
                 _persist_vertical_family(connector, handle, family)
         assert _vertical_family_snapshot(connector, family) == before
-        assert _vertical_family_view(connector, family) == []
+        if family == "filesystem":
+            assert _vertical_family_view(connector, family) == []
+        else:
+            assert len(_vertical_family_view(connector, family)) == 1
     finally:
         connector.close()
 
@@ -2251,7 +2181,7 @@ def test_four_vertical_family_mariadb_sql_is_static_and_seal_last() -> None:
         for query, data in recorder.executions
         if query.lstrip().startswith("INSERT INTO catalog_gallery_observation_")
     )
-    assert len(insertions) == len(ordered_tables) == 19
+    assert len(insertions) == len(ordered_tables) == 9
     for (query, _data), table in zip(insertions, ordered_tables, strict=True):
         assert query.lstrip().startswith(f"INSERT INTO {table}")
         assert "%s" in query and "?" not in query
@@ -2738,7 +2668,7 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
             True,
         )
         connector.execute(
-            "UPDATE catalog_gallery_manifest_manifest_sha256s "
+            "UPDATE catalog_gallery_manifests "
             "SET manifest_sha256 = %s WHERE gallery_id = %s "
             "AND observation_id = %s AND manifest_policy_id = 1",
             (b"x" * 32, gallery_id, sealed.observation_id),
@@ -2761,7 +2691,7 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
                 now=63,
             )
         connector.execute(
-            "UPDATE catalog_gallery_manifest_manifest_sha256s "
+            "UPDATE catalog_gallery_manifests "
             "SET manifest_sha256 = %s WHERE gallery_id = %s "
             "AND observation_id = %s AND manifest_policy_id = 1",
             (expected_manifest, gallery_id, sealed.observation_id),
@@ -3054,7 +2984,7 @@ def test_identical_observation_on_a_later_build_reuses_canonical_identity(
             now=100_020,
         )
         connector.execute(
-            "UPDATE catalog_gallery_observation_stat_byte_counts SET byte_count = 1 "
+            "UPDATE catalog_gallery_observation_stat SET byte_count = 1 "
             "WHERE gallery_id = %s AND observation_id = %s",
             (gallery_id, first_seal.observation_id),
         )
@@ -3066,20 +2996,8 @@ def test_identical_observation_on_a_later_build_reuses_canonical_identity(
             (second_handle.staging_id,),
         ) == ("OPEN",)
         connector.execute(
-            "UPDATE catalog_gallery_observation_stat_byte_counts SET byte_count = 0 "
+            "UPDATE catalog_gallery_observation_stat SET byte_count = 0 "
             "WHERE gallery_id = %s AND observation_id = %s",
-            (gallery_id, first_seal.observation_id),
-        )
-        connector.execute(
-            "DELETE FROM catalog_gallery_observation_stat_seals "
-            "WHERE gallery_id = %s AND observation_id = %s",
-            (gallery_id, first_seal.observation_id),
-        )
-        with pytest.raises(GalleryStagingConflictError, match="stat"):
-            seal_observation(second_turn, second_handle, now=100_027)
-        connector.execute(
-            "INSERT INTO catalog_gallery_observation_stat_seals "
-            "(gallery_id, observation_id) VALUES (%s, %s)",
             (gallery_id, first_seal.observation_id),
         )
         reused = seal_observation(second_turn, second_handle, now=100_028)

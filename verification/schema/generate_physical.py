@@ -592,33 +592,17 @@ TABLE_NAMES = {
     "gallery_observation_page_key_bounds": "catalog_gallery_observation_page_key_bounds",
     "gallery_observation_page_child": "catalog_gallery_observation_page_children",
     "gallery_observation_tree_root": "catalog_gallery_observation_tree_roots",
-    "gallery_observation_metadata_anchor": "catalog_gallery_observation_metadata_anchors",
     "gallery_upload_time": "catalog_gallery_upload_times",
     "source_gallery_name_gid": "catalog_source_gallery_name_gids",
     "gallery_source_name_access": "catalog_gallery_source_name_accesses",
-    "gallery_observation_download_time": "catalog_gallery_observation_download_times",
-    "gallery_observation_modified_time": "catalog_gallery_observation_modified_times",
-    "gallery_observation_metadata_seal": "catalog_gallery_observation_metadata_seals",
+    "gallery_observation_metadata_local": "catalog_gallery_observation_metadata_locals",
     "gallery_observation_metadata": "catalog_gallery_observation_metadata",
-    "gallery_observation_scan_anchor": "catalog_gallery_observation_scan_anchors",
-    "gallery_observation_scan_observation_sha256": "catalog_gallery_observation_scan_observation_sha256s",
-    "gallery_observation_scan_observation_version": "catalog_gallery_observation_scan_observation_versions",
-    "gallery_observation_scan_source_file_count": "catalog_gallery_observation_scan_source_file_counts",
-    "gallery_observation_scan_seal": "catalog_gallery_observation_scan_seals",
     "gallery_observation_scan": "catalog_gallery_observation_scans",
     "gallery_observation_discovery_fingerprint": "catalog_gallery_observation_discovery_fingerprints",
     "gallery_observation_metadata_digest": "catalog_gallery_observation_metadata_digests",
     "gallery_observation_raw_content": "catalog_gallery_observation_raw_content",
     "gallery_observation_page_count": "catalog_gallery_observation_page_counts",
-    "gallery_observation_directory_anchor": "catalog_gallery_observation_directory_anchors",
-    "gallery_observation_directory_entry_count": "catalog_gallery_observation_directory_entry_counts",
-    "gallery_observation_directory_observation_sha256": "catalog_gallery_observation_directory_observation_sha256s",
-    "gallery_observation_directory_seal": "catalog_gallery_observation_directory_seals",
     "gallery_observation_directory": "catalog_gallery_observation_directories",
-    "gallery_observation_stat_anchor": "catalog_gallery_observation_stat_anchors",
-    "gallery_observation_stat_file_count": "catalog_gallery_observation_stat_file_counts",
-    "gallery_observation_stat_byte_count": "catalog_gallery_observation_stat_byte_counts",
-    "gallery_observation_stat_seal": "catalog_gallery_observation_stat_seals",
     "gallery_observation_stat": "catalog_gallery_observation_stat",
     "source_build_gallery": "catalog_source_build_galleries",
     "file_name_identity_anchor": "catalog_file_name_identity_anchors",
@@ -651,10 +635,6 @@ TABLE_NAMES = {
     "build_manifest_byte_count": "catalog_build_manifest_byte_counts",
     "build_manifest_seal": "catalog_build_manifest_seals",
     "gallery_manifest": "catalog_gallery_manifests",
-    "gallery_manifest_anchor": "catalog_gallery_manifest_anchors",
-    "gallery_manifest_manifest_sha256": "catalog_gallery_manifest_manifest_sha256s",
-    "gallery_manifest_computed_at": "catalog_gallery_manifest_computed_ats",
-    "gallery_manifest_seal": "catalog_gallery_manifest_seals",
     "analysis_policy": "catalog_analysis_policies",
     "analysis_policy_anchor": "catalog_analysis_policy_anchors",
     "analysis_policy_algorithm_version": "catalog_analysis_policy_algorithm_versions",
@@ -701,15 +681,11 @@ TABLE_NAMES = {
     "analysis_changed_file_hash": "catalog_analysis_changed_file_hashes",
     "analysis_exclusion_delta": "catalog_analysis_exclusion_deltas",
     "analysis_impacted_gallery": "catalog_analysis_impacted_galleries",
-    "analysis_impacted_content_anchor": "catalog_a_impacted_content_anchors",
     "analysis_impacted_content_provenance": "catalog_a_impacted_content_provenance",
-    "analysis_impacted_content_witness": "catalog_a_impacted_content_witnesses",
-    "analysis_impacted_content_seal": "catalog_a_impacted_content_seals",
     "analysis_impacted_content": "catalog_analysis_impacted_content",
-    "analysis_impacted_gid_anchor": "catalog_a_impacted_gid_anchors",
+    "analysis_impacted_gid_provenance_storage": "catalog_a_impacted_gid_provenance_storage",
+    "analysis_impacted_gid_storage": "catalog_analysis_impacted_gid_storage",
     "analysis_impacted_gid_provenance": "catalog_a_impacted_gid_provenance",
-    "analysis_impacted_gid_witness": "catalog_a_impacted_gid_witnesses",
-    "analysis_impacted_gid_seal": "catalog_a_impacted_gid_seals",
     "analysis_impacted_gid": "catalog_analysis_impacted_gid",
     "analysis_checkpoint": "catalog_analysis_checkpoints",
     "analysis_checkpoint_anchor": "catalog_analysis_checkpoint_anchors",
@@ -754,18 +730,9 @@ TABLE_NAMES = {
     "analysis_file_hash_decision_shadow_artist_count": "catalog_a_file_decision_shadow_artists",
     "analysis_file_hash_decision_shadow_maximum_gallery_artist_count": "catalog_a_file_decision_shadow_gallery_artist_max",
     "analysis_file_hash_decision_shadow_seal": "catalog_a_file_decision_shadow_seals",
-    "analysis_content_owner_candidate_shadow_anchor": "catalog_a_content_candidate_shadow_anchors",
-    "analysis_content_owner_candidate_shadow_content_sha256": "catalog_a_content_candidate_shadow_contents",
-    "analysis_content_owner_candidate_shadow_prefer_not_already_uploaded": "catalog_a_content_candidate_shadow_not_uploaded",
-    "analysis_content_owner_candidate_shadow_title_scalar_count": "catalog_a_content_candidate_shadow_title_counts",
-    "analysis_content_owner_candidate_shadow_download_time": "catalog_a_content_candidate_shadow_download_times",
-    "analysis_content_owner_candidate_shadow_seal": "catalog_a_content_candidate_shadow_seals",
     "analysis_content_owner_candidate_shadow": "catalog_analysis_content_owner_candidate_shadows",
     "analysis_content_owner_candidate_tombstone": "catalog_analysis_content_owner_candidate_tombstones",
     "analysis_content_owner_candidate_resolved": "catalog_analysis_content_owner_candidate_resolved",
-    "analysis_content_owner_shadow_anchor": "catalog_a_content_owner_shadow_anchors",
-    "analysis_content_owner_shadow_owner_gallery_id": "catalog_a_content_owner_shadow_galleries",
-    "analysis_content_owner_shadow_seal": "catalog_a_content_owner_shadow_seals",
     "analysis_content_owner_shadow": "catalog_analysis_content_owner_shadows",
     "analysis_content_owner_tombstone": "catalog_analysis_content_owner_tombstones",
     "analysis_content_owner_resolved": "catalog_analysis_content_owner_resolved",
@@ -800,6 +767,8 @@ TABLE_NAMES = {
     "publication_candidate_base_publication_commit": "catalog_publication_candidate_base_publication_commits",
     "publication_candidate_base_catalog": "catalog_publication_candidate_base_catalog",
     "publication_candidate_base_source": "catalog_publication_candidate_base_sources",
+    "publication_selection_storage": "catalog_publication_selection_storage",
+    "publication_selection_occurrence_identity": "catalog_publication_selection_occurrence_identities",
     "publication_selection": "catalog_publication_selections",
     "publication_stage": "catalog_publication_stages",
     "publication_stage_anchor": "catalog_publication_stage_anchors",
@@ -904,19 +873,11 @@ TABLE_NAMES = {
     "display_title_policy": "catalog_display_title_policies",
     "display_title_choice": "catalog_display_title_choices",
     "title_sort": "catalog_title_sorts",
+    "catalog_publication_storage": "catalog_publication_storage",
+    "catalog_publication_occurrence_identity": "catalog_publication_occurrence_identities",
     "catalog_publication": "catalog_publications",
-    "catalog_publication_anchor": "catalog_publication_anchors",
-    "catalog_publication_gallery_id": "catalog_publication_gallery_ids",
-    "catalog_publication_summary_sha256": "catalog_publication_summary_sha256s",
-    "catalog_publication_language_sha256": "catalog_publication_language_sha256s",
-    "catalog_publication_modified_at": "catalog_publication_modified_ats",
-    "catalog_publication_seal": "catalog_publication_seals",
     "catalog_publication_order": "catalog_publication_order",
     "catalog_publication_title": "catalog_publication_titles",
-    "catalog_publication_title_anchor": "catalog_publication_title_anchors",
-    "catalog_publication_title_source_title_sha256": "catalog_publication_title_source_title_sha256s",
-    "catalog_publication_title_source_gallery_name": "catalog_publication_title_source_gallery_names",
-    "catalog_publication_title_seal": "catalog_publication_title_seals",
     "catalog_publication_content": "catalog_publication_contents",
     "catalog_contributor": "catalog_contributors",
     "catalog_contributor_anchor": "catalog_contributor_anchors",
@@ -1027,7 +988,7 @@ INDEXES: dict[str, list[tuple[str, list[str], bool]]] = {
             False,
         )
     ],
-    "gallery_manifest_seal": [
+    "gallery_manifest": [
         (
             "ix_gallery_manifest_policy",
             ["manifest_policy_id", "gallery_id", "observation_id"],
@@ -1076,24 +1037,10 @@ INDEXES: dict[str, list[tuple[str, list[str], bool]]] = {
             False,
         )
     ],
-    "analysis_impacted_gid_provenance": [
-        (
-            "ix_a_impacted_gid_key_gallery",
-            ["analysis_id", "gid", "gallery_id"],
-            False,
-        )
-    ],
-    "analysis_content_owner_candidate_shadow_content_sha256": [
+    "analysis_content_owner_candidate_shadow": [
         (
             "ix_a_content_candidate_group",
             ["analysis_id", "content_sha256", "gallery_id"],
-            False,
-        )
-    ],
-    "publication_selection": [
-        (
-            "ix_pub_selection_keyset",
-            ["candidate_id", "publication_key", "gallery_id"],
             False,
         )
     ],
@@ -1131,13 +1078,6 @@ INDEXES: dict[str, list[tuple[str, list[str], bool]]] = {
     ],
     "title_sort": [
         ("ix_title_sort_identity", ["sort_title_sha256", "title_sha256"], False)
-    ],
-    "catalog_publication_modified_at": [
-        (
-            "ix_catalog_publication_modified",
-            ["revision", "modified_at", "publication_key"],
-            False,
-        ),
     ],
 }
 
@@ -1588,11 +1528,17 @@ def make_relation(
                 "publication_finalization_batch_receipt",
             }
             and attribute == "next_state"
-        ) or (name == "publication_receipt" and attribute == "state"):
-            # MariaDB conservatively reports every computed string expression
-            # in a view as nullable, even a total CASE with non-null literals.
-            # The exact rendered CASE remains the non-null logical authority;
-            # this flag describes MariaDB's INFORMATION_SCHEMA presentation.
+        ) or (
+            (name, attribute)
+            in {
+                ("analysis_impacted_gid", "witness_gallery_id"),
+                ("publication_receipt", "state"),
+            }
+        ):
+            # MariaDB conservatively reports computed view expressions as nullable,
+            # including total CASE expressions and MIN over a mandatory inner join.
+            # The exact view definition remains the non-null logical authority; this
+            # flag describes MariaDB's INFORMATION_SCHEMA presentation.
             backend_shape["mariadb"]["nullable"] = True
         relation["column"].append(
             {
@@ -1842,6 +1788,14 @@ def emit_relation(relation: dict[str, Any]) -> str:
             "analysis_gid_winner_keyset",
             "artifact_delta_old",
             "artifact_delta_new",
+            "analysis_impacted_gid_projection",
+            "analysis_impacted_gid_provenance_projection",
+            "catalog_publication_occurrence_identity",
+            "catalog_publication_projection",
+            "catalog_publication_title_projection",
+            "gallery_observation_metadata_projection",
+            "publication_selection_occurrence_identity",
+            "publication_selection_projection",
             "publication_candidate_projection",
             "batch_receipt_derived",
             "publication_commit_baseline",
@@ -2018,6 +1972,14 @@ def topological_order(
                 "analysis_gid_winner_keyset",
                 "artifact_delta_old",
                 "artifact_delta_new",
+                "analysis_impacted_gid_projection",
+                "analysis_impacted_gid_provenance_projection",
+                "catalog_publication_occurrence_identity",
+                "catalog_publication_projection",
+                "catalog_publication_title_projection",
+                "gallery_observation_metadata_projection",
+                "publication_selection_occurrence_identity",
+                "publication_selection_projection",
                 "publication_candidate_projection",
                 "batch_receipt_derived",
                 "publication_commit_baseline",

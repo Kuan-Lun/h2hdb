@@ -4273,57 +4273,25 @@ def _persist_metadata_facts(
     )
     _insert_or_require(
         connector,
-        label="gallery metadata anchor",
+        label="gallery observation metadata local",
         select_sql=(
-            "SELECT gallery_id, observation_id "
-            "FROM catalog_gallery_observation_metadata_anchors "
+            "SELECT download_time, modified_time "
+            "FROM catalog_gallery_observation_metadata_locals "
             "WHERE gallery_id = %s AND observation_id = %s"
         ),
         select_data=(handle.gallery_id, handle.observation_id),
         insert_sql=(
-            "INSERT INTO catalog_gallery_observation_metadata_anchors "
-            "(gallery_id, observation_id) VALUES (%s, %s)"
-        ),
-        insert_data=(handle.gallery_id, handle.observation_id),
-        expected=(handle.gallery_id, handle.observation_id),
-    )
-    _insert_or_require(
-        connector,
-        label="gallery observation download time",
-        select_sql=(
-            "SELECT download_time FROM catalog_gallery_observation_download_times "
-            "WHERE gallery_id = %s AND observation_id = %s"
-        ),
-        select_data=(handle.gallery_id, handle.observation_id),
-        insert_sql=(
-            "INSERT INTO catalog_gallery_observation_download_times "
-            "(gallery_id, observation_id, download_time) VALUES (%s, %s, %s)"
+            "INSERT INTO catalog_gallery_observation_metadata_locals "
+            "(gallery_id, observation_id, download_time, modified_time) "
+            "VALUES (%s, %s, %s, %s)"
         ),
         insert_data=(
             handle.gallery_id,
             handle.observation_id,
             receipt.download_time,
-        ),
-        expected=(receipt.download_time,),
-    )
-    _insert_or_require(
-        connector,
-        label="gallery observation modified time",
-        select_sql=(
-            "SELECT modified_time FROM catalog_gallery_observation_modified_times "
-            "WHERE gallery_id = %s AND observation_id = %s"
-        ),
-        select_data=(handle.gallery_id, handle.observation_id),
-        insert_sql=(
-            "INSERT INTO catalog_gallery_observation_modified_times "
-            "(gallery_id, observation_id, modified_time) VALUES (%s, %s, %s)"
-        ),
-        insert_data=(
-            handle.gallery_id,
-            handle.observation_id,
             receipt.modified_time,
         ),
-        expected=(receipt.modified_time,),
+        expected=(receipt.download_time, receipt.modified_time),
     )
     metadata_root_count = _component_root(
         connector,
@@ -4365,22 +4333,6 @@ def _persist_metadata_facts(
             insert_data=(handle.gallery_id, handle.observation_id, receipt.page_count),
             expected=(receipt.page_count,),
         )
-    _insert_or_require(
-        connector,
-        label="gallery metadata seal",
-        select_sql=(
-            "SELECT gallery_id, observation_id "
-            "FROM catalog_gallery_observation_metadata_seals "
-            "WHERE gallery_id = %s AND observation_id = %s"
-        ),
-        select_data=(handle.gallery_id, handle.observation_id),
-        insert_sql=(
-            "INSERT INTO catalog_gallery_observation_metadata_seals "
-            "(gallery_id, observation_id) VALUES (%s, %s)"
-        ),
-        insert_data=(handle.gallery_id, handle.observation_id),
-        expected=(handle.gallery_id, handle.observation_id),
-    )
 
 
 def _derive_source_gallery_name(connector: Any, *, gallery_id: int) -> bytes:
@@ -4416,69 +4368,20 @@ def _persist_directory_fact(
     key = (gallery_id, observation_id)
     _insert_or_require(
         connector,
-        label="gallery directory anchor",
+        label="gallery observation directory",
         select_sql=(
-            "SELECT gallery_id, observation_id "
-            "FROM catalog_gallery_observation_directory_anchors "
+            "SELECT directory_entry_count, directory_observation_sha256 "
+            "FROM catalog_gallery_observation_directories "
             "WHERE gallery_id = %s AND observation_id = %s"
         ),
         select_data=key,
         insert_sql=(
-            "INSERT INTO catalog_gallery_observation_directory_anchors "
-            "(gallery_id, observation_id) VALUES (%s, %s)"
+            "INSERT INTO catalog_gallery_observation_directories "
+            "(gallery_id, observation_id, directory_entry_count, "
+            "directory_observation_sha256) VALUES (%s, %s, %s, %s)"
         ),
-        insert_data=key,
-        expected=key,
-    )
-    _insert_or_require(
-        connector,
-        label="gallery directory entry count",
-        select_sql=(
-            "SELECT directory_entry_count "
-            "FROM catalog_gallery_observation_directory_entry_counts "
-            "WHERE gallery_id = %s AND observation_id = %s"
-        ),
-        select_data=key,
-        insert_sql=(
-            "INSERT INTO catalog_gallery_observation_directory_entry_counts "
-            "(gallery_id, observation_id, directory_entry_count) "
-            "VALUES (%s, %s, %s)"
-        ),
-        insert_data=(*key, directory_entry_count),
-        expected=(directory_entry_count,),
-    )
-    _insert_or_require(
-        connector,
-        label="gallery directory observation digest",
-        select_sql=(
-            "SELECT directory_observation_sha256 "
-            "FROM catalog_gallery_observation_directory_observation_sha256s "
-            "WHERE gallery_id = %s AND observation_id = %s"
-        ),
-        select_data=key,
-        insert_sql=(
-            "INSERT INTO catalog_gallery_observation_directory_observation_sha256s "
-            "(gallery_id, observation_id, directory_observation_sha256) "
-            "VALUES (%s, %s, %s)"
-        ),
-        insert_data=(*key, directory_observation_sha256),
-        expected=(directory_observation_sha256,),
-    )
-    _insert_or_require(
-        connector,
-        label="gallery directory seal",
-        select_sql=(
-            "SELECT gallery_id, observation_id "
-            "FROM catalog_gallery_observation_directory_seals "
-            "WHERE gallery_id = %s AND observation_id = %s"
-        ),
-        select_data=key,
-        insert_sql=(
-            "INSERT INTO catalog_gallery_observation_directory_seals "
-            "(gallery_id, observation_id) VALUES (%s, %s)"
-        ),
-        insert_data=key,
-        expected=key,
+        insert_data=(*key, directory_entry_count, directory_observation_sha256),
+        expected=(directory_entry_count, directory_observation_sha256),
     )
 
 
@@ -4493,65 +4396,19 @@ def _persist_stat_fact(
     key = (gallery_id, observation_id)
     _insert_or_require(
         connector,
-        label="gallery stat anchor",
+        label="gallery observation stat",
         select_sql=(
-            "SELECT gallery_id, observation_id "
-            "FROM catalog_gallery_observation_stat_anchors "
+            "SELECT file_count, byte_count FROM catalog_gallery_observation_stat "
             "WHERE gallery_id = %s AND observation_id = %s"
         ),
         select_data=key,
         insert_sql=(
-            "INSERT INTO catalog_gallery_observation_stat_anchors "
-            "(gallery_id, observation_id) VALUES (%s, %s)"
+            "INSERT INTO catalog_gallery_observation_stat "
+            "(gallery_id, observation_id, file_count, byte_count) "
+            "VALUES (%s, %s, %s, %s)"
         ),
-        insert_data=key,
-        expected=key,
-    )
-    _insert_or_require(
-        connector,
-        label="gallery stat file count",
-        select_sql=(
-            "SELECT file_count FROM catalog_gallery_observation_stat_file_counts "
-            "WHERE gallery_id = %s AND observation_id = %s"
-        ),
-        select_data=key,
-        insert_sql=(
-            "INSERT INTO catalog_gallery_observation_stat_file_counts "
-            "(gallery_id, observation_id, file_count) VALUES (%s, %s, %s)"
-        ),
-        insert_data=(*key, file_count),
-        expected=(file_count,),
-    )
-    _insert_or_require(
-        connector,
-        label="gallery stat byte count",
-        select_sql=(
-            "SELECT byte_count FROM catalog_gallery_observation_stat_byte_counts "
-            "WHERE gallery_id = %s AND observation_id = %s"
-        ),
-        select_data=key,
-        insert_sql=(
-            "INSERT INTO catalog_gallery_observation_stat_byte_counts "
-            "(gallery_id, observation_id, byte_count) VALUES (%s, %s, %s)"
-        ),
-        insert_data=(*key, byte_count),
-        expected=(byte_count,),
-    )
-    _insert_or_require(
-        connector,
-        label="gallery stat seal",
-        select_sql=(
-            "SELECT gallery_id, observation_id "
-            "FROM catalog_gallery_observation_stat_seals "
-            "WHERE gallery_id = %s AND observation_id = %s"
-        ),
-        select_data=key,
-        insert_sql=(
-            "INSERT INTO catalog_gallery_observation_stat_seals "
-            "(gallery_id, observation_id) VALUES (%s, %s)"
-        ),
-        insert_data=key,
-        expected=key,
+        insert_data=(*key, file_count, byte_count),
+        expected=(file_count, byte_count),
     )
 
 
@@ -4662,76 +4519,26 @@ def _persist_scan_fact(
     key = (handle.gallery_id, handle.observation_id)
     _insert_or_require(
         connector,
-        label="gallery scan anchor",
+        label="gallery observation scan",
         select_sql=(
-            "SELECT gallery_id, observation_id "
-            "FROM catalog_gallery_observation_scan_anchors "
+            "SELECT scan_observation_sha256, scan_observation_version, "
+            "source_file_count FROM catalog_gallery_observation_scans "
             "WHERE gallery_id = %s AND observation_id = %s"
         ),
         select_data=key,
         insert_sql=(
-            "INSERT INTO catalog_gallery_observation_scan_anchors "
-            "(gallery_id, observation_id) VALUES (%s, %s)"
+            "INSERT INTO catalog_gallery_observation_scans "
+            "(gallery_id, observation_id, scan_observation_sha256, "
+            "scan_observation_version, source_file_count) "
+            "VALUES (%s, %s, %s, %s, %s)"
         ),
-        insert_data=key,
-        expected=key,
-    )
-    for label, select_sql, insert_sql, value in (
-        (
-            "gallery scan observation digest",
-            "SELECT scan_observation_sha256 "
-            "FROM catalog_gallery_observation_scan_observation_sha256s "
-            "WHERE gallery_id = %s AND observation_id = %s",
-            "INSERT INTO catalog_gallery_observation_scan_observation_sha256s "
-            "(gallery_id, observation_id, scan_observation_sha256) "
-            "VALUES (%s, %s, %s)",
+        insert_data=(
+            *key,
             scan_digest,
-        ),
-        (
-            "gallery scan observation version",
-            "SELECT scan_observation_version "
-            "FROM catalog_gallery_observation_scan_observation_versions "
-            "WHERE gallery_id = %s AND observation_id = %s",
-            "INSERT INTO catalog_gallery_observation_scan_observation_versions "
-            "(gallery_id, observation_id, scan_observation_version) "
-            "VALUES (%s, %s, %s)",
             scan_observation_version,
-        ),
-        (
-            "gallery scan source file count",
-            "SELECT source_file_count "
-            "FROM catalog_gallery_observation_scan_source_file_counts "
-            "WHERE gallery_id = %s AND observation_id = %s",
-            "INSERT INTO catalog_gallery_observation_scan_source_file_counts "
-            "(gallery_id, observation_id, source_file_count) "
-            "VALUES (%s, %s, %s)",
             source_file_count,
         ),
-    ):
-        _insert_or_require(
-            connector,
-            label=label,
-            select_sql=select_sql,
-            select_data=key,
-            insert_sql=insert_sql,
-            insert_data=(*key, value),
-            expected=(value,),
-        )
-    _insert_or_require(
-        connector,
-        label="gallery scan seal",
-        select_sql=(
-            "SELECT gallery_id, observation_id "
-            "FROM catalog_gallery_observation_scan_seals "
-            "WHERE gallery_id = %s AND observation_id = %s"
-        ),
-        select_data=key,
-        insert_sql=(
-            "INSERT INTO catalog_gallery_observation_scan_seals "
-            "(gallery_id, observation_id) VALUES (%s, %s)"
-        ),
-        insert_data=key,
-        expected=key,
+        expected=(scan_digest, scan_observation_version, source_file_count),
     )
 
 

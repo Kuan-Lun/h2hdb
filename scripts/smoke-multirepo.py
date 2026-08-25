@@ -57,6 +57,17 @@ def _assert_wide_bcnf_recompositions(database_path: Path) -> None:
         "catalog_prepared_artifacts",
         "catalog_artifacts",
         "catalog_artifact_blobs",
+        "catalog_gallery_observation_metadata_locals",
+        "catalog_gallery_observation_scans",
+        "catalog_gallery_observation_directories",
+        "catalog_gallery_observation_stat",
+        "catalog_gallery_manifests",
+        "catalog_publications",
+        "catalog_publication_titles",
+        "catalog_analysis_content_owner_candidate_shadows",
+        "catalog_analysis_content_owner_shadows",
+        "catalog_analysis_impacted_content",
+        "catalog_analysis_impacted_gid",
     }
     removed = {
         "catalog_gallery_identity_anchors",
@@ -84,16 +95,66 @@ def _assert_wide_bcnf_recompositions(database_path: Path) -> None:
         "catalog_artifact_semantics_sha256s",
         "catalog_artifact_seals",
         "catalog_artifact_location",
+        "catalog_gallery_observation_metadata_anchors",
+        "catalog_gallery_observation_metadata_seals",
+        "catalog_gallery_observation_download_times",
+        "catalog_gallery_observation_modified_times",
+        "catalog_gallery_observation_scan_anchors",
+        "catalog_gallery_observation_scan_observation_sha256s",
+        "catalog_gallery_observation_scan_observation_versions",
+        "catalog_gallery_observation_scan_source_file_counts",
+        "catalog_gallery_observation_scan_seals",
+        "catalog_gallery_observation_directory_anchors",
+        "catalog_gallery_observation_directory_entry_counts",
+        "catalog_gallery_observation_directory_observation_sha256s",
+        "catalog_gallery_observation_directory_seals",
+        "catalog_gallery_observation_stat_anchors",
+        "catalog_gallery_observation_stat_file_counts",
+        "catalog_gallery_observation_stat_byte_counts",
+        "catalog_gallery_observation_stat_seals",
+        "catalog_gallery_manifest_anchors",
+        "catalog_gallery_manifest_manifest_sha256s",
+        "catalog_gallery_manifest_computed_ats",
+        "catalog_gallery_manifest_seals",
+        "catalog_publication_anchors",
+        "catalog_publication_gallery_ids",
+        "catalog_publication_summary_sha256s",
+        "catalog_publication_language_sha256s",
+        "catalog_publication_modified_ats",
+        "catalog_publication_seals",
+        "catalog_publication_title_anchors",
+        "catalog_publication_title_source_title_sha256s",
+        "catalog_publication_title_source_gallery_names",
+        "catalog_publication_title_seals",
+        "catalog_a_content_candidate_shadow_anchors",
+        "catalog_a_content_candidate_shadow_contents",
+        "catalog_a_content_candidate_shadow_not_uploaded",
+        "catalog_a_content_candidate_shadow_title_counts",
+        "catalog_a_content_candidate_shadow_download_times",
+        "catalog_a_content_candidate_shadow_seals",
+        "catalog_a_content_owner_shadow_anchors",
+        "catalog_a_content_owner_shadow_galleries",
+        "catalog_a_content_owner_shadow_seals",
+        "catalog_a_impacted_content_anchors",
+        "catalog_a_impacted_content_witnesses",
+        "catalog_a_impacted_content_seals",
+        "catalog_a_impacted_gid_anchors",
+        "catalog_a_impacted_gid_witnesses",
+        "catalog_a_impacted_gid_seals",
     }
     with sqlite3.connect(database_path) as connection:
-        names = {
-            str(row[0])
+        relation_types = {
+            str(row[0]): str(row[1])
             for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
+                "SELECT name, type FROM sqlite_master "
+                "WHERE type IN ('table', 'view')"
             )
         }
-    assert required <= names
-    assert removed.isdisjoint(names)
+    assert sum(kind == "table" for kind in relation_types.values()) == 381
+    assert sum(kind == "view" for kind in relation_types.values()) == 74
+    assert required <= relation_types.keys()
+    assert removed.isdisjoint(relation_types)
+    assert relation_types["catalog_analysis_impacted_gid"] == "view"
 
 
 def main() -> None:

@@ -1,10 +1,12 @@
-"""Pinned readers for the normalized greenfield catalog.
+"""Current-head readers for the normalized greenfield catalog.
 
 The reader never reconstructs a value from a digest alone.  Every long value
 is reached through ``canonical_value_identity`` and its complete page tree,
 then domain checked before any decoded value is exposed.  Revision ordering is
 read from the immutable ``catalog_publication_order`` relation; callers never
-sort a revision-sized result in memory.
+sort a revision-sized result in memory.  A returned descriptor remains usable
+only while it still names the current publication head; head advancement makes
+every explicit or pinned historical revision fail closed.
 """
 
 from __future__ import annotations
@@ -173,7 +175,7 @@ class _CanonicalLoader:
 
 
 class VNextCatalogReaderRepository:
-    """Read immutable publications from one explicit or current revision."""
+    """Read publications only from the exact current catalog head."""
 
     def __init__(self, *, backend: str) -> None:
         if backend not in {"sqlite", "mariadb"}:
@@ -193,68 +195,45 @@ class VNextCatalogReaderRepository:
             minimum=1,
             maximum=64,
         )
-        if revision is None:
-            row = connector.fetch_one(
-                "SELECT catalog.revision, count.publication_count, "
-                "committed.committed_at, generation.generation "
-                "FROM catalog_channel_registry AS registry "
-                "JOIN catalog_publication_commit_head_receipts AS head "
-                "ON head.channel = registry.channel "
-                "JOIN catalog_publication_commit_seals AS commit_seal "
-                "ON commit_seal.receipt_id = head.receipt_id "
-                "JOIN catalog_publication_commit_catalog_revisions AS catalog "
-                "ON catalog.receipt_id = head.receipt_id "
-                "JOIN catalog_publication_commit_source_revisions AS source "
-                "ON source.receipt_id = head.receipt_id "
-                "JOIN catalog_source_revision_descriptor_seals AS source_seal "
-                "ON source_seal.source_revision = source.source_revision "
-                "JOIN catalog_source_revision_channels AS source_channel "
-                "ON source_channel.source_revision = source.source_revision "
-                "AND source_channel.channel = registry.channel "
-                "JOIN catalog_publication_commit_generations AS generation "
-                "ON generation.receipt_id = head.receipt_id "
-                "JOIN catalog_publication_commit_committed_ats AS committed "
-                "ON committed.receipt_id = head.receipt_id "
-                "JOIN catalog_revision_descriptor_seals AS descriptor_seal "
-                "ON descriptor_seal.revision = catalog.revision "
-                "JOIN catalog_revision_publication_counts AS count "
-                "ON count.revision = descriptor_seal.revision "
-                "WHERE registry.channel = %s",
-                (exact_channel,),
-            )
-            if len(row) != 4:
-                raise CatalogRevisionNotFoundError(0)
-            selected = require_positive_int63(row[0], field="catalog head revision")
-        else:
-            selected = require_positive_int63(revision, field="catalog revision")
-            row = connector.fetch_one(
-                "SELECT catalog.revision, count.publication_count, "
-                "committed.committed_at, generation.generation "
-                "FROM catalog_publication_commit_catalog_revisions AS catalog "
-                "JOIN catalog_publication_commit_seals AS commit_seal "
-                "ON commit_seal.receipt_id = catalog.receipt_id "
-                "JOIN catalog_publication_commit_source_revisions AS source "
-                "ON source.receipt_id = catalog.receipt_id "
-                "JOIN catalog_source_revision_descriptor_seals AS source_seal "
-                "ON source_seal.source_revision = source.source_revision "
-                "JOIN catalog_source_revision_channels AS source_channel "
-                "ON source_channel.source_revision = source.source_revision "
-                "AND source_channel.channel = %s "
-                "JOIN catalog_publication_commit_generations AS generation "
-                "ON generation.receipt_id = catalog.receipt_id "
-                "JOIN catalog_publication_commit_committed_ats AS committed "
-                "ON committed.receipt_id = catalog.receipt_id "
-                "JOIN catalog_revision_descriptor_seals AS descriptor_seal "
-                "ON descriptor_seal.revision = catalog.revision "
-                "JOIN catalog_revision_publication_counts AS count "
-                "ON count.revision = descriptor_seal.revision "
-                "WHERE catalog.revision = %s",
-                (exact_channel, selected),
-            )
+        requested = (
+            None
+            if revision is None
+            else require_positive_int63(revision, field="catalog revision")
+        )
+        row = connector.fetch_one(
+            "SELECT catalog.revision, count.publication_count, "
+            "committed.committed_at, generation.generation "
+            "FROM catalog_channel_registry AS registry "
+            "JOIN catalog_publication_commit_head_receipts AS head "
+            "ON head.channel = registry.channel "
+            "JOIN catalog_publication_commit_seals AS commit_seal "
+            "ON commit_seal.receipt_id = head.receipt_id "
+            "JOIN catalog_publication_commit_catalog_revisions AS catalog "
+            "ON catalog.receipt_id = head.receipt_id "
+            "JOIN catalog_publication_commit_source_revisions AS source "
+            "ON source.receipt_id = head.receipt_id "
+            "JOIN catalog_source_revision_descriptor_seals AS source_seal "
+            "ON source_seal.source_revision = source.source_revision "
+            "JOIN catalog_source_revision_channels AS source_channel "
+            "ON source_channel.source_revision = source.source_revision "
+            "AND source_channel.channel = registry.channel "
+            "JOIN catalog_publication_commit_generations AS generation "
+            "ON generation.receipt_id = head.receipt_id "
+            "JOIN catalog_publication_commit_committed_ats AS committed "
+            "ON committed.receipt_id = head.receipt_id "
+            "JOIN catalog_revision_descriptor_seals AS descriptor_seal "
+            "ON descriptor_seal.revision = catalog.revision "
+            "JOIN catalog_revision_publication_counts AS count "
+            "ON count.revision = descriptor_seal.revision "
+            "WHERE registry.channel = %s",
+            (exact_channel,),
+        )
+        missing = 0 if requested is None else requested
         if len(row) != 4:
-            raise CatalogRevisionNotFoundError(selected)
-        if require_positive_int63(row[0], field="catalog revision") != selected:
-            raise VNextCatalogReadError("catalog revision lookup returned another key")
+            raise CatalogRevisionNotFoundError(missing)
+        selected = require_positive_int63(row[0], field="catalog head revision")
+        if requested is not None and requested != selected:
+            raise CatalogRevisionNotFoundError(requested)
         require_positive_int63(row[3], field="catalog revision generation")
         return CatalogRevision(
             selected,
@@ -278,7 +257,7 @@ class VNextCatalogReaderRepository:
             if query.strip():
                 raise VNextCatalogReadError(
                     "catalog search is unavailable until the normalized "
-                    "revision-pinned search index is built"
+                    "current-head search index is built"
                 )
         page_offset = require_int63(offset, field="catalog page offset")
         page_limit = require_positive_int63(limit, field="catalog page limit")
@@ -356,6 +335,7 @@ class VNextCatalogReaderRepository:
             publication_keys=keys,
         )
         publications = tuple(hydrated[key] for key in keys)
+        self._assert_still_current(connector, pinned)
         return CatalogPage(
             revision=pinned,
             publications=publications,
@@ -395,6 +375,7 @@ class VNextCatalogReaderRepository:
             raise VNextCatalogReadError(
                 "publication identity collides with the requested GID"
             )
+        self._assert_still_current(connector, pinned)
         return publication
 
     def get_artifact(
@@ -415,7 +396,7 @@ class VNextCatalogReaderRepository:
             ) from error
         publication_key = identity.publication_key(gid)
         pinned = self._pin(connector, revision)
-        return self._hydrate_artifact(
+        artifact = self._hydrate_artifact(
             connector,
             _CanonicalLoader(connector, backend=self._backend),
             revision=pinned.revision,
@@ -423,6 +404,8 @@ class VNextCatalogReaderRepository:
             expected_gid=gid,
             expected_artifact_sha256=artifact_sha256,
         )
+        self._assert_still_current(connector, pinned)
+        return artifact
 
     def get_publications_by_artifact_names(
         self,
@@ -458,9 +441,10 @@ class VNextCatalogReaderRepository:
                     "artifact-name request contains a publication-key collision"
                 )
             encoded.append((name, key, gid))
-        if not encoded:
-            return {}
         pinned = self._pin(connector, revision)
+        if not encoded:
+            self._assert_still_current(connector, pinned)
+            return {}
         requested_keys = tuple(key for _name, key, _gid in encoded)
         rows = connector.fetch_all(
             "SELECT identity.publication_key, identity.gid "
@@ -506,6 +490,7 @@ class VNextCatalogReaderRepository:
                     "artifact-name identity collides with the requested GID"
                 )
             result[name] = publication
+        self._assert_still_current(connector, pinned)
         return result
 
     def _pin(
@@ -521,6 +506,16 @@ class VNextCatalogReaderRepository:
                 )
             return revision
         return self.get_catalog_revision(connector, revision)
+
+    def _assert_still_current(
+        self,
+        connector: SQLConnector,
+        pinned: CatalogRevision,
+    ) -> None:
+        if self.get_catalog_revision(connector) != pinned:
+            raise VNextCatalogReadError(
+                "catalog publication head advanced during the read"
+            )
 
     def _hydrate_publications(
         self,
@@ -548,47 +543,22 @@ class VNextCatalogReaderRepository:
             "SELECT ordering.publication_key FROM catalog_publication_order AS ordering "
             "JOIN selected AS chosen ON chosen.publication_key = ordering.publication_key "
             "WHERE ordering.revision = %s UNION "
-            "SELECT anchor.publication_key FROM catalog_publication_anchors AS anchor "
-            "JOIN selected AS chosen ON chosen.publication_key = anchor.publication_key "
-            "WHERE anchor.revision = %s UNION "
-            "SELECT gallery.publication_key FROM catalog_publication_gallery_ids AS gallery "
-            "JOIN selected AS chosen ON chosen.publication_key = gallery.publication_key "
-            "WHERE gallery.revision = %s UNION "
-            "SELECT summary.publication_key FROM catalog_publication_summary_sha256s AS summary "
-            "JOIN selected AS chosen ON chosen.publication_key = summary.publication_key "
-            "WHERE summary.revision = %s UNION "
-            "SELECT language.publication_key FROM catalog_publication_language_sha256s AS language "
-            "JOIN selected AS chosen ON chosen.publication_key = language.publication_key "
-            "WHERE language.revision = %s UNION "
-            "SELECT modified.publication_key FROM catalog_publication_modified_ats AS modified "
-            "JOIN selected AS chosen ON chosen.publication_key = modified.publication_key "
-            "WHERE modified.revision = %s UNION "
-            "SELECT seal.publication_key FROM catalog_publication_seals AS seal "
-            "JOIN selected AS chosen ON chosen.publication_key = seal.publication_key "
-            "WHERE seal.revision = %s UNION "
-            "SELECT anchor.publication_key FROM catalog_publication_title_anchors AS anchor "
-            "JOIN selected AS chosen ON chosen.publication_key = anchor.publication_key "
-            "WHERE anchor.revision = %s UNION "
-            "SELECT source.publication_key "
-            "FROM catalog_publication_title_source_title_sha256s AS source "
-            "JOIN selected AS chosen ON chosen.publication_key = source.publication_key "
-            "WHERE source.revision = %s UNION "
-            "SELECT name.publication_key "
-            "FROM catalog_publication_title_source_gallery_names AS name "
-            "JOIN selected AS chosen ON chosen.publication_key = name.publication_key "
-            "WHERE name.revision = %s UNION "
-            "SELECT seal.publication_key FROM catalog_publication_title_seals AS seal "
-            "JOIN selected AS chosen ON chosen.publication_key = seal.publication_key "
-            "WHERE seal.revision = %s UNION "
+            "SELECT publication.publication_key FROM catalog_publications AS publication "
+            "JOIN selected AS chosen "
+            "ON chosen.publication_key = publication.publication_key "
+            "WHERE publication.revision = %s UNION "
+            "SELECT title.publication_key FROM catalog_publication_titles AS title "
+            "JOIN selected AS chosen ON chosen.publication_key = title.publication_key "
+            "WHERE title.revision = %s UNION "
             "SELECT content.publication_key FROM catalog_publication_contents AS content "
             "JOIN selected AS chosen ON chosen.publication_key = content.publication_key "
             "WHERE content.revision = %s) "
             "SELECT family.publication_key, ordering.publication_key, "
-            "publication_anchor.publication_key, gallery.gallery_id, "
-            "summary.summary_sha256, language.language_sha256, modified.modified_at, "
-            "publication_seal.publication_key, identity.gid, upload.upload_time, "
-            "title_anchor.publication_key, title_source.source_title_sha256, "
-            "title_name.source_gallery_name, title_seal.publication_key, "
+            "publication.publication_key, publication.gallery_id, "
+            "publication.summary_sha256, publication.language_sha256, "
+            "publication.modified_at, identity.gid, upload.upload_time, "
+            "title.publication_key, title.source_title_sha256, "
+            "title.source_gallery_name, "
             "committed_revision.receipt_id, commit_seal.receipt_id, "
             "commit_policy.display_title_policy_id, policy_seal.display_title_policy_id, "
             "choice.title_sha256, policy_sort.title_sort_policy_id, "
@@ -596,41 +566,17 @@ class VNextCatalogReaderRepository:
             "FROM family_keys AS family "
             "LEFT JOIN catalog_publication_order AS ordering "
             "ON ordering.revision = %s AND ordering.publication_key = family.publication_key "
-            "LEFT JOIN catalog_publication_anchors AS publication_anchor "
-            "ON publication_anchor.revision = ordering.revision "
-            "AND publication_anchor.publication_key = ordering.publication_key "
-            "LEFT JOIN catalog_publication_gallery_ids AS gallery "
-            "ON gallery.revision = publication_anchor.revision "
-            "AND gallery.publication_key = publication_anchor.publication_key "
-            "LEFT JOIN catalog_publication_summary_sha256s AS summary "
-            "ON summary.revision = publication_anchor.revision "
-            "AND summary.publication_key = publication_anchor.publication_key "
-            "LEFT JOIN catalog_publication_language_sha256s AS language "
-            "ON language.revision = publication_anchor.revision "
-            "AND language.publication_key = publication_anchor.publication_key "
-            "LEFT JOIN catalog_publication_modified_ats AS modified "
-            "ON modified.revision = publication_anchor.revision "
-            "AND modified.publication_key = publication_anchor.publication_key "
-            "LEFT JOIN catalog_publication_seals AS publication_seal "
-            "ON publication_seal.revision = publication_anchor.revision "
-            "AND publication_seal.publication_key = publication_anchor.publication_key "
+            "LEFT JOIN catalog_publications AS publication "
+            "ON publication.revision = %s "
+            "AND publication.publication_key = family.publication_key "
             "LEFT JOIN catalog_publication_identities AS identity "
-            "ON identity.publication_key = publication_anchor.publication_key "
+            "ON identity.publication_key = publication.publication_key "
             "LEFT JOIN catalog_gallery_upload_times AS upload ON upload.gid = identity.gid "
-            "LEFT JOIN catalog_publication_title_anchors AS title_anchor "
-            "ON title_anchor.revision = publication_anchor.revision "
-            "AND title_anchor.publication_key = publication_anchor.publication_key "
-            "LEFT JOIN catalog_publication_title_source_title_sha256s AS title_source "
-            "ON title_source.revision = title_anchor.revision "
-            "AND title_source.publication_key = title_anchor.publication_key "
-            "LEFT JOIN catalog_publication_title_source_gallery_names AS title_name "
-            "ON title_name.revision = title_anchor.revision "
-            "AND title_name.publication_key = title_anchor.publication_key "
-            "LEFT JOIN catalog_publication_title_seals AS title_seal "
-            "ON title_seal.revision = title_anchor.revision "
-            "AND title_seal.publication_key = title_anchor.publication_key "
+            "LEFT JOIN catalog_publication_titles AS title "
+            "ON title.revision = publication.revision "
+            "AND title.publication_key = publication.publication_key "
             "LEFT JOIN catalog_publication_commit_catalog_revisions AS committed_revision "
-            "ON committed_revision.revision = publication_anchor.revision "
+            "ON committed_revision.revision = publication.revision "
             "LEFT JOIN catalog_publication_commit_seals AS commit_seal "
             "ON commit_seal.receipt_id = committed_revision.receipt_id "
             "LEFT JOIN catalog_publication_commit_display_title_policies AS commit_policy "
@@ -640,8 +586,8 @@ class VNextCatalogReaderRepository:
             "commit_policy.display_title_policy_id "
             "LEFT JOIN catalog_display_title_choices AS choice "
             "ON choice.display_title_policy_id = policy_seal.display_title_policy_id "
-            "AND choice.source_title_sha256 = title_source.source_title_sha256 "
-            "AND choice.source_gallery_name = title_name.source_gallery_name "
+            "AND choice.source_title_sha256 = title.source_title_sha256 "
+            "AND choice.source_gallery_name = title.source_gallery_name "
             "LEFT JOIN catalog_display_title_policy_title_sort_policy_ids AS policy_sort "
             "ON policy_sort.display_title_policy_id = "
             "policy_seal.display_title_policy_id "
@@ -649,15 +595,15 @@ class VNextCatalogReaderRepository:
             "ON title_sort.title_sort_policy_id = policy_sort.title_sort_policy_id "
             "AND title_sort.title_sha256 = choice.title_sha256 "
             "LEFT JOIN catalog_publication_contents AS content "
-            "ON content.revision = publication_anchor.revision "
-            "AND content.publication_key = publication_anchor.publication_key "
+            "ON content.revision = publication.revision "
+            "AND content.publication_key = publication.publication_key "
             "ORDER BY family.publication_key",
-            (*selected, *(revision for _ in range(12)), revision),
+            (*selected, *(revision for _ in range(6))),
         )
         expected = set(selected)
         scalar_by_key: dict[bytes, tuple[object, ...]] = {}
         for row in rows:
-            if len(row) != 22:
+            if len(row) != 20:
                 raise VNextCatalogReadError(
                     "published item scalar query returned an invalid shape"
                 )
@@ -666,22 +612,26 @@ class VNextCatalogReaderRepository:
                 raise VNextCatalogReadError(
                     "published item scalar query is not one-to-one"
                 )
-            if any(value is None for value in row[1:21]):
+            if any(value is None for value in row[1:19]):
                 raise VNextCatalogReadError(
-                    "published item scalar/title family is partial or noncongruent"
+                    "published item scalar/title row is missing or noncongruent"
+                )
+            if row[1] != key or row[2] != key or row[9] != key:
+                raise VNextCatalogReadError(
+                    "published item scalar/title keys are noncongruent"
                 )
             scalar_by_key[key] = (
                 key,
-                row[8],
+                row[7],
                 row[4],
                 row[5],
-                row[9],
+                row[8],
                 row[6],
+                row[10],
                 row[11],
-                row[12],
+                row[16],
                 row[18],
-                row[20],
-                row[21],
+                row[19],
             )
         if require_all and set(scalar_by_key) != expected:
             raise VNextCatalogReadError(
@@ -968,19 +918,13 @@ class VNextCatalogReaderRepository:
         ):
             return None
         row = connector.fetch_one(
-            "SELECT identity.gid, modified.modified_at "
+            "SELECT identity.gid, publication.modified_at "
             "FROM catalog_publication_order AS ordering "
-            "JOIN catalog_publication_anchors AS anchor "
-            "ON anchor.revision = ordering.revision "
-            "AND anchor.publication_key = ordering.publication_key "
-            "JOIN catalog_publication_modified_ats AS modified "
-            "ON modified.revision = anchor.revision "
-            "AND modified.publication_key = anchor.publication_key "
-            "JOIN catalog_publication_seals AS seal "
-            "ON seal.revision = anchor.revision "
-            "AND seal.publication_key = anchor.publication_key "
+            "JOIN catalog_publications AS publication "
+            "ON publication.revision = ordering.revision "
+            "AND publication.publication_key = ordering.publication_key "
             "JOIN catalog_publication_identities AS identity "
-            "ON identity.publication_key = anchor.publication_key "
+            "ON identity.publication_key = publication.publication_key "
             "WHERE ordering.revision = %s AND ordering.publication_key = %s",
             (revision, key),
         )

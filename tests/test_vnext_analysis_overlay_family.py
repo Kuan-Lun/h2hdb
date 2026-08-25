@@ -52,7 +52,7 @@ def _insert_tables(trace: list[str], registered: tuple[str, ...]) -> tuple[str, 
     )
 
 
-def test_shadow_families_insert_physical_members_with_seal_last(
+def test_shadow_families_insert_narrow_file_family_and_atomic_wide_rows(
     tmp_path: Path,
 ) -> None:
     connector = _database(tmp_path / "analysis-shadow-families.sqlite3")
@@ -94,15 +94,8 @@ def test_shadow_families_insert_physical_members_with_seal_last(
             "catalog_a_file_decision_shadow_artists",
             "catalog_a_file_decision_shadow_gallery_artist_max",
             "catalog_a_file_decision_shadow_seals",
-            "catalog_a_content_candidate_shadow_anchors",
-            "catalog_a_content_candidate_shadow_contents",
-            "catalog_a_content_candidate_shadow_not_uploaded",
-            "catalog_a_content_candidate_shadow_title_counts",
-            "catalog_a_content_candidate_shadow_download_times",
-            "catalog_a_content_candidate_shadow_seals",
-            "catalog_a_content_owner_shadow_anchors",
-            "catalog_a_content_owner_shadow_galleries",
-            "catalog_a_content_owner_shadow_seals",
+            "catalog_analysis_content_owner_candidate_shadows",
+            "catalog_analysis_content_owner_shadows",
         )
         assert _insert_tables(traced, expected) == expected
     finally:
@@ -130,8 +123,8 @@ def test_provenance_page_uses_one_bounded_preflight_and_one_replay_query(
             )
         assert reads.call_count == 1
         preflight_query, preflight_parameters = reads.call_args.args
-        assert preflight_query.count("%s") == 1_030
-        assert len(preflight_parameters) == 1_030
+        assert preflight_query.count("%s") == 259
+        assert len(preflight_parameters) == 259
         assert connector.fetch_one(
             "SELECT COUNT(*) FROM catalog_a_impacted_content_provenance "
             "WHERE analysis_id = %s",
@@ -201,11 +194,21 @@ def test_provenance_preflight_candidates_are_driven_by_typed_storage(
             )
         assert reads.call_count == 1
         content_query, content_parameters = reads.call_args.args
-        assert "WITH proposed(analysis_id, key_value)" in content_query
+        assert "FROM catalog_analysis_impacted_content AS impacted" in content_query
         assert "SELECT %s AS key_value" not in content_query
-        assert content_query.count("stored.content_sha256 IN (%s)") == 4
-        assert content_parameters[:-2] == (analysis, content) * 4
+        assert content_query.count("impacted.content_sha256 IN (%s)") == 1
+        assert content_parameters[1:-1] == (analysis, content)
 
+        connector.execute(
+            "INSERT INTO catalog_gallery_source_name_accesses "
+            "(gallery_id, source_gallery_name) VALUES (1, %s)",
+            (b"gallery-1",),
+        )
+        connector.execute(
+            "INSERT INTO catalog_source_gallery_name_gids "
+            "(source_gallery_name, gid) VALUES (%s, 17)",
+            (b"gallery-1",),
+        )
         with patch.object(
             connector,
             "fetch_all",
@@ -216,12 +219,12 @@ def test_provenance_preflight_candidates_are_driven_by_typed_storage(
                 analysis_id=analysis,
                 entries=((1, 17),),
             )
-        assert reads.call_count == 1
+        assert reads.call_count == 2
         gid_query, gid_parameters = reads.call_args.args
-        assert "WITH proposed(analysis_id, key_value)" in gid_query
+        assert "FROM catalog_analysis_impacted_gid AS impacted" in gid_query
         assert "SELECT %s AS key_value" not in gid_query
-        assert gid_query.count("stored.gid IN (%s)") == 4
-        assert gid_parameters[:-2] == (analysis, 17) * 4
+        assert gid_query.count("impacted.gid IN (%s)") == 1
+        assert gid_parameters[1:-1] == (analysis, 17)
 
         content_family = load_analysis_impacted_content_key_family(
             connector,
@@ -317,28 +320,18 @@ def test_fresh_page_rejects_existing_or_future_provenance(tmp_path: Path) -> Non
     ("table", "columns", "values"),
     (
         (
-            "catalog_a_impacted_content_anchors",
-            "analysis_id, content_sha256",
-            lambda analysis, content: (analysis, content),
+            "catalog_analysis_impacted_content",
+            "analysis_id, content_sha256, witness_gallery_id",
+            lambda analysis, content: (analysis, content, 1),
         ),
         (
             "catalog_a_impacted_content_provenance",
             "analysis_id, gallery_id, content_sha256",
             lambda analysis, content: (analysis, 1, content),
         ),
-        (
-            "catalog_a_impacted_content_witnesses",
-            "analysis_id, content_sha256, witness_gallery_id",
-            lambda analysis, content: (analysis, content, 1),
-        ),
-        (
-            "catalog_a_impacted_content_seals",
-            "analysis_id, content_sha256",
-            lambda analysis, content: (analysis, content),
-        ),
     ),
 )
-def test_terminal_keyspace_rejects_every_orphan_physical_member(
+def test_terminal_keyspace_rejects_orphan_atomic_or_provenance_row(
     tmp_path: Path,
     table: str,
     columns: str,

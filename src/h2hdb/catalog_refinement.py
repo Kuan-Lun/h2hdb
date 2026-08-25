@@ -488,18 +488,14 @@ _IMPACTED_KEY_FAMILIES = (
     (
         "content",
         "content_sha256",
-        "catalog_a_impacted_content_anchors",
+        "catalog_analysis_impacted_content",
         "catalog_a_impacted_content_provenance",
-        "catalog_a_impacted_content_witnesses",
-        "catalog_a_impacted_content_seals",
     ),
     (
         "gid",
         "gid",
-        "catalog_a_impacted_gid_anchors",
+        "catalog_analysis_impacted_gid",
         "catalog_a_impacted_gid_provenance",
-        "catalog_a_impacted_gid_witnesses",
-        "catalog_a_impacted_gid_seals",
     ),
 )
 
@@ -1776,6 +1772,62 @@ def _require_canonical_domain(
         )
 
 
+def _validate_live_snapshot_manifest_pins(connector: SQLConnector) -> None:
+    """Require payload only for transient analysis/candidate retention pins.
+
+    Historical analysis and source-revision bindings are compact opaque audit
+    digests.  They deliberately do not participate in this query.  A digest
+    becomes payload authority only while its analysis build occupies a source
+    working slot or its publication candidate is uncommitted/operationally
+    live.  The current published source is validated separately by
+    :func:`_active_source_contexts`.
+    """
+
+    invalid = connector.fetch_all(
+        """
+        SELECT pinned.snapshot_manifest_sha256
+        FROM (
+            SELECT binding.snapshot_manifest_sha256
+            FROM catalog_analysis_snapshot_manifest AS binding
+            JOIN catalog_analysis_run_build_ids AS run_build
+              ON run_build.analysis_id = binding.analysis_id
+            JOIN operational_source_working_builds AS working_build
+              ON working_build.build_id = run_build.build_id
+            UNION
+            SELECT binding.snapshot_manifest_sha256
+            FROM catalog_publication_candidate_analysis_ids AS candidate
+            JOIN catalog_analysis_snapshot_manifest AS binding
+              ON binding.analysis_id = candidate.analysis_id
+            LEFT JOIN catalog_publication_commit_candidates AS committed
+              ON committed.candidate_id = candidate.candidate_id
+            LEFT JOIN operational_catalog_working_candidates AS working_candidate
+              ON working_candidate.candidate_id = candidate.candidate_id
+            WHERE committed.candidate_id IS NULL
+               OR working_candidate.candidate_id IS NOT NULL
+        ) AS pinned
+        LEFT JOIN catalog_source_snapshot_manifest_identity AS snapshot_identity
+          ON snapshot_identity.snapshot_manifest_sha256 =
+             pinned.snapshot_manifest_sha256
+        LEFT JOIN catalog_canonical_value_identities AS canonical_identity
+          ON canonical_identity.value_sha256 = pinned.snapshot_manifest_sha256
+        LEFT JOIN catalog_canonical_value_allocations AS allocation
+          ON allocation.value_sha256 = pinned.snapshot_manifest_sha256
+        WHERE LENGTH(pinned.snapshot_manifest_sha256) <> 32
+           OR snapshot_identity.snapshot_manifest_sha256 IS NULL
+           OR canonical_identity.value_sha256 IS NULL
+           OR allocation.value_sha256 IS NULL
+           OR allocation.digest_domain <> %s
+        LIMIT 1
+        """,
+        (b"source_snapshot_manifest_v1",),
+    )
+    if invalid:
+        raise CatalogSemanticValidationError(
+            "live source-working analysis or publication-candidate snapshot "
+            "semantic pin lacks a complete source_snapshot_manifest_v1 payload"
+        )
+
+
 def _active_source_contexts(connector: SQLConnector) -> tuple[_SourceContext, ...]:
     rows = connector.fetch_all("""
         SELECT registry.channel, head.source_revision, mapping.generation,
@@ -2183,7 +2235,7 @@ def _validate_impacted_key_families(
 ) -> None:
     """Audit sealed impacted keys without recomputing their derivation.
 
-    Each anti-join is rooted at one physical family member and constrained by
+    Each anti-join is rooted at one atomic impacted-key row and constrained by
     ``analysis_id``.  The minimum-witness query deliberately probes provenance
     in ``(analysis_id, key, gallery_id)`` order so both supported backends can
     use the manifest-required key-first lookup index.
@@ -2192,43 +2244,35 @@ def _validate_impacted_key_families(
     for (
         family,
         key,
-        anchor_table,
+        impacted_table,
         provenance_table,
-        witness_table,
-        seal_table,
     ) in _IMPACTED_KEY_FAMILIES:
-        incomplete_anchor = connector.fetch_all(
+        incomplete_key = connector.fetch_all(
             f"""
-            SELECT anchor.{key}
-            FROM {anchor_table} AS anchor
-            WHERE anchor.analysis_id = %s
+            SELECT impacted.{key}
+            FROM {impacted_table} AS impacted
+            WHERE impacted.analysis_id = %s
               AND (
                 NOT EXISTS (
                   SELECT 1
                   FROM {provenance_table} AS provenance
-                  WHERE provenance.analysis_id = anchor.analysis_id
-                    AND provenance.{key} = anchor.{key}
+                  WHERE provenance.analysis_id = impacted.analysis_id
+                    AND provenance.{key} = impacted.{key}
                 )
                 OR NOT EXISTS (
-                  SELECT 1
-                  FROM {witness_table} AS witness
-                  WHERE witness.analysis_id = anchor.analysis_id
-                    AND witness.{key} = anchor.{key}
-                )
-                OR NOT EXISTS (
-                  SELECT 1
-                  FROM {seal_table} AS seal
-                  WHERE seal.analysis_id = anchor.analysis_id
-                    AND seal.{key} = anchor.{key}
+                  SELECT 1 FROM {provenance_table} AS witness
+                  WHERE witness.analysis_id = impacted.analysis_id
+                    AND witness.{key} = impacted.{key}
+                    AND witness.gallery_id = impacted.witness_gallery_id
                 )
               )
             LIMIT 1
             """,
             (analysis_id,),
         )
-        if incomplete_anchor:
+        if incomplete_key:
             raise CatalogSemanticValidationError(
-                f"sealed impacted-{family} anchor lacks provenance, witness, or seal"
+                f"impacted-{family} row lacks its witness provenance"
             )
 
         orphan_provenance = connector.fetch_all(
@@ -2238,9 +2282,9 @@ def _validate_impacted_key_families(
             WHERE provenance.analysis_id = %s
               AND NOT EXISTS (
                 SELECT 1
-                FROM {anchor_table} AS anchor
-                WHERE anchor.analysis_id = provenance.analysis_id
-                  AND anchor.{key} = provenance.{key}
+                FROM {impacted_table} AS impacted
+                WHERE impacted.analysis_id = provenance.analysis_id
+                  AND impacted.{key} = provenance.{key}
               )
             LIMIT 1
             """,
@@ -2248,77 +2292,20 @@ def _validate_impacted_key_families(
         )
         if orphan_provenance:
             raise CatalogSemanticValidationError(
-                f"sealed impacted-{family} provenance has no anchor"
-            )
-
-        incomplete_witness = connector.fetch_all(
-            f"""
-            SELECT witness.{key}
-            FROM {witness_table} AS witness
-            WHERE witness.analysis_id = %s
-              AND (
-                NOT EXISTS (
-                  SELECT 1
-                  FROM {anchor_table} AS anchor
-                  WHERE anchor.analysis_id = witness.analysis_id
-                    AND anchor.{key} = witness.{key}
-                )
-                OR NOT EXISTS (
-                  SELECT 1
-                  FROM {provenance_table} AS provenance
-                  WHERE provenance.analysis_id = witness.analysis_id
-                    AND provenance.{key} = witness.{key}
-                    AND provenance.gallery_id = witness.witness_gallery_id
-                )
-              )
-            LIMIT 1
-            """,
-            (analysis_id,),
-        )
-        if incomplete_witness:
-            raise CatalogSemanticValidationError(
-                f"sealed impacted-{family} witness lacks its anchor or provenance"
-            )
-
-        incomplete_seal = connector.fetch_all(
-            f"""
-            SELECT seal.{key}
-            FROM {seal_table} AS seal
-            WHERE seal.analysis_id = %s
-              AND (
-                NOT EXISTS (
-                  SELECT 1
-                  FROM {anchor_table} AS anchor
-                  WHERE anchor.analysis_id = seal.analysis_id
-                    AND anchor.{key} = seal.{key}
-                )
-                OR NOT EXISTS (
-                  SELECT 1
-                  FROM {witness_table} AS witness
-                  WHERE witness.analysis_id = seal.analysis_id
-                    AND witness.{key} = seal.{key}
-                )
-              )
-            LIMIT 1
-            """,
-            (analysis_id,),
-        )
-        if incomplete_seal:
-            raise CatalogSemanticValidationError(
-                f"sealed impacted-{family} seal lacks its anchor or witness"
+                f"impacted-{family} provenance has no atomic key row"
             )
 
         nonminimum_witness = connector.fetch_all(
             f"""
-            SELECT witness.{key}
-            FROM {witness_table} AS witness
-            WHERE witness.analysis_id = %s
+            SELECT impacted.{key}
+            FROM {impacted_table} AS impacted
+            WHERE impacted.analysis_id = %s
               AND NOT EXISTS (
                 SELECT 1
                 FROM {provenance_table} AS candidate
-                WHERE candidate.analysis_id = witness.analysis_id
-                  AND candidate.{key} = witness.{key}
-                  AND candidate.gallery_id = witness.witness_gallery_id
+                WHERE candidate.analysis_id = impacted.analysis_id
+                  AND candidate.{key} = impacted.{key}
+                  AND candidate.gallery_id = impacted.witness_gallery_id
                   AND NOT EXISTS (
                     SELECT 1
                     FROM {provenance_table} AS smaller
@@ -2335,6 +2322,49 @@ def _validate_impacted_key_families(
             raise CatalogSemanticValidationError(
                 f"sealed impacted-{family} witness is not the minimum provenance gallery"
             )
+
+    incomplete_gid_key_storage = connector.fetch_all(
+        """
+        SELECT stored.gid
+        FROM catalog_analysis_impacted_gid_storage AS stored
+        WHERE stored.analysis_id = %s
+          AND NOT EXISTS (
+            SELECT 1
+            FROM catalog_a_impacted_gid_provenance AS provenance
+            WHERE provenance.analysis_id = stored.analysis_id
+              AND provenance.gid = stored.gid
+          )
+        LIMIT 1
+        """,
+        (analysis_id,),
+    )
+    if incomplete_gid_key_storage:
+        raise CatalogSemanticValidationError(
+            "impacted-gid key storage lacks complete derived provenance"
+        )
+
+    incomplete_gid_provenance_storage = connector.fetch_all(
+        """
+        SELECT stored.gallery_id
+        FROM catalog_a_impacted_gid_provenance_storage AS stored
+        WHERE stored.analysis_id = %s
+          AND NOT EXISTS (
+            SELECT 1
+            FROM catalog_a_impacted_gid_provenance AS provenance
+            JOIN catalog_analysis_impacted_gid_storage AS impacted
+              ON impacted.analysis_id = provenance.analysis_id
+             AND impacted.gid = provenance.gid
+            WHERE provenance.analysis_id = stored.analysis_id
+              AND provenance.gallery_id = stored.gallery_id
+          )
+        LIMIT 1
+        """,
+        (analysis_id,),
+    )
+    if incomplete_gid_provenance_storage:
+        raise CatalogSemanticValidationError(
+            "impacted-gid provenance storage lacks its identity chain or atomic key"
+        )
 
 
 def _validate_analysis_seal(
@@ -3034,6 +3064,47 @@ def _publication_terminal_stage_count(
     return processed_count
 
 
+def _validate_catalog_occurrence_storage(
+    connector: SQLConnector,
+    *,
+    revision: int,
+) -> None:
+    """Boundedly reject an occurrence whose payload or gallery key is missing.
+
+    The publication family rederives the occurrence digest on every insert and
+    keyed load.  READY audits relational congruence with a one-row anti-join;
+    it must not materialize and rehash an entire million-row active revision.
+    """
+
+    mismatch = connector.fetch_all(
+        """
+        SELECT occurrence.catalog_occurrence_sha256
+        FROM catalog_publication_occurrence_identities AS occurrence
+        LEFT JOIN catalog_publication_storage AS stored
+          ON stored.catalog_occurrence_sha256 =
+             occurrence.catalog_occurrence_sha256
+        LEFT JOIN catalog_gallery_source_name_accesses AS access
+          ON access.gallery_id = stored.gallery_id
+        LEFT JOIN catalog_source_gallery_name_gids AS name_gid
+          ON name_gid.source_gallery_name = access.source_gallery_name
+        LEFT JOIN catalog_publication_identities AS derived
+          ON derived.gid = name_gid.gid
+        WHERE occurrence.revision = %s
+          AND (
+            stored.catalog_occurrence_sha256 IS NULL
+            OR derived.publication_key IS NULL
+            OR derived.publication_key <> occurrence.publication_key
+          )
+        LIMIT 1
+        """,
+        (revision,),
+    )
+    if mismatch:
+        raise CatalogSemanticValidationError(
+            "active catalog occurrence identity/storage is not congruent"
+        )
+
+
 def _active_publication_contexts(
     connector: SQLConnector,
 ) -> tuple[_PublicationContext, ...]:
@@ -3088,6 +3159,10 @@ def _active_publication_contexts(
         assert revision_row is not None
         publication_count = _as_int(
             revision_row[0], field="catalog_revision.publication_count"
+        )
+        _validate_catalog_occurrence_storage(
+            connector,
+            revision=revision,
         )
         receipt_row = _one(
             connector,
@@ -3918,6 +3993,18 @@ def _validate_identity_codec_vectors() -> None:
             "publication-key.v1",
         ),
         (
+            identity.publication_selection_occurrence_sha256(
+                bytes(range(16)), bytes(range(32, 64))
+            ),
+            "2ff17d9d79c889c594c82864f71d4799a172199db2c823ee919bc0f5ab9928fa",
+            "publication-selection-occurrence.v1",
+        ),
+        (
+            identity.catalog_publication_occurrence_sha256(1, bytes(range(32, 64))),
+            "b22702b4189d823ff834f6dd335f342aeaa563af2d3fe8c26c16a1b6e9a9d697",
+            "catalog-publication-occurrence.v1",
+        ),
+        (
             identity.file_key(b"galleryinfo.txt"),
             "941b3ae3880d76dc3de825346febfb62b7c9c11111fd3a9260cb2622d6bab138",
             "file-key.v1",
@@ -4008,6 +4095,7 @@ def check_canonical_reference_domains_v1(connector: SQLConnector) -> None:
 
     _validate_exact_registries(connector)
     _active_source_contexts(connector)
+    _validate_live_snapshot_manifest_pins(connector)
     _active_publication_contexts(connector)
 
 
@@ -4239,6 +4327,7 @@ def check_retention_contract_v1(connector: SQLConnector) -> None:
 
     _validate_exact_registries(connector)
     source_contexts = _active_source_contexts(connector)
+    _validate_live_snapshot_manifest_pins(connector)
     for context in source_contexts:
         if context.analysis_id is not None:
             _validate_analysis_seal(connector, context.analysis_id)

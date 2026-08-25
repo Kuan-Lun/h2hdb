@@ -15,27 +15,30 @@ sibling packages.
 
 The current schema is a clean epoch-2 design:
 
-- 340 catalog data-plane base relations checked as BCNF, plus 78 generated
-  logical views for read-oriented projections. Forty-nine generic sealed vertical
+- 306 catalog data-plane base relations checked as BCNF, plus 73 generated
+  logical views for read-oriented projections. Thirty-eight generic sealed vertical
   families keep ordinary bases at their semantic key plus at most one value.
-- 27 declared decompositions, each checked as lossless and
+- 29 declared decompositions, each checked as lossless and
   dependency-preserving.
 - 75 operational control-plane base relations checked as BCNF, one of which is
   the separately created epoch-control relation, plus one derived activation
-  view. The complete epoch therefore contains 340 + 75 = 415 base tables.
+  view. The complete epoch therefore contains 306 + 75 = 381 base tables and
+  74 logical views, or 455 schema objects in those two manifests.
 - One generated physical schema for SQLite and MariaDB, with backend-specific
   SQL rendered from the same closed-world manifests.
 - A separate physical-width gate requires each ordinary `catalog_*` base table
   to have its semantic primary key plus at most one atomic non-key value. It
-  reports 335 narrow bases and five exact approved-wide BCNF recompositions:
-  gallery identity, artifact semantic input, prepared artifact, catalog artifact
-  occurrence, and artifact blob with its mandatory locator. Logical views are
-  excluded from that policy.
-- The closed catalog physical-domain authority contains exactly 295 relations:
-  239 mutation relations and 56 read-only views. The complete publication graph
+  reports 294 narrow bases and 12 exact approved-wide BCNF recompositions: the
+  seven gallery-linear current-state rows for observation metadata, scan,
+  directory, stat, gallery manifest, analysis owner candidate, catalog
+  publication storage, plus gallery identity, artifact
+  semantic input, prepared artifact, catalog artifact occurrence, and artifact
+  blob with its mandatory locator. Logical views are excluded from that policy.
+- The closed catalog physical-domain authority contains exactly 272 relations:
+  218 mutation relations and 54 read-only views. The complete publication graph
   is inside that closure, including permanent finalization replay state.
-- The generated provider installs exactly 4,644 typed bootstrap rows per
-  backend, including all 17 fixed 256-shard cleanup ranges.
+- The generated provider installs exactly 4,913 typed bootstrap rows per
+  backend, including all 18 fixed 256-shard cleanup ranges.
 
 The logical sources of truth are
 [`verification/schema/catalog.toml`](verification/schema/catalog.toml) and
@@ -87,8 +90,8 @@ run numbered historical migrations.
   read-only access.
 - Manifest-bound schema construction, full validation, and O(1) readiness
   checks.
-- Normalized catalog identities, immutable revisions, publication preparation,
-  and revision-pinned reads.
+- Normalized catalog identities, retained revision/commit audit descriptors,
+  publication preparation, and current-head-only catalog reads.
 - Durable download-to-ingest handoff, exact attempt/lease fencing, and
   coordinated completion.
 - Bounded source-build, analysis, publication, cleanup, maintenance-gate,
@@ -196,8 +199,10 @@ Consumers should import the public facades and immutable domain values from
 `h2hdb`; they must not import connector, repository, generated-schema, or table
 implementation modules.
 
-Revision-pinned catalog reads use `open_database`, which performs the full
-manifest-bound `READY` audit before returning a `VNextCatalogFacade`:
+Current-head catalog reads use `open_database`, which performs the full
+manifest-bound `READY` audit before returning a `VNextCatalogFacade`. The
+returned descriptor fences one call and is accepted only while it still equals
+the current head; a head advance makes an older descriptor fail closed:
 
 ```python
 from h2hdb import load_config, open_database
@@ -235,12 +240,25 @@ private disk-backed spool. The manifest preflight and later bounded staging
 steps therefore read the same immutable bytes even if the live source changes
 mid-run; closing the prepared-source handle removes the temporary spool.
 
+After `complete_ingest()` releases its SHARED gate lease, resident integrations
+call `VNextIngestFacade.drain_current_only_maintenance()`. Each cleanup
+transaction selects at most 256 logical cleanup keys/families under a renewable
+EXCLUSIVE lease; each selected key executes only a schema-fixed bounded set of
+physical deletes. One public attempt advances at most 16 cleanup batches. The
+typed result is `DONE`,
+`PROGRESSED`, `BLOCKED`, or `CONTENDED`; residents immediately retry
+`PROGRESSED`, while blocked/contended attempts use the ordinary poll cadence.
+Every result retains no caller capability, and durable shard checkpoints make
+response-loss replay safe. Cleanup retains the prior payload until the new
+current receipt is fully `PROJECTION_FINALIZED` and no live
+publication-candidate or source-build predecessor pins it.
+
 ### Deliberate current limits
 
 - A nonblank catalog search query fails closed until a normalized,
-  revision-pinned search index is part of the manifest and reader contract.
+  current-head search index is part of the manifest and reader contract.
 - The durable contract needed to derive `CatalogPublication.redownload_required`
-  for a pinned revision is not closed. Readers therefore do not infer it from
+  for the current revision is not closed. Readers therefore do not infer it from
   transient operational rows.
 - Core defines and orchestrates the typed artifact-preparation/storage
   boundary, but concrete filesystem and object-storage behavior remains in the

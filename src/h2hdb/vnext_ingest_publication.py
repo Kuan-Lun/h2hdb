@@ -130,7 +130,7 @@ _STEP_TOKEN = object()
 _PREPARED_TOKEN = object()
 _MAX_PAGE_ROWS = 128
 
-_STAGES = (
+_CANDIDATE_STAGES = (
     b"BUILD_SELECTION",
     b"VALIDATE_SELECTION",
     b"BUILD_CATALOG_PROJECTION",
@@ -147,7 +147,6 @@ _STAGES = (
     b"VALIDATE_CHANGED_GALLERY",
     b"VALIDATE_REMOVED_GALLERY",
     b"VALIDATE_DUPLICATE_LOSER",
-    b"FINALIZE_ARTIFACTS",
 )
 
 
@@ -1005,7 +1004,7 @@ def _issue_database_action(
     first_open = next(
         (stage for stage, state in checkpoints if state != "COMPLETE"), None
     )
-    if first_open is None or first_open == b"FINALIZE_ARTIFACTS":
+    if first_open is None:
         return _Action.COMMIT_PUBLICATION, candidate
 
     batch_key = secrets.token_bytes(32)
@@ -1513,8 +1512,10 @@ def _load_checkpoints(
         (candidate_id,),
     )
     result = tuple((bytes(row[0]), str(row[1])) for row in rows)
-    if tuple(stage for stage, _state in result) != _STAGES:
-        raise RuntimeError("publication checkpoint registry is incomplete or reordered")
+    if tuple(stage for stage, _state in result) != _CANDIDATE_STAGES:
+        raise RuntimeError(
+            "publication candidate checkpoint registry is incomplete or reordered"
+        )
     if any(state not in {"OPEN", "COMPLETE"} for _stage, state in result):
         raise RuntimeError("publication checkpoint has an invalid state")
     seen_open = False

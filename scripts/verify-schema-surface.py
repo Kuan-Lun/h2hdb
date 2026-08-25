@@ -228,6 +228,18 @@ def _is_static_relation_literal(
             return False
         if isinstance(parent, ast.Call):
             call_name = _call_name(parent)
+            if (
+                cleanup_dispatch
+                and call_name is not None
+                and call_name.endswith("_spec")
+                and len(parent.args) > 1
+                and any(descendant is node for descendant in ast.walk(parent.args[1]))
+            ):
+                # Static cleanup specs pass their primary-key column tuple as
+                # positional argument 2.  A column may legitimately begin
+                # with ``catalog_`` (for example catalog_occurrence_sha256),
+                # but it is not a dynamically selected relation.
+                return False
             if call_name in _STATIC_RELATION_CALLS or (
                 call_name is not None and call_name.endswith("_spec")
             ):

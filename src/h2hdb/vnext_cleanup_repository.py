@@ -5,7 +5,7 @@ predicates.  Runtime dispatch therefore stays closed-world: every supported
 target and phase below is bound to literal SQL owned by this module.  Database
 text is never interpolated into a statement.
 
-All seventeen provider-seeded target kinds are implemented here.  The large
+All eighteen provider-seeded target kinds are implemented here.  The large
 child-first targets use source-owned, immutable statement specifications; the
 database registry is checked for exact equality but is never treated as SQL or
 as an authorization predicate.
@@ -14,6 +14,7 @@ as an authorization predicate.
 from __future__ import annotations
 
 __all__ = [
+    "CatalogPublicationMaintenanceState",
     "CleanupBatchCommand",
     "CleanupBatchResult",
     "CleanupCorruptionError",
@@ -63,6 +64,7 @@ _COMPLETION_TABLE = "operational_cleanup_completions"
 class CleanupTargetKind(StrEnum):
     SOURCE_BUILD = "SOURCE_BUILD"
     ANALYSIS_RUN = "ANALYSIS_RUN"
+    CATALOG_PUBLICATION = "CATALOG_PUBLICATION"
     PUBLICATION_CANDIDATE = "PUBLICATION_CANDIDATE"
     OPERATIONAL_PREPARATION = "OPERATIONAL_PREPARATION"
     GALLERY_OBSERVATION = "GALLERY_OBSERVATION"
@@ -78,6 +80,49 @@ class CleanupTargetKind(StrEnum):
     GALLERY_UPLOAD_TIME = "GALLERY_UPLOAD_TIME"
     CANONICAL_VALUE_UPLOAD = "CANONICAL_VALUE_UPLOAD"
     HASH_CACHE_OBSERVATION = "HASH_CACHE_OBSERVATION"
+
+
+_MAINTENANCE_TARGET_PRIORITY = (
+    CleanupTargetKind.CATALOG_PUBLICATION,
+    CleanupTargetKind.PUBLICATION_CANDIDATE,
+    CleanupTargetKind.OPERATIONAL_PREPARATION,
+    CleanupTargetKind.GALLERY_OBSERVATION_STAGING,
+    CleanupTargetKind.ANALYSIS_RUN,
+    CleanupTargetKind.SOURCE_BUILD,
+    CleanupTargetKind.CANONICAL_VALUE_UPLOAD,
+    CleanupTargetKind.GALLERY_OBSERVATION,
+    CleanupTargetKind.ARTIFACT_BLOB,
+    CleanupTargetKind.PUBLICATION_IDENTITY,
+    CleanupTargetKind.GALLERY_IDENTITY,
+    CleanupTargetKind.SOURCE_GALLERY_NAME_GID,
+    CleanupTargetKind.GALLERY_UPLOAD_TIME,
+    CleanupTargetKind.GALLERY_OBSERVATION_PAGE,
+    CleanupTargetKind.FILE_NAME_IDENTITY,
+    CleanupTargetKind.HASH_CACHE_OBSERVATION,
+    CleanupTargetKind.CONTENT_BLOB,
+    CleanupTargetKind.CANONICAL_VALUE,
+)
+_CURRENT_ONLY_TARGET_PRIORITY = tuple(
+    kind
+    for kind in _MAINTENANCE_TARGET_PRIORITY
+    if kind is not CleanupTargetKind.HASH_CACHE_OBSERVATION
+)
+_CURRENT_ONLY_OPEN_ORDER_SQL = (
+    "CASE sweep.target_kind "
+    + " ".join(
+        f"WHEN '{kind.value}' THEN {position}"
+        for position, kind in enumerate(_CURRENT_ONLY_TARGET_PRIORITY)
+    )
+    + " ELSE 999 END"
+)
+
+
+class CatalogPublicationMaintenanceState(StrEnum):
+    """Optimistic current-only state used to avoid gate writes on idle polls."""
+
+    DONE = "DONE"
+    BLOCKED = "BLOCKED"
+    ACTIONABLE = "ACTIONABLE"
 
 
 class CleanupUnavailableError(RuntimeError):
@@ -211,6 +256,218 @@ class VNextCleanupRepository:
     """Run one fixed cleanup shard through bounded child-first phases."""
 
     @staticmethod
+    def catalog_publication_maintenance_state(
+        work: VNextUnitOfWork,
+    ) -> CatalogPublicationMaintenanceState:
+        """Optimistically classify current-only work without changing the gate.
+
+        DONE and BLOCKED are safe hints: a concurrent publication/finalization
+        merely defers cleanup to a later resident poll.  ACTIONABLE callers
+        must still claim EXCLUSIVE and recheck under the gate before deleting.
+        """
+
+        interrupted = work.connector.fetch_one(
+            f"SELECT 1 FROM {_SWEEP_TABLE} AS sweep "
+            f"JOIN {_JOB_TABLE} AS job ON job.target_key = sweep.target_key "
+            "WHERE sweep.target_kind = %s AND job.state = 'OPEN' LIMIT 1",
+            (CleanupTargetKind.CATALOG_PUBLICATION.value,),
+        )
+        if interrupted and interrupted != (1,):
+            raise CleanupCorruptionError(
+                "catalog cleanup interrupted-cycle probe returned an invalid shape"
+            )
+        if interrupted:
+            return CatalogPublicationMaintenanceState.ACTIONABLE
+
+        payload = work.connector.fetch_one(
+            "SELECT 1 FROM catalog_publication_occurrence_identities AS publication "
+            "JOIN catalog_publication_commit_head_receipts AS head "
+            "ON head.channel = %s "
+            "JOIN catalog_publication_commit_catalog_revisions AS current "
+            "ON current.receipt_id = head.receipt_id "
+            "WHERE publication.revision < current.revision LIMIT 1",
+            (b"default",),
+        )
+        if payload and payload != (1,):
+            raise CleanupCorruptionError(
+                "catalog cleanup preflight returned an invalid shape"
+            )
+        if not payload:
+            return CatalogPublicationMaintenanceState.DONE
+
+        current = work.connector.fetch_one(
+            "SELECT receipt.state, receipt.finalized_at "
+            "FROM catalog_publication_commit_head_receipts AS head "
+            "JOIN catalog_publication_receipts AS receipt "
+            "ON receipt.receipt_id = head.receipt_id "
+            "WHERE head.channel = %s",
+            (b"default",),
+        )
+        if not current:
+            return CatalogPublicationMaintenanceState.BLOCKED
+        if len(current) != 2:
+            raise CleanupCorruptionError(
+                "catalog cleanup current-receipt probe returned an invalid shape"
+            )
+        state = _as_text(current[0], field="catalog cleanup current receipt state")
+        if state != "PROJECTION_FINALIZED" or current[1] is None:
+            return CatalogPublicationMaintenanceState.BLOCKED
+        require_int63(current[1], field="catalog cleanup current finalized_at")
+
+        candidate = work.connector.fetch_one(
+            "SELECT 1 FROM catalog_publication_occurrence_identities AS r "
+            f"WHERE ({_CATALOG_PUBLICATION_ELIGIBILITY}) LIMIT 1"
+        )
+        if candidate and candidate != (1,):
+            raise CleanupCorruptionError(
+                "catalog cleanup actionable probe returned an invalid shape"
+            )
+        if candidate:
+            return CatalogPublicationMaintenanceState.ACTIONABLE
+        return CatalogPublicationMaintenanceState.BLOCKED
+
+    @staticmethod
+    def catalog_publication_next_maintenance_shard(
+        work: VNextUnitOfWork,
+        *,
+        gate_lease: GateLease,
+        now: int,
+    ) -> int | None:
+        """Return the next actionable shard, prioritizing interrupted work."""
+
+        timestamp = require_int63(now, field="catalog cleanup next-shard now")
+        _require_exclusive_gate(work, gate_lease, now=timestamp)
+        _validate_strategy_seeds(work, CleanupTargetKind.CATALOG_PUBLICATION)
+
+        interrupted = work.connector.fetch_one(
+            f"SELECT sweep.shard_no FROM {_SWEEP_TABLE} AS sweep "
+            f"JOIN {_JOB_TABLE} AS job ON job.target_key = sweep.target_key "
+            "WHERE sweep.target_kind = %s AND job.state = 'OPEN' "
+            "ORDER BY sweep.shard_no LIMIT 1",
+            (CleanupTargetKind.CATALOG_PUBLICATION.value,),
+        )
+        if interrupted:
+            if len(interrupted) != 1:
+                raise CleanupCorruptionError(
+                    "catalog cleanup interrupted-shard probe returned an invalid shape"
+                )
+            return _require_shard(interrupted[0])
+
+        candidate = work.connector.fetch_one(
+            "SELECT r.publication_key "
+            "FROM catalog_publication_occurrence_identities AS r "
+            f"WHERE ({_CATALOG_PUBLICATION_ELIGIBILITY}) "
+            "ORDER BY r.publication_key LIMIT 1"
+        )
+        if not candidate:
+            return None
+        if len(candidate) != 1:
+            raise CleanupCorruptionError(
+                "catalog cleanup next-candidate probe returned an invalid shape"
+            )
+        publication_key = require_digest32(
+            candidate[0], field="catalog cleanup candidate publication_key"
+        )
+        return publication_key[0]
+
+    @staticmethod
+    def catalog_publication_maintenance_required(
+        work: VNextUnitOfWork,
+        *,
+        gate_lease: GateLease,
+        now: int,
+    ) -> bool:
+        """Return whether historical payload or an interrupted shard remains."""
+
+        timestamp = require_int63(now, field="catalog cleanup preflight now")
+        _require_exclusive_gate(work, gate_lease, now=timestamp)
+        return (
+            VNextCleanupRepository.catalog_publication_maintenance_state(work)
+            is not CatalogPublicationMaintenanceState.DONE
+        )
+
+    @staticmethod
+    def current_only_maintenance_state(
+        work: VNextUnitOfWork,
+        *,
+        cycle_cutoff_at: int,
+        gate_lease: GateLease | None = None,
+        now: int | None = None,
+    ) -> CatalogPublicationMaintenanceState:
+        """Classify the 17-target gallery/CBZ current-only fixed point.
+
+        ``HASH_CACHE_OBSERVATION`` is deliberately excluded.  It is a
+        file-derived, age-based cache policy rather than gallery/CBZ history;
+        including it with a zero max age would make every resident idle poll
+        delete newly observed cache rows and prevent a stable fixed point.
+
+        A lease-free call is an optimistic read-only hint.  Supplying the
+        exact EXCLUSIVE lease and ``now`` performs the same exact probes under
+        the destructive maintenance fence.
+        """
+
+        cutoff = require_int63(
+            cycle_cutoff_at, field="current-only maintenance cycle_cutoff_at"
+        )
+        if (gate_lease is None) != (now is None):
+            raise TypeError("gate_lease and now must be supplied together")
+        if gate_lease is not None:
+            assert now is not None
+            timestamp = require_int63(now, field="current-only maintenance state now")
+            _require_exclusive_gate(work, gate_lease, now=timestamp)
+
+        if _load_open_current_only_cycle(work) is not None:
+            return CatalogPublicationMaintenanceState.ACTIONABLE
+        if _next_current_only_candidate(work, cycle_cutoff_at=cutoff) is not None:
+            return CatalogPublicationMaintenanceState.ACTIONABLE
+        if _catalog_publication_payload_is_blocked(
+            work
+        ) or _publication_candidate_payload_is_blocked(work):
+            return CatalogPublicationMaintenanceState.BLOCKED
+        return CatalogPublicationMaintenanceState.DONE
+
+    @staticmethod
+    def next_current_only_cycle(
+        work: VNextUnitOfWork,
+        *,
+        gate_lease: GateLease,
+        cycle_cutoff_at: int,
+        now: int,
+    ) -> CleanupCycle | None:
+        """Resume an OPEN job or begin the first actionable priority target.
+
+        The exact candidate probe and cycle creation share the EXCLUSIVE
+        transaction.  A completed cycle is followed by a new call, which
+        restarts the priority scan from the first target and therefore reaches
+        a dependency fixed point without walking all 4,608 target shards.
+        """
+
+        timestamp = require_int63(now, field="current-only maintenance next now")
+        cutoff = require_int63(
+            cycle_cutoff_at, field="current-only maintenance cycle_cutoff_at"
+        )
+        _require_exclusive_gate(work, gate_lease, now=timestamp)
+
+        interrupted = _load_open_current_only_cycle(work)
+        if interrupted is not None:
+            _validate_strategy_seeds(work, interrupted.target_kind)
+            return interrupted
+
+        candidate = _next_current_only_candidate(work, cycle_cutoff_at=cutoff)
+        if candidate is None:
+            return None
+        kind, shard = candidate
+        return _begin_cycle_under_exclusive(
+            work,
+            kind=kind,
+            shard=shard,
+            cutoff=cutoff,
+            max_rows=_MAX_BATCH_ROWS,
+            max_age=0,
+            now=timestamp,
+        )
+
+    @staticmethod
     def begin_cycle(
         work: VNextUnitOfWork,
         *,
@@ -236,107 +493,15 @@ class VNextCleanupRepository:
         if kind != CleanupTargetKind.HASH_CACHE_OBSERVATION and max_age != 0:
             raise ValueError("hash-cache max age is only valid for hash-cache cleanup")
         _require_exclusive_gate(work, gate_lease, now=timestamp)
-        _validate_strategy_seeds(work, kind)
-
-        expected_target_key = _target_key(kind, shard)
-        row = work.lock_row(
-            LockRank.CHECKPOINT,
-            encode_lock_key("cleanup-sweep", expected_target_key),
-            f"""
-            SELECT s.target_key,
-                   j.cleanup_id, j.cycle_generation, j.cycle_cutoff_at,
-                   j.algorithm_version, j.max_rows_per_transaction,
-                   j.hash_cache_max_age_microseconds, j.state,
-                   j.created_at, j.completed_at,
-                   c.cycle_generation, c.final_chain_sha256, c.deleted_count
-            FROM {_SWEEP_TABLE} AS s
-            LEFT JOIN {_JOB_TABLE} AS j ON j.target_key = s.target_key
-            LEFT JOIN {_COMPLETION_TABLE} AS c ON c.target_key = s.target_key
-            WHERE s.target_kind = %s AND s.shard_no = %s
-            """,
-            (kind.value, shard),
-        )
-        if not row or row[0] != expected_target_key:
-            raise CleanupCorruptionError(
-                "fixed cleanup sweep seed is missing or corrupt"
-            )
-
-        if row[1] is None:
-            generation = 1
-        else:
-            existing = _cycle_from_job_row(kind, shard, row)
-            state = _as_text(row[7], field="cleanup job state")
-            if state == "OPEN":
-                _require_cycle_policy(
-                    existing,
-                    cutoff=cutoff,
-                    max_rows=max_rows,
-                    max_age=max_age,
-                )
-                return existing
-            if state != "COMPLETE":
-                raise CleanupCorruptionError("cleanup job has an invalid state")
-            _require_complete_job(row, existing)
-            if existing.cycle_generation == INT63_MAX:
-                raise CleanupCycleExhaustedError(
-                    "cleanup cycle generation reached portable int63 maximum"
-                )
-            generation = existing.cycle_generation + 1
-            work.connector.execute(
-                f"DELETE FROM {_COMPLETION_TABLE} WHERE target_key = %s",
-                (expected_target_key,),
-            )
-            affected = work.connector.execute_affected(
-                f"DELETE FROM {_JOB_TABLE} "
-                "WHERE cleanup_id = %s AND target_key = %s "
-                "AND cycle_generation = %s AND state = 'COMPLETE'",
-                (
-                    existing.cleanup_id,
-                    existing.target_key,
-                    existing.cycle_generation,
-                ),
-            )
-            if affected != 1:
-                raise CleanupUnavailableError("completed cleanup cycle changed")
-
-        cleanup_id = _cleanup_id(kind, shard, generation)
-        cycle = CleanupCycle(
-            cleanup_id=cleanup_id,
-            target_kind=kind,
-            shard_no=shard,
-            target_key=expected_target_key,
-            cycle_generation=generation,
-            cycle_cutoff_at=cutoff,
-            max_rows_per_transaction=max_rows,
-            hash_cache_max_age_microseconds=max_age,
-        )
-        work.connector.execute(
-            f"""
-            INSERT INTO {_JOB_TABLE}
-                (cleanup_id, target_key, cycle_generation, cycle_cutoff_at,
-                 algorithm_version, max_rows_per_transaction,
-                 hash_cache_max_age_microseconds, state, created_at, completed_at)
-            VALUES (%s, %s, %s, %s, 1, %s, %s, 'OPEN', %s, NULL)
-            """,
-            (
-                cycle.cleanup_id,
-                cycle.target_key,
-                cycle.cycle_generation,
-                cycle.cycle_cutoff_at,
-                cycle.max_rows_per_transaction,
-                cycle.hash_cache_max_age_microseconds,
-                timestamp,
-            ),
-        )
-        first_phase = _STRATEGIES[kind].phases[0]
-        _insert_checkpoint(
+        return _begin_cycle_under_exclusive(
             work,
-            cycle=cycle,
-            phase=first_phase,
-            chain_sha256=_initial_chain(cycle.cleanup_id, first_phase),
+            kind=kind,
+            shard=shard,
+            cutoff=cutoff,
+            max_rows=max_rows,
+            max_age=max_age,
             now=timestamp,
         )
-        return cycle
 
     @staticmethod
     def resume_cycle(
@@ -536,6 +701,118 @@ class VNextCleanupRepository:
             deleted_count=total_deleted,
             replayed=False,
         )
+
+
+def _begin_cycle_under_exclusive(
+    work: VNextUnitOfWork,
+    *,
+    kind: CleanupTargetKind,
+    shard: int,
+    cutoff: int,
+    max_rows: int,
+    max_age: int,
+    now: int,
+) -> CleanupCycle:
+    """Begin after the caller has fenced this transaction exactly once."""
+
+    _validate_strategy_seeds(work, kind)
+    expected_target_key = _target_key(kind, shard)
+    row = work.lock_row(
+        LockRank.CHECKPOINT,
+        encode_lock_key("cleanup-sweep", expected_target_key),
+        f"""
+        SELECT s.target_key,
+               j.cleanup_id, j.cycle_generation, j.cycle_cutoff_at,
+               j.algorithm_version, j.max_rows_per_transaction,
+               j.hash_cache_max_age_microseconds, j.state,
+               j.created_at, j.completed_at,
+               c.cycle_generation, c.final_chain_sha256, c.deleted_count
+        FROM {_SWEEP_TABLE} AS s
+        LEFT JOIN {_JOB_TABLE} AS j ON j.target_key = s.target_key
+        LEFT JOIN {_COMPLETION_TABLE} AS c ON c.target_key = s.target_key
+        WHERE s.target_kind = %s AND s.shard_no = %s
+        """,
+        (kind.value, shard),
+    )
+    if not row or row[0] != expected_target_key:
+        raise CleanupCorruptionError("fixed cleanup sweep seed is missing or corrupt")
+
+    if row[1] is None:
+        generation = 1
+    else:
+        existing = _cycle_from_job_row(kind, shard, row)
+        state = _as_text(row[7], field="cleanup job state")
+        if state == "OPEN":
+            _require_cycle_policy(
+                existing,
+                cutoff=cutoff,
+                max_rows=max_rows,
+                max_age=max_age,
+            )
+            return existing
+        if state != "COMPLETE":
+            raise CleanupCorruptionError("cleanup job has an invalid state")
+        _require_complete_job(row, existing)
+        if existing.cycle_generation == INT63_MAX:
+            raise CleanupCycleExhaustedError(
+                "cleanup cycle generation reached portable int63 maximum"
+            )
+        generation = existing.cycle_generation + 1
+        work.connector.execute(
+            f"DELETE FROM {_COMPLETION_TABLE} WHERE target_key = %s",
+            (expected_target_key,),
+        )
+        affected = work.connector.execute_affected(
+            f"DELETE FROM {_JOB_TABLE} "
+            "WHERE cleanup_id = %s AND target_key = %s "
+            "AND cycle_generation = %s AND state = 'COMPLETE'",
+            (
+                existing.cleanup_id,
+                existing.target_key,
+                existing.cycle_generation,
+            ),
+        )
+        if affected != 1:
+            raise CleanupUnavailableError("completed cleanup cycle changed")
+
+    cleanup_id = _cleanup_id(kind, shard, generation)
+    cycle = CleanupCycle(
+        cleanup_id=cleanup_id,
+        target_kind=kind,
+        shard_no=shard,
+        target_key=expected_target_key,
+        cycle_generation=generation,
+        cycle_cutoff_at=cutoff,
+        max_rows_per_transaction=max_rows,
+        hash_cache_max_age_microseconds=max_age,
+    )
+    work.connector.execute(
+        f"""
+        INSERT INTO {_JOB_TABLE}
+            (cleanup_id, target_key, cycle_generation, cycle_cutoff_at,
+             algorithm_version, max_rows_per_transaction,
+             hash_cache_max_age_microseconds, state, created_at, completed_at)
+        VALUES (%s, %s, %s, %s, 1, %s, %s, 'OPEN', %s, NULL)
+        """,
+        (
+            cycle.cleanup_id,
+            cycle.target_key,
+            cycle.cycle_generation,
+            cycle.cycle_cutoff_at,
+            cycle.max_rows_per_transaction,
+            cycle.hash_cache_max_age_microseconds,
+            now,
+        ),
+    )
+    first_phase = _STRATEGIES[kind].phases[0]
+    _insert_checkpoint(
+        work,
+        cycle=cycle,
+        phase=first_phase,
+        chain_sha256=_initial_chain(cycle.cleanup_id, first_phase),
+        now=now,
+    )
+    return cycle
 
 
 def _require_supported_kind(value: object) -> CleanupTargetKind:
@@ -1300,10 +1577,10 @@ def _select_publication_identities(
           AND (%s = 0 OR p.publication_key > %s)
           AND (%s = 1 OR p.publication_key < %s)
           AND NOT EXISTS (
-              SELECT 1 FROM catalog_publication_anchors x
+              SELECT 1 FROM catalog_publication_occurrence_identities x
               WHERE x.publication_key = p.publication_key)
           AND NOT EXISTS (
-              SELECT 1 FROM catalog_publication_selections x
+              SELECT 1 FROM catalog_publication_selection_occurrence_identities x
               WHERE x.publication_key = p.publication_key)
         ORDER BY p.publication_key
         LIMIT %s
@@ -1326,10 +1603,10 @@ def _select_publication_identities(
             SELECT p.publication_key FROM catalog_publication_identities AS p
             WHERE p.publication_key = %s
               AND NOT EXISTS (
-                  SELECT 1 FROM catalog_publication_anchors x
+                  SELECT 1 FROM catalog_publication_occurrence_identities x
                   WHERE x.publication_key = p.publication_key)
               AND NOT EXISTS (
-                  SELECT 1 FROM catalog_publication_selections x
+                  SELECT 1 FROM catalog_publication_selection_occurrence_identities x
                   WHERE x.publication_key = p.publication_key)
             """,
             (key,),
@@ -1602,6 +1879,7 @@ class _StaticDeleteSpec:
 @dataclass(frozen=True, slots=True)
 class _StaticTargetPlan:
     kind: CleanupTargetKind
+    root_table: str
     root_key: tuple[str, ...]
     shard_column: str
     shard_width: int | None
@@ -1801,10 +2079,12 @@ def _static_select_sql(
         else f"r.{plan.shard_column} >= %s AND (%s = 1 OR r.{plan.shard_column} < %s)"
     )
     if exact:
+        exact_root = " AND ".join(f"{column} = %s" for column in root_columns)
         exact_pk = " AND ".join(f"{column} = %s" for column in primary_columns)
         return (
             f"SELECT {select} FROM {spec.source} WHERE ({plan.eligibility}) "
-            f"AND ({spec.extra_predicate}) AND ({shard_sql}) AND {exact_pk}"
+            f"AND ({spec.extra_predicate}) AND ({shard_sql}) "
+            f"AND {exact_root} AND {exact_pk}"
         )
     keyset_sql = ""
     if has_after:
@@ -1865,6 +2145,7 @@ def _run_static_phase(
     shard = _static_shard_parameters(plan, cycle)
     for index in range(start_index, len(specs)):
         spec = specs[index]
+        deleted_primary_keys: set[tuple[_StaticScalar, ...]] = set()
         ordered_arity = len(plan.root_key) + len(spec.primary_key)
         after = start_values if index == start_index else None
         if after is not None and len(after) != ordered_arity:
@@ -1882,21 +2163,41 @@ def _run_static_phase(
             if not rows:
                 break
             candidates = tuple(_static_values(row) for row in rows)
-            for candidate in candidates:
-                root = candidate[: len(plan.root_key)]
-                primary = candidate[len(plan.root_key) :]
-                exact_query = _static_select_sql(plan, spec, exact=True)
-                exact_parameters = policy + shard + primary
-                locked = work.lock_row(
-                    LockRank.CHILD,
-                    encode_lock_key(
+            deleted_before_page = len(deleted)
+            candidates_by_lock = tuple(
+                sorted(
+                    candidates,
+                    key=lambda candidate: encode_lock_key(
                         "cleanup-static",
                         plan.kind.value,
                         phase,
                         index,
-                        *root,
-                        *primary,
+                        *candidate,
                     ),
+                )
+            )
+            for candidate in candidates_by_lock:
+                root = candidate[: len(plan.root_key)]
+                primary = candidate[len(plan.root_key) :]
+                if primary in deleted_primary_keys:
+                    # An indirect child can reference two eligible roots (for
+                    # example a display-title cache row whose input and output
+                    # canonical digests share this shard).  Delete the child
+                    # exactly once while still advancing past every joined
+                    # root/key tuple in the deterministic cursor order.
+                    continue
+                exact_query = _static_select_sql(plan, spec, exact=True)
+                exact_parameters = policy + shard + root + primary
+                lock_key = encode_lock_key(
+                    "cleanup-static",
+                    plan.kind.value,
+                    phase,
+                    index,
+                    *candidate,
+                )
+                locked = work.lock_row(
+                    LockRank.CHILD,
+                    lock_key,
                     exact_query,
                     exact_parameters,
                 )
@@ -1923,10 +2224,15 @@ def _run_static_phase(
                         raise CleanupUnavailableError(
                             f"{plan.kind.value} cleanup row changed"
                         )
-                after = candidate
-                next_cursor = _encode_static_cursor(index, candidate)
+                deleted_primary_keys.add(primary)
                 deleted.append(_encode_static_cursor(index, candidate))
-            if len(candidates) < remaining:
+            # Cursor order is SQL root/PK order, independent of the unsigned
+            # encoded lock-key order used above inside this bounded page.
+            after = candidates[-1]
+            next_cursor = _encode_static_cursor(index, after)
+            if len(candidates) < remaining or len(deleted) - deleted_before_page < len(
+                candidates
+            ):
                 break
     return _Mutation(next_cursor, tuple(deleted))
 
@@ -2081,7 +2387,113 @@ AND NOT EXISTS (
     JOIN catalog_source_build_base_publication_commits base
       ON base.base_receipt_id = committed.receipt_id
     WHERE committed.candidate_id = r.candidate_id)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_publication_commit_candidates committed
+    JOIN catalog_publication_candidate_reserved_revisions reserved
+      ON reserved.candidate_id = committed.candidate_id
+    JOIN catalog_publication_occurrence_identities projected
+      ON projected.revision = reserved.reserved_revision
+    WHERE committed.candidate_id = r.candidate_id)
 """
+
+_CATALOG_PUBLICATION_ELIGIBILITY = """
+EXISTS (
+    SELECT 1 FROM catalog_publication_receipts finalized
+    WHERE finalized.revision = r.revision
+      AND finalized.state = 'PROJECTION_FINALIZED'
+      AND finalized.finalized_at IS NOT NULL)
+AND EXISTS (
+    SELECT 1 FROM catalog_publication_commit_head_receipts head
+    JOIN catalog_publication_receipts current
+      ON current.receipt_id = head.receipt_id
+    WHERE current.revision > r.revision
+      AND current.state = 'PROJECTION_FINALIZED'
+      AND current.finalized_at IS NOT NULL)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_publication_candidate_base_publication_commits base
+    JOIN operational_catalog_working_candidates working
+      ON working.candidate_id = base.candidate_id
+    JOIN catalog_publication_commit_catalog_revisions pinned
+      ON pinned.receipt_id = base.base_receipt_id
+    WHERE pinned.revision = r.revision)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_source_build_base_publication_commits base
+    JOIN operational_source_working_builds working
+      ON working.build_id = base.build_id
+    JOIN catalog_publication_commit_catalog_revisions pinned
+      ON pinned.receipt_id = base.base_receipt_id
+    WHERE pinned.revision = r.revision)
+"""
+
+
+def _catalog_publication_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
+    root = "catalog_publication_occurrence_identities"
+    key = ("revision", "publication_key")
+
+    def direct(table: str, pk: tuple[str, ...]) -> _StaticDeleteSpec:
+        return _owned_spec(table, pk, root, key)
+
+    storage = _indirect_spec(
+        "catalog_publication_storage",
+        ("catalog_occurrence_sha256",),
+        "catalog_publication_storage AS c "
+        "JOIN catalog_publication_occurrence_identities AS r "
+        "ON r.catalog_occurrence_sha256 = c.catalog_occurrence_sha256",
+    )
+
+    return {
+        "CP_STORAGE": (storage,),
+        "CP_CONTRIBUTOR_SEAL": (
+            direct(
+                "catalog_contributor_seals",
+                ("revision", "publication_key", "position"),
+            ),
+        ),
+        "CP_CONTRIBUTOR_IDENTITY": (
+            direct(
+                "catalog_contributor_identities",
+                (
+                    "revision",
+                    "publication_key",
+                    "contributor_name_sha256",
+                    "role",
+                ),
+            ),
+        ),
+        "CP_CONTRIBUTOR_NAME": (
+            direct(
+                "catalog_contributor_name_sha256s",
+                ("revision", "publication_key", "position"),
+            ),
+        ),
+        "CP_CONTRIBUTOR_ROLE": (
+            direct(
+                "catalog_contributor_roles",
+                ("revision", "publication_key", "position"),
+            ),
+        ),
+        "CP_CONTRIBUTOR_ANCHOR": (
+            direct(
+                "catalog_contributor_anchors",
+                ("revision", "publication_key", "position"),
+            ),
+        ),
+        "CP_ORDER": (
+            direct(
+                "catalog_publication_order",
+                ("revision", "position"),
+            ),
+        ),
+        "CP_CONTENT": (direct("catalog_publication_contents", key),),
+        "CP_SUBJECT": (
+            direct(
+                "catalog_subjects",
+                ("revision", "publication_key", "position"),
+            ),
+        ),
+        "CP_ARTIFACT": (direct("catalog_artifacts", key),),
+        "CP_ROOT": (direct(root, key),),
+    }
 
 
 def _analysis_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
@@ -2164,18 +2576,21 @@ def _analysis_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                     ("analysis_id", "file_sha256"),
                 ),
                 (
-                    "catalog_a_content_candidate_shadow_seals",
+                    "catalog_analysis_content_owner_candidate_shadows",
                     ("analysis_id", "gallery_id"),
                 ),
                 (
-                    "catalog_a_content_owner_shadow_seals",
+                    "catalog_analysis_content_owner_shadows",
                     ("analysis_id", "content_sha256"),
                 ),
                 (
-                    "catalog_a_impacted_content_seals",
+                    "catalog_analysis_impacted_content",
                     ("analysis_id", "content_sha256"),
                 ),
-                ("catalog_a_impacted_gid_seals", ("analysis_id", "gid")),
+                (
+                    "catalog_analysis_impacted_gid_storage",
+                    ("analysis_id", "gid"),
+                ),
                 (
                     "catalog_analysis_file_hash_decision_tombstone",
                     ("analysis_id", "file_sha256"),
@@ -2201,72 +2616,34 @@ def _analysis_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                     ("analysis_id", "winner_gallery_id"),
                 ),
                 ("catalog_analysis_gid_winner_tombstones", ("analysis_id", "gid")),
-                (
-                    "catalog_a_file_decision_shadow_occurrences",
-                    ("analysis_id", "file_sha256"),
-                ),
-                (
-                    "catalog_a_file_decision_shadow_artists",
-                    ("analysis_id", "file_sha256"),
-                ),
-                (
-                    "catalog_a_file_decision_shadow_gallery_artist_max",
-                    ("analysis_id", "file_sha256"),
-                ),
-                (
-                    "catalog_a_content_candidate_shadow_contents",
-                    ("analysis_id", "gallery_id"),
-                ),
-                (
-                    "catalog_a_content_candidate_shadow_not_uploaded",
-                    ("analysis_id", "gallery_id"),
-                ),
-                (
-                    "catalog_a_content_candidate_shadow_title_counts",
-                    ("analysis_id", "gallery_id"),
-                ),
-                (
-                    "catalog_a_content_candidate_shadow_download_times",
-                    ("analysis_id", "gallery_id"),
-                ),
-                (
-                    "catalog_a_content_owner_shadow_galleries",
-                    ("analysis_id", "content_sha256"),
-                ),
-                (
-                    "catalog_a_impacted_content_witnesses",
-                    ("analysis_id", "content_sha256"),
-                ),
-                (
-                    "catalog_a_impacted_gid_witnesses",
-                    ("analysis_id", "gid"),
-                ),
+            )
+        ),
+        "AR_FILE_HASH_VALUES": tuple(
+            direct(table, ("analysis_id", "file_sha256"))
+            for table in (
+                "catalog_a_file_decision_shadow_occurrences",
+                "catalog_a_file_decision_shadow_artists",
+                "catalog_a_file_decision_shadow_gallery_artist_max",
+            )
+        ),
+        "AR_IMPACT_PROVENANCE": tuple(
+            direct(table, pk)
+            for table, pk in (
                 (
                     "catalog_a_impacted_content_provenance",
                     ("analysis_id", "gallery_id", "content_sha256"),
                 ),
                 (
-                    "catalog_a_impacted_gid_provenance",
-                    ("analysis_id", "gallery_id", "gid"),
-                ),
-                (
-                    "catalog_a_file_decision_shadow_anchors",
-                    ("analysis_id", "file_sha256"),
-                ),
-                (
-                    "catalog_a_content_candidate_shadow_anchors",
+                    "catalog_a_impacted_gid_provenance_storage",
                     ("analysis_id", "gallery_id"),
                 ),
-                (
-                    "catalog_a_content_owner_shadow_anchors",
-                    ("analysis_id", "content_sha256"),
-                ),
-                (
-                    "catalog_a_impacted_content_anchors",
-                    ("analysis_id", "content_sha256"),
-                ),
-                ("catalog_a_impacted_gid_anchors", ("analysis_id", "gid")),
             )
+        ),
+        "AR_FILE_HASH_ANCHOR": (
+            direct(
+                "catalog_a_file_decision_shadow_anchors",
+                ("analysis_id", "file_sha256"),
+            ),
         ),
         "AR_EVIDENCE": tuple(
             direct(table, pk)
@@ -2384,6 +2761,11 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
     def direct(table: str, pk: tuple[str, ...]) -> _StaticDeleteSpec:
         return _owned_spec(table, pk, root, key)
 
+    uncommitted = (
+        "NOT EXISTS (SELECT 1 FROM catalog_publication_commit_candidates committed "
+        "WHERE committed.candidate_id = r.candidate_id)"
+    )
+
     prepared_source = (
         "catalog_prepared_artifacts AS c "
         "JOIN catalog_publication_candidate_anchors AS r "
@@ -2399,6 +2781,40 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
             "WHERE candidate_id = %s AND publication_key = %s",
         ),
     )
+    selection_storage = _indirect_spec(
+        "catalog_publication_selection_storage",
+        ("selection_occurrence_sha256",),
+        "catalog_publication_selection_storage AS c "
+        "JOIN catalog_publication_selection_occurrence_identities AS occurrence "
+        "ON occurrence.selection_occurrence_sha256 = "
+        "c.selection_occurrence_sha256 "
+        "JOIN catalog_publication_candidate_anchors AS r "
+        "ON r.candidate_id = occurrence.candidate_id",
+    )
+    projection_storage = _indirect_spec(
+        "catalog_publication_storage",
+        ("catalog_occurrence_sha256",),
+        "catalog_publication_storage AS c "
+        "JOIN catalog_publication_occurrence_identities AS occurrence "
+        "ON occurrence.catalog_occurrence_sha256 = c.catalog_occurrence_sha256 "
+        "JOIN catalog_publication_candidate_reserved_revisions AS reserved "
+        "ON reserved.reserved_revision = occurrence.revision "
+        "JOIN catalog_publication_candidate_anchors AS r "
+        "ON r.candidate_id = reserved.candidate_id",
+        extra_predicate=uncommitted,
+    )
+
+    def projection(table: str, primary_key: tuple[str, ...]) -> _StaticDeleteSpec:
+        return _indirect_spec(
+            table,
+            primary_key,
+            f"{table} AS c "
+            "JOIN catalog_publication_candidate_reserved_revisions AS reserved "
+            "ON reserved.reserved_revision = c.revision "
+            "JOIN catalog_publication_candidate_anchors AS r "
+            "ON r.candidate_id = reserved.candidate_id",
+            extra_predicate=uncommitted,
+        )
 
     return {
         "PC_SEALS": (
@@ -2412,12 +2828,28 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                 ("candidate_id", "stage", "start_generation"),
             ),
             direct("catalog_artifact_operations", ("candidate_id", "publication_key")),
+            projection_storage,
         ),
-        "PC_PREPARED": (prepared,),
+        "PC_PREPARED": (
+            prepared,
+            projection(
+                "catalog_contributor_seals",
+                ("revision", "publication_key", "position"),
+            ),
+        ),
         "PC_INPUT": (
             direct(
                 "catalog_candidate_artifact_inputs",
                 ("candidate_id", "publication_key"),
+            ),
+            projection(
+                "catalog_contributor_identities",
+                (
+                    "revision",
+                    "publication_key",
+                    "contributor_name_sha256",
+                    "role",
+                ),
             ),
         ),
         "PC_BATCH_VALUES": (
@@ -2445,16 +2877,31 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                 "catalog_publication_batch_receipt_start_cursors",
                 ("candidate_id", "stage", "start_generation"),
             ),
+            projection(
+                "catalog_contributor_name_sha256s",
+                ("revision", "publication_key", "position"),
+            ),
         ),
         "PC_BATCH_ANCHOR": (
             direct(
                 "catalog_publication_batch_receipt_anchors",
                 ("candidate_id", "stage", "start_generation"),
             ),
+            projection(
+                "catalog_contributor_roles",
+                ("revision", "publication_key", "position"),
+            ),
         ),
         "PC_CHECKPOINT_SEAL": (
             direct("catalog_publication_checkpoint_seals", ("candidate_id", "stage")),
-            direct("catalog_publication_selections", ("candidate_id", "gallery_id")),
+            projection(
+                "catalog_contributor_anchors",
+                ("revision", "publication_key", "position"),
+            ),
+        ),
+        "PC_SELECTION_STORAGE": (
+            selection_storage,
+            projection("catalog_publication_order", ("revision", "position")),
         ),
         "PC_CHECKPOINT_VALUES": (
             direct(
@@ -2471,14 +2918,30 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                 "catalog_publication_checkpoint_generations",
                 ("candidate_id", "stage"),
             ),
+            projection("catalog_publication_contents", ("revision", "publication_key")),
         ),
         "PC_CHECKPOINT_ANCHOR": (
             direct("catalog_publication_checkpoint_anchors", ("candidate_id", "stage")),
+            projection(
+                "catalog_subjects",
+                ("revision", "publication_key", "position"),
+            ),
         ),
         "PC_BASES": (
             direct(
                 "catalog_publication_candidate_base_publication_commits",
                 ("candidate_id",),
+            ),
+            projection("catalog_artifacts", ("revision", "publication_key")),
+        ),
+        "PC_SELECTION_IDENTITY": (
+            direct(
+                "catalog_publication_selection_occurrence_identities",
+                ("candidate_id", "publication_key"),
+            ),
+            projection(
+                "catalog_publication_occurrence_identities",
+                ("revision", "publication_key"),
             ),
         ),
         "PC_ROOT": (
@@ -2916,19 +3379,7 @@ def _gallery_observation_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
             direct(table, pk)
             for table, pk in (
                 (
-                    "catalog_gallery_manifest_seals",
-                    ("gallery_id", "observation_id", "manifest_policy_id"),
-                ),
-                (
-                    "catalog_gallery_manifest_manifest_sha256s",
-                    ("gallery_id", "observation_id", "manifest_policy_id"),
-                ),
-                (
-                    "catalog_gallery_manifest_computed_ats",
-                    ("gallery_id", "observation_id", "manifest_policy_id"),
-                ),
-                (
-                    "catalog_gallery_manifest_anchors",
+                    "catalog_gallery_manifests",
                     ("gallery_id", "observation_id", "manifest_policy_id"),
                 ),
                 (
@@ -2988,49 +3439,13 @@ def _gallery_observation_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                 ),
             ),
         ),
-        "GO_METADATA_SEAL": (
-            direct(
-                "catalog_gallery_observation_metadata_seals",
-                ("gallery_id", "observation_id"),
-            ),
-        ),
-        "GO_METADATA_VALUES": (
-            direct(
-                "catalog_gallery_observation_download_times",
-                ("gallery_id", "observation_id"),
-            ),
-            direct(
-                "catalog_gallery_observation_modified_times",
-                ("gallery_id", "observation_id"),
-            ),
-        ),
-        "GO_OBSERVATION_FACT_SEALS": tuple(
+        "GO_OBSERVATION_FACTS": tuple(
             direct(table, ("gallery_id", "observation_id"))
             for table in (
-                "catalog_gallery_observation_directory_seals",
-                "catalog_gallery_observation_stat_seals",
-                "catalog_gallery_observation_scan_seals",
-            )
-        ),
-        "GO_OBSERVATION_FACT_VALUES": tuple(
-            direct(table, ("gallery_id", "observation_id"))
-            for table in (
-                "catalog_gallery_observation_directory_entry_counts",
-                "catalog_gallery_observation_directory_observation_sha256s",
-                "catalog_gallery_observation_stat_file_counts",
-                "catalog_gallery_observation_stat_byte_counts",
-                "catalog_gallery_observation_scan_observation_sha256s",
-                "catalog_gallery_observation_scan_observation_versions",
-                "catalog_gallery_observation_scan_source_file_counts",
-            )
-        ),
-        "GO_OBSERVATION_FACT_ANCHORS": tuple(
-            direct(table, ("gallery_id", "observation_id"))
-            for table in (
-                "catalog_gallery_observation_metadata_anchors",
-                "catalog_gallery_observation_directory_anchors",
-                "catalog_gallery_observation_stat_anchors",
-                "catalog_gallery_observation_scan_anchors",
+                "catalog_gallery_observation_metadata_locals",
+                "catalog_gallery_observation_directories",
+                "catalog_gallery_observation_stat",
+                "catalog_gallery_observation_scans",
             )
         ),
         "GO_DESCRIPTOR": tuple(
@@ -3266,39 +3681,29 @@ AND NOT EXISTS (SELECT 1 FROM catalog_analysis_changed_galleries x
                 WHERE x.gallery_id = r.gallery_id)
 AND NOT EXISTS (SELECT 1 FROM catalog_analysis_impacted_galleries x
                 WHERE x.gallery_id = r.gallery_id)
-AND NOT EXISTS (SELECT 1 FROM catalog_a_content_candidate_shadow_anchors x
-                WHERE x.gallery_id = r.gallery_id)
-AND NOT EXISTS (SELECT 1 FROM catalog_a_content_candidate_shadow_contents x
-                WHERE x.gallery_id = r.gallery_id)
-AND NOT EXISTS (SELECT 1 FROM catalog_a_content_candidate_shadow_not_uploaded x
-                WHERE x.gallery_id = r.gallery_id)
-AND NOT EXISTS (SELECT 1 FROM catalog_a_content_candidate_shadow_title_counts x
-                WHERE x.gallery_id = r.gallery_id)
-AND NOT EXISTS (SELECT 1 FROM catalog_a_content_candidate_shadow_download_times x
-                WHERE x.gallery_id = r.gallery_id)
-AND NOT EXISTS (SELECT 1 FROM catalog_a_content_candidate_shadow_seals x
+AND NOT EXISTS (SELECT 1 FROM catalog_analysis_content_owner_candidate_shadows x
                 WHERE x.gallery_id = r.gallery_id)
 AND NOT EXISTS (SELECT 1 FROM catalog_analysis_content_owner_candidate_tombstones x
                 WHERE x.gallery_id = r.gallery_id)
-AND NOT EXISTS (SELECT 1 FROM catalog_a_content_owner_shadow_galleries x
+AND NOT EXISTS (SELECT 1 FROM catalog_analysis_content_owner_shadows x
                 WHERE x.owner_gallery_id = r.gallery_id)
 AND NOT EXISTS (SELECT 1 FROM catalog_a_impacted_content_provenance x
                 WHERE x.gallery_id = r.gallery_id)
-AND NOT EXISTS (SELECT 1 FROM catalog_a_impacted_content_witnesses x
+AND NOT EXISTS (SELECT 1 FROM catalog_analysis_impacted_content x
                 WHERE x.witness_gallery_id = r.gallery_id)
-AND NOT EXISTS (SELECT 1 FROM catalog_a_impacted_gid_provenance x
+AND NOT EXISTS (SELECT 1 FROM catalog_a_impacted_gid_provenance_storage x
                 WHERE x.gallery_id = r.gallery_id)
-AND NOT EXISTS (SELECT 1 FROM catalog_a_impacted_gid_witnesses x
-                WHERE x.witness_gallery_id = r.gallery_id)
 AND NOT EXISTS (SELECT 1 FROM catalog_analysis_gid_candidate_shadows x
                 WHERE x.gallery_id = r.gallery_id)
 AND NOT EXISTS (SELECT 1 FROM catalog_analysis_gid_candidate_tombstones x
                 WHERE x.gallery_id = r.gallery_id)
 AND NOT EXISTS (SELECT 1 FROM catalog_analysis_gid_winner_selections x
                 WHERE x.winner_gallery_id = r.gallery_id)
-AND NOT EXISTS (SELECT 1 FROM catalog_publication_selections x
+AND NOT EXISTS (SELECT 1 FROM catalog_publication_selection_storage x
                 WHERE x.gallery_id = r.gallery_id)
-AND NOT EXISTS (SELECT 1 FROM catalog_gallery_observation_metadata_seals x
+AND NOT EXISTS (SELECT 1 FROM catalog_publication_storage x
+                WHERE x.gallery_id = r.gallery_id)
+AND NOT EXISTS (SELECT 1 FROM catalog_gallery_observation_metadata_locals x
                 WHERE x.gallery_id = r.gallery_id)
 AND NOT EXISTS (SELECT 1 FROM operational_gallery_redownload_states x
                 WHERE x.gallery_id = r.gallery_id)
@@ -3346,6 +3751,8 @@ NOT EXISTS (SELECT 1 FROM catalog_source_gallery_name_gids x
             WHERE x.gid = r.gid)
 AND NOT EXISTS (SELECT 1 FROM catalog_publication_identities x
                 WHERE x.gid = r.gid)
+AND NOT EXISTS (SELECT 1 FROM catalog_analysis_impacted_gid_storage x
+                WHERE x.gid = r.gid)
 """
 
 
@@ -3388,7 +3795,56 @@ def _canonical_upload_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
     return {"CVU_ROOT": (_owned_spec(root, key, root, key),)}
 
 
-_CANONICAL_VALUE_ELIGIBILITY = """
+def _live_display_title_choice(alias: str) -> str:
+    child = _identifier(alias)
+    return f"""
+    EXISTS (
+        SELECT 1
+        FROM catalog_publication_commit_head_receipts head
+        JOIN catalog_publication_commit_catalog_revisions current_revision
+          ON current_revision.receipt_id = head.receipt_id
+        JOIN catalog_publication_commit_display_title_policies current_policy
+          ON current_policy.receipt_id = head.receipt_id
+        JOIN catalog_publication_titles current_title
+          ON current_title.revision = current_revision.revision
+        WHERE current_policy.display_title_policy_id = {child}.display_title_policy_id
+          AND current_title.source_title_sha256 = {child}.source_title_sha256
+          AND current_title.source_gallery_name = {child}.source_gallery_name)
+    OR EXISTS (
+        SELECT 1
+        FROM catalog_publication_candidate_reserved_revisions candidate_revision
+        JOIN catalog_publication_candidate_display_title_policy_ids candidate_policy
+          ON candidate_policy.candidate_id = candidate_revision.candidate_id
+        JOIN catalog_publication_titles candidate_title
+          ON candidate_title.revision = candidate_revision.reserved_revision
+        WHERE candidate_policy.display_title_policy_id = {child}.display_title_policy_id
+          AND candidate_title.source_title_sha256 = {child}.source_title_sha256
+          AND candidate_title.source_gallery_name = {child}.source_gallery_name
+          AND (
+            EXISTS (
+                SELECT 1 FROM operational_catalog_working_candidates working
+                WHERE working.candidate_id = candidate_revision.candidate_id)
+            OR NOT EXISTS (
+                SELECT 1 FROM catalog_publication_commit_candidates committed
+                WHERE committed.candidate_id = candidate_revision.candidate_id)))
+    """
+
+
+def _live_title_sort(alias: str) -> str:
+    child = _identifier(alias)
+    return f"""
+    EXISTS (
+        SELECT 1
+        FROM catalog_display_title_choices choice
+        JOIN catalog_display_title_policy_title_sort_policy_ids policy
+          ON policy.display_title_policy_id = choice.display_title_policy_id
+        WHERE policy.title_sort_policy_id = {child}.title_sort_policy_id
+          AND choice.title_sha256 = {child}.title_sha256
+          AND ({_live_display_title_choice("choice")}))
+    """
+
+
+_CANONICAL_VALUE_ELIGIBILITY = f"""
 NOT EXISTS (SELECT 1 FROM operational_canonical_value_uploads x
             WHERE x.value_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM operational_hash_cache_observations x
@@ -3421,27 +3877,36 @@ AND NOT EXISTS (
     JOIN catalog_tag_term_identities term ON term.tag_id = x.tag_id
     WHERE term.tag_value_sha256 = r.value_sha256)
 AND NOT EXISTS (
-    SELECT 1 FROM catalog_source_revision_descriptor_seals sealed
+    SELECT 1 FROM catalog_source_head_revisions current_source
     JOIN catalog_source_revision_snapshot_manifests manifest
-      ON manifest.source_revision = sealed.source_revision
+      ON manifest.source_revision = current_source.source_revision
     WHERE manifest.snapshot_manifest_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_analysis_snapshot_manifest x
-                WHERE x.snapshot_manifest_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_a_impacted_content_anchors x
-                WHERE x.content_sha256 = r.value_sha256)
+AND NOT EXISTS (
+    SELECT 1 FROM operational_source_working_builds working
+    JOIN catalog_analysis_run_build_ids live_analysis
+      ON live_analysis.build_id = working.build_id
+    JOIN catalog_analysis_snapshot_manifest manifest
+      ON manifest.analysis_id = live_analysis.analysis_id
+    WHERE manifest.snapshot_manifest_sha256 = r.value_sha256)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_publication_candidate_analysis_ids live_analysis
+    JOIN catalog_analysis_snapshot_manifest manifest
+      ON manifest.analysis_id = live_analysis.analysis_id
+    WHERE manifest.snapshot_manifest_sha256 = r.value_sha256
+      AND (
+        EXISTS (
+            SELECT 1 FROM operational_catalog_working_candidates working
+            WHERE working.candidate_id = live_analysis.candidate_id)
+        OR NOT EXISTS (
+            SELECT 1 FROM catalog_publication_commit_candidates committed
+            WHERE committed.candidate_id = live_analysis.candidate_id)))
 AND NOT EXISTS (SELECT 1 FROM catalog_a_impacted_content_provenance x
                 WHERE x.content_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_a_impacted_content_witnesses x
+AND NOT EXISTS (SELECT 1 FROM catalog_analysis_impacted_content x
                 WHERE x.content_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_a_impacted_content_seals x
+AND NOT EXISTS (SELECT 1 FROM catalog_analysis_content_owner_candidate_shadows x
                 WHERE x.content_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_a_content_candidate_shadow_contents x
-                WHERE x.content_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_a_content_owner_shadow_anchors x
-                WHERE x.content_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_a_content_owner_shadow_galleries x
-                WHERE x.content_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_a_content_owner_shadow_seals x
+AND NOT EXISTS (SELECT 1 FROM catalog_analysis_content_owner_shadows x
                 WHERE x.content_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_analysis_content_owner_tombstones x
                 WHERE x.content_sha256 = r.value_sha256)
@@ -3475,26 +3940,52 @@ AND NOT EXISTS (SELECT 1 FROM catalog_publication_contents x
                 WHERE x.content_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_contributor_name_sha256s x
                 WHERE x.contributor_name_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_publication_summary_sha256s x
+AND NOT EXISTS (SELECT 1 FROM catalog_publication_storage x
                 WHERE x.summary_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_publication_language_sha256s x
+AND NOT EXISTS (SELECT 1 FROM catalog_publication_storage x
                 WHERE x.language_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_publication_title_source_title_sha256s x
+AND NOT EXISTS (SELECT 1 FROM catalog_publication_storage x
                 WHERE x.source_title_sha256 = r.value_sha256)
 AND NOT EXISTS (SELECT 1 FROM catalog_artifact_blobs x
                 WHERE x.artifact_locator_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_display_title_choices x
-                WHERE x.source_title_sha256 = r.value_sha256
-                   OR x.title_sha256 = r.value_sha256)
-AND NOT EXISTS (SELECT 1 FROM catalog_title_sorts x
-                WHERE x.title_sha256 = r.value_sha256
-                   OR x.sort_title_sha256 = r.value_sha256)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_display_title_choices choice
+    WHERE (choice.source_title_sha256 = r.value_sha256
+           OR choice.title_sha256 = r.value_sha256)
+      AND ({_live_display_title_choice("choice")}))
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_title_sorts title_sort
+    WHERE (title_sort.title_sha256 = r.value_sha256
+           OR title_sort.sort_title_sha256 = r.value_sha256)
+      AND ({_live_title_sort("title_sort")}))
 """
 
 
 def _canonical_value_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
     root = "catalog_canonical_value_allocation_anchors"
     key = ("value_sha256",)
+    display_title_choice = _indirect_spec(
+        "catalog_display_title_choices",
+        (
+            "display_title_policy_id",
+            "source_title_sha256",
+            "source_gallery_name",
+        ),
+        "catalog_display_title_choices AS c "
+        "JOIN catalog_canonical_value_allocation_anchors AS r "
+        "ON r.value_sha256 = c.source_title_sha256 "
+        "OR r.value_sha256 = c.title_sha256",
+        extra_predicate=f"NOT ({_live_display_title_choice('c')})",
+    )
+    title_sort = _indirect_spec(
+        "catalog_title_sorts",
+        ("title_sort_policy_id", "title_sha256"),
+        "catalog_title_sorts AS c "
+        "JOIN catalog_canonical_value_allocation_anchors AS r "
+        "ON r.value_sha256 = c.title_sha256 "
+        "OR r.value_sha256 = c.sort_title_sha256",
+        extra_predicate=f"NOT ({_live_title_sort('c')})",
+    )
     source_scope = (
         _indirect_spec(
             "catalog_source_scope_anchors",
@@ -3634,7 +4125,16 @@ def _canonical_value_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         ),
     )
     return {
-        "CV_DICTIONARY": (*source_scope, locator, tag, snapshot, policy, semantic),
+        "CV_DICTIONARY": (
+            display_title_choice,
+            title_sort,
+            *source_scope,
+            locator,
+            tag,
+            snapshot,
+            policy,
+            semantic,
+        ),
         "CV_SEMANTIC_LINK": policy_semantics,
         "CV_IDENTITY": (
             _owned_spec(
@@ -3682,6 +4182,7 @@ def _canonical_value_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
 _STATIC_PLANS: dict[CleanupTargetKind, _StaticTargetPlan] = {
     CleanupTargetKind.SOURCE_BUILD: _StaticTargetPlan(
         CleanupTargetKind.SOURCE_BUILD,
+        "catalog_source_build_anchors",
         ("build_id",),
         "build_id",
         16,
@@ -3690,14 +4191,25 @@ _STATIC_PLANS: dict[CleanupTargetKind, _StaticTargetPlan] = {
     ),
     CleanupTargetKind.ANALYSIS_RUN: _StaticTargetPlan(
         CleanupTargetKind.ANALYSIS_RUN,
+        "catalog_analysis_run_anchors",
         ("analysis_id",),
         "analysis_id",
         16,
         _ANALYSIS_RUN_ELIGIBILITY,
         _analysis_phases(),
     ),
+    CleanupTargetKind.CATALOG_PUBLICATION: _StaticTargetPlan(
+        CleanupTargetKind.CATALOG_PUBLICATION,
+        "catalog_publication_occurrence_identities",
+        ("revision", "publication_key"),
+        "publication_key",
+        32,
+        _CATALOG_PUBLICATION_ELIGIBILITY,
+        _catalog_publication_phases(),
+    ),
     CleanupTargetKind.PUBLICATION_CANDIDATE: _StaticTargetPlan(
         CleanupTargetKind.PUBLICATION_CANDIDATE,
+        "catalog_publication_candidate_anchors",
         ("candidate_id",),
         "candidate_id",
         16,
@@ -3706,6 +4218,7 @@ _STATIC_PLANS: dict[CleanupTargetKind, _StaticTargetPlan] = {
     ),
     CleanupTargetKind.OPERATIONAL_PREPARATION: _StaticTargetPlan(
         CleanupTargetKind.OPERATIONAL_PREPARATION,
+        "operational_operational_preparations",
         ("preparation_id",),
         "preparation_id",
         16,
@@ -3714,6 +4227,7 @@ _STATIC_PLANS: dict[CleanupTargetKind, _StaticTargetPlan] = {
     ),
     CleanupTargetKind.GALLERY_OBSERVATION: _StaticTargetPlan(
         CleanupTargetKind.GALLERY_OBSERVATION,
+        "catalog_gallery_observation_allocations",
         ("gallery_id", "observation_id"),
         "gallery_id",
         None,
@@ -3723,6 +4237,7 @@ _STATIC_PLANS: dict[CleanupTargetKind, _StaticTargetPlan] = {
     ),
     CleanupTargetKind.GALLERY_OBSERVATION_STAGING: _StaticTargetPlan(
         CleanupTargetKind.GALLERY_OBSERVATION_STAGING,
+        "operational_gallery_observation_stagings",
         ("staging_id",),
         "staging_id",
         16,
@@ -3731,6 +4246,7 @@ _STATIC_PLANS: dict[CleanupTargetKind, _StaticTargetPlan] = {
     ),
     CleanupTargetKind.CANONICAL_VALUE: _StaticTargetPlan(
         CleanupTargetKind.CANONICAL_VALUE,
+        "catalog_canonical_value_allocation_anchors",
         ("value_sha256",),
         "value_sha256",
         32,
@@ -3739,6 +4255,7 @@ _STATIC_PLANS: dict[CleanupTargetKind, _StaticTargetPlan] = {
     ),
     CleanupTargetKind.GALLERY_OBSERVATION_PAGE: _StaticTargetPlan(
         CleanupTargetKind.GALLERY_OBSERVATION_PAGE,
+        "catalog_gallery_observation_page_descriptor_anchors",
         ("page_sha256",),
         "page_sha256",
         32,
@@ -3747,6 +4264,7 @@ _STATIC_PLANS: dict[CleanupTargetKind, _StaticTargetPlan] = {
     ),
     CleanupTargetKind.GALLERY_IDENTITY: _StaticTargetPlan(
         CleanupTargetKind.GALLERY_IDENTITY,
+        "catalog_gallery_identities",
         ("gallery_id",),
         "gallery_id",
         None,
@@ -3755,6 +4273,7 @@ _STATIC_PLANS: dict[CleanupTargetKind, _StaticTargetPlan] = {
     ),
     CleanupTargetKind.SOURCE_GALLERY_NAME_GID: _StaticTargetPlan(
         CleanupTargetKind.SOURCE_GALLERY_NAME_GID,
+        "catalog_source_gallery_name_gids",
         ("source_gallery_name",),
         "source_gallery_name",
         255,
@@ -3764,6 +4283,7 @@ _STATIC_PLANS: dict[CleanupTargetKind, _StaticTargetPlan] = {
     ),
     CleanupTargetKind.GALLERY_UPLOAD_TIME: _StaticTargetPlan(
         CleanupTargetKind.GALLERY_UPLOAD_TIME,
+        "catalog_gallery_upload_times",
         ("gid",),
         "gid",
         None,
@@ -3772,6 +4292,7 @@ _STATIC_PLANS: dict[CleanupTargetKind, _StaticTargetPlan] = {
     ),
     CleanupTargetKind.CANONICAL_VALUE_UPLOAD: _StaticTargetPlan(
         CleanupTargetKind.CANONICAL_VALUE_UPLOAD,
+        "operational_canonical_value_uploads",
         ("generation", "value_sha256"),
         "value_sha256",
         32,
@@ -3780,6 +4301,253 @@ _STATIC_PLANS: dict[CleanupTargetKind, _StaticTargetPlan] = {
         uses_cutoff=True,
     ),
 }
+
+
+def _load_open_current_only_cycle(work: VNextUnitOfWork) -> CleanupCycle | None:
+    row = work.connector.fetch_one(
+        f"""
+        SELECT sweep.target_kind, sweep.shard_no, sweep.target_key,
+               job.cleanup_id, job.cycle_generation, job.cycle_cutoff_at,
+               job.algorithm_version, job.max_rows_per_transaction,
+               job.hash_cache_max_age_microseconds
+        FROM {_SWEEP_TABLE} AS sweep
+        JOIN {_JOB_TABLE} AS job ON job.target_key = sweep.target_key
+        WHERE job.state = 'OPEN' AND sweep.target_kind <> %s
+        ORDER BY {_CURRENT_ONLY_OPEN_ORDER_SQL}, sweep.shard_no
+        LIMIT 1
+        """,
+        (CleanupTargetKind.HASH_CACHE_OBSERVATION.value,),
+    )
+    if not row:
+        return None
+    if len(row) != 9:
+        raise CleanupCorruptionError(
+            "current-only interrupted-cycle probe returned an invalid shape"
+        )
+    try:
+        kind = CleanupTargetKind(
+            _as_text(row[0], field="current-only interrupted target_kind")
+        )
+    except ValueError as error:
+        raise CleanupCorruptionError(
+            "current-only interrupted cycle has an unknown target"
+        ) from error
+    if kind not in _CURRENT_ONLY_TARGET_PRIORITY:
+        raise CleanupCorruptionError(
+            "current-only interrupted cycle has an excluded target"
+        )
+    shard = _require_shard(row[1])
+    if require_int63(row[6], field="cleanup algorithm_version") != 1:
+        raise CleanupCorruptionError("cleanup algorithm_version is unsupported")
+    cycle = CleanupCycle(
+        cleanup_id=require_uuid16(row[3], field="stored cleanup_id"),
+        target_kind=kind,
+        shard_no=shard,
+        target_key=require_digest32(row[2], field="stored target_key"),
+        cycle_generation=require_positive_int63(
+            row[4], field="stored cycle_generation"
+        ),
+        cycle_cutoff_at=require_int63(row[5], field="stored cycle_cutoff_at"),
+        max_rows_per_transaction=_require_batch_bound(row[7]),
+        hash_cache_max_age_microseconds=require_int63(
+            row[8], field="stored hash_cache_max_age_microseconds"
+        ),
+    )
+    if cycle.hash_cache_max_age_microseconds != 0:
+        raise CleanupCorruptionError(
+            "current-only OPEN cycle has an invalid hash-cache age policy"
+        )
+    return cycle
+
+
+def _static_candidate_shard(plan: _StaticTargetPlan, value: object) -> int:
+    if plan.shard_width is None:
+        return require_int63(value, field="cleanup candidate integer shard") % 256
+    if isinstance(value, str):
+        payload = value.encode("utf-8", errors="strict")
+    else:
+        payload = require_bounded_bytes(
+            value,
+            field="cleanup candidate byte shard",
+            minimum=1,
+            maximum=1024,
+        )
+    if not payload:
+        raise CleanupCorruptionError("cleanup candidate shard value is empty")
+    if plan.variable_width_shard:
+        if len(payload) > plan.shard_width:
+            raise CleanupCorruptionError("cleanup candidate shard value is too wide")
+    elif len(payload) != plan.shard_width:
+        raise CleanupCorruptionError("cleanup candidate shard width is invalid")
+    return payload[0]
+
+
+def _next_static_candidate_shard(
+    work: VNextUnitOfWork,
+    plan: _StaticTargetPlan,
+    *,
+    cycle_cutoff_at: int,
+) -> int | None:
+    root_table = _identifier(plan.root_table)
+    shard_column = _identifier(plan.shard_column)
+    order = ", ".join(f"r.{_identifier(column)}" for column in plan.root_key)
+    parameters: tuple[object, ...] = (cycle_cutoff_at,) if plan.uses_cutoff else ()
+    row = work.connector.fetch_one(
+        f"SELECT r.{shard_column} FROM {root_table} AS r "
+        f"WHERE ({plan.eligibility}) ORDER BY {order} LIMIT 1",
+        parameters,
+    )
+    if not row:
+        return None
+    if len(row) != 1:
+        raise CleanupCorruptionError(
+            f"{plan.kind.value} candidate probe returned an invalid shape"
+        )
+    return _static_candidate_shard(plan, row[0])
+
+
+def _next_artifact_blob_candidate_shard(work: VNextUnitOfWork) -> int | None:
+    row = work.connector.fetch_one("""
+        SELECT artifact_blob.artifact_sha256
+        FROM catalog_artifact_blobs AS artifact_blob
+        WHERE NOT EXISTS (
+            SELECT 1 FROM catalog_prepared_artifacts prepared
+            WHERE prepared.artifact_sha256 = artifact_blob.artifact_sha256)
+          AND NOT EXISTS (
+            SELECT 1 FROM catalog_artifacts retained
+            WHERE retained.artifact_sha256 = artifact_blob.artifact_sha256)
+        ORDER BY artifact_blob.artifact_sha256
+        LIMIT 1
+        """)
+    return _digest_candidate_shard(row, field="artifact blob candidate")
+
+
+def _next_publication_identity_candidate_shard(
+    work: VNextUnitOfWork,
+) -> int | None:
+    row = work.connector.fetch_one("""
+        SELECT identity.publication_key
+        FROM catalog_publication_identities AS identity
+        WHERE NOT EXISTS (
+            SELECT 1 FROM catalog_publication_occurrence_identities occurrence
+            WHERE occurrence.publication_key = identity.publication_key)
+          AND NOT EXISTS (
+            SELECT 1
+            FROM catalog_publication_selection_occurrence_identities selection
+            WHERE selection.publication_key = identity.publication_key)
+        ORDER BY identity.publication_key
+        LIMIT 1
+        """)
+    return _digest_candidate_shard(row, field="publication identity candidate")
+
+
+def _next_file_name_candidate_shard(work: VNextUnitOfWork) -> int | None:
+    row = work.connector.fetch_one("""
+        SELECT identity.file_key
+        FROM catalog_file_name_identity_anchors AS identity
+        WHERE NOT EXISTS (
+            SELECT 1 FROM catalog_gallery_observation_file_anchors retained
+            WHERE retained.file_key = identity.file_key)
+        ORDER BY identity.file_key
+        LIMIT 1
+        """)
+    return _digest_candidate_shard(row, field="file-name identity candidate")
+
+
+def _next_content_blob_candidate_shard(work: VNextUnitOfWork) -> int | None:
+    row = work.connector.fetch_one("""
+        SELECT content_blob.file_sha256
+        FROM catalog_content_blobs AS content_blob
+        WHERE NOT EXISTS (SELECT 1 FROM catalog_gallery_observation_file_file_sha256s x WHERE x.file_sha256 = content_blob.file_sha256)
+          AND NOT EXISTS (SELECT 1 FROM catalog_gallery_observation_file_hash_occurrences x WHERE x.file_sha256 = content_blob.file_sha256)
+          AND NOT EXISTS (SELECT 1 FROM catalog_analysis_changed_file_hashes x WHERE x.file_sha256 = content_blob.file_sha256)
+          AND NOT EXISTS (SELECT 1 FROM catalog_analysis_exclusion_delta_anchors x WHERE x.file_sha256 = content_blob.file_sha256)
+          AND NOT EXISTS (SELECT 1 FROM catalog_a_file_decision_shadow_anchors x WHERE x.file_sha256 = content_blob.file_sha256)
+          AND NOT EXISTS (SELECT 1 FROM catalog_a_file_decision_shadow_occurrences x WHERE x.file_sha256 = content_blob.file_sha256)
+          AND NOT EXISTS (SELECT 1 FROM catalog_a_file_decision_shadow_artists x WHERE x.file_sha256 = content_blob.file_sha256)
+          AND NOT EXISTS (SELECT 1 FROM catalog_a_file_decision_shadow_gallery_artist_max x WHERE x.file_sha256 = content_blob.file_sha256)
+          AND NOT EXISTS (SELECT 1 FROM catalog_a_file_decision_shadow_seals x WHERE x.file_sha256 = content_blob.file_sha256)
+          AND NOT EXISTS (SELECT 1 FROM catalog_analysis_file_hash_decision_tombstone x WHERE x.file_sha256 = content_blob.file_sha256)
+          AND NOT EXISTS (SELECT 1 FROM operational_file_hash_caches x WHERE x.file_sha256 = content_blob.file_sha256)
+        ORDER BY content_blob.file_sha256
+        LIMIT 1
+        """)
+    return _digest_candidate_shard(row, field="content blob candidate")
+
+
+def _digest_candidate_shard(
+    row: tuple[object, ...] | None, *, field: str
+) -> int | None:
+    if not row:
+        return None
+    if len(row) != 1:
+        raise CleanupCorruptionError(f"{field} probe returned an invalid shape")
+    return require_digest32(row[0], field=field)[0]
+
+
+def _next_current_only_candidate(
+    work: VNextUnitOfWork, *, cycle_cutoff_at: int
+) -> tuple[CleanupTargetKind, int] | None:
+    dynamic = {
+        CleanupTargetKind.ARTIFACT_BLOB: _next_artifact_blob_candidate_shard,
+        CleanupTargetKind.PUBLICATION_IDENTITY: (
+            _next_publication_identity_candidate_shard
+        ),
+        CleanupTargetKind.FILE_NAME_IDENTITY: _next_file_name_candidate_shard,
+        CleanupTargetKind.CONTENT_BLOB: _next_content_blob_candidate_shard,
+    }
+    for kind in _CURRENT_ONLY_TARGET_PRIORITY:
+        plan = _STATIC_PLANS.get(kind)
+        if plan is not None:
+            shard = _next_static_candidate_shard(
+                work, plan, cycle_cutoff_at=cycle_cutoff_at
+            )
+        else:
+            shard = dynamic[kind](work)
+        if shard is not None:
+            return kind, shard
+    return None
+
+
+def _catalog_publication_payload_is_blocked(work: VNextUnitOfWork) -> bool:
+    row = work.connector.fetch_one(
+        """
+        SELECT 1
+        FROM catalog_publication_occurrence_identities AS publication
+        JOIN catalog_publication_commit_head_receipts AS head
+          ON head.channel = %s
+        JOIN catalog_publication_commit_catalog_revisions AS current
+          ON current.receipt_id = head.receipt_id
+        WHERE publication.revision < current.revision
+        LIMIT 1
+        """,
+        (b"default",),
+    )
+    if row and row != (1,):
+        raise CleanupCorruptionError(
+            "current-only blocked-payload probe returned an invalid shape"
+        )
+    return bool(row)
+
+
+def _publication_candidate_payload_is_blocked(work: VNextUnitOfWork) -> bool:
+    row = work.connector.fetch_one("""
+        SELECT 1
+        FROM catalog_publication_candidate_anchors AS candidate
+        WHERE NOT EXISTS (
+            SELECT 1 FROM operational_catalog_working_candidates working
+            WHERE working.candidate_id = candidate.candidate_id)
+          AND EXISTS (
+            SELECT 1 FROM catalog_prepared_artifacts prepared
+            WHERE prepared.candidate_id = candidate.candidate_id
+              AND prepared.state IN ('PENDING', 'PREPARED'))
+        LIMIT 1
+        """)
+    if row and row != (1,):
+        raise CleanupCorruptionError(
+            "current-only blocked-candidate probe returned an invalid shape"
+        )
+    return bool(row)
 
 
 def _static_strategy(kind: CleanupTargetKind) -> _Strategy:
@@ -3793,6 +4561,9 @@ def _static_strategy(kind: CleanupTargetKind) -> _Strategy:
 _STRATEGIES: dict[CleanupTargetKind, _Strategy] = {
     CleanupTargetKind.SOURCE_BUILD: _static_strategy(CleanupTargetKind.SOURCE_BUILD),
     CleanupTargetKind.ANALYSIS_RUN: _static_strategy(CleanupTargetKind.ANALYSIS_RUN),
+    CleanupTargetKind.CATALOG_PUBLICATION: _static_strategy(
+        CleanupTargetKind.CATALOG_PUBLICATION
+    ),
     CleanupTargetKind.PUBLICATION_CANDIDATE: _static_strategy(
         CleanupTargetKind.PUBLICATION_CANDIDATE
     ),

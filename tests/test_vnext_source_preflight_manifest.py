@@ -19,6 +19,7 @@ from h2hdb import (
     TagObservation,
     VNextArtifactProducer,
     VNextArtifactStoragePolicy,
+    VNextCurrentOnlyMaintenanceOutcome,
     VNextDatabaseAdminFacade,
     VNextIngestFacade,
     VNextIngestGalleryObservation,
@@ -62,6 +63,21 @@ def _generated_database(path: Path) -> None:
             connector.execute(seed["sql"], seed["parameters"])
     finally:
         connector.close()
+
+
+def _drain_current_only_maintenance(facade: VNextIngestFacade) -> None:
+    outcomes: list[VNextCurrentOnlyMaintenanceOutcome] = []
+    for _attempt in range(64):
+        outcomes.append(facade.drain_current_only_maintenance(1_000_000))
+        if outcomes[-1] is VNextCurrentOnlyMaintenanceOutcome.DONE:
+            break
+    else:
+        pytest.fail("current-only maintenance did not finish within 64 attempts")
+    assert outcomes[-1] is VNextCurrentOnlyMaintenanceOutcome.DONE
+    assert all(
+        outcome is VNextCurrentOnlyMaintenanceOutcome.PROGRESSED
+        for outcome in outcomes[:-1]
+    )
 
 
 class _BoundarySource:
@@ -656,6 +672,7 @@ def test_manifest_mismatch_abandons_exact_build_and_next_stable_scan_replays(
     def drive_stable(
         stable_facade: VNextIngestFacade,
     ) -> tuple[bytes, bool]:
+        _drain_current_only_maintenance(stable_facade)
         stable_session = stable_facade.try_claim_ingest(True, 1_000_000)
         assert stable_session is not None
         stable_policy = stable_facade.ensure_policy(stable_session, _policy())
@@ -736,6 +753,7 @@ def test_new_generation_atomically_recovers_stale_open_mismatch_build(
 
     facade.complete_ingest(session)
     successor = VNextIngestFacade(config, clock=lambda: 200)
+    _drain_current_only_maintenance(successor)
     successor_session = successor.try_claim_ingest(True, 1_000_000)
     assert successor_session is not None
     successor_policy = successor.ensure_policy(successor_session, _policy())
@@ -803,6 +821,7 @@ def test_live_mariadb_manifest_mismatch_abandons_then_stable_source_replays(
 
     def stable_turn(now: int) -> tuple[bytes, bool]:
         facade = VNextIngestFacade(mariadb_config, clock=lambda: now)
+        _drain_current_only_maintenance(facade)
         session = facade.try_claim_ingest(True, 1_000_000)
         assert session is not None
         policy = facade.ensure_policy(session, _policy())

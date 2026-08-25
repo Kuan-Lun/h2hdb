@@ -1,9 +1,8 @@
-"""Receipt-pinned bounded artifact pages for the current projection.
+"""Current-head bounded artifact pages for the current projection.
 
-The mutable channel head is consulted only for the first page.  That read pins
-one immutable publication receipt and catalog revision; continuation pages are
-then addressed by the exact receipt plus the previous 32-byte publication key,
-so a concurrent head advance cannot mix revisions in one projection spool.
+Every page requires its receipt to remain the mutable channel head.  A head
+advance invalidates an earlier continuation before historical payload becomes
+eligible for current-only cleanup.
 
 Artifact paths are never reconstructed from a display or source file name.
 Every returned locator is derived from the sealed catalog artifact digest and
@@ -169,11 +168,12 @@ class CurrentProjectionArtifactRepository:
         cursor: bytes | None = None,
         page_limit: int = _MAX_PAGE_ITEMS,
     ) -> CurrentProjectionArtifactPage:
-        """Return one bounded page from a current or already-pinned receipt.
+        """Return one bounded page from the exact current receipt.
 
         ``receipt_id=None`` is an initial read and pins the current sealed head.
         A continuation supplies the returned receipt identity and its exact
-        nonterminal cursor.  Nonempty pages deliberately remain nonterminal;
+        nonterminal cursor, which remains valid only while that receipt is the
+        channel head.  Nonempty pages deliberately remain nonterminal;
         the following empty page is the terminal proof, keeping every physical
         scan at or below the hard cap of 128 rows.
         """
@@ -248,6 +248,7 @@ class CurrentProjectionArtifactRepository:
                 "current projection query did not advance its keyset cursor"
             )
         next_cursor = None if not items else items[-1].publication_key
+        _require_current_pin(connector, pin)
         return CurrentProjectionArtifactPage(
             pin.receipt_id,
             pin.revision,
@@ -288,6 +289,9 @@ def _load_receipt_pin(
         row = connector.fetch_one(
             "SELECT receipt.receipt_id, receipt.revision, receipt.channel, "
             "receipt.state FROM catalog_publication_receipts AS receipt "
+            "JOIN catalog_publication_commit_head_receipts AS head "
+            "ON head.receipt_id = receipt.receipt_id "
+            "AND head.channel = receipt.channel "
             "WHERE receipt.receipt_id = %s",
             (receipt_id,),
         )
@@ -329,6 +333,21 @@ def _load_receipt_pin(
     return _PinnedReceipt(stored_receipt, revision, stored_channel, state)
 
 
+def _require_current_pin(
+    connector: SQLConnector,
+    pin: _PinnedReceipt,
+) -> None:
+    current = _load_receipt_pin(
+        connector,
+        channel=pin.channel,
+        receipt_id=None,
+    )
+    if current != pin:
+        raise CurrentProjectionUnavailableError(
+            "current projection head advanced during the page read"
+        )
+
+
 def _require_exact_cursor(
     connector: SQLConnector,
     *,
@@ -357,24 +376,21 @@ def _require_exact_cursor(
 
 
 _ARTIFACT_SELECT = (
-    "SELECT artifact.publication_key, publication_seal.publication_key, "
-    "title_seal.publication_key, publication_identity.gid, "
-    "title_name.source_gallery_name, upload.upload_time, "
+    "SELECT artifact.publication_key, publication.publication_key, "
+    "title.publication_key, publication_identity.gid, "
+    "title.source_gallery_name, upload.upload_time, "
     "artifact.artifact_sha256, artifact_blob.artifact_locator_sha256, "
     "artifact_blob.size_bytes FROM catalog_artifacts AS artifact "
-    "LEFT JOIN catalog_publication_seals AS publication_seal "
-    "ON publication_seal.revision = artifact.revision "
-    "AND publication_seal.publication_key = artifact.publication_key "
+    "LEFT JOIN catalog_publications AS publication "
+    "ON publication.revision = artifact.revision "
+    "AND publication.publication_key = artifact.publication_key "
     "LEFT JOIN catalog_publication_identities AS publication_identity "
-    "ON publication_identity.publication_key = artifact.publication_key "
+    "ON publication_identity.publication_key = publication.publication_key "
     "LEFT JOIN catalog_gallery_upload_times AS upload "
     "ON upload.gid = publication_identity.gid "
-    "LEFT JOIN catalog_publication_title_seals AS title_seal "
-    "ON title_seal.revision = artifact.revision "
-    "AND title_seal.publication_key = artifact.publication_key "
-    "LEFT JOIN catalog_publication_title_source_gallery_names AS title_name "
-    "ON title_name.revision = title_seal.revision "
-    "AND title_name.publication_key = title_seal.publication_key "
+    "LEFT JOIN catalog_publication_titles AS title "
+    "ON title.revision = publication.revision "
+    "AND title.publication_key = publication.publication_key "
     "LEFT JOIN catalog_artifact_blobs AS artifact_blob "
     "ON artifact_blob.artifact_sha256 = artifact.artifact_sha256 "
 )
@@ -421,7 +437,7 @@ def _item_from_row(row: tuple[Any, ...]) -> CurrentProjectionArtifactItem:
     )
     if row[1] != publication_key or row[2] != publication_key:
         raise ValueError(
-            "current projection artifact lacks its sealed publication/title family"
+            "current projection artifact lacks its atomic publication/title rows"
         )
     gid = require_positive_int63(row[3], field="stored current projection gid")
     source_name = require_utf8_bytes(

@@ -6,6 +6,7 @@ from typing import Any, cast
 import pytest
 
 import h2hdb.vnext_queue_repository as queue_repository_module
+from h2hdb import vnext_identity as identity
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_domains import INT63_MAX
@@ -83,27 +84,46 @@ def _seed_current_catalog_candidates(
             "(receipt_id, source_revision) VALUES (%s, %s)",
             (receipt_id, 1),
         )
-        for index, (gid, gallery_id, redownload_at) in enumerate(rows, start=1):
-            publication_key = bytes([index]) * 32
+        for gid, gallery_id, redownload_at in rows:
+            publication_key = identity.publication_key(gid)
+            occurrence = identity.catalog_publication_occurrence_sha256(
+                1, publication_key
+            )
+            source_name = f"gallery-{gallery_id}".encode()
             connector.execute(
                 "INSERT INTO catalog_publication_identities "
                 "(publication_key, gid) VALUES (%s, %s)",
                 (publication_key, gid),
             )
             connector.execute(
-                "INSERT INTO catalog_publication_anchors "
-                "(revision, publication_key) VALUES (%s, %s)",
-                (1, publication_key),
+                "INSERT INTO catalog_source_gallery_name_gids "
+                "(source_gallery_name, gid) VALUES (%s, %s)",
+                (source_name, gid),
             )
             connector.execute(
-                "INSERT INTO catalog_publication_gallery_ids "
-                "(revision, publication_key, gallery_id) VALUES (%s, %s, %s)",
-                (1, publication_key, gallery_id),
+                "INSERT INTO catalog_gallery_source_name_accesses "
+                "(gallery_id, source_gallery_name) VALUES (%s, %s)",
+                (gallery_id, source_name),
             )
             connector.execute(
-                "INSERT INTO catalog_publication_seals "
-                "(revision, publication_key) VALUES (%s, %s)",
-                (1, publication_key),
+                "INSERT INTO catalog_publication_occurrence_identities "
+                "(catalog_occurrence_sha256, revision, publication_key) "
+                "VALUES (%s, %s, %s)",
+                (occurrence, 1, publication_key),
+            )
+            connector.execute(
+                "INSERT INTO catalog_publication_storage "
+                "(catalog_occurrence_sha256, gallery_id, summary_sha256, "
+                "language_sha256, modified_at, source_title_sha256) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (
+                    occurrence,
+                    gallery_id,
+                    b"s" * 32,
+                    b"l" * 32,
+                    redownload_at,
+                    b"t" * 32,
+                ),
             )
             connector.execute(
                 "INSERT INTO operational_gallery_redownload_states "

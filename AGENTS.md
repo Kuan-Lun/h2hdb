@@ -7,13 +7,13 @@ Guidance for coding agents working in the `h2hdb` core repository.
 This package owns the SQLite/MariaDB connectors, greenfield schema epoch,
 normalized catalog and operational relations, bounded transactions, durable
 coordination state, and public application facades. The supported schema is
-epoch 2/version 1: 340 catalog BCNF base relations, 78 intentional logical
-views, 27 lossless and dependency-preserving binary decompositions, 49
-sealed vertical families, 335 narrow catalog bases plus five intentional wide
-BCNF bases, an exact 295-relation catalog physical-domain closure (239
-mutation relations and 56 read-only views), 75 operational BCNF
+epoch 2/version 1: 306 catalog BCNF base relations, 73 intentional logical
+views, 29 lossless and dependency-preserving binary decompositions, 38
+sealed vertical families, 294 narrow catalog bases plus 12 intentional wide
+BCNF bases, an exact 272-relation catalog physical-domain closure (218
+mutation relations and 54 read-only views), 75 operational BCNF
 base relations, and one derived
-operational view. The generated provider installs exactly 4,644 typed bootstrap
+operational view. The generated provider installs exactly 4,913 typed bootstrap
 rows per backend.
 
 Core must not depend on Pillow, FastAPI, OPDS types, `hbrowser`, filesystem
@@ -98,11 +98,14 @@ reflected consistently in manifests, checks, and documentation.
 BCNF and physical width are separate gates. Every physical `catalog_*` base
 table is intended to contain its semantic primary key plus at most one atomic
 non-key column unless its complete approved-wide shape is registered; logical
-views are exempt. The five reviewed BCNF recompositions are gallery identity,
-artifact semantic input, prepared artifact, catalog artifact occurrence, and
-artifact blob plus mandatory locator. Every nontrivial determinant in each is
-a declared candidate key. The current width checker records 335 narrow bases
-and those five exact approved-wide shapes. Never hide an ordinary value in a
+views are exempt. The 12 reviewed BCNF recompositions include seven
+gallery-linear current-state rows (observation metadata, scan, directory, stat,
+gallery manifest, analysis owner candidate, and unified catalog publication
+storage) plus gallery identity, artifact semantic input, prepared
+artifact, catalog artifact occurrence, and artifact blob plus mandatory
+locator. Every nontrivial determinant in each is a declared candidate key. The
+current width checker records 294 narrow bases and those 12 exact approved-wide
+shapes. Never hide an ordinary value in a
 primary key, packed scalar, JSON, or EAV representation to make a count appear
 smaller.
 
@@ -176,9 +179,10 @@ metadata, and pre-push verifies the clean committed tree before publication.
 - Cleanup is bounded, child-first, and reachability checked. It must retain any
   identity or history still referenced by active work, publication, pending
   effects, or protection claims.
-- Catalog pagination across calls pins the `CatalogRevision` returned by the
-  first read. Nonblank search remains unavailable until a normalized,
-  revision-pinned index is added to the manifest.
+- Catalog calls accept only the current publication head. A supplied
+  `CatalogRevision` is valid only while it still exactly equals that head, and
+  every read rechecks the head before returning. Nonblank search remains
+  unavailable until a normalized current-head index is added to the manifest.
 - Do not derive `redownload_required` from transient joins until the manifest
   defines durable revision-scoped authority and replay semantics.
 - Public ingest orchestration separates short transaction-owned issue/commit

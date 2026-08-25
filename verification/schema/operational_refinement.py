@@ -1003,7 +1003,7 @@ def check_maintenance_gate_contract_v1(
         "exclusive_claim_rule": "current_exclusive_owner_holds_every_slot_zero_through_sixty_three",
         "reclaim_rule": "replace_a_slot_only_by_transactional_cas_on_the_exact_observed_owner_after_its_generation_is_stale_or_its_lease_is_expired",
         "stale_rule": "stale_generation_or_expired_owner_authorizes_no_mutation",
-        "canonical_value_rule": "every canonical-value allocation, upload-claim, bounded page, and final-seal transaction holds and rechecks one shared maintenance slot; CANONICAL_VALUE cleanup holds the exclusive generation for its complete multi-phase cycle, so no live producer can claim, write, or reseal between destructive phases",
+        "canonical_value_rule": "every canonical-value allocation, upload-claim, bounded page, and final-seal transaction holds and rechecks one shared maintenance slot; CANONICAL_VALUE cleanup holds the exclusive generation for its complete multi-phase cycle and rechecks current-head, live source-working analysis, live or uncommitted publication-candidate, and upload semantic pins before every bounded destructive batch, so no live producer can claim, write, reseal, or lose its canonical snapshot between phases",
         "history_cleanup_rule": "under a newer live exclusive gate generation, keyset-delete at most the fixed batch bound of expired non-head owners after their holder slots are absent, then delete an unreferenced non-head maintenance generation only after no owner or head references it; every batch row-locks and rechecks head, owner lease, and exact generation, so current or live shared and exclusive authority always blocks",
     }
     _require_exact_table(logical, "maintenance_gate_contract", expected)
@@ -1343,7 +1343,7 @@ def check_build_generation_contract_v1(
         assembly, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("ascii")
     if hashlib.sha256(encoded_assembly).hexdigest() != (
-        "c2af7b96706b15114ba1d5df3cb6ccb316a4c44ad432f6fb10cb4357fda89eac"
+        "9b76cfc1463c98c72cf9b64474fd7ec2a88d93db8541d2527cd3d3bc20a9a6c2"
     ):
         raise ValueError("source-build assembly exact protocol text drifts")
 
@@ -1599,6 +1599,9 @@ _CLEANUP_TARGET_SHAPES = {
             "AR_COMPONENT_VALUES",
             "AR_COMPONENT_ANCHOR",
             "AR_OVERLAY",
+            "AR_FILE_HASH_VALUES",
+            "AR_IMPACT_PROVENANCE",
+            "AR_FILE_HASH_ANCHOR",
             "AR_EVIDENCE",
             "AR_EXCLUSION_VALUES",
             "AR_EXCLUSION_ANCHOR",
@@ -1611,6 +1614,27 @@ _CLEANUP_TARGET_SHAPES = {
             "AR_DESCRIPTOR",
             "AR_RUN_VALUES",
             "AR_ROOT",
+        ),
+    ),
+    "CATALOG_PUBLICATION": (
+        "catalog_publication_occurrence_identity",
+        ("revision", "publication_key"),
+        "target_kind_tag16_u64be_zero8_v1",
+        "catalog_publication_finalized_before_finalized_current_head_v1",
+        "catalog_publication_finalized_current_head_and_live_predecessor_v1",
+        "h2hdb.cleanup.catalog_publication.v1",
+        (
+            "CP_STORAGE",
+            "CP_CONTRIBUTOR_SEAL",
+            "CP_CONTRIBUTOR_IDENTITY",
+            "CP_CONTRIBUTOR_NAME",
+            "CP_CONTRIBUTOR_ROLE",
+            "CP_CONTRIBUTOR_ANCHOR",
+            "CP_ORDER",
+            "CP_CONTENT",
+            "CP_SUBJECT",
+            "CP_ARTIFACT",
+            "CP_ROOT",
         ),
     ),
     "PUBLICATION_CANDIDATE": (
@@ -1627,9 +1651,11 @@ _CLEANUP_TARGET_SHAPES = {
             "PC_BATCH_VALUES",
             "PC_BATCH_ANCHOR",
             "PC_CHECKPOINT_SEAL",
+            "PC_SELECTION_STORAGE",
             "PC_CHECKPOINT_VALUES",
             "PC_CHECKPOINT_ANCHOR",
             "PC_BASES",
+            "PC_SELECTION_IDENTITY",
             "PC_ROOT",
         ),
     ),
@@ -1669,11 +1695,7 @@ _CLEANUP_TARGET_SHAPES = {
             "GO_FILESYSTEM_VALUES",
             "GO_FILESYSTEM_ANCHOR",
             "GO_FILES",
-            "GO_METADATA_SEAL",
-            "GO_METADATA_VALUES",
-            "GO_OBSERVATION_FACT_SEALS",
-            "GO_OBSERVATION_FACT_VALUES",
-            "GO_OBSERVATION_FACT_ANCHORS",
+            "GO_OBSERVATION_FACTS",
             "GO_DESCRIPTOR",
             "GO_ROOT",
         ),
@@ -1904,7 +1926,11 @@ def check_cleanup_reachability_v1(
             )
         if kind in {"ARTIFACT_BLOB", "CANONICAL_VALUE"}:
             extra_allowed.update({"owned_prunable_intermediates", "required_via_paths"})
-        if kind in {"CANONICAL_VALUE", "GALLERY_OBSERVATION_PAGE"}:
+        if kind in {
+            "PUBLICATION_CANDIDATE",
+            "CANONICAL_VALUE",
+            "GALLERY_OBSERVATION_PAGE",
+        }:
             extra_allowed.add("machine_gates")
         if kind == "GALLERY_OBSERVATION_PAGE":
             extra_allowed.update({"phase_selectors", "operational_blockers"})
@@ -2197,6 +2223,71 @@ def check_cleanup_reachability_v1(
         {"relation": "canonical_value_upload", "attributes": ["value_sha256"]},
     ]:
         raise ValueError("canonical operational blocker registry drifts")
+    candidate = by_kind["PUBLICATION_CANDIDATE"]
+    expected_candidate_phase_relations = [
+        [
+            "publication_candidate_preparation",
+            "publication_candidate_projection_seal",
+            "publication_batch_receipt_seal",
+            "artifact_operation",
+            "catalog_publication_storage",
+        ],
+        ["prepared_artifact", "catalog_contributor_seal"],
+        ["artifact_input", "catalog_contributor_identity"],
+        [
+            "publication_batch_receipt_coordinate",
+            "publication_batch_receipt_start_cursor",
+            "publication_batch_receipt_start_processed_count",
+            "publication_batch_receipt_next_cursor",
+            "publication_batch_receipt_row_count",
+            "publication_batch_receipt_committed_at",
+            "catalog_contributor_name_sha256",
+        ],
+        ["publication_batch_receipt_anchor", "catalog_contributor_role"],
+        ["publication_checkpoint_seal", "catalog_contributor_anchor"],
+        ["publication_selection_storage", "catalog_publication_order"],
+        [
+            "publication_checkpoint_generation",
+            "publication_checkpoint_cursor",
+            "publication_checkpoint_processed_count",
+            "publication_checkpoint_state",
+            "publication_checkpoint_updated_at",
+            "catalog_publication_content",
+        ],
+        ["publication_checkpoint_anchor", "catalog_subject"],
+        ["publication_candidate_base_publication_commit", "catalog_artifact"],
+        [
+            "publication_selection_occurrence_identity",
+            "catalog_publication_occurrence_identity",
+        ],
+        [
+            "publication_candidate_definition_seal",
+            "publication_candidate_created_at",
+            "publication_candidate_artifacts_required",
+            "publication_candidate_display_title_policy_id",
+            "publication_candidate_artifact_policy_id",
+            "publication_candidate_reserved_revision",
+            "publication_candidate_analysis_id",
+            "publication_candidate_anchor",
+        ],
+    ]
+    if [phase.get("relations") for phase in candidate["phases"]] != (
+        expected_candidate_phase_relations
+    ):
+        raise ValueError(
+            "publication candidate phases must fold the exact uncommitted "
+            "reserved projection child-first"
+        )
+    candidate_retention_roots = candidate.get("retention_roots")
+    if (
+        not isinstance(candidate_retention_roots, list)
+        or not candidate_retention_roots
+        or candidate_retention_roots[-1]
+        != "an uncommitted candidate exclusively owns every catalog projection row whose revision equals its unique reserved_revision; each projection selector and every phase eligibility recheck require the exact candidate to have no publication_commit_candidate, while a committed reserved projection blocks PUBLICATION_CANDIDATE cleanup until higher-priority CATALOG_PUBLICATION cleanup removes that payload under its current-head finalization gates"
+    ):
+        raise ValueError(
+            "publication candidate uncommitted reserved-projection boundary drifts"
+        )
     upload_cleanup = by_kind["CANONICAL_VALUE_UPLOAD"]
     if upload_cleanup.get("claim_rule") != (
         "under the exclusive maintenance gate, keyset-select at most the fixed batch bound by generation then value_sha256; for every claim lock and recheck current head, generation history, owner, lease, optional source_build_generation mapping, canonical allocation domain, and exact claim. Delete only if the generation is completed or strictly superseded and never current/live. A missing mapping is accepted only for source_root_v1, the sole bootstrap domain; every other domain requires its retained mapping. Receipt and checkpoint CAS commit atomically, after which the unblocked allocation becomes ordinary CANONICAL_VALUE GC work"
@@ -2408,9 +2499,11 @@ def _validate_catalog_cleanup_fk_coverage(
             raise ValueError(
                 f"cleanup target {kind} semantic blockers differ from catalog retention authority"
             )
-        if kind in {"CANONICAL_VALUE", "GALLERY_OBSERVATION_PAGE"} and target.get(
-            "machine_gates", []
-        ) != data_target.get("machine_gates", []):
+        if kind in {
+            "PUBLICATION_CANDIDATE",
+            "CANONICAL_VALUE",
+            "GALLERY_OBSERVATION_PAGE",
+        } and target.get("machine_gates", []) != data_target.get("machine_gates", []):
             raise ValueError(
                 f"cleanup target {kind} machine gates differ from catalog retention authority"
             )
@@ -4373,6 +4466,7 @@ def _validate_bootstrap(
     expected_range_kinds = {
         "SOURCE_BUILD": "7b973d41884dbcdc84faa93629b8db70",
         "ANALYSIS_RUN": "aee565cf30cb51de9e454dfcb1577234",
+        "CATALOG_PUBLICATION": "322a87b56f3c8fac8d3b5985d8cc11bd",
         "PUBLICATION_CANDIDATE": "dc636b256645946128b728969d39be48",
         "OPERATIONAL_PREPARATION": "93f08650a665d7d4d98b72e183ed7e74",
         "GALLERY_OBSERVATION": "a5ea90668cd7204ebc7d72e131405102",

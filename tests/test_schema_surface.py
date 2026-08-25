@@ -378,7 +378,6 @@ def test_catalog_hot_paths_do_not_read_b3b_wide_views() -> None:
     wide_views = {
         "catalog_source_builds",
         "catalog_build_manifests",
-        "catalog_gallery_manifests",
         "catalog_source_snapshot_manifest_identity",
     }
     hot_modules = (

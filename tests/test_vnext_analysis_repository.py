@@ -1060,31 +1060,10 @@ def _insert_scan_fact(
 ) -> None:
     key = (gallery_id, observation_id)
     connector.execute(
-        "INSERT INTO catalog_gallery_observation_scan_anchors "
-        "(gallery_id, observation_id) VALUES (%s, %s)",
-        key,
-    )
-    connector.execute(
-        "INSERT INTO catalog_gallery_observation_scan_observation_sha256s "
-        "(gallery_id, observation_id, scan_observation_sha256) "
-        "VALUES (%s, %s, %s)",
-        (*key, scan_observation_sha256),
-    )
-    connector.execute(
-        "INSERT INTO catalog_gallery_observation_scan_observation_versions "
-        "(gallery_id, observation_id, scan_observation_version) "
-        "VALUES (%s, %s, %s)",
-        (*key, scan_observation_version),
-    )
-    connector.execute(
-        "INSERT INTO catalog_gallery_observation_scan_source_file_counts "
-        "(gallery_id, observation_id, source_file_count) VALUES (%s, %s, %s)",
-        (*key, source_file_count),
-    )
-    connector.execute(
-        "INSERT INTO catalog_gallery_observation_scan_seals "
-        "(gallery_id, observation_id) VALUES (%s, %s)",
-        key,
+        "INSERT INTO catalog_gallery_observation_scans "
+        "(gallery_id, observation_id, scan_observation_sha256, "
+        "scan_observation_version, source_file_count) VALUES (%s, %s, %s, %s, %s)",
+        (*key, scan_observation_sha256, scan_observation_version, source_file_count),
     )
 
 
@@ -1098,24 +1077,10 @@ def _insert_stat_fact(
 ) -> None:
     key = (gallery_id, observation_id)
     connector.execute(
-        "INSERT INTO catalog_gallery_observation_stat_anchors "
-        "(gallery_id, observation_id) VALUES (%s, %s)",
-        key,
-    )
-    connector.execute(
-        "INSERT INTO catalog_gallery_observation_stat_file_counts "
-        "(gallery_id, observation_id, file_count) VALUES (%s, %s, %s)",
-        (*key, file_count),
-    )
-    connector.execute(
-        "INSERT INTO catalog_gallery_observation_stat_byte_counts "
-        "(gallery_id, observation_id, byte_count) VALUES (%s, %s, %s)",
-        (*key, byte_count),
-    )
-    connector.execute(
-        "INSERT INTO catalog_gallery_observation_stat_seals "
-        "(gallery_id, observation_id) VALUES (%s, %s)",
-        key,
+        "INSERT INTO catalog_gallery_observation_stat "
+        "(gallery_id, observation_id, file_count, byte_count) "
+        "VALUES (%s, %s, %s, %s)",
+        (*key, file_count, byte_count),
     )
 
 
@@ -1202,24 +1167,15 @@ def _seed_preparation_facts(
         (gallery_id, source_gallery_name),
     )
     connector.execute(
-        "INSERT INTO catalog_gallery_observation_metadata_anchors "
-        "(gallery_id, observation_id) VALUES (%s, %s)",
-        (gallery_id, observation_id),
-    )
-    connector.execute(
-        "INSERT INTO catalog_gallery_observation_download_times "
-        "(gallery_id, observation_id, download_time) VALUES (%s, %s, %s)",
-        (gallery_id, observation_id, metadata.download_time),
-    )
-    connector.execute(
-        "INSERT INTO catalog_gallery_observation_modified_times "
-        "(gallery_id, observation_id, modified_time) VALUES (%s, %s, %s)",
-        (gallery_id, observation_id, metadata.modified_time),
-    )
-    connector.execute(
-        "INSERT INTO catalog_gallery_observation_metadata_seals "
-        "(gallery_id, observation_id) VALUES (%s, %s)",
-        (gallery_id, observation_id),
+        "INSERT INTO catalog_gallery_observation_metadata_locals "
+        "(gallery_id, observation_id, download_time, modified_time) "
+        "VALUES (%s, %s, %s, %s)",
+        (
+            gallery_id,
+            observation_id,
+            metadata.download_time,
+            metadata.modified_time,
+        ),
     )
     _insert_scan_fact(
         connector,
@@ -5351,23 +5307,9 @@ def _seed_minimal_gid_metadata(
         (gallery_id, source_name),
     )
     connector.execute(
-        "INSERT INTO catalog_gallery_observation_metadata_anchors "
-        "(gallery_id, observation_id) VALUES (%s, %s)",
-        (gallery_id, observation_id),
-    )
-    connector.execute(
-        "INSERT INTO catalog_gallery_observation_download_times "
-        "(gallery_id, observation_id, download_time) VALUES (%s, %s, 1)",
-        (gallery_id, observation_id),
-    )
-    connector.execute(
-        "INSERT INTO catalog_gallery_observation_modified_times "
-        "(gallery_id, observation_id, modified_time) VALUES (%s, %s, 1)",
-        (gallery_id, observation_id),
-    )
-    connector.execute(
-        "INSERT INTO catalog_gallery_observation_metadata_seals "
-        "(gallery_id, observation_id) VALUES (%s, %s)",
+        "INSERT INTO catalog_gallery_observation_metadata_locals "
+        "(gallery_id, observation_id, download_time, modified_time) "
+        "VALUES (%s, %s, 1, 1)",
         (gallery_id, observation_id),
     )
     return gid
@@ -5588,8 +5530,9 @@ def _impact_batch_select_profile(
                 zero_dml=True,
             )
             connector.execute(
-                "INSERT INTO catalog_a_impacted_content_anchors "
-                "(analysis_id, content_sha256) VALUES (%s, %s)",
+                "INSERT INTO catalog_analysis_impacted_content "
+                "(analysis_id, content_sha256, witness_gallery_id) "
+                "VALUES (%s, %s, 1)",
                 (run.analysis_id, b"o" * 32),
             )
             with (
@@ -5770,8 +5713,8 @@ def _impact_batch_select_profile(
                 zero_dml=True,
             )
             connector.execute(
-                "INSERT INTO catalog_a_impacted_gid_anchors (analysis_id, gid) "
-                "VALUES (%s, %s)",
+                "INSERT INTO catalog_analysis_impacted_gid_storage "
+                "(analysis_id, gid) VALUES (%s, %s)",
                 (run.analysis_id, 99_999),
             )
             with (
@@ -5848,10 +5791,13 @@ def test_impacted_stage_select_counts_are_constant_for_one_and_128_rows(
     provenance_preflights = [
         query
         for query in content_fresh_queries
-        if "WITH proposed(analysis_id, key_value)" in query
+        if "FROM catalog_analysis_impacted_content AS impacted" in query
+        and "page_or_future" in query
     ]
     assert len(provenance_preflights) == 1
     assert "SELECT %s AS key_value" not in provenance_preflights[0]
+    assert provenance_preflights[0].count("impacted.content_sha256 IN (") == 1
+    assert provenance_preflights[0].count("%s") == 131
     content_deletes = [
         query
         for query in many["content_fresh"][2]
@@ -5876,6 +5822,14 @@ def test_impacted_stage_select_counts_are_constant_for_one_and_128_rows(
     for stage in ("gid_fresh", "gid_replay"):
         queries = many[stage][1]
         assert sum("WITH proposed(gallery_id)" in query for query in queries) == 1
+    gid_storage_preflights = [
+        query
+        for query in many["gid_fresh"][1]
+        if "FROM catalog_a_impacted_gid_provenance_storage" in query
+        and "gallery_id IN (" in query
+    ]
+    assert len(gid_storage_preflights) == 1
+    assert gid_storage_preflights[0].count("%s") == 129
     for stage in (
         "content_terminal",
         "content_terminal_replay",

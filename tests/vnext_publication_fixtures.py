@@ -85,6 +85,90 @@ def seed_publication_finalization_checkpoint(
     )
 
 
+def seed_publication_finalization(
+    connector: SQLConnector,
+    *,
+    receipt_id: bytes,
+    cursor: bytes,
+    processed_count: int,
+    finalized_at: int,
+) -> None:
+    """Complete an existing commit's exact terminal finalization family."""
+
+    batch_key = (receipt_id, 1)
+    connector.execute(
+        "INSERT INTO catalog_publication_finalization_batch_anchors "
+        "(receipt_id, start_generation) VALUES (%s, %s)",
+        batch_key,
+    )
+    connector.execute(
+        "INSERT INTO catalog_publication_finalization_batch_coordinates "
+        "(receipt_id, batch_key, start_generation) VALUES (%s, %s, %s)",
+        (receipt_id, b"terminal", 1),
+    )
+    for batch_table, batch_column, batch_value in (
+        (
+            "catalog_publication_finalization_batch_start_cursors",
+            "start_cursor",
+            cursor,
+        ),
+        (
+            "catalog_publication_finalization_batch_start_counts",
+            "start_processed_count",
+            processed_count,
+        ),
+        (
+            "catalog_publication_finalization_batch_next_cursors",
+            "next_cursor",
+            cursor,
+        ),
+        ("catalog_publication_finalization_batch_row_counts", "row_count", 0),
+        (
+            "catalog_publication_finalization_batch_committed_ats",
+            "committed_at",
+            finalized_at,
+        ),
+    ):
+        connector.execute(
+            f"INSERT INTO {batch_table} "
+            f"(receipt_id, start_generation, {batch_column}) VALUES (%s, %s, %s)",
+            (*batch_key, batch_value),
+        )
+    connector.execute(
+        "INSERT INTO catalog_publication_finalization_batch_seals "
+        "(receipt_id, start_generation) VALUES (%s, %s)",
+        batch_key,
+    )
+    for checkpoint_table, checkpoint_column, checkpoint_value in (
+        ("catalog_publication_finalization_checkpoint_generations", "generation", 2),
+        ("catalog_publication_finalization_checkpoint_cursors", "cursor", cursor),
+        (
+            "catalog_publication_finalization_checkpoint_counts",
+            "processed_count",
+            processed_count,
+        ),
+        ("catalog_publication_finalization_checkpoint_states", "state", "COMPLETE"),
+        (
+            "catalog_publication_finalization_checkpoint_updated_ats",
+            "updated_at",
+            finalized_at,
+        ),
+    ):
+        quoted = (
+            f"`{checkpoint_column}`"
+            if checkpoint_column == "cursor"
+            else checkpoint_column
+        )
+        connector.execute(
+            f"UPDATE {checkpoint_table} SET {quoted} = %s WHERE receipt_id = %s",
+            (checkpoint_value, receipt_id),
+        )
+    connector.execute(
+        "INSERT INTO catalog_publication_commit_finalizations (receipt_id) VALUES (%s)",
+        (receipt_id,),
+    )
+
+
 def seed_publication_commit(
     connector: SQLConnector,
     *,
@@ -202,6 +286,7 @@ def seed_catalog_publication(
     summary_sha256: bytes,
     language_sha256: bytes,
     modified_at: int,
+    source_title_sha256: bytes,
     backend: str = "sqlite",
 ) -> CatalogPublicationFamily:
     family = CatalogPublicationFamily(
@@ -211,6 +296,7 @@ def seed_catalog_publication(
         summary_sha256,
         language_sha256,
         modified_at,
+        source_title_sha256,
     )
     ensure_catalog_publication_family(connector, family, backend=backend)
     return family
@@ -266,12 +352,24 @@ def clone_catalog_publication_families(
     """Clone exact scalar/title/contributor families into a seeded revision."""
 
     publication_rows = connector.fetch_all(
-        "SELECT publication_key, gallery_id, summary_sha256, language_sha256, "
-        "modified_at FROM catalog_publications WHERE revision = %s "
-        "ORDER BY publication_key",
+        "SELECT publication.publication_key, publication.gallery_id, "
+        "publication.summary_sha256, publication.language_sha256, "
+        "publication.modified_at, title.source_title_sha256 "
+        "FROM catalog_publications AS publication "
+        "JOIN catalog_publication_titles AS title "
+        "ON title.revision = publication.revision "
+        "AND title.publication_key = publication.publication_key "
+        "WHERE publication.revision = %s ORDER BY publication.publication_key",
         (source_revision,),
     )
-    for publication_key, gallery_id, summary, language, modified_at in publication_rows:
+    for (
+        publication_key,
+        gallery_id,
+        summary,
+        language,
+        modified_at,
+        source_title,
+    ) in publication_rows:
         seed_catalog_publication(
             connector,
             revision=target_revision,
@@ -280,6 +378,7 @@ def clone_catalog_publication_families(
             summary_sha256=summary,
             language_sha256=language,
             modified_at=modified_at,
+            source_title_sha256=source_title,
             backend=backend,
         )
     title_rows = connector.fetch_all(

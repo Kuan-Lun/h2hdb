@@ -33,6 +33,16 @@ def test_live_mariadb_provenance_preflight_preserves_raw_binary_keys(
         # family primary key and raw BINARY(32) comparison exercised below.
         connector.execute("SET FOREIGN_KEY_CHECKS = 0")
         with connector.transaction():
+            connector.execute(
+                "INSERT INTO catalog_source_gallery_name_gids "
+                "(source_gallery_name, gid) VALUES (%s, %s)",
+                (b"gallery-17", 17),
+            )
+            connector.execute_many(
+                "INSERT INTO catalog_gallery_source_name_accesses "
+                "(gallery_id, source_gallery_name) VALUES (%s, %s)",
+                [(1, b"gallery-17"), (2, b"gallery-17")],
+            )
             record_analysis_impacted_content_provenance_page(
                 connector,
                 analysis_id=analysis,

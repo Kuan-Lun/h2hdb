@@ -572,7 +572,7 @@ def test_catalog_issue_reuses_the_outer_gate_and_ingest_authorization(
     root = publication._Root(b"b" * 16, b"a" * 16, 1, b"c" * 16, None, None, None)
     states = tuple(
         (stage, "COMPLETE" if index < 2 else "OPEN")
-        for index, stage in enumerate(publication._STAGES)
+        for index, stage in enumerate(publication._CANDIDATE_STAGES)
     )
 
     def resume_gate(work: Any, lease: Any, *, now: int) -> Any:
@@ -972,7 +972,28 @@ def test_operational_effect_planner_enforces_128_row_cap() -> None:
     assert all(isinstance(effect, RemovedGid) for effect in effects)
 
 
-def test_genesis_one_gallery_route_covers_all_seventeen_server_owned_stages(
+def test_checkpoint_loader_accepts_only_sixteen_candidate_owned_stages() -> None:
+    class Connector:
+        def __init__(self) -> None:
+            self.rows = [(stage, "COMPLETE") for stage in publication._CANDIDATE_STAGES]
+
+        def fetch_all(
+            self,
+            _query: str,
+            _parameters: object = (),
+        ) -> list[tuple[bytes, str]]:
+            return self.rows
+
+    connector = Connector()
+    expected = tuple(connector.rows)
+    assert publication._load_checkpoints(cast(Any, connector), b"c" * 16) == expected
+
+    connector.rows.append((b"FINALIZE_ARTIFACTS", "OPEN"))
+    with pytest.raises(RuntimeError, match="incomplete or reordered"):
+        publication._load_checkpoints(cast(Any, connector), b"c" * 16)
+
+
+def test_genesis_route_covers_sixteen_candidate_stages_then_commits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     candidate = b"c" * 16
@@ -1020,7 +1041,7 @@ def test_genesis_one_gallery_route_covers_all_seventeen_server_owned_stages(
     for index, expected_action in enumerate(expected):
         states = tuple(
             (stage, "COMPLETE" if position < index else "OPEN")
-            for position, stage in enumerate(publication._STAGES)
+            for position, stage in enumerate(publication._CANDIDATE_STAGES)
         )
         monkeypatch.setattr(
             publication, "_load_checkpoints", lambda *_args, states=states: states
@@ -1035,8 +1056,7 @@ def test_genesis_one_gallery_route_covers_all_seventeen_server_owned_stages(
         assert action is expected_action
 
     terminal_states = tuple(
-        (stage, "COMPLETE" if index < 16 else "OPEN")
-        for index, stage in enumerate(publication._STAGES)
+        (stage, "COMPLETE") for stage in publication._CANDIDATE_STAGES
     )
     monkeypatch.setattr(
         publication,

@@ -162,26 +162,10 @@ def seed_gallery_manifest(
         return existing
     key = (gallery_id, observation_id, manifest_policy_id)
     connector.execute(
-        "INSERT INTO catalog_gallery_manifest_anchors "
-        "(gallery_id, observation_id, manifest_policy_id) VALUES (%s, %s, %s)",
-        key,
-    )
-    connector.execute(
-        "INSERT INTO catalog_gallery_manifest_manifest_sha256s "
-        "(gallery_id, observation_id, manifest_policy_id, manifest_sha256) "
-        "VALUES (%s, %s, %s, %s)",
-        (*key, manifest_sha256),
-    )
-    connector.execute(
-        "INSERT INTO catalog_gallery_manifest_computed_ats "
-        "(gallery_id, observation_id, manifest_policy_id, computed_at) "
-        "VALUES (%s, %s, %s, %s)",
-        (*key, computed_at),
-    )
-    connector.execute(
-        "INSERT INTO catalog_gallery_manifest_seals "
-        "(gallery_id, observation_id, manifest_policy_id) VALUES (%s, %s, %s)",
-        key,
+        "INSERT INTO catalog_gallery_manifests "
+        "(gallery_id, observation_id, manifest_policy_id, manifest_sha256, "
+        "computed_at) VALUES (%s, %s, %s, %s, %s)",
+        (*key, manifest_sha256, computed_at),
     )
     return expected
 

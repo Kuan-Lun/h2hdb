@@ -1118,6 +1118,16 @@ def check_maintenance_gate_contract_v1(connector: SQLConnector) -> None:
         slots_by_owner[token] += 1
         ordered_slots.append((slot, token))
 
+    if not owner_tokens:
+        if ordered_slots:
+            raise OperationalSemanticValidationError(
+                "operational READY idle maintenance gate has orphan holder slots"
+            )
+        # Releasing the final owner intentionally leaves the immutable current
+        # generation/head audit in place.  Either mode can therefore be idle
+        # with no owner or holder until the next claim advances the generation.
+        return
+
     if mode == "SHARED":
         if any(slots_by_owner[token] != 1 for token in owner_tokens):
             raise OperationalSemanticValidationError(

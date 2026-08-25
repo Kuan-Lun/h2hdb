@@ -1,8 +1,8 @@
-"""Exact narrow storage protocols for source and manifest families.
+"""Exact storage protocols for source and manifest families.
 
-The historical wide relations covered here are read-only compatibility views.
-Production code reads and writes the physical families directly, inserts every
-completion seal last, and treats any existing incomplete family as corruption.
+Source, build, and snapshot descriptors remain sealed narrow families.  A
+gallery manifest is one atomic BCNF row, so readers and writers use that base
+directly and exact-compare it on replay.
 """
 
 from __future__ import annotations
@@ -52,10 +52,7 @@ _BUILD_MANIFEST_BYTE_COUNT = "catalog_build_manifest_byte_counts"
 _BUILD_MANIFEST_SEAL = "catalog_build_manifest_seals"
 _DISCOVERY_GALLERY_COUNT = "catalog_source_build_discovery_gallery_counts"
 
-_GALLERY_MANIFEST_ANCHOR = "catalog_gallery_manifest_anchors"
-_GALLERY_MANIFEST_DIGEST = "catalog_gallery_manifest_manifest_sha256s"
-_GALLERY_MANIFEST_COMPUTED = "catalog_gallery_manifest_computed_ats"
-_GALLERY_MANIFEST_SEAL = "catalog_gallery_manifest_seals"
+_GALLERY_MANIFEST = "catalog_gallery_manifests"
 
 _SNAPSHOT_ANCHOR = "catalog_source_snapshot_manifest_identity_anchors"
 _SNAPSHOT_GALLERY_COUNT = "catalog_source_snapshot_manifest_identity_gallery_counts"
@@ -386,35 +383,18 @@ def load_gallery_manifest_family(
         require_positive_int63(observation_id, field="observation_id"),
         require_positive_int63(manifest_policy_id, field="manifest_policy_id"),
     )
-    predicate = "gallery_id = %s AND observation_id = %s AND manifest_policy_id = %s"
     row = connector.fetch_one(
-        "WITH family_keys(gallery_id, observation_id, manifest_policy_id) AS ("
-        f"SELECT gallery_id, observation_id, manifest_policy_id FROM {_GALLERY_MANIFEST_ANCHOR} WHERE {predicate} UNION "
-        f"SELECT gallery_id, observation_id, manifest_policy_id FROM {_GALLERY_MANIFEST_DIGEST} WHERE {predicate} UNION "
-        f"SELECT gallery_id, observation_id, manifest_policy_id FROM {_GALLERY_MANIFEST_COMPUTED} WHERE {predicate} UNION "
-        f"SELECT gallery_id, observation_id, manifest_policy_id FROM {_GALLERY_MANIFEST_SEAL} WHERE {predicate}) "
-        "SELECT k.gallery_id, k.observation_id, k.manifest_policy_id, "
-        "a.gallery_id, a.observation_id, a.manifest_policy_id, "
-        "digest.gallery_id, digest.observation_id, digest.manifest_policy_id, "
-        "digest.manifest_sha256, computed.gallery_id, computed.observation_id, "
-        "computed.manifest_policy_id, computed.computed_at, seal.gallery_id, "
-        "seal.observation_id, seal.manifest_policy_id FROM family_keys k "
-        f"LEFT JOIN {_GALLERY_MANIFEST_ANCHOR} a USING (gallery_id, observation_id, manifest_policy_id) "
-        f"LEFT JOIN {_GALLERY_MANIFEST_DIGEST} digest USING (gallery_id, observation_id, manifest_policy_id) "
-        f"LEFT JOIN {_GALLERY_MANIFEST_COMPUTED} computed USING (gallery_id, observation_id, manifest_policy_id) "
-        f"LEFT JOIN {_GALLERY_MANIFEST_SEAL} seal USING (gallery_id, observation_id, manifest_policy_id)",
-        key * 4,
+        "SELECT manifest_sha256, computed_at FROM catalog_gallery_manifests "
+        "WHERE gallery_id = %s AND observation_id = %s "
+        "AND manifest_policy_id = %s",
+        key,
     )
     if not row:
         return None
-    if len(row) != 17 or any(
-        tuple(row[start : start + 3]) != key for start in (0, 3, 6, 10, 14)
-    ):
-        raise ManifestFamilyPartialError(
-            "gallery manifest has an existing incomplete sealed family"
-        )
     try:
-        return GalleryManifestFamily(*key, row[9], row[13])
+        if len(row) != 2:
+            raise ValueError("gallery manifest row has an invalid shape")
+        return GalleryManifestFamily(*key, row[0], row[1])
     except (TypeError, ValueError) as error:
         raise ManifestFamilyCollisionError(
             "gallery manifest contains invalid immutable facts"
@@ -494,26 +474,10 @@ def ensure_gallery_manifest_family(
     )
     key = (gallery, observation, policy_id)
     work.connector.execute(
-        f"INSERT INTO {_GALLERY_MANIFEST_ANCHOR} "
-        "(gallery_id, observation_id, manifest_policy_id) VALUES (%s, %s, %s)",
-        key,
-    )
-    work.connector.execute(
-        f"INSERT INTO {_GALLERY_MANIFEST_DIGEST} "
-        "(gallery_id, observation_id, manifest_policy_id, manifest_sha256) "
-        "VALUES (%s, %s, %s, %s)",
-        (*key, digest),
-    )
-    work.connector.execute(
-        f"INSERT INTO {_GALLERY_MANIFEST_COMPUTED} "
-        "(gallery_id, observation_id, manifest_policy_id, computed_at) "
-        "VALUES (%s, %s, %s, %s)",
-        (*key, computed_at),
-    )
-    work.connector.execute(
-        f"INSERT INTO {_GALLERY_MANIFEST_SEAL} "
-        "(gallery_id, observation_id, manifest_policy_id) VALUES (%s, %s, %s)",
-        key,
+        f"INSERT INTO {_GALLERY_MANIFEST} "
+        "(gallery_id, observation_id, manifest_policy_id, manifest_sha256, "
+        "computed_at) VALUES (%s, %s, %s, %s, %s)",
+        (*key, digest, computed_at),
     )
     return proposed
 

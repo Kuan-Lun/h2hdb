@@ -7,11 +7,11 @@ non-key attribute.  The product policy checked here is stricter and purely
 physical: every ``catalog_*`` base table has a primary key plus at most one
 atomic value column.  Views are excluded, so read models may remain wide.
 
-The current epoch intentionally denormalizes the pure-gallery identity family
-into one BCNF relation.  The exact exception registry admits only that reviewed
-shape and rejects any additional or changed wide relation, while the closed
-semantic-role registry rejects a hidden value moved into the primary key or an
-undeclared base table.
+The current epoch intentionally recomposes a closed set of gallery-linear BCNF
+families into complete rows.  The exact exception registry admits only those
+reviewed shapes and rejects any additional or changed wide relation, while the
+closed semantic-role registry rejects a hidden value moved into the primary key
+or an undeclared base table.
 """
 
 from __future__ import annotations
@@ -117,6 +117,12 @@ class NarrowPhysicalReport:
 # the exception also fails until this registry and the resulting narrow layout
 # declarations are updated together.
 APPROVED_WIDE_BCNF_RELATIONS: Mapping[str, tuple[str, ...]] = {
+    "catalog_analysis_content_owner_candidate_shadows": (
+        "content_sha256",
+        "prefer_not_already_uploaded",
+        "title_scalar_count",
+        "download_time",
+    ),
     "catalog_artifact_blobs": (
         "size_bytes",
         "artifact_locator_sha256",
@@ -138,12 +144,40 @@ APPROVED_WIDE_BCNF_RELATIONS: Mapping[str, tuple[str, ...]] = {
         "scope_key",
         "locator_sha256",
     ),
+    "catalog_gallery_manifests": (
+        "manifest_sha256",
+        "computed_at",
+    ),
+    "catalog_gallery_observation_directories": (
+        "directory_entry_count",
+        "directory_observation_sha256",
+    ),
+    "catalog_gallery_observation_metadata_locals": (
+        "download_time",
+        "modified_time",
+    ),
+    "catalog_gallery_observation_scans": (
+        "scan_observation_sha256",
+        "scan_observation_version",
+        "source_file_count",
+    ),
+    "catalog_gallery_observation_stat": (
+        "file_count",
+        "byte_count",
+    ),
     "catalog_prepared_artifacts": (
         "artifact_sha256",
         "storage_codec_version",
         "storage_generation",
         "protection_token",
         "state",
+    ),
+    "catalog_publication_storage": (
+        "gallery_id",
+        "summary_sha256",
+        "language_sha256",
+        "modified_at",
+        "source_title_sha256",
     ),
 }
 
@@ -263,10 +297,6 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
         semantic_key=("gallery_id", "observation_id"),
         semantic_value=("observation_identity_sha256",),
     ),
-    "catalog_gallery_observation_metadata_anchors": NarrowLayoutDeclaration(
-        semantic_key=("gallery_id", "observation_id"),
-        semantic_value=(),
-    ),
     "catalog_gallery_upload_times": NarrowLayoutDeclaration(
         semantic_key=("gid",),
         semantic_value=("upload_time",),
@@ -278,44 +308,6 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
     "catalog_gallery_source_name_accesses": NarrowLayoutDeclaration(
         semantic_key=("gallery_id",),
         semantic_value=("source_gallery_name",),
-    ),
-    "catalog_gallery_observation_download_times": NarrowLayoutDeclaration(
-        semantic_key=("gallery_id", "observation_id"),
-        semantic_value=("download_time",),
-    ),
-    "catalog_gallery_observation_modified_times": NarrowLayoutDeclaration(
-        semantic_key=("gallery_id", "observation_id"),
-        semantic_value=("modified_time",),
-    ),
-    "catalog_gallery_observation_metadata_seals": NarrowLayoutDeclaration(
-        semantic_key=("gallery_id", "observation_id"),
-        semantic_value=(),
-    ),
-    "catalog_gallery_observation_scan_anchors": NarrowLayoutDeclaration(
-        semantic_key=("gallery_id", "observation_id"),
-        semantic_value=(),
-    ),
-    "catalog_gallery_observation_scan_observation_sha256s": (
-        NarrowLayoutDeclaration(
-            semantic_key=("gallery_id", "observation_id"),
-            semantic_value=("scan_observation_sha256",),
-        )
-    ),
-    "catalog_gallery_observation_scan_observation_versions": (
-        NarrowLayoutDeclaration(
-            semantic_key=("gallery_id", "observation_id"),
-            semantic_value=("scan_observation_version",),
-        )
-    ),
-    "catalog_gallery_observation_scan_source_file_counts": (
-        NarrowLayoutDeclaration(
-            semantic_key=("gallery_id", "observation_id"),
-            semantic_value=("source_file_count",),
-        )
-    ),
-    "catalog_gallery_observation_scan_seals": NarrowLayoutDeclaration(
-        semantic_key=("gallery_id", "observation_id"),
-        semantic_value=(),
     ),
     "catalog_gallery_observation_discovery_fingerprints": (
         NarrowLayoutDeclaration(
@@ -334,42 +326,6 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
     "catalog_gallery_observation_page_counts": NarrowLayoutDeclaration(
         semantic_key=("gallery_id", "observation_id"),
         semantic_value=("page_count",),
-    ),
-    "catalog_gallery_observation_directory_anchors": NarrowLayoutDeclaration(
-        semantic_key=("gallery_id", "observation_id"),
-        semantic_value=(),
-    ),
-    "catalog_gallery_observation_directory_entry_counts": (
-        NarrowLayoutDeclaration(
-            semantic_key=("gallery_id", "observation_id"),
-            semantic_value=("directory_entry_count",),
-        )
-    ),
-    "catalog_gallery_observation_directory_observation_sha256s": (
-        NarrowLayoutDeclaration(
-            semantic_key=("gallery_id", "observation_id"),
-            semantic_value=("directory_observation_sha256",),
-        )
-    ),
-    "catalog_gallery_observation_directory_seals": NarrowLayoutDeclaration(
-        semantic_key=("gallery_id", "observation_id"),
-        semantic_value=(),
-    ),
-    "catalog_gallery_observation_stat_anchors": NarrowLayoutDeclaration(
-        semantic_key=("gallery_id", "observation_id"),
-        semantic_value=(),
-    ),
-    "catalog_gallery_observation_stat_file_counts": NarrowLayoutDeclaration(
-        semantic_key=("gallery_id", "observation_id"),
-        semantic_value=("file_count",),
-    ),
-    "catalog_gallery_observation_stat_byte_counts": NarrowLayoutDeclaration(
-        semantic_key=("gallery_id", "observation_id"),
-        semantic_value=("byte_count",),
-    ),
-    "catalog_gallery_observation_stat_seals": NarrowLayoutDeclaration(
-        semantic_key=("gallery_id", "observation_id"),
-        semantic_value=(),
     ),
     "catalog_source_build_galleries": NarrowLayoutDeclaration(
         semantic_key=("build_id", "gallery_id"),
@@ -393,22 +349,6 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
     ),
     "catalog_build_manifest_seals": NarrowLayoutDeclaration(
         semantic_key=("build_id",),
-        semantic_value=(),
-    ),
-    "catalog_gallery_manifest_anchors": NarrowLayoutDeclaration(
-        semantic_key=("gallery_id", "observation_id", "manifest_policy_id"),
-        semantic_value=(),
-    ),
-    "catalog_gallery_manifest_manifest_sha256s": NarrowLayoutDeclaration(
-        semantic_key=("gallery_id", "observation_id", "manifest_policy_id"),
-        semantic_value=("manifest_sha256",),
-    ),
-    "catalog_gallery_manifest_computed_ats": NarrowLayoutDeclaration(
-        semantic_key=("gallery_id", "observation_id", "manifest_policy_id"),
-        semantic_value=("computed_at",),
-    ),
-    "catalog_gallery_manifest_seals": NarrowLayoutDeclaration(
-        semantic_key=("gallery_id", "observation_id", "manifest_policy_id"),
         semantic_value=(),
     ),
     "catalog_content_blobs": NarrowLayoutDeclaration(
@@ -527,10 +467,6 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
         semantic_key=("analysis_id", "gallery_id", "content_sha256"),
         semantic_value=(),
     ),
-    "catalog_a_impacted_gid_provenance": NarrowLayoutDeclaration(
-        semantic_key=("analysis_id", "gallery_id", "gid"),
-        semantic_value=(),
-    ),
     "catalog_analysis_file_hash_decision_tombstone": NarrowLayoutDeclaration(
         semantic_key=("analysis_id", "file_sha256"),
         semantic_value=(),
@@ -543,6 +479,22 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
     ),
     "catalog_analysis_content_owner_tombstones": NarrowLayoutDeclaration(
         semantic_key=("analysis_id", "content_sha256"),
+        semantic_value=(),
+    ),
+    "catalog_analysis_content_owner_shadows": NarrowLayoutDeclaration(
+        semantic_key=("analysis_id", "content_sha256"),
+        semantic_value=("owner_gallery_id",),
+    ),
+    "catalog_analysis_impacted_content": NarrowLayoutDeclaration(
+        semantic_key=("analysis_id", "content_sha256"),
+        semantic_value=("witness_gallery_id",),
+    ),
+    "catalog_analysis_impacted_gid_storage": NarrowLayoutDeclaration(
+        semantic_key=("analysis_id", "gid"),
+        semantic_value=(),
+    ),
+    "catalog_a_impacted_gid_provenance_storage": NarrowLayoutDeclaration(
+        semantic_key=("analysis_id", "gallery_id"),
         semantic_value=(),
     ),
     "catalog_analysis_gid_candidate_tombstones": NarrowLayoutDeclaration(
@@ -573,9 +525,19 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
         semantic_key=("publication_key",),
         semantic_value=("gid",),
     ),
-    "catalog_publication_selections": NarrowLayoutDeclaration(
-        semantic_key=("candidate_id", "gallery_id"),
-        semantic_value=("publication_key",),
+    "catalog_publication_selection_storage": NarrowLayoutDeclaration(
+        semantic_key=("selection_occurrence_sha256",),
+        semantic_value=("gallery_id",),
+    ),
+    "catalog_publication_selection_occurrence_identities": (
+        NarrowLayoutDeclaration(
+            semantic_key=("candidate_id", "publication_key"),
+            semantic_value=("selection_occurrence_sha256",),
+        )
+    ),
+    "catalog_publication_occurrence_identities": NarrowLayoutDeclaration(
+        semantic_key=("revision", "publication_key"),
+        semantic_value=("catalog_occurrence_sha256",),
     ),
     "catalog_artifact_producer_fingerprint_anchors": NarrowLayoutDeclaration(
         semantic_key=("producer_fingerprint_sha256",),

@@ -3,6 +3,7 @@ from __future__ import annotations
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
+from unicodedata import unidata_version
 
 import pytest
 from vnext_canonical_value_fixtures import seed_canonical_value
@@ -11,20 +12,30 @@ from vnext_catalog_registry_fixtures import (
     seed_artifact_policy_semantics,
     seed_artifact_producer_fingerprint,
     seed_display_title_policy,
+    seed_manifest_policy,
     seed_source_scope,
     seed_title_sort_policy,
 )
-from vnext_manifest_fixtures import seed_snapshot_manifest
+from vnext_manifest_fixtures import seed_snapshot_manifest, seed_source_build
 from vnext_publication_fixtures import (
     clone_catalog_publication_families,
     seed_catalog_contributor,
     seed_catalog_publication,
     seed_catalog_publication_title,
     seed_publication_commit,
+    seed_publication_finalization,
     seed_publication_identity,
 )
 
 import h2hdb.vnext_identity as identity
+from h2hdb import (
+    CoreConfig,
+    DatabaseConfig,
+    VNextCatalogFacade,
+    VNextCurrentOnlyMaintenanceOutcome,
+    VNextDatabaseAdminFacade,
+    VNextIngestFacade,
+)
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.catalog_errors import CatalogRevisionNotFoundError
 from h2hdb.sqlite_connector import SQLiteConnector
@@ -62,6 +73,91 @@ from h2hdb.vnext_identity import (
     source_relative_locator_digest,
     source_scope_key,
 )
+
+_EMPTY_EVENT_CHAIN = sha256(b"h2hdb-operational-event-chain-v1\0").digest()
+_READER_PRODUCER = (
+    b"reader-writer",
+    b"cpython-test",
+    b"pillow-test",
+    b"jpeg-test",
+    b"zlib-test",
+)
+_CATALOG_PUBLICATION_PAYLOAD_TABLES = (
+    "catalog_contributor_seals",
+    "catalog_contributor_identities",
+    "catalog_contributor_name_sha256s",
+    "catalog_contributor_roles",
+    "catalog_contributor_anchors",
+    "catalog_publication_order",
+    "catalog_publication_titles",
+    "catalog_publication_contents",
+    "catalog_subjects",
+    "catalog_artifacts",
+    "catalog_publications",
+)
+
+
+def _canonical_root_page(
+    connector: SQLiteConnector,
+    value_sha256: bytes,
+) -> bytes:
+    row = connector.fetch_one(
+        "SELECT root_page_sha256 FROM catalog_canonical_value_identities "
+        "WHERE value_sha256 = %s",
+        (value_sha256,),
+    )
+    assert len(row) == 1
+    root_page_sha256 = row[0]
+    assert isinstance(root_page_sha256, bytes)
+    return root_page_sha256
+
+
+def _assert_canonical_value_storage(
+    connector: SQLiteConnector,
+    *,
+    value_sha256: bytes,
+    root_page_sha256: bytes,
+    present: bool,
+) -> None:
+    """Assert the complete one-page canonical fixture is retained or reclaimed."""
+
+    expected = (1,) if present else (0,)
+    for table in (
+        "catalog_canonical_value_allocation_anchors",
+        "catalog_canonical_value_allocation_digest_domains",
+        "catalog_canonical_value_allocation_byte_counts",
+        "catalog_canonical_value_allocation_allocated_ats",
+        "catalog_canonical_value_allocation_seals",
+        "catalog_canonical_value_identities",
+    ):
+        assert (
+            connector.fetch_one(
+                f"SELECT COUNT(*) FROM {table} WHERE value_sha256 = %s",
+                (value_sha256,),
+            )
+            == expected
+        )
+    assert (
+        connector.fetch_one(
+            "SELECT COUNT(*) FROM catalog_canonical_value_page_coordinates "
+            "WHERE value_sha256 = %s AND page_sha256 = %s",
+            (value_sha256, root_page_sha256),
+        )
+        == expected
+    )
+    for table in (
+        "catalog_canonical_value_page_anchors",
+        "catalog_canonical_value_page_payloads",
+        "catalog_canonical_value_page_subtree_item_counts",
+        "catalog_canonical_value_page_seals",
+    ):
+        assert (
+            connector.fetch_one(
+                f"SELECT COUNT(*) FROM {table} WHERE page_sha256 = %s",
+                (root_page_sha256,),
+            )
+            == expected
+        )
 
 
 def _database(path: Path) -> SQLiteConnector:
@@ -135,7 +231,7 @@ def _publication_commit(
     candidate_id: bytes = b"c" * 16,
     preparation_id: bytes = b"p" * 16,
 ) -> None:
-    connector.execute("PRAGMA foreign_keys = OFF")
+    _seed_commit_authorities(connector, preparation_id=preparation_id)
     connector.execute(
         "INSERT INTO catalog_source_revision_anchors (source_revision) VALUES (%s)",
         (source_revision,),
@@ -200,7 +296,102 @@ def _publication_commit(
         "(channel, receipt_id) VALUES (%s, %s)",
         (b"default", receipt_id),
     )
-    connector.execute("PRAGMA foreign_keys = ON")
+
+
+def _seed_commit_authorities(
+    connector: SQLiteConnector,
+    *,
+    preparation_id: bytes,
+) -> None:
+    """Seed complete FK-on parents for the immutable common commit fixture."""
+
+    seed_manifest_policy(connector)
+    seed_display_title_policy(connector)
+    producer = seed_artifact_producer_fingerprint(
+        connector,
+        artifact_algorithm_version=1,
+        writer_id=_READER_PRODUCER[0],
+        python_abi=_READER_PRODUCER[1],
+        pillow_build=_READER_PRODUCER[2],
+        libjpeg_build=_READER_PRODUCER[3],
+        zlib_build=_READER_PRODUCER[4],
+    )
+    policy_payload = encode_artifact_policy(
+        1,
+        1600,
+        producer.producer_fingerprint_sha256,
+    )
+    policy_component = artifact_policy_digest(
+        1,
+        1600,
+        producer.producer_fingerprint_sha256,
+    )
+    if not connector.fetch_one(
+        "SELECT 1 FROM catalog_canonical_value_identities " "WHERE value_sha256 = %s",
+        (policy_component,),
+    ):
+        assert (
+            _canonical(
+                connector,
+                "artifact_policy_v2",
+                policy_payload,
+            )
+            == policy_component
+        )
+    semantics = seed_artifact_policy_semantics(
+        connector,
+        artifact_algorithm_version=1,
+        max_image_short_side=1600,
+        producer_fingerprint_sha256=producer.producer_fingerprint_sha256,
+    )
+    assert semantics.policy_component_sha256 == policy_component
+    connector.execute(
+        "INSERT OR IGNORE INTO catalog_artifact_policies "
+        "(artifact_policy_id, policy_component_sha256) VALUES (1, %s)",
+        (semantics.policy_component_sha256,),
+    )
+    connector.execute(
+        "INSERT OR IGNORE INTO operational_operational_policys "
+        "(operational_policy_id, operational_schema_version, "
+        "algorithm_version, max_batch_rows) VALUES (1, 1, 1, 128)"
+    )
+    if connector.fetch_one(
+        "SELECT 1 FROM operational_operational_preparation_effect_seals "
+        "WHERE preparation_id = %s",
+        (preparation_id,),
+    ):
+        return
+    scope = connector.fetch_one(
+        "SELECT scope_key FROM catalog_source_scopes ORDER BY scope_key LIMIT 1"
+    )
+    assert len(scope) == 1
+    build_id = sha256(b"reader-commit-build\0" + preparation_id).digest()[:16]
+    seed_source_build(
+        connector,
+        build_id=build_id,
+        scope_key=scope[0],
+        state="SEALED",
+        created_at=1,
+        sealed_at=2,
+    )
+    connector.execute(
+        "INSERT INTO operational_operational_event_streams "
+        "(preparation_id, created_at) VALUES (%s, 2)",
+        (preparation_id,),
+    )
+    connector.execute(
+        "INSERT INTO operational_operational_preparations "
+        "(preparation_id, build_id, deletion_request_generation, "
+        "operational_policy_id, state, prepared_at, completed_at) "
+        "VALUES (%s, %s, 0, 1, 'COMPLETE', 2, 3)",
+        (preparation_id, build_id),
+    )
+    connector.execute(
+        "INSERT INTO operational_operational_preparation_effect_seals "
+        "(preparation_id, event_count, final_chain_sha256, sealed_at) "
+        "VALUES (%s, 0, %s, 3)",
+        (preparation_id, _EMPTY_EVENT_CHAIN),
+    )
 
 
 def _published_fixture(connector: SQLiteConnector) -> dict[str, bytes]:
@@ -253,7 +444,10 @@ def _published_fixture(connector: SQLiteConnector) -> dict[str, bytes]:
     contributor = _canonical(connector, "contributor_name_utf8_v1", "作者".encode())
     tag_value = _canonical(connector, "tag_value_utf8_v1", "測試".encode())
 
-    seed_title_sort_policy(connector, unicode_data_version=b"15.0.0")
+    seed_title_sort_policy(
+        connector,
+        unicode_data_version=unidata_version.encode("ascii"),
+    )
     seed_display_title_policy(connector)
     connector.execute(
         "INSERT INTO catalog_display_title_choices "
@@ -276,6 +470,16 @@ def _published_fixture(connector: SQLiteConnector) -> dict[str, bytes]:
         (gid, 2000000),
     )
     assert seed_publication_identity(connector, gid=gid).publication_key == key
+    connector.execute(
+        "INSERT INTO catalog_source_gallery_name_gids "
+        "(source_gallery_name, gid) VALUES (%s, %s)",
+        (b"gallery-one", gid),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_source_name_accesses "
+        "(gallery_id, source_gallery_name) VALUES (1, %s)",
+        (b"gallery-one",),
+    )
     _publication_commit(
         connector,
         snapshot_manifest_sha256=snapshot,
@@ -288,6 +492,7 @@ def _published_fixture(connector: SQLiteConnector) -> dict[str, bytes]:
         summary_sha256=summary,
         language_sha256=language,
         modified_at=3000000,
+        source_title_sha256=source_title,
     )
     connector.execute(
         "INSERT INTO catalog_publication_order "
@@ -327,8 +532,16 @@ def _published_fixture(connector: SQLiteConnector) -> dict[str, bytes]:
     )
     return {
         "publication_key": key,
+        "source_root": root,
+        "locator": locator,
+        "source_title": source_title,
+        "display_title": display_title,
+        "sort_title": sort_title,
         "summary": summary,
+        "language": language,
         "content": content,
+        "contributor": contributor,
+        "tag_value": tag_value,
         "snapshot_manifest": snapshot,
     }
 
@@ -339,13 +552,7 @@ def _artifact_fixture(
     publication_key_value: bytes,
     gid: int = 123,
 ) -> dict[str, bytes]:
-    producer_tuple = (
-        b"reader-writer",
-        b"cpython-test",
-        b"pillow-test",
-        b"jpeg-test",
-        b"zlib-test",
-    )
+    producer_tuple = _READER_PRODUCER
     producer = artifact_producer_fingerprint_sha256(*producer_tuple)
     registered = seed_artifact_producer_fingerprint(
         connector,
@@ -357,8 +564,12 @@ def _artifact_fixture(
         zlib_build=producer_tuple[4],
     )
     assert registered.producer_fingerprint_sha256 == producer
-    policy_payload = encode_artifact_policy(1, 1600, producer)
-    policy = _canonical(connector, "artifact_policy_v2", policy_payload)
+    policy = artifact_policy_digest(1, 1600, producer)
+    assert connector.fetch_one(
+        "SELECT value_sha256 FROM catalog_canonical_value_identities "
+        "WHERE value_sha256 = %s",
+        (policy,),
+    ) == (policy,)
     assert policy == artifact_policy_digest(1, 1600, producer)
     registered_policy = seed_artifact_policy_semantics(
         connector,
@@ -448,6 +659,12 @@ def _artifact_fixture(
         "artifact_id": identifier,
         "artifact_sha256": artifact_sha256,
         "locator": locator,
+        "semantics": semantics,
+        "source_manifest": source_manifest,
+        "member_plan": member_plan,
+        "effective_content": effective_content,
+        "selected": selected,
+        "owner": owner,
     }
 
 
@@ -699,8 +916,7 @@ def test_artifact_name_lookup_uses_one_bounded_set_query_per_publication_family(
         assert tuple(publications) == ("h2h-123.cbz",)
         assert (
             sum(
-                "FROM catalog_publication_anchors AS anchor" in query
-                for query in queries
+                "FROM catalog_publications AS publication" in query for query in queries
             )
             == 1
         )
@@ -719,7 +935,7 @@ def test_artifact_name_lookup_uses_one_bounded_set_query_per_publication_family(
         connector.close()
 
 
-def test_single_publication_lookup_rejects_partial_scalar_and_title_families(
+def test_single_publication_lookup_rejects_missing_atomic_title_row(
     tmp_path: Path,
 ) -> None:
     connector = _database(tmp_path / "reader-partial-publication.sqlite3")
@@ -727,15 +943,18 @@ def test_single_publication_lookup_rejects_partial_scalar_and_title_families(
         values = _published_fixture(connector)
         connector.execute("PRAGMA foreign_keys = OFF")
         connector.execute(
-            "DELETE FROM catalog_publication_title_seals "
-            "WHERE revision = 1 AND publication_key = %s",
+            "DELETE FROM catalog_publication_storage WHERE "
+            "catalog_occurrence_sha256 = ("
+            "SELECT catalog_occurrence_sha256 "
+            "FROM catalog_publication_occurrence_identities "
+            "WHERE revision = 1 AND publication_key = %s)",
             (values["publication_key"],),
         )
         connector.execute("PRAGMA foreign_keys = ON")
         reader = VNextCatalogReaderRepository(backend="sqlite")
         with (
             connector.read_transaction(),
-            pytest.raises(VNextCatalogReadError, match="partial or noncongruent"),
+            pytest.raises(VNextCatalogReadError, match="missing or noncongruent"),
         ):
             reader.get_publication(connector, "urn:h2h:gallery:123", revision=1)
     finally:
@@ -856,7 +1075,7 @@ def test_reader_fails_closed_for_search_until_revision_index_exists(
             connector.read_transaction(),
             pytest.raises(
                 VNextCatalogReadError,
-                match="normalized revision-pinned search index",
+                match="normalized current-head search index",
             ),
         ):
             reader.list_publications(connector, query="顯示")
@@ -868,13 +1087,16 @@ def test_reader_fails_closed_for_search_until_revision_index_exists(
         connector.close()
 
 
-def test_reader_pins_historical_revision_through_read_only_connection(
+def test_reader_rejects_explicit_and_pinned_revision_after_head_advances(
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "reader-history.sqlite3"
     connector = _database(database_path)
     try:
         values = _published_fixture(connector)
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        with connector.read_transaction():
+            prior_head = reader.get_catalog_revision(connector)
         _publication_commit(
             connector,
             snapshot_manifest_sha256=values["snapshot_manifest"],
@@ -919,16 +1141,387 @@ def test_reader_pins_historical_revision_through_read_only_connection(
         reader = VNextCatalogReaderRepository(backend="sqlite")
         with read_only.read_transaction():
             current = reader.get_catalog_revision(read_only)
-            historical = reader.get_catalog_revision(read_only, 1)
             current_page = reader.list_publications(read_only, revision=current)
-            historical_page = reader.list_publications(
-                read_only,
-                revision=historical,
-            )
+            with pytest.raises(CatalogRevisionNotFoundError) as explicit_history:
+                reader.get_catalog_revision(read_only, 1)
+            with pytest.raises(CatalogRevisionNotFoundError) as pinned_history:
+                reader.list_publications(
+                    read_only,
+                    revision=prior_head,
+                )
+            with pytest.raises(CatalogRevisionNotFoundError) as empty_history:
+                reader.get_publications_by_artifact_names(
+                    read_only,
+                    [],
+                    revision=prior_head,
+                )
+            with pytest.raises(CatalogRevisionNotFoundError) as empty_history_int:
+                reader.get_publications_by_artifact_names(
+                    read_only,
+                    [],
+                    revision=1,
+                )
         assert current.revision == 2
-        assert historical.revision == 1
         assert current_page.revision == current
-        assert historical_page.revision == historical
-        assert current_page.publications == historical_page.publications
+        assert explicit_history.value.revision == 1
+        assert pinned_history.value.revision == 1
+        assert empty_history.value.revision == 1
+        assert empty_history_int.value.revision == 1
+        assert len(current_page.publications) == 1
     finally:
         read_only.close()
+
+
+def test_reader_rechecks_head_after_hydration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connector = _database(tmp_path / "reader-head-race.sqlite3")
+    try:
+        values = _published_fixture(connector)
+        _publication_commit(
+            connector,
+            snapshot_manifest_sha256=values["snapshot_manifest"],
+            revision=2,
+            source_revision=2,
+            generation=2,
+            publication_count=1,
+            committed_at=5000000,
+            receipt_id=b"s" * 16,
+            candidate_id=b"d" * 16,
+            preparation_id=b"q" * 16,
+        )
+        connector.execute(
+            "UPDATE catalog_publication_commit_head_receipts "
+            "SET receipt_id = %s WHERE channel = %s",
+            (b"r" * 16, b"default"),
+        )
+        reader = VNextCatalogReaderRepository(backend="sqlite")
+        hydrate = reader._hydrate_publications
+
+        def hydrate_then_advance(*args: Any, **kwargs: Any) -> Any:
+            result = hydrate(*args, **kwargs)
+            connector.execute(
+                "UPDATE catalog_publication_commit_head_receipts "
+                "SET receipt_id = %s WHERE channel = %s",
+                (b"s" * 16, b"default"),
+            )
+            return result
+
+        monkeypatch.setattr(reader, "_hydrate_publications", hydrate_then_advance)
+        with pytest.raises(VNextCatalogReadError, match="head advanced"):
+            reader.list_publications(connector)
+    finally:
+        connector.close()
+
+
+def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "current-only-facade.sqlite3"
+    config = CoreConfig(
+        database=DatabaseConfig(sql_type="sqlite", database=str(database_path))
+    )
+    admin = VNextDatabaseAdminFacade(config)
+    assert admin.initialize().state == "READY"
+    connector = SQLiteConnector(str(database_path))
+    connector.connect()
+    try:
+        values = _published_fixture(connector)
+        artifact_values = _artifact_fixture(
+            connector,
+            publication_key_value=values["publication_key"],
+        )
+        old_only_canonical_values = (
+            values["source_root"],
+            values["locator"],
+            values["snapshot_manifest"],
+            values["source_title"],
+            values["display_title"],
+            values["sort_title"],
+            values["summary"],
+            values["language"],
+            values["content"],
+            values["contributor"],
+            values["tag_value"],
+            artifact_values["locator"],
+            artifact_values["semantics"],
+            artifact_values["source_manifest"],
+            artifact_values["member_plan"],
+            artifact_values["effective_content"],
+            artifact_values["selected"],
+            artifact_values["owner"],
+        )
+        old_only_root_pages = {
+            value: _canonical_root_page(connector, value)
+            for value in old_only_canonical_values
+        }
+        seed_publication_finalization(
+            connector,
+            receipt_id=b"r" * 16,
+            cursor=values["publication_key"],
+            processed_count=1,
+            finalized_at=4_000_000,
+        )
+        current_snapshot = _canonical(
+            connector,
+            "source_snapshot_manifest_v1",
+            b"reader-current-empty-snapshot",
+        )
+        seed_snapshot_manifest(
+            connector,
+            snapshot_manifest_sha256=current_snapshot,
+            gallery_count=0,
+            file_count=0,
+            byte_count=0,
+        )
+        current_snapshot_root_page = _canonical_root_page(connector, current_snapshot)
+        _publication_commit(
+            connector,
+            snapshot_manifest_sha256=current_snapshot,
+            revision=2,
+            source_revision=2,
+            generation=2,
+            publication_count=0,
+            committed_at=5_000_000,
+            receipt_id=b"s" * 16,
+            candidate_id=b"d" * 16,
+            preparation_id=b"q" * 16,
+        )
+
+        assert connector.fetch_one(
+            "SELECT state, finalized_at FROM catalog_publication_receipts "
+            "WHERE receipt_id = %s",
+            (b"s" * 16,),
+        ) == ("DB_COMMITTED", None)
+        blocked_facade = VNextIngestFacade(config, clock=lambda: 5_500_000)
+        for _attempt in range(32):
+            before_finalization = blocked_facade.drain_current_only_maintenance(
+                30_000_000
+            )
+            assert connector.fetch_one("PRAGMA foreign_keys") == (1,)
+            assert connector.fetch_all("PRAGMA foreign_key_check") == []
+            if before_finalization is VNextCurrentOnlyMaintenanceOutcome.BLOCKED:
+                break
+            assert before_finalization is VNextCurrentOnlyMaintenanceOutcome.PROGRESSED
+        assert before_finalization is VNextCurrentOnlyMaintenanceOutcome.BLOCKED
+        # Unrelated orphan families may already be reclaimed while external
+        # finalization is pending, but the current head's snapshot stays live.
+        _assert_canonical_value_storage(
+            connector,
+            value_sha256=current_snapshot,
+            root_page_sha256=current_snapshot_root_page,
+            present=True,
+        )
+        generation_count = connector.fetch_one(
+            "SELECT COUNT(*) FROM operational_maintenance_gate_generations"
+        )
+        for _attempt in range(3):
+            assert (
+                blocked_facade.drain_current_only_maintenance(30_000_000)
+                is VNextCurrentOnlyMaintenanceOutcome.BLOCKED
+            )
+            assert connector.fetch_one("PRAGMA foreign_keys") == (1,)
+            assert connector.fetch_all("PRAGMA foreign_key_check") == []
+        assert (
+            connector.fetch_one(
+                "SELECT COUNT(*) FROM operational_maintenance_gate_generations"
+            )
+            == generation_count
+        )
+
+        seed_publication_finalization(
+            connector,
+            receipt_id=b"s" * 16,
+            cursor=b"",
+            processed_count=0,
+            finalized_at=6_000_000,
+        )
+        assert connector.fetch_one("PRAGMA foreign_keys") == (1,)
+        assert connector.fetch_all("PRAGMA foreign_key_check") == []
+        for table in _CATALOG_PUBLICATION_PAYLOAD_TABLES:
+            assert (
+                connector.fetch_one(f"SELECT COUNT(*) FROM {table} WHERE revision = 1")[
+                    0
+                ]
+                > 0
+            )
+            assert (
+                connector.fetch_one(f"SELECT COUNT(*) FROM {table} WHERE revision = 2")[
+                    0
+                ]
+                == 0
+            )
+    finally:
+        connector.close()
+
+    assert admin.check().state == "READY"
+    facade = VNextIngestFacade(config, clock=lambda: 7_000_000)
+    with SQLiteConnector(str(database_path)) as inspection:
+        assert inspection.fetch_one(
+            "SELECT COUNT(*) FROM operational_cleanup_jobs WHERE state = 'OPEN'"
+        ) == (0,)
+    # Actionable old payload fences a new ingest even before the first shard
+    # job opens; otherwise a bounded attempt that just completed one shard
+    # could recreate a predecessor pin to a partially reclaimed revision.
+    assert facade.try_claim_ingest(True, 30_000_000) is None
+    with SQLiteConnector(str(database_path)) as inspection:
+        for table in (
+            "operational_maintenance_gate_holders",
+            "operational_maintenance_gate_owners",
+            "operational_ingest_generation_owners",
+        ):
+            assert inspection.fetch_one(f"SELECT COUNT(*) FROM {table}") == (0,)
+
+    attempts = [facade.drain_current_only_maintenance(30_000_000)]
+    assert attempts == [VNextCurrentOnlyMaintenanceOutcome.PROGRESSED]
+    with SQLiteConnector(str(database_path)) as inspection:
+        assert inspection.fetch_one(
+            "SELECT COUNT(*) FROM operational_cleanup_jobs WHERE state = 'OPEN'"
+        ) == (1,)
+
+    # A bounded attempt releases EXCLUSIVE while retaining its durable OPEN
+    # checkpoint.  A tentative SHARED ingest claim must atomically roll back
+    # until that interrupted, partially destructive cycle is complete.
+    assert facade.try_claim_ingest(True, 30_000_000) is None
+    with SQLiteConnector(str(database_path)) as inspection:
+        for table in (
+            "operational_maintenance_gate_holders",
+            "operational_maintenance_gate_owners",
+            "operational_ingest_generation_owners",
+        ):
+            assert inspection.fetch_one(f"SELECT COUNT(*) FROM {table}") == (0,)
+
+    for _attempt in range(64):
+        attempts.append(facade.drain_current_only_maintenance(30_000_000))
+        with SQLiteConnector(str(database_path)) as inspection:
+            assert inspection.fetch_one("PRAGMA foreign_keys") == (1,)
+            assert inspection.fetch_all("PRAGMA foreign_key_check") == []
+        if attempts[-1] is VNextCurrentOnlyMaintenanceOutcome.DONE:
+            break
+    assert attempts[-1] is VNextCurrentOnlyMaintenanceOutcome.DONE
+    session = facade.try_claim_ingest(True, 30_000_000)
+    assert session is not None
+    facade.complete_ingest(session)
+
+    catalog = VNextCatalogFacade(config)
+    current = catalog.get_catalog_revision()
+    assert current.revision == 2
+    assert catalog.list_publications(revision=current).total == 0
+    with pytest.raises(CatalogRevisionNotFoundError):
+        catalog.list_publications(revision=1)
+    assert admin.check().state == "READY"
+
+    connector = SQLiteConnector(str(database_path))
+    connector.connect()
+    try:
+        assert connector.fetch_one("PRAGMA foreign_keys") == (1,)
+        assert connector.fetch_all("PRAGMA foreign_key_check") == []
+        for table in _CATALOG_PUBLICATION_PAYLOAD_TABLES:
+            assert connector.fetch_one(
+                f"SELECT COUNT(*) FROM {table} WHERE revision = 1"
+            ) == (0,)
+            assert (
+                connector.fetch_one(f"SELECT COUNT(*) FROM {table} WHERE revision = 2")[
+                    0
+                ]
+                == 0
+            )
+        assert connector.fetch_one(
+            "SELECT snapshot_manifest_sha256 "
+            "FROM catalog_source_revision_snapshot_manifests "
+            "WHERE source_revision = 1"
+        ) == (values["snapshot_manifest"],)
+        assert connector.fetch_one(
+            "SELECT snapshot_manifest_sha256 "
+            "FROM catalog_source_revision_snapshot_manifests "
+            "WHERE source_revision = 2"
+        ) == (current_snapshot,)
+        for value in old_only_canonical_values:
+            _assert_canonical_value_storage(
+                connector,
+                value_sha256=value,
+                root_page_sha256=old_only_root_pages[value],
+                present=False,
+            )
+        _assert_canonical_value_storage(
+            connector,
+            value_sha256=current_snapshot,
+            root_page_sha256=current_snapshot_root_page,
+            present=True,
+        )
+        assert (
+            connector.fetch_one(
+                "SELECT snapshot_manifest_sha256 "
+                "FROM catalog_source_snapshot_manifest_identity_anchors "
+                "WHERE snapshot_manifest_sha256 = %s",
+                (values["snapshot_manifest"],),
+            )
+            == ()
+        )
+        assert connector.fetch_one(
+            "SELECT snapshot_manifest_sha256 "
+            "FROM catalog_source_snapshot_manifest_identity_anchors "
+            "WHERE snapshot_manifest_sha256 = %s",
+            (current_snapshot,),
+        ) == (current_snapshot,)
+        assert connector.fetch_all("SELECT * FROM catalog_display_title_choices") == []
+        assert connector.fetch_all("SELECT * FROM catalog_title_sorts") == []
+        assert (
+            connector.fetch_one(
+                "SELECT artifact_sha256 FROM catalog_artifact_blobs "
+                "WHERE artifact_sha256 = %s",
+                (artifact_values["artifact_sha256"],),
+            )
+            == ()
+        )
+        assert (
+            connector.fetch_one(
+                "SELECT artifact_semantics_sha256 "
+                "FROM catalog_artifact_semantic_inputs "
+                "WHERE artifact_semantics_sha256 = %s",
+                (artifact_values["semantics"],),
+            )
+            == ()
+        )
+        for table in (
+            "catalog_publication_identities",
+            "catalog_gallery_identities",
+            "catalog_gallery_source_name_accesses",
+            "catalog_source_gallery_name_gids",
+            "catalog_gallery_upload_times",
+            "catalog_source_locator_identity",
+        ):
+            assert connector.fetch_one(f"SELECT COUNT(*) FROM {table}") == (0,)
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM catalog_source_scope_anchors"
+        ) == (0,)
+        assert connector.fetch_one("SELECT COUNT(*) FROM catalog_tag_term_anchors") == (
+            0,
+        )
+        assert connector.fetch_one(
+            "SELECT publication_count FROM catalog_revision_publication_counts "
+            "WHERE revision = 1"
+        ) == (1,)
+        assert connector.fetch_one(
+            "SELECT snapshot_manifest_sha256 "
+            "FROM catalog_source_revision_snapshot_manifests "
+            "WHERE source_revision = 1"
+        ) == (values["snapshot_manifest"],)
+        assert connector.fetch_one(
+            "SELECT snapshot_manifest_sha256 "
+            "FROM catalog_source_revision_snapshot_manifests "
+            "WHERE source_revision = 2"
+        ) == (current_snapshot,)
+        assert connector.fetch_one(
+            "SELECT receipt_id FROM catalog_publication_commit_head_receipts "
+            "WHERE channel = %s",
+            (b"default",),
+        ) == (b"s" * 16,)
+        assert connector.fetch_one(
+            "SELECT revision FROM catalog_publication_commit_catalog_revisions "
+            "WHERE receipt_id = %s",
+            (b"r" * 16,),
+        ) == (1,)
+    finally:
+        connector.close()

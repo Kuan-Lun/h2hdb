@@ -3500,26 +3500,11 @@ def _insert_observation_stat(
     file_count: int,
     byte_count: int,
 ) -> None:
-    key = (gallery_id, observation_id)
     connector.execute(
-        "INSERT INTO catalog_gallery_observation_stat_anchors "
-        "(gallery_id, observation_id) VALUES (%s, %s)",
-        key,
-    )
-    connector.execute(
-        "INSERT INTO catalog_gallery_observation_stat_file_counts "
-        "(gallery_id, observation_id, file_count) VALUES (%s, %s, %s)",
-        (*key, file_count),
-    )
-    connector.execute(
-        "INSERT INTO catalog_gallery_observation_stat_byte_counts "
-        "(gallery_id, observation_id, byte_count) VALUES (%s, %s, %s)",
-        (*key, byte_count),
-    )
-    connector.execute(
-        "INSERT INTO catalog_gallery_observation_stat_seals "
-        "(gallery_id, observation_id) VALUES (%s, %s)",
-        key,
+        "INSERT INTO catalog_gallery_observation_stat "
+        "(gallery_id, observation_id, file_count, byte_count) "
+        "VALUES (%s, %s, %s, %s)",
+        (gallery_id, observation_id, file_count, byte_count),
     )
 
 

@@ -4133,12 +4133,9 @@ def _iter_snapshot_galleries(
             "JOIN catalog_gallery_observation_metadata AS metadata "
             "ON metadata.gallery_id = member.gallery_id "
             "AND metadata.observation_id = member.observation_id "
-            "JOIN catalog_gallery_observation_scan_seals AS scan_seal "
-            "ON scan_seal.gallery_id = member.gallery_id "
-            "AND scan_seal.observation_id = member.observation_id "
-            "JOIN catalog_gallery_observation_scan_source_file_counts AS scan_count "
-            "ON scan_count.gallery_id = scan_seal.gallery_id "
-            "AND scan_count.observation_id = scan_seal.observation_id "
+            "JOIN catalog_gallery_observation_scans AS scan_count "
+            "ON scan_count.gallery_id = member.gallery_id "
+            "AND scan_count.observation_id = member.observation_id "
             "WHERE member.build_id = %s"
             + predicate
             + " ORDER BY identity.gallery_key LIMIT %s",
@@ -7234,26 +7231,16 @@ def _content_candidate_validation_keys(
     after: int | None,
     limit: int,
 ) -> list[tuple[Any, ...]]:
-    shadow_tables = (
-        "catalog_a_content_candidate_shadow_anchors",
-        "catalog_a_content_candidate_shadow_contents",
-        "catalog_a_content_candidate_shadow_not_uploaded",
-        "catalog_a_content_candidate_shadow_title_counts",
-        "catalog_a_content_candidate_shadow_download_times",
-        "catalog_a_content_candidate_shadow_seals",
-    )
     subqueries = [
         "SELECT gallery_id FROM catalog_source_build_galleries WHERE build_id = %s",
-        *(
-            f"SELECT gallery_id FROM {table} WHERE analysis_id = %s"
-            for table in shadow_tables
-        ),
+        "SELECT gallery_id FROM catalog_analysis_content_owner_candidate_shadows "
+        "WHERE analysis_id = %s",
         "SELECT gallery_id FROM catalog_analysis_content_owner_candidate_tombstones "
         "WHERE analysis_id = %s",
     ]
     parameters: list[Any] = [
         authority.build_id,
-        *(authority.analysis_id for _table in shadow_tables),
+        authority.analysis_id,
         authority.analysis_id,
     ]
     if authority.baseline_analysis_id is not None:
@@ -7436,25 +7423,18 @@ def _content_owner_validation_keys(
     after: bytes | None,
     limit: int,
 ) -> list[tuple[Any, ...]]:
-    shadow_tables = (
-        "catalog_a_content_owner_shadow_anchors",
-        "catalog_a_content_owner_shadow_galleries",
-        "catalog_a_content_owner_shadow_seals",
-    )
     subqueries = [
         "SELECT content_sha256 FROM "
         "catalog_analysis_content_owner_candidate_resolved "
         "WHERE analysis_id = %s",
-        *(
-            f"SELECT content_sha256 FROM {table} WHERE analysis_id = %s"
-            for table in shadow_tables
-        ),
+        "SELECT content_sha256 FROM catalog_analysis_content_owner_shadows "
+        "WHERE analysis_id = %s",
         "SELECT content_sha256 FROM catalog_analysis_content_owner_tombstones "
         "WHERE analysis_id = %s",
     ]
     parameters: list[Any] = [
         authority.analysis_id,
-        *(authority.analysis_id for _table in shadow_tables),
+        authority.analysis_id,
         authority.analysis_id,
     ]
     if authority.baseline_analysis_id is not None:

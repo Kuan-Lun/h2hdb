@@ -127,7 +127,9 @@ def test_generated_coverage_is_exact_and_excludes_control_and_stubs() -> None:
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
-def test_generated_metadata_view_is_a_sealed_vertical_join(backend: str) -> None:
+def test_generated_metadata_view_joins_local_time_and_global_gid_authority(
+    backend: str,
+) -> None:
     payload = ARTIFACT_DATA["backends"][backend]
     metadata = next(
         relation
@@ -137,37 +139,66 @@ def test_generated_metadata_view_is_a_sealed_vertical_join(backend: str) -> None
     assert metadata["kind"] == "view"
     assert metadata["table"] == "catalog_gallery_observation_metadata"
     assert metadata["view_dependencies"] == (
-        "gallery_observation_metadata_anchor",
-        "gallery_observation_metadata_seal",
+        "gallery_observation_metadata_local",
         "gallery_source_name_access",
         "source_gallery_name_gid",
         "gallery_upload_time",
-        "gallery_observation_download_time",
-        "gallery_observation_modified_time",
     )
     statements = dict(payload["slices"])["relation:gallery_observation_metadata"]
     assert len(statements) == 1
     _statement_id, object_kind, object_name, sql = statements[0]
     assert object_kind == "view"
     assert object_name == "catalog_gallery_observation_metadata"
-    assert "catalog_gallery_observation_metadata_seals" in sql
+    assert "catalog_gallery_observation_metadata_locals" in sql
     assert "catalog_gallery_source_name_accesses" in sql
     assert "catalog_source_gallery_name_gids" in sql
     assert "catalog_gallery_upload_times" in sql
-    assert "catalog_gallery_observation_modified_times" in sql
+    quote = '"' if backend == "sqlite" else "`"
+    assert f"local.{quote}download_time{quote}" in sql
+    assert f"local.{quote}modified_time{quote}" in sql
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
 @pytest.mark.parametrize(
     ("relation_name", "table"),
     [
+        (
+            "gallery_observation_metadata_local",
+            "catalog_gallery_observation_metadata_locals",
+        ),
+        ("gallery_observation_scan", "catalog_gallery_observation_scans"),
+        (
+            "gallery_observation_directory",
+            "catalog_gallery_observation_directories",
+        ),
+        ("gallery_observation_stat", "catalog_gallery_observation_stat"),
+        ("gallery_manifest", "catalog_gallery_manifests"),
+        ("catalog_publication_storage", "catalog_publication_storage"),
+        (
+            "catalog_publication_occurrence_identity",
+            "catalog_publication_occurrence_identities",
+        ),
+        (
+            "analysis_content_owner_candidate_shadow",
+            "catalog_analysis_content_owner_candidate_shadows",
+        ),
+        (
+            "analysis_content_owner_shadow",
+            "catalog_analysis_content_owner_shadows",
+        ),
+        ("analysis_impacted_content", "catalog_analysis_impacted_content"),
+        ("analysis_impacted_gid_storage", "catalog_analysis_impacted_gid_storage"),
+        (
+            "analysis_impacted_gid_provenance_storage",
+            "catalog_a_impacted_gid_provenance_storage",
+        ),
         ("artifact_semantic_input", "catalog_artifact_semantic_inputs"),
         ("prepared_artifact", "catalog_prepared_artifacts"),
         ("catalog_artifact", "catalog_artifacts"),
         ("artifact_blob", "catalog_artifact_blobs"),
     ],
 )
-def test_generated_recomposed_artifact_relations_are_base_tables(
+def test_generated_recomposed_storage_relations_are_base_tables(
     backend: str,
     relation_name: str,
     table: str,
@@ -182,6 +213,21 @@ def test_generated_recomposed_artifact_relations_are_base_tables(
     statements = dict(payload["slices"])[f"relation:{relation_name}"]
     assert statements[0][1:3] == ("table", table)
     assert all(statement[1] in {"table", "index"} for statement in statements)
+
+
+def test_generated_mariadb_impacted_gid_view_models_min_metadata_nullability() -> None:
+    payload = ARTIFACT_DATA["backends"]["mariadb"]
+    relation = next(
+        value
+        for value in payload["relations"]
+        if value["relation"] == "analysis_impacted_gid"
+    )
+    witness_gallery_id = next(
+        column for column in relation["columns"] if column[0] == "witness_gallery_id"
+    )
+    assert witness_gallery_id[2:] == ("BIGINT UNSIGNED", True, None)
+    sql = dict(payload["slices"])["relation:analysis_impacted_gid"][0][3]
+    assert "MIN(provenance.`gallery_id`)" in sql
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
@@ -241,56 +287,6 @@ def test_generated_batch7_artifact_delta_views_use_occurrences_and_inputs(
                 "catalog_source_build_discovery_gallery_counts",
                 "catalog_source_build_discovery_tree_observation_sha256s",
                 "catalog_source_build_discovery_completed_ats",
-            ),
-        ),
-        (
-            "gallery_observation_scan",
-            "catalog_gallery_observation_scans",
-            (
-                "gallery_observation_scan_anchor",
-                "gallery_observation_scan_seal",
-                "gallery_observation_scan_observation_sha256",
-                "gallery_observation_scan_observation_version",
-                "gallery_observation_scan_source_file_count",
-            ),
-            (
-                "catalog_gallery_observation_scan_anchors",
-                "catalog_gallery_observation_scan_seals",
-                "catalog_gallery_observation_scan_observation_sha256s",
-                "catalog_gallery_observation_scan_observation_versions",
-                "catalog_gallery_observation_scan_source_file_counts",
-            ),
-        ),
-        (
-            "gallery_observation_directory",
-            "catalog_gallery_observation_directories",
-            (
-                "gallery_observation_directory_anchor",
-                "gallery_observation_directory_seal",
-                "gallery_observation_directory_entry_count",
-                "gallery_observation_directory_observation_sha256",
-            ),
-            (
-                "catalog_gallery_observation_directory_anchors",
-                "catalog_gallery_observation_directory_seals",
-                "catalog_gallery_observation_directory_entry_counts",
-                "catalog_gallery_observation_directory_observation_sha256s",
-            ),
-        ),
-        (
-            "gallery_observation_stat",
-            "catalog_gallery_observation_stat",
-            (
-                "gallery_observation_stat_anchor",
-                "gallery_observation_stat_seal",
-                "gallery_observation_stat_file_count",
-                "gallery_observation_stat_byte_count",
-            ),
-            (
-                "catalog_gallery_observation_stat_anchors",
-                "catalog_gallery_observation_stat_seals",
-                "catalog_gallery_observation_stat_file_counts",
-                "catalog_gallery_observation_stat_byte_counts",
             ),
         ),
         (
@@ -397,22 +393,6 @@ def test_generated_batch7_artifact_delta_views_use_occurrences_and_inputs(
                 "catalog_build_manifest_file_counts",
                 "catalog_build_manifest_byte_counts",
                 "catalog_source_build_sealed_ats",
-            ),
-        ),
-        (
-            "gallery_manifest",
-            "catalog_gallery_manifests",
-            (
-                "gallery_manifest_anchor",
-                "gallery_manifest_seal",
-                "gallery_manifest_manifest_sha256",
-                "gallery_manifest_computed_at",
-            ),
-            (
-                "catalog_gallery_manifest_anchors",
-                "catalog_gallery_manifest_seals",
-                "catalog_gallery_manifest_manifest_sha256s",
-                "catalog_gallery_manifest_computed_ats",
             ),
         ),
         (

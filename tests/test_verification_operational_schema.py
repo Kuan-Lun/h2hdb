@@ -275,8 +275,11 @@ def test_maintenance_gate_holder_allows_one_owner_to_hold_every_slot() -> None:
             "every canonical-value allocation, upload-claim, bounded page, and "
             "final-seal transaction holds and rechecks one shared maintenance "
             "slot; CANONICAL_VALUE cleanup holds the exclusive generation for "
-            "its complete multi-phase cycle, so no live producer can claim, "
-            "write, or reseal between destructive phases"
+            "its complete multi-phase cycle and rechecks current-head, live "
+            "source-working analysis, live or uncommitted publication-candidate, "
+            "and upload semantic pins before every bounded destructive batch, so "
+            "no live producer can claim, write, reseal, or lose its canonical "
+            "snapshot between phases"
         ),
         "history_cleanup_rule": (
             "under a newer live exclusive gate generation, keyset-delete at most "
@@ -1200,7 +1203,9 @@ def test_operational_machine_obligations_and_genesis_are_closed_world() -> None:
     )
     assert machine.epoch_owned_relation == "schema_epoch_control"
     assert len(machine.absent_relations) == 68
-    assert len(machine.seeds) == 115
+    with PHYSICAL_PATH.open("rb") as stream:
+        physical_document = tomllib.load(stream)
+    assert len(machine.seeds) == len(physical_document.get("bootstrap_seed", ()))
     assert {
         value.seed_id
         for value in machine.seeds
@@ -1265,10 +1270,25 @@ def test_cleanup_fk_descendant_and_root_codec_mutations_fail_closed() -> None:
     next(
         phase
         for phase in observation["phases"]
-        if "gallery_observation_modified_time" in phase["relations"]
-    )["relations"].remove("gallery_observation_modified_time")
+        if "gallery_observation_metadata_local" in phase["relations"]
+    )["relations"].remove("gallery_observation_metadata_local")
     with pytest.raises(ValueError, match="phase ownership"):
         operational_refinement.check_cleanup_reachability_v1(missing_child, physical)
+
+    missing_reserved_projection = deepcopy(logical)
+    candidate = next(
+        value
+        for value in missing_reserved_projection["cleanup_target"]
+        if value["target_kind"] == "PUBLICATION_CANDIDATE"
+    )
+    candidate["phases"][0]["relations"].remove("catalog_publication_storage")
+    with pytest.raises(
+        ValueError,
+        match="phase ownership|uncommitted reserved projection",
+    ):
+        operational_refinement.check_cleanup_reachability_v1(
+            missing_reserved_projection, physical
+        )
 
     invalid_key = deepcopy(logical)
     observation = next(
@@ -1299,6 +1319,7 @@ def test_cleanup_fk_descendant_and_root_codec_mutations_fail_closed() -> None:
     assert upload_time["retention_roots"] == [
         "source_gallery_name_gid.gid",
         "publication_identity.gid",
+        "analysis_impacted_gid_storage.gid",
     ]
     upload_time["retained_fk_edges"] = [
         edge

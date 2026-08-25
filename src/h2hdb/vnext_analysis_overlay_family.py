@@ -1,11 +1,10 @@
-"""Physical sealed-family protocols for analysis overlays and provenance.
+"""Atomic BCNF storage protocols for analysis overlays and provenance.
 
-The public analysis relations are views.  Writers use these helpers to insert
-the narrow physical members in dependency order, with the completion seal
-last.  Readers reject partial families instead of silently treating them as
-absent.  Impacted-key provenance is append-only: galleries are processed in
-strictly increasing order, so the first gallery for a key is its immutable
-global-minimum witness.
+File-decision shadows remain a sealed narrow family.  Gallery-scaled content
+candidate, content-owner, and impacted-key facts are atomic base rows.
+Impacted-key provenance is append-only: galleries are processed in strictly
+increasing order, so the first gallery for a key is its immutable global-minimum
+witness.
 """
 
 from __future__ import annotations
@@ -64,30 +63,51 @@ _FILE_ARTIST = "catalog_a_file_decision_shadow_artists"
 _FILE_GALLERY_ARTIST_MAX = "catalog_a_file_decision_shadow_gallery_artist_max"
 _FILE_SEAL = "catalog_a_file_decision_shadow_seals"
 
-_CANDIDATE_ANCHOR = "catalog_a_content_candidate_shadow_anchors"
-_CANDIDATE_CONTENT = "catalog_a_content_candidate_shadow_contents"
-_CANDIDATE_NOT_UPLOADED = "catalog_a_content_candidate_shadow_not_uploaded"
-_CANDIDATE_TITLE_COUNT = "catalog_a_content_candidate_shadow_title_counts"
-_CANDIDATE_DOWNLOAD_TIME = "catalog_a_content_candidate_shadow_download_times"
-_CANDIDATE_SEAL = "catalog_a_content_candidate_shadow_seals"
+_CANDIDATE = "catalog_analysis_content_owner_candidate_shadows"
+_OWNER = "catalog_analysis_content_owner_shadows"
 
-_OWNER_ANCHOR = "catalog_a_content_owner_shadow_anchors"
-_OWNER_GALLERY = "catalog_a_content_owner_shadow_galleries"
-_OWNER_SEAL = "catalog_a_content_owner_shadow_seals"
-
-_IMPACTED_CONTENT_ANCHOR = "catalog_a_impacted_content_anchors"
+_IMPACTED_CONTENT = "catalog_analysis_impacted_content"
 _IMPACTED_CONTENT_PROVENANCE = "catalog_a_impacted_content_provenance"
-_IMPACTED_CONTENT_WITNESS = "catalog_a_impacted_content_witnesses"
-_IMPACTED_CONTENT_SEAL = "catalog_a_impacted_content_seals"
 
-_IMPACTED_GID_ANCHOR = "catalog_a_impacted_gid_anchors"
+_IMPACTED_GID = "catalog_analysis_impacted_gid"
 _IMPACTED_GID_PROVENANCE = "catalog_a_impacted_gid_provenance"
-_IMPACTED_GID_WITNESS = "catalog_a_impacted_gid_witnesses"
-_IMPACTED_GID_SEAL = "catalog_a_impacted_gid_seals"
+_IMPACTED_GID_STORAGE = "catalog_analysis_impacted_gid_storage"
+_IMPACTED_GID_PROVENANCE_STORAGE = "catalog_a_impacted_gid_provenance_storage"
 
 _MAX_PROVENANCE_PAGE_ROWS = 256
 _PROVENANCE_QUERY_LIMIT = _MAX_PROVENANCE_PAGE_ROWS + 1
 _PROVENANCE_PAGE_TOKEN = object()
+
+
+def _require_gallery_gid_entries(
+    connector: Any,
+    entries: Sequence[tuple[int, int]],
+) -> None:
+    """Validate every proposed GID against the immutable gallery-name chain."""
+
+    if not entries:
+        return
+    gallery_ids = tuple(gallery for gallery, _gid in entries)
+    placeholders = ", ".join("%s" for _gallery in gallery_ids)
+    rows = connector.fetch_all(
+        "SELECT access.gallery_id, name_gid.gid "
+        "FROM catalog_gallery_source_name_accesses AS access "
+        "JOIN catalog_source_gallery_name_gids AS name_gid "
+        "ON name_gid.source_gallery_name = access.source_gallery_name "
+        f"WHERE access.gallery_id IN ({placeholders}) "
+        "ORDER BY access.gallery_id",
+        gallery_ids,
+    )
+    expected = tuple(sorted(entries))
+    if len(rows) != len(expected) or any(len(row) != 2 for row in rows):
+        raise AnalysisFamilyPartialError(
+            "impacted GID provenance has an incomplete gallery identity chain"
+        )
+    actual = tuple((row[0], row[1]) for row in rows)
+    if actual != expected:
+        raise AnalysisFamilyCollisionError(
+            "impacted GID provenance disagrees with the gallery identity chain"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,62 +370,25 @@ def load_analysis_content_owner_candidate_shadow_family(
 ) -> AnalysisContentOwnerCandidateShadowFamily | None:
     analysis = require_uuid16(analysis_id, field="candidate shadow analysis_id")
     gallery = require_positive_int63(gallery_id, field="candidate shadow gallery_id")
-    members = (
-        _CANDIDATE_ANCHOR,
-        _CANDIDATE_CONTENT,
-        _CANDIDATE_NOT_UPLOADED,
-        _CANDIDATE_TITLE_COUNT,
-        _CANDIDATE_DOWNLOAD_TIME,
-        _CANDIDATE_SEAL,
-    )
-    key_union = " UNION ".join(
-        f"SELECT analysis_id, gallery_id FROM {table} "
-        "WHERE analysis_id = %s AND gallery_id = %s"
-        for table in members
-    )
     row = connector.fetch_one(
-        "WITH family_keys(analysis_id, gallery_id) AS ("
-        + key_union
-        + ") SELECT anchor.analysis_id, content.analysis_id, "
-        "content.content_sha256, preference.analysis_id, "
-        "preference.prefer_not_already_uploaded, title.analysis_id, "
-        "title.title_scalar_count, download.analysis_id, download.download_time, "
-        "seal.analysis_id FROM family_keys AS keyset "
-        f"LEFT JOIN {_CANDIDATE_ANCHOR} AS anchor "
-        "ON anchor.analysis_id = keyset.analysis_id "
-        "AND anchor.gallery_id = keyset.gallery_id "
-        f"LEFT JOIN {_CANDIDATE_CONTENT} AS content "
-        "ON content.analysis_id = keyset.analysis_id "
-        "AND content.gallery_id = keyset.gallery_id "
-        f"LEFT JOIN {_CANDIDATE_NOT_UPLOADED} AS preference "
-        "ON preference.analysis_id = keyset.analysis_id "
-        "AND preference.gallery_id = keyset.gallery_id "
-        f"LEFT JOIN {_CANDIDATE_TITLE_COUNT} AS title "
-        "ON title.analysis_id = keyset.analysis_id "
-        "AND title.gallery_id = keyset.gallery_id "
-        f"LEFT JOIN {_CANDIDATE_DOWNLOAD_TIME} AS download "
-        "ON download.analysis_id = keyset.analysis_id "
-        "AND download.gallery_id = keyset.gallery_id "
-        f"LEFT JOIN {_CANDIDATE_SEAL} AS seal "
-        "ON seal.analysis_id = keyset.analysis_id "
-        "AND seal.gallery_id = keyset.gallery_id",
-        (analysis, gallery) * len(members),
+        f"SELECT content_sha256, prefer_not_already_uploaded, "
+        f"title_scalar_count, download_time FROM {_CANDIDATE} "
+        "WHERE analysis_id = %s AND gallery_id = %s",
+        (analysis, gallery),
     )
     if not row:
         return None
     exact = tuple(row)
-    if len(exact) != 10 or any(
-        exact[index] != analysis for index in (0, 1, 3, 5, 7, 9)
-    ):
-        raise AnalysisFamilyPartialError("content-candidate shadow family is partial")
     try:
+        if len(exact) != 4:
+            raise ValueError("content-candidate shadow row has an invalid shape")
         return AnalysisContentOwnerCandidateShadowFamily(
             analysis,
             gallery,
+            exact[0],
+            exact[1],
             exact[2],
-            exact[4],
-            exact[6],
-            exact[8],
+            exact[3],
         )
     except (TypeError, ValueError) as error:
         raise AnalysisFamilyCollisionError(
@@ -430,30 +413,19 @@ def ensure_analysis_content_owner_candidate_shadow_family(
                 "content-candidate shadow replay changed"
             )
         return existing, False
-    key = (family.analysis_id, family.gallery_id)
     connector.execute(
-        f"INSERT INTO {_CANDIDATE_ANCHOR} " "(analysis_id, gallery_id) VALUES (%s, %s)",
-        key,
-    )
-    facts = (
-        (_CANDIDATE_CONTENT, "content_sha256", family.content_sha256),
+        f"INSERT INTO {_CANDIDATE} "
+        "(analysis_id, gallery_id, content_sha256, "
+        "prefer_not_already_uploaded, title_scalar_count, download_time) "
+        "VALUES (%s, %s, %s, %s, %s, %s)",
         (
-            _CANDIDATE_NOT_UPLOADED,
-            "prefer_not_already_uploaded",
+            family.analysis_id,
+            family.gallery_id,
+            family.content_sha256,
             family.prefer_not_already_uploaded,
+            family.title_scalar_count,
+            family.download_time,
         ),
-        (_CANDIDATE_TITLE_COUNT, "title_scalar_count", family.title_scalar_count),
-        (_CANDIDATE_DOWNLOAD_TIME, "download_time", family.download_time),
-    )
-    for table, column, value in facts:
-        connector.execute(
-            f"INSERT INTO {table} (analysis_id, gallery_id, {column}) "
-            "VALUES (%s, %s, %s)",
-            (*key, value),
-        )
-    connector.execute(
-        f"INSERT INTO {_CANDIDATE_SEAL} " "(analysis_id, gallery_id) VALUES (%s, %s)",
-        key,
     )
     return family, True
 
@@ -467,33 +439,17 @@ def load_analysis_content_owner_shadow_family(
     analysis = require_uuid16(analysis_id, field="owner shadow analysis_id")
     content = require_digest32(content_sha256, field="owner shadow content_sha256")
     row = connector.fetch_one(
-        "WITH family_keys(analysis_id, content_sha256) AS ("
-        f"SELECT analysis_id, content_sha256 FROM {_OWNER_ANCHOR} "
-        "WHERE analysis_id = %s AND content_sha256 = %s UNION "
-        f"SELECT analysis_id, content_sha256 FROM {_OWNER_GALLERY} "
-        "WHERE analysis_id = %s AND content_sha256 = %s UNION "
-        f"SELECT analysis_id, content_sha256 FROM {_OWNER_SEAL} "
-        "WHERE analysis_id = %s AND content_sha256 = %s) "
-        "SELECT anchor.analysis_id, owner.analysis_id, owner.owner_gallery_id, "
-        "seal.analysis_id FROM family_keys AS keyset "
-        f"LEFT JOIN {_OWNER_ANCHOR} AS anchor "
-        "ON anchor.analysis_id = keyset.analysis_id "
-        "AND anchor.content_sha256 = keyset.content_sha256 "
-        f"LEFT JOIN {_OWNER_GALLERY} AS owner "
-        "ON owner.analysis_id = keyset.analysis_id "
-        "AND owner.content_sha256 = keyset.content_sha256 "
-        f"LEFT JOIN {_OWNER_SEAL} AS seal "
-        "ON seal.analysis_id = keyset.analysis_id "
-        "AND seal.content_sha256 = keyset.content_sha256",
-        (analysis, content) * 3,
+        f"SELECT owner_gallery_id FROM {_OWNER} "
+        "WHERE analysis_id = %s AND content_sha256 = %s",
+        (analysis, content),
     )
     if not row:
         return None
     exact = tuple(row)
-    if len(exact) != 4 or any(exact[index] != analysis for index in (0, 1, 3)):
-        raise AnalysisFamilyPartialError("content-owner shadow family is partial")
     try:
-        return AnalysisContentOwnerShadowFamily(analysis, content, exact[2])
+        if len(exact) != 1:
+            raise ValueError("content-owner shadow row has an invalid shape")
+        return AnalysisContentOwnerShadowFamily(analysis, content, exact[0])
     except (TypeError, ValueError) as error:
         raise AnalysisFamilyCollisionError(
             "content-owner shadow family contains invalid facts"
@@ -515,19 +471,10 @@ def ensure_analysis_content_owner_shadow_family(
         if existing != family:
             raise AnalysisFamilyCollisionError("content-owner shadow replay changed")
         return existing, False
-    key = (family.analysis_id, family.content_sha256)
     connector.execute(
-        f"INSERT INTO {_OWNER_ANCHOR} " "(analysis_id, content_sha256) VALUES (%s, %s)",
-        key,
-    )
-    connector.execute(
-        f"INSERT INTO {_OWNER_GALLERY} "
+        f"INSERT INTO {_OWNER} "
         "(analysis_id, content_sha256, owner_gallery_id) VALUES (%s, %s, %s)",
-        (*key, family.owner_gallery_id),
-    )
-    connector.execute(
-        f"INSERT INTO {_OWNER_SEAL} " "(analysis_id, content_sha256) VALUES (%s, %s)",
-        key,
+        (family.analysis_id, family.content_sha256, family.owner_gallery_id),
     )
     return family, True
 
@@ -538,54 +485,31 @@ def _load_impacted_key_family(
     analysis_id: bytes,
     key: bytes | int,
     key_column: str,
-    anchor_table: str,
+    impacted_table: str,
     provenance_table: str,
-    witness_table: str,
-    seal_table: str,
     label: str,
 ) -> tuple[int, int] | None:
     row = connector.fetch_one(
-        "WITH family_keys(analysis_id, key_value) AS ("
-        f"SELECT analysis_id, {key_column} FROM {anchor_table} "
-        f"WHERE analysis_id = %s AND {key_column} = %s UNION "
-        f"SELECT analysis_id, {key_column} FROM {provenance_table} "
-        f"WHERE analysis_id = %s AND {key_column} = %s UNION "
-        f"SELECT analysis_id, {key_column} FROM {witness_table} "
-        f"WHERE analysis_id = %s AND {key_column} = %s UNION "
-        f"SELECT analysis_id, {key_column} FROM {seal_table} "
-        f"WHERE analysis_id = %s AND {key_column} = %s), "
-        "minimums(analysis_id, key_value, minimum_gallery_id) AS ("
-        f"SELECT analysis_id, {key_column}, gallery_id FROM {provenance_table} "
-        f"WHERE analysis_id = %s AND {key_column} = %s "
-        "ORDER BY gallery_id LIMIT 1) "
-        "SELECT anchor.analysis_id, witness.analysis_id, "
-        "witness.witness_gallery_id, seal.analysis_id, minimums.minimum_gallery_id "
-        "FROM family_keys AS keyset "
-        f"LEFT JOIN {anchor_table} AS anchor "
-        "ON anchor.analysis_id = keyset.analysis_id "
-        f"AND anchor.{key_column} = keyset.key_value "
-        f"LEFT JOIN {witness_table} AS witness "
-        "ON witness.analysis_id = keyset.analysis_id "
-        f"AND witness.{key_column} = keyset.key_value "
-        f"LEFT JOIN {seal_table} AS seal "
-        "ON seal.analysis_id = keyset.analysis_id "
-        f"AND seal.{key_column} = keyset.key_value "
-        "LEFT JOIN minimums ON minimums.analysis_id = keyset.analysis_id "
-        "AND minimums.key_value = keyset.key_value",
-        (analysis_id, key) * 5,
+        f"SELECT impacted.witness_gallery_id, (SELECT MIN(provenance.gallery_id) "
+        f"FROM {provenance_table} AS provenance "
+        "WHERE provenance.analysis_id = impacted.analysis_id "
+        f"AND provenance.{key_column} = impacted.{key_column}) "
+        f"FROM {impacted_table} AS impacted WHERE impacted.analysis_id = %s "
+        f"AND impacted.{key_column} = %s",
+        (analysis_id, key),
     )
     if not row:
         return None
     exact = tuple(row)
-    if len(exact) != 5 or any(exact[index] != analysis_id for index in (0, 1, 3)):
-        raise AnalysisFamilyPartialError(f"{label} key family is partial")
+    if len(exact) != 2:
+        raise AnalysisFamilyPartialError(f"{label} key row has an invalid shape")
     try:
         witness = require_positive_int63(
-            exact[2],
+            exact[0],
             field=f"{label} witness_gallery_id",
         )
         minimum = require_positive_int63(
-            exact[4],
+            exact[1],
             field=f"{label} minimum provenance gallery_id",
         )
     except (TypeError, ValueError) as error:
@@ -612,10 +536,8 @@ def load_analysis_impacted_content_key_family(
         analysis_id=analysis,
         key=content,
         key_column="content_sha256",
-        anchor_table=_IMPACTED_CONTENT_ANCHOR,
+        impacted_table=_IMPACTED_CONTENT,
         provenance_table=_IMPACTED_CONTENT_PROVENANCE,
-        witness_table=_IMPACTED_CONTENT_WITNESS,
-        seal_table=_IMPACTED_CONTENT_SEAL,
         label="impacted content",
     )
     if loaded is None:
@@ -631,20 +553,31 @@ def load_analysis_impacted_gid_key_family(
 ) -> AnalysisImpactedGidKeyFamily | None:
     analysis = require_uuid16(analysis_id, field="impacted GID analysis_id")
     exact_gid = require_positive_int63(gid, field="impacted gid")
-    loaded = _load_impacted_key_family(
-        connector,
-        analysis_id=analysis,
-        key=exact_gid,
-        key_column="gid",
-        anchor_table=_IMPACTED_GID_ANCHOR,
-        provenance_table=_IMPACTED_GID_PROVENANCE,
-        witness_table=_IMPACTED_GID_WITNESS,
-        seal_table=_IMPACTED_GID_SEAL,
-        label="impacted GID",
+    row = connector.fetch_one(
+        f"SELECT base.analysis_id, (SELECT MIN(provenance.gallery_id) "
+        f"FROM {_IMPACTED_GID_PROVENANCE} AS provenance "
+        "WHERE provenance.analysis_id = base.analysis_id "
+        f"AND provenance.gid = base.gid) FROM {_IMPACTED_GID_STORAGE} AS base "
+        "WHERE base.analysis_id = %s AND base.gid = %s",
+        (analysis, exact_gid),
     )
-    if loaded is None:
+    if not row:
+        orphan = connector.fetch_one(
+            f"SELECT 1 FROM {_IMPACTED_GID_PROVENANCE} "
+            "WHERE analysis_id = %s AND gid = %s LIMIT 1",
+            (analysis, exact_gid),
+        )
+        if orphan:
+            raise AnalysisFamilyPartialError(
+                "impacted GID provenance has no frozen key storage"
+            )
         return None
-    return AnalysisImpactedGidKeyFamily(analysis, exact_gid, loaded[0])
+    if len(row) != 2 or row[0] != analysis or row[1] is None:
+        raise AnalysisFamilyPartialError(
+            "impacted GID key storage has no complete provenance"
+        )
+    witness = require_positive_int63(row[1], field="impacted GID witness_gallery_id")
+    return AnalysisImpactedGidKeyFamily(analysis, exact_gid, witness)
 
 
 def _record_impacted_provenance(
@@ -654,10 +587,8 @@ def _record_impacted_provenance(
     gallery_id: int,
     key: bytes | int,
     key_column: str,
-    anchor_table: str,
+    impacted_table: str,
     provenance_table: str,
-    witness_table: str,
-    seal_table: str,
     existing_witness: int | None,
     label: str,
 ) -> tuple[int, bool]:
@@ -685,22 +616,14 @@ def _record_impacted_provenance(
         return existing_witness, False
 
     connector.execute(
-        f"INSERT INTO {anchor_table} (analysis_id, {key_column}) VALUES (%s, %s)",
-        (analysis_id, key),
-    )
-    connector.execute(
         f"INSERT INTO {provenance_table} "
         f"(analysis_id, gallery_id, {key_column}) VALUES (%s, %s, %s)",
         (analysis_id, gallery_id, key),
     )
     connector.execute(
-        f"INSERT INTO {witness_table} "
+        f"INSERT INTO {impacted_table} "
         f"(analysis_id, {key_column}, witness_gallery_id) VALUES (%s, %s, %s)",
         (analysis_id, key, gallery_id),
-    )
-    connector.execute(
-        f"INSERT INTO {seal_table} (analysis_id, {key_column}) VALUES (%s, %s)",
-        (analysis_id, key),
     )
     return gallery_id, True
 
@@ -729,10 +652,8 @@ def record_analysis_impacted_content_provenance(
         gallery_id=gallery,
         key=content,
         key_column="content_sha256",
-        anchor_table=_IMPACTED_CONTENT_ANCHOR,
+        impacted_table=_IMPACTED_CONTENT,
         provenance_table=_IMPACTED_CONTENT_PROVENANCE,
-        witness_table=_IMPACTED_CONTENT_WITNESS,
-        seal_table=_IMPACTED_CONTENT_SEAL,
         existing_witness=None if existing is None else existing.witness_gallery_id,
         label="impacted content",
     )
@@ -752,24 +673,44 @@ def record_analysis_impacted_gid_provenance(
         field="impacted GID provenance gallery_id",
     )
     exact_gid = require_positive_int63(gid, field="impacted gid")
+    _require_gallery_gid_entries(connector, ((gallery, exact_gid),))
     existing = load_analysis_impacted_gid_key_family(
         connector,
         analysis_id=analysis,
         gid=exact_gid,
     )
-    witness, created = _record_impacted_provenance(
-        connector,
-        analysis_id=analysis,
-        gallery_id=gallery,
-        key=exact_gid,
-        key_column="gid",
-        anchor_table=_IMPACTED_GID_ANCHOR,
-        provenance_table=_IMPACTED_GID_PROVENANCE,
-        witness_table=_IMPACTED_GID_WITNESS,
-        seal_table=_IMPACTED_GID_SEAL,
-        existing_witness=None if existing is None else existing.witness_gallery_id,
-        label="impacted GID",
+    exact = connector.fetch_one(
+        f"SELECT gid FROM {_IMPACTED_GID_PROVENANCE} "
+        "WHERE analysis_id = %s AND gallery_id = %s",
+        (analysis, gallery),
     )
+    if exact:
+        if exact != (exact_gid,):
+            raise AnalysisFamilyCollisionError(
+                "impacted GID gallery derives a conflicting GID"
+            )
+        if existing is None:
+            raise AnalysisFamilyPartialError(
+                "impacted GID provenance exists without frozen key storage"
+            )
+        return existing, False
+    if existing is not None and gallery <= existing.witness_gallery_id:
+        raise AnalysisFamilyCollisionError(
+            "impacted GID provenance is not strictly after its stable witness"
+        )
+    connector.execute(
+        f"INSERT INTO {_IMPACTED_GID_PROVENANCE_STORAGE} "
+        "(analysis_id, gallery_id) VALUES (%s, %s)",
+        (analysis, gallery),
+    )
+    created = existing is None
+    witness = gallery if existing is None else existing.witness_gallery_id
+    if created:
+        connector.execute(
+            f"INSERT INTO {_IMPACTED_GID_STORAGE} (analysis_id, gid) "
+            "VALUES (%s, %s)",
+            (analysis, exact_gid),
+        )
     return AnalysisImpactedGidKeyFamily(analysis, exact_gid, witness), created
 
 
@@ -779,10 +720,8 @@ def _preflight_impacted_provenance_page(
     analysis_id: bytes,
     entries: Sequence[tuple[int, bytes | int]],
     key_column: str,
-    anchor_table: str,
+    impacted_table: str,
     provenance_table: str,
-    witness_table: str,
-    seal_table: str,
     label: str,
 ) -> dict[bytes | int, int]:
     """Load every existing proposed key family with one bounded set query."""
@@ -792,54 +731,35 @@ def _preflight_impacted_provenance_page(
     keys = tuple(sorted({key for _gallery, key in entries}))
     if len(keys) > _MAX_PROVENANCE_PAGE_ROWS:
         raise ValueError(f"{label} page has too many distinct keys")
-    family_sources = (anchor_table, provenance_table, witness_table, seal_table)
     key_placeholders = ", ".join("%s" for _key in keys)
-    proposed = " UNION ".join(
-        f"SELECT stored.analysis_id, stored.{key_column} FROM {table} AS stored "
-        "WHERE stored.analysis_id = %s "
-        f"AND stored.{key_column} IN ({key_placeholders})"
-        for table in family_sources
-    )
-    parameters: list[Any] = []
-    for _table in family_sources:
-        parameters.extend((analysis_id, *keys))
     page_start = entries[0][0]
-    parameters.extend((page_start, _PROVENANCE_QUERY_LIMIT))
+    parameters: list[Any] = [page_start, analysis_id, *keys, _PROVENANCE_QUERY_LIMIT]
     rows = connector.fetch_all(
-        "WITH proposed(analysis_id, key_value) AS ("
-        + proposed
-        + ") SELECT keyset.key_value, anchor.analysis_id, witness.analysis_id, "
-        "witness.witness_gallery_id, seal.analysis_id, "
+        f"SELECT impacted.{key_column}, impacted.analysis_id, "
+        "impacted.witness_gallery_id, "
         "witness_provenance.analysis_id, CASE WHEN NOT EXISTS ("
         f"SELECT 1 FROM {provenance_table} AS earlier "
-        "WHERE earlier.analysis_id = keyset.analysis_id "
-        f"AND earlier.{key_column} = keyset.key_value "
-        "AND earlier.gallery_id < witness.witness_gallery_id"
+        "WHERE earlier.analysis_id = impacted.analysis_id "
+        f"AND earlier.{key_column} = impacted.{key_column} "
+        "AND earlier.gallery_id < impacted.witness_gallery_id"
         ") THEN 1 ELSE 0 END, CASE WHEN EXISTS ("
         f"SELECT 1 FROM {provenance_table} AS page_or_future "
-        "WHERE page_or_future.analysis_id = keyset.analysis_id "
-        f"AND page_or_future.{key_column} = keyset.key_value "
+        "WHERE page_or_future.analysis_id = impacted.analysis_id "
+        f"AND page_or_future.{key_column} = impacted.{key_column} "
         "AND page_or_future.gallery_id >= %s"
-        ") THEN 1 ELSE 0 END FROM proposed AS keyset "
-        f"LEFT JOIN {anchor_table} AS anchor "
-        "ON anchor.analysis_id = keyset.analysis_id "
-        f"AND anchor.{key_column} = keyset.key_value "
-        f"LEFT JOIN {witness_table} AS witness "
-        "ON witness.analysis_id = keyset.analysis_id "
-        f"AND witness.{key_column} = keyset.key_value "
-        f"LEFT JOIN {seal_table} AS seal "
-        "ON seal.analysis_id = keyset.analysis_id "
-        f"AND seal.{key_column} = keyset.key_value "
+        f") THEN 1 ELSE 0 END FROM {impacted_table} AS impacted "
         f"LEFT JOIN {provenance_table} AS witness_provenance "
-        "ON witness_provenance.analysis_id = keyset.analysis_id "
-        f"AND witness_provenance.{key_column} = keyset.key_value "
-        "AND witness_provenance.gallery_id = witness.witness_gallery_id "
-        "ORDER BY keyset.key_value LIMIT %s",
+        "ON witness_provenance.analysis_id = impacted.analysis_id "
+        f"AND witness_provenance.{key_column} = impacted.{key_column} "
+        "AND witness_provenance.gallery_id = impacted.witness_gallery_id "
+        "WHERE impacted.analysis_id = %s "
+        f"AND impacted.{key_column} IN ({key_placeholders}) "
+        f"ORDER BY impacted.{key_column} LIMIT %s",
         tuple(parameters),
     )
     existing: dict[bytes | int, int] = {}
     for row in rows:
-        if len(row) != 8:
+        if len(row) != 6:
             raise AnalysisFamilyCollisionError(
                 f"{label} preflight family has an invalid shape"
             )
@@ -848,22 +768,22 @@ def _preflight_impacted_provenance_page(
             raise AnalysisFamilyCollisionError(
                 f"{label} preflight escaped its proposed key set"
             )
-        if any(row[index] != analysis_id for index in (1, 2, 4, 5)):
+        if row[1] != analysis_id or row[3] != analysis_id:
             raise AnalysisFamilyPartialError(f"{label} key family is partial")
         try:
             witness = require_positive_int63(
-                row[3],
+                row[2],
                 field=f"{label} preflight witness_gallery_id",
             )
         except (TypeError, ValueError) as error:
             raise AnalysisFamilyPartialError(
                 f"{label} key family has no valid witness"
             ) from error
-        if row[6] != 1:
+        if row[4] != 1:
             raise AnalysisFamilyCollisionError(
                 f"{label} witness is not the global minimum provenance gallery"
             )
-        if row[7] != 0:
+        if row[5] != 0:
             raise AnalysisFamilyCollisionError(
                 f"{label} fresh page overlaps existing or future provenance"
             )
@@ -878,10 +798,8 @@ def _apply_impacted_provenance_page(
     entries: Sequence[tuple[int, bytes | int]],
     existing_witnesses: Sequence[tuple[bytes | int, int]],
     key_column: str,
-    anchor_table: str,
+    impacted_table: str,
     provenance_table: str,
-    witness_table: str,
-    seal_table: str,
     label: str,
 ) -> None:
     normalized = tuple(entries)
@@ -890,25 +808,15 @@ def _apply_impacted_provenance_page(
         witness = existing.get(key)
         if witness is None:
             connector.execute(
-                f"INSERT INTO {anchor_table} (analysis_id, {key_column}) "
-                "VALUES (%s, %s)",
-                (analysis_id, key),
-            )
-            connector.execute(
                 f"INSERT INTO {provenance_table} "
                 f"(analysis_id, gallery_id, {key_column}) VALUES (%s, %s, %s)",
                 (analysis_id, gallery, key),
             )
             connector.execute(
-                f"INSERT INTO {witness_table} "
+                f"INSERT INTO {impacted_table} "
                 f"(analysis_id, {key_column}, witness_gallery_id) "
                 "VALUES (%s, %s, %s)",
                 (analysis_id, key, gallery),
-            )
-            connector.execute(
-                f"INSERT INTO {seal_table} (analysis_id, {key_column}) "
-                "VALUES (%s, %s)",
-                (analysis_id, key),
             )
             existing[key] = gallery
             continue
@@ -946,10 +854,8 @@ def prepare_analysis_impacted_content_provenance_page(
         analysis_id=analysis,
         entries=normalized,
         key_column="content_sha256",
-        anchor_table=_IMPACTED_CONTENT_ANCHOR,
+        impacted_table=_IMPACTED_CONTENT,
         provenance_table=_IMPACTED_CONTENT_PROVENANCE,
-        witness_table=_IMPACTED_CONTENT_WITNESS,
-        seal_table=_IMPACTED_CONTENT_SEAL,
         label="impacted content",
     )
     return AnalysisImpactedContentProvenancePageReceipt(
@@ -979,10 +885,8 @@ def apply_analysis_impacted_content_provenance_page(
         entries=receipt.entries,
         existing_witnesses=receipt.existing_witnesses,
         key_column="content_sha256",
-        anchor_table=_IMPACTED_CONTENT_ANCHOR,
+        impacted_table=_IMPACTED_CONTENT,
         provenance_table=_IMPACTED_CONTENT_PROVENANCE,
-        witness_table=_IMPACTED_CONTENT_WITNESS,
-        seal_table=_IMPACTED_CONTENT_SEAL,
         label="impacted content",
     )
 
@@ -1021,15 +925,18 @@ def prepare_analysis_impacted_gid_provenance_page(
         raise ValueError("impacted GID provenance exceeds one bounded page")
     if tuple(sorted(set(normalized))) != normalized:
         raise ValueError("impacted GID provenance is not an exact ordered set")
+    if len({gallery for gallery, _gid in normalized}) != len(normalized):
+        raise ValueError(
+            "one impacted GID provenance gallery cannot derive multiple GIDs"
+        )
+    _require_gallery_gid_entries(connector, normalized)
     existing = _preflight_impacted_provenance_page(
         connector,
         analysis_id=analysis,
         entries=normalized,
         key_column="gid",
-        anchor_table=_IMPACTED_GID_ANCHOR,
+        impacted_table=_IMPACTED_GID,
         provenance_table=_IMPACTED_GID_PROVENANCE,
-        witness_table=_IMPACTED_GID_WITNESS,
-        seal_table=_IMPACTED_GID_SEAL,
         label="impacted GID",
     )
     return AnalysisImpactedGidProvenancePageReceipt(
@@ -1053,18 +960,41 @@ def apply_analysis_impacted_gid_provenance_page(
     if type(receipt) is not AnalysisImpactedGidProvenancePageReceipt:
         raise TypeError("receipt must be an exact GID provenance page receipt")
     receipt.__post_init__()
-    _apply_impacted_provenance_page(
-        connector,
-        analysis_id=receipt.analysis_id,
-        entries=receipt.entries,
-        existing_witnesses=receipt.existing_witnesses,
-        key_column="gid",
-        anchor_table=_IMPACTED_GID_ANCHOR,
-        provenance_table=_IMPACTED_GID_PROVENANCE,
-        witness_table=_IMPACTED_GID_WITNESS,
-        seal_table=_IMPACTED_GID_SEAL,
-        label="impacted GID",
-    )
+    if receipt.entries:
+        # The physical relation owns gallery uniqueness.  Preflight the whole
+        # bounded page there so a collision is rejected before any row is written.
+        gallery_ids = tuple(gallery for gallery, _gid in receipt.entries)
+        placeholders = ", ".join("%s" for _gallery in gallery_ids)
+        prior = connector.fetch_one(
+            f"SELECT gallery_id FROM {_IMPACTED_GID_PROVENANCE_STORAGE} "
+            "WHERE analysis_id = %s "
+            f"AND gallery_id IN ({placeholders}) "
+            "ORDER BY gallery_id LIMIT 1",
+            (receipt.analysis_id, *gallery_ids),
+        )
+        if prior:
+            raise AnalysisFamilyCollisionError(
+                "impacted GID fresh page overlaps existing provenance"
+            )
+    existing = dict(receipt.existing_witnesses)
+    for gallery, gid in receipt.entries:
+        witness = existing.get(gid)
+        if witness is not None and gallery <= witness:
+            raise AnalysisFamilyCollisionError(
+                "impacted GID provenance is not strictly after its stable witness"
+            )
+        connector.execute(
+            f"INSERT INTO {_IMPACTED_GID_PROVENANCE_STORAGE} "
+            "(analysis_id, gallery_id) VALUES (%s, %s)",
+            (receipt.analysis_id, gallery),
+        )
+        if witness is None:
+            connector.execute(
+                f"INSERT INTO {_IMPACTED_GID_STORAGE} (analysis_id, gid) "
+                "VALUES (%s, %s)",
+                (receipt.analysis_id, gid),
+            )
+            existing[gid] = gallery
 
 
 def record_analysis_impacted_gid_provenance_page(
@@ -1090,10 +1020,8 @@ def _load_provenance_page(
     after_gallery_id: int | None,
     through_gallery_id: int | None,
     key_column: str,
-    anchor_table: str,
+    impacted_table: str,
     provenance_table: str,
-    witness_table: str,
-    seal_table: str,
     key_validator: Any,
     label: str,
 ) -> tuple[tuple[int, bytes | int], ...]:
@@ -1108,28 +1036,22 @@ def _load_provenance_page(
     parameters.append(_PROVENANCE_QUERY_LIMIT)
     rows = connector.fetch_all(
         f"SELECT provenance.gallery_id, provenance.{key_column}, "
-        "anchor.analysis_id, witness.analysis_id, witness.witness_gallery_id, "
-        "seal.analysis_id, witness_provenance.analysis_id, "
+        "impacted.analysis_id, impacted.witness_gallery_id, "
+        "witness_provenance.analysis_id, "
         "CASE WHEN NOT EXISTS ("
         f"SELECT 1 FROM {provenance_table} AS earlier "
         "WHERE earlier.analysis_id = provenance.analysis_id "
         f"AND earlier.{key_column} = provenance.{key_column} "
-        "AND earlier.gallery_id < witness.witness_gallery_id"
+        "AND earlier.gallery_id < impacted.witness_gallery_id"
         ") THEN 1 ELSE 0 END "
         f"FROM {provenance_table} AS provenance "
-        f"LEFT JOIN {anchor_table} AS anchor "
-        "ON anchor.analysis_id = provenance.analysis_id "
-        f"AND anchor.{key_column} = provenance.{key_column} "
-        f"LEFT JOIN {witness_table} AS witness "
-        "ON witness.analysis_id = provenance.analysis_id "
-        f"AND witness.{key_column} = provenance.{key_column} "
-        f"LEFT JOIN {seal_table} AS seal "
-        "ON seal.analysis_id = provenance.analysis_id "
-        f"AND seal.{key_column} = provenance.{key_column} "
+        f"LEFT JOIN {impacted_table} AS impacted "
+        "ON impacted.analysis_id = provenance.analysis_id "
+        f"AND impacted.{key_column} = provenance.{key_column} "
         f"LEFT JOIN {provenance_table} AS witness_provenance "
         "ON witness_provenance.analysis_id = provenance.analysis_id "
         f"AND witness_provenance.{key_column} = provenance.{key_column} "
-        "AND witness_provenance.gallery_id = witness.witness_gallery_id WHERE "
+        "AND witness_provenance.gallery_id = impacted.witness_gallery_id WHERE "
         + " AND ".join(
             predicate.replace("analysis_id", "provenance.analysis_id").replace(
                 "gallery_id", "provenance.gallery_id"
@@ -1142,7 +1064,7 @@ def _load_provenance_page(
     normalized: list[tuple[int, bytes | int]] = []
     previous: tuple[int, bytes | int] | None = None
     for row in rows:
-        if len(row) != 8:
+        if len(row) != 6:
             raise AnalysisFamilyCollisionError(
                 f"{label} provenance page has an invalid joined shape"
             )
@@ -1152,20 +1074,20 @@ def _load_provenance_page(
             field=f"{label} provenance gallery_id",
         )
         key = key_validator(raw_key)
-        if any(row[index] != analysis_id for index in (2, 3, 5, 6)):
+        if row[2] != analysis_id or row[4] != analysis_id:
             raise AnalysisFamilyPartialError(
                 f"{label} provenance references a partial key family"
             )
         try:
             witness = require_positive_int63(
-                row[4],
+                row[3],
                 field=f"{label} provenance witness_gallery_id",
             )
         except (TypeError, ValueError) as error:
             raise AnalysisFamilyPartialError(
                 f"{label} provenance has no valid witness"
             ) from error
-        if row[7] != 1 or witness > gallery:
+        if row[5] != 1 or witness > gallery:
             raise AnalysisFamilyCollisionError(
                 f"{label} witness is not the global minimum provenance gallery"
             )
@@ -1205,10 +1127,8 @@ def load_analysis_impacted_content_provenance_page(
         after_gallery_id=after,
         through_gallery_id=through,
         key_column="content_sha256",
-        anchor_table=_IMPACTED_CONTENT_ANCHOR,
+        impacted_table=_IMPACTED_CONTENT,
         provenance_table=_IMPACTED_CONTENT_PROVENANCE,
-        witness_table=_IMPACTED_CONTENT_WITNESS,
-        seal_table=_IMPACTED_CONTENT_SEAL,
         key_validator=lambda value: require_digest32(
             value,
             field="impacted content provenance content_sha256",
@@ -1244,10 +1164,8 @@ def load_analysis_impacted_gid_provenance_page(
         after_gallery_id=after,
         through_gallery_id=through,
         key_column="gid",
-        anchor_table=_IMPACTED_GID_ANCHOR,
+        impacted_table=_IMPACTED_GID,
         provenance_table=_IMPACTED_GID_PROVENANCE,
-        witness_table=_IMPACTED_GID_WITNESS,
-        seal_table=_IMPACTED_GID_SEAL,
         key_validator=lambda value: require_positive_int63(
             value,
             field="impacted provenance gid",
@@ -1336,55 +1254,32 @@ def _require_complete_impacted_keyspace(
     *,
     analysis_id: bytes,
     key_column: str,
-    anchor_table: str,
+    impacted_table: str,
     provenance_table: str,
-    witness_table: str,
-    seal_table: str,
     label: str,
 ) -> None:
     violation = connector.fetch_one(
         "SELECT 1 FROM ("
-        f"SELECT anchor.{key_column} FROM {anchor_table} AS anchor "
-        "WHERE anchor.analysis_id = %s AND (NOT EXISTS ("
+        f"SELECT impacted.{key_column} FROM {impacted_table} AS impacted "
+        "WHERE impacted.analysis_id = %s AND (NOT EXISTS ("
         f"SELECT 1 FROM {provenance_table} AS provenance "
-        "WHERE provenance.analysis_id = anchor.analysis_id "
-        f"AND provenance.{key_column} = anchor.{key_column}) OR NOT EXISTS ("
-        f"SELECT 1 FROM {witness_table} AS witness "
-        "WHERE witness.analysis_id = anchor.analysis_id "
-        f"AND witness.{key_column} = anchor.{key_column}) OR NOT EXISTS ("
-        f"SELECT 1 FROM {seal_table} AS seal "
-        "WHERE seal.analysis_id = anchor.analysis_id "
-        f"AND seal.{key_column} = anchor.{key_column})) UNION ALL "
+        "WHERE provenance.analysis_id = impacted.analysis_id "
+        f"AND provenance.{key_column} = impacted.{key_column}) OR NOT EXISTS ("
+        f"SELECT 1 FROM {provenance_table} AS witness_provenance "
+        "WHERE witness_provenance.analysis_id = impacted.analysis_id "
+        f"AND witness_provenance.{key_column} = impacted.{key_column} "
+        "AND witness_provenance.gallery_id = impacted.witness_gallery_id) OR EXISTS ("
+        f"SELECT 1 FROM {provenance_table} AS earlier "
+        "WHERE earlier.analysis_id = impacted.analysis_id "
+        f"AND earlier.{key_column} = impacted.{key_column} "
+        "AND earlier.gallery_id < impacted.witness_gallery_id)) UNION ALL "
         f"SELECT provenance.{key_column} FROM {provenance_table} AS provenance "
         "WHERE provenance.analysis_id = %s AND NOT EXISTS ("
-        f"SELECT 1 FROM {anchor_table} AS anchor "
-        "WHERE anchor.analysis_id = provenance.analysis_id "
-        f"AND anchor.{key_column} = provenance.{key_column}) UNION ALL "
-        f"SELECT witness.{key_column} FROM {witness_table} AS witness "
-        "WHERE witness.analysis_id = %s AND (NOT EXISTS ("
-        f"SELECT 1 FROM {anchor_table} AS anchor "
-        "WHERE anchor.analysis_id = witness.analysis_id "
-        f"AND anchor.{key_column} = witness.{key_column}) OR NOT EXISTS ("
-        f"SELECT 1 FROM {provenance_table} AS witness_provenance "
-        "WHERE witness_provenance.analysis_id = witness.analysis_id "
-        f"AND witness_provenance.{key_column} = witness.{key_column} "
-        "AND witness_provenance.gallery_id = witness.witness_gallery_id)) UNION ALL "
-        f"SELECT seal.{key_column} FROM {seal_table} AS seal "
-        "WHERE seal.analysis_id = %s AND (NOT EXISTS ("
-        f"SELECT 1 FROM {anchor_table} AS anchor "
-        "WHERE anchor.analysis_id = seal.analysis_id "
-        f"AND anchor.{key_column} = seal.{key_column}) OR NOT EXISTS ("
-        f"SELECT 1 FROM {witness_table} AS witness "
-        "WHERE witness.analysis_id = seal.analysis_id "
-        f"AND witness.{key_column} = seal.{key_column})) UNION ALL "
-        f"SELECT witness.{key_column} FROM {witness_table} AS witness "
-        "WHERE witness.analysis_id = %s AND EXISTS ("
-        f"SELECT 1 FROM {provenance_table} AS earlier "
-        "WHERE earlier.analysis_id = witness.analysis_id "
-        f"AND earlier.{key_column} = witness.{key_column} "
-        "AND earlier.gallery_id < witness.witness_gallery_id)"
+        f"SELECT 1 FROM {impacted_table} AS impacted "
+        "WHERE impacted.analysis_id = provenance.analysis_id "
+        f"AND impacted.{key_column} = provenance.{key_column})"
         ") AS violations LIMIT 1",
-        (analysis_id,) * 5,
+        (analysis_id,) * 2,
     )
     if violation:
         raise AnalysisFamilyPartialError(
@@ -1402,10 +1297,8 @@ def require_complete_analysis_impacted_content_keyspace(
         connector,
         analysis_id=analysis,
         key_column="content_sha256",
-        anchor_table=_IMPACTED_CONTENT_ANCHOR,
+        impacted_table=_IMPACTED_CONTENT,
         provenance_table=_IMPACTED_CONTENT_PROVENANCE,
-        witness_table=_IMPACTED_CONTENT_WITNESS,
-        seal_table=_IMPACTED_CONTENT_SEAL,
         label="impacted content",
     )
 
@@ -1416,13 +1309,28 @@ def require_complete_analysis_impacted_gid_keyspace(
     analysis_id: bytes,
 ) -> None:
     analysis = require_uuid16(analysis_id, field="impacted GID analysis_id")
+    physical_violation = connector.fetch_one(
+        f"SELECT 1 FROM {_IMPACTED_GID_STORAGE} AS stored "
+        "WHERE stored.analysis_id = %s AND NOT EXISTS ("
+        f"SELECT 1 FROM {_IMPACTED_GID} AS projected "
+        "WHERE projected.analysis_id = stored.analysis_id "
+        "AND projected.gid = stored.gid) UNION ALL "
+        f"SELECT 1 FROM {_IMPACTED_GID_PROVENANCE_STORAGE} AS stored "
+        "WHERE stored.analysis_id = %s AND NOT EXISTS ("
+        f"SELECT 1 FROM {_IMPACTED_GID_PROVENANCE} AS projected "
+        "WHERE projected.analysis_id = stored.analysis_id "
+        "AND projected.gallery_id = stored.gallery_id) LIMIT 1",
+        (analysis, analysis),
+    )
+    if physical_violation:
+        raise AnalysisFamilyPartialError(
+            "impacted GID terminal keyspace contains orphan physical storage"
+        )
     _require_complete_impacted_keyspace(
         connector,
         analysis_id=analysis,
         key_column="gid",
-        anchor_table=_IMPACTED_GID_ANCHOR,
+        impacted_table=_IMPACTED_GID,
         provenance_table=_IMPACTED_GID_PROVENANCE,
-        witness_table=_IMPACTED_GID_WITNESS,
-        seal_table=_IMPACTED_GID_SEAL,
         label="impacted GID",
     )

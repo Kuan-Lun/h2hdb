@@ -468,7 +468,15 @@ def _view_dependencies(relation: Mapping[str, Any]) -> tuple[str, ...]:
         "analysis_gid_winner_keyset",
         "artifact_delta_old",
         "artifact_delta_new",
+        "analysis_impacted_gid_projection",
+        "analysis_impacted_gid_provenance_projection",
         "batch_receipt_derived",
+        "catalog_publication_occurrence_identity",
+        "catalog_publication_projection",
+        "catalog_publication_title_projection",
+        "gallery_observation_metadata_projection",
+        "publication_selection_occurrence_identity",
+        "publication_selection_projection",
         "publication_commit_activation",
         "publication_commit_baseline",
         "publication_commit_generation",
@@ -507,6 +515,25 @@ def _render_view(
         return _render_artifact_delta_old_view(relation, relations, backend)
     if pattern == "artifact_delta_new":
         return _render_artifact_delta_new_view(relation, relations, backend)
+    if pattern in {
+        "publication_selection_occurrence_identity",
+        "catalog_publication_occurrence_identity",
+    }:
+        return _render_occurrence_identity_view(relation, relations, backend)
+    if pattern == "publication_selection_projection":
+        return _render_publication_selection_view(relation, relations, backend)
+    if pattern == "catalog_publication_projection":
+        return _render_catalog_publication_view(relation, relations, backend)
+    if pattern == "catalog_publication_title_projection":
+        return _render_catalog_publication_title_view(relation, relations, backend)
+    if pattern == "analysis_impacted_gid_provenance_projection":
+        return _render_analysis_impacted_gid_provenance_view(
+            relation, relations, backend
+        )
+    if pattern == "analysis_impacted_gid_projection":
+        return _render_analysis_impacted_gid_view(relation, relations, backend)
+    if pattern == "gallery_observation_metadata_projection":
+        return _render_gallery_observation_metadata_view(relation, relations, backend)
     if pattern == "batch_receipt_derived":
         return _render_batch_receipt_view(relation, relations, backend)
     if pattern == "publication_candidate_projection":
@@ -1172,6 +1199,313 @@ def _render_publication_candidate_projection_view(
         backend,
         expressions,
         f"FROM {q(str(seal['table']))} AS certified\n" + "\n".join(joins),
+    )
+
+
+def _render_gallery_observation_metadata_view(
+    relation: Mapping[str, Any],
+    relations: Mapping[str, dict[str, Any]],
+    backend: str,
+) -> str:
+    """Join observation-local times to the normalized basename/GID/time chain."""
+
+    sources = {
+        str(source["name"]): source for source in _view_sources(relation, relations)
+    }
+    local = sources["gallery_observation_metadata_local"]
+    access = sources["gallery_source_name_access"]
+    name_gid = sources["source_gallery_name_gid"]
+    upload = sources["gallery_upload_time"]
+
+    def q(value: str) -> str:
+        return _quote(value, backend)
+
+    expressions = {
+        "gallery_id": f"local.{q(_column_name(local, 'gallery_id'))}",
+        "observation_id": f"local.{q(_column_name(local, 'observation_id'))}",
+        "gid": f"name_gid.{q(_column_name(name_gid, 'gid'))}",
+        "upload_time": f"upload.{q(_column_name(upload, 'upload_time'))}",
+        "download_time": f"local.{q(_column_name(local, 'download_time'))}",
+        "modified_time": f"local.{q(_column_name(local, 'modified_time'))}",
+    }
+    return _render_projection_view(
+        relation,
+        backend,
+        expressions,
+        f"FROM {q(str(local['table']))} AS local\n"
+        f"JOIN {q(str(access['table']))} AS access\n"
+        f"  ON access.{q(_column_name(access, 'gallery_id'))}\n"
+        f"   = local.{q(_column_name(local, 'gallery_id'))}\n"
+        f"JOIN {q(str(name_gid['table']))} AS name_gid\n"
+        f"  ON name_gid.{q(_column_name(name_gid, 'source_gallery_name'))}\n"
+        f"   = access.{q(_column_name(access, 'source_gallery_name'))}\n"
+        f"JOIN {q(str(upload['table']))} AS upload\n"
+        f"  ON upload.{q(_column_name(upload, 'gid'))}\n"
+        f"   = name_gid.{q(_column_name(name_gid, 'gid'))}",
+    )
+
+
+def _render_occurrence_identity_view(
+    relation: Mapping[str, Any],
+    relations: Mapping[str, dict[str, Any]],
+    backend: str,
+) -> str:
+    sources = {
+        str(source["name"]): source for source in _view_sources(relation, relations)
+    }
+    selection = "publication_selection_storage" in sources
+    storage = sources[
+        "publication_selection_storage" if selection else "catalog_publication_storage"
+    ]
+    access = sources["gallery_source_name_access"]
+    name_gid = sources["source_gallery_name_gid"]
+    publication = sources["publication_identity"]
+    occurrence_attribute = (
+        "selection_occurrence_sha256" if selection else "catalog_occurrence_sha256"
+    )
+    scope_attribute = "candidate_id" if selection else "revision"
+
+    def q(value: str) -> str:
+        return _quote(value, backend)
+
+    expressions = {
+        occurrence_attribute: f"stored.{q(_column_name(storage, occurrence_attribute))}",
+        scope_attribute: f"stored.{q(_column_name(storage, scope_attribute))}",
+        "publication_key": (
+            f"publication.{q(_column_name(publication, 'publication_key'))}"
+        ),
+    }
+    return _render_projection_view(
+        relation,
+        backend,
+        expressions,
+        f"FROM {q(str(storage['table']))} AS stored\n"
+        f"JOIN {q(str(access['table']))} AS access\n"
+        f"  ON access.{q(_column_name(access, 'gallery_id'))}\n"
+        f"   = stored.{q(_column_name(storage, 'gallery_id'))}\n"
+        f"JOIN {q(str(name_gid['table']))} AS name_gid\n"
+        f"  ON name_gid.{q(_column_name(name_gid, 'source_gallery_name'))}\n"
+        f"   = access.{q(_column_name(access, 'source_gallery_name'))}\n"
+        f"JOIN {q(str(publication['table']))} AS publication\n"
+        f"  ON publication.{q(_column_name(publication, 'gid'))}\n"
+        f"   = name_gid.{q(_column_name(name_gid, 'gid'))}",
+    )
+
+
+def _render_publication_selection_view(
+    relation: Mapping[str, Any],
+    relations: Mapping[str, dict[str, Any]],
+    backend: str,
+) -> str:
+    sources = {
+        str(source["name"]): source for source in _view_sources(relation, relations)
+    }
+    storage = sources["publication_selection_storage"]
+    occurrence = sources["publication_selection_occurrence_identity"]
+    access = sources["gallery_source_name_access"]
+    name_gid = sources["source_gallery_name_gid"]
+    publication = sources["publication_identity"]
+
+    def q(value: str) -> str:
+        return _quote(value, backend)
+
+    expressions = {
+        "candidate_id": f"occurrence.{q(_column_name(occurrence, 'candidate_id'))}",
+        "gallery_id": f"stored.{q(_column_name(storage, 'gallery_id'))}",
+        "publication_key": (
+            f"occurrence.{q(_column_name(occurrence, 'publication_key'))}"
+        ),
+    }
+    return _render_projection_view(
+        relation,
+        backend,
+        expressions,
+        f"FROM {q(str(storage['table']))} AS stored\n"
+        f"JOIN {q(str(occurrence['table']))} AS occurrence\n"
+        f"  ON occurrence.{q(_column_name(occurrence, 'selection_occurrence_sha256'))}\n"
+        f"   = stored.{q(_column_name(storage, 'selection_occurrence_sha256'))}\n"
+        f"JOIN {q(str(access['table']))} AS access\n"
+        f"  ON access.{q(_column_name(access, 'gallery_id'))}\n"
+        f"   = stored.{q(_column_name(storage, 'gallery_id'))}\n"
+        f"JOIN {q(str(name_gid['table']))} AS name_gid\n"
+        f"  ON name_gid.{q(_column_name(name_gid, 'source_gallery_name'))}\n"
+        f"   = access.{q(_column_name(access, 'source_gallery_name'))}\n"
+        f"JOIN {q(str(publication['table']))} AS derived\n"
+        f"  ON derived.{q(_column_name(publication, 'gid'))}\n"
+        f"   = name_gid.{q(_column_name(name_gid, 'gid'))}\n"
+        f" AND derived.{q(_column_name(publication, 'publication_key'))}\n"
+        f"   = occurrence.{q(_column_name(occurrence, 'publication_key'))}",
+    )
+
+
+def _render_catalog_publication_view(
+    relation: Mapping[str, Any],
+    relations: Mapping[str, dict[str, Any]],
+    backend: str,
+) -> str:
+    sources = {
+        str(source["name"]): source for source in _view_sources(relation, relations)
+    }
+    storage = sources["catalog_publication_storage"]
+    occurrence = sources["catalog_publication_occurrence_identity"]
+    access = sources["gallery_source_name_access"]
+    name_gid = sources["source_gallery_name_gid"]
+    publication = sources["publication_identity"]
+
+    def q(value: str) -> str:
+        return _quote(value, backend)
+
+    expressions = {
+        "revision": f"occurrence.{q(_column_name(occurrence, 'revision'))}",
+        "publication_key": (
+            f"occurrence.{q(_column_name(occurrence, 'publication_key'))}"
+        ),
+        "gallery_id": f"stored.{q(_column_name(storage, 'gallery_id'))}",
+        "summary_sha256": f"stored.{q(_column_name(storage, 'summary_sha256'))}",
+        "language_sha256": f"stored.{q(_column_name(storage, 'language_sha256'))}",
+        "modified_at": f"stored.{q(_column_name(storage, 'modified_at'))}",
+    }
+    return _render_projection_view(
+        relation,
+        backend,
+        expressions,
+        f"FROM {q(str(storage['table']))} AS stored\n"
+        f"JOIN {q(str(occurrence['table']))} AS occurrence\n"
+        f"  ON occurrence.{q(_column_name(occurrence, 'catalog_occurrence_sha256'))}\n"
+        f"   = stored.{q(_column_name(storage, 'catalog_occurrence_sha256'))}\n"
+        f"JOIN {q(str(access['table']))} AS access\n"
+        f"  ON access.{q(_column_name(access, 'gallery_id'))}\n"
+        f"   = stored.{q(_column_name(storage, 'gallery_id'))}\n"
+        f"JOIN {q(str(name_gid['table']))} AS name_gid\n"
+        f"  ON name_gid.{q(_column_name(name_gid, 'source_gallery_name'))}\n"
+        f"   = access.{q(_column_name(access, 'source_gallery_name'))}\n"
+        f"JOIN {q(str(publication['table']))} AS derived\n"
+        f"  ON derived.{q(_column_name(publication, 'gid'))}\n"
+        f"   = name_gid.{q(_column_name(name_gid, 'gid'))}\n"
+        f" AND derived.{q(_column_name(publication, 'publication_key'))}\n"
+        f"   = occurrence.{q(_column_name(occurrence, 'publication_key'))}",
+    )
+
+
+def _render_catalog_publication_title_view(
+    relation: Mapping[str, Any],
+    relations: Mapping[str, dict[str, Any]],
+    backend: str,
+) -> str:
+    sources = {
+        str(source["name"]): source for source in _view_sources(relation, relations)
+    }
+    storage = sources["catalog_publication_storage"]
+    occurrence = sources["catalog_publication_occurrence_identity"]
+    access = sources["gallery_source_name_access"]
+    name_gid = sources["source_gallery_name_gid"]
+    publication = sources["publication_identity"]
+
+    def q(value: str) -> str:
+        return _quote(value, backend)
+
+    expressions = {
+        "revision": f"occurrence.{q(_column_name(occurrence, 'revision'))}",
+        "publication_key": (
+            f"occurrence.{q(_column_name(occurrence, 'publication_key'))}"
+        ),
+        "source_title_sha256": (
+            f"stored.{q(_column_name(storage, 'source_title_sha256'))}"
+        ),
+        "source_gallery_name": (
+            f"access.{q(_column_name(access, 'source_gallery_name'))}"
+        ),
+    }
+    return _render_projection_view(
+        relation,
+        backend,
+        expressions,
+        f"FROM {q(str(storage['table']))} AS stored\n"
+        f"JOIN {q(str(occurrence['table']))} AS occurrence\n"
+        f"  ON occurrence.{q(_column_name(occurrence, 'catalog_occurrence_sha256'))}\n"
+        f"   = stored.{q(_column_name(storage, 'catalog_occurrence_sha256'))}\n"
+        "\n"
+        f"JOIN {q(str(access['table']))} AS access\n"
+        f"  ON access.{q(_column_name(access, 'gallery_id'))}\n"
+        f"   = stored.{q(_column_name(storage, 'gallery_id'))}\n"
+        f"JOIN {q(str(name_gid['table']))} AS name_gid\n"
+        f"  ON name_gid.{q(_column_name(name_gid, 'source_gallery_name'))}\n"
+        f"   = access.{q(_column_name(access, 'source_gallery_name'))}\n"
+        f"JOIN {q(str(publication['table']))} AS derived\n"
+        f"  ON derived.{q(_column_name(publication, 'gid'))}\n"
+        f"   = name_gid.{q(_column_name(name_gid, 'gid'))}\n"
+        f" AND derived.{q(_column_name(publication, 'publication_key'))}\n"
+        f"   = occurrence.{q(_column_name(occurrence, 'publication_key'))}",
+    )
+
+
+def _render_analysis_impacted_gid_provenance_view(
+    relation: Mapping[str, Any],
+    relations: Mapping[str, dict[str, Any]],
+    backend: str,
+) -> str:
+    sources = {
+        str(source["name"]): source for source in _view_sources(relation, relations)
+    }
+    storage = sources["analysis_impacted_gid_provenance_storage"]
+    access = sources["gallery_source_name_access"]
+    name_gid = sources["source_gallery_name_gid"]
+
+    def q(value: str) -> str:
+        return _quote(value, backend)
+
+    expressions = {
+        "analysis_id": f"stored.{q(_column_name(storage, 'analysis_id'))}",
+        "gallery_id": f"stored.{q(_column_name(storage, 'gallery_id'))}",
+        "gid": f"name_gid.{q(_column_name(name_gid, 'gid'))}",
+    }
+    return _render_projection_view(
+        relation,
+        backend,
+        expressions,
+        f"FROM {q(str(storage['table']))} AS stored\n"
+        f"JOIN {q(str(access['table']))} AS access\n"
+        f"  ON access.{q(_column_name(access, 'gallery_id'))}\n"
+        f"   = stored.{q(_column_name(storage, 'gallery_id'))}\n"
+        f"JOIN {q(str(name_gid['table']))} AS name_gid\n"
+        f"  ON name_gid.{q(_column_name(name_gid, 'source_gallery_name'))}\n"
+        f"   = access.{q(_column_name(access, 'source_gallery_name'))}",
+    )
+
+
+def _render_analysis_impacted_gid_view(
+    relation: Mapping[str, Any],
+    relations: Mapping[str, dict[str, Any]],
+    backend: str,
+) -> str:
+    sources = {
+        str(source["name"]): source for source in _view_sources(relation, relations)
+    }
+    storage = sources["analysis_impacted_gid_storage"]
+    provenance = sources["analysis_impacted_gid_provenance"]
+
+    def q(value: str) -> str:
+        return _quote(value, backend)
+
+    expressions = {
+        "analysis_id": f"stored.{q(_column_name(storage, 'analysis_id'))}",
+        "gid": f"stored.{q(_column_name(storage, 'gid'))}",
+        "witness_gallery_id": (
+            f"MIN(provenance.{q(_column_name(provenance, 'gallery_id'))})"
+        ),
+    }
+    return _render_projection_view(
+        relation,
+        backend,
+        expressions,
+        f"FROM {q(str(storage['table']))} AS stored\n"
+        f"JOIN {q(str(provenance['table']))} AS provenance\n"
+        f"  ON provenance.{q(_column_name(provenance, 'analysis_id'))}\n"
+        f"   = stored.{q(_column_name(storage, 'analysis_id'))}\n"
+        f" AND provenance.{q(_column_name(provenance, 'gid'))}\n"
+        f"   = stored.{q(_column_name(storage, 'gid'))}\n"
+        f"GROUP BY stored.{q(_column_name(storage, 'analysis_id'))}, "
+        f"stored.{q(_column_name(storage, 'gid'))}",
     )
 
 

@@ -364,6 +364,14 @@ _DERIVED_VIEW_FIELDS: Mapping[str, frozenset[str]] = {
     "analysis_gid_winner_keyset": frozenset(),
     "artifact_delta_old": frozenset(),
     "artifact_delta_new": frozenset(),
+    "analysis_impacted_gid_projection": frozenset(),
+    "analysis_impacted_gid_provenance_projection": frozenset(),
+    "catalog_publication_occurrence_identity": frozenset(),
+    "catalog_publication_projection": frozenset(),
+    "catalog_publication_title_projection": frozenset(),
+    "gallery_observation_metadata_projection": frozenset(),
+    "publication_selection_occurrence_identity": frozenset(),
+    "publication_selection_projection": frozenset(),
     "publication_candidate_projection": frozenset(),
     "batch_receipt_derived": frozenset(
         {
@@ -2189,7 +2197,206 @@ def _render_derived_view(
     pattern = spec.pattern
     expressions: dict[str, str]
     from_sql: str
-    if pattern == "analysis_ancestry_endpoint":
+    if pattern in {
+        "publication_selection_occurrence_identity",
+        "catalog_publication_occurrence_identity",
+    }:
+        source_by_name = {source.relation: source for source in sources}
+        storage_name = (
+            "publication_selection_storage"
+            if pattern == "publication_selection_occurrence_identity"
+            else "catalog_publication_storage"
+        )
+        storage = source_by_name[storage_name]
+        access = source_by_name["gallery_source_name_access"]
+        name_gid = source_by_name["source_gallery_name_gid"]
+        publication = source_by_name["publication_identity"]
+        occurrence_attribute = (
+            "selection_occurrence_sha256"
+            if pattern == "publication_selection_occurrence_identity"
+            else "catalog_occurrence_sha256"
+        )
+        expressions = {
+            occurrence_attribute: f"stored.{column(storage, occurrence_attribute)}",
+            "publication_key": f"publication.{column(publication, 'publication_key')}",
+        }
+        scope_attribute = (
+            "candidate_id"
+            if pattern == "publication_selection_occurrence_identity"
+            else "revision"
+        )
+        expressions[scope_attribute] = f"stored.{column(storage, scope_attribute)}"
+        from_sql = (
+            f"FROM {table(storage)} AS stored\n"
+            f"JOIN {table(access)} AS access\n"
+            f"  ON access.{column(access, 'gallery_id')}\n"
+            f"   = stored.{column(storage, 'gallery_id')}\n"
+            f"JOIN {table(name_gid)} AS name_gid\n"
+            f"  ON name_gid.{column(name_gid, 'source_gallery_name')}\n"
+            f"   = access.{column(access, 'source_gallery_name')}\n"
+            f"JOIN {table(publication)} AS publication\n"
+            f"  ON publication.{column(publication, 'gid')}\n"
+            f"   = name_gid.{column(name_gid, 'gid')}"
+        )
+    elif pattern == "publication_selection_projection":
+        source_by_name = {source.relation: source for source in sources}
+        storage = source_by_name["publication_selection_storage"]
+        occurrence = source_by_name["publication_selection_occurrence_identity"]
+        access = source_by_name["gallery_source_name_access"]
+        name_gid = source_by_name["source_gallery_name_gid"]
+        publication = source_by_name["publication_identity"]
+        expressions = {
+            "candidate_id": f"occurrence.{column(occurrence, 'candidate_id')}",
+            "gallery_id": f"stored.{column(storage, 'gallery_id')}",
+            "publication_key": f"occurrence.{column(occurrence, 'publication_key')}",
+        }
+        from_sql = (
+            f"FROM {table(storage)} AS stored\n"
+            f"JOIN {table(occurrence)} AS occurrence\n"
+            f"  ON occurrence.{column(occurrence, 'selection_occurrence_sha256')}\n"
+            f"   = stored.{column(storage, 'selection_occurrence_sha256')}\n"
+            f"JOIN {table(access)} AS access\n"
+            f"  ON access.{column(access, 'gallery_id')}\n"
+            f"   = stored.{column(storage, 'gallery_id')}\n"
+            f"JOIN {table(name_gid)} AS name_gid\n"
+            f"  ON name_gid.{column(name_gid, 'source_gallery_name')}\n"
+            f"   = access.{column(access, 'source_gallery_name')}\n"
+            f"JOIN {table(publication)} AS derived\n"
+            f"  ON derived.{column(publication, 'gid')}\n"
+            f"   = name_gid.{column(name_gid, 'gid')}\n"
+            f" AND derived.{column(publication, 'publication_key')}\n"
+            f"   = occurrence.{column(occurrence, 'publication_key')}"
+        )
+    elif pattern == "catalog_publication_projection":
+        source_by_name = {source.relation: source for source in sources}
+        storage = source_by_name["catalog_publication_storage"]
+        occurrence = source_by_name["catalog_publication_occurrence_identity"]
+        access = source_by_name["gallery_source_name_access"]
+        name_gid = source_by_name["source_gallery_name_gid"]
+        publication = source_by_name["publication_identity"]
+        expressions = {
+            "revision": f"occurrence.{column(occurrence, 'revision')}",
+            "publication_key": f"occurrence.{column(occurrence, 'publication_key')}",
+            "gallery_id": f"stored.{column(storage, 'gallery_id')}",
+            "summary_sha256": f"stored.{column(storage, 'summary_sha256')}",
+            "language_sha256": f"stored.{column(storage, 'language_sha256')}",
+            "modified_at": f"stored.{column(storage, 'modified_at')}",
+        }
+        from_sql = (
+            f"FROM {table(storage)} AS stored\n"
+            f"JOIN {table(occurrence)} AS occurrence\n"
+            f"  ON occurrence.{column(occurrence, 'catalog_occurrence_sha256')}\n"
+            f"   = stored.{column(storage, 'catalog_occurrence_sha256')}\n"
+            f"JOIN {table(access)} AS access\n"
+            f"  ON access.{column(access, 'gallery_id')}\n"
+            f"   = stored.{column(storage, 'gallery_id')}\n"
+            f"JOIN {table(name_gid)} AS name_gid\n"
+            f"  ON name_gid.{column(name_gid, 'source_gallery_name')}\n"
+            f"   = access.{column(access, 'source_gallery_name')}\n"
+            f"JOIN {table(publication)} AS derived\n"
+            f"  ON derived.{column(publication, 'gid')}\n"
+            f"   = name_gid.{column(name_gid, 'gid')}\n"
+            f" AND derived.{column(publication, 'publication_key')}\n"
+            f"   = occurrence.{column(occurrence, 'publication_key')}"
+        )
+    elif pattern == "catalog_publication_title_projection":
+        source_by_name = {source.relation: source for source in sources}
+        storage = source_by_name["catalog_publication_storage"]
+        occurrence = source_by_name["catalog_publication_occurrence_identity"]
+        access = source_by_name["gallery_source_name_access"]
+        name_gid = source_by_name["source_gallery_name_gid"]
+        publication = source_by_name["publication_identity"]
+        expressions = {
+            "revision": f"occurrence.{column(occurrence, 'revision')}",
+            "publication_key": f"occurrence.{column(occurrence, 'publication_key')}",
+            "source_title_sha256": f"stored.{column(storage, 'source_title_sha256')}",
+            "source_gallery_name": f"access.{column(access, 'source_gallery_name')}",
+        }
+        from_sql = (
+            f"FROM {table(storage)} AS stored\n"
+            f"JOIN {table(occurrence)} AS occurrence\n"
+            f"  ON occurrence.{column(occurrence, 'catalog_occurrence_sha256')}\n"
+            f"   = stored.{column(storage, 'catalog_occurrence_sha256')}\n"
+            "\n"
+            f"JOIN {table(access)} AS access\n"
+            f"  ON access.{column(access, 'gallery_id')}\n"
+            f"   = stored.{column(storage, 'gallery_id')}\n"
+            f"JOIN {table(name_gid)} AS name_gid\n"
+            f"  ON name_gid.{column(name_gid, 'source_gallery_name')}\n"
+            f"   = access.{column(access, 'source_gallery_name')}\n"
+            f"JOIN {table(publication)} AS derived\n"
+            f"  ON derived.{column(publication, 'gid')}\n"
+            f"   = name_gid.{column(name_gid, 'gid')}\n"
+            f" AND derived.{column(publication, 'publication_key')}\n"
+            f"   = occurrence.{column(occurrence, 'publication_key')}"
+        )
+    elif pattern == "analysis_impacted_gid_provenance_projection":
+        source_by_name = {source.relation: source for source in sources}
+        storage = source_by_name["analysis_impacted_gid_provenance_storage"]
+        access = source_by_name["gallery_source_name_access"]
+        name_gid = source_by_name["source_gallery_name_gid"]
+        expressions = {
+            "analysis_id": f"stored.{column(storage, 'analysis_id')}",
+            "gallery_id": f"stored.{column(storage, 'gallery_id')}",
+            "gid": f"name_gid.{column(name_gid, 'gid')}",
+        }
+        from_sql = (
+            f"FROM {table(storage)} AS stored\n"
+            f"JOIN {table(access)} AS access\n"
+            f"  ON access.{column(access, 'gallery_id')}\n"
+            f"   = stored.{column(storage, 'gallery_id')}\n"
+            f"JOIN {table(name_gid)} AS name_gid\n"
+            f"  ON name_gid.{column(name_gid, 'source_gallery_name')}\n"
+            f"   = access.{column(access, 'source_gallery_name')}"
+        )
+    elif pattern == "analysis_impacted_gid_projection":
+        source_by_name = {source.relation: source for source in sources}
+        storage = source_by_name["analysis_impacted_gid_storage"]
+        provenance = source_by_name["analysis_impacted_gid_provenance"]
+        expressions = {
+            "analysis_id": f"stored.{column(storage, 'analysis_id')}",
+            "gid": f"stored.{column(storage, 'gid')}",
+            "witness_gallery_id": (
+                f"MIN(provenance.{column(provenance, 'gallery_id')})"
+            ),
+        }
+        from_sql = (
+            f"FROM {table(storage)} AS stored\n"
+            f"JOIN {table(provenance)} AS provenance\n"
+            f"  ON provenance.{column(provenance, 'analysis_id')}\n"
+            f"   = stored.{column(storage, 'analysis_id')}\n"
+            f" AND provenance.{column(provenance, 'gid')}\n"
+            f"   = stored.{column(storage, 'gid')}\n"
+            f"GROUP BY stored.{column(storage, 'analysis_id')}, "
+            f"stored.{column(storage, 'gid')}"
+        )
+    elif pattern == "gallery_observation_metadata_projection":
+        source_by_name = {source.relation: source for source in sources}
+        local = source_by_name["gallery_observation_metadata_local"]
+        access = source_by_name["gallery_source_name_access"]
+        name_gid = source_by_name["source_gallery_name_gid"]
+        upload = source_by_name["gallery_upload_time"]
+        expressions = {
+            "gallery_id": f"local.{column(local, 'gallery_id')}",
+            "observation_id": f"local.{column(local, 'observation_id')}",
+            "gid": f"name_gid.{column(name_gid, 'gid')}",
+            "upload_time": f"upload.{column(upload, 'upload_time')}",
+            "download_time": f"local.{column(local, 'download_time')}",
+            "modified_time": f"local.{column(local, 'modified_time')}",
+        }
+        from_sql = (
+            f"FROM {table(local)} AS local\n"
+            f"JOIN {table(access)} AS access\n"
+            f"  ON access.{column(access, 'gallery_id')}\n"
+            f"   = local.{column(local, 'gallery_id')}\n"
+            f"JOIN {table(name_gid)} AS name_gid\n"
+            f"  ON name_gid.{column(name_gid, 'source_gallery_name')}\n"
+            f"   = access.{column(access, 'source_gallery_name')}\n"
+            f"JOIN {table(upload)} AS upload\n"
+            f"  ON upload.{column(upload, 'gid')}\n"
+            f"   = name_gid.{column(name_gid, 'gid')}"
+        )
+    elif pattern == "analysis_ancestry_endpoint":
         (ancestry,) = sources
         analysis_id = column(ancestry, "analysis_id")
         ancestor_analysis_id = column(ancestry, "ancestor_analysis_id")
@@ -3636,11 +3843,6 @@ def _validate_physical_schema(
             ("analysis_id", "content_sha256", "gallery_id"),
             False,
         ),
-        "analysis_impacted_gid_provenance": PhysicalIndexSpec(
-            "ix_a_impacted_gid_key_gallery",
-            ("analysis_id", "gid", "gallery_id"),
-            False,
-        ),
     }
     for relation_name, expected_index in impacted_lookup_indexes.items():
         relation = physical.relation(relation_name)
@@ -3658,6 +3860,43 @@ def _validate_physical_schema(
                 f"impacted provenance relation {relation_name!r} must expose "
                 f"the exact key-first lookup index {expected_index!r}"
             )
+
+    impacted_gid_storage = physical.relation("analysis_impacted_gid_storage")
+    impacted_gid_provenance_storage = physical.relation(
+        "analysis_impacted_gid_provenance_storage"
+    )
+    impacted_gid_provenance = physical.relation("analysis_impacted_gid_provenance")
+    impacted_gid = physical.relation("analysis_impacted_gid")
+    if (
+        impacted_gid_storage is None
+        or impacted_gid_storage.kind != "table"
+        or impacted_gid_storage.primary_key != ("analysis_id", "gid")
+        or impacted_gid_provenance_storage is None
+        or impacted_gid_provenance_storage.kind != "table"
+        or impacted_gid_provenance_storage.primary_key != ("analysis_id", "gallery_id")
+        or impacted_gid_provenance is None
+        or impacted_gid_provenance.kind != "view"
+        or impacted_gid_provenance.derived_view
+        != DerivedViewSpec(
+            pattern="analysis_impacted_gid_provenance_projection",
+            source_relations=(
+                "analysis_impacted_gid_provenance_storage",
+                "gallery_source_name_access",
+                "source_gallery_name_gid",
+            ),
+        )
+        or impacted_gid is None
+        or impacted_gid.kind != "view"
+        or impacted_gid.derived_view
+        != DerivedViewSpec(
+            pattern="analysis_impacted_gid_projection",
+            source_relations=(
+                "analysis_impacted_gid_storage",
+                "analysis_impacted_gid_provenance",
+            ),
+        )
+    ):
+        raise ValueError("impacted GID storage/provenance recomposition is not exact")
 
     for relation_spec in physical.implemented_relations:
         logical_relation = logical.relation(relation_spec.relation)
@@ -4273,7 +4512,56 @@ def _validate_physical_schema(
                 raise ValueError(
                     f"derived view {relation_spec.relation!r} cannot reference itself"
                 )
-            if derived.pattern == "analysis_ancestry_endpoint":
+            if derived.pattern == "gallery_observation_metadata_projection":
+                expected_sources: tuple[str, ...] = (
+                    "gallery_observation_metadata_local",
+                    "gallery_source_name_access",
+                    "source_gallery_name_gid",
+                    "gallery_upload_time",
+                )
+                if derived.source_relations != expected_sources:
+                    raise ValueError(
+                        "gallery observation metadata source authority drifted"
+                    )
+                source_by_name = {
+                    source.relation: source for source in sources if source is not None
+                }
+                expected_shapes = {
+                    "gallery_observation_metadata_local": (
+                        "gallery_id",
+                        "observation_id",
+                        "download_time",
+                        "modified_time",
+                    ),
+                    "gallery_source_name_access": (
+                        "gallery_id",
+                        "source_gallery_name",
+                    ),
+                    "source_gallery_name_gid": ("source_gallery_name", "gid"),
+                    "gallery_upload_time": ("gid", "upload_time"),
+                }
+                for source_name, expected_shape in expected_shapes.items():
+                    source = source_by_name[source_name]
+                    if (
+                        tuple(column.attribute for column in source.columns)
+                        != expected_shape
+                    ):
+                        raise ValueError(
+                            "gallery observation metadata source shape drifted: "
+                            f"{source_name}"
+                        )
+                if tuple(column.attribute for column in relation_spec.columns) != (
+                    "gallery_id",
+                    "observation_id",
+                    "gid",
+                    "upload_time",
+                    "download_time",
+                    "modified_time",
+                ):
+                    raise ValueError(
+                        "gallery observation metadata projection shape drifted"
+                    )
+            elif derived.pattern == "analysis_ancestry_endpoint":
                 if derived.source_relations != ("analysis_state_ancestry",):
                     raise ValueError(
                         "analysis ancestry endpoint must derive only from ancestry"
@@ -4316,7 +4604,11 @@ def _validate_physical_schema(
                         "analysis_id",
                         "winner_gallery_id",
                     ),
-                    "analysis_impacted_gid": ("analysis_id", "gid"),
+                    "analysis_impacted_gid": (
+                        "analysis_id",
+                        "gid",
+                        "witness_gallery_id",
+                    ),
                     "analysis_run_build_id": ("analysis_id", "build_id"),
                     "source_build_gallery": (
                         "build_id",

@@ -475,6 +475,7 @@ class LongValueStorageContract:
     canonical_reference_relation: str
     canonical_reference_attribute: str
     canonical_reference_attributes: tuple[str, ...]
+    opaque_audit_references: tuple[str, ...]
     direct_payload_attributes: tuple[str, ...]
     selection_rule: str
     rationale: str
@@ -727,14 +728,11 @@ class AnalysisBatchStage:
 class AnalysisImpactedKeyFamily:
     name: str
     key_attribute: str
-    anchor_relation: str
+    base_relation: str
     provenance_relation: str
-    witness_relation: str
-    seal_relation: str
-    view_relation: str
     provenance_primary_key: tuple[str, ...]
     provenance_lookup_index: tuple[str, ...]
-    witness_primary_key: tuple[str, ...]
+    base_primary_key: tuple[str, ...]
     witness_fk_attributes: tuple[str, ...]
     population_stage: str
     population_cursor_attribute: str
@@ -843,6 +841,7 @@ class RetentionContract:
     semantic_obligation_id: str
     source_history_rule: str
     catalog_history_rule: str
+    current_catalog_rule: str
     active_source_rule: str
     inactive_source_rule: str
 
@@ -1530,6 +1529,9 @@ def validate_contract(contract: Contract) -> ValidationReport:
         errors.extend(relation_errors)
         reports.append(report)
 
+    if contract.scope == "catalog_data_plane":
+        errors.extend(_validate_gallery_identity_chain_bcnf(relation_by_name))
+
     for relation in contract.relations:
         errors.extend(
             _validate_foreign_keys(relation, relation_by_name, external_by_name)
@@ -1944,7 +1946,7 @@ def validate_cross_manifest_contracts(
 
     expected_membership = catalog_relations.get("source_build_expected_gallery")
     membership = catalog_relations.get("source_build_gallery")
-    observation_stat_anchor = catalog_relations.get("gallery_observation_stat_anchor")
+    observation_stat = catalog_relations.get("gallery_observation_stat")
     if expected_membership is not None and not (
         _has_fk(
             expected_membership,
@@ -1971,8 +1973,8 @@ def validate_cross_manifest_contracts(
         errors.append(
             "catalog source_build_gallery must forbid extra expected membership"
         )
-    if observation_stat_anchor is not None and not _has_fk(
-        observation_stat_anchor,
+    if observation_stat is not None and not _has_fk(
+        observation_stat,
         ("gallery_id", "observation_id"),
         "gallery_observation",
         ("gallery_id", "observation_id"),
@@ -1996,7 +1998,7 @@ def validate_cross_manifest_contracts(
         errors.append("GALLERY_IDENTITY retention must list expected source membership")
     gallery_observation_target = retention_targets.get("GALLERY_OBSERVATION")
     if gallery_observation_target is None or not any(
-        "gallery_observation_stat_anchor" in phase
+        "gallery_observation_stat" in phase
         for phase in gallery_observation_target.child_phases
     ):
         errors.append(
@@ -2034,6 +2036,10 @@ _DATA_MACHINE_OBLIGATION_IDS = frozenset(
 
 
 _DATA_RETENTION_TARGETS: Mapping[str, tuple[str, tuple[str, ...]]] = {
+    "CATALOG_PUBLICATION": (
+        "catalog_publication_occurrence_identity",
+        ("revision", "publication_key"),
+    ),
     "PUBLICATION_CANDIDATE": ("publication_candidate_anchor", ("candidate_id",)),
     "ANALYSIS_RUN": ("analysis_run_anchor", ("analysis_id",)),
     "SOURCE_BUILD": ("source_build_anchor", ("build_id",)),
@@ -2096,11 +2102,6 @@ def _validate_retention_contract(
         "source_revision_channel",
         "source_revision_snapshot_manifest",
         "source_revision_descriptor_seal",
-        "source_snapshot_manifest_identity_anchor",
-        "source_snapshot_manifest_identity_gallery_count",
-        "source_snapshot_manifest_identity_file_count",
-        "source_snapshot_manifest_identity_byte_count",
-        "source_snapshot_manifest_identity_seal",
         "catalog_revision_anchor",
         "catalog_revision_publication_count",
         "catalog_revision_descriptor_seal",
@@ -2138,14 +2139,12 @@ def _validate_retention_contract(
         "publication_finalization_batch_receipt_row_count",
         "publication_finalization_batch_receipt_committed_at",
         "publication_finalization_batch_receipt_seal",
-        "display_title_choice",
-        "title_sort",
     }
     if set(retained) != required_retained:
         errors.append(
             "retention contract indefinite history must be exactly the stage "
             "registries, descriptor families, common commit/generation authority, "
-            "and retained title dictionaries"
+            "and compact source/catalog audit authority"
         )
 
     expected_active_relations = {
@@ -2173,6 +2172,9 @@ def _validate_retention_contract(
         "source_revision_provenance",
         "deleted before",
         "self-contained retained history",
+        "old source snapshot identity and canonical page payload",
+        "bounded CANONICAL_VALUE cleanup",
+        "every dynamic semantic pin releases",
     )
     if any(term not in retention.active_source_rule for term in active_terms):
         errors.append("retention contract active provenance rule is incomplete")
@@ -2182,19 +2184,39 @@ def _validate_retention_contract(
         errors.append("retention contract must resolve through catalog.retention.v1")
     if not all(
         token in retention.source_history_rule
-        for token in ("indefinitely retained", "source_revision", "self-contained")
+        for token in (
+            "indefinitely retained",
+            "source_revision",
+            "self-contained compact source history",
+            "opaque digest audit fact without a payload foreign key",
+            "does not retain source_snapshot_manifest_identity or canonical pages",
+            "every dynamic semantic pin releases",
+        )
     ):
         errors.append("retention contract source history rule is incomplete")
     if not all(
         token in retention.catalog_history_rule
         for token in (
-            "indefinitely retained",
-            "cross-call pagination",
-            "durable reader lease",
-            "not a cleanup target",
+            "catalog_revision",
+            "O(revision)",
+            "current head",
+            "fixed-shard bounded child-first cleanup",
         )
     ):
         errors.append("retention contract catalog history rule is incomplete")
+    if not all(
+        token in retention.current_catalog_rule
+        for token in (
+            "current publication head revision",
+            "pinned descriptor",
+            "explicit historical revisions fail closed",
+            "head advance",
+            "DB_COMMITTED",
+            "PROJECTION_FINALIZED",
+            "CATALOG_PUBLICATION",
+        )
+    ):
+        errors.append("retention contract current catalog rule is incomplete")
 
     head = relation_by_name.get(retention.active_head_relation)
     revision = relation_by_name.get(retention.revision_relation)
@@ -2476,7 +2498,13 @@ def _validate_retention_target(
         if gate.semantic_obligation_id != "catalog.retention.v1":
             errors.append(f"{prefix} machine gate {gate.id!r} lacks its resolver")
     expected_machine_gates = {
+        "PUBLICATION_CANDIDATE": (
+            "catalog.uncommitted_candidate_reserved_projection(candidate_id,reserved_revision)",
+        ),
         "CANONICAL_VALUE": (
+            "catalog.current_source_snapshot_manifest(source_revision,snapshot_manifest_sha256)",
+            "operational.live_source_working_analysis_snapshot_manifest(analysis_id,snapshot_manifest_sha256)",
+            "catalog.live_publication_candidate_snapshot_manifest(candidate_id,snapshot_manifest_sha256)",
             "operational.canonical_value_upload(generation,value_sha256)",
             "operational.canonical_value_maintenance_fence",
         ),
@@ -2489,10 +2517,69 @@ def _validate_retention_target(
             f"{prefix} machine gates must be exactly {expected_machine_gates!r}"
         )
 
+    if target.target == "PUBLICATION_CANDIDATE":
+        expected_candidate_phases = (
+            (
+                "publication_candidate_projection_seal",
+                "publication_batch_receipt_seal",
+                "artifact_operation",
+                "catalog_publication_storage",
+            ),
+            ("prepared_artifact", "catalog_contributor_seal"),
+            ("artifact_input", "catalog_contributor_identity"),
+            (
+                "publication_batch_receipt_coordinate",
+                "publication_batch_receipt_start_cursor",
+                "publication_batch_receipt_start_processed_count",
+                "publication_batch_receipt_next_cursor",
+                "publication_batch_receipt_row_count",
+                "publication_batch_receipt_committed_at",
+                "catalog_contributor_name_sha256",
+            ),
+            ("publication_batch_receipt_anchor", "catalog_contributor_role"),
+            ("publication_checkpoint_seal", "catalog_contributor_anchor"),
+            ("publication_selection_storage", "catalog_publication_order"),
+            (
+                "publication_checkpoint_generation",
+                "publication_checkpoint_cursor",
+                "publication_checkpoint_processed_count",
+                "publication_checkpoint_state",
+                "publication_checkpoint_updated_at",
+                "catalog_publication_content",
+            ),
+            ("publication_checkpoint_anchor", "catalog_subject"),
+            ("publication_candidate_base_publication_commit", "catalog_artifact"),
+            (
+                "publication_selection_occurrence_identity",
+                "catalog_publication_occurrence_identity",
+            ),
+            (
+                "publication_candidate_definition_seal",
+                "publication_candidate_created_at",
+                "publication_candidate_artifacts_required",
+                "publication_candidate_display_title_policy_id",
+                "publication_candidate_artifact_policy_id",
+                "publication_candidate_reserved_revision",
+                "publication_candidate_analysis_id",
+            ),
+        )
+        if target.child_phases != expected_candidate_phases:
+            errors.append(
+                f"{prefix} must fold the exact uncommitted reserved projection "
+                "child-first into the twelve registered candidate phases"
+            )
+
     visited_edges: set[RetentionForeignKeyBoundary] = set()
     visited_phases: set[str] = set()
     visited_views: set[str] = set()
     pending = [target.root_relation]
+    if target.target == "PUBLICATION_CANDIDATE":
+        # A unique reserved revision is a semantic, deliberately non-FK owner:
+        # committed publication payload must outlive its transient candidate.
+        # The exact machine gate above restricts this second traversal root to
+        # an uncommitted candidate and rechecks that predicate for every batch.
+        pending.append("catalog_publication_occurrence_identity")
+        visited_phases.add("catalog_publication_occurrence_identity")
     expanded: set[str] = set()
     while pending:
         parent = pending.pop()
@@ -2761,12 +2848,26 @@ def _validate_identity_codecs(contract: Contract) -> list[str]:
             "7fffffffffffffff",
             "ef9a3bbaa67483f863e6aa50c1c8f2b97969a6acf1b21d6ea77df181e3bb0fd2",
         ),
+        "publication-selection-occurrence.v1": (
+            "selection_occurrence_sha256",
+            "ascii('h2hdb-vnext-publication-selection-occurrence-v1\\0') || "
+            "raw16(candidate_id) || raw32(publication_key)",
+            "000102030405060708090a0b0c0d0e0f"
+            "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+            "2ff17d9d79c889c594c82864f71d4799a172199db2c823ee919bc0f5ab9928fa",
+        ),
+        "catalog-publication-occurrence.v1": (
+            "catalog_occurrence_sha256",
+            "ascii('h2hdb-vnext-catalog-publication-occurrence-v1\\0') || "
+            "u64be(revision) || raw32(publication_key)",
+            "0000000000000001"
+            "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+            "b22702b4189d823ff834f6dd335f342aeaa563af2d3fe8c26c16a1b6e9a9d697",
+        ),
     }
     by_id = {codec.id: codec for codec in contract.identity_codecs}
     if len(by_id) != len(contract.identity_codecs) or set(by_id) != set(expected):
-        return [
-            "identity codec registry must contain exactly gallery-key.v1 and publication-key.v1"
-        ]
+        return ["identity codec registry does not match the exact closed v1 set"]
     for codec_id, values in expected.items():
         codec = by_id[codec_id]
         target, framing, golden_input, golden_digest = values
@@ -3283,16 +3384,9 @@ def _validate_effective_content_contract(
         )
     expected_relations = {
         "analysis_impacted_content",
-        "analysis_impacted_content_anchor",
         "analysis_impacted_content_provenance",
-        "analysis_impacted_content_witness",
-        "analysis_impacted_content_seal",
-        "analysis_content_owner_candidate_shadow_content_sha256",
         "analysis_content_owner_candidate_shadow",
         "analysis_content_owner_candidate_resolved",
-        "analysis_content_owner_shadow_anchor",
-        "analysis_content_owner_shadow_owner_gallery_id",
-        "analysis_content_owner_shadow_seal",
         "analysis_content_owner_shadow",
         "analysis_content_owner_tombstone",
         "analysis_content_owner_resolved",
@@ -3438,10 +3532,13 @@ def _validate_source_snapshot_manifest_contract(
         "all three mutations commit or roll back together",
         "production AnalysisRepository.handoff_snapshot_manifest COMPLETE response-loss replay",
         "analysis_id natural key",
+        "live source-working or live publication-candidate semantic pin",
         "exact-compares the binding digest and all three sealed snapshot count facts",
         "requires the claim absent",
         "performs zero writes",
         "streams and validates collision-checked canonical page bytes",
+        "compact binding is opaque audit only",
+        "missing canonical payload fails closed",
         "no caller digest",
         "input_manifest_sha256",
         "output authority",
@@ -3462,10 +3559,15 @@ def _validate_source_snapshot_manifest_contract(
     if not all(
         term in contract.retention
         for term in (
-            "while any source_revision or analysis_snapshot_manifest references",
-            "analysis cleanup deletes analysis_snapshot_manifest before analysis_run",
-            "last source revision and analysis binding",
-            "garbage-collecting",
+            "compact opaque audit digests without payload foreign keys",
+            "never independently retain source_snapshot_manifest_identity or canonical page bytes",
+            "current publication_commit_head_receipt source digest",
+            "live source-working analysis digest",
+            "uncommitted or operationally live publication-candidate digest",
+            "active canonical_value_upload claim",
+            "exclusive maintenance gate",
+            "rechecks every dynamic semantic pin",
+            "leaves historical audit digests intact",
         )
     ):
         errors.append(f"{prefix} retention/garbage-collection rule is incomplete")
@@ -3556,15 +3658,34 @@ def _validate_source_snapshot_manifest_contract(
             "analysis_run_descriptor_seal",
             ("analysis_id",),
         )
-        or not _has_fk(
-            binding,
-            (contract.digest_attribute,),
-            "source_snapshot_manifest_identity_seal",
-            (contract.digest_attribute,),
-        )
+        or len(binding.foreign_keys) != 1
     ):
         errors.append(
-            f"{prefix} analysis output binding must be one-way BCNF authority"
+            f"{prefix} analysis output binding must be one-way BCNF opaque audit"
+        )
+    revision_audit = relations.get("source_revision_snapshot_manifest")
+    if (
+        revision_audit is None
+        or set(revision_audit.attributes)
+        != {"source_revision", contract.digest_attribute}
+        or set(revision_audit.declared_keys) != {frozenset({"source_revision"})}
+        or set(revision_audit.functional_dependencies)
+        != {
+            FunctionalDependency(
+                frozenset({"source_revision"}),
+                frozenset({contract.digest_attribute}),
+            )
+        }
+        or not _has_fk(
+            revision_audit,
+            ("source_revision",),
+            "source_revision_anchor",
+            ("source_revision",),
+        )
+        or len(revision_audit.foreign_keys) != 1
+    ):
+        errors.append(
+            f"{prefix} source revision digest must be one-way BCNF opaque audit"
         )
     return errors
 
@@ -3777,6 +3898,7 @@ def _validate_publication_atomic_contract(
         "initialize candidate-owned checkpoints only for the first sixteen stages",
         "FINALIZE_ARTIFACTS has no candidate-owned checkpoint",
         "permanent receipt-owned finalization family",
+        "stages 2 through 16 require the immediately preceding stage COMPLETE",
         "generation one, empty cursor, processed_count zero, and OPEN state",
         "hard-capped maximum-128 candidate batch",
         "server-side",
@@ -4188,7 +4310,7 @@ def _validate_publication_atomic_contract(
         or not _has_fk(
             publication_order,
             ("revision", "publication_key"),
-            "catalog_publication_seal",
+            "catalog_publication_occurrence_identity",
             ("revision", "publication_key"),
         )
     ):
@@ -4614,7 +4736,16 @@ def _validate_title_sort_contract(
             errors.append(f"{prefix} {field} must be {value!r}")
     if not all(
         term in contract.runtime_obligation
-        for term in ("display_title_policy_id", "Unicode", "unknown", "new policy")
+        for term in (
+            "display_title_policy_id",
+            "Unicode",
+            "unknown",
+            "new policy",
+            "reproducible non-authoritative caches",
+            "CANONICAL_VALUE cleanup deletes child-first",
+            "dynamic live semantic pins release",
+            "deterministically rebuild",
+        )
     ):
         errors.append(f"{prefix} runtime version obligation is incomplete")
     policy = relations.get(contract.policy_relation)
@@ -7134,7 +7265,7 @@ _ANALYSIS_CANDIDATE_RUNTIME_OBLIGATION_V1 = (
     "comparator bytes, or any audit digest as authority"
 )
 _ANALYSIS_CONTENT_CANDIDATE_FACT_AUTHORITIES_V1 = {
-    "analysis_content_owner_candidate_shadow_content_sha256": (
+    "analysis_content_owner_candidate_shadow": (
         frozenset(
             {
                 "analysis_impacted_gallery",
@@ -7145,23 +7276,6 @@ _ANALYSIS_CONTENT_CANDIDATE_FACT_AUTHORITIES_V1 = {
                 "gallery_observation_file",
                 "file_name_identity",
                 "analysis_file_hash_decision_resolved",
-            }
-        ),
-        "for the candidate analysis_id, use analysis_run_build_id to bind the "
-        "current build and source_build_gallery to its one terminal observation "
-        "for the impacted gallery; stream only file_name_identity.file_role = "
-        "CONTENT rows from that observation, recompute excluded from the atomic "
-        "analysis_file_hash_decision_resolved counts under analysis_run_policy_id "
-        "and sealed analysis_policy thresholds, then frame the ordered "
-        "non-excluded hashes with the registered effective-content codec; "
-        "insert once and exact-compare on replay",
-    ),
-    "analysis_content_owner_candidate_shadow_prefer_not_already_uploaded": (
-        frozenset(
-            {
-                "analysis_impacted_gallery",
-                "analysis_run_build_id",
-                "source_build_gallery",
                 "gallery_observation_tag",
                 "tag_term_identity",
                 "canonical_value_identity",
@@ -7169,63 +7283,13 @@ _ANALYSIS_CONTENT_CANDIDATE_FACT_AUTHORITIES_V1 = {
                 "canonical_value_page",
                 "canonical_value_page_descriptor",
                 "canonical_value_page_parent",
-            }
-        ),
-        "for the candidate analysis_id, use analysis_run_build_id and "
-        "source_build_gallery to bind the impacted gallery to its one terminal "
-        "current observation; join only that observation's tags through "
-        "tag_term_identity, require canonical_value_allocation.digest_domain = "
-        "tag_value_utf8_v1, stream and digest-validate every exact canonical tag "
-        "value through canonical_value_identity, canonical_value_allocation, "
-        "canonical_value_page, canonical_value_page_descriptor, and "
-        "canonical_value_page_parent to exact EOF, "
-        "compare strict-UTF-8 bytes after ASCII A-Z folding only while ignoring "
-        "namespace, and store zero on the exact already uploaded marker match or "
-        "one on absence; insert once and exact-compare on replay",
-    ),
-    "analysis_content_owner_candidate_shadow_title_scalar_count": (
-        frozenset(
-            {
-                "analysis_impacted_gallery",
-                "analysis_run_build_id",
-                "source_build_gallery",
                 "gallery_observation_tree_root",
-                "gallery_observation_page_descriptor",
-                "gallery_observation_page",
                 "gallery_observation_page_child",
+                "gallery_observation_metadata_local",
             }
         ),
-        "for the candidate analysis_id, use analysis_run_build_id and "
-        "source_build_gallery to bind the impacted gallery to its one terminal "
-        "current observation; select exactly one METADATA root and traverse only "
-        "sealed gallery_observation_page_descriptor, gallery_observation_page, "
-        "and gallery_observation_page_child facts while validating page digests, "
-        "descriptor equality, contiguous offsets, and exact EOF; stream the "
-        "framed title bytes through StrictUtf8ScalarCounter and never treat "
-        "gallery_observation_metadata as title authority; insert once and "
-        "exact-compare on replay",
-    ),
-    "analysis_content_owner_candidate_shadow_download_time": (
-        frozenset(
-            {
-                "analysis_impacted_gallery",
-                "analysis_run_build_id",
-                "source_build_gallery",
-                "gallery_observation_download_time",
-                "gallery_observation_tree_root",
-                "gallery_observation_page_descriptor",
-                "gallery_observation_page",
-                "gallery_observation_page_child",
-            }
-        ),
-        "for the candidate analysis_id, use analysis_run_build_id and "
-        "source_build_gallery to bind the impacted gallery to its one terminal "
-        "current observation; select exactly one METADATA root, replay the sealed "
-        "gallery_observation_page_descriptor, gallery_observation_page, and "
-        "gallery_observation_page_child stream to exact EOF, decode its "
-        "download_time, and exact-compare that value with the same observation's "
-        "gallery_observation_download_time fact; insert once and exact-compare on "
-        "replay",
+        "stream and validate every comparator input, insert the complete row "
+        "atomically, and exact-compare all values on replay",
     ),
 }
 
@@ -7373,7 +7437,11 @@ def _validate_analysis_candidate_contract(
         != expected_shadow_sources
     ):
         errors.append(f"{prefix} GID winner shadow must be the exact derived keyset")
-    if keyset is None or set(keyset.attributes) != {"analysis_id", "gid"}:
+    if keyset is None or set(keyset.attributes) != {
+        "analysis_id",
+        "gid",
+        "witness_gallery_id",
+    }:
         errors.append(f"{prefix} lacks its frozen impacted-GID keyset")
     if (
         run_build is None
@@ -7398,8 +7466,8 @@ _IMPACTED_KEY_WITNESS_RULE_V1 = (
 )
 _IMPACTED_KEY_APPEND_RULE_V1 = (
     "population pages are strictly increasing by gallery_id; first insert fixes the "
-    "final minimum witness; after seal only provenance may append and every appended "
-    "gallery_id must be greater than the witness"
+    "final minimum witness; after base-row insertion only provenance may append and "
+    "every appended gallery_id must be greater than the witness"
 )
 _IMPACTED_KEY_REPLAY_RULE_V1 = (
     "exact-compare the complete old/new key set for every selected gallery, reject "
@@ -7427,7 +7495,7 @@ def _validate_analysis_impacted_key_contract(
         or contract.witness_rule != _IMPACTED_KEY_WITNESS_RULE_V1
         or contract.append_rule != _IMPACTED_KEY_APPEND_RULE_V1
         or contract.replay_rule != _IMPACTED_KEY_REPLAY_RULE_V1
-        or contract.cleanup_rule != "seal_then_witness_then_provenance_then_anchor"
+        or contract.cleanup_rule != "base_then_provenance"
     ):
         errors.append(
             f"{prefix} must pin the bounded 128-gallery/257-row MIN-witness v1 protocol"
@@ -7437,14 +7505,11 @@ def _validate_analysis_impacted_key_contract(
         "content": AnalysisImpactedKeyFamily(
             name="content",
             key_attribute="content_sha256",
-            anchor_relation="analysis_impacted_content_anchor",
+            base_relation="analysis_impacted_content",
             provenance_relation="analysis_impacted_content_provenance",
-            witness_relation="analysis_impacted_content_witness",
-            seal_relation="analysis_impacted_content_seal",
-            view_relation="analysis_impacted_content",
             provenance_primary_key=("analysis_id", "gallery_id", "content_sha256"),
             provenance_lookup_index=("analysis_id", "content_sha256", "gallery_id"),
-            witness_primary_key=("analysis_id", "content_sha256"),
+            base_primary_key=("analysis_id", "content_sha256"),
             witness_fk_attributes=(
                 "analysis_id",
                 "witness_gallery_id",
@@ -7458,14 +7523,11 @@ def _validate_analysis_impacted_key_contract(
         "gid": AnalysisImpactedKeyFamily(
             name="gid",
             key_attribute="gid",
-            anchor_relation="analysis_impacted_gid_anchor",
+            base_relation="analysis_impacted_gid",
             provenance_relation="analysis_impacted_gid_provenance",
-            witness_relation="analysis_impacted_gid_witness",
-            seal_relation="analysis_impacted_gid_seal",
-            view_relation="analysis_impacted_gid",
-            provenance_primary_key=("analysis_id", "gallery_id", "gid"),
+            provenance_primary_key=("analysis_id", "gallery_id"),
             provenance_lookup_index=("analysis_id", "gid", "gallery_id"),
-            witness_primary_key=("analysis_id", "gid"),
+            base_primary_key=("analysis_id", "gid"),
             witness_fk_attributes=("analysis_id", "witness_gallery_id", "gid"),
             population_stage="impacted_gid",
             population_cursor_attribute="gallery_id",
@@ -7479,8 +7541,6 @@ def _validate_analysis_impacted_key_contract(
         or family_by_name != expected_families
     ):
         errors.append(f"{prefix} family registry must equal content plus GID exactly")
-
-    vertical_by_name = {family.name: family for family in vertical_families}
 
     def fk_shapes(
         relation: Relation,
@@ -7525,34 +7585,159 @@ def _validate_analysis_impacted_key_contract(
         if family is None:
             continue
         key = ("analysis_id", family.key_attribute)
-        anchor = relation_by_name.get(family.anchor_relation)
+        base = relation_by_name.get(family.base_relation)
         provenance = relation_by_name.get(family.provenance_relation)
-        witness = relation_by_name.get(family.witness_relation)
-        seal = relation_by_name.get(family.seal_relation)
-        view = relation_by_name.get(family.view_relation)
-        if None in (anchor, provenance, witness, seal, view):
+        if base is None or provenance is None:
             errors.append(f"{prefix} family {name!r} references missing relations")
             continue
-        assert anchor is not None
-        assert provenance is not None
-        assert witness is not None
-        assert seal is not None
-        assert view is not None
-        if (
-            anchor.kind != "source_of_truth"
-            or anchor.attributes != key
-            or anchor.declared_keys != (frozenset(key),)
-            or anchor.functional_dependencies
-        ):
-            errors.append(f"{prefix} family {name!r} anchor is not the exact key")
+        if name == "gid":
+            provenance_storage = relation_by_name.get(
+                "analysis_impacted_gid_provenance_storage"
+            )
+            base_storage = relation_by_name.get("analysis_impacted_gid_storage")
+            expected_provenance_fd = FunctionalDependency(
+                frozenset({"gallery_id"}), frozenset({"gid"})
+            )
+            expected_base_fds = {
+                FunctionalDependency(
+                    frozenset({"analysis_id", "gid"}),
+                    frozenset({"witness_gallery_id"}),
+                ),
+                FunctionalDependency(
+                    frozenset({"witness_gallery_id"}), frozenset({"gid"})
+                ),
+            }
+            provenance_materialization = provenance.materialization
+            base_materialization = base.materialization
+            if (
+                provenance.attributes != ("analysis_id", "gallery_id", "gid")
+                or provenance.declared_keys
+                != (frozenset({"analysis_id", "gallery_id"}),)
+                or set(provenance.functional_dependencies) != {expected_provenance_fd}
+                or provenance.foreign_keys
+                or not isinstance(provenance_materialization, Mapping)
+                or provenance_materialization.get("storage") != "logical_view"
+                or provenance_materialization.get("view_pattern")
+                != "analysis_impacted_gid_provenance_projection"
+            ):
+                errors.append(
+                    f"{prefix} family 'gid' provenance must derive gallery_id -> "
+                    "gid from normalized BCNF storage"
+                )
+            if (
+                provenance_storage is None
+                or provenance_storage.attributes != ("analysis_id", "gallery_id")
+                or provenance_storage.declared_keys
+                != (frozenset({"analysis_id", "gallery_id"}),)
+                or provenance_storage.functional_dependencies
+                or fk_shapes(provenance_storage)
+                != {
+                    (
+                        ("analysis_id",),
+                        "analysis_run_descriptor_seal",
+                        ("analysis_id",),
+                    ),
+                    (
+                        ("analysis_id", "gallery_id"),
+                        "analysis_impacted_gallery",
+                        ("analysis_id", "gallery_id"),
+                    ),
+                }
+            ):
+                errors.append(
+                    f"{prefix} family 'gid' provenance storage must be exact "
+                    "analysis/gallery membership"
+                )
+            if (
+                base.attributes != ("analysis_id", "gid", "witness_gallery_id")
+                or set(base.declared_keys)
+                != {
+                    frozenset({"analysis_id", "gid"}),
+                    frozenset({"analysis_id", "witness_gallery_id"}),
+                }
+                or set(base.functional_dependencies) != expected_base_fds
+                or base.foreign_keys
+                or not isinstance(base_materialization, Mapping)
+                or base_materialization.get("storage") != "logical_view"
+                or base_materialization.get("view_pattern")
+                != "analysis_impacted_gid_projection"
+            ):
+                errors.append(
+                    f"{prefix} family 'gid' key/witness view must derive the "
+                    "immutable minimum without a cross-FD base"
+                )
+            if (
+                base_storage is None
+                or base_storage.attributes != ("analysis_id", "gid")
+                or base_storage.declared_keys != (frozenset({"analysis_id", "gid"}),)
+                or base_storage.functional_dependencies
+                or fk_shapes(base_storage)
+                != {
+                    (
+                        ("analysis_id",),
+                        "analysis_run_descriptor_seal",
+                        ("analysis_id",),
+                    ),
+                    (("gid",), "gallery_upload_time", ("gid",)),
+                }
+            ):
+                errors.append(
+                    f"{prefix} family 'gid' base storage must be the PK-only "
+                    "analysis/GID workset"
+                )
+            storage_metadata = (
+                provenance_storage.materialization
+                if provenance_storage is not None
+                else None
+            )
+            storage_sources = (
+                set(storage_metadata.get("derived_from", ()))
+                if isinstance(storage_metadata, Mapping)
+                else set()
+            )
+            storage_refresh = (
+                str(storage_metadata.get("refresh_strategy", ""))
+                if isinstance(storage_metadata, Mapping)
+                else ""
+            )
+            if storage_sources != expected_sources[name] or any(
+                term not in storage_refresh
+                for term in (
+                    "append only",
+                    "strictly increasing gallery_id",
+                    "complete selected-gallery key set",
+                    "zero DML",
+                    "analysis_gid_candidate_resolved only to delimit old membership",
+                    "analysis_baseline",
+                    "baseline analysis_run_build_id",
+                    "current analysis_run_build_id",
+                )
+            ):
+                errors.append(
+                    f"{prefix} family 'gid' normalized provenance authority/replay "
+                    "rule drifts"
+                )
+            continue
         expected_provenance_fks = {
-            (key, family.anchor_relation, key),
+            (
+                ("analysis_id",),
+                "analysis_run_descriptor_seal",
+                ("analysis_id",),
+            ),
             (
                 ("analysis_id", "gallery_id"),
                 "analysis_impacted_gallery",
                 ("analysis_id", "gallery_id"),
             ),
         }
+        if name == "content":
+            expected_provenance_fks.add(
+                (
+                    ("content_sha256",),
+                    "canonical_value_identity",
+                    ("value_sha256",),
+                )
+            )
         if (
             provenance.attributes != family.provenance_primary_key
             or provenance.declared_keys != (frozenset(family.provenance_primary_key),)
@@ -7613,73 +7798,49 @@ def _validate_analysis_impacted_key_contract(
         expected_witness_fd = FunctionalDependency(
             frozenset(key), frozenset({"witness_gallery_id"})
         )
-        if (
-            witness.attributes != (*key, "witness_gallery_id")
-            or witness.declared_keys != (frozenset(key),)
-            or witness.functional_dependencies != (expected_witness_fd,)
-            or fk_shapes(witness)
-            != {
+        expected_base_fks = {
+            (
+                ("analysis_id",),
+                "analysis_run_descriptor_seal",
+                ("analysis_id",),
+            ),
+            (
+                family.witness_fk_attributes,
+                family.provenance_relation,
+                family.provenance_primary_key,
+            ),
+        }
+        if name == "content":
+            expected_base_fks.add(
                 (
-                    family.witness_fk_attributes,
-                    family.provenance_relation,
-                    family.provenance_primary_key,
+                    ("content_sha256",),
+                    "canonical_value_identity",
+                    ("value_sha256",),
                 )
-            }
+            )
+        if (
+            base.kind != "controlled_materialization"
+            or base.attributes != (*key, "witness_gallery_id")
+            or base.declared_keys != (frozenset(family.base_primary_key),)
+            or base.functional_dependencies != (expected_witness_fd,)
+            or fk_shapes(base) != expected_base_fks
         ):
             errors.append(
-                f"{prefix} family {name!r} witness must be key->gallery with one "
-                "full-tuple provenance FK"
+                f"{prefix} family {name!r} base must atomically store key->gallery "
+                "with one full-tuple provenance FK"
             )
-        witness_metadata = witness.materialization
-        witness_text = (
+        base_metadata = base.materialization
+        base_text = (
             " ".join(
-                str(witness_metadata.get(field, ""))
+                str(base_metadata.get(field, ""))
                 for field in ("rationale", "refresh_strategy")
             )
-            if isinstance(witness_metadata, Mapping)
+            if isinstance(base_metadata, Mapping)
             else ""
         )
-        if any(
-            term not in witness_text
-            for term in ("smallest", "minimum", "first", "never update", "replay")
-        ):
+        if any(term not in base_text for term in ("minimum", "provenance", "replay")):
             errors.append(
-                f"{prefix} family {name!r} witness does not pin immutable MIN semantics"
-            )
-        expected_seal_fks = {
-            (key, family.anchor_relation, key),
-            (key, family.witness_relation, key),
-        }
-        if (
-            seal.kind != "source_of_truth"
-            or seal.attributes != key
-            or seal.declared_keys != (frozenset(key),)
-            or seal.functional_dependencies
-            or fk_shapes(seal) != expected_seal_fks
-        ):
-            errors.append(f"{prefix} family {name!r} seal lacks anchor+witness proof")
-        view_metadata = view.materialization
-        if (
-            view.attributes != key
-            or view.declared_keys != (frozenset(key),)
-            or view.functional_dependencies
-            or fk_shapes(view) != {(key, family.seal_relation, key)}
-            or not isinstance(view_metadata, Mapping)
-            or view_metadata.get("storage") != "logical_view"
-        ):
-            errors.append(f"{prefix} family {name!r} hot workset is not key-only")
-        vertical = vertical_by_name.get(f"analysis_impacted_{name}_vertical")
-        if (
-            vertical is None
-            or vertical.anchor_relation != family.anchor_relation
-            or vertical.seal_relation != family.seal_relation
-            or vertical.view_relation != family.view_relation
-            or len(vertical.members) != 1
-            or vertical.members[0].relation != family.witness_relation
-            or vertical.members[0].project
-        ):
-            errors.append(
-                f"{prefix} family {name!r} must use one non-projected required witness"
+                f"{prefix} family {name!r} base does not pin immutable MIN semantics"
             )
 
     if resolution is None:
@@ -7717,27 +7878,26 @@ def _validate_analysis_impacted_key_contract(
             for relation in relations
         }
         for family in expected_families.values():
-            ordered = (
-                family.seal_relation,
-                family.witness_relation,
-                family.provenance_relation,
-                family.anchor_relation,
+            base_relation = (
+                "analysis_impacted_gid_storage"
+                if family.name == "gid"
+                else family.base_relation
             )
-            positions = tuple(
-                phase_by_relation.get(relation, -1) for relation in ordered
+            provenance_relation = (
+                "analysis_impacted_gid_provenance_storage"
+                if family.name == "gid"
+                else family.provenance_relation
             )
+            base_position = phase_by_relation.get(base_relation, -1)
+            provenance_position = phase_by_relation.get(provenance_relation, -1)
             if (
-                any(position < 0 for position in positions)
-                or positions != tuple(sorted(positions))
-                or len(set(positions)) != len(positions)
+                base_position < 0
+                or provenance_position < 0
+                or base_position >= provenance_position
             ):
                 errors.append(
-                    f"{prefix} family {family.name!r} cleanup must be seal, witness, "
-                    "provenance, then anchor"
-                )
-            if family.view_relation in phase_by_relation:
-                errors.append(
-                    f"{prefix} family {family.name!r} logical view must never be deleted"
+                    f"{prefix} family {family.name!r} cleanup must delete the "
+                    "materialized key/witness row before its provenance row"
                 )
     return errors
 
@@ -7776,14 +7936,22 @@ def _validate_long_value_storage_contract(
         "start_cursor",
         "next_cursor",
     }
+    expected_opaque_audit = {
+        "analysis_snapshot_manifest.snapshot_manifest_sha256",
+        "source_revision_snapshot_manifest.snapshot_manifest_sha256",
+    }
     if set(storage.canonical_reference_attributes) != expected_canonical:
         errors.append(f"{prefix} canonical-reference registry is incomplete")
     if set(storage.direct_payload_attributes) != expected_direct:
         errors.append(f"{prefix} direct-payload registry is incomplete")
+    if set(storage.opaque_audit_references) != expected_opaque_audit:
+        errors.append(f"{prefix} opaque-audit registry is incomplete")
     if len(storage.canonical_reference_attributes) != len(expected_canonical):
         errors.append(f"{prefix} canonical-reference registry contains duplicates")
     if len(storage.direct_payload_attributes) != len(expected_direct):
         errors.append(f"{prefix} direct-payload registry contains duplicates")
+    if len(storage.opaque_audit_references) != len(expected_opaque_audit):
+        errors.append(f"{prefix} opaque-audit registry contains duplicates")
     if expected_canonical & expected_direct:
         errors.append(f"{prefix} registries must be disjoint")
     if (
@@ -7870,6 +8038,14 @@ def _validate_long_value_storage_contract(
                 # sealed view is already proven to project that member exactly;
                 # requiring a second view-level FK would either point at a view
                 # or duplicate storage authority in generated DDL.
+                continue
+            coordinate = f"{relation.name}.{attribute}"
+            if coordinate in expected_opaque_audit:
+                if (relation.name, attribute) in canonical_paths:
+                    errors.append(
+                        f"{prefix} opaque audit {coordinate!r} illegally retains "
+                        "canonical payload bytes"
+                    )
                 continue
             if (relation.name, attribute) not in canonical_paths:
                 errors.append(
@@ -8109,6 +8285,135 @@ def _validate_relation(relation: Relation) -> tuple[list[str], RelationReport]:
         1 << len(attributes),
         not logical_view,
     )
+
+
+_GALLERY_IDENTITY_CHAIN_GALLERY_ATTRIBUTES = frozenset(
+    {"gallery_id", "owner_gallery_id", "winner_gallery_id", "witness_gallery_id"}
+)
+
+
+def _validate_gallery_identity_chain_bcnf(
+    relation_by_name: Mapping[str, Relation],
+) -> list[str]:
+    """Close BCNF over the immutable gallery/name/GID/publication chain.
+
+    These dependencies are cross-relation semantic facts, so merely omitting
+    them from a new relation's local ``fds`` array must never make a physical
+    redundancy pass the checker.  Gallery-valued aliases all identify the same
+    gallery domain.  Basenames are many-to-one onto GIDs, while GID and
+    publication_key are a collision-checked bijection.
+    """
+
+    errors: list[str] = []
+    required_backbone = {
+        "gallery_source_name_access": (
+            frozenset({"gallery_id", "source_gallery_name"}),
+            FunctionalDependency(
+                frozenset({"gallery_id"}), frozenset({"source_gallery_name"})
+            ),
+        ),
+        "source_gallery_name_gid": (
+            frozenset({"source_gallery_name", "gid"}),
+            FunctionalDependency(
+                frozenset({"source_gallery_name"}), frozenset({"gid"})
+            ),
+        ),
+        "publication_identity": (
+            frozenset({"gid", "publication_key"}),
+            FunctionalDependency(frozenset({"gid"}), frozenset({"publication_key"})),
+        ),
+    }
+    for name, (attributes, dependency) in required_backbone.items():
+        relation = relation_by_name.get(name)
+        if (
+            relation is None
+            or frozenset(relation.attributes) != attributes
+            or dependency not in relation.functional_dependencies
+        ):
+            errors.append(
+                "gallery identity chain must retain its exact authoritative "
+                f"backbone relation {name!r}"
+            )
+
+    for relation in relation_by_name.values():
+        attributes = frozenset(relation.attributes)
+        inferred: set[FunctionalDependency] = set()
+        gallery_attributes = attributes & _GALLERY_IDENTITY_CHAIN_GALLERY_ATTRIBUTES
+        for gallery_attribute in gallery_attributes:
+            for dependent in ("source_gallery_name", "gid", "publication_key"):
+                if dependent in attributes:
+                    inferred.add(
+                        FunctionalDependency(
+                            frozenset({gallery_attribute}), frozenset({dependent})
+                        )
+                    )
+        if "source_gallery_name" in attributes:
+            for dependent in ("gid", "publication_key"):
+                if dependent in attributes:
+                    inferred.add(
+                        FunctionalDependency(
+                            frozenset({"source_gallery_name"}),
+                            frozenset({dependent}),
+                        )
+                    )
+        if {"gid", "publication_key"} <= attributes:
+            inferred.update(
+                {
+                    FunctionalDependency(
+                        frozenset({"gid"}), frozenset({"publication_key"})
+                    ),
+                    FunctionalDependency(
+                        frozenset({"publication_key"}), frozenset({"gid"})
+                    ),
+                }
+            )
+        if not inferred:
+            continue
+
+        declared = tuple(relation.functional_dependencies)
+        for dependency in sorted(
+            inferred,
+            key=lambda item: (
+                tuple(sorted(item.determinant)),
+                tuple(sorted(item.dependent)),
+            ),
+        ):
+            if not dependency.dependent <= attribute_closure(
+                dependency.determinant, declared
+            ):
+                errors.append(
+                    f"relation {relation.name!r} omits immutable cross-relation "
+                    f"identity FD {_format_set(dependency.determinant)} -> "
+                    f"{_format_set(dependency.dependent)}"
+                )
+
+        augmented = declared + tuple(inferred)
+        augmented_keys = frozenset(enumerate_candidate_keys(attributes, augmented))
+        declared_keys = frozenset(relation.declared_keys)
+        if augmented_keys != declared_keys:
+            errors.append(
+                f"relation {relation.name!r} candidate keys ignore the immutable "
+                "gallery/name/GID/publication identity chain"
+            )
+
+        logical_view = (
+            relation.kind == "controlled_materialization"
+            and isinstance(relation.materialization, Mapping)
+            and relation.materialization.get("storage") == "logical_view"
+        )
+        if logical_view:
+            continue
+        for dependency in inferred:
+            if dependency.dependent <= dependency.determinant:
+                continue
+            if attribute_closure(dependency.determinant, augmented) != attributes:
+                errors.append(
+                    f"relation {relation.name!r} physically repeats immutable "
+                    f"identity-chain fact {_format_set(dependency.determinant)} -> "
+                    f"{_format_set(dependency.dependent)} without a superkey determinant"
+                )
+                break
+    return errors
 
 
 def _validate_foreign_keys(
@@ -10220,6 +10525,7 @@ def _parse_retention_contract(value: Mapping[str, Any]) -> RetentionContract:
         semantic_obligation_id=_string(value, "semantic_obligation_id", context),
         source_history_rule=_string(value, "source_history_rule", context),
         catalog_history_rule=_string(value, "catalog_history_rule", context),
+        current_catalog_rule=_string(value, "current_catalog_rule", context),
         active_source_rule=_string(value, "active_source_rule", context),
         inactive_source_rule=_string(value, "inactive_source_rule", context),
     )
@@ -10446,23 +10752,18 @@ def _parse_analysis_impacted_key_contract(
             AnalysisImpactedKeyFamily(
                 name=_string(family, "name", f"{context}.family"),
                 key_attribute=_string(family, "key_attribute", f"{context}.family"),
-                anchor_relation=_string(family, "anchor_relation", f"{context}.family"),
+                base_relation=_string(family, "base_relation", f"{context}.family"),
                 provenance_relation=_string(
                     family, "provenance_relation", f"{context}.family"
                 ),
-                witness_relation=_string(
-                    family, "witness_relation", f"{context}.family"
-                ),
-                seal_relation=_string(family, "seal_relation", f"{context}.family"),
-                view_relation=_string(family, "view_relation", f"{context}.family"),
                 provenance_primary_key=_string_tuple(
                     family, "provenance_primary_key", f"{context}.family"
                 ),
                 provenance_lookup_index=_string_tuple(
                     family, "provenance_lookup_index", f"{context}.family"
                 ),
-                witness_primary_key=_string_tuple(
-                    family, "witness_primary_key", f"{context}.family"
+                base_primary_key=_string_tuple(
+                    family, "base_primary_key", f"{context}.family"
                 ),
                 witness_fk_attributes=_string_tuple(
                     family, "witness_fk_attributes", f"{context}.family"
@@ -10721,6 +11022,9 @@ def _parse_long_value_storage_contract(
         ),
         canonical_reference_attributes=_string_tuple(
             value, "canonical_reference_attributes", context
+        ),
+        opaque_audit_references=_string_tuple(
+            value, "opaque_audit_references", context
         ),
         direct_payload_attributes=_string_tuple(
             value, "direct_payload_attributes", context

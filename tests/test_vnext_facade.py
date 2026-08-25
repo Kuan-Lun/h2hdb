@@ -423,6 +423,16 @@ def _catalog_fixture(connector: SQLiteConnector) -> dict[str, object]:
     assert seed_publication_identity(connector, gid=gid).publication_key == (
         publication_key_value
     )
+    connector.execute(
+        "INSERT INTO catalog_source_gallery_name_gids "
+        "(source_gallery_name, gid) VALUES (%s, %s)",
+        (b"gallery-one", gid),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_source_name_accesses "
+        "(gallery_id, source_gallery_name) VALUES (1, %s)",
+        (b"gallery-one",),
+    )
     snapshot_manifest = _canonical(
         connector,
         "source_snapshot_manifest_v1",
@@ -447,6 +457,7 @@ def _catalog_fixture(connector: SQLiteConnector) -> dict[str, object]:
         summary_sha256=summary,
         language_sha256=language,
         modified_at=3_000_000,
+        source_title_sha256=source_title,
     )
     connector.execute(
         "INSERT INTO catalog_publication_order "

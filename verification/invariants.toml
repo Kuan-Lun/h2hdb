@@ -1048,7 +1048,7 @@ id = "runtime.production.publication-candidate"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The production candidate repository derives the exact channel and optional baselines under locks, reserves one catalog revision, uses closed bounded cursor and stage registries, independently validates selection and catalog projection children, and writes immutable seals."
+claim = "The production candidate repository derives the exact channel and optional baselines under locks, reserves one catalog revision, validates the exact seventeen-stage provider registry while allocating only the first sixteen candidate-owned checkpoints, never allocates FINALIZE_ARTIFACTS candidate state, uses closed bounded cursors, independently validates selection and catalog projection children, and writes immutable seals."
 assumptions = ["Typed disk plans are immutable between preparation and the transaction that revalidates their authority."]
 [[evidence.location]]
 path = "src/h2hdb/vnext_publication_candidate_repository.py"
@@ -1079,8 +1079,11 @@ id = "integration.sqlite.publication-candidate"
 layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
-claim = "Generated SQLite E2E executes production candidate begin and replay, exact bounded selection, typed disk-backed catalog projection, independent child validation, projection seal, and response-loss reauthorization."
+claim = "Generated SQLite E2E executes production candidate begin and replay, proves the seventeen-stage provider registry yields exactly sixteen candidate-owned checkpoints with no FINALIZE_ARTIFACTS row, exact bounded selection, typed disk-backed catalog projection, independent child validation, projection seal, and response-loss reauthorization."
 assumptions = ["This executes SQLite and does not establish MariaDB transaction behavior."]
+[[evidence.location]]
+path = "tests/test_vnext_publication_candidate_repository.py"
+symbol = "test_begin_derives_revision_channel_and_exact_optional_bases"
 [[evidence.location]]
 path = "tests/test_vnext_publication_candidate_repository.py"
 symbol = "test_catalog_projection_uses_typed_disk_plan_and_independent_validation"
@@ -1093,7 +1096,7 @@ id = "integration.mariadb-shape.publication-candidate"
 layer = "integration"
 strength = "runtime_integration"
 directness = "supporting"
-claim = "MariaDB recorders check production candidate authority locks, selection SQL, checkpoint compare-and-swap, and server placeholders without executing a MariaDB transaction."
+claim = "MariaDB recorders check production candidate authority locks, selection SQL, initialization that excludes FINALIZE_ARTIFACTS from candidate-owned checkpoints, checkpoint compare-and-swap, and server placeholders without executing a MariaDB transaction."
 assumptions = ["SQL-shape recording cannot establish MariaDB isolation, locking, rollback, constraints, or result decoding."]
 [[evidence.location]]
 path = "tests/test_vnext_publication_candidate_repository.py"
@@ -1234,7 +1237,7 @@ id = "runtime.production.cleanup"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The production cleanup repository uses the fixed seventeen-kind phase registry, deterministic sharded identities, exclusive-gate authorization, bounded keyset selection, exact retained-root blockers, receipted checkpoint replay, and static child-first delete plans; PUBLICATION_CANDIDATE eligibility and every phase recheck retain every PENDING or PREPARED protection family, so only terminal release-acknowledged COMMITTED families can be deleted child-first."
+claim = "The production cleanup repository uses the fixed eighteen-kind phase registry, deterministic sharded identities, exclusive-gate authorization, bounded keyset selection, exact retained-root blockers, receipted checkpoint replay, and static child-first delete plans; CATALOG_PUBLICATION removes only finalized non-head payload after the current head is projection-finalized and live predecessor pins release, while PUBLICATION_CANDIDATE eligibility and every phase recheck retain every PENDING or PREPARED protection family, so only terminal release-acknowledged COMMITTED families can be deleted child-first."
 assumptions = ["Every cleanup cycle is invoked while the supplied exclusive maintenance lease remains live and is revalidated at each batch."]
 [[evidence.location]]
 path = "src/h2hdb/vnext_cleanup_repository.py"
@@ -1249,7 +1252,7 @@ layer = "fault"
 strength = "negative_control"
 directness = "direct"
 claim = "Cleanup tests reject registry drift, shared or stale gate authority, live retention roots, receipt corruption and stale attempts, retain unresolved PENDING and PREPARED artifact-protection families before every delete, prove empty-terminal replay, and roll back a paired child-first delete when its second write fails."
-assumptions = ["The current injected-write test covers one paired strategy and does not interrupt every statement in every one of the seventeen strategies."]
+assumptions = ["The current injected-write test covers one paired strategy and does not interrupt every statement in every one of the eighteen strategies."]
 [[evidence.location]]
 path = "tests/test_vnext_cleanup_repository.py"
 symbol = "test_cleanup_fails_closed_for_shared_gate_and_registry_drift"
@@ -1268,11 +1271,11 @@ id = "integration.sqlite.cleanup"
 layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
-claim = "Generated SQLite E2E executes all seventeen static production strategies, child-first source, analysis, candidate and staging cleanup, activated-effect preservation, abandoned-stream deletion, bounded replay, and retention blocking, including zero-write retention of PENDING and PREPARED candidate families and child-first deletion only after every family is COMMITTED."
+claim = "Generated SQLite E2E executes all eighteen static production strategies, child-first source, analysis, catalog-publication, candidate and staging cleanup, activated-effect preservation, abandoned-stream deletion, bounded replay, and retention blocking. The public current-only facade runs against an FK-on READY rev1-to-rev2 database containing every catalog-publication payload phase including artifact, requires multiple bounded attempts, rejects the stale reader pin, removes all eleven old payload families, preserves current payload and audit descriptors, and remains READY."
 assumptions = ["This executes SQLite and does not establish MariaDB transaction behavior."]
 [[evidence.location]]
 path = "tests/test_vnext_cleanup_repository.py"
-symbol = "test_all_fifteen_static_strategies_match_the_closed_phase_registry"
+symbol = "test_all_eighteen_strategies_match_the_closed_phase_registry"
 [[evidence.location]]
 path = "tests/test_vnext_cleanup_repository.py"
 symbol = "test_source_analysis_and_candidate_strategies_delete_child_first"
@@ -1285,6 +1288,9 @@ symbol = "test_candidate_cleanup_deletes_committed_prepared_family_child_first"
 [[evidence.location]]
 path = "tests/test_vnext_cleanup_repository.py"
 symbol = "test_operational_preparation_cleanup_preserves_activated_effects"
+[[evidence.location]]
+path = "tests/test_vnext_catalog_reader_repository.py"
+symbol = "test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready"
 
 [[evidence]]
 id = "integration.mariadb-shape.cleanup"
@@ -1361,7 +1367,7 @@ id = "runtime.production.schema-epoch"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "SchemaEpochRunner constructs only an admissible empty epoch, records and revalidates exact DDL, 4,644 bootstrap seeds per backend and all 25 semantic-obligation writer bindings, resumes committed create-only slices and idempotent seeds, runs wheel validators read-only, and publishes READY by exact compare-and-swap; full check deliberately performs the documented linear scan of the single sealed publication generation chain for exact nodes, edges, commits, arithmetic, no-fork/no-gap/no-orphan and maximum-head consistency, while quick readiness remains epoch-only O(1); the default generated wheel provider completes initialize, replay, read-only full check and readiness on fresh SQLite and MariaDB 10.11.11."
+claim = "SchemaEpochRunner constructs only an admissible empty epoch, records and revalidates exact DDL, 4,913 bootstrap seeds per backend and all 25 semantic-obligation writer bindings, resumes committed create-only slices and idempotent seeds, runs wheel validators read-only, and publishes READY by exact compare-and-swap; full check deliberately performs the documented linear scan of the single sealed publication generation chain for exact nodes, edges, commits, arithmetic, no-fork/no-gap/no-orphan and maximum-head consistency, while quick readiness remains epoch-only O(1); the default generated wheel provider completes initialize, replay, read-only full check and readiness on fresh SQLite and MariaDB 10.11.11."
 assumptions = ["The MariaDB 10.11.11 test remains an opt-in testcontainer integration gate."]
 [[evidence.location]]
 path = "src/h2hdb/schema_epoch.py"
@@ -1398,7 +1404,7 @@ id = "integration.sqlite.schema-epoch"
 layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
-claim = "SQLite integration executes the production epoch runner from an empty database through create-only slices, exact bootstrap and semantic validation, READY publication, read-only READY revalidation, and committed retry convergence; the default generated provider additionally initializes, replays and validates all 4,644 SQLite seeds and 25 resolved writer bindings."
+claim = "SQLite integration executes the production epoch runner from an empty database through create-only slices, exact bootstrap and semantic validation, READY publication, read-only READY revalidation, and committed retry convergence; the default generated provider additionally initializes, replays and validates all 4,913 SQLite seeds and 25 resolved writer bindings."
 assumptions = []
 [[evidence.location]]
 path = "tests/test_schema_epoch.py"
@@ -1415,7 +1421,7 @@ id = "integration.live-mariadb.schema-epoch"
 layer = "integration"
 strength = "mariadb_integration"
 directness = "direct"
-claim = "Live MariaDB 10.11.11 integration executes the production epoch runner through empty-database READY, read-only full revalidation, committed partial-DDL resume, committed seed resume, and fail-closed rejection with advisory-lock release; the default generated provider additionally initializes, replays and validates all 4,644 MariaDB seeds, all 25 resolved writer bindings, and the non-null publication-candidate projection metadata."
+claim = "Live MariaDB 10.11.11 integration executes the production epoch runner through empty-database READY, read-only full revalidation, committed partial-DDL resume, committed seed resume, and fail-closed rejection with advisory-lock release; the default generated provider additionally initializes, replays and validates all 4,913 MariaDB seeds, all 25 resolved writer bindings, and the non-null publication-candidate projection metadata."
 assumptions = ["The MariaDB 10.11.11 tests remain opt-in testcontainer integration gates."]
 [[evidence.location]]
 path = "tests/test_schema_epoch_mariadb.py"
@@ -1446,7 +1452,7 @@ id = "runtime.production.writer-bindings"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The wheel-owned closed registry installs all 25 exact obligation, hook-name and version bindings whose families contain canonical public production repository methods, typed transaction owners and mutation relations inside the generated authority closure. Physical-domain bindings additionally install the closed guard tuples; nine boundary tests prove the exact 54 catalog, nine operational and one schema-epoch writer families, the 295-relation catalog physical-domain authority set with exactly 239 mutation relations, and the exact exclusion of all 56 read-only catalog views from mutation authority while rejecting forged values before SQL or event derivation."
+claim = "The wheel-owned closed registry installs all 25 exact obligation, hook-name and version bindings whose families contain canonical public production repository methods, typed transaction owners and mutation relations inside the generated authority closure. Physical-domain bindings additionally install the closed guard tuples; nine boundary tests prove the exact 54 catalog, nine operational and one schema-epoch writer families, the 272-relation catalog physical-domain authority set with exactly 218 mutation relations, and the exact exclusion of all 54 read-only catalog views from mutation authority while rejecting forged values before SQL or event derivation."
 assumptions = ["Binding evidence identifies the complete mutation-owner family; each referenced repository evidence record establishes the corresponding runtime semantics at those entrypoints. The adversarial boundary set is representative and does not constitute the exhaustive cross-backend fault matrix required by the fault layer."]
 [[evidence.location]]
 path = "src/h2hdb/catalog_writer.py"
@@ -1802,8 +1808,8 @@ fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
 lean = { status = "covered", evidence = ["lean.data.retention"] }
 tla = { status = "supporting", evidence = ["tla.data.lifecycle.small", "tla.data.vertical-family.small"] }
 runtime_refinement = { status = "covered", evidence = ["runtime.data.retention", "runtime.production.writer-bindings", "runtime.production.cleanup"] }
-fault = { status = "blocked", evidence = ["fault.data.binding-corruption", "fault.production.cleanup"], blocker = "The production matrix rejects live roots, registry and receipt corruption and rolls back one paired delete, but it does not race every retention root or interrupt every phase of all seventeen strategies." }
-integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.cleanup", "integration.mariadb-shape.cleanup"], blocker = "SQLite executes all seventeen production strategies and retained-root blockers, but MariaDB evidence checks static SQL shape only and no live MariaDB cleanup, resume, and publication-race workflow has run." }
+fault = { status = "blocked", evidence = ["fault.data.binding-corruption", "fault.production.cleanup"], blocker = "The production matrix rejects live roots, registry and receipt corruption and rolls back one paired delete, but it does not race every retention root or interrupt every phase of all eighteen strategies." }
+integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.cleanup", "integration.mariadb-shape.cleanup"], blocker = "SQLite executes all eighteen production strategies and retained-root blockers, but MariaDB evidence checks static SQL shape only and no live MariaDB cleanup, resume, and publication-race workflow has run." }
 
 [[invariant]]
 id = "h2hdb.operational.physical-domains.v1"

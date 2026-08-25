@@ -8,15 +8,16 @@ or operational tables directly.
 
 ## Database ownership
 
-There is one epoch-2/version-1 database. Its 340 catalog BCNF base relations,
-78 intentional catalog views, 75 operational BCNF base relations, and one
+There is one epoch-2/version-1 database. Its 306 catalog BCNF base relations,
+73 intentional catalog views, 75 operational BCNF base relations, and one
 operational activation view are generated for both SQLite and MariaDB from the
 same logical manifests. One of the 75 operational bases is the separately
-created epoch-control relation, so the database has 340 + 75 = 415 base tables.
-The catalog graph has 49 sealed vertical families, 27 checked decompositions,
-335 narrow bases plus five intentional wide BCNF recompositions, and an exact
-295-relation physical authority closure (239 mutation relations plus 56
-read-only views). Each backend receives exactly 4,644 typed bootstrap rows.
+created epoch-control relation, so the database has 306 + 75 = 381 base tables
+and 74 logical views, or 455 schema objects. The catalog graph has 38 sealed
+vertical families, 29 checked decompositions, 294 narrow bases plus 12
+intentional wide BCNF recompositions, and an exact 272-relation physical
+authority closure (218 mutation relations plus 54 read-only views). Each
+backend receives exactly 4,913 typed bootstrap rows.
 
 Ingest and coordination workers receive read-write credentials. Catalog-serving
 consumers use read-only credentials and `VNextCatalogFacade`. For SQLite, mount
@@ -80,8 +81,13 @@ core versions.
 Applications import these public entry points from `h2hdb`:
 
 - `VNextDatabaseAdminFacade` for initialization, full checks, and readiness.
-- `VNextCatalogFacade` for revision-pinned catalog reads.
+- `VNextCatalogFacade` for current-head catalog reads; a descriptor is accepted
+  only while it still exactly equals that head.
 - `VNextDownloadQueueFacade` for normalized request/list/complete operations.
+- `VNextIngestFacade.drain_current_only_maintenance()` after ingest completion
+  for renewable, response-loss-safe current-catalog cleanup. Its typed outcome
+  distinguishes `PROGRESSED` (retry immediately) from `BLOCKED`/`CONTENDED`
+  (retry on the ordinary resident poll cadence) and terminal `DONE`.
 
 Repository classes that accept a connector or unit of work are internal
 coordination surfaces. A sibling repository must not depend on physical table
@@ -89,7 +95,7 @@ names, generated SQL, or a private repository method.
 
 The integration boundary has three explicit limits:
 
-- Nonblank search fails closed until a normalized revision-pinned search index
+- Nonblank search fails closed until a normalized current-head search index
   is part of the schema and reader contract.
 - `CatalogPublication.redownload_required` has no closed durable
   revision-scoped derivation contract, so consumers must not infer it from
@@ -109,7 +115,8 @@ verified archive.
 If a filesystem-backed adapter is used, keep these conceptual roots separate:
 
 - A replaceable current library with friendly filenames for Komga.
-- An immutable, content-addressed artifact store used for published revisions.
+- A content-addressed artifact store retaining the current and bounded pending
+  projection; released artifacts outside both are reclaimed after reconcile.
 
 Ingest needs write access to both. Catalog-serving consumers need read access
 only to the artifact store when their acquisition adapter serves those bytes.
@@ -150,6 +157,9 @@ installs with:
 ```
 
 The script does not create or consume `uv.lock`. Its smoke installs every
-public consumer, including `h2hdb-ingest` and `h2hdb-downloader`, and
-supplements—but does not replace—schema/Lean checks, strict coverage evidence,
-or live MariaDB integration tests.
+repository-owned public consumer, including `h2hdb-ingest` and
+`h2hdb-downloader`, as a local editable. The downloader resolves `hbrowser`
+from its declared PyPI range so this integration run never consumes an
+unrelated local `hbrowser` worktree. The smoke supplements—but does not
+replace—schema/Lean checks, strict coverage evidence, or live MariaDB
+integration tests.

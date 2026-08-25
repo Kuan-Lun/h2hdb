@@ -37,6 +37,7 @@ from h2hdb.vnext_current_projection_repository import (
     CurrentProjectionArtifactRepository,
     CurrentProjectionCursorError,
     CurrentProjectionReadError,
+    CurrentProjectionUnavailableError,
 )
 
 _CHANNEL = b"default"
@@ -263,6 +264,9 @@ def _seed_projection(
             publication_key = identity.publication_key(gid)
             upload_time = 2_000_000 + gid
             source_name = f"gallery-{gid}"
+            source_title_sha256 = sha256(
+                f"source-title-{revision}-{gid}".encode()
+            ).digest()
             artifact_payload = f"artifact-{revision}-{gid}".encode()
             artifact_sha256 = sha256(artifact_payload).digest()
             locator_components = identity.artifact_locator_components(artifact_sha256)
@@ -274,6 +278,21 @@ def _seed_projection(
                 (gid, upload_time),
             )
             seed_publication_identity(connector, gid=gid)
+            if not connector.fetch_one(
+                "SELECT 1 FROM catalog_source_gallery_name_gids "
+                "WHERE source_gallery_name = %s",
+                (source_name.encode(),),
+            ):
+                connector.execute(
+                    "INSERT INTO catalog_source_gallery_name_gids "
+                    "(source_gallery_name, gid) VALUES (%s, %s)",
+                    (source_name.encode(), gid),
+                )
+            connector.execute(
+                "INSERT INTO catalog_gallery_source_name_accesses "
+                "(gallery_id, source_gallery_name) VALUES (%s, %s)",
+                (revision * 10_000 + position + 1, source_name.encode()),
+            )
             seed_catalog_publication(
                 connector,
                 revision=revision,
@@ -282,14 +301,13 @@ def _seed_projection(
                 summary_sha256=sha256(f"summary-{revision}-{gid}".encode()).digest(),
                 language_sha256=sha256(b"language-zh").digest(),
                 modified_at=3_000_000 + gid,
+                source_title_sha256=source_title_sha256,
             )
             seed_catalog_publication_title(
                 connector,
                 revision=revision,
                 publication_key=publication_key,
-                source_title_sha256=sha256(
-                    f"source-title-{revision}-{gid}".encode()
-                ).digest(),
+                source_title_sha256=source_title_sha256,
                 source_gallery_name=source_name.encode(),
             )
             connector.execute(
@@ -394,13 +412,13 @@ def test_db_committed_projection_pages_are_bounded_and_empty_terminal(
         connector.close()
 
 
-def test_continuation_stays_on_receipt_after_current_head_advances(
+def test_continuation_fails_closed_after_current_head_advances(
     tmp_path: Path,
 ) -> None:
     connector = _database(tmp_path / "head-advance.sqlite3")
     try:
         old_receipt = b"o" * 16
-        old_expected = _seed_projection(
+        _seed_projection(
             connector,
             revision=1,
             gids=(201, 202),
@@ -418,18 +436,16 @@ def test_continuation_stays_on_receipt_after_current_head_advances(
             receipt_id=new_receipt,
         )
 
-        continued = CurrentProjectionArtifactRepository.list_page(
-            connector,
-            receipt_id=first.receipt_id,
-            cursor=first.next_cursor,
-            page_limit=1,
-        )
-        assert continued.receipt_id == old_receipt
-        assert continued.catalog_revision == 1
-        assert (
-            tuple(item.publication_key for item in continued.items)
-            == tuple(sorted(old_expected))[1:]
-        )
+        with pytest.raises(
+            CurrentProjectionUnavailableError,
+            match="unavailable",
+        ):
+            CurrentProjectionArtifactRepository.list_page(
+                connector,
+                receipt_id=first.receipt_id,
+                cursor=first.next_cursor,
+                page_limit=1,
+            )
 
         current = CurrentProjectionArtifactRepository.list_page(connector)
         assert current.receipt_id == new_receipt
@@ -502,7 +518,7 @@ def test_cursor_and_page_bounds_fail_closed(tmp_path: Path) -> None:
         connector.close()
 
 
-@pytest.mark.parametrize("corruption", ("title-seal", "locator"))
+@pytest.mark.parametrize("corruption", ("title-row", "locator"))
 def test_sealed_projection_corruption_is_not_silently_omitted(
     tmp_path: Path,
     corruption: str,
@@ -518,10 +534,13 @@ def test_sealed_projection_corruption_is_not_silently_omitted(
         publication_key = next(iter(expected))
         connector.execute("PRAGMA foreign_keys = OFF")
         try:
-            if corruption == "title-seal":
+            if corruption == "title-row":
                 connector.execute(
-                    "DELETE FROM catalog_publication_title_seals "
-                    "WHERE revision = 1 AND publication_key = %s",
+                    "DELETE FROM catalog_publication_storage WHERE "
+                    "catalog_occurrence_sha256 = ("
+                    "SELECT catalog_occurrence_sha256 "
+                    "FROM catalog_publication_occurrence_identities "
+                    "WHERE revision = 1 AND publication_key = %s)",
                     (publication_key,),
                 )
             else:
@@ -578,7 +597,7 @@ def test_sqlite_page_scan_uses_revision_publication_key_primary_index(
         connector.close()
 
 
-def test_public_facade_pins_continuation_across_head_advance_and_maps_all_fields(
+def test_public_facade_rejects_continuation_across_head_advance(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "facade-head-advance.sqlite3"
@@ -632,16 +651,14 @@ def test_public_facade_pins_continuation_across_head_advance_and_maps_all_fields
     finally:
         head_connector.close()
 
-    continued = facade.continue_current_projection_artifacts(
-        first.receipt_id,
-        first.next_cursor,
-    )
-    assert continued.receipt_id == old_receipt
-    assert continued.catalog_revision == 1
-    assert (
-        tuple(item.publication_key for item in continued.items)
-        == tuple(sorted(old_expected))[1:]
-    )
+    with pytest.raises(
+        VNextCurrentProjectionUnavailableError,
+        match="unavailable",
+    ):
+        facade.continue_current_projection_artifacts(
+            first.receipt_id,
+            first.next_cursor,
+        )
 
     current = facade.list_current_projection_artifacts(channel=b"special")
     assert current.receipt_id == new_receipt
@@ -768,7 +785,8 @@ def test_public_projection_facade_owns_mariadb_read_snapshot(
         "commit",
         "close",
     ]
-    assert len(recorder.selects) == 2
+    assert len(recorder.selects) == 3
     assert recorder.selects[0][1] == (b"special",)
     assert recorder.selects[1][1] == (1, 7)
+    assert recorder.selects[2][1] == (b"special",)
     assert all("FOR UPDATE" not in query for query, _data in recorder.selects)

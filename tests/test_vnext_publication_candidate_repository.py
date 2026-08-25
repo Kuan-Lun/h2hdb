@@ -493,23 +493,9 @@ def _seed_selected_galleries(
             (gallery_id, source_gallery_name),
         )
         connector.execute(
-            "INSERT INTO catalog_gallery_observation_metadata_anchors "
-            "(gallery_id, observation_id) VALUES (%s, 1)",
-            (gallery_id,),
-        )
-        connector.execute(
-            "INSERT INTO catalog_gallery_observation_download_times "
-            "(gallery_id, observation_id, download_time) VALUES (%s, 1, 2)",
-            (gallery_id,),
-        )
-        connector.execute(
-            "INSERT INTO catalog_gallery_observation_modified_times "
-            "(gallery_id, observation_id, modified_time) VALUES (%s, 1, 3)",
-            (gallery_id,),
-        )
-        connector.execute(
-            "INSERT INTO catalog_gallery_observation_metadata_seals "
-            "(gallery_id, observation_id) VALUES (%s, 1)",
+            "INSERT INTO catalog_gallery_observation_metadata_locals "
+            "(gallery_id, observation_id, download_time, modified_time) "
+            "VALUES (%s, 1, 2, 3)",
             (gallery_id,),
         )
         connector.execute(
@@ -529,22 +515,12 @@ def _seed_selected_galleries(
             (_ANALYSIS, gallery_id),
         )
         connector.execute(
-            "INSERT INTO catalog_a_impacted_gid_anchors "
-            "(analysis_id, gid) VALUES (%s, %s)",
-            (_ANALYSIS, gid),
+            "INSERT INTO catalog_a_impacted_gid_provenance_storage "
+            "(analysis_id, gallery_id) VALUES (%s, %s)",
+            (_ANALYSIS, gallery_id),
         )
         connector.execute(
-            "INSERT INTO catalog_a_impacted_gid_provenance "
-            "(analysis_id, gallery_id, gid) VALUES (%s, %s, %s)",
-            (_ANALYSIS, gallery_id, gid),
-        )
-        connector.execute(
-            "INSERT INTO catalog_a_impacted_gid_witnesses "
-            "(analysis_id, gid, witness_gallery_id) VALUES (%s, %s, %s)",
-            (_ANALYSIS, gid, gallery_id),
-        )
-        connector.execute(
-            "INSERT INTO catalog_a_impacted_gid_seals "
+            "INSERT INTO catalog_analysis_impacted_gid_storage "
             "(analysis_id, gid) VALUES (%s, %s)",
             (_ANALYSIS, gid),
         )
@@ -830,9 +806,17 @@ def test_begin_derives_revision_channel_and_exact_optional_bases(
         (1,),
     ) == (_CANDIDATE,)
     assert connector.fetch_one(
+        "SELECT COUNT(*) FROM catalog_publication_stages",
+    ) == (17,)
+    assert connector.fetch_one(
         "SELECT COUNT(*) FROM catalog_publication_checkpoints WHERE candidate_id = %s",
         (_CANDIDATE,),
-    ) == (17,)
+    ) == (16,)
+    assert not connector.fetch_one(
+        "SELECT 1 FROM catalog_publication_checkpoints "
+        "WHERE candidate_id = %s AND stage = %s",
+        (_CANDIDATE, b"FINALIZE_ARTIFACTS"),
+    )
     assert not connector.fetch_one(
         "SELECT 1 FROM catalog_revisions WHERE revision = %s",
         (expected_revision,),
@@ -1643,7 +1627,7 @@ def test_catalog_projection_major_statement_faults_roll_back_all_children(
         original_execute = connector.execute
         original_execute_affected = connector.execute_affected
         failures = (
-            "INSERT INTO catalog_publication_anchors",
+            "INSERT INTO catalog_publication_occurrence_identities",
             "INSERT INTO catalog_publication_batch_receipt_seals",
             "UPDATE catalog_publication_checkpoint_generations",
         )
@@ -1783,7 +1767,11 @@ def test_independent_catalog_validation_rejects_missing_child_without_progress(
                     now=112 + index,
                 )
         connector.execute(
-            "DELETE FROM catalog_publication_title_seals WHERE revision = %s",
+            "DELETE FROM catalog_publication_storage WHERE "
+            "catalog_occurrence_sha256 IN ("
+            "SELECT catalog_occurrence_sha256 "
+            "FROM catalog_publication_occurrence_identities "
+            "WHERE revision = %s)",
             (1,),
         )
         with pytest.raises(PublicationCandidateConflictError, match="independent"):
@@ -1906,9 +1894,12 @@ def test_independent_selection_validation_rejects_missing_materialized_child(
                 now=101 + index,
             )
     connector.execute(
-        "DELETE FROM catalog_publication_selections "
-        "WHERE candidate_id = %s AND gallery_id = %s",
-        (_CANDIDATE, 2),
+        "DELETE FROM catalog_publication_selection_storage "
+        "WHERE gallery_id = %s AND selection_occurrence_sha256 IN ("
+        "SELECT selection_occurrence_sha256 "
+        "FROM catalog_publication_selection_occurrence_identities "
+        "WHERE candidate_id = %s)",
+        (2, _CANDIDATE),
     )
 
     with pytest.raises(PublicationCandidateConflictError, match="independent"):
@@ -2070,7 +2061,7 @@ def test_mariadb_selection_and_checkpoint_sql_keep_closed_server_shape() -> None
         ) -> int:
             self.query = query
             self.data = data
-            return 17
+            return 16
 
     connector: Any = RecordingConnector()
     work = VNextUnitOfWork(connector, backend="mariadb")
@@ -2137,8 +2128,12 @@ def test_mariadb_selection_and_checkpoint_sql_keep_closed_server_shape() -> None
 
     module._initialize_candidate_checkpoints(work, _CANDIDATE, now=100)
     assert "SELECT %s, stage" in connector.query
-    assert "FROM catalog_publication_stage_seals ORDER BY stage" in connector.query
-    assert connector.query.count("%s") == 1 and "?" not in connector.query
+    assert (
+        "FROM catalog_publication_stage_seals WHERE stage <> %s ORDER BY stage"
+        in connector.query
+    )
+    assert connector.data == (_CANDIDATE, b"FINALIZE_ARTIFACTS")
+    assert connector.query.count("%s") == 2 and "?" not in connector.query
 
 
 @pytest.mark.parametrize(

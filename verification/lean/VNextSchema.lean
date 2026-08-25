@@ -1174,7 +1174,7 @@ end H2HDB.Verification.VNextSchema
 namespace H2HDB.Verification.VNextSchema
 
 /- BEGIN GENERATED CATALOG CONTRACTS -/
-def catalogManifestSha256 : String := "86f47b12a02c1444defaa2299eaadf3e825176ed906225e71db151c266893e4b"
+def catalogManifestSha256 : String := "c53e9557a2833d8cb605bc886d53a5be3ad5751243b2a8451c7dcb06bbf9eec0"
 
 /-! This section is mechanically generated from catalog.toml. -/
 
@@ -4279,51 +4279,6 @@ theorem gallery_observation_bcnf_check :
 theorem gallery_observation_bcnf : BCNF gallery_observation_contract :=
   bcnfCheck_sound gallery_observation_contract gallery_observation_bcnf_check
 
-def gallery_observation_metadata_anchor_contract : RelationContract where
-  name := "gallery_observation_metadata_anchor"
-  attributes := ["gallery_id", "observation_id"]
-  declaredKeys := [["gallery_id", "observation_id"]]
-  declaredFDs := [
-  ]
-
-theorem gallery_observation_metadata_anchor_schema_well_formed :
-    schemaWellFormedCheck gallery_observation_metadata_anchor_contract = true := by
-  native_decide
-
-theorem gallery_observation_metadata_anchor_candidate_keys_check :
-    keysDetermineAllCheck gallery_observation_metadata_anchor_contract = true := by
-  native_decide
-
-theorem gallery_observation_metadata_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_observation_metadata_anchor_contract :=
-  keysDetermineAllCheck_sound gallery_observation_metadata_anchor_contract
-    gallery_observation_metadata_anchor_candidate_keys_check
-
-theorem gallery_observation_metadata_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_observation_metadata_anchor_contract = true := by
-  native_decide
-
-theorem gallery_observation_metadata_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_observation_metadata_anchor_contract :=
-  declaredKeysMinimalCheck_sound gallery_observation_metadata_anchor_contract
-    gallery_observation_metadata_anchor_candidate_keys_minimal_check
-
-theorem gallery_observation_metadata_anchor_closure_fixed_check :
-    closureFixedPointCheck gallery_observation_metadata_anchor_contract = true := by
-  native_decide
-
-theorem gallery_observation_metadata_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_observation_metadata_anchor_contract :=
-  closureFixedPointCheck_sound gallery_observation_metadata_anchor_contract
-    gallery_observation_metadata_anchor_closure_fixed_check
-
-theorem gallery_observation_metadata_anchor_bcnf_check :
-    bcnfCheck gallery_observation_metadata_anchor_contract = true := by
-  native_decide
-
-theorem gallery_observation_metadata_anchor_bcnf : BCNF gallery_observation_metadata_anchor_contract :=
-  bcnfCheck_sound gallery_observation_metadata_anchor_contract gallery_observation_metadata_anchor_bcnf_check
-
 def gallery_upload_time_contract : RelationContract where
   name := "gallery_upload_time"
   attributes := ["gid", "upload_time"]
@@ -4462,142 +4417,51 @@ theorem gallery_source_name_access_bcnf_check :
 theorem gallery_source_name_access_bcnf : BCNF gallery_source_name_access_contract :=
   bcnfCheck_sound gallery_source_name_access_contract gallery_source_name_access_bcnf_check
 
-def gallery_observation_download_time_contract : RelationContract where
-  name := "gallery_observation_download_time"
-  attributes := ["gallery_id", "observation_id", "download_time"]
+def gallery_observation_metadata_local_contract : RelationContract where
+  name := "gallery_observation_metadata_local"
+  attributes := ["gallery_id", "observation_id", "download_time", "modified_time"]
   declaredKeys := [["gallery_id", "observation_id"]]
   declaredFDs := [
-    { determinant := ["gallery_id", "observation_id"], dependent := ["download_time"] }
+    { determinant := ["gallery_id", "observation_id"], dependent := ["download_time", "modified_time"] }
   ]
 
-theorem gallery_observation_download_time_schema_well_formed :
-    schemaWellFormedCheck gallery_observation_download_time_contract = true := by
+theorem gallery_observation_metadata_local_schema_well_formed :
+    schemaWellFormedCheck gallery_observation_metadata_local_contract = true := by
   native_decide
 
-theorem gallery_observation_download_time_candidate_keys_check :
-    keysDetermineAllCheck gallery_observation_download_time_contract = true := by
+theorem gallery_observation_metadata_local_candidate_keys_check :
+    keysDetermineAllCheck gallery_observation_metadata_local_contract = true := by
   native_decide
 
-theorem gallery_observation_download_time_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_observation_download_time_contract :=
-  keysDetermineAllCheck_sound gallery_observation_download_time_contract
-    gallery_observation_download_time_candidate_keys_check
+theorem gallery_observation_metadata_local_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes gallery_observation_metadata_local_contract :=
+  keysDetermineAllCheck_sound gallery_observation_metadata_local_contract
+    gallery_observation_metadata_local_candidate_keys_check
 
-theorem gallery_observation_download_time_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_observation_download_time_contract = true := by
+theorem gallery_observation_metadata_local_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck gallery_observation_metadata_local_contract = true := by
   native_decide
 
-theorem gallery_observation_download_time_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_observation_download_time_contract :=
-  declaredKeysMinimalCheck_sound gallery_observation_download_time_contract
-    gallery_observation_download_time_candidate_keys_minimal_check
+theorem gallery_observation_metadata_local_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal gallery_observation_metadata_local_contract :=
+  declaredKeysMinimalCheck_sound gallery_observation_metadata_local_contract
+    gallery_observation_metadata_local_candidate_keys_minimal_check
 
-theorem gallery_observation_download_time_closure_fixed_check :
-    closureFixedPointCheck gallery_observation_download_time_contract = true := by
+theorem gallery_observation_metadata_local_closure_fixed_check :
+    closureFixedPointCheck gallery_observation_metadata_local_contract = true := by
   native_decide
 
-theorem gallery_observation_download_time_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_observation_download_time_contract :=
-  closureFixedPointCheck_sound gallery_observation_download_time_contract
-    gallery_observation_download_time_closure_fixed_check
+theorem gallery_observation_metadata_local_closure_reached_fixed_point :
+    ClosureReachedFixedPoint gallery_observation_metadata_local_contract :=
+  closureFixedPointCheck_sound gallery_observation_metadata_local_contract
+    gallery_observation_metadata_local_closure_fixed_check
 
-theorem gallery_observation_download_time_bcnf_check :
-    bcnfCheck gallery_observation_download_time_contract = true := by
+theorem gallery_observation_metadata_local_bcnf_check :
+    bcnfCheck gallery_observation_metadata_local_contract = true := by
   native_decide
 
-theorem gallery_observation_download_time_bcnf : BCNF gallery_observation_download_time_contract :=
-  bcnfCheck_sound gallery_observation_download_time_contract gallery_observation_download_time_bcnf_check
-
-def gallery_observation_modified_time_contract : RelationContract where
-  name := "gallery_observation_modified_time"
-  attributes := ["gallery_id", "observation_id", "modified_time"]
-  declaredKeys := [["gallery_id", "observation_id"]]
-  declaredFDs := [
-    { determinant := ["gallery_id", "observation_id"], dependent := ["modified_time"] }
-  ]
-
-theorem gallery_observation_modified_time_schema_well_formed :
-    schemaWellFormedCheck gallery_observation_modified_time_contract = true := by
-  native_decide
-
-theorem gallery_observation_modified_time_candidate_keys_check :
-    keysDetermineAllCheck gallery_observation_modified_time_contract = true := by
-  native_decide
-
-theorem gallery_observation_modified_time_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_observation_modified_time_contract :=
-  keysDetermineAllCheck_sound gallery_observation_modified_time_contract
-    gallery_observation_modified_time_candidate_keys_check
-
-theorem gallery_observation_modified_time_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_observation_modified_time_contract = true := by
-  native_decide
-
-theorem gallery_observation_modified_time_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_observation_modified_time_contract :=
-  declaredKeysMinimalCheck_sound gallery_observation_modified_time_contract
-    gallery_observation_modified_time_candidate_keys_minimal_check
-
-theorem gallery_observation_modified_time_closure_fixed_check :
-    closureFixedPointCheck gallery_observation_modified_time_contract = true := by
-  native_decide
-
-theorem gallery_observation_modified_time_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_observation_modified_time_contract :=
-  closureFixedPointCheck_sound gallery_observation_modified_time_contract
-    gallery_observation_modified_time_closure_fixed_check
-
-theorem gallery_observation_modified_time_bcnf_check :
-    bcnfCheck gallery_observation_modified_time_contract = true := by
-  native_decide
-
-theorem gallery_observation_modified_time_bcnf : BCNF gallery_observation_modified_time_contract :=
-  bcnfCheck_sound gallery_observation_modified_time_contract gallery_observation_modified_time_bcnf_check
-
-def gallery_observation_metadata_seal_contract : RelationContract where
-  name := "gallery_observation_metadata_seal"
-  attributes := ["gallery_id", "observation_id"]
-  declaredKeys := [["gallery_id", "observation_id"]]
-  declaredFDs := [
-  ]
-
-theorem gallery_observation_metadata_seal_schema_well_formed :
-    schemaWellFormedCheck gallery_observation_metadata_seal_contract = true := by
-  native_decide
-
-theorem gallery_observation_metadata_seal_candidate_keys_check :
-    keysDetermineAllCheck gallery_observation_metadata_seal_contract = true := by
-  native_decide
-
-theorem gallery_observation_metadata_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_observation_metadata_seal_contract :=
-  keysDetermineAllCheck_sound gallery_observation_metadata_seal_contract
-    gallery_observation_metadata_seal_candidate_keys_check
-
-theorem gallery_observation_metadata_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_observation_metadata_seal_contract = true := by
-  native_decide
-
-theorem gallery_observation_metadata_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_observation_metadata_seal_contract :=
-  declaredKeysMinimalCheck_sound gallery_observation_metadata_seal_contract
-    gallery_observation_metadata_seal_candidate_keys_minimal_check
-
-theorem gallery_observation_metadata_seal_closure_fixed_check :
-    closureFixedPointCheck gallery_observation_metadata_seal_contract = true := by
-  native_decide
-
-theorem gallery_observation_metadata_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_observation_metadata_seal_contract :=
-  closureFixedPointCheck_sound gallery_observation_metadata_seal_contract
-    gallery_observation_metadata_seal_closure_fixed_check
-
-theorem gallery_observation_metadata_seal_bcnf_check :
-    bcnfCheck gallery_observation_metadata_seal_contract = true := by
-  native_decide
-
-theorem gallery_observation_metadata_seal_bcnf : BCNF gallery_observation_metadata_seal_contract :=
-  bcnfCheck_sound gallery_observation_metadata_seal_contract gallery_observation_metadata_seal_bcnf_check
+theorem gallery_observation_metadata_local_bcnf : BCNF gallery_observation_metadata_local_contract :=
+  bcnfCheck_sound gallery_observation_metadata_local_contract gallery_observation_metadata_local_bcnf_check
 
 def gallery_observation_metadata_contract : RelationContract where
   name := "gallery_observation_metadata"
@@ -4640,234 +4504,6 @@ theorem gallery_observation_metadata_closure_reached_fixed_point :
   closureFixedPointCheck_sound gallery_observation_metadata_contract
     gallery_observation_metadata_closure_fixed_check
 
-def gallery_observation_scan_anchor_contract : RelationContract where
-  name := "gallery_observation_scan_anchor"
-  attributes := ["gallery_id", "observation_id"]
-  declaredKeys := [["gallery_id", "observation_id"]]
-  declaredFDs := [
-  ]
-
-theorem gallery_observation_scan_anchor_schema_well_formed :
-    schemaWellFormedCheck gallery_observation_scan_anchor_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_anchor_candidate_keys_check :
-    keysDetermineAllCheck gallery_observation_scan_anchor_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_observation_scan_anchor_contract :=
-  keysDetermineAllCheck_sound gallery_observation_scan_anchor_contract
-    gallery_observation_scan_anchor_candidate_keys_check
-
-theorem gallery_observation_scan_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_observation_scan_anchor_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_observation_scan_anchor_contract :=
-  declaredKeysMinimalCheck_sound gallery_observation_scan_anchor_contract
-    gallery_observation_scan_anchor_candidate_keys_minimal_check
-
-theorem gallery_observation_scan_anchor_closure_fixed_check :
-    closureFixedPointCheck gallery_observation_scan_anchor_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_observation_scan_anchor_contract :=
-  closureFixedPointCheck_sound gallery_observation_scan_anchor_contract
-    gallery_observation_scan_anchor_closure_fixed_check
-
-theorem gallery_observation_scan_anchor_bcnf_check :
-    bcnfCheck gallery_observation_scan_anchor_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_anchor_bcnf : BCNF gallery_observation_scan_anchor_contract :=
-  bcnfCheck_sound gallery_observation_scan_anchor_contract gallery_observation_scan_anchor_bcnf_check
-
-def gallery_observation_scan_observation_sha256_contract : RelationContract where
-  name := "gallery_observation_scan_observation_sha256"
-  attributes := ["gallery_id", "observation_id", "scan_observation_sha256"]
-  declaredKeys := [["gallery_id", "observation_id"]]
-  declaredFDs := [
-    { determinant := ["gallery_id", "observation_id"], dependent := ["scan_observation_sha256"] }
-  ]
-
-theorem gallery_observation_scan_observation_sha256_schema_well_formed :
-    schemaWellFormedCheck gallery_observation_scan_observation_sha256_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_observation_sha256_candidate_keys_check :
-    keysDetermineAllCheck gallery_observation_scan_observation_sha256_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_observation_sha256_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_observation_scan_observation_sha256_contract :=
-  keysDetermineAllCheck_sound gallery_observation_scan_observation_sha256_contract
-    gallery_observation_scan_observation_sha256_candidate_keys_check
-
-theorem gallery_observation_scan_observation_sha256_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_observation_scan_observation_sha256_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_observation_sha256_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_observation_scan_observation_sha256_contract :=
-  declaredKeysMinimalCheck_sound gallery_observation_scan_observation_sha256_contract
-    gallery_observation_scan_observation_sha256_candidate_keys_minimal_check
-
-theorem gallery_observation_scan_observation_sha256_closure_fixed_check :
-    closureFixedPointCheck gallery_observation_scan_observation_sha256_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_observation_sha256_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_observation_scan_observation_sha256_contract :=
-  closureFixedPointCheck_sound gallery_observation_scan_observation_sha256_contract
-    gallery_observation_scan_observation_sha256_closure_fixed_check
-
-theorem gallery_observation_scan_observation_sha256_bcnf_check :
-    bcnfCheck gallery_observation_scan_observation_sha256_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_observation_sha256_bcnf : BCNF gallery_observation_scan_observation_sha256_contract :=
-  bcnfCheck_sound gallery_observation_scan_observation_sha256_contract gallery_observation_scan_observation_sha256_bcnf_check
-
-def gallery_observation_scan_observation_version_contract : RelationContract where
-  name := "gallery_observation_scan_observation_version"
-  attributes := ["gallery_id", "observation_id", "scan_observation_version"]
-  declaredKeys := [["gallery_id", "observation_id"]]
-  declaredFDs := [
-    { determinant := ["gallery_id", "observation_id"], dependent := ["scan_observation_version"] }
-  ]
-
-theorem gallery_observation_scan_observation_version_schema_well_formed :
-    schemaWellFormedCheck gallery_observation_scan_observation_version_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_observation_version_candidate_keys_check :
-    keysDetermineAllCheck gallery_observation_scan_observation_version_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_observation_version_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_observation_scan_observation_version_contract :=
-  keysDetermineAllCheck_sound gallery_observation_scan_observation_version_contract
-    gallery_observation_scan_observation_version_candidate_keys_check
-
-theorem gallery_observation_scan_observation_version_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_observation_scan_observation_version_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_observation_version_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_observation_scan_observation_version_contract :=
-  declaredKeysMinimalCheck_sound gallery_observation_scan_observation_version_contract
-    gallery_observation_scan_observation_version_candidate_keys_minimal_check
-
-theorem gallery_observation_scan_observation_version_closure_fixed_check :
-    closureFixedPointCheck gallery_observation_scan_observation_version_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_observation_version_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_observation_scan_observation_version_contract :=
-  closureFixedPointCheck_sound gallery_observation_scan_observation_version_contract
-    gallery_observation_scan_observation_version_closure_fixed_check
-
-theorem gallery_observation_scan_observation_version_bcnf_check :
-    bcnfCheck gallery_observation_scan_observation_version_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_observation_version_bcnf : BCNF gallery_observation_scan_observation_version_contract :=
-  bcnfCheck_sound gallery_observation_scan_observation_version_contract gallery_observation_scan_observation_version_bcnf_check
-
-def gallery_observation_scan_source_file_count_contract : RelationContract where
-  name := "gallery_observation_scan_source_file_count"
-  attributes := ["gallery_id", "observation_id", "source_file_count"]
-  declaredKeys := [["gallery_id", "observation_id"]]
-  declaredFDs := [
-    { determinant := ["gallery_id", "observation_id"], dependent := ["source_file_count"] }
-  ]
-
-theorem gallery_observation_scan_source_file_count_schema_well_formed :
-    schemaWellFormedCheck gallery_observation_scan_source_file_count_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_source_file_count_candidate_keys_check :
-    keysDetermineAllCheck gallery_observation_scan_source_file_count_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_source_file_count_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_observation_scan_source_file_count_contract :=
-  keysDetermineAllCheck_sound gallery_observation_scan_source_file_count_contract
-    gallery_observation_scan_source_file_count_candidate_keys_check
-
-theorem gallery_observation_scan_source_file_count_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_observation_scan_source_file_count_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_source_file_count_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_observation_scan_source_file_count_contract :=
-  declaredKeysMinimalCheck_sound gallery_observation_scan_source_file_count_contract
-    gallery_observation_scan_source_file_count_candidate_keys_minimal_check
-
-theorem gallery_observation_scan_source_file_count_closure_fixed_check :
-    closureFixedPointCheck gallery_observation_scan_source_file_count_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_source_file_count_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_observation_scan_source_file_count_contract :=
-  closureFixedPointCheck_sound gallery_observation_scan_source_file_count_contract
-    gallery_observation_scan_source_file_count_closure_fixed_check
-
-theorem gallery_observation_scan_source_file_count_bcnf_check :
-    bcnfCheck gallery_observation_scan_source_file_count_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_source_file_count_bcnf : BCNF gallery_observation_scan_source_file_count_contract :=
-  bcnfCheck_sound gallery_observation_scan_source_file_count_contract gallery_observation_scan_source_file_count_bcnf_check
-
-def gallery_observation_scan_seal_contract : RelationContract where
-  name := "gallery_observation_scan_seal"
-  attributes := ["gallery_id", "observation_id"]
-  declaredKeys := [["gallery_id", "observation_id"]]
-  declaredFDs := [
-  ]
-
-theorem gallery_observation_scan_seal_schema_well_formed :
-    schemaWellFormedCheck gallery_observation_scan_seal_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_seal_candidate_keys_check :
-    keysDetermineAllCheck gallery_observation_scan_seal_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_observation_scan_seal_contract :=
-  keysDetermineAllCheck_sound gallery_observation_scan_seal_contract
-    gallery_observation_scan_seal_candidate_keys_check
-
-theorem gallery_observation_scan_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_observation_scan_seal_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_observation_scan_seal_contract :=
-  declaredKeysMinimalCheck_sound gallery_observation_scan_seal_contract
-    gallery_observation_scan_seal_candidate_keys_minimal_check
-
-theorem gallery_observation_scan_seal_closure_fixed_check :
-    closureFixedPointCheck gallery_observation_scan_seal_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_observation_scan_seal_contract :=
-  closureFixedPointCheck_sound gallery_observation_scan_seal_contract
-    gallery_observation_scan_seal_closure_fixed_check
-
-theorem gallery_observation_scan_seal_bcnf_check :
-    bcnfCheck gallery_observation_scan_seal_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_seal_bcnf : BCNF gallery_observation_scan_seal_contract :=
-  bcnfCheck_sound gallery_observation_scan_seal_contract gallery_observation_scan_seal_bcnf_check
-
 def gallery_observation_scan_contract : RelationContract where
   name := "gallery_observation_scan"
   attributes := ["gallery_id", "observation_id", "scan_observation_sha256", "scan_observation_version", "source_file_count"]
@@ -4906,6 +4542,13 @@ theorem gallery_observation_scan_closure_reached_fixed_point :
     ClosureReachedFixedPoint gallery_observation_scan_contract :=
   closureFixedPointCheck_sound gallery_observation_scan_contract
     gallery_observation_scan_closure_fixed_check
+
+theorem gallery_observation_scan_bcnf_check :
+    bcnfCheck gallery_observation_scan_contract = true := by
+  native_decide
+
+theorem gallery_observation_scan_bcnf : BCNF gallery_observation_scan_contract :=
+  bcnfCheck_sound gallery_observation_scan_contract gallery_observation_scan_bcnf_check
 
 def gallery_observation_discovery_fingerprint_contract : RelationContract where
   name := "gallery_observation_discovery_fingerprint"
@@ -5091,188 +4734,6 @@ theorem gallery_observation_page_count_bcnf_check :
 theorem gallery_observation_page_count_bcnf : BCNF gallery_observation_page_count_contract :=
   bcnfCheck_sound gallery_observation_page_count_contract gallery_observation_page_count_bcnf_check
 
-def gallery_observation_directory_anchor_contract : RelationContract where
-  name := "gallery_observation_directory_anchor"
-  attributes := ["gallery_id", "observation_id"]
-  declaredKeys := [["gallery_id", "observation_id"]]
-  declaredFDs := [
-  ]
-
-theorem gallery_observation_directory_anchor_schema_well_formed :
-    schemaWellFormedCheck gallery_observation_directory_anchor_contract = true := by
-  native_decide
-
-theorem gallery_observation_directory_anchor_candidate_keys_check :
-    keysDetermineAllCheck gallery_observation_directory_anchor_contract = true := by
-  native_decide
-
-theorem gallery_observation_directory_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_observation_directory_anchor_contract :=
-  keysDetermineAllCheck_sound gallery_observation_directory_anchor_contract
-    gallery_observation_directory_anchor_candidate_keys_check
-
-theorem gallery_observation_directory_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_observation_directory_anchor_contract = true := by
-  native_decide
-
-theorem gallery_observation_directory_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_observation_directory_anchor_contract :=
-  declaredKeysMinimalCheck_sound gallery_observation_directory_anchor_contract
-    gallery_observation_directory_anchor_candidate_keys_minimal_check
-
-theorem gallery_observation_directory_anchor_closure_fixed_check :
-    closureFixedPointCheck gallery_observation_directory_anchor_contract = true := by
-  native_decide
-
-theorem gallery_observation_directory_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_observation_directory_anchor_contract :=
-  closureFixedPointCheck_sound gallery_observation_directory_anchor_contract
-    gallery_observation_directory_anchor_closure_fixed_check
-
-theorem gallery_observation_directory_anchor_bcnf_check :
-    bcnfCheck gallery_observation_directory_anchor_contract = true := by
-  native_decide
-
-theorem gallery_observation_directory_anchor_bcnf : BCNF gallery_observation_directory_anchor_contract :=
-  bcnfCheck_sound gallery_observation_directory_anchor_contract gallery_observation_directory_anchor_bcnf_check
-
-def gallery_observation_directory_entry_count_contract : RelationContract where
-  name := "gallery_observation_directory_entry_count"
-  attributes := ["gallery_id", "observation_id", "directory_entry_count"]
-  declaredKeys := [["gallery_id", "observation_id"]]
-  declaredFDs := [
-    { determinant := ["gallery_id", "observation_id"], dependent := ["directory_entry_count"] }
-  ]
-
-theorem gallery_observation_directory_entry_count_schema_well_formed :
-    schemaWellFormedCheck gallery_observation_directory_entry_count_contract = true := by
-  native_decide
-
-theorem gallery_observation_directory_entry_count_candidate_keys_check :
-    keysDetermineAllCheck gallery_observation_directory_entry_count_contract = true := by
-  native_decide
-
-theorem gallery_observation_directory_entry_count_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_observation_directory_entry_count_contract :=
-  keysDetermineAllCheck_sound gallery_observation_directory_entry_count_contract
-    gallery_observation_directory_entry_count_candidate_keys_check
-
-theorem gallery_observation_directory_entry_count_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_observation_directory_entry_count_contract = true := by
-  native_decide
-
-theorem gallery_observation_directory_entry_count_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_observation_directory_entry_count_contract :=
-  declaredKeysMinimalCheck_sound gallery_observation_directory_entry_count_contract
-    gallery_observation_directory_entry_count_candidate_keys_minimal_check
-
-theorem gallery_observation_directory_entry_count_closure_fixed_check :
-    closureFixedPointCheck gallery_observation_directory_entry_count_contract = true := by
-  native_decide
-
-theorem gallery_observation_directory_entry_count_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_observation_directory_entry_count_contract :=
-  closureFixedPointCheck_sound gallery_observation_directory_entry_count_contract
-    gallery_observation_directory_entry_count_closure_fixed_check
-
-theorem gallery_observation_directory_entry_count_bcnf_check :
-    bcnfCheck gallery_observation_directory_entry_count_contract = true := by
-  native_decide
-
-theorem gallery_observation_directory_entry_count_bcnf : BCNF gallery_observation_directory_entry_count_contract :=
-  bcnfCheck_sound gallery_observation_directory_entry_count_contract gallery_observation_directory_entry_count_bcnf_check
-
-def gallery_observation_directory_observation_sha256_contract : RelationContract where
-  name := "gallery_observation_directory_observation_sha256"
-  attributes := ["gallery_id", "observation_id", "directory_observation_sha256"]
-  declaredKeys := [["gallery_id", "observation_id"]]
-  declaredFDs := [
-    { determinant := ["gallery_id", "observation_id"], dependent := ["directory_observation_sha256"] }
-  ]
-
-theorem gallery_observation_directory_observation_sha256_schema_well_formed :
-    schemaWellFormedCheck gallery_observation_directory_observation_sha256_contract = true := by
-  native_decide
-
-theorem gallery_observation_directory_observation_sha256_candidate_keys_check :
-    keysDetermineAllCheck gallery_observation_directory_observation_sha256_contract = true := by
-  native_decide
-
-theorem gallery_observation_directory_observation_sha256_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_observation_directory_observation_sha256_contract :=
-  keysDetermineAllCheck_sound gallery_observation_directory_observation_sha256_contract
-    gallery_observation_directory_observation_sha256_candidate_keys_check
-
-theorem gallery_observation_directory_observation_sha256_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_observation_directory_observation_sha256_contract = true := by
-  native_decide
-
-theorem gallery_observation_directory_observation_sha256_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_observation_directory_observation_sha256_contract :=
-  declaredKeysMinimalCheck_sound gallery_observation_directory_observation_sha256_contract
-    gallery_observation_directory_observation_sha256_candidate_keys_minimal_check
-
-theorem gallery_observation_directory_observation_sha256_closure_fixed_check :
-    closureFixedPointCheck gallery_observation_directory_observation_sha256_contract = true := by
-  native_decide
-
-theorem gallery_observation_directory_observation_sha256_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_observation_directory_observation_sha256_contract :=
-  closureFixedPointCheck_sound gallery_observation_directory_observation_sha256_contract
-    gallery_observation_directory_observation_sha256_closure_fixed_check
-
-theorem gallery_observation_directory_observation_sha256_bcnf_check :
-    bcnfCheck gallery_observation_directory_observation_sha256_contract = true := by
-  native_decide
-
-theorem gallery_observation_directory_observation_sha256_bcnf : BCNF gallery_observation_directory_observation_sha256_contract :=
-  bcnfCheck_sound gallery_observation_directory_observation_sha256_contract gallery_observation_directory_observation_sha256_bcnf_check
-
-def gallery_observation_directory_seal_contract : RelationContract where
-  name := "gallery_observation_directory_seal"
-  attributes := ["gallery_id", "observation_id"]
-  declaredKeys := [["gallery_id", "observation_id"]]
-  declaredFDs := [
-  ]
-
-theorem gallery_observation_directory_seal_schema_well_formed :
-    schemaWellFormedCheck gallery_observation_directory_seal_contract = true := by
-  native_decide
-
-theorem gallery_observation_directory_seal_candidate_keys_check :
-    keysDetermineAllCheck gallery_observation_directory_seal_contract = true := by
-  native_decide
-
-theorem gallery_observation_directory_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_observation_directory_seal_contract :=
-  keysDetermineAllCheck_sound gallery_observation_directory_seal_contract
-    gallery_observation_directory_seal_candidate_keys_check
-
-theorem gallery_observation_directory_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_observation_directory_seal_contract = true := by
-  native_decide
-
-theorem gallery_observation_directory_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_observation_directory_seal_contract :=
-  declaredKeysMinimalCheck_sound gallery_observation_directory_seal_contract
-    gallery_observation_directory_seal_candidate_keys_minimal_check
-
-theorem gallery_observation_directory_seal_closure_fixed_check :
-    closureFixedPointCheck gallery_observation_directory_seal_contract = true := by
-  native_decide
-
-theorem gallery_observation_directory_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_observation_directory_seal_contract :=
-  closureFixedPointCheck_sound gallery_observation_directory_seal_contract
-    gallery_observation_directory_seal_closure_fixed_check
-
-theorem gallery_observation_directory_seal_bcnf_check :
-    bcnfCheck gallery_observation_directory_seal_contract = true := by
-  native_decide
-
-theorem gallery_observation_directory_seal_bcnf : BCNF gallery_observation_directory_seal_contract :=
-  bcnfCheck_sound gallery_observation_directory_seal_contract gallery_observation_directory_seal_bcnf_check
-
 def gallery_observation_directory_contract : RelationContract where
   name := "gallery_observation_directory"
   attributes := ["gallery_id", "observation_id", "directory_entry_count", "directory_observation_sha256"]
@@ -5312,187 +4773,12 @@ theorem gallery_observation_directory_closure_reached_fixed_point :
   closureFixedPointCheck_sound gallery_observation_directory_contract
     gallery_observation_directory_closure_fixed_check
 
-def gallery_observation_stat_anchor_contract : RelationContract where
-  name := "gallery_observation_stat_anchor"
-  attributes := ["gallery_id", "observation_id"]
-  declaredKeys := [["gallery_id", "observation_id"]]
-  declaredFDs := [
-  ]
-
-theorem gallery_observation_stat_anchor_schema_well_formed :
-    schemaWellFormedCheck gallery_observation_stat_anchor_contract = true := by
+theorem gallery_observation_directory_bcnf_check :
+    bcnfCheck gallery_observation_directory_contract = true := by
   native_decide
 
-theorem gallery_observation_stat_anchor_candidate_keys_check :
-    keysDetermineAllCheck gallery_observation_stat_anchor_contract = true := by
-  native_decide
-
-theorem gallery_observation_stat_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_observation_stat_anchor_contract :=
-  keysDetermineAllCheck_sound gallery_observation_stat_anchor_contract
-    gallery_observation_stat_anchor_candidate_keys_check
-
-theorem gallery_observation_stat_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_observation_stat_anchor_contract = true := by
-  native_decide
-
-theorem gallery_observation_stat_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_observation_stat_anchor_contract :=
-  declaredKeysMinimalCheck_sound gallery_observation_stat_anchor_contract
-    gallery_observation_stat_anchor_candidate_keys_minimal_check
-
-theorem gallery_observation_stat_anchor_closure_fixed_check :
-    closureFixedPointCheck gallery_observation_stat_anchor_contract = true := by
-  native_decide
-
-theorem gallery_observation_stat_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_observation_stat_anchor_contract :=
-  closureFixedPointCheck_sound gallery_observation_stat_anchor_contract
-    gallery_observation_stat_anchor_closure_fixed_check
-
-theorem gallery_observation_stat_anchor_bcnf_check :
-    bcnfCheck gallery_observation_stat_anchor_contract = true := by
-  native_decide
-
-theorem gallery_observation_stat_anchor_bcnf : BCNF gallery_observation_stat_anchor_contract :=
-  bcnfCheck_sound gallery_observation_stat_anchor_contract gallery_observation_stat_anchor_bcnf_check
-
-def gallery_observation_stat_file_count_contract : RelationContract where
-  name := "gallery_observation_stat_file_count"
-  attributes := ["gallery_id", "observation_id", "file_count"]
-  declaredKeys := [["gallery_id", "observation_id"]]
-  declaredFDs := [
-    { determinant := ["gallery_id", "observation_id"], dependent := ["file_count"] }
-  ]
-
-theorem gallery_observation_stat_file_count_schema_well_formed :
-    schemaWellFormedCheck gallery_observation_stat_file_count_contract = true := by
-  native_decide
-
-theorem gallery_observation_stat_file_count_candidate_keys_check :
-    keysDetermineAllCheck gallery_observation_stat_file_count_contract = true := by
-  native_decide
-
-theorem gallery_observation_stat_file_count_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_observation_stat_file_count_contract :=
-  keysDetermineAllCheck_sound gallery_observation_stat_file_count_contract
-    gallery_observation_stat_file_count_candidate_keys_check
-
-theorem gallery_observation_stat_file_count_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_observation_stat_file_count_contract = true := by
-  native_decide
-
-theorem gallery_observation_stat_file_count_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_observation_stat_file_count_contract :=
-  declaredKeysMinimalCheck_sound gallery_observation_stat_file_count_contract
-    gallery_observation_stat_file_count_candidate_keys_minimal_check
-
-theorem gallery_observation_stat_file_count_closure_fixed_check :
-    closureFixedPointCheck gallery_observation_stat_file_count_contract = true := by
-  native_decide
-
-theorem gallery_observation_stat_file_count_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_observation_stat_file_count_contract :=
-  closureFixedPointCheck_sound gallery_observation_stat_file_count_contract
-    gallery_observation_stat_file_count_closure_fixed_check
-
-theorem gallery_observation_stat_file_count_bcnf_check :
-    bcnfCheck gallery_observation_stat_file_count_contract = true := by
-  native_decide
-
-theorem gallery_observation_stat_file_count_bcnf : BCNF gallery_observation_stat_file_count_contract :=
-  bcnfCheck_sound gallery_observation_stat_file_count_contract gallery_observation_stat_file_count_bcnf_check
-
-def gallery_observation_stat_byte_count_contract : RelationContract where
-  name := "gallery_observation_stat_byte_count"
-  attributes := ["gallery_id", "observation_id", "byte_count"]
-  declaredKeys := [["gallery_id", "observation_id"]]
-  declaredFDs := [
-    { determinant := ["gallery_id", "observation_id"], dependent := ["byte_count"] }
-  ]
-
-theorem gallery_observation_stat_byte_count_schema_well_formed :
-    schemaWellFormedCheck gallery_observation_stat_byte_count_contract = true := by
-  native_decide
-
-theorem gallery_observation_stat_byte_count_candidate_keys_check :
-    keysDetermineAllCheck gallery_observation_stat_byte_count_contract = true := by
-  native_decide
-
-theorem gallery_observation_stat_byte_count_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_observation_stat_byte_count_contract :=
-  keysDetermineAllCheck_sound gallery_observation_stat_byte_count_contract
-    gallery_observation_stat_byte_count_candidate_keys_check
-
-theorem gallery_observation_stat_byte_count_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_observation_stat_byte_count_contract = true := by
-  native_decide
-
-theorem gallery_observation_stat_byte_count_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_observation_stat_byte_count_contract :=
-  declaredKeysMinimalCheck_sound gallery_observation_stat_byte_count_contract
-    gallery_observation_stat_byte_count_candidate_keys_minimal_check
-
-theorem gallery_observation_stat_byte_count_closure_fixed_check :
-    closureFixedPointCheck gallery_observation_stat_byte_count_contract = true := by
-  native_decide
-
-theorem gallery_observation_stat_byte_count_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_observation_stat_byte_count_contract :=
-  closureFixedPointCheck_sound gallery_observation_stat_byte_count_contract
-    gallery_observation_stat_byte_count_closure_fixed_check
-
-theorem gallery_observation_stat_byte_count_bcnf_check :
-    bcnfCheck gallery_observation_stat_byte_count_contract = true := by
-  native_decide
-
-theorem gallery_observation_stat_byte_count_bcnf : BCNF gallery_observation_stat_byte_count_contract :=
-  bcnfCheck_sound gallery_observation_stat_byte_count_contract gallery_observation_stat_byte_count_bcnf_check
-
-def gallery_observation_stat_seal_contract : RelationContract where
-  name := "gallery_observation_stat_seal"
-  attributes := ["gallery_id", "observation_id"]
-  declaredKeys := [["gallery_id", "observation_id"]]
-  declaredFDs := [
-  ]
-
-theorem gallery_observation_stat_seal_schema_well_formed :
-    schemaWellFormedCheck gallery_observation_stat_seal_contract = true := by
-  native_decide
-
-theorem gallery_observation_stat_seal_candidate_keys_check :
-    keysDetermineAllCheck gallery_observation_stat_seal_contract = true := by
-  native_decide
-
-theorem gallery_observation_stat_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_observation_stat_seal_contract :=
-  keysDetermineAllCheck_sound gallery_observation_stat_seal_contract
-    gallery_observation_stat_seal_candidate_keys_check
-
-theorem gallery_observation_stat_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_observation_stat_seal_contract = true := by
-  native_decide
-
-theorem gallery_observation_stat_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_observation_stat_seal_contract :=
-  declaredKeysMinimalCheck_sound gallery_observation_stat_seal_contract
-    gallery_observation_stat_seal_candidate_keys_minimal_check
-
-theorem gallery_observation_stat_seal_closure_fixed_check :
-    closureFixedPointCheck gallery_observation_stat_seal_contract = true := by
-  native_decide
-
-theorem gallery_observation_stat_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_observation_stat_seal_contract :=
-  closureFixedPointCheck_sound gallery_observation_stat_seal_contract
-    gallery_observation_stat_seal_closure_fixed_check
-
-theorem gallery_observation_stat_seal_bcnf_check :
-    bcnfCheck gallery_observation_stat_seal_contract = true := by
-  native_decide
-
-theorem gallery_observation_stat_seal_bcnf : BCNF gallery_observation_stat_seal_contract :=
-  bcnfCheck_sound gallery_observation_stat_seal_contract gallery_observation_stat_seal_bcnf_check
+theorem gallery_observation_directory_bcnf : BCNF gallery_observation_directory_contract :=
+  bcnfCheck_sound gallery_observation_directory_contract gallery_observation_directory_bcnf_check
 
 def gallery_observation_stat_contract : RelationContract where
   name := "gallery_observation_stat"
@@ -5532,6 +4818,13 @@ theorem gallery_observation_stat_closure_reached_fixed_point :
     ClosureReachedFixedPoint gallery_observation_stat_contract :=
   closureFixedPointCheck_sound gallery_observation_stat_contract
     gallery_observation_stat_closure_fixed_check
+
+theorem gallery_observation_stat_bcnf_check :
+    bcnfCheck gallery_observation_stat_contract = true := by
+  native_decide
+
+theorem gallery_observation_stat_bcnf : BCNF gallery_observation_stat_contract :=
+  bcnfCheck_sound gallery_observation_stat_contract gallery_observation_stat_bcnf_check
 
 def source_build_gallery_contract : RelationContract where
   name := "source_build_gallery"
@@ -6875,188 +6168,6 @@ theorem build_manifest_closure_reached_fixed_point :
   closureFixedPointCheck_sound build_manifest_contract
     build_manifest_closure_fixed_check
 
-def gallery_manifest_anchor_contract : RelationContract where
-  name := "gallery_manifest_anchor"
-  attributes := ["gallery_id", "observation_id", "manifest_policy_id"]
-  declaredKeys := [["gallery_id", "observation_id", "manifest_policy_id"]]
-  declaredFDs := [
-  ]
-
-theorem gallery_manifest_anchor_schema_well_formed :
-    schemaWellFormedCheck gallery_manifest_anchor_contract = true := by
-  native_decide
-
-theorem gallery_manifest_anchor_candidate_keys_check :
-    keysDetermineAllCheck gallery_manifest_anchor_contract = true := by
-  native_decide
-
-theorem gallery_manifest_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_manifest_anchor_contract :=
-  keysDetermineAllCheck_sound gallery_manifest_anchor_contract
-    gallery_manifest_anchor_candidate_keys_check
-
-theorem gallery_manifest_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_manifest_anchor_contract = true := by
-  native_decide
-
-theorem gallery_manifest_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_manifest_anchor_contract :=
-  declaredKeysMinimalCheck_sound gallery_manifest_anchor_contract
-    gallery_manifest_anchor_candidate_keys_minimal_check
-
-theorem gallery_manifest_anchor_closure_fixed_check :
-    closureFixedPointCheck gallery_manifest_anchor_contract = true := by
-  native_decide
-
-theorem gallery_manifest_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_manifest_anchor_contract :=
-  closureFixedPointCheck_sound gallery_manifest_anchor_contract
-    gallery_manifest_anchor_closure_fixed_check
-
-theorem gallery_manifest_anchor_bcnf_check :
-    bcnfCheck gallery_manifest_anchor_contract = true := by
-  native_decide
-
-theorem gallery_manifest_anchor_bcnf : BCNF gallery_manifest_anchor_contract :=
-  bcnfCheck_sound gallery_manifest_anchor_contract gallery_manifest_anchor_bcnf_check
-
-def gallery_manifest_manifest_sha256_contract : RelationContract where
-  name := "gallery_manifest_manifest_sha256"
-  attributes := ["gallery_id", "observation_id", "manifest_policy_id", "manifest_sha256"]
-  declaredKeys := [["gallery_id", "observation_id", "manifest_policy_id"]]
-  declaredFDs := [
-    { determinant := ["gallery_id", "observation_id", "manifest_policy_id"], dependent := ["manifest_sha256"] }
-  ]
-
-theorem gallery_manifest_manifest_sha256_schema_well_formed :
-    schemaWellFormedCheck gallery_manifest_manifest_sha256_contract = true := by
-  native_decide
-
-theorem gallery_manifest_manifest_sha256_candidate_keys_check :
-    keysDetermineAllCheck gallery_manifest_manifest_sha256_contract = true := by
-  native_decide
-
-theorem gallery_manifest_manifest_sha256_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_manifest_manifest_sha256_contract :=
-  keysDetermineAllCheck_sound gallery_manifest_manifest_sha256_contract
-    gallery_manifest_manifest_sha256_candidate_keys_check
-
-theorem gallery_manifest_manifest_sha256_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_manifest_manifest_sha256_contract = true := by
-  native_decide
-
-theorem gallery_manifest_manifest_sha256_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_manifest_manifest_sha256_contract :=
-  declaredKeysMinimalCheck_sound gallery_manifest_manifest_sha256_contract
-    gallery_manifest_manifest_sha256_candidate_keys_minimal_check
-
-theorem gallery_manifest_manifest_sha256_closure_fixed_check :
-    closureFixedPointCheck gallery_manifest_manifest_sha256_contract = true := by
-  native_decide
-
-theorem gallery_manifest_manifest_sha256_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_manifest_manifest_sha256_contract :=
-  closureFixedPointCheck_sound gallery_manifest_manifest_sha256_contract
-    gallery_manifest_manifest_sha256_closure_fixed_check
-
-theorem gallery_manifest_manifest_sha256_bcnf_check :
-    bcnfCheck gallery_manifest_manifest_sha256_contract = true := by
-  native_decide
-
-theorem gallery_manifest_manifest_sha256_bcnf : BCNF gallery_manifest_manifest_sha256_contract :=
-  bcnfCheck_sound gallery_manifest_manifest_sha256_contract gallery_manifest_manifest_sha256_bcnf_check
-
-def gallery_manifest_computed_at_contract : RelationContract where
-  name := "gallery_manifest_computed_at"
-  attributes := ["gallery_id", "observation_id", "manifest_policy_id", "computed_at"]
-  declaredKeys := [["gallery_id", "observation_id", "manifest_policy_id"]]
-  declaredFDs := [
-    { determinant := ["gallery_id", "observation_id", "manifest_policy_id"], dependent := ["computed_at"] }
-  ]
-
-theorem gallery_manifest_computed_at_schema_well_formed :
-    schemaWellFormedCheck gallery_manifest_computed_at_contract = true := by
-  native_decide
-
-theorem gallery_manifest_computed_at_candidate_keys_check :
-    keysDetermineAllCheck gallery_manifest_computed_at_contract = true := by
-  native_decide
-
-theorem gallery_manifest_computed_at_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_manifest_computed_at_contract :=
-  keysDetermineAllCheck_sound gallery_manifest_computed_at_contract
-    gallery_manifest_computed_at_candidate_keys_check
-
-theorem gallery_manifest_computed_at_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_manifest_computed_at_contract = true := by
-  native_decide
-
-theorem gallery_manifest_computed_at_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_manifest_computed_at_contract :=
-  declaredKeysMinimalCheck_sound gallery_manifest_computed_at_contract
-    gallery_manifest_computed_at_candidate_keys_minimal_check
-
-theorem gallery_manifest_computed_at_closure_fixed_check :
-    closureFixedPointCheck gallery_manifest_computed_at_contract = true := by
-  native_decide
-
-theorem gallery_manifest_computed_at_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_manifest_computed_at_contract :=
-  closureFixedPointCheck_sound gallery_manifest_computed_at_contract
-    gallery_manifest_computed_at_closure_fixed_check
-
-theorem gallery_manifest_computed_at_bcnf_check :
-    bcnfCheck gallery_manifest_computed_at_contract = true := by
-  native_decide
-
-theorem gallery_manifest_computed_at_bcnf : BCNF gallery_manifest_computed_at_contract :=
-  bcnfCheck_sound gallery_manifest_computed_at_contract gallery_manifest_computed_at_bcnf_check
-
-def gallery_manifest_seal_contract : RelationContract where
-  name := "gallery_manifest_seal"
-  attributes := ["gallery_id", "observation_id", "manifest_policy_id"]
-  declaredKeys := [["gallery_id", "observation_id", "manifest_policy_id"]]
-  declaredFDs := [
-  ]
-
-theorem gallery_manifest_seal_schema_well_formed :
-    schemaWellFormedCheck gallery_manifest_seal_contract = true := by
-  native_decide
-
-theorem gallery_manifest_seal_candidate_keys_check :
-    keysDetermineAllCheck gallery_manifest_seal_contract = true := by
-  native_decide
-
-theorem gallery_manifest_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes gallery_manifest_seal_contract :=
-  keysDetermineAllCheck_sound gallery_manifest_seal_contract
-    gallery_manifest_seal_candidate_keys_check
-
-theorem gallery_manifest_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck gallery_manifest_seal_contract = true := by
-  native_decide
-
-theorem gallery_manifest_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal gallery_manifest_seal_contract :=
-  declaredKeysMinimalCheck_sound gallery_manifest_seal_contract
-    gallery_manifest_seal_candidate_keys_minimal_check
-
-theorem gallery_manifest_seal_closure_fixed_check :
-    closureFixedPointCheck gallery_manifest_seal_contract = true := by
-  native_decide
-
-theorem gallery_manifest_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint gallery_manifest_seal_contract :=
-  closureFixedPointCheck_sound gallery_manifest_seal_contract
-    gallery_manifest_seal_closure_fixed_check
-
-theorem gallery_manifest_seal_bcnf_check :
-    bcnfCheck gallery_manifest_seal_contract = true := by
-  native_decide
-
-theorem gallery_manifest_seal_bcnf : BCNF gallery_manifest_seal_contract :=
-  bcnfCheck_sound gallery_manifest_seal_contract gallery_manifest_seal_bcnf_check
-
 def gallery_manifest_contract : RelationContract where
   name := "gallery_manifest"
   attributes := ["gallery_id", "observation_id", "manifest_policy_id", "manifest_sha256", "computed_at"]
@@ -7095,6 +6206,13 @@ theorem gallery_manifest_closure_reached_fixed_point :
     ClosureReachedFixedPoint gallery_manifest_contract :=
   closureFixedPointCheck_sound gallery_manifest_contract
     gallery_manifest_closure_fixed_check
+
+theorem gallery_manifest_bcnf_check :
+    bcnfCheck gallery_manifest_contract = true := by
+  native_decide
+
+theorem gallery_manifest_bcnf : BCNF gallery_manifest_contract :=
+  bcnfCheck_sound gallery_manifest_contract gallery_manifest_bcnf_check
 
 def analysis_policy_anchor_contract : RelationContract where
   name := "analysis_policy_anchor"
@@ -9361,50 +8479,51 @@ theorem analysis_impacted_gallery_bcnf_check :
 theorem analysis_impacted_gallery_bcnf : BCNF analysis_impacted_gallery_contract :=
   bcnfCheck_sound analysis_impacted_gallery_contract analysis_impacted_gallery_bcnf_check
 
-def analysis_impacted_content_anchor_contract : RelationContract where
-  name := "analysis_impacted_content_anchor"
-  attributes := ["analysis_id", "content_sha256"]
+def analysis_impacted_content_contract : RelationContract where
+  name := "analysis_impacted_content"
+  attributes := ["analysis_id", "content_sha256", "witness_gallery_id"]
   declaredKeys := [["analysis_id", "content_sha256"]]
   declaredFDs := [
+    { determinant := ["analysis_id", "content_sha256"], dependent := ["witness_gallery_id"] }
   ]
 
-theorem analysis_impacted_content_anchor_schema_well_formed :
-    schemaWellFormedCheck analysis_impacted_content_anchor_contract = true := by
+theorem analysis_impacted_content_schema_well_formed :
+    schemaWellFormedCheck analysis_impacted_content_contract = true := by
   native_decide
 
-theorem analysis_impacted_content_anchor_candidate_keys_check :
-    keysDetermineAllCheck analysis_impacted_content_anchor_contract = true := by
+theorem analysis_impacted_content_candidate_keys_check :
+    keysDetermineAllCheck analysis_impacted_content_contract = true := by
   native_decide
 
-theorem analysis_impacted_content_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_impacted_content_anchor_contract :=
-  keysDetermineAllCheck_sound analysis_impacted_content_anchor_contract
-    analysis_impacted_content_anchor_candidate_keys_check
+theorem analysis_impacted_content_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes analysis_impacted_content_contract :=
+  keysDetermineAllCheck_sound analysis_impacted_content_contract
+    analysis_impacted_content_candidate_keys_check
 
-theorem analysis_impacted_content_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_impacted_content_anchor_contract = true := by
+theorem analysis_impacted_content_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck analysis_impacted_content_contract = true := by
   native_decide
 
-theorem analysis_impacted_content_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_impacted_content_anchor_contract :=
-  declaredKeysMinimalCheck_sound analysis_impacted_content_anchor_contract
-    analysis_impacted_content_anchor_candidate_keys_minimal_check
+theorem analysis_impacted_content_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal analysis_impacted_content_contract :=
+  declaredKeysMinimalCheck_sound analysis_impacted_content_contract
+    analysis_impacted_content_candidate_keys_minimal_check
 
-theorem analysis_impacted_content_anchor_closure_fixed_check :
-    closureFixedPointCheck analysis_impacted_content_anchor_contract = true := by
+theorem analysis_impacted_content_closure_fixed_check :
+    closureFixedPointCheck analysis_impacted_content_contract = true := by
   native_decide
 
-theorem analysis_impacted_content_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_impacted_content_anchor_contract :=
-  closureFixedPointCheck_sound analysis_impacted_content_anchor_contract
-    analysis_impacted_content_anchor_closure_fixed_check
+theorem analysis_impacted_content_closure_reached_fixed_point :
+    ClosureReachedFixedPoint analysis_impacted_content_contract :=
+  closureFixedPointCheck_sound analysis_impacted_content_contract
+    analysis_impacted_content_closure_fixed_check
 
-theorem analysis_impacted_content_anchor_bcnf_check :
-    bcnfCheck analysis_impacted_content_anchor_contract = true := by
+theorem analysis_impacted_content_bcnf_check :
+    bcnfCheck analysis_impacted_content_contract = true := by
   native_decide
 
-theorem analysis_impacted_content_anchor_bcnf : BCNF analysis_impacted_content_anchor_contract :=
-  bcnfCheck_sound analysis_impacted_content_anchor_contract analysis_impacted_content_anchor_bcnf_check
+theorem analysis_impacted_content_bcnf : BCNF analysis_impacted_content_contract :=
+  bcnfCheck_sound analysis_impacted_content_contract analysis_impacted_content_bcnf_check
 
 def analysis_impacted_content_provenance_contract : RelationContract where
   name := "analysis_impacted_content_provenance"
@@ -9451,185 +8570,102 @@ theorem analysis_impacted_content_provenance_bcnf_check :
 theorem analysis_impacted_content_provenance_bcnf : BCNF analysis_impacted_content_provenance_contract :=
   bcnfCheck_sound analysis_impacted_content_provenance_contract analysis_impacted_content_provenance_bcnf_check
 
-def analysis_impacted_content_witness_contract : RelationContract where
-  name := "analysis_impacted_content_witness"
-  attributes := ["analysis_id", "content_sha256", "witness_gallery_id"]
-  declaredKeys := [["analysis_id", "content_sha256"]]
-  declaredFDs := [
-    { determinant := ["analysis_id", "content_sha256"], dependent := ["witness_gallery_id"] }
-  ]
-
-theorem analysis_impacted_content_witness_schema_well_formed :
-    schemaWellFormedCheck analysis_impacted_content_witness_contract = true := by
-  native_decide
-
-theorem analysis_impacted_content_witness_candidate_keys_check :
-    keysDetermineAllCheck analysis_impacted_content_witness_contract = true := by
-  native_decide
-
-theorem analysis_impacted_content_witness_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_impacted_content_witness_contract :=
-  keysDetermineAllCheck_sound analysis_impacted_content_witness_contract
-    analysis_impacted_content_witness_candidate_keys_check
-
-theorem analysis_impacted_content_witness_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_impacted_content_witness_contract = true := by
-  native_decide
-
-theorem analysis_impacted_content_witness_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_impacted_content_witness_contract :=
-  declaredKeysMinimalCheck_sound analysis_impacted_content_witness_contract
-    analysis_impacted_content_witness_candidate_keys_minimal_check
-
-theorem analysis_impacted_content_witness_closure_fixed_check :
-    closureFixedPointCheck analysis_impacted_content_witness_contract = true := by
-  native_decide
-
-theorem analysis_impacted_content_witness_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_impacted_content_witness_contract :=
-  closureFixedPointCheck_sound analysis_impacted_content_witness_contract
-    analysis_impacted_content_witness_closure_fixed_check
-
-theorem analysis_impacted_content_witness_bcnf_check :
-    bcnfCheck analysis_impacted_content_witness_contract = true := by
-  native_decide
-
-theorem analysis_impacted_content_witness_bcnf : BCNF analysis_impacted_content_witness_contract :=
-  bcnfCheck_sound analysis_impacted_content_witness_contract analysis_impacted_content_witness_bcnf_check
-
-def analysis_impacted_content_seal_contract : RelationContract where
-  name := "analysis_impacted_content_seal"
-  attributes := ["analysis_id", "content_sha256"]
-  declaredKeys := [["analysis_id", "content_sha256"]]
-  declaredFDs := [
-  ]
-
-theorem analysis_impacted_content_seal_schema_well_formed :
-    schemaWellFormedCheck analysis_impacted_content_seal_contract = true := by
-  native_decide
-
-theorem analysis_impacted_content_seal_candidate_keys_check :
-    keysDetermineAllCheck analysis_impacted_content_seal_contract = true := by
-  native_decide
-
-theorem analysis_impacted_content_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_impacted_content_seal_contract :=
-  keysDetermineAllCheck_sound analysis_impacted_content_seal_contract
-    analysis_impacted_content_seal_candidate_keys_check
-
-theorem analysis_impacted_content_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_impacted_content_seal_contract = true := by
-  native_decide
-
-theorem analysis_impacted_content_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_impacted_content_seal_contract :=
-  declaredKeysMinimalCheck_sound analysis_impacted_content_seal_contract
-    analysis_impacted_content_seal_candidate_keys_minimal_check
-
-theorem analysis_impacted_content_seal_closure_fixed_check :
-    closureFixedPointCheck analysis_impacted_content_seal_contract = true := by
-  native_decide
-
-theorem analysis_impacted_content_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_impacted_content_seal_contract :=
-  closureFixedPointCheck_sound analysis_impacted_content_seal_contract
-    analysis_impacted_content_seal_closure_fixed_check
-
-theorem analysis_impacted_content_seal_bcnf_check :
-    bcnfCheck analysis_impacted_content_seal_contract = true := by
-  native_decide
-
-theorem analysis_impacted_content_seal_bcnf : BCNF analysis_impacted_content_seal_contract :=
-  bcnfCheck_sound analysis_impacted_content_seal_contract analysis_impacted_content_seal_bcnf_check
-
-def analysis_impacted_content_contract : RelationContract where
-  name := "analysis_impacted_content"
-  attributes := ["analysis_id", "content_sha256"]
-  declaredKeys := [["analysis_id", "content_sha256"]]
-  declaredFDs := [
-  ]
-
-theorem analysis_impacted_content_schema_well_formed :
-    schemaWellFormedCheck analysis_impacted_content_contract = true := by
-  native_decide
-
-theorem analysis_impacted_content_candidate_keys_check :
-    keysDetermineAllCheck analysis_impacted_content_contract = true := by
-  native_decide
-
-theorem analysis_impacted_content_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_impacted_content_contract :=
-  keysDetermineAllCheck_sound analysis_impacted_content_contract
-    analysis_impacted_content_candidate_keys_check
-
-theorem analysis_impacted_content_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_impacted_content_contract = true := by
-  native_decide
-
-theorem analysis_impacted_content_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_impacted_content_contract :=
-  declaredKeysMinimalCheck_sound analysis_impacted_content_contract
-    analysis_impacted_content_candidate_keys_minimal_check
-
-theorem analysis_impacted_content_closure_fixed_check :
-    closureFixedPointCheck analysis_impacted_content_contract = true := by
-  native_decide
-
-theorem analysis_impacted_content_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_impacted_content_contract :=
-  closureFixedPointCheck_sound analysis_impacted_content_contract
-    analysis_impacted_content_closure_fixed_check
-
-def analysis_impacted_gid_anchor_contract : RelationContract where
-  name := "analysis_impacted_gid_anchor"
+def analysis_impacted_gid_storage_contract : RelationContract where
+  name := "analysis_impacted_gid_storage"
   attributes := ["analysis_id", "gid"]
   declaredKeys := [["analysis_id", "gid"]]
   declaredFDs := [
   ]
 
-theorem analysis_impacted_gid_anchor_schema_well_formed :
-    schemaWellFormedCheck analysis_impacted_gid_anchor_contract = true := by
+theorem analysis_impacted_gid_storage_schema_well_formed :
+    schemaWellFormedCheck analysis_impacted_gid_storage_contract = true := by
   native_decide
 
-theorem analysis_impacted_gid_anchor_candidate_keys_check :
-    keysDetermineAllCheck analysis_impacted_gid_anchor_contract = true := by
+theorem analysis_impacted_gid_storage_candidate_keys_check :
+    keysDetermineAllCheck analysis_impacted_gid_storage_contract = true := by
   native_decide
 
-theorem analysis_impacted_gid_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_impacted_gid_anchor_contract :=
-  keysDetermineAllCheck_sound analysis_impacted_gid_anchor_contract
-    analysis_impacted_gid_anchor_candidate_keys_check
+theorem analysis_impacted_gid_storage_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes analysis_impacted_gid_storage_contract :=
+  keysDetermineAllCheck_sound analysis_impacted_gid_storage_contract
+    analysis_impacted_gid_storage_candidate_keys_check
 
-theorem analysis_impacted_gid_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_impacted_gid_anchor_contract = true := by
+theorem analysis_impacted_gid_storage_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck analysis_impacted_gid_storage_contract = true := by
   native_decide
 
-theorem analysis_impacted_gid_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_impacted_gid_anchor_contract :=
-  declaredKeysMinimalCheck_sound analysis_impacted_gid_anchor_contract
-    analysis_impacted_gid_anchor_candidate_keys_minimal_check
+theorem analysis_impacted_gid_storage_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal analysis_impacted_gid_storage_contract :=
+  declaredKeysMinimalCheck_sound analysis_impacted_gid_storage_contract
+    analysis_impacted_gid_storage_candidate_keys_minimal_check
 
-theorem analysis_impacted_gid_anchor_closure_fixed_check :
-    closureFixedPointCheck analysis_impacted_gid_anchor_contract = true := by
+theorem analysis_impacted_gid_storage_closure_fixed_check :
+    closureFixedPointCheck analysis_impacted_gid_storage_contract = true := by
   native_decide
 
-theorem analysis_impacted_gid_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_impacted_gid_anchor_contract :=
-  closureFixedPointCheck_sound analysis_impacted_gid_anchor_contract
-    analysis_impacted_gid_anchor_closure_fixed_check
+theorem analysis_impacted_gid_storage_closure_reached_fixed_point :
+    ClosureReachedFixedPoint analysis_impacted_gid_storage_contract :=
+  closureFixedPointCheck_sound analysis_impacted_gid_storage_contract
+    analysis_impacted_gid_storage_closure_fixed_check
 
-theorem analysis_impacted_gid_anchor_bcnf_check :
-    bcnfCheck analysis_impacted_gid_anchor_contract = true := by
+theorem analysis_impacted_gid_storage_bcnf_check :
+    bcnfCheck analysis_impacted_gid_storage_contract = true := by
   native_decide
 
-theorem analysis_impacted_gid_anchor_bcnf : BCNF analysis_impacted_gid_anchor_contract :=
-  bcnfCheck_sound analysis_impacted_gid_anchor_contract analysis_impacted_gid_anchor_bcnf_check
+theorem analysis_impacted_gid_storage_bcnf : BCNF analysis_impacted_gid_storage_contract :=
+  bcnfCheck_sound analysis_impacted_gid_storage_contract analysis_impacted_gid_storage_bcnf_check
+
+def analysis_impacted_gid_provenance_storage_contract : RelationContract where
+  name := "analysis_impacted_gid_provenance_storage"
+  attributes := ["analysis_id", "gallery_id"]
+  declaredKeys := [["analysis_id", "gallery_id"]]
+  declaredFDs := [
+  ]
+
+theorem analysis_impacted_gid_provenance_storage_schema_well_formed :
+    schemaWellFormedCheck analysis_impacted_gid_provenance_storage_contract = true := by
+  native_decide
+
+theorem analysis_impacted_gid_provenance_storage_candidate_keys_check :
+    keysDetermineAllCheck analysis_impacted_gid_provenance_storage_contract = true := by
+  native_decide
+
+theorem analysis_impacted_gid_provenance_storage_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes analysis_impacted_gid_provenance_storage_contract :=
+  keysDetermineAllCheck_sound analysis_impacted_gid_provenance_storage_contract
+    analysis_impacted_gid_provenance_storage_candidate_keys_check
+
+theorem analysis_impacted_gid_provenance_storage_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck analysis_impacted_gid_provenance_storage_contract = true := by
+  native_decide
+
+theorem analysis_impacted_gid_provenance_storage_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal analysis_impacted_gid_provenance_storage_contract :=
+  declaredKeysMinimalCheck_sound analysis_impacted_gid_provenance_storage_contract
+    analysis_impacted_gid_provenance_storage_candidate_keys_minimal_check
+
+theorem analysis_impacted_gid_provenance_storage_closure_fixed_check :
+    closureFixedPointCheck analysis_impacted_gid_provenance_storage_contract = true := by
+  native_decide
+
+theorem analysis_impacted_gid_provenance_storage_closure_reached_fixed_point :
+    ClosureReachedFixedPoint analysis_impacted_gid_provenance_storage_contract :=
+  closureFixedPointCheck_sound analysis_impacted_gid_provenance_storage_contract
+    analysis_impacted_gid_provenance_storage_closure_fixed_check
+
+theorem analysis_impacted_gid_provenance_storage_bcnf_check :
+    bcnfCheck analysis_impacted_gid_provenance_storage_contract = true := by
+  native_decide
+
+theorem analysis_impacted_gid_provenance_storage_bcnf : BCNF analysis_impacted_gid_provenance_storage_contract :=
+  bcnfCheck_sound analysis_impacted_gid_provenance_storage_contract analysis_impacted_gid_provenance_storage_bcnf_check
 
 def analysis_impacted_gid_provenance_contract : RelationContract where
   name := "analysis_impacted_gid_provenance"
   attributes := ["analysis_id", "gallery_id", "gid"]
-  declaredKeys := [["analysis_id", "gallery_id", "gid"]]
+  declaredKeys := [["analysis_id", "gallery_id"]]
   declaredFDs := [
+    { determinant := ["gallery_id"], dependent := ["gid"] }
   ]
 
 theorem analysis_impacted_gid_provenance_schema_well_formed :
@@ -9663,109 +8699,13 @@ theorem analysis_impacted_gid_provenance_closure_reached_fixed_point :
   closureFixedPointCheck_sound analysis_impacted_gid_provenance_contract
     analysis_impacted_gid_provenance_closure_fixed_check
 
-theorem analysis_impacted_gid_provenance_bcnf_check :
-    bcnfCheck analysis_impacted_gid_provenance_contract = true := by
-  native_decide
-
-theorem analysis_impacted_gid_provenance_bcnf : BCNF analysis_impacted_gid_provenance_contract :=
-  bcnfCheck_sound analysis_impacted_gid_provenance_contract analysis_impacted_gid_provenance_bcnf_check
-
-def analysis_impacted_gid_witness_contract : RelationContract where
-  name := "analysis_impacted_gid_witness"
-  attributes := ["analysis_id", "gid", "witness_gallery_id"]
-  declaredKeys := [["analysis_id", "gid"]]
-  declaredFDs := [
-    { determinant := ["analysis_id", "gid"], dependent := ["witness_gallery_id"] }
-  ]
-
-theorem analysis_impacted_gid_witness_schema_well_formed :
-    schemaWellFormedCheck analysis_impacted_gid_witness_contract = true := by
-  native_decide
-
-theorem analysis_impacted_gid_witness_candidate_keys_check :
-    keysDetermineAllCheck analysis_impacted_gid_witness_contract = true := by
-  native_decide
-
-theorem analysis_impacted_gid_witness_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_impacted_gid_witness_contract :=
-  keysDetermineAllCheck_sound analysis_impacted_gid_witness_contract
-    analysis_impacted_gid_witness_candidate_keys_check
-
-theorem analysis_impacted_gid_witness_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_impacted_gid_witness_contract = true := by
-  native_decide
-
-theorem analysis_impacted_gid_witness_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_impacted_gid_witness_contract :=
-  declaredKeysMinimalCheck_sound analysis_impacted_gid_witness_contract
-    analysis_impacted_gid_witness_candidate_keys_minimal_check
-
-theorem analysis_impacted_gid_witness_closure_fixed_check :
-    closureFixedPointCheck analysis_impacted_gid_witness_contract = true := by
-  native_decide
-
-theorem analysis_impacted_gid_witness_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_impacted_gid_witness_contract :=
-  closureFixedPointCheck_sound analysis_impacted_gid_witness_contract
-    analysis_impacted_gid_witness_closure_fixed_check
-
-theorem analysis_impacted_gid_witness_bcnf_check :
-    bcnfCheck analysis_impacted_gid_witness_contract = true := by
-  native_decide
-
-theorem analysis_impacted_gid_witness_bcnf : BCNF analysis_impacted_gid_witness_contract :=
-  bcnfCheck_sound analysis_impacted_gid_witness_contract analysis_impacted_gid_witness_bcnf_check
-
-def analysis_impacted_gid_seal_contract : RelationContract where
-  name := "analysis_impacted_gid_seal"
-  attributes := ["analysis_id", "gid"]
-  declaredKeys := [["analysis_id", "gid"]]
-  declaredFDs := [
-  ]
-
-theorem analysis_impacted_gid_seal_schema_well_formed :
-    schemaWellFormedCheck analysis_impacted_gid_seal_contract = true := by
-  native_decide
-
-theorem analysis_impacted_gid_seal_candidate_keys_check :
-    keysDetermineAllCheck analysis_impacted_gid_seal_contract = true := by
-  native_decide
-
-theorem analysis_impacted_gid_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_impacted_gid_seal_contract :=
-  keysDetermineAllCheck_sound analysis_impacted_gid_seal_contract
-    analysis_impacted_gid_seal_candidate_keys_check
-
-theorem analysis_impacted_gid_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_impacted_gid_seal_contract = true := by
-  native_decide
-
-theorem analysis_impacted_gid_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_impacted_gid_seal_contract :=
-  declaredKeysMinimalCheck_sound analysis_impacted_gid_seal_contract
-    analysis_impacted_gid_seal_candidate_keys_minimal_check
-
-theorem analysis_impacted_gid_seal_closure_fixed_check :
-    closureFixedPointCheck analysis_impacted_gid_seal_contract = true := by
-  native_decide
-
-theorem analysis_impacted_gid_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_impacted_gid_seal_contract :=
-  closureFixedPointCheck_sound analysis_impacted_gid_seal_contract
-    analysis_impacted_gid_seal_closure_fixed_check
-
-theorem analysis_impacted_gid_seal_bcnf_check :
-    bcnfCheck analysis_impacted_gid_seal_contract = true := by
-  native_decide
-
-theorem analysis_impacted_gid_seal_bcnf : BCNF analysis_impacted_gid_seal_contract :=
-  bcnfCheck_sound analysis_impacted_gid_seal_contract analysis_impacted_gid_seal_bcnf_check
-
 def analysis_impacted_gid_contract : RelationContract where
   name := "analysis_impacted_gid"
-  attributes := ["analysis_id", "gid"]
-  declaredKeys := [["analysis_id", "gid"]]
+  attributes := ["analysis_id", "gid", "witness_gallery_id"]
+  declaredKeys := [["analysis_id", "gid"], ["analysis_id", "witness_gallery_id"]]
   declaredFDs := [
+    { determinant := ["witness_gallery_id"], dependent := ["gid"] },
+    { determinant := ["analysis_id", "gid"], dependent := ["witness_gallery_id"] }
   ]
 
 theorem analysis_impacted_gid_schema_well_formed :
@@ -10150,280 +9090,6 @@ theorem analysis_file_hash_decision_resolved_closure_reached_fixed_point :
   closureFixedPointCheck_sound analysis_file_hash_decision_resolved_contract
     analysis_file_hash_decision_resolved_closure_fixed_check
 
-def analysis_content_owner_candidate_shadow_anchor_contract : RelationContract where
-  name := "analysis_content_owner_candidate_shadow_anchor"
-  attributes := ["analysis_id", "gallery_id"]
-  declaredKeys := [["analysis_id", "gallery_id"]]
-  declaredFDs := [
-  ]
-
-theorem analysis_content_owner_candidate_shadow_anchor_schema_well_formed :
-    schemaWellFormedCheck analysis_content_owner_candidate_shadow_anchor_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_anchor_candidate_keys_check :
-    keysDetermineAllCheck analysis_content_owner_candidate_shadow_anchor_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_content_owner_candidate_shadow_anchor_contract :=
-  keysDetermineAllCheck_sound analysis_content_owner_candidate_shadow_anchor_contract
-    analysis_content_owner_candidate_shadow_anchor_candidate_keys_check
-
-theorem analysis_content_owner_candidate_shadow_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_content_owner_candidate_shadow_anchor_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_content_owner_candidate_shadow_anchor_contract :=
-  declaredKeysMinimalCheck_sound analysis_content_owner_candidate_shadow_anchor_contract
-    analysis_content_owner_candidate_shadow_anchor_candidate_keys_minimal_check
-
-theorem analysis_content_owner_candidate_shadow_anchor_closure_fixed_check :
-    closureFixedPointCheck analysis_content_owner_candidate_shadow_anchor_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_content_owner_candidate_shadow_anchor_contract :=
-  closureFixedPointCheck_sound analysis_content_owner_candidate_shadow_anchor_contract
-    analysis_content_owner_candidate_shadow_anchor_closure_fixed_check
-
-theorem analysis_content_owner_candidate_shadow_anchor_bcnf_check :
-    bcnfCheck analysis_content_owner_candidate_shadow_anchor_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_anchor_bcnf : BCNF analysis_content_owner_candidate_shadow_anchor_contract :=
-  bcnfCheck_sound analysis_content_owner_candidate_shadow_anchor_contract analysis_content_owner_candidate_shadow_anchor_bcnf_check
-
-def analysis_content_owner_candidate_shadow_content_sha256_contract : RelationContract where
-  name := "analysis_content_owner_candidate_shadow_content_sha256"
-  attributes := ["analysis_id", "gallery_id", "content_sha256"]
-  declaredKeys := [["analysis_id", "gallery_id"]]
-  declaredFDs := [
-    { determinant := ["analysis_id", "gallery_id"], dependent := ["content_sha256"] }
-  ]
-
-theorem analysis_content_owner_candidate_shadow_content_sha256_schema_well_formed :
-    schemaWellFormedCheck analysis_content_owner_candidate_shadow_content_sha256_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_content_sha256_candidate_keys_check :
-    keysDetermineAllCheck analysis_content_owner_candidate_shadow_content_sha256_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_content_sha256_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_content_owner_candidate_shadow_content_sha256_contract :=
-  keysDetermineAllCheck_sound analysis_content_owner_candidate_shadow_content_sha256_contract
-    analysis_content_owner_candidate_shadow_content_sha256_candidate_keys_check
-
-theorem analysis_content_owner_candidate_shadow_content_sha256_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_content_owner_candidate_shadow_content_sha256_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_content_sha256_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_content_owner_candidate_shadow_content_sha256_contract :=
-  declaredKeysMinimalCheck_sound analysis_content_owner_candidate_shadow_content_sha256_contract
-    analysis_content_owner_candidate_shadow_content_sha256_candidate_keys_minimal_check
-
-theorem analysis_content_owner_candidate_shadow_content_sha256_closure_fixed_check :
-    closureFixedPointCheck analysis_content_owner_candidate_shadow_content_sha256_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_content_sha256_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_content_owner_candidate_shadow_content_sha256_contract :=
-  closureFixedPointCheck_sound analysis_content_owner_candidate_shadow_content_sha256_contract
-    analysis_content_owner_candidate_shadow_content_sha256_closure_fixed_check
-
-theorem analysis_content_owner_candidate_shadow_content_sha256_bcnf_check :
-    bcnfCheck analysis_content_owner_candidate_shadow_content_sha256_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_content_sha256_bcnf : BCNF analysis_content_owner_candidate_shadow_content_sha256_contract :=
-  bcnfCheck_sound analysis_content_owner_candidate_shadow_content_sha256_contract analysis_content_owner_candidate_shadow_content_sha256_bcnf_check
-
-def analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_contract : RelationContract where
-  name := "analysis_content_owner_candidate_shadow_prefer_not_already_uploaded"
-  attributes := ["analysis_id", "gallery_id", "prefer_not_already_uploaded"]
-  declaredKeys := [["analysis_id", "gallery_id"]]
-  declaredFDs := [
-    { determinant := ["analysis_id", "gallery_id"], dependent := ["prefer_not_already_uploaded"] }
-  ]
-
-theorem analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_schema_well_formed :
-    schemaWellFormedCheck analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_candidate_keys_check :
-    keysDetermineAllCheck analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_contract :=
-  keysDetermineAllCheck_sound analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_contract
-    analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_candidate_keys_check
-
-theorem analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_contract :=
-  declaredKeysMinimalCheck_sound analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_contract
-    analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_candidate_keys_minimal_check
-
-theorem analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_closure_fixed_check :
-    closureFixedPointCheck analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_contract :=
-  closureFixedPointCheck_sound analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_contract
-    analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_closure_fixed_check
-
-theorem analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_bcnf_check :
-    bcnfCheck analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_bcnf : BCNF analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_contract :=
-  bcnfCheck_sound analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_contract analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_bcnf_check
-
-def analysis_content_owner_candidate_shadow_title_scalar_count_contract : RelationContract where
-  name := "analysis_content_owner_candidate_shadow_title_scalar_count"
-  attributes := ["analysis_id", "gallery_id", "title_scalar_count"]
-  declaredKeys := [["analysis_id", "gallery_id"]]
-  declaredFDs := [
-    { determinant := ["analysis_id", "gallery_id"], dependent := ["title_scalar_count"] }
-  ]
-
-theorem analysis_content_owner_candidate_shadow_title_scalar_count_schema_well_formed :
-    schemaWellFormedCheck analysis_content_owner_candidate_shadow_title_scalar_count_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_title_scalar_count_candidate_keys_check :
-    keysDetermineAllCheck analysis_content_owner_candidate_shadow_title_scalar_count_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_title_scalar_count_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_content_owner_candidate_shadow_title_scalar_count_contract :=
-  keysDetermineAllCheck_sound analysis_content_owner_candidate_shadow_title_scalar_count_contract
-    analysis_content_owner_candidate_shadow_title_scalar_count_candidate_keys_check
-
-theorem analysis_content_owner_candidate_shadow_title_scalar_count_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_content_owner_candidate_shadow_title_scalar_count_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_title_scalar_count_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_content_owner_candidate_shadow_title_scalar_count_contract :=
-  declaredKeysMinimalCheck_sound analysis_content_owner_candidate_shadow_title_scalar_count_contract
-    analysis_content_owner_candidate_shadow_title_scalar_count_candidate_keys_minimal_check
-
-theorem analysis_content_owner_candidate_shadow_title_scalar_count_closure_fixed_check :
-    closureFixedPointCheck analysis_content_owner_candidate_shadow_title_scalar_count_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_title_scalar_count_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_content_owner_candidate_shadow_title_scalar_count_contract :=
-  closureFixedPointCheck_sound analysis_content_owner_candidate_shadow_title_scalar_count_contract
-    analysis_content_owner_candidate_shadow_title_scalar_count_closure_fixed_check
-
-theorem analysis_content_owner_candidate_shadow_title_scalar_count_bcnf_check :
-    bcnfCheck analysis_content_owner_candidate_shadow_title_scalar_count_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_title_scalar_count_bcnf : BCNF analysis_content_owner_candidate_shadow_title_scalar_count_contract :=
-  bcnfCheck_sound analysis_content_owner_candidate_shadow_title_scalar_count_contract analysis_content_owner_candidate_shadow_title_scalar_count_bcnf_check
-
-def analysis_content_owner_candidate_shadow_download_time_contract : RelationContract where
-  name := "analysis_content_owner_candidate_shadow_download_time"
-  attributes := ["analysis_id", "gallery_id", "download_time"]
-  declaredKeys := [["analysis_id", "gallery_id"]]
-  declaredFDs := [
-    { determinant := ["analysis_id", "gallery_id"], dependent := ["download_time"] }
-  ]
-
-theorem analysis_content_owner_candidate_shadow_download_time_schema_well_formed :
-    schemaWellFormedCheck analysis_content_owner_candidate_shadow_download_time_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_download_time_candidate_keys_check :
-    keysDetermineAllCheck analysis_content_owner_candidate_shadow_download_time_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_download_time_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_content_owner_candidate_shadow_download_time_contract :=
-  keysDetermineAllCheck_sound analysis_content_owner_candidate_shadow_download_time_contract
-    analysis_content_owner_candidate_shadow_download_time_candidate_keys_check
-
-theorem analysis_content_owner_candidate_shadow_download_time_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_content_owner_candidate_shadow_download_time_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_download_time_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_content_owner_candidate_shadow_download_time_contract :=
-  declaredKeysMinimalCheck_sound analysis_content_owner_candidate_shadow_download_time_contract
-    analysis_content_owner_candidate_shadow_download_time_candidate_keys_minimal_check
-
-theorem analysis_content_owner_candidate_shadow_download_time_closure_fixed_check :
-    closureFixedPointCheck analysis_content_owner_candidate_shadow_download_time_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_download_time_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_content_owner_candidate_shadow_download_time_contract :=
-  closureFixedPointCheck_sound analysis_content_owner_candidate_shadow_download_time_contract
-    analysis_content_owner_candidate_shadow_download_time_closure_fixed_check
-
-theorem analysis_content_owner_candidate_shadow_download_time_bcnf_check :
-    bcnfCheck analysis_content_owner_candidate_shadow_download_time_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_download_time_bcnf : BCNF analysis_content_owner_candidate_shadow_download_time_contract :=
-  bcnfCheck_sound analysis_content_owner_candidate_shadow_download_time_contract analysis_content_owner_candidate_shadow_download_time_bcnf_check
-
-def analysis_content_owner_candidate_shadow_seal_contract : RelationContract where
-  name := "analysis_content_owner_candidate_shadow_seal"
-  attributes := ["analysis_id", "gallery_id"]
-  declaredKeys := [["analysis_id", "gallery_id"]]
-  declaredFDs := [
-  ]
-
-theorem analysis_content_owner_candidate_shadow_seal_schema_well_formed :
-    schemaWellFormedCheck analysis_content_owner_candidate_shadow_seal_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_seal_candidate_keys_check :
-    keysDetermineAllCheck analysis_content_owner_candidate_shadow_seal_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_content_owner_candidate_shadow_seal_contract :=
-  keysDetermineAllCheck_sound analysis_content_owner_candidate_shadow_seal_contract
-    analysis_content_owner_candidate_shadow_seal_candidate_keys_check
-
-theorem analysis_content_owner_candidate_shadow_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_content_owner_candidate_shadow_seal_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_content_owner_candidate_shadow_seal_contract :=
-  declaredKeysMinimalCheck_sound analysis_content_owner_candidate_shadow_seal_contract
-    analysis_content_owner_candidate_shadow_seal_candidate_keys_minimal_check
-
-theorem analysis_content_owner_candidate_shadow_seal_closure_fixed_check :
-    closureFixedPointCheck analysis_content_owner_candidate_shadow_seal_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_content_owner_candidate_shadow_seal_contract :=
-  closureFixedPointCheck_sound analysis_content_owner_candidate_shadow_seal_contract
-    analysis_content_owner_candidate_shadow_seal_closure_fixed_check
-
-theorem analysis_content_owner_candidate_shadow_seal_bcnf_check :
-    bcnfCheck analysis_content_owner_candidate_shadow_seal_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_seal_bcnf : BCNF analysis_content_owner_candidate_shadow_seal_contract :=
-  bcnfCheck_sound analysis_content_owner_candidate_shadow_seal_contract analysis_content_owner_candidate_shadow_seal_bcnf_check
-
 def analysis_content_owner_candidate_shadow_contract : RelationContract where
   name := "analysis_content_owner_candidate_shadow"
   attributes := ["analysis_id", "gallery_id", "content_sha256", "prefer_not_already_uploaded", "title_scalar_count", "download_time"]
@@ -10462,6 +9128,13 @@ theorem analysis_content_owner_candidate_shadow_closure_reached_fixed_point :
     ClosureReachedFixedPoint analysis_content_owner_candidate_shadow_contract :=
   closureFixedPointCheck_sound analysis_content_owner_candidate_shadow_contract
     analysis_content_owner_candidate_shadow_closure_fixed_check
+
+theorem analysis_content_owner_candidate_shadow_bcnf_check :
+    bcnfCheck analysis_content_owner_candidate_shadow_contract = true := by
+  native_decide
+
+theorem analysis_content_owner_candidate_shadow_bcnf : BCNF analysis_content_owner_candidate_shadow_contract :=
+  bcnfCheck_sound analysis_content_owner_candidate_shadow_contract analysis_content_owner_candidate_shadow_bcnf_check
 
 def analysis_content_owner_candidate_tombstone_contract : RelationContract where
   name := "analysis_content_owner_candidate_tombstone"
@@ -10547,143 +9220,6 @@ theorem analysis_content_owner_candidate_resolved_closure_reached_fixed_point :
   closureFixedPointCheck_sound analysis_content_owner_candidate_resolved_contract
     analysis_content_owner_candidate_resolved_closure_fixed_check
 
-def analysis_content_owner_shadow_anchor_contract : RelationContract where
-  name := "analysis_content_owner_shadow_anchor"
-  attributes := ["analysis_id", "content_sha256"]
-  declaredKeys := [["analysis_id", "content_sha256"]]
-  declaredFDs := [
-  ]
-
-theorem analysis_content_owner_shadow_anchor_schema_well_formed :
-    schemaWellFormedCheck analysis_content_owner_shadow_anchor_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_shadow_anchor_candidate_keys_check :
-    keysDetermineAllCheck analysis_content_owner_shadow_anchor_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_shadow_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_content_owner_shadow_anchor_contract :=
-  keysDetermineAllCheck_sound analysis_content_owner_shadow_anchor_contract
-    analysis_content_owner_shadow_anchor_candidate_keys_check
-
-theorem analysis_content_owner_shadow_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_content_owner_shadow_anchor_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_shadow_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_content_owner_shadow_anchor_contract :=
-  declaredKeysMinimalCheck_sound analysis_content_owner_shadow_anchor_contract
-    analysis_content_owner_shadow_anchor_candidate_keys_minimal_check
-
-theorem analysis_content_owner_shadow_anchor_closure_fixed_check :
-    closureFixedPointCheck analysis_content_owner_shadow_anchor_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_shadow_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_content_owner_shadow_anchor_contract :=
-  closureFixedPointCheck_sound analysis_content_owner_shadow_anchor_contract
-    analysis_content_owner_shadow_anchor_closure_fixed_check
-
-theorem analysis_content_owner_shadow_anchor_bcnf_check :
-    bcnfCheck analysis_content_owner_shadow_anchor_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_shadow_anchor_bcnf : BCNF analysis_content_owner_shadow_anchor_contract :=
-  bcnfCheck_sound analysis_content_owner_shadow_anchor_contract analysis_content_owner_shadow_anchor_bcnf_check
-
-def analysis_content_owner_shadow_owner_gallery_id_contract : RelationContract where
-  name := "analysis_content_owner_shadow_owner_gallery_id"
-  attributes := ["analysis_id", "content_sha256", "owner_gallery_id"]
-  declaredKeys := [["analysis_id", "content_sha256"], ["analysis_id", "owner_gallery_id"]]
-  declaredFDs := [
-    { determinant := ["analysis_id", "content_sha256"], dependent := ["owner_gallery_id"] },
-    { determinant := ["analysis_id", "owner_gallery_id"], dependent := ["content_sha256"] }
-  ]
-
-theorem analysis_content_owner_shadow_owner_gallery_id_schema_well_formed :
-    schemaWellFormedCheck analysis_content_owner_shadow_owner_gallery_id_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_shadow_owner_gallery_id_candidate_keys_check :
-    keysDetermineAllCheck analysis_content_owner_shadow_owner_gallery_id_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_shadow_owner_gallery_id_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_content_owner_shadow_owner_gallery_id_contract :=
-  keysDetermineAllCheck_sound analysis_content_owner_shadow_owner_gallery_id_contract
-    analysis_content_owner_shadow_owner_gallery_id_candidate_keys_check
-
-theorem analysis_content_owner_shadow_owner_gallery_id_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_content_owner_shadow_owner_gallery_id_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_shadow_owner_gallery_id_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_content_owner_shadow_owner_gallery_id_contract :=
-  declaredKeysMinimalCheck_sound analysis_content_owner_shadow_owner_gallery_id_contract
-    analysis_content_owner_shadow_owner_gallery_id_candidate_keys_minimal_check
-
-theorem analysis_content_owner_shadow_owner_gallery_id_closure_fixed_check :
-    closureFixedPointCheck analysis_content_owner_shadow_owner_gallery_id_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_shadow_owner_gallery_id_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_content_owner_shadow_owner_gallery_id_contract :=
-  closureFixedPointCheck_sound analysis_content_owner_shadow_owner_gallery_id_contract
-    analysis_content_owner_shadow_owner_gallery_id_closure_fixed_check
-
-theorem analysis_content_owner_shadow_owner_gallery_id_bcnf_check :
-    bcnfCheck analysis_content_owner_shadow_owner_gallery_id_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_shadow_owner_gallery_id_bcnf : BCNF analysis_content_owner_shadow_owner_gallery_id_contract :=
-  bcnfCheck_sound analysis_content_owner_shadow_owner_gallery_id_contract analysis_content_owner_shadow_owner_gallery_id_bcnf_check
-
-def analysis_content_owner_shadow_seal_contract : RelationContract where
-  name := "analysis_content_owner_shadow_seal"
-  attributes := ["analysis_id", "content_sha256"]
-  declaredKeys := [["analysis_id", "content_sha256"]]
-  declaredFDs := [
-  ]
-
-theorem analysis_content_owner_shadow_seal_schema_well_formed :
-    schemaWellFormedCheck analysis_content_owner_shadow_seal_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_shadow_seal_candidate_keys_check :
-    keysDetermineAllCheck analysis_content_owner_shadow_seal_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_shadow_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_content_owner_shadow_seal_contract :=
-  keysDetermineAllCheck_sound analysis_content_owner_shadow_seal_contract
-    analysis_content_owner_shadow_seal_candidate_keys_check
-
-theorem analysis_content_owner_shadow_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_content_owner_shadow_seal_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_shadow_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_content_owner_shadow_seal_contract :=
-  declaredKeysMinimalCheck_sound analysis_content_owner_shadow_seal_contract
-    analysis_content_owner_shadow_seal_candidate_keys_minimal_check
-
-theorem analysis_content_owner_shadow_seal_closure_fixed_check :
-    closureFixedPointCheck analysis_content_owner_shadow_seal_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_shadow_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_content_owner_shadow_seal_contract :=
-  closureFixedPointCheck_sound analysis_content_owner_shadow_seal_contract
-    analysis_content_owner_shadow_seal_closure_fixed_check
-
-theorem analysis_content_owner_shadow_seal_bcnf_check :
-    bcnfCheck analysis_content_owner_shadow_seal_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_shadow_seal_bcnf : BCNF analysis_content_owner_shadow_seal_contract :=
-  bcnfCheck_sound analysis_content_owner_shadow_seal_contract analysis_content_owner_shadow_seal_bcnf_check
-
 def analysis_content_owner_shadow_contract : RelationContract where
   name := "analysis_content_owner_shadow"
   attributes := ["analysis_id", "content_sha256", "owner_gallery_id"]
@@ -10723,6 +9259,13 @@ theorem analysis_content_owner_shadow_closure_reached_fixed_point :
     ClosureReachedFixedPoint analysis_content_owner_shadow_contract :=
   closureFixedPointCheck_sound analysis_content_owner_shadow_contract
     analysis_content_owner_shadow_closure_fixed_check
+
+theorem analysis_content_owner_shadow_bcnf_check :
+    bcnfCheck analysis_content_owner_shadow_contract = true := by
+  native_decide
+
+theorem analysis_content_owner_shadow_bcnf : BCNF analysis_content_owner_shadow_contract :=
+  bcnfCheck_sound analysis_content_owner_shadow_contract analysis_content_owner_shadow_bcnf_check
 
 def analysis_content_owner_tombstone_contract : RelationContract where
   name := "analysis_content_owner_tombstone"
@@ -13032,11 +11575,105 @@ theorem publication_candidate_base_source_closure_reached_fixed_point :
   closureFixedPointCheck_sound publication_candidate_base_source_contract
     publication_candidate_base_source_closure_fixed_check
 
+def publication_selection_storage_contract : RelationContract where
+  name := "publication_selection_storage"
+  attributes := ["selection_occurrence_sha256", "gallery_id"]
+  declaredKeys := [["selection_occurrence_sha256"]]
+  declaredFDs := [
+    { determinant := ["selection_occurrence_sha256"], dependent := ["gallery_id"] }
+  ]
+
+theorem publication_selection_storage_schema_well_formed :
+    schemaWellFormedCheck publication_selection_storage_contract = true := by
+  native_decide
+
+theorem publication_selection_storage_candidate_keys_check :
+    keysDetermineAllCheck publication_selection_storage_contract = true := by
+  native_decide
+
+theorem publication_selection_storage_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes publication_selection_storage_contract :=
+  keysDetermineAllCheck_sound publication_selection_storage_contract
+    publication_selection_storage_candidate_keys_check
+
+theorem publication_selection_storage_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck publication_selection_storage_contract = true := by
+  native_decide
+
+theorem publication_selection_storage_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal publication_selection_storage_contract :=
+  declaredKeysMinimalCheck_sound publication_selection_storage_contract
+    publication_selection_storage_candidate_keys_minimal_check
+
+theorem publication_selection_storage_closure_fixed_check :
+    closureFixedPointCheck publication_selection_storage_contract = true := by
+  native_decide
+
+theorem publication_selection_storage_closure_reached_fixed_point :
+    ClosureReachedFixedPoint publication_selection_storage_contract :=
+  closureFixedPointCheck_sound publication_selection_storage_contract
+    publication_selection_storage_closure_fixed_check
+
+theorem publication_selection_storage_bcnf_check :
+    bcnfCheck publication_selection_storage_contract = true := by
+  native_decide
+
+theorem publication_selection_storage_bcnf : BCNF publication_selection_storage_contract :=
+  bcnfCheck_sound publication_selection_storage_contract publication_selection_storage_bcnf_check
+
+def publication_selection_occurrence_identity_contract : RelationContract where
+  name := "publication_selection_occurrence_identity"
+  attributes := ["selection_occurrence_sha256", "candidate_id", "publication_key"]
+  declaredKeys := [["candidate_id", "publication_key"], ["selection_occurrence_sha256"]]
+  declaredFDs := [
+    { determinant := ["selection_occurrence_sha256"], dependent := ["candidate_id", "publication_key"] },
+    { determinant := ["candidate_id", "publication_key"], dependent := ["selection_occurrence_sha256"] }
+  ]
+
+theorem publication_selection_occurrence_identity_schema_well_formed :
+    schemaWellFormedCheck publication_selection_occurrence_identity_contract = true := by
+  native_decide
+
+theorem publication_selection_occurrence_identity_candidate_keys_check :
+    keysDetermineAllCheck publication_selection_occurrence_identity_contract = true := by
+  native_decide
+
+theorem publication_selection_occurrence_identity_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes publication_selection_occurrence_identity_contract :=
+  keysDetermineAllCheck_sound publication_selection_occurrence_identity_contract
+    publication_selection_occurrence_identity_candidate_keys_check
+
+theorem publication_selection_occurrence_identity_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck publication_selection_occurrence_identity_contract = true := by
+  native_decide
+
+theorem publication_selection_occurrence_identity_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal publication_selection_occurrence_identity_contract :=
+  declaredKeysMinimalCheck_sound publication_selection_occurrence_identity_contract
+    publication_selection_occurrence_identity_candidate_keys_minimal_check
+
+theorem publication_selection_occurrence_identity_closure_fixed_check :
+    closureFixedPointCheck publication_selection_occurrence_identity_contract = true := by
+  native_decide
+
+theorem publication_selection_occurrence_identity_closure_reached_fixed_point :
+    ClosureReachedFixedPoint publication_selection_occurrence_identity_contract :=
+  closureFixedPointCheck_sound publication_selection_occurrence_identity_contract
+    publication_selection_occurrence_identity_closure_fixed_check
+
+theorem publication_selection_occurrence_identity_bcnf_check :
+    bcnfCheck publication_selection_occurrence_identity_contract = true := by
+  native_decide
+
+theorem publication_selection_occurrence_identity_bcnf : BCNF publication_selection_occurrence_identity_contract :=
+  bcnfCheck_sound publication_selection_occurrence_identity_contract publication_selection_occurrence_identity_bcnf_check
+
 def publication_selection_contract : RelationContract where
   name := "publication_selection"
   attributes := ["candidate_id", "gallery_id", "publication_key"]
   declaredKeys := [["candidate_id", "gallery_id"], ["candidate_id", "publication_key"]]
   declaredFDs := [
+    { determinant := ["gallery_id"], dependent := ["publication_key"] },
     { determinant := ["candidate_id", "gallery_id"], dependent := ["publication_key"] },
     { determinant := ["candidate_id", "publication_key"], dependent := ["gallery_id"] }
   ]
@@ -13071,13 +11708,6 @@ theorem publication_selection_closure_reached_fixed_point :
     ClosureReachedFixedPoint publication_selection_contract :=
   closureFixedPointCheck_sound publication_selection_contract
     publication_selection_closure_fixed_check
-
-theorem publication_selection_bcnf_check :
-    bcnfCheck publication_selection_contract = true := by
-  native_decide
-
-theorem publication_selection_bcnf : BCNF publication_selection_contract :=
-  bcnfCheck_sound publication_selection_contract publication_selection_bcnf_check
 
 def publication_stage_anchor_contract : RelationContract where
   name := "publication_stage_anchor"
@@ -17803,286 +16433,105 @@ theorem title_sort_bcnf_check :
 theorem title_sort_bcnf : BCNF title_sort_contract :=
   bcnfCheck_sound title_sort_contract title_sort_bcnf_check
 
-def catalog_publication_anchor_contract : RelationContract where
-  name := "catalog_publication_anchor"
-  attributes := ["revision", "publication_key"]
-  declaredKeys := [["revision", "publication_key"]]
+def catalog_publication_storage_contract : RelationContract where
+  name := "catalog_publication_storage"
+  attributes := ["catalog_occurrence_sha256", "gallery_id", "summary_sha256", "language_sha256", "modified_at", "source_title_sha256"]
+  declaredKeys := [["catalog_occurrence_sha256"]]
   declaredFDs := [
+    { determinant := ["catalog_occurrence_sha256"], dependent := ["gallery_id", "summary_sha256", "language_sha256", "modified_at", "source_title_sha256"] }
   ]
 
-theorem catalog_publication_anchor_schema_well_formed :
-    schemaWellFormedCheck catalog_publication_anchor_contract = true := by
+theorem catalog_publication_storage_schema_well_formed :
+    schemaWellFormedCheck catalog_publication_storage_contract = true := by
   native_decide
 
-theorem catalog_publication_anchor_candidate_keys_check :
-    keysDetermineAllCheck catalog_publication_anchor_contract = true := by
+theorem catalog_publication_storage_candidate_keys_check :
+    keysDetermineAllCheck catalog_publication_storage_contract = true := by
   native_decide
 
-theorem catalog_publication_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes catalog_publication_anchor_contract :=
-  keysDetermineAllCheck_sound catalog_publication_anchor_contract
-    catalog_publication_anchor_candidate_keys_check
+theorem catalog_publication_storage_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes catalog_publication_storage_contract :=
+  keysDetermineAllCheck_sound catalog_publication_storage_contract
+    catalog_publication_storage_candidate_keys_check
 
-theorem catalog_publication_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck catalog_publication_anchor_contract = true := by
+theorem catalog_publication_storage_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck catalog_publication_storage_contract = true := by
   native_decide
 
-theorem catalog_publication_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal catalog_publication_anchor_contract :=
-  declaredKeysMinimalCheck_sound catalog_publication_anchor_contract
-    catalog_publication_anchor_candidate_keys_minimal_check
+theorem catalog_publication_storage_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal catalog_publication_storage_contract :=
+  declaredKeysMinimalCheck_sound catalog_publication_storage_contract
+    catalog_publication_storage_candidate_keys_minimal_check
 
-theorem catalog_publication_anchor_closure_fixed_check :
-    closureFixedPointCheck catalog_publication_anchor_contract = true := by
+theorem catalog_publication_storage_closure_fixed_check :
+    closureFixedPointCheck catalog_publication_storage_contract = true := by
   native_decide
 
-theorem catalog_publication_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint catalog_publication_anchor_contract :=
-  closureFixedPointCheck_sound catalog_publication_anchor_contract
-    catalog_publication_anchor_closure_fixed_check
+theorem catalog_publication_storage_closure_reached_fixed_point :
+    ClosureReachedFixedPoint catalog_publication_storage_contract :=
+  closureFixedPointCheck_sound catalog_publication_storage_contract
+    catalog_publication_storage_closure_fixed_check
 
-theorem catalog_publication_anchor_bcnf_check :
-    bcnfCheck catalog_publication_anchor_contract = true := by
+theorem catalog_publication_storage_bcnf_check :
+    bcnfCheck catalog_publication_storage_contract = true := by
   native_decide
 
-theorem catalog_publication_anchor_bcnf : BCNF catalog_publication_anchor_contract :=
-  bcnfCheck_sound catalog_publication_anchor_contract catalog_publication_anchor_bcnf_check
+theorem catalog_publication_storage_bcnf : BCNF catalog_publication_storage_contract :=
+  bcnfCheck_sound catalog_publication_storage_contract catalog_publication_storage_bcnf_check
 
-def catalog_publication_gallery_id_contract : RelationContract where
-  name := "catalog_publication_gallery_id"
-  attributes := ["revision", "publication_key", "gallery_id"]
-  declaredKeys := [["revision", "publication_key"], ["revision", "gallery_id"]]
+def catalog_publication_occurrence_identity_contract : RelationContract where
+  name := "catalog_publication_occurrence_identity"
+  attributes := ["catalog_occurrence_sha256", "revision", "publication_key"]
+  declaredKeys := [["revision", "publication_key"], ["catalog_occurrence_sha256"]]
   declaredFDs := [
-    { determinant := ["revision", "publication_key"], dependent := ["gallery_id"] },
-    { determinant := ["revision", "gallery_id"], dependent := ["publication_key"] }
+    { determinant := ["catalog_occurrence_sha256"], dependent := ["revision", "publication_key"] },
+    { determinant := ["revision", "publication_key"], dependent := ["catalog_occurrence_sha256"] }
   ]
 
-theorem catalog_publication_gallery_id_schema_well_formed :
-    schemaWellFormedCheck catalog_publication_gallery_id_contract = true := by
+theorem catalog_publication_occurrence_identity_schema_well_formed :
+    schemaWellFormedCheck catalog_publication_occurrence_identity_contract = true := by
   native_decide
 
-theorem catalog_publication_gallery_id_candidate_keys_check :
-    keysDetermineAllCheck catalog_publication_gallery_id_contract = true := by
+theorem catalog_publication_occurrence_identity_candidate_keys_check :
+    keysDetermineAllCheck catalog_publication_occurrence_identity_contract = true := by
   native_decide
 
-theorem catalog_publication_gallery_id_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes catalog_publication_gallery_id_contract :=
-  keysDetermineAllCheck_sound catalog_publication_gallery_id_contract
-    catalog_publication_gallery_id_candidate_keys_check
+theorem catalog_publication_occurrence_identity_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes catalog_publication_occurrence_identity_contract :=
+  keysDetermineAllCheck_sound catalog_publication_occurrence_identity_contract
+    catalog_publication_occurrence_identity_candidate_keys_check
 
-theorem catalog_publication_gallery_id_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck catalog_publication_gallery_id_contract = true := by
+theorem catalog_publication_occurrence_identity_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck catalog_publication_occurrence_identity_contract = true := by
   native_decide
 
-theorem catalog_publication_gallery_id_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal catalog_publication_gallery_id_contract :=
-  declaredKeysMinimalCheck_sound catalog_publication_gallery_id_contract
-    catalog_publication_gallery_id_candidate_keys_minimal_check
+theorem catalog_publication_occurrence_identity_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal catalog_publication_occurrence_identity_contract :=
+  declaredKeysMinimalCheck_sound catalog_publication_occurrence_identity_contract
+    catalog_publication_occurrence_identity_candidate_keys_minimal_check
 
-theorem catalog_publication_gallery_id_closure_fixed_check :
-    closureFixedPointCheck catalog_publication_gallery_id_contract = true := by
+theorem catalog_publication_occurrence_identity_closure_fixed_check :
+    closureFixedPointCheck catalog_publication_occurrence_identity_contract = true := by
   native_decide
 
-theorem catalog_publication_gallery_id_closure_reached_fixed_point :
-    ClosureReachedFixedPoint catalog_publication_gallery_id_contract :=
-  closureFixedPointCheck_sound catalog_publication_gallery_id_contract
-    catalog_publication_gallery_id_closure_fixed_check
+theorem catalog_publication_occurrence_identity_closure_reached_fixed_point :
+    ClosureReachedFixedPoint catalog_publication_occurrence_identity_contract :=
+  closureFixedPointCheck_sound catalog_publication_occurrence_identity_contract
+    catalog_publication_occurrence_identity_closure_fixed_check
 
-theorem catalog_publication_gallery_id_bcnf_check :
-    bcnfCheck catalog_publication_gallery_id_contract = true := by
+theorem catalog_publication_occurrence_identity_bcnf_check :
+    bcnfCheck catalog_publication_occurrence_identity_contract = true := by
   native_decide
 
-theorem catalog_publication_gallery_id_bcnf : BCNF catalog_publication_gallery_id_contract :=
-  bcnfCheck_sound catalog_publication_gallery_id_contract catalog_publication_gallery_id_bcnf_check
-
-def catalog_publication_summary_sha256_contract : RelationContract where
-  name := "catalog_publication_summary_sha256"
-  attributes := ["revision", "publication_key", "summary_sha256"]
-  declaredKeys := [["revision", "publication_key"]]
-  declaredFDs := [
-    { determinant := ["revision", "publication_key"], dependent := ["summary_sha256"] }
-  ]
-
-theorem catalog_publication_summary_sha256_schema_well_formed :
-    schemaWellFormedCheck catalog_publication_summary_sha256_contract = true := by
-  native_decide
-
-theorem catalog_publication_summary_sha256_candidate_keys_check :
-    keysDetermineAllCheck catalog_publication_summary_sha256_contract = true := by
-  native_decide
-
-theorem catalog_publication_summary_sha256_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes catalog_publication_summary_sha256_contract :=
-  keysDetermineAllCheck_sound catalog_publication_summary_sha256_contract
-    catalog_publication_summary_sha256_candidate_keys_check
-
-theorem catalog_publication_summary_sha256_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck catalog_publication_summary_sha256_contract = true := by
-  native_decide
-
-theorem catalog_publication_summary_sha256_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal catalog_publication_summary_sha256_contract :=
-  declaredKeysMinimalCheck_sound catalog_publication_summary_sha256_contract
-    catalog_publication_summary_sha256_candidate_keys_minimal_check
-
-theorem catalog_publication_summary_sha256_closure_fixed_check :
-    closureFixedPointCheck catalog_publication_summary_sha256_contract = true := by
-  native_decide
-
-theorem catalog_publication_summary_sha256_closure_reached_fixed_point :
-    ClosureReachedFixedPoint catalog_publication_summary_sha256_contract :=
-  closureFixedPointCheck_sound catalog_publication_summary_sha256_contract
-    catalog_publication_summary_sha256_closure_fixed_check
-
-theorem catalog_publication_summary_sha256_bcnf_check :
-    bcnfCheck catalog_publication_summary_sha256_contract = true := by
-  native_decide
-
-theorem catalog_publication_summary_sha256_bcnf : BCNF catalog_publication_summary_sha256_contract :=
-  bcnfCheck_sound catalog_publication_summary_sha256_contract catalog_publication_summary_sha256_bcnf_check
-
-def catalog_publication_language_sha256_contract : RelationContract where
-  name := "catalog_publication_language_sha256"
-  attributes := ["revision", "publication_key", "language_sha256"]
-  declaredKeys := [["revision", "publication_key"]]
-  declaredFDs := [
-    { determinant := ["revision", "publication_key"], dependent := ["language_sha256"] }
-  ]
-
-theorem catalog_publication_language_sha256_schema_well_formed :
-    schemaWellFormedCheck catalog_publication_language_sha256_contract = true := by
-  native_decide
-
-theorem catalog_publication_language_sha256_candidate_keys_check :
-    keysDetermineAllCheck catalog_publication_language_sha256_contract = true := by
-  native_decide
-
-theorem catalog_publication_language_sha256_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes catalog_publication_language_sha256_contract :=
-  keysDetermineAllCheck_sound catalog_publication_language_sha256_contract
-    catalog_publication_language_sha256_candidate_keys_check
-
-theorem catalog_publication_language_sha256_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck catalog_publication_language_sha256_contract = true := by
-  native_decide
-
-theorem catalog_publication_language_sha256_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal catalog_publication_language_sha256_contract :=
-  declaredKeysMinimalCheck_sound catalog_publication_language_sha256_contract
-    catalog_publication_language_sha256_candidate_keys_minimal_check
-
-theorem catalog_publication_language_sha256_closure_fixed_check :
-    closureFixedPointCheck catalog_publication_language_sha256_contract = true := by
-  native_decide
-
-theorem catalog_publication_language_sha256_closure_reached_fixed_point :
-    ClosureReachedFixedPoint catalog_publication_language_sha256_contract :=
-  closureFixedPointCheck_sound catalog_publication_language_sha256_contract
-    catalog_publication_language_sha256_closure_fixed_check
-
-theorem catalog_publication_language_sha256_bcnf_check :
-    bcnfCheck catalog_publication_language_sha256_contract = true := by
-  native_decide
-
-theorem catalog_publication_language_sha256_bcnf : BCNF catalog_publication_language_sha256_contract :=
-  bcnfCheck_sound catalog_publication_language_sha256_contract catalog_publication_language_sha256_bcnf_check
-
-def catalog_publication_modified_at_contract : RelationContract where
-  name := "catalog_publication_modified_at"
-  attributes := ["revision", "publication_key", "modified_at"]
-  declaredKeys := [["revision", "publication_key"]]
-  declaredFDs := [
-    { determinant := ["revision", "publication_key"], dependent := ["modified_at"] }
-  ]
-
-theorem catalog_publication_modified_at_schema_well_formed :
-    schemaWellFormedCheck catalog_publication_modified_at_contract = true := by
-  native_decide
-
-theorem catalog_publication_modified_at_candidate_keys_check :
-    keysDetermineAllCheck catalog_publication_modified_at_contract = true := by
-  native_decide
-
-theorem catalog_publication_modified_at_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes catalog_publication_modified_at_contract :=
-  keysDetermineAllCheck_sound catalog_publication_modified_at_contract
-    catalog_publication_modified_at_candidate_keys_check
-
-theorem catalog_publication_modified_at_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck catalog_publication_modified_at_contract = true := by
-  native_decide
-
-theorem catalog_publication_modified_at_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal catalog_publication_modified_at_contract :=
-  declaredKeysMinimalCheck_sound catalog_publication_modified_at_contract
-    catalog_publication_modified_at_candidate_keys_minimal_check
-
-theorem catalog_publication_modified_at_closure_fixed_check :
-    closureFixedPointCheck catalog_publication_modified_at_contract = true := by
-  native_decide
-
-theorem catalog_publication_modified_at_closure_reached_fixed_point :
-    ClosureReachedFixedPoint catalog_publication_modified_at_contract :=
-  closureFixedPointCheck_sound catalog_publication_modified_at_contract
-    catalog_publication_modified_at_closure_fixed_check
-
-theorem catalog_publication_modified_at_bcnf_check :
-    bcnfCheck catalog_publication_modified_at_contract = true := by
-  native_decide
-
-theorem catalog_publication_modified_at_bcnf : BCNF catalog_publication_modified_at_contract :=
-  bcnfCheck_sound catalog_publication_modified_at_contract catalog_publication_modified_at_bcnf_check
-
-def catalog_publication_seal_contract : RelationContract where
-  name := "catalog_publication_seal"
-  attributes := ["revision", "publication_key"]
-  declaredKeys := [["revision", "publication_key"]]
-  declaredFDs := [
-  ]
-
-theorem catalog_publication_seal_schema_well_formed :
-    schemaWellFormedCheck catalog_publication_seal_contract = true := by
-  native_decide
-
-theorem catalog_publication_seal_candidate_keys_check :
-    keysDetermineAllCheck catalog_publication_seal_contract = true := by
-  native_decide
-
-theorem catalog_publication_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes catalog_publication_seal_contract :=
-  keysDetermineAllCheck_sound catalog_publication_seal_contract
-    catalog_publication_seal_candidate_keys_check
-
-theorem catalog_publication_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck catalog_publication_seal_contract = true := by
-  native_decide
-
-theorem catalog_publication_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal catalog_publication_seal_contract :=
-  declaredKeysMinimalCheck_sound catalog_publication_seal_contract
-    catalog_publication_seal_candidate_keys_minimal_check
-
-theorem catalog_publication_seal_closure_fixed_check :
-    closureFixedPointCheck catalog_publication_seal_contract = true := by
-  native_decide
-
-theorem catalog_publication_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint catalog_publication_seal_contract :=
-  closureFixedPointCheck_sound catalog_publication_seal_contract
-    catalog_publication_seal_closure_fixed_check
-
-theorem catalog_publication_seal_bcnf_check :
-    bcnfCheck catalog_publication_seal_contract = true := by
-  native_decide
-
-theorem catalog_publication_seal_bcnf : BCNF catalog_publication_seal_contract :=
-  bcnfCheck_sound catalog_publication_seal_contract catalog_publication_seal_bcnf_check
+theorem catalog_publication_occurrence_identity_bcnf : BCNF catalog_publication_occurrence_identity_contract :=
+  bcnfCheck_sound catalog_publication_occurrence_identity_contract catalog_publication_occurrence_identity_bcnf_check
 
 def catalog_publication_contract : RelationContract where
   name := "catalog_publication"
   attributes := ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at"]
   declaredKeys := [["revision", "publication_key"], ["revision", "gallery_id"]]
   declaredFDs := [
+    { determinant := ["gallery_id"], dependent := ["publication_key"] },
     { determinant := ["revision", "publication_key"], dependent := ["gallery_id", "summary_sha256", "language_sha256", "modified_at"] },
     { determinant := ["revision", "gallery_id"], dependent := ["publication_key", "summary_sha256", "language_sha256", "modified_at"] }
   ]
@@ -18165,193 +16614,12 @@ theorem catalog_publication_order_bcnf_check :
 theorem catalog_publication_order_bcnf : BCNF catalog_publication_order_contract :=
   bcnfCheck_sound catalog_publication_order_contract catalog_publication_order_bcnf_check
 
-def catalog_publication_title_anchor_contract : RelationContract where
-  name := "catalog_publication_title_anchor"
-  attributes := ["revision", "publication_key"]
-  declaredKeys := [["revision", "publication_key"]]
-  declaredFDs := [
-  ]
-
-theorem catalog_publication_title_anchor_schema_well_formed :
-    schemaWellFormedCheck catalog_publication_title_anchor_contract = true := by
-  native_decide
-
-theorem catalog_publication_title_anchor_candidate_keys_check :
-    keysDetermineAllCheck catalog_publication_title_anchor_contract = true := by
-  native_decide
-
-theorem catalog_publication_title_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes catalog_publication_title_anchor_contract :=
-  keysDetermineAllCheck_sound catalog_publication_title_anchor_contract
-    catalog_publication_title_anchor_candidate_keys_check
-
-theorem catalog_publication_title_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck catalog_publication_title_anchor_contract = true := by
-  native_decide
-
-theorem catalog_publication_title_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal catalog_publication_title_anchor_contract :=
-  declaredKeysMinimalCheck_sound catalog_publication_title_anchor_contract
-    catalog_publication_title_anchor_candidate_keys_minimal_check
-
-theorem catalog_publication_title_anchor_closure_fixed_check :
-    closureFixedPointCheck catalog_publication_title_anchor_contract = true := by
-  native_decide
-
-theorem catalog_publication_title_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint catalog_publication_title_anchor_contract :=
-  closureFixedPointCheck_sound catalog_publication_title_anchor_contract
-    catalog_publication_title_anchor_closure_fixed_check
-
-theorem catalog_publication_title_anchor_bcnf_check :
-    bcnfCheck catalog_publication_title_anchor_contract = true := by
-  native_decide
-
-theorem catalog_publication_title_anchor_bcnf : BCNF catalog_publication_title_anchor_contract :=
-  bcnfCheck_sound catalog_publication_title_anchor_contract catalog_publication_title_anchor_bcnf_check
-
-def catalog_publication_title_source_title_sha256_contract : RelationContract where
-  name := "catalog_publication_title_source_title_sha256"
-  attributes := ["revision", "publication_key", "source_title_sha256"]
-  declaredKeys := [["revision", "publication_key"]]
-  declaredFDs := [
-    { determinant := ["revision", "publication_key"], dependent := ["source_title_sha256"] }
-  ]
-
-theorem catalog_publication_title_source_title_sha256_schema_well_formed :
-    schemaWellFormedCheck catalog_publication_title_source_title_sha256_contract = true := by
-  native_decide
-
-theorem catalog_publication_title_source_title_sha256_candidate_keys_check :
-    keysDetermineAllCheck catalog_publication_title_source_title_sha256_contract = true := by
-  native_decide
-
-theorem catalog_publication_title_source_title_sha256_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes catalog_publication_title_source_title_sha256_contract :=
-  keysDetermineAllCheck_sound catalog_publication_title_source_title_sha256_contract
-    catalog_publication_title_source_title_sha256_candidate_keys_check
-
-theorem catalog_publication_title_source_title_sha256_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck catalog_publication_title_source_title_sha256_contract = true := by
-  native_decide
-
-theorem catalog_publication_title_source_title_sha256_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal catalog_publication_title_source_title_sha256_contract :=
-  declaredKeysMinimalCheck_sound catalog_publication_title_source_title_sha256_contract
-    catalog_publication_title_source_title_sha256_candidate_keys_minimal_check
-
-theorem catalog_publication_title_source_title_sha256_closure_fixed_check :
-    closureFixedPointCheck catalog_publication_title_source_title_sha256_contract = true := by
-  native_decide
-
-theorem catalog_publication_title_source_title_sha256_closure_reached_fixed_point :
-    ClosureReachedFixedPoint catalog_publication_title_source_title_sha256_contract :=
-  closureFixedPointCheck_sound catalog_publication_title_source_title_sha256_contract
-    catalog_publication_title_source_title_sha256_closure_fixed_check
-
-theorem catalog_publication_title_source_title_sha256_bcnf_check :
-    bcnfCheck catalog_publication_title_source_title_sha256_contract = true := by
-  native_decide
-
-theorem catalog_publication_title_source_title_sha256_bcnf : BCNF catalog_publication_title_source_title_sha256_contract :=
-  bcnfCheck_sound catalog_publication_title_source_title_sha256_contract catalog_publication_title_source_title_sha256_bcnf_check
-
-def catalog_publication_title_source_gallery_name_contract : RelationContract where
-  name := "catalog_publication_title_source_gallery_name"
-  attributes := ["revision", "publication_key", "source_gallery_name"]
-  declaredKeys := [["revision", "publication_key"]]
-  declaredFDs := [
-    { determinant := ["revision", "publication_key"], dependent := ["source_gallery_name"] }
-  ]
-
-theorem catalog_publication_title_source_gallery_name_schema_well_formed :
-    schemaWellFormedCheck catalog_publication_title_source_gallery_name_contract = true := by
-  native_decide
-
-theorem catalog_publication_title_source_gallery_name_candidate_keys_check :
-    keysDetermineAllCheck catalog_publication_title_source_gallery_name_contract = true := by
-  native_decide
-
-theorem catalog_publication_title_source_gallery_name_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes catalog_publication_title_source_gallery_name_contract :=
-  keysDetermineAllCheck_sound catalog_publication_title_source_gallery_name_contract
-    catalog_publication_title_source_gallery_name_candidate_keys_check
-
-theorem catalog_publication_title_source_gallery_name_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck catalog_publication_title_source_gallery_name_contract = true := by
-  native_decide
-
-theorem catalog_publication_title_source_gallery_name_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal catalog_publication_title_source_gallery_name_contract :=
-  declaredKeysMinimalCheck_sound catalog_publication_title_source_gallery_name_contract
-    catalog_publication_title_source_gallery_name_candidate_keys_minimal_check
-
-theorem catalog_publication_title_source_gallery_name_closure_fixed_check :
-    closureFixedPointCheck catalog_publication_title_source_gallery_name_contract = true := by
-  native_decide
-
-theorem catalog_publication_title_source_gallery_name_closure_reached_fixed_point :
-    ClosureReachedFixedPoint catalog_publication_title_source_gallery_name_contract :=
-  closureFixedPointCheck_sound catalog_publication_title_source_gallery_name_contract
-    catalog_publication_title_source_gallery_name_closure_fixed_check
-
-theorem catalog_publication_title_source_gallery_name_bcnf_check :
-    bcnfCheck catalog_publication_title_source_gallery_name_contract = true := by
-  native_decide
-
-theorem catalog_publication_title_source_gallery_name_bcnf : BCNF catalog_publication_title_source_gallery_name_contract :=
-  bcnfCheck_sound catalog_publication_title_source_gallery_name_contract catalog_publication_title_source_gallery_name_bcnf_check
-
-def catalog_publication_title_seal_contract : RelationContract where
-  name := "catalog_publication_title_seal"
-  attributes := ["revision", "publication_key"]
-  declaredKeys := [["revision", "publication_key"]]
-  declaredFDs := [
-  ]
-
-theorem catalog_publication_title_seal_schema_well_formed :
-    schemaWellFormedCheck catalog_publication_title_seal_contract = true := by
-  native_decide
-
-theorem catalog_publication_title_seal_candidate_keys_check :
-    keysDetermineAllCheck catalog_publication_title_seal_contract = true := by
-  native_decide
-
-theorem catalog_publication_title_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes catalog_publication_title_seal_contract :=
-  keysDetermineAllCheck_sound catalog_publication_title_seal_contract
-    catalog_publication_title_seal_candidate_keys_check
-
-theorem catalog_publication_title_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck catalog_publication_title_seal_contract = true := by
-  native_decide
-
-theorem catalog_publication_title_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal catalog_publication_title_seal_contract :=
-  declaredKeysMinimalCheck_sound catalog_publication_title_seal_contract
-    catalog_publication_title_seal_candidate_keys_minimal_check
-
-theorem catalog_publication_title_seal_closure_fixed_check :
-    closureFixedPointCheck catalog_publication_title_seal_contract = true := by
-  native_decide
-
-theorem catalog_publication_title_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint catalog_publication_title_seal_contract :=
-  closureFixedPointCheck_sound catalog_publication_title_seal_contract
-    catalog_publication_title_seal_closure_fixed_check
-
-theorem catalog_publication_title_seal_bcnf_check :
-    bcnfCheck catalog_publication_title_seal_contract = true := by
-  native_decide
-
-theorem catalog_publication_title_seal_bcnf : BCNF catalog_publication_title_seal_contract :=
-  bcnfCheck_sound catalog_publication_title_seal_contract catalog_publication_title_seal_bcnf_check
-
 def catalog_publication_title_contract : RelationContract where
   name := "catalog_publication_title"
   attributes := ["revision", "publication_key", "source_title_sha256", "source_gallery_name"]
-  declaredKeys := [["revision", "publication_key"]]
+  declaredKeys := [["revision", "publication_key"], ["revision", "source_gallery_name"]]
   declaredFDs := [
+    { determinant := ["source_gallery_name"], dependent := ["publication_key"] },
     { determinant := ["revision", "publication_key"], dependent := ["source_title_sha256", "source_gallery_name"] }
   ]
 
@@ -19955,33 +18223,17 @@ def manifestContracts : List RelationContract := [
   gallery_observation_page_child_contract,
   gallery_observation_tree_root_contract,
   gallery_observation_contract,
-  gallery_observation_metadata_anchor_contract,
   gallery_upload_time_contract,
   source_gallery_name_gid_contract,
   gallery_source_name_access_contract,
-  gallery_observation_download_time_contract,
-  gallery_observation_modified_time_contract,
-  gallery_observation_metadata_seal_contract,
+  gallery_observation_metadata_local_contract,
   gallery_observation_metadata_contract,
-  gallery_observation_scan_anchor_contract,
-  gallery_observation_scan_observation_sha256_contract,
-  gallery_observation_scan_observation_version_contract,
-  gallery_observation_scan_source_file_count_contract,
-  gallery_observation_scan_seal_contract,
   gallery_observation_scan_contract,
   gallery_observation_discovery_fingerprint_contract,
   gallery_observation_metadata_digest_contract,
   gallery_observation_raw_content_contract,
   gallery_observation_page_count_contract,
-  gallery_observation_directory_anchor_contract,
-  gallery_observation_directory_entry_count_contract,
-  gallery_observation_directory_observation_sha256_contract,
-  gallery_observation_directory_seal_contract,
   gallery_observation_directory_contract,
-  gallery_observation_stat_anchor_contract,
-  gallery_observation_stat_file_count_contract,
-  gallery_observation_stat_byte_count_contract,
-  gallery_observation_stat_seal_contract,
   gallery_observation_stat_contract,
   source_build_gallery_contract,
   file_name_identity_anchor_contract,
@@ -20013,10 +18265,6 @@ def manifestContracts : List RelationContract := [
   build_manifest_byte_count_contract,
   build_manifest_seal_contract,
   build_manifest_contract,
-  gallery_manifest_anchor_contract,
-  gallery_manifest_manifest_sha256_contract,
-  gallery_manifest_computed_at_contract,
-  gallery_manifest_seal_contract,
   gallery_manifest_contract,
   analysis_policy_anchor_contract,
   analysis_policy_algorithm_version_contract,
@@ -20069,15 +18317,11 @@ def manifestContracts : List RelationContract := [
   analysis_exclusion_delta_seal_contract,
   analysis_exclusion_delta_contract,
   analysis_impacted_gallery_contract,
-  analysis_impacted_content_anchor_contract,
-  analysis_impacted_content_provenance_contract,
-  analysis_impacted_content_witness_contract,
-  analysis_impacted_content_seal_contract,
   analysis_impacted_content_contract,
-  analysis_impacted_gid_anchor_contract,
+  analysis_impacted_content_provenance_contract,
+  analysis_impacted_gid_storage_contract,
+  analysis_impacted_gid_provenance_storage_contract,
   analysis_impacted_gid_provenance_contract,
-  analysis_impacted_gid_witness_contract,
-  analysis_impacted_gid_seal_contract,
   analysis_impacted_gid_contract,
   analysis_file_hash_decision_shadow_anchor_contract,
   analysis_file_hash_decision_shadow_occurrence_count_contract,
@@ -20087,18 +18331,9 @@ def manifestContracts : List RelationContract := [
   analysis_file_hash_decision_shadow_contract,
   analysis_file_hash_decision_tombstone_contract,
   analysis_file_hash_decision_resolved_contract,
-  analysis_content_owner_candidate_shadow_anchor_contract,
-  analysis_content_owner_candidate_shadow_content_sha256_contract,
-  analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_contract,
-  analysis_content_owner_candidate_shadow_title_scalar_count_contract,
-  analysis_content_owner_candidate_shadow_download_time_contract,
-  analysis_content_owner_candidate_shadow_seal_contract,
   analysis_content_owner_candidate_shadow_contract,
   analysis_content_owner_candidate_tombstone_contract,
   analysis_content_owner_candidate_resolved_contract,
-  analysis_content_owner_shadow_anchor_contract,
-  analysis_content_owner_shadow_owner_gallery_id_contract,
-  analysis_content_owner_shadow_seal_contract,
   analysis_content_owner_shadow_contract,
   analysis_content_owner_tombstone_contract,
   analysis_content_owner_resolved_contract,
@@ -20152,6 +18387,8 @@ def manifestContracts : List RelationContract := [
   publication_candidate_base_publication_commit_contract,
   publication_candidate_base_catalog_contract,
   publication_candidate_base_source_contract,
+  publication_selection_storage_contract,
+  publication_selection_occurrence_identity_contract,
   publication_selection_contract,
   publication_stage_anchor_contract,
   publication_stage_order_contract,
@@ -20258,18 +18495,10 @@ def manifestContracts : List RelationContract := [
   title_sort_policy_contract,
   display_title_choice_contract,
   title_sort_contract,
-  catalog_publication_anchor_contract,
-  catalog_publication_gallery_id_contract,
-  catalog_publication_summary_sha256_contract,
-  catalog_publication_language_sha256_contract,
-  catalog_publication_modified_at_contract,
-  catalog_publication_seal_contract,
+  catalog_publication_storage_contract,
+  catalog_publication_occurrence_identity_contract,
   catalog_publication_contract,
   catalog_publication_order_contract,
-  catalog_publication_title_anchor_contract,
-  catalog_publication_title_source_title_sha256_contract,
-  catalog_publication_title_source_gallery_name_contract,
-  catalog_publication_title_seal_contract,
   catalog_publication_title_contract,
   catalog_publication_content_contract,
   contributor_role_registry_contract,
@@ -20307,7 +18536,7 @@ def manifestContracts : List RelationContract := [
 ]
 
 theorem manifest_relation_count :
-    manifestContracts.length = 418 := by
+    manifestContracts.length = 379 := by
   native_decide
 
 /-! Closed catalog physical-domain authority from the manifest. -/
@@ -20354,10 +18583,6 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   gallery_observation_file_file_sha256_contract,
   gallery_observation_file_seal_contract,
   gallery_observation_file_contract,
-  gallery_manifest_anchor_contract,
-  gallery_manifest_manifest_sha256_contract,
-  gallery_manifest_computed_at_contract,
-  gallery_manifest_seal_contract,
   gallery_manifest_contract,
   tag_term_anchor_contract,
   tag_term_identity_contract,
@@ -20423,26 +18648,13 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   analysis_file_hash_decision_shadow_maximum_gallery_artist_count_contract,
   analysis_file_hash_decision_shadow_seal_contract,
   analysis_file_hash_decision_shadow_contract,
-  analysis_content_owner_candidate_shadow_anchor_contract,
-  analysis_content_owner_candidate_shadow_content_sha256_contract,
-  analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_contract,
-  analysis_content_owner_candidate_shadow_title_scalar_count_contract,
-  analysis_content_owner_candidate_shadow_download_time_contract,
-  analysis_content_owner_candidate_shadow_seal_contract,
   analysis_content_owner_candidate_shadow_contract,
-  analysis_content_owner_shadow_anchor_contract,
-  analysis_content_owner_shadow_owner_gallery_id_contract,
-  analysis_content_owner_shadow_seal_contract,
   analysis_content_owner_shadow_contract,
-  analysis_impacted_content_anchor_contract,
   analysis_impacted_content_provenance_contract,
-  analysis_impacted_content_witness_contract,
-  analysis_impacted_content_seal_contract,
   analysis_impacted_content_contract,
-  analysis_impacted_gid_anchor_contract,
+  analysis_impacted_gid_provenance_storage_contract,
+  analysis_impacted_gid_storage_contract,
   analysis_impacted_gid_provenance_contract,
-  analysis_impacted_gid_witness_contract,
-  analysis_impacted_gid_seal_contract,
   analysis_impacted_gid_contract,
   analysis_gid_candidate_shadow_contract,
   analysis_gid_candidate_tombstone_contract,
@@ -20469,6 +18681,8 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   publication_candidate_base_publication_commit_contract,
   publication_candidate_base_catalog_contract,
   publication_candidate_base_source_contract,
+  publication_selection_storage_contract,
+  publication_selection_occurrence_identity_contract,
   publication_selection_contract,
   publication_stage_anchor_contract,
   publication_stage_order_contract,
@@ -20563,18 +18777,10 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   title_sort_policy_contract,
   display_title_choice_contract,
   title_sort_contract,
-  catalog_publication_anchor_contract,
-  catalog_publication_gallery_id_contract,
-  catalog_publication_summary_sha256_contract,
-  catalog_publication_language_sha256_contract,
-  catalog_publication_modified_at_contract,
-  catalog_publication_seal_contract,
+  catalog_publication_storage_contract,
+  catalog_publication_occurrence_identity_contract,
   catalog_publication_contract,
   catalog_publication_order_contract,
-  catalog_publication_title_anchor_contract,
-  catalog_publication_title_source_title_sha256_contract,
-  catalog_publication_title_source_gallery_name_contract,
-  catalog_publication_title_seal_contract,
   catalog_publication_title_contract,
   catalog_publication_content_contract,
   contributor_role_registry_contract,
@@ -20645,10 +18851,7 @@ def catalogPhysicalDomainMutationContracts : List RelationContract := [
   gallery_observation_file_file_no_contract,
   gallery_observation_file_file_sha256_contract,
   gallery_observation_file_seal_contract,
-  gallery_manifest_anchor_contract,
-  gallery_manifest_manifest_sha256_contract,
-  gallery_manifest_computed_at_contract,
-  gallery_manifest_seal_contract,
+  gallery_manifest_contract,
   tag_term_anchor_contract,
   tag_term_identity_contract,
   tag_term_seal_contract,
@@ -20702,23 +18905,12 @@ def catalogPhysicalDomainMutationContracts : List RelationContract := [
   analysis_file_hash_decision_shadow_artist_count_contract,
   analysis_file_hash_decision_shadow_maximum_gallery_artist_count_contract,
   analysis_file_hash_decision_shadow_seal_contract,
-  analysis_content_owner_candidate_shadow_anchor_contract,
-  analysis_content_owner_candidate_shadow_content_sha256_contract,
-  analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_contract,
-  analysis_content_owner_candidate_shadow_title_scalar_count_contract,
-  analysis_content_owner_candidate_shadow_download_time_contract,
-  analysis_content_owner_candidate_shadow_seal_contract,
-  analysis_content_owner_shadow_anchor_contract,
-  analysis_content_owner_shadow_owner_gallery_id_contract,
-  analysis_content_owner_shadow_seal_contract,
-  analysis_impacted_content_anchor_contract,
+  analysis_content_owner_candidate_shadow_contract,
+  analysis_content_owner_shadow_contract,
   analysis_impacted_content_provenance_contract,
-  analysis_impacted_content_witness_contract,
-  analysis_impacted_content_seal_contract,
-  analysis_impacted_gid_anchor_contract,
-  analysis_impacted_gid_provenance_contract,
-  analysis_impacted_gid_witness_contract,
-  analysis_impacted_gid_seal_contract,
+  analysis_impacted_content_contract,
+  analysis_impacted_gid_provenance_storage_contract,
+  analysis_impacted_gid_storage_contract,
   analysis_gid_candidate_shadow_contract,
   analysis_gid_candidate_tombstone_contract,
   analysis_gid_winner_selection_contract,
@@ -20734,7 +18926,8 @@ def catalogPhysicalDomainMutationContracts : List RelationContract := [
   publication_candidate_definition_seal_contract,
   publication_candidate_projection_seal_contract,
   publication_candidate_base_publication_commit_contract,
-  publication_selection_contract,
+  publication_selection_storage_contract,
+  publication_selection_occurrence_identity_contract,
   publication_stage_anchor_contract,
   publication_stage_order_contract,
   publication_stage_cursor_codec_contract,
@@ -20814,17 +19007,9 @@ def catalogPhysicalDomainMutationContracts : List RelationContract := [
   title_sort_policy_seal_contract,
   display_title_choice_contract,
   title_sort_contract,
-  catalog_publication_anchor_contract,
-  catalog_publication_gallery_id_contract,
-  catalog_publication_summary_sha256_contract,
-  catalog_publication_language_sha256_contract,
-  catalog_publication_modified_at_contract,
-  catalog_publication_seal_contract,
+  catalog_publication_storage_contract,
+  catalog_publication_occurrence_identity_contract,
   catalog_publication_order_contract,
-  catalog_publication_title_anchor_contract,
-  catalog_publication_title_source_title_sha256_contract,
-  catalog_publication_title_source_gallery_name_contract,
-  catalog_publication_title_seal_contract,
   catalog_publication_content_contract,
   contributor_role_registry_contract,
   catalog_contributor_anchor_contract,
@@ -20860,7 +19045,6 @@ def catalogPhysicalDomainReadOnlyViewContracts : List RelationContract := [
   build_manifest_contract,
   file_name_identity_contract,
   gallery_observation_file_contract,
-  gallery_manifest_contract,
   tag_term_contract,
   source_snapshot_manifest_identity_contract,
   artifact_producer_fingerprint_contract,
@@ -20872,9 +19056,7 @@ def catalogPhysicalDomainReadOnlyViewContracts : List RelationContract := [
   analysis_state_component_seal_contract,
   analysis_exclusion_delta_contract,
   analysis_file_hash_decision_shadow_contract,
-  analysis_content_owner_candidate_shadow_contract,
-  analysis_content_owner_shadow_contract,
-  analysis_impacted_content_contract,
+  analysis_impacted_gid_provenance_contract,
   analysis_impacted_gid_contract,
   analysis_gid_candidate_resolved_contract,
   analysis_gid_winner_shadow_contract,
@@ -20886,6 +19068,7 @@ def catalogPhysicalDomainReadOnlyViewContracts : List RelationContract := [
   publication_candidate_projection_contract,
   publication_candidate_base_catalog_contract,
   publication_candidate_base_source_contract,
+  publication_selection_contract,
   publication_stage_contract,
   publication_batch_receipt_stored_contract,
   publication_finalization_checkpoint_contract,
@@ -20912,15 +19095,15 @@ def catalogPhysicalDomainReadOnlyViewContracts : List RelationContract := [
 ]
 
 theorem catalog_physical_domain_relation_count :
-    catalogPhysicalDomainContracts.length = 295 := by
+    catalogPhysicalDomainContracts.length = 272 := by
   native_decide
 
 theorem catalog_physical_domain_mutation_relation_count :
-    catalogPhysicalDomainMutationContracts.length = 239 := by
+    catalogPhysicalDomainMutationContracts.length = 218 := by
   native_decide
 
 theorem catalog_physical_domain_read_only_view_count :
-    catalogPhysicalDomainReadOnlyViewContracts.length = 56 := by
+    catalogPhysicalDomainReadOnlyViewContracts.length = 54 := by
   native_decide
 
 theorem catalog_physical_domain_has_no_duplicates :
@@ -21086,74 +19269,6 @@ theorem analysis_gid_winner_selection_unique_under_stable_identity
   gid_winner_exact_gallery_unique candidates dominates left right
     leftExact rightExact stableIdentity
 
-def gallery_observation_metadata_vertical_contract : VerticalFamilyContract where
-  name := "gallery_observation_metadata_vertical"
-  anchorRelation := "gallery_observation_metadata_anchor"
-  sealRelation := "gallery_observation_metadata_seal"
-  keyAttributes := ["gallery_id", "observation_id"]
-  anchorAttributes := ["gallery_id", "observation_id"]
-  sealAttributes := ["gallery_id", "observation_id"]
-  semanticAttributes := ["gallery_id", "observation_id", "source_gallery_name", "gid", "upload_time", "download_time", "modified_time"]
-  semanticFDs := [
-    { determinant := ["gallery_id"], dependent := ["source_gallery_name"] },
-    { determinant := ["source_gallery_name"], dependent := ["gid"] },
-    { determinant := ["gid"], dependent := ["upload_time"] },
-    { determinant := ["gallery_id", "observation_id"], dependent := ["download_time", "modified_time"] }
-  ]
-  viewAttributes := ["gallery_id", "observation_id", "gid", "upload_time", "download_time", "modified_time"]
-  viewFDs := [
-    { determinant := ["gallery_id"], dependent := ["gid"] },
-    { determinant := ["gid"], dependent := ["upload_time"] },
-    { determinant := ["gallery_id", "observation_id"], dependent := ["download_time", "modified_time"] }
-  ]
-  members := [
-    { relationName := "gallery_source_name_access", keyAttributes := ["gallery_id"], valueAttribute := "source_gallery_name", projectionAttribute := "source_gallery_name", attributes := ["gallery_id", "source_gallery_name"], declaredKeys := [["gallery_id"]], declaredFDs := [{ determinant := ["gallery_id"], dependent := ["source_gallery_name"] }], sourceRelation := "gallery_observation_metadata_seal", sourceRelationAttributes := ["gallery_id", "observation_id"], sourceAttributes := ["gallery_id"], memberAttributes := ["gallery_id"], congruenceMembers := [], project := false, required := true },
-    { relationName := "source_gallery_name_gid", keyAttributes := ["source_gallery_name"], valueAttribute := "gid", projectionAttribute := "gid", attributes := ["source_gallery_name", "gid"], declaredKeys := [["source_gallery_name"]], declaredFDs := [{ determinant := ["source_gallery_name"], dependent := ["gid"] }], sourceRelation := "gallery_source_name_access", sourceRelationAttributes := ["gallery_id", "source_gallery_name"], sourceAttributes := ["source_gallery_name"], memberAttributes := ["source_gallery_name"], congruenceMembers := [], project := true, required := true },
-    { relationName := "gallery_upload_time", keyAttributes := ["gid"], valueAttribute := "upload_time", projectionAttribute := "upload_time", attributes := ["gid", "upload_time"], declaredKeys := [["gid"]], declaredFDs := [{ determinant := ["gid"], dependent := ["upload_time"] }], sourceRelation := "source_gallery_name_gid", sourceRelationAttributes := ["source_gallery_name", "gid"], sourceAttributes := ["gid"], memberAttributes := ["gid"], congruenceMembers := [], project := true, required := true },
-    { relationName := "gallery_observation_download_time", keyAttributes := ["gallery_id", "observation_id"], valueAttribute := "download_time", projectionAttribute := "download_time", attributes := ["gallery_id", "observation_id", "download_time"], declaredKeys := [["gallery_id", "observation_id"]], declaredFDs := [{ determinant := ["gallery_id", "observation_id"], dependent := ["download_time"] }], sourceRelation := "gallery_observation_metadata_seal", sourceRelationAttributes := ["gallery_id", "observation_id"], sourceAttributes := ["gallery_id", "observation_id"], memberAttributes := ["gallery_id", "observation_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "gallery_observation_modified_time", keyAttributes := ["gallery_id", "observation_id"], valueAttribute := "modified_time", projectionAttribute := "modified_time", attributes := ["gallery_id", "observation_id", "modified_time"], declaredKeys := [["gallery_id", "observation_id"]], declaredFDs := [{ determinant := ["gallery_id", "observation_id"], dependent := ["modified_time"] }], sourceRelation := "gallery_observation_metadata_seal", sourceRelationAttributes := ["gallery_id", "observation_id"], sourceAttributes := ["gallery_id", "observation_id"], memberAttributes := ["gallery_id", "observation_id"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem gallery_observation_metadata_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck gallery_observation_metadata_vertical_contract = true := by
-  native_decide
-
-theorem gallery_observation_metadata_vertical_view_projection :
-    VerticalFamilyViewProjection gallery_observation_metadata_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound gallery_observation_metadata_vertical_contract
-    gallery_observation_metadata_vertical_view_projection_check
-
-theorem gallery_observation_metadata_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck gallery_observation_metadata_vertical_contract = true := by
-  native_decide
-
-theorem gallery_observation_metadata_vertical_well_formed :
-    VerticalFamilyWellFormed gallery_observation_metadata_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound gallery_observation_metadata_vertical_contract
-    gallery_observation_metadata_vertical_well_formed_check
-
-theorem gallery_observation_metadata_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck gallery_observation_metadata_vertical_contract = true := by
-  native_decide
-
-theorem gallery_observation_metadata_vertical_lossless :
-    VerticalFamilyLossless gallery_observation_metadata_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound gallery_observation_metadata_vertical_contract
-    gallery_observation_metadata_vertical_lossless_join_check
-
-theorem gallery_observation_metadata_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck gallery_observation_metadata_vertical_contract = true := by
-  native_decide
-
-theorem gallery_observation_metadata_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving gallery_observation_metadata_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound gallery_observation_metadata_vertical_contract
-    gallery_observation_metadata_vertical_dependency_preservation_check
-
 def source_build_discovery_vertical_contract : VerticalFamilyContract where
   name := "source_build_discovery_vertical"
   anchorRelation := "source_build_discovery_anchor"
@@ -21215,187 +19330,6 @@ theorem source_build_discovery_vertical_dependency_preserving :
     VerticalFamilyDependencyPreserving source_build_discovery_vertical_contract :=
   verticalFamilyDependencyPreservationCheck_sound source_build_discovery_vertical_contract
     source_build_discovery_vertical_dependency_preservation_check
-
-def gallery_observation_scan_vertical_contract : VerticalFamilyContract where
-  name := "gallery_observation_scan_vertical"
-  anchorRelation := "gallery_observation_scan_anchor"
-  sealRelation := "gallery_observation_scan_seal"
-  keyAttributes := ["gallery_id", "observation_id"]
-  anchorAttributes := ["gallery_id", "observation_id"]
-  sealAttributes := ["gallery_id", "observation_id"]
-  semanticAttributes := ["gallery_id", "observation_id", "scan_observation_sha256", "scan_observation_version", "source_file_count"]
-  semanticFDs := [
-    { determinant := ["gallery_id", "observation_id"], dependent := ["scan_observation_sha256", "scan_observation_version", "source_file_count"] }
-  ]
-  viewAttributes := ["gallery_id", "observation_id", "scan_observation_sha256", "scan_observation_version", "source_file_count"]
-  viewFDs := [
-    { determinant := ["gallery_id", "observation_id"], dependent := ["scan_observation_sha256", "scan_observation_version", "source_file_count"] }
-  ]
-  members := [
-    { relationName := "gallery_observation_scan_observation_sha256", keyAttributes := ["gallery_id", "observation_id"], valueAttribute := "scan_observation_sha256", projectionAttribute := "scan_observation_sha256", attributes := ["gallery_id", "observation_id", "scan_observation_sha256"], declaredKeys := [["gallery_id", "observation_id"]], declaredFDs := [{ determinant := ["gallery_id", "observation_id"], dependent := ["scan_observation_sha256"] }], sourceRelation := "gallery_observation_scan_seal", sourceRelationAttributes := ["gallery_id", "observation_id"], sourceAttributes := ["gallery_id", "observation_id"], memberAttributes := ["gallery_id", "observation_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "gallery_observation_scan_observation_version", keyAttributes := ["gallery_id", "observation_id"], valueAttribute := "scan_observation_version", projectionAttribute := "scan_observation_version", attributes := ["gallery_id", "observation_id", "scan_observation_version"], declaredKeys := [["gallery_id", "observation_id"]], declaredFDs := [{ determinant := ["gallery_id", "observation_id"], dependent := ["scan_observation_version"] }], sourceRelation := "gallery_observation_scan_seal", sourceRelationAttributes := ["gallery_id", "observation_id"], sourceAttributes := ["gallery_id", "observation_id"], memberAttributes := ["gallery_id", "observation_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "gallery_observation_scan_source_file_count", keyAttributes := ["gallery_id", "observation_id"], valueAttribute := "source_file_count", projectionAttribute := "source_file_count", attributes := ["gallery_id", "observation_id", "source_file_count"], declaredKeys := [["gallery_id", "observation_id"]], declaredFDs := [{ determinant := ["gallery_id", "observation_id"], dependent := ["source_file_count"] }], sourceRelation := "gallery_observation_scan_seal", sourceRelationAttributes := ["gallery_id", "observation_id"], sourceAttributes := ["gallery_id", "observation_id"], memberAttributes := ["gallery_id", "observation_id"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem gallery_observation_scan_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck gallery_observation_scan_vertical_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_vertical_view_projection :
-    VerticalFamilyViewProjection gallery_observation_scan_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound gallery_observation_scan_vertical_contract
-    gallery_observation_scan_vertical_view_projection_check
-
-theorem gallery_observation_scan_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck gallery_observation_scan_vertical_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_vertical_well_formed :
-    VerticalFamilyWellFormed gallery_observation_scan_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound gallery_observation_scan_vertical_contract
-    gallery_observation_scan_vertical_well_formed_check
-
-theorem gallery_observation_scan_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck gallery_observation_scan_vertical_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_vertical_lossless :
-    VerticalFamilyLossless gallery_observation_scan_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound gallery_observation_scan_vertical_contract
-    gallery_observation_scan_vertical_lossless_join_check
-
-theorem gallery_observation_scan_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck gallery_observation_scan_vertical_contract = true := by
-  native_decide
-
-theorem gallery_observation_scan_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving gallery_observation_scan_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound gallery_observation_scan_vertical_contract
-    gallery_observation_scan_vertical_dependency_preservation_check
-
-def gallery_observation_directory_vertical_contract : VerticalFamilyContract where
-  name := "gallery_observation_directory_vertical"
-  anchorRelation := "gallery_observation_directory_anchor"
-  sealRelation := "gallery_observation_directory_seal"
-  keyAttributes := ["gallery_id", "observation_id"]
-  anchorAttributes := ["gallery_id", "observation_id"]
-  sealAttributes := ["gallery_id", "observation_id"]
-  semanticAttributes := ["gallery_id", "observation_id", "directory_entry_count", "directory_observation_sha256"]
-  semanticFDs := [
-    { determinant := ["gallery_id", "observation_id"], dependent := ["directory_entry_count", "directory_observation_sha256"] }
-  ]
-  viewAttributes := ["gallery_id", "observation_id", "directory_entry_count", "directory_observation_sha256"]
-  viewFDs := [
-    { determinant := ["gallery_id", "observation_id"], dependent := ["directory_entry_count", "directory_observation_sha256"] }
-  ]
-  members := [
-    { relationName := "gallery_observation_directory_entry_count", keyAttributes := ["gallery_id", "observation_id"], valueAttribute := "directory_entry_count", projectionAttribute := "directory_entry_count", attributes := ["gallery_id", "observation_id", "directory_entry_count"], declaredKeys := [["gallery_id", "observation_id"]], declaredFDs := [{ determinant := ["gallery_id", "observation_id"], dependent := ["directory_entry_count"] }], sourceRelation := "gallery_observation_directory_seal", sourceRelationAttributes := ["gallery_id", "observation_id"], sourceAttributes := ["gallery_id", "observation_id"], memberAttributes := ["gallery_id", "observation_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "gallery_observation_directory_observation_sha256", keyAttributes := ["gallery_id", "observation_id"], valueAttribute := "directory_observation_sha256", projectionAttribute := "directory_observation_sha256", attributes := ["gallery_id", "observation_id", "directory_observation_sha256"], declaredKeys := [["gallery_id", "observation_id"]], declaredFDs := [{ determinant := ["gallery_id", "observation_id"], dependent := ["directory_observation_sha256"] }], sourceRelation := "gallery_observation_directory_seal", sourceRelationAttributes := ["gallery_id", "observation_id"], sourceAttributes := ["gallery_id", "observation_id"], memberAttributes := ["gallery_id", "observation_id"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem gallery_observation_directory_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck gallery_observation_directory_vertical_contract = true := by
-  native_decide
-
-theorem gallery_observation_directory_vertical_view_projection :
-    VerticalFamilyViewProjection gallery_observation_directory_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound gallery_observation_directory_vertical_contract
-    gallery_observation_directory_vertical_view_projection_check
-
-theorem gallery_observation_directory_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck gallery_observation_directory_vertical_contract = true := by
-  native_decide
-
-theorem gallery_observation_directory_vertical_well_formed :
-    VerticalFamilyWellFormed gallery_observation_directory_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound gallery_observation_directory_vertical_contract
-    gallery_observation_directory_vertical_well_formed_check
-
-theorem gallery_observation_directory_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck gallery_observation_directory_vertical_contract = true := by
-  native_decide
-
-theorem gallery_observation_directory_vertical_lossless :
-    VerticalFamilyLossless gallery_observation_directory_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound gallery_observation_directory_vertical_contract
-    gallery_observation_directory_vertical_lossless_join_check
-
-theorem gallery_observation_directory_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck gallery_observation_directory_vertical_contract = true := by
-  native_decide
-
-theorem gallery_observation_directory_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving gallery_observation_directory_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound gallery_observation_directory_vertical_contract
-    gallery_observation_directory_vertical_dependency_preservation_check
-
-def gallery_observation_stat_vertical_contract : VerticalFamilyContract where
-  name := "gallery_observation_stat_vertical"
-  anchorRelation := "gallery_observation_stat_anchor"
-  sealRelation := "gallery_observation_stat_seal"
-  keyAttributes := ["gallery_id", "observation_id"]
-  anchorAttributes := ["gallery_id", "observation_id"]
-  sealAttributes := ["gallery_id", "observation_id"]
-  semanticAttributes := ["gallery_id", "observation_id", "file_count", "byte_count"]
-  semanticFDs := [
-    { determinant := ["gallery_id", "observation_id"], dependent := ["file_count", "byte_count"] }
-  ]
-  viewAttributes := ["gallery_id", "observation_id", "file_count", "byte_count"]
-  viewFDs := [
-    { determinant := ["gallery_id", "observation_id"], dependent := ["file_count", "byte_count"] }
-  ]
-  members := [
-    { relationName := "gallery_observation_stat_file_count", keyAttributes := ["gallery_id", "observation_id"], valueAttribute := "file_count", projectionAttribute := "file_count", attributes := ["gallery_id", "observation_id", "file_count"], declaredKeys := [["gallery_id", "observation_id"]], declaredFDs := [{ determinant := ["gallery_id", "observation_id"], dependent := ["file_count"] }], sourceRelation := "gallery_observation_stat_seal", sourceRelationAttributes := ["gallery_id", "observation_id"], sourceAttributes := ["gallery_id", "observation_id"], memberAttributes := ["gallery_id", "observation_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "gallery_observation_stat_byte_count", keyAttributes := ["gallery_id", "observation_id"], valueAttribute := "byte_count", projectionAttribute := "byte_count", attributes := ["gallery_id", "observation_id", "byte_count"], declaredKeys := [["gallery_id", "observation_id"]], declaredFDs := [{ determinant := ["gallery_id", "observation_id"], dependent := ["byte_count"] }], sourceRelation := "gallery_observation_stat_seal", sourceRelationAttributes := ["gallery_id", "observation_id"], sourceAttributes := ["gallery_id", "observation_id"], memberAttributes := ["gallery_id", "observation_id"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem gallery_observation_stat_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck gallery_observation_stat_vertical_contract = true := by
-  native_decide
-
-theorem gallery_observation_stat_vertical_view_projection :
-    VerticalFamilyViewProjection gallery_observation_stat_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound gallery_observation_stat_vertical_contract
-    gallery_observation_stat_vertical_view_projection_check
-
-theorem gallery_observation_stat_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck gallery_observation_stat_vertical_contract = true := by
-  native_decide
-
-theorem gallery_observation_stat_vertical_well_formed :
-    VerticalFamilyWellFormed gallery_observation_stat_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound gallery_observation_stat_vertical_contract
-    gallery_observation_stat_vertical_well_formed_check
-
-theorem gallery_observation_stat_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck gallery_observation_stat_vertical_contract = true := by
-  native_decide
-
-theorem gallery_observation_stat_vertical_lossless :
-    VerticalFamilyLossless gallery_observation_stat_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound gallery_observation_stat_vertical_contract
-    gallery_observation_stat_vertical_lossless_join_check
-
-theorem gallery_observation_stat_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck gallery_observation_stat_vertical_contract = true := by
-  native_decide
-
-theorem gallery_observation_stat_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving gallery_observation_stat_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound gallery_observation_stat_vertical_contract
-    gallery_observation_stat_vertical_dependency_preservation_check
 
 def gallery_observation_file_filesystem_vertical_contract : VerticalFamilyContract where
   name := "gallery_observation_file_filesystem_vertical"
@@ -22865,66 +20799,6 @@ theorem build_manifest_vertical_dependency_preserving :
   verticalFamilyDependencyPreservationCheck_sound build_manifest_vertical_contract
     build_manifest_vertical_dependency_preservation_check
 
-def gallery_manifest_vertical_contract : VerticalFamilyContract where
-  name := "gallery_manifest_vertical"
-  anchorRelation := "gallery_manifest_anchor"
-  sealRelation := "gallery_manifest_seal"
-  keyAttributes := ["gallery_id", "observation_id", "manifest_policy_id"]
-  anchorAttributes := ["gallery_id", "observation_id", "manifest_policy_id"]
-  sealAttributes := ["gallery_id", "observation_id", "manifest_policy_id"]
-  semanticAttributes := ["gallery_id", "observation_id", "manifest_policy_id", "manifest_sha256", "computed_at"]
-  semanticFDs := [
-    { determinant := ["gallery_id", "observation_id", "manifest_policy_id"], dependent := ["manifest_sha256", "computed_at"] }
-  ]
-  viewAttributes := ["gallery_id", "observation_id", "manifest_policy_id", "manifest_sha256", "computed_at"]
-  viewFDs := [
-    { determinant := ["gallery_id", "observation_id", "manifest_policy_id"], dependent := ["manifest_sha256", "computed_at"] }
-  ]
-  members := [
-    { relationName := "gallery_manifest_manifest_sha256", keyAttributes := ["gallery_id", "observation_id", "manifest_policy_id"], valueAttribute := "manifest_sha256", projectionAttribute := "manifest_sha256", attributes := ["gallery_id", "observation_id", "manifest_policy_id", "manifest_sha256"], declaredKeys := [["gallery_id", "observation_id", "manifest_policy_id"]], declaredFDs := [{ determinant := ["gallery_id", "observation_id", "manifest_policy_id"], dependent := ["manifest_sha256"] }], sourceRelation := "gallery_manifest_seal", sourceRelationAttributes := ["gallery_id", "observation_id", "manifest_policy_id"], sourceAttributes := ["gallery_id", "observation_id", "manifest_policy_id"], memberAttributes := ["gallery_id", "observation_id", "manifest_policy_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "gallery_manifest_computed_at", keyAttributes := ["gallery_id", "observation_id", "manifest_policy_id"], valueAttribute := "computed_at", projectionAttribute := "computed_at", attributes := ["gallery_id", "observation_id", "manifest_policy_id", "computed_at"], declaredKeys := [["gallery_id", "observation_id", "manifest_policy_id"]], declaredFDs := [{ determinant := ["gallery_id", "observation_id", "manifest_policy_id"], dependent := ["computed_at"] }], sourceRelation := "gallery_manifest_seal", sourceRelationAttributes := ["gallery_id", "observation_id", "manifest_policy_id"], sourceAttributes := ["gallery_id", "observation_id", "manifest_policy_id"], memberAttributes := ["gallery_id", "observation_id", "manifest_policy_id"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem gallery_manifest_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck gallery_manifest_vertical_contract = true := by
-  native_decide
-
-theorem gallery_manifest_vertical_view_projection :
-    VerticalFamilyViewProjection gallery_manifest_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound gallery_manifest_vertical_contract
-    gallery_manifest_vertical_view_projection_check
-
-theorem gallery_manifest_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck gallery_manifest_vertical_contract = true := by
-  native_decide
-
-theorem gallery_manifest_vertical_well_formed :
-    VerticalFamilyWellFormed gallery_manifest_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound gallery_manifest_vertical_contract
-    gallery_manifest_vertical_well_formed_check
-
-theorem gallery_manifest_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck gallery_manifest_vertical_contract = true := by
-  native_decide
-
-theorem gallery_manifest_vertical_lossless :
-    VerticalFamilyLossless gallery_manifest_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound gallery_manifest_vertical_contract
-    gallery_manifest_vertical_lossless_join_check
-
-theorem gallery_manifest_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck gallery_manifest_vertical_contract = true := by
-  native_decide
-
-theorem gallery_manifest_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving gallery_manifest_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound gallery_manifest_vertical_contract
-    gallery_manifest_vertical_dependency_preservation_check
-
 def source_snapshot_manifest_identity_vertical_contract : VerticalFamilyContract where
   name := "source_snapshot_manifest_identity_vertical"
   anchorRelation := "source_snapshot_manifest_identity_anchor"
@@ -23443,130 +21317,6 @@ theorem publication_candidate_vertical_dependency_preserving :
   verticalFamilyDependencyPreservationCheck_sound publication_candidate_vertical_contract
     publication_candidate_vertical_dependency_preservation_check
 
-def catalog_publication_vertical_contract : VerticalFamilyContract where
-  name := "catalog_publication_vertical"
-  anchorRelation := "catalog_publication_anchor"
-  sealRelation := "catalog_publication_seal"
-  keyAttributes := ["revision", "publication_key"]
-  anchorAttributes := ["revision", "publication_key"]
-  sealAttributes := ["revision", "publication_key"]
-  semanticAttributes := ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at"]
-  semanticFDs := [
-    { determinant := ["revision", "publication_key"], dependent := ["gallery_id", "summary_sha256", "language_sha256", "modified_at"] },
-    { determinant := ["revision", "gallery_id"], dependent := ["publication_key", "summary_sha256", "language_sha256", "modified_at"] }
-  ]
-  viewAttributes := ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at"]
-  viewFDs := [
-    { determinant := ["revision", "publication_key"], dependent := ["gallery_id", "summary_sha256", "language_sha256", "modified_at"] },
-    { determinant := ["revision", "gallery_id"], dependent := ["publication_key", "summary_sha256", "language_sha256", "modified_at"] }
-  ]
-  members := [
-    { relationName := "catalog_publication_gallery_id", keyAttributes := ["revision", "publication_key"], valueAttribute := "gallery_id", projectionAttribute := "gallery_id", attributes := ["revision", "publication_key", "gallery_id"], declaredKeys := [["revision", "publication_key"], ["revision", "gallery_id"]], declaredFDs := [{ determinant := ["revision", "publication_key"], dependent := ["gallery_id"] }, { determinant := ["revision", "gallery_id"], dependent := ["publication_key"] }], sourceRelation := "catalog_publication_seal", sourceRelationAttributes := ["revision", "publication_key"], sourceAttributes := ["revision", "publication_key"], memberAttributes := ["revision", "publication_key"], congruenceMembers := [], project := true, required := true },
-    { relationName := "catalog_publication_summary_sha256", keyAttributes := ["revision", "publication_key"], valueAttribute := "summary_sha256", projectionAttribute := "summary_sha256", attributes := ["revision", "publication_key", "summary_sha256"], declaredKeys := [["revision", "publication_key"]], declaredFDs := [{ determinant := ["revision", "publication_key"], dependent := ["summary_sha256"] }], sourceRelation := "catalog_publication_seal", sourceRelationAttributes := ["revision", "publication_key"], sourceAttributes := ["revision", "publication_key"], memberAttributes := ["revision", "publication_key"], congruenceMembers := [], project := true, required := true },
-    { relationName := "catalog_publication_language_sha256", keyAttributes := ["revision", "publication_key"], valueAttribute := "language_sha256", projectionAttribute := "language_sha256", attributes := ["revision", "publication_key", "language_sha256"], declaredKeys := [["revision", "publication_key"]], declaredFDs := [{ determinant := ["revision", "publication_key"], dependent := ["language_sha256"] }], sourceRelation := "catalog_publication_seal", sourceRelationAttributes := ["revision", "publication_key"], sourceAttributes := ["revision", "publication_key"], memberAttributes := ["revision", "publication_key"], congruenceMembers := [], project := true, required := true },
-    { relationName := "catalog_publication_modified_at", keyAttributes := ["revision", "publication_key"], valueAttribute := "modified_at", projectionAttribute := "modified_at", attributes := ["revision", "publication_key", "modified_at"], declaredKeys := [["revision", "publication_key"]], declaredFDs := [{ determinant := ["revision", "publication_key"], dependent := ["modified_at"] }], sourceRelation := "catalog_publication_seal", sourceRelationAttributes := ["revision", "publication_key"], sourceAttributes := ["revision", "publication_key"], memberAttributes := ["revision", "publication_key"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem catalog_publication_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck catalog_publication_vertical_contract = true := by
-  native_decide
-
-theorem catalog_publication_vertical_view_projection :
-    VerticalFamilyViewProjection catalog_publication_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound catalog_publication_vertical_contract
-    catalog_publication_vertical_view_projection_check
-
-theorem catalog_publication_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck catalog_publication_vertical_contract = true := by
-  native_decide
-
-theorem catalog_publication_vertical_well_formed :
-    VerticalFamilyWellFormed catalog_publication_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound catalog_publication_vertical_contract
-    catalog_publication_vertical_well_formed_check
-
-theorem catalog_publication_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck catalog_publication_vertical_contract = true := by
-  native_decide
-
-theorem catalog_publication_vertical_lossless :
-    VerticalFamilyLossless catalog_publication_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound catalog_publication_vertical_contract
-    catalog_publication_vertical_lossless_join_check
-
-theorem catalog_publication_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck catalog_publication_vertical_contract = true := by
-  native_decide
-
-theorem catalog_publication_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving catalog_publication_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound catalog_publication_vertical_contract
-    catalog_publication_vertical_dependency_preservation_check
-
-def catalog_publication_title_vertical_contract : VerticalFamilyContract where
-  name := "catalog_publication_title_vertical"
-  anchorRelation := "catalog_publication_title_anchor"
-  sealRelation := "catalog_publication_title_seal"
-  keyAttributes := ["revision", "publication_key"]
-  anchorAttributes := ["revision", "publication_key"]
-  sealAttributes := ["revision", "publication_key"]
-  semanticAttributes := ["revision", "publication_key", "source_title_sha256", "source_gallery_name"]
-  semanticFDs := [
-    { determinant := ["revision", "publication_key"], dependent := ["source_title_sha256", "source_gallery_name"] }
-  ]
-  viewAttributes := ["revision", "publication_key", "source_title_sha256", "source_gallery_name"]
-  viewFDs := [
-    { determinant := ["revision", "publication_key"], dependent := ["source_title_sha256", "source_gallery_name"] }
-  ]
-  members := [
-    { relationName := "catalog_publication_title_source_title_sha256", keyAttributes := ["revision", "publication_key"], valueAttribute := "source_title_sha256", projectionAttribute := "source_title_sha256", attributes := ["revision", "publication_key", "source_title_sha256"], declaredKeys := [["revision", "publication_key"]], declaredFDs := [{ determinant := ["revision", "publication_key"], dependent := ["source_title_sha256"] }], sourceRelation := "catalog_publication_title_seal", sourceRelationAttributes := ["revision", "publication_key"], sourceAttributes := ["revision", "publication_key"], memberAttributes := ["revision", "publication_key"], congruenceMembers := [], project := true, required := true },
-    { relationName := "catalog_publication_title_source_gallery_name", keyAttributes := ["revision", "publication_key"], valueAttribute := "source_gallery_name", projectionAttribute := "source_gallery_name", attributes := ["revision", "publication_key", "source_gallery_name"], declaredKeys := [["revision", "publication_key"]], declaredFDs := [{ determinant := ["revision", "publication_key"], dependent := ["source_gallery_name"] }], sourceRelation := "catalog_publication_title_seal", sourceRelationAttributes := ["revision", "publication_key"], sourceAttributes := ["revision", "publication_key"], memberAttributes := ["revision", "publication_key"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem catalog_publication_title_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck catalog_publication_title_vertical_contract = true := by
-  native_decide
-
-theorem catalog_publication_title_vertical_view_projection :
-    VerticalFamilyViewProjection catalog_publication_title_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound catalog_publication_title_vertical_contract
-    catalog_publication_title_vertical_view_projection_check
-
-theorem catalog_publication_title_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck catalog_publication_title_vertical_contract = true := by
-  native_decide
-
-theorem catalog_publication_title_vertical_well_formed :
-    VerticalFamilyWellFormed catalog_publication_title_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound catalog_publication_title_vertical_contract
-    catalog_publication_title_vertical_well_formed_check
-
-theorem catalog_publication_title_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck catalog_publication_title_vertical_contract = true := by
-  native_decide
-
-theorem catalog_publication_title_vertical_lossless :
-    VerticalFamilyLossless catalog_publication_title_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound catalog_publication_title_vertical_contract
-    catalog_publication_title_vertical_lossless_join_check
-
-theorem catalog_publication_title_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck catalog_publication_title_vertical_contract = true := by
-  native_decide
-
-theorem catalog_publication_title_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving catalog_publication_title_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound catalog_publication_title_vertical_contract
-    catalog_publication_title_vertical_dependency_preservation_check
-
 def catalog_contributor_vertical_contract : VerticalFamilyContract where
   name := "catalog_contributor_vertical"
   anchorRelation := "catalog_contributor_anchor"
@@ -23945,245 +21695,6 @@ theorem analysis_file_hash_decision_shadow_vertical_dependency_preserving :
     VerticalFamilyDependencyPreserving analysis_file_hash_decision_shadow_vertical_contract :=
   verticalFamilyDependencyPreservationCheck_sound analysis_file_hash_decision_shadow_vertical_contract
     analysis_file_hash_decision_shadow_vertical_dependency_preservation_check
-
-def analysis_content_owner_candidate_shadow_vertical_contract : VerticalFamilyContract where
-  name := "analysis_content_owner_candidate_shadow_vertical"
-  anchorRelation := "analysis_content_owner_candidate_shadow_anchor"
-  sealRelation := "analysis_content_owner_candidate_shadow_seal"
-  keyAttributes := ["analysis_id", "gallery_id"]
-  anchorAttributes := ["analysis_id", "gallery_id"]
-  sealAttributes := ["analysis_id", "gallery_id"]
-  semanticAttributes := ["analysis_id", "gallery_id", "content_sha256", "prefer_not_already_uploaded", "title_scalar_count", "download_time"]
-  semanticFDs := [
-    { determinant := ["analysis_id", "gallery_id"], dependent := ["content_sha256", "prefer_not_already_uploaded", "title_scalar_count", "download_time"] }
-  ]
-  viewAttributes := ["analysis_id", "gallery_id", "content_sha256", "prefer_not_already_uploaded", "title_scalar_count", "download_time"]
-  viewFDs := [
-    { determinant := ["analysis_id", "gallery_id"], dependent := ["content_sha256", "prefer_not_already_uploaded", "title_scalar_count", "download_time"] }
-  ]
-  members := [
-    { relationName := "analysis_content_owner_candidate_shadow_content_sha256", keyAttributes := ["analysis_id", "gallery_id"], valueAttribute := "content_sha256", projectionAttribute := "content_sha256", attributes := ["analysis_id", "gallery_id", "content_sha256"], declaredKeys := [["analysis_id", "gallery_id"]], declaredFDs := [{ determinant := ["analysis_id", "gallery_id"], dependent := ["content_sha256"] }], sourceRelation := "analysis_content_owner_candidate_shadow_seal", sourceRelationAttributes := ["analysis_id", "gallery_id"], sourceAttributes := ["analysis_id", "gallery_id"], memberAttributes := ["analysis_id", "gallery_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_content_owner_candidate_shadow_prefer_not_already_uploaded", keyAttributes := ["analysis_id", "gallery_id"], valueAttribute := "prefer_not_already_uploaded", projectionAttribute := "prefer_not_already_uploaded", attributes := ["analysis_id", "gallery_id", "prefer_not_already_uploaded"], declaredKeys := [["analysis_id", "gallery_id"]], declaredFDs := [{ determinant := ["analysis_id", "gallery_id"], dependent := ["prefer_not_already_uploaded"] }], sourceRelation := "analysis_content_owner_candidate_shadow_seal", sourceRelationAttributes := ["analysis_id", "gallery_id"], sourceAttributes := ["analysis_id", "gallery_id"], memberAttributes := ["analysis_id", "gallery_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_content_owner_candidate_shadow_title_scalar_count", keyAttributes := ["analysis_id", "gallery_id"], valueAttribute := "title_scalar_count", projectionAttribute := "title_scalar_count", attributes := ["analysis_id", "gallery_id", "title_scalar_count"], declaredKeys := [["analysis_id", "gallery_id"]], declaredFDs := [{ determinant := ["analysis_id", "gallery_id"], dependent := ["title_scalar_count"] }], sourceRelation := "analysis_content_owner_candidate_shadow_seal", sourceRelationAttributes := ["analysis_id", "gallery_id"], sourceAttributes := ["analysis_id", "gallery_id"], memberAttributes := ["analysis_id", "gallery_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_content_owner_candidate_shadow_download_time", keyAttributes := ["analysis_id", "gallery_id"], valueAttribute := "download_time", projectionAttribute := "download_time", attributes := ["analysis_id", "gallery_id", "download_time"], declaredKeys := [["analysis_id", "gallery_id"]], declaredFDs := [{ determinant := ["analysis_id", "gallery_id"], dependent := ["download_time"] }], sourceRelation := "analysis_content_owner_candidate_shadow_seal", sourceRelationAttributes := ["analysis_id", "gallery_id"], sourceAttributes := ["analysis_id", "gallery_id"], memberAttributes := ["analysis_id", "gallery_id"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem analysis_content_owner_candidate_shadow_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck analysis_content_owner_candidate_shadow_vertical_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_vertical_view_projection :
-    VerticalFamilyViewProjection analysis_content_owner_candidate_shadow_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound analysis_content_owner_candidate_shadow_vertical_contract
-    analysis_content_owner_candidate_shadow_vertical_view_projection_check
-
-theorem analysis_content_owner_candidate_shadow_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck analysis_content_owner_candidate_shadow_vertical_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_vertical_well_formed :
-    VerticalFamilyWellFormed analysis_content_owner_candidate_shadow_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound analysis_content_owner_candidate_shadow_vertical_contract
-    analysis_content_owner_candidate_shadow_vertical_well_formed_check
-
-theorem analysis_content_owner_candidate_shadow_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck analysis_content_owner_candidate_shadow_vertical_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_vertical_lossless :
-    VerticalFamilyLossless analysis_content_owner_candidate_shadow_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound analysis_content_owner_candidate_shadow_vertical_contract
-    analysis_content_owner_candidate_shadow_vertical_lossless_join_check
-
-theorem analysis_content_owner_candidate_shadow_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck analysis_content_owner_candidate_shadow_vertical_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_candidate_shadow_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving analysis_content_owner_candidate_shadow_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound analysis_content_owner_candidate_shadow_vertical_contract
-    analysis_content_owner_candidate_shadow_vertical_dependency_preservation_check
-
-def analysis_content_owner_shadow_vertical_contract : VerticalFamilyContract where
-  name := "analysis_content_owner_shadow_vertical"
-  anchorRelation := "analysis_content_owner_shadow_anchor"
-  sealRelation := "analysis_content_owner_shadow_seal"
-  keyAttributes := ["analysis_id", "content_sha256"]
-  anchorAttributes := ["analysis_id", "content_sha256"]
-  sealAttributes := ["analysis_id", "content_sha256"]
-  semanticAttributes := ["analysis_id", "content_sha256", "owner_gallery_id"]
-  semanticFDs := [
-    { determinant := ["analysis_id", "content_sha256"], dependent := ["owner_gallery_id"] },
-    { determinant := ["analysis_id", "owner_gallery_id"], dependent := ["content_sha256"] }
-  ]
-  viewAttributes := ["analysis_id", "content_sha256", "owner_gallery_id"]
-  viewFDs := [
-    { determinant := ["analysis_id", "content_sha256"], dependent := ["owner_gallery_id"] },
-    { determinant := ["analysis_id", "owner_gallery_id"], dependent := ["content_sha256"] }
-  ]
-  members := [
-    { relationName := "analysis_content_owner_shadow_owner_gallery_id", keyAttributes := ["analysis_id", "content_sha256"], valueAttribute := "owner_gallery_id", projectionAttribute := "owner_gallery_id", attributes := ["analysis_id", "content_sha256", "owner_gallery_id"], declaredKeys := [["analysis_id", "content_sha256"], ["analysis_id", "owner_gallery_id"]], declaredFDs := [{ determinant := ["analysis_id", "content_sha256"], dependent := ["owner_gallery_id"] }, { determinant := ["analysis_id", "owner_gallery_id"], dependent := ["content_sha256"] }], sourceRelation := "analysis_content_owner_shadow_seal", sourceRelationAttributes := ["analysis_id", "content_sha256"], sourceAttributes := ["analysis_id", "content_sha256"], memberAttributes := ["analysis_id", "content_sha256"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem analysis_content_owner_shadow_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck analysis_content_owner_shadow_vertical_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_shadow_vertical_view_projection :
-    VerticalFamilyViewProjection analysis_content_owner_shadow_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound analysis_content_owner_shadow_vertical_contract
-    analysis_content_owner_shadow_vertical_view_projection_check
-
-theorem analysis_content_owner_shadow_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck analysis_content_owner_shadow_vertical_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_shadow_vertical_well_formed :
-    VerticalFamilyWellFormed analysis_content_owner_shadow_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound analysis_content_owner_shadow_vertical_contract
-    analysis_content_owner_shadow_vertical_well_formed_check
-
-theorem analysis_content_owner_shadow_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck analysis_content_owner_shadow_vertical_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_shadow_vertical_lossless :
-    VerticalFamilyLossless analysis_content_owner_shadow_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound analysis_content_owner_shadow_vertical_contract
-    analysis_content_owner_shadow_vertical_lossless_join_check
-
-theorem analysis_content_owner_shadow_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck analysis_content_owner_shadow_vertical_contract = true := by
-  native_decide
-
-theorem analysis_content_owner_shadow_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving analysis_content_owner_shadow_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound analysis_content_owner_shadow_vertical_contract
-    analysis_content_owner_shadow_vertical_dependency_preservation_check
-
-def analysis_impacted_content_vertical_contract : VerticalFamilyContract where
-  name := "analysis_impacted_content_vertical"
-  anchorRelation := "analysis_impacted_content_anchor"
-  sealRelation := "analysis_impacted_content_seal"
-  keyAttributes := ["analysis_id", "content_sha256"]
-  anchorAttributes := ["analysis_id", "content_sha256"]
-  sealAttributes := ["analysis_id", "content_sha256"]
-  semanticAttributes := ["analysis_id", "content_sha256", "witness_gallery_id"]
-  semanticFDs := [
-    { determinant := ["analysis_id", "content_sha256"], dependent := ["witness_gallery_id"] }
-  ]
-  viewAttributes := ["analysis_id", "content_sha256"]
-  viewFDs := [
-  ]
-  members := [
-    { relationName := "analysis_impacted_content_witness", keyAttributes := ["analysis_id", "content_sha256"], valueAttribute := "witness_gallery_id", projectionAttribute := "witness_gallery_id", attributes := ["analysis_id", "content_sha256", "witness_gallery_id"], declaredKeys := [["analysis_id", "content_sha256"]], declaredFDs := [{ determinant := ["analysis_id", "content_sha256"], dependent := ["witness_gallery_id"] }], sourceRelation := "analysis_impacted_content_seal", sourceRelationAttributes := ["analysis_id", "content_sha256"], sourceAttributes := ["analysis_id", "content_sha256"], memberAttributes := ["analysis_id", "content_sha256"], congruenceMembers := [], project := false, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem analysis_impacted_content_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck analysis_impacted_content_vertical_contract = true := by
-  native_decide
-
-theorem analysis_impacted_content_vertical_view_projection :
-    VerticalFamilyViewProjection analysis_impacted_content_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound analysis_impacted_content_vertical_contract
-    analysis_impacted_content_vertical_view_projection_check
-
-theorem analysis_impacted_content_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck analysis_impacted_content_vertical_contract = true := by
-  native_decide
-
-theorem analysis_impacted_content_vertical_well_formed :
-    VerticalFamilyWellFormed analysis_impacted_content_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound analysis_impacted_content_vertical_contract
-    analysis_impacted_content_vertical_well_formed_check
-
-theorem analysis_impacted_content_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck analysis_impacted_content_vertical_contract = true := by
-  native_decide
-
-theorem analysis_impacted_content_vertical_lossless :
-    VerticalFamilyLossless analysis_impacted_content_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound analysis_impacted_content_vertical_contract
-    analysis_impacted_content_vertical_lossless_join_check
-
-theorem analysis_impacted_content_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck analysis_impacted_content_vertical_contract = true := by
-  native_decide
-
-theorem analysis_impacted_content_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving analysis_impacted_content_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound analysis_impacted_content_vertical_contract
-    analysis_impacted_content_vertical_dependency_preservation_check
-
-def analysis_impacted_gid_vertical_contract : VerticalFamilyContract where
-  name := "analysis_impacted_gid_vertical"
-  anchorRelation := "analysis_impacted_gid_anchor"
-  sealRelation := "analysis_impacted_gid_seal"
-  keyAttributes := ["analysis_id", "gid"]
-  anchorAttributes := ["analysis_id", "gid"]
-  sealAttributes := ["analysis_id", "gid"]
-  semanticAttributes := ["analysis_id", "gid", "witness_gallery_id"]
-  semanticFDs := [
-    { determinant := ["analysis_id", "gid"], dependent := ["witness_gallery_id"] }
-  ]
-  viewAttributes := ["analysis_id", "gid"]
-  viewFDs := [
-  ]
-  members := [
-    { relationName := "analysis_impacted_gid_witness", keyAttributes := ["analysis_id", "gid"], valueAttribute := "witness_gallery_id", projectionAttribute := "witness_gallery_id", attributes := ["analysis_id", "gid", "witness_gallery_id"], declaredKeys := [["analysis_id", "gid"]], declaredFDs := [{ determinant := ["analysis_id", "gid"], dependent := ["witness_gallery_id"] }], sourceRelation := "analysis_impacted_gid_seal", sourceRelationAttributes := ["analysis_id", "gid"], sourceAttributes := ["analysis_id", "gid"], memberAttributes := ["analysis_id", "gid"], congruenceMembers := [], project := false, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem analysis_impacted_gid_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck analysis_impacted_gid_vertical_contract = true := by
-  native_decide
-
-theorem analysis_impacted_gid_vertical_view_projection :
-    VerticalFamilyViewProjection analysis_impacted_gid_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound analysis_impacted_gid_vertical_contract
-    analysis_impacted_gid_vertical_view_projection_check
-
-theorem analysis_impacted_gid_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck analysis_impacted_gid_vertical_contract = true := by
-  native_decide
-
-theorem analysis_impacted_gid_vertical_well_formed :
-    VerticalFamilyWellFormed analysis_impacted_gid_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound analysis_impacted_gid_vertical_contract
-    analysis_impacted_gid_vertical_well_formed_check
-
-theorem analysis_impacted_gid_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck analysis_impacted_gid_vertical_contract = true := by
-  native_decide
-
-theorem analysis_impacted_gid_vertical_lossless :
-    VerticalFamilyLossless analysis_impacted_gid_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound analysis_impacted_gid_vertical_contract
-    analysis_impacted_gid_vertical_lossless_join_check
-
-theorem analysis_impacted_gid_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck analysis_impacted_gid_vertical_contract = true := by
-  native_decide
-
-theorem analysis_impacted_gid_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving analysis_impacted_gid_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound analysis_impacted_gid_vertical_contract
-    analysis_impacted_gid_vertical_dependency_preservation_check
 
 def source_build_and_optional_base_source_contract : BinaryDecompositionContract where
   name := "source_build_and_optional_base_source"
@@ -25240,12 +22751,104 @@ theorem publication_head_revision_and_advanced_at_dependency_preserving :
   dependencyPreservationCheck_sound publication_head_revision_and_advanced_at_contract
     publication_head_revision_and_advanced_at_dependency_preservation_check
 
+def publication_selection_occurrence_and_gallery_contract : BinaryDecompositionContract where
+  name := "publication_selection_occurrence_and_gallery"
+  universalAttributes := ["selection_occurrence_sha256", "candidate_id", "gallery_id", "publication_key"]
+  leftAttributes := ["selection_occurrence_sha256", "gallery_id"]
+  rightAttributes := ["selection_occurrence_sha256", "candidate_id", "publication_key"]
+  declaredFDs := [
+    { determinant := ["selection_occurrence_sha256"], dependent := ["candidate_id", "gallery_id", "publication_key"] },
+    { determinant := ["candidate_id", "publication_key"], dependent := ["selection_occurrence_sha256", "gallery_id"] }
+  ]
+
+theorem publication_selection_occurrence_and_gallery_projection_check :
+    binaryDecompositionWellFormedCheck
+      publication_selection_occurrence_and_gallery_contract = true := by
+  native_decide
+
+theorem publication_selection_occurrence_and_gallery_projection_well_formed :
+    BinaryDecompositionWellFormed publication_selection_occurrence_and_gallery_contract :=
+  binaryDecompositionWellFormedCheck_sound
+    publication_selection_occurrence_and_gallery_contract publication_selection_occurrence_and_gallery_projection_check
+
+theorem publication_selection_occurrence_and_gallery_intersection_check :
+    sameAttrSet (attributeIntersection
+      publication_selection_occurrence_and_gallery_contract.leftAttributes
+      publication_selection_occurrence_and_gallery_contract.rightAttributes)
+      ["selection_occurrence_sha256"] = true := by
+  native_decide
+
+theorem publication_selection_occurrence_and_gallery_lossless_check :
+    binaryLosslessCheck publication_selection_occurrence_and_gallery_contract = true := by
+  native_decide
+
+theorem publication_selection_occurrence_and_gallery_lossless : BinaryLossless publication_selection_occurrence_and_gallery_contract :=
+  ⟨publication_selection_occurrence_and_gallery_projection_well_formed,
+    binaryLosslessCheck_sound publication_selection_occurrence_and_gallery_contract
+      publication_selection_occurrence_and_gallery_lossless_check⟩
+
+theorem publication_selection_occurrence_and_gallery_dependency_preservation_check :
+    dependencyPreservationCheck publication_selection_occurrence_and_gallery_contract = true := by
+  native_decide
+
+theorem publication_selection_occurrence_and_gallery_dependency_preserving :
+    DependencyPreserving publication_selection_occurrence_and_gallery_contract :=
+  dependencyPreservationCheck_sound publication_selection_occurrence_and_gallery_contract
+    publication_selection_occurrence_and_gallery_dependency_preservation_check
+
+def catalog_publication_occurrence_and_payload_contract : BinaryDecompositionContract where
+  name := "catalog_publication_occurrence_and_payload"
+  universalAttributes := ["catalog_occurrence_sha256", "revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at", "source_title_sha256"]
+  leftAttributes := ["catalog_occurrence_sha256", "revision", "publication_key"]
+  rightAttributes := ["catalog_occurrence_sha256", "gallery_id", "summary_sha256", "language_sha256", "modified_at", "source_title_sha256"]
+  declaredFDs := [
+    { determinant := ["catalog_occurrence_sha256"], dependent := ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at", "source_title_sha256"] },
+    { determinant := ["revision", "publication_key"], dependent := ["catalog_occurrence_sha256", "gallery_id", "summary_sha256", "language_sha256", "modified_at", "source_title_sha256"] }
+  ]
+
+theorem catalog_publication_occurrence_and_payload_projection_check :
+    binaryDecompositionWellFormedCheck
+      catalog_publication_occurrence_and_payload_contract = true := by
+  native_decide
+
+theorem catalog_publication_occurrence_and_payload_projection_well_formed :
+    BinaryDecompositionWellFormed catalog_publication_occurrence_and_payload_contract :=
+  binaryDecompositionWellFormedCheck_sound
+    catalog_publication_occurrence_and_payload_contract catalog_publication_occurrence_and_payload_projection_check
+
+theorem catalog_publication_occurrence_and_payload_intersection_check :
+    sameAttrSet (attributeIntersection
+      catalog_publication_occurrence_and_payload_contract.leftAttributes
+      catalog_publication_occurrence_and_payload_contract.rightAttributes)
+      ["catalog_occurrence_sha256"] = true := by
+  native_decide
+
+theorem catalog_publication_occurrence_and_payload_lossless_check :
+    binaryLosslessCheck catalog_publication_occurrence_and_payload_contract = true := by
+  native_decide
+
+theorem catalog_publication_occurrence_and_payload_lossless : BinaryLossless catalog_publication_occurrence_and_payload_contract :=
+  ⟨catalog_publication_occurrence_and_payload_projection_well_formed,
+    binaryLosslessCheck_sound catalog_publication_occurrence_and_payload_contract
+      catalog_publication_occurrence_and_payload_lossless_check⟩
+
+theorem catalog_publication_occurrence_and_payload_dependency_preservation_check :
+    dependencyPreservationCheck catalog_publication_occurrence_and_payload_contract = true := by
+  native_decide
+
+theorem catalog_publication_occurrence_and_payload_dependency_preserving :
+    DependencyPreserving catalog_publication_occurrence_and_payload_contract :=
+  dependencyPreservationCheck_sound catalog_publication_occurrence_and_payload_contract
+    catalog_publication_occurrence_and_payload_dependency_preservation_check
+
 def catalog_publication_and_title_basis_contract : BinaryDecompositionContract where
   name := "catalog_publication_and_title_basis"
   universalAttributes := ["revision", "gallery_id", "publication_key", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "modified_at"]
   leftAttributes := ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at"]
   rightAttributes := ["revision", "publication_key", "source_title_sha256", "source_gallery_name"]
   declaredFDs := [
+    { determinant := ["gallery_id"], dependent := ["publication_key"] },
+    { determinant := ["source_gallery_name"], dependent := ["publication_key"] },
     { determinant := ["revision", "gallery_id"], dependent := ["publication_key", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "modified_at"] },
     { determinant := ["revision", "publication_key"], dependent := ["gallery_id", "source_title_sha256", "source_gallery_name", "summary_sha256", "language_sha256", "modified_at"] }
   ]
@@ -25336,6 +22939,7 @@ def catalog_publication_and_optional_content_contract : BinaryDecompositionContr
   leftAttributes := ["revision", "publication_key", "gallery_id", "summary_sha256", "language_sha256", "modified_at"]
   rightAttributes := ["revision", "publication_key", "content_sha256"]
   declaredFDs := [
+    { determinant := ["gallery_id"], dependent := ["publication_key"] },
     { determinant := ["revision", "gallery_id"], dependent := ["publication_key", "summary_sha256", "language_sha256", "modified_at", "content_sha256"] },
     { determinant := ["revision", "publication_key"], dependent := ["gallery_id", "summary_sha256", "language_sha256", "modified_at", "content_sha256"] }
   ]
@@ -25444,6 +23048,8 @@ theorem all_manifest_decompositions_lossless :
     BinaryLossless publication_candidate_and_optional_base_catalog_contract ∧
     BinaryLossless catalog_revision_and_generation_publication_seal_contract ∧
     BinaryLossless publication_head_revision_and_advanced_at_contract ∧
+    BinaryLossless publication_selection_occurrence_and_gallery_contract ∧
+    BinaryLossless catalog_publication_occurrence_and_payload_contract ∧
     BinaryLossless catalog_publication_and_title_basis_contract ∧
     BinaryLossless publication_identity_and_gallery_upload_time_contract ∧
     BinaryLossless catalog_publication_and_optional_content_contract ∧
@@ -25471,6 +23077,8 @@ theorem all_manifest_decompositions_lossless :
     publication_candidate_and_optional_base_catalog_lossless,
     catalog_revision_and_generation_publication_seal_lossless,
     publication_head_revision_and_advanced_at_lossless,
+    publication_selection_occurrence_and_gallery_lossless,
+    catalog_publication_occurrence_and_payload_lossless,
     catalog_publication_and_title_basis_lossless,
     publication_identity_and_gallery_upload_time_lossless,
     catalog_publication_and_optional_content_lossless,
@@ -25500,6 +23108,8 @@ theorem all_manifest_decompositions_dependency_preserving :
     DependencyPreserving publication_candidate_and_optional_base_catalog_contract ∧
     DependencyPreserving catalog_revision_and_generation_publication_seal_contract ∧
     DependencyPreserving publication_head_revision_and_advanced_at_contract ∧
+    DependencyPreserving publication_selection_occurrence_and_gallery_contract ∧
+    DependencyPreserving catalog_publication_occurrence_and_payload_contract ∧
     DependencyPreserving catalog_publication_and_title_basis_contract ∧
     DependencyPreserving publication_identity_and_gallery_upload_time_contract ∧
     DependencyPreserving catalog_publication_and_optional_content_contract ∧
@@ -25527,6 +23137,8 @@ theorem all_manifest_decompositions_dependency_preserving :
     publication_candidate_and_optional_base_catalog_dependency_preserving,
     catalog_revision_and_generation_publication_seal_dependency_preserving,
     publication_head_revision_and_advanced_at_dependency_preserving,
+    publication_selection_occurrence_and_gallery_dependency_preserving,
+    catalog_publication_occurrence_and_payload_dependency_preserving,
     catalog_publication_and_title_basis_dependency_preserving,
     publication_identity_and_gallery_upload_time_dependency_preserving,
     catalog_publication_and_optional_content_dependency_preserving,
@@ -25593,30 +23205,17 @@ theorem all_manifest_base_relations_bcnf :
     BCNF gallery_observation_page_child_contract ∧
     BCNF gallery_observation_tree_root_contract ∧
     BCNF gallery_observation_contract ∧
-    BCNF gallery_observation_metadata_anchor_contract ∧
     BCNF gallery_upload_time_contract ∧
     BCNF source_gallery_name_gid_contract ∧
     BCNF gallery_source_name_access_contract ∧
-    BCNF gallery_observation_download_time_contract ∧
-    BCNF gallery_observation_modified_time_contract ∧
-    BCNF gallery_observation_metadata_seal_contract ∧
-    BCNF gallery_observation_scan_anchor_contract ∧
-    BCNF gallery_observation_scan_observation_sha256_contract ∧
-    BCNF gallery_observation_scan_observation_version_contract ∧
-    BCNF gallery_observation_scan_source_file_count_contract ∧
-    BCNF gallery_observation_scan_seal_contract ∧
+    BCNF gallery_observation_metadata_local_contract ∧
+    BCNF gallery_observation_scan_contract ∧
     BCNF gallery_observation_discovery_fingerprint_contract ∧
     BCNF gallery_observation_metadata_digest_contract ∧
     BCNF gallery_observation_raw_content_contract ∧
     BCNF gallery_observation_page_count_contract ∧
-    BCNF gallery_observation_directory_anchor_contract ∧
-    BCNF gallery_observation_directory_entry_count_contract ∧
-    BCNF gallery_observation_directory_observation_sha256_contract ∧
-    BCNF gallery_observation_directory_seal_contract ∧
-    BCNF gallery_observation_stat_anchor_contract ∧
-    BCNF gallery_observation_stat_file_count_contract ∧
-    BCNF gallery_observation_stat_byte_count_contract ∧
-    BCNF gallery_observation_stat_seal_contract ∧
+    BCNF gallery_observation_directory_contract ∧
+    BCNF gallery_observation_stat_contract ∧
     BCNF source_build_gallery_contract ∧
     BCNF file_name_identity_anchor_contract ∧
     BCNF file_name_identity_name_bytes_contract ∧
@@ -25642,10 +23241,7 @@ theorem all_manifest_base_relations_bcnf :
     BCNF build_manifest_file_count_contract ∧
     BCNF build_manifest_byte_count_contract ∧
     BCNF build_manifest_seal_contract ∧
-    BCNF gallery_manifest_anchor_contract ∧
-    BCNF gallery_manifest_manifest_sha256_contract ∧
-    BCNF gallery_manifest_computed_at_contract ∧
-    BCNF gallery_manifest_seal_contract ∧
+    BCNF gallery_manifest_contract ∧
     BCNF analysis_policy_anchor_contract ∧
     BCNF analysis_policy_algorithm_version_contract ∧
     BCNF analysis_policy_spam_artist_threshold_contract ∧
@@ -25686,30 +23282,19 @@ theorem all_manifest_base_relations_bcnf :
     BCNF analysis_exclusion_delta_change_contract ∧
     BCNF analysis_exclusion_delta_seal_contract ∧
     BCNF analysis_impacted_gallery_contract ∧
-    BCNF analysis_impacted_content_anchor_contract ∧
+    BCNF analysis_impacted_content_contract ∧
     BCNF analysis_impacted_content_provenance_contract ∧
-    BCNF analysis_impacted_content_witness_contract ∧
-    BCNF analysis_impacted_content_seal_contract ∧
-    BCNF analysis_impacted_gid_anchor_contract ∧
-    BCNF analysis_impacted_gid_provenance_contract ∧
-    BCNF analysis_impacted_gid_witness_contract ∧
-    BCNF analysis_impacted_gid_seal_contract ∧
+    BCNF analysis_impacted_gid_storage_contract ∧
+    BCNF analysis_impacted_gid_provenance_storage_contract ∧
     BCNF analysis_file_hash_decision_shadow_anchor_contract ∧
     BCNF analysis_file_hash_decision_shadow_occurrence_count_contract ∧
     BCNF analysis_file_hash_decision_shadow_artist_count_contract ∧
     BCNF analysis_file_hash_decision_shadow_maximum_gallery_artist_count_contract ∧
     BCNF analysis_file_hash_decision_shadow_seal_contract ∧
     BCNF analysis_file_hash_decision_tombstone_contract ∧
-    BCNF analysis_content_owner_candidate_shadow_anchor_contract ∧
-    BCNF analysis_content_owner_candidate_shadow_content_sha256_contract ∧
-    BCNF analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_contract ∧
-    BCNF analysis_content_owner_candidate_shadow_title_scalar_count_contract ∧
-    BCNF analysis_content_owner_candidate_shadow_download_time_contract ∧
-    BCNF analysis_content_owner_candidate_shadow_seal_contract ∧
+    BCNF analysis_content_owner_candidate_shadow_contract ∧
     BCNF analysis_content_owner_candidate_tombstone_contract ∧
-    BCNF analysis_content_owner_shadow_anchor_contract ∧
-    BCNF analysis_content_owner_shadow_owner_gallery_id_contract ∧
-    BCNF analysis_content_owner_shadow_seal_contract ∧
+    BCNF analysis_content_owner_shadow_contract ∧
     BCNF analysis_content_owner_tombstone_contract ∧
     BCNF analysis_gid_candidate_shadow_contract ∧
     BCNF analysis_gid_candidate_tombstone_contract ∧
@@ -25749,7 +23334,8 @@ theorem all_manifest_base_relations_bcnf :
     BCNF publication_candidate_definition_seal_contract ∧
     BCNF publication_candidate_projection_seal_contract ∧
     BCNF publication_candidate_base_publication_commit_contract ∧
-    BCNF publication_selection_contract ∧
+    BCNF publication_selection_storage_contract ∧
+    BCNF publication_selection_occurrence_identity_contract ∧
     BCNF publication_stage_anchor_contract ∧
     BCNF publication_stage_order_contract ∧
     BCNF publication_stage_cursor_codec_contract ∧
@@ -25837,17 +23423,9 @@ theorem all_manifest_base_relations_bcnf :
     BCNF title_sort_policy_seal_contract ∧
     BCNF display_title_choice_contract ∧
     BCNF title_sort_contract ∧
-    BCNF catalog_publication_anchor_contract ∧
-    BCNF catalog_publication_gallery_id_contract ∧
-    BCNF catalog_publication_summary_sha256_contract ∧
-    BCNF catalog_publication_language_sha256_contract ∧
-    BCNF catalog_publication_modified_at_contract ∧
-    BCNF catalog_publication_seal_contract ∧
+    BCNF catalog_publication_storage_contract ∧
+    BCNF catalog_publication_occurrence_identity_contract ∧
     BCNF catalog_publication_order_contract ∧
-    BCNF catalog_publication_title_anchor_contract ∧
-    BCNF catalog_publication_title_source_title_sha256_contract ∧
-    BCNF catalog_publication_title_source_gallery_name_contract ∧
-    BCNF catalog_publication_title_seal_contract ∧
     BCNF catalog_publication_content_contract ∧
     BCNF contributor_role_registry_contract ∧
     BCNF catalog_contributor_anchor_contract ∧
@@ -25933,30 +23511,17 @@ theorem all_manifest_base_relations_bcnf :
     gallery_observation_page_child_bcnf,
     gallery_observation_tree_root_bcnf,
     gallery_observation_bcnf,
-    gallery_observation_metadata_anchor_bcnf,
     gallery_upload_time_bcnf,
     source_gallery_name_gid_bcnf,
     gallery_source_name_access_bcnf,
-    gallery_observation_download_time_bcnf,
-    gallery_observation_modified_time_bcnf,
-    gallery_observation_metadata_seal_bcnf,
-    gallery_observation_scan_anchor_bcnf,
-    gallery_observation_scan_observation_sha256_bcnf,
-    gallery_observation_scan_observation_version_bcnf,
-    gallery_observation_scan_source_file_count_bcnf,
-    gallery_observation_scan_seal_bcnf,
+    gallery_observation_metadata_local_bcnf,
+    gallery_observation_scan_bcnf,
     gallery_observation_discovery_fingerprint_bcnf,
     gallery_observation_metadata_digest_bcnf,
     gallery_observation_raw_content_bcnf,
     gallery_observation_page_count_bcnf,
-    gallery_observation_directory_anchor_bcnf,
-    gallery_observation_directory_entry_count_bcnf,
-    gallery_observation_directory_observation_sha256_bcnf,
-    gallery_observation_directory_seal_bcnf,
-    gallery_observation_stat_anchor_bcnf,
-    gallery_observation_stat_file_count_bcnf,
-    gallery_observation_stat_byte_count_bcnf,
-    gallery_observation_stat_seal_bcnf,
+    gallery_observation_directory_bcnf,
+    gallery_observation_stat_bcnf,
     source_build_gallery_bcnf,
     file_name_identity_anchor_bcnf,
     file_name_identity_name_bytes_bcnf,
@@ -25982,10 +23547,7 @@ theorem all_manifest_base_relations_bcnf :
     build_manifest_file_count_bcnf,
     build_manifest_byte_count_bcnf,
     build_manifest_seal_bcnf,
-    gallery_manifest_anchor_bcnf,
-    gallery_manifest_manifest_sha256_bcnf,
-    gallery_manifest_computed_at_bcnf,
-    gallery_manifest_seal_bcnf,
+    gallery_manifest_bcnf,
     analysis_policy_anchor_bcnf,
     analysis_policy_algorithm_version_bcnf,
     analysis_policy_spam_artist_threshold_bcnf,
@@ -26026,30 +23588,19 @@ theorem all_manifest_base_relations_bcnf :
     analysis_exclusion_delta_change_bcnf,
     analysis_exclusion_delta_seal_bcnf,
     analysis_impacted_gallery_bcnf,
-    analysis_impacted_content_anchor_bcnf,
+    analysis_impacted_content_bcnf,
     analysis_impacted_content_provenance_bcnf,
-    analysis_impacted_content_witness_bcnf,
-    analysis_impacted_content_seal_bcnf,
-    analysis_impacted_gid_anchor_bcnf,
-    analysis_impacted_gid_provenance_bcnf,
-    analysis_impacted_gid_witness_bcnf,
-    analysis_impacted_gid_seal_bcnf,
+    analysis_impacted_gid_storage_bcnf,
+    analysis_impacted_gid_provenance_storage_bcnf,
     analysis_file_hash_decision_shadow_anchor_bcnf,
     analysis_file_hash_decision_shadow_occurrence_count_bcnf,
     analysis_file_hash_decision_shadow_artist_count_bcnf,
     analysis_file_hash_decision_shadow_maximum_gallery_artist_count_bcnf,
     analysis_file_hash_decision_shadow_seal_bcnf,
     analysis_file_hash_decision_tombstone_bcnf,
-    analysis_content_owner_candidate_shadow_anchor_bcnf,
-    analysis_content_owner_candidate_shadow_content_sha256_bcnf,
-    analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_bcnf,
-    analysis_content_owner_candidate_shadow_title_scalar_count_bcnf,
-    analysis_content_owner_candidate_shadow_download_time_bcnf,
-    analysis_content_owner_candidate_shadow_seal_bcnf,
+    analysis_content_owner_candidate_shadow_bcnf,
     analysis_content_owner_candidate_tombstone_bcnf,
-    analysis_content_owner_shadow_anchor_bcnf,
-    analysis_content_owner_shadow_owner_gallery_id_bcnf,
-    analysis_content_owner_shadow_seal_bcnf,
+    analysis_content_owner_shadow_bcnf,
     analysis_content_owner_tombstone_bcnf,
     analysis_gid_candidate_shadow_bcnf,
     analysis_gid_candidate_tombstone_bcnf,
@@ -26089,7 +23640,8 @@ theorem all_manifest_base_relations_bcnf :
     publication_candidate_definition_seal_bcnf,
     publication_candidate_projection_seal_bcnf,
     publication_candidate_base_publication_commit_bcnf,
-    publication_selection_bcnf,
+    publication_selection_storage_bcnf,
+    publication_selection_occurrence_identity_bcnf,
     publication_stage_anchor_bcnf,
     publication_stage_order_bcnf,
     publication_stage_cursor_codec_bcnf,
@@ -26177,17 +23729,9 @@ theorem all_manifest_base_relations_bcnf :
     title_sort_policy_seal_bcnf,
     display_title_choice_bcnf,
     title_sort_bcnf,
-    catalog_publication_anchor_bcnf,
-    catalog_publication_gallery_id_bcnf,
-    catalog_publication_summary_sha256_bcnf,
-    catalog_publication_language_sha256_bcnf,
-    catalog_publication_modified_at_bcnf,
-    catalog_publication_seal_bcnf,
+    catalog_publication_storage_bcnf,
+    catalog_publication_occurrence_identity_bcnf,
     catalog_publication_order_bcnf,
-    catalog_publication_title_anchor_bcnf,
-    catalog_publication_title_source_title_sha256_bcnf,
-    catalog_publication_title_source_gallery_name_bcnf,
-    catalog_publication_title_seal_bcnf,
     catalog_publication_content_bcnf,
     contributor_role_registry_bcnf,
     catalog_contributor_anchor_bcnf,
@@ -26286,33 +23830,17 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes gallery_observation_page_child_contract ∧
     KeysDetermineAllAttributes gallery_observation_tree_root_contract ∧
     KeysDetermineAllAttributes gallery_observation_contract ∧
-    KeysDetermineAllAttributes gallery_observation_metadata_anchor_contract ∧
     KeysDetermineAllAttributes gallery_upload_time_contract ∧
     KeysDetermineAllAttributes source_gallery_name_gid_contract ∧
     KeysDetermineAllAttributes gallery_source_name_access_contract ∧
-    KeysDetermineAllAttributes gallery_observation_download_time_contract ∧
-    KeysDetermineAllAttributes gallery_observation_modified_time_contract ∧
-    KeysDetermineAllAttributes gallery_observation_metadata_seal_contract ∧
+    KeysDetermineAllAttributes gallery_observation_metadata_local_contract ∧
     KeysDetermineAllAttributes gallery_observation_metadata_contract ∧
-    KeysDetermineAllAttributes gallery_observation_scan_anchor_contract ∧
-    KeysDetermineAllAttributes gallery_observation_scan_observation_sha256_contract ∧
-    KeysDetermineAllAttributes gallery_observation_scan_observation_version_contract ∧
-    KeysDetermineAllAttributes gallery_observation_scan_source_file_count_contract ∧
-    KeysDetermineAllAttributes gallery_observation_scan_seal_contract ∧
     KeysDetermineAllAttributes gallery_observation_scan_contract ∧
     KeysDetermineAllAttributes gallery_observation_discovery_fingerprint_contract ∧
     KeysDetermineAllAttributes gallery_observation_metadata_digest_contract ∧
     KeysDetermineAllAttributes gallery_observation_raw_content_contract ∧
     KeysDetermineAllAttributes gallery_observation_page_count_contract ∧
-    KeysDetermineAllAttributes gallery_observation_directory_anchor_contract ∧
-    KeysDetermineAllAttributes gallery_observation_directory_entry_count_contract ∧
-    KeysDetermineAllAttributes gallery_observation_directory_observation_sha256_contract ∧
-    KeysDetermineAllAttributes gallery_observation_directory_seal_contract ∧
     KeysDetermineAllAttributes gallery_observation_directory_contract ∧
-    KeysDetermineAllAttributes gallery_observation_stat_anchor_contract ∧
-    KeysDetermineAllAttributes gallery_observation_stat_file_count_contract ∧
-    KeysDetermineAllAttributes gallery_observation_stat_byte_count_contract ∧
-    KeysDetermineAllAttributes gallery_observation_stat_seal_contract ∧
     KeysDetermineAllAttributes gallery_observation_stat_contract ∧
     KeysDetermineAllAttributes source_build_gallery_contract ∧
     KeysDetermineAllAttributes file_name_identity_anchor_contract ∧
@@ -26344,10 +23872,6 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes build_manifest_byte_count_contract ∧
     KeysDetermineAllAttributes build_manifest_seal_contract ∧
     KeysDetermineAllAttributes build_manifest_contract ∧
-    KeysDetermineAllAttributes gallery_manifest_anchor_contract ∧
-    KeysDetermineAllAttributes gallery_manifest_manifest_sha256_contract ∧
-    KeysDetermineAllAttributes gallery_manifest_computed_at_contract ∧
-    KeysDetermineAllAttributes gallery_manifest_seal_contract ∧
     KeysDetermineAllAttributes gallery_manifest_contract ∧
     KeysDetermineAllAttributes analysis_policy_anchor_contract ∧
     KeysDetermineAllAttributes analysis_policy_algorithm_version_contract ∧
@@ -26400,15 +23924,11 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes analysis_exclusion_delta_seal_contract ∧
     KeysDetermineAllAttributes analysis_exclusion_delta_contract ∧
     KeysDetermineAllAttributes analysis_impacted_gallery_contract ∧
-    KeysDetermineAllAttributes analysis_impacted_content_anchor_contract ∧
-    KeysDetermineAllAttributes analysis_impacted_content_provenance_contract ∧
-    KeysDetermineAllAttributes analysis_impacted_content_witness_contract ∧
-    KeysDetermineAllAttributes analysis_impacted_content_seal_contract ∧
     KeysDetermineAllAttributes analysis_impacted_content_contract ∧
-    KeysDetermineAllAttributes analysis_impacted_gid_anchor_contract ∧
+    KeysDetermineAllAttributes analysis_impacted_content_provenance_contract ∧
+    KeysDetermineAllAttributes analysis_impacted_gid_storage_contract ∧
+    KeysDetermineAllAttributes analysis_impacted_gid_provenance_storage_contract ∧
     KeysDetermineAllAttributes analysis_impacted_gid_provenance_contract ∧
-    KeysDetermineAllAttributes analysis_impacted_gid_witness_contract ∧
-    KeysDetermineAllAttributes analysis_impacted_gid_seal_contract ∧
     KeysDetermineAllAttributes analysis_impacted_gid_contract ∧
     KeysDetermineAllAttributes analysis_file_hash_decision_shadow_anchor_contract ∧
     KeysDetermineAllAttributes analysis_file_hash_decision_shadow_occurrence_count_contract ∧
@@ -26418,18 +23938,9 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes analysis_file_hash_decision_shadow_contract ∧
     KeysDetermineAllAttributes analysis_file_hash_decision_tombstone_contract ∧
     KeysDetermineAllAttributes analysis_file_hash_decision_resolved_contract ∧
-    KeysDetermineAllAttributes analysis_content_owner_candidate_shadow_anchor_contract ∧
-    KeysDetermineAllAttributes analysis_content_owner_candidate_shadow_content_sha256_contract ∧
-    KeysDetermineAllAttributes analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_contract ∧
-    KeysDetermineAllAttributes analysis_content_owner_candidate_shadow_title_scalar_count_contract ∧
-    KeysDetermineAllAttributes analysis_content_owner_candidate_shadow_download_time_contract ∧
-    KeysDetermineAllAttributes analysis_content_owner_candidate_shadow_seal_contract ∧
     KeysDetermineAllAttributes analysis_content_owner_candidate_shadow_contract ∧
     KeysDetermineAllAttributes analysis_content_owner_candidate_tombstone_contract ∧
     KeysDetermineAllAttributes analysis_content_owner_candidate_resolved_contract ∧
-    KeysDetermineAllAttributes analysis_content_owner_shadow_anchor_contract ∧
-    KeysDetermineAllAttributes analysis_content_owner_shadow_owner_gallery_id_contract ∧
-    KeysDetermineAllAttributes analysis_content_owner_shadow_seal_contract ∧
     KeysDetermineAllAttributes analysis_content_owner_shadow_contract ∧
     KeysDetermineAllAttributes analysis_content_owner_tombstone_contract ∧
     KeysDetermineAllAttributes analysis_content_owner_resolved_contract ∧
@@ -26483,6 +23994,8 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes publication_candidate_base_publication_commit_contract ∧
     KeysDetermineAllAttributes publication_candidate_base_catalog_contract ∧
     KeysDetermineAllAttributes publication_candidate_base_source_contract ∧
+    KeysDetermineAllAttributes publication_selection_storage_contract ∧
+    KeysDetermineAllAttributes publication_selection_occurrence_identity_contract ∧
     KeysDetermineAllAttributes publication_selection_contract ∧
     KeysDetermineAllAttributes publication_stage_anchor_contract ∧
     KeysDetermineAllAttributes publication_stage_order_contract ∧
@@ -26589,18 +24102,10 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes title_sort_policy_contract ∧
     KeysDetermineAllAttributes display_title_choice_contract ∧
     KeysDetermineAllAttributes title_sort_contract ∧
-    KeysDetermineAllAttributes catalog_publication_anchor_contract ∧
-    KeysDetermineAllAttributes catalog_publication_gallery_id_contract ∧
-    KeysDetermineAllAttributes catalog_publication_summary_sha256_contract ∧
-    KeysDetermineAllAttributes catalog_publication_language_sha256_contract ∧
-    KeysDetermineAllAttributes catalog_publication_modified_at_contract ∧
-    KeysDetermineAllAttributes catalog_publication_seal_contract ∧
+    KeysDetermineAllAttributes catalog_publication_storage_contract ∧
+    KeysDetermineAllAttributes catalog_publication_occurrence_identity_contract ∧
     KeysDetermineAllAttributes catalog_publication_contract ∧
     KeysDetermineAllAttributes catalog_publication_order_contract ∧
-    KeysDetermineAllAttributes catalog_publication_title_anchor_contract ∧
-    KeysDetermineAllAttributes catalog_publication_title_source_title_sha256_contract ∧
-    KeysDetermineAllAttributes catalog_publication_title_source_gallery_name_contract ∧
-    KeysDetermineAllAttributes catalog_publication_title_seal_contract ∧
     KeysDetermineAllAttributes catalog_publication_title_contract ∧
     KeysDetermineAllAttributes catalog_publication_content_contract ∧
     KeysDetermineAllAttributes contributor_role_registry_contract ∧
@@ -26704,33 +24209,17 @@ theorem all_manifest_candidate_keys_determine_attributes :
     gallery_observation_page_child_candidate_keys_determine_all_attributes,
     gallery_observation_tree_root_candidate_keys_determine_all_attributes,
     gallery_observation_candidate_keys_determine_all_attributes,
-    gallery_observation_metadata_anchor_candidate_keys_determine_all_attributes,
     gallery_upload_time_candidate_keys_determine_all_attributes,
     source_gallery_name_gid_candidate_keys_determine_all_attributes,
     gallery_source_name_access_candidate_keys_determine_all_attributes,
-    gallery_observation_download_time_candidate_keys_determine_all_attributes,
-    gallery_observation_modified_time_candidate_keys_determine_all_attributes,
-    gallery_observation_metadata_seal_candidate_keys_determine_all_attributes,
+    gallery_observation_metadata_local_candidate_keys_determine_all_attributes,
     gallery_observation_metadata_candidate_keys_determine_all_attributes,
-    gallery_observation_scan_anchor_candidate_keys_determine_all_attributes,
-    gallery_observation_scan_observation_sha256_candidate_keys_determine_all_attributes,
-    gallery_observation_scan_observation_version_candidate_keys_determine_all_attributes,
-    gallery_observation_scan_source_file_count_candidate_keys_determine_all_attributes,
-    gallery_observation_scan_seal_candidate_keys_determine_all_attributes,
     gallery_observation_scan_candidate_keys_determine_all_attributes,
     gallery_observation_discovery_fingerprint_candidate_keys_determine_all_attributes,
     gallery_observation_metadata_digest_candidate_keys_determine_all_attributes,
     gallery_observation_raw_content_candidate_keys_determine_all_attributes,
     gallery_observation_page_count_candidate_keys_determine_all_attributes,
-    gallery_observation_directory_anchor_candidate_keys_determine_all_attributes,
-    gallery_observation_directory_entry_count_candidate_keys_determine_all_attributes,
-    gallery_observation_directory_observation_sha256_candidate_keys_determine_all_attributes,
-    gallery_observation_directory_seal_candidate_keys_determine_all_attributes,
     gallery_observation_directory_candidate_keys_determine_all_attributes,
-    gallery_observation_stat_anchor_candidate_keys_determine_all_attributes,
-    gallery_observation_stat_file_count_candidate_keys_determine_all_attributes,
-    gallery_observation_stat_byte_count_candidate_keys_determine_all_attributes,
-    gallery_observation_stat_seal_candidate_keys_determine_all_attributes,
     gallery_observation_stat_candidate_keys_determine_all_attributes,
     source_build_gallery_candidate_keys_determine_all_attributes,
     file_name_identity_anchor_candidate_keys_determine_all_attributes,
@@ -26762,10 +24251,6 @@ theorem all_manifest_candidate_keys_determine_attributes :
     build_manifest_byte_count_candidate_keys_determine_all_attributes,
     build_manifest_seal_candidate_keys_determine_all_attributes,
     build_manifest_candidate_keys_determine_all_attributes,
-    gallery_manifest_anchor_candidate_keys_determine_all_attributes,
-    gallery_manifest_manifest_sha256_candidate_keys_determine_all_attributes,
-    gallery_manifest_computed_at_candidate_keys_determine_all_attributes,
-    gallery_manifest_seal_candidate_keys_determine_all_attributes,
     gallery_manifest_candidate_keys_determine_all_attributes,
     analysis_policy_anchor_candidate_keys_determine_all_attributes,
     analysis_policy_algorithm_version_candidate_keys_determine_all_attributes,
@@ -26818,15 +24303,11 @@ theorem all_manifest_candidate_keys_determine_attributes :
     analysis_exclusion_delta_seal_candidate_keys_determine_all_attributes,
     analysis_exclusion_delta_candidate_keys_determine_all_attributes,
     analysis_impacted_gallery_candidate_keys_determine_all_attributes,
-    analysis_impacted_content_anchor_candidate_keys_determine_all_attributes,
-    analysis_impacted_content_provenance_candidate_keys_determine_all_attributes,
-    analysis_impacted_content_witness_candidate_keys_determine_all_attributes,
-    analysis_impacted_content_seal_candidate_keys_determine_all_attributes,
     analysis_impacted_content_candidate_keys_determine_all_attributes,
-    analysis_impacted_gid_anchor_candidate_keys_determine_all_attributes,
+    analysis_impacted_content_provenance_candidate_keys_determine_all_attributes,
+    analysis_impacted_gid_storage_candidate_keys_determine_all_attributes,
+    analysis_impacted_gid_provenance_storage_candidate_keys_determine_all_attributes,
     analysis_impacted_gid_provenance_candidate_keys_determine_all_attributes,
-    analysis_impacted_gid_witness_candidate_keys_determine_all_attributes,
-    analysis_impacted_gid_seal_candidate_keys_determine_all_attributes,
     analysis_impacted_gid_candidate_keys_determine_all_attributes,
     analysis_file_hash_decision_shadow_anchor_candidate_keys_determine_all_attributes,
     analysis_file_hash_decision_shadow_occurrence_count_candidate_keys_determine_all_attributes,
@@ -26836,18 +24317,9 @@ theorem all_manifest_candidate_keys_determine_attributes :
     analysis_file_hash_decision_shadow_candidate_keys_determine_all_attributes,
     analysis_file_hash_decision_tombstone_candidate_keys_determine_all_attributes,
     analysis_file_hash_decision_resolved_candidate_keys_determine_all_attributes,
-    analysis_content_owner_candidate_shadow_anchor_candidate_keys_determine_all_attributes,
-    analysis_content_owner_candidate_shadow_content_sha256_candidate_keys_determine_all_attributes,
-    analysis_content_owner_candidate_shadow_prefer_not_already_uploaded_candidate_keys_determine_all_attributes,
-    analysis_content_owner_candidate_shadow_title_scalar_count_candidate_keys_determine_all_attributes,
-    analysis_content_owner_candidate_shadow_download_time_candidate_keys_determine_all_attributes,
-    analysis_content_owner_candidate_shadow_seal_candidate_keys_determine_all_attributes,
     analysis_content_owner_candidate_shadow_candidate_keys_determine_all_attributes,
     analysis_content_owner_candidate_tombstone_candidate_keys_determine_all_attributes,
     analysis_content_owner_candidate_resolved_candidate_keys_determine_all_attributes,
-    analysis_content_owner_shadow_anchor_candidate_keys_determine_all_attributes,
-    analysis_content_owner_shadow_owner_gallery_id_candidate_keys_determine_all_attributes,
-    analysis_content_owner_shadow_seal_candidate_keys_determine_all_attributes,
     analysis_content_owner_shadow_candidate_keys_determine_all_attributes,
     analysis_content_owner_tombstone_candidate_keys_determine_all_attributes,
     analysis_content_owner_resolved_candidate_keys_determine_all_attributes,
@@ -26901,6 +24373,8 @@ theorem all_manifest_candidate_keys_determine_attributes :
     publication_candidate_base_publication_commit_candidate_keys_determine_all_attributes,
     publication_candidate_base_catalog_candidate_keys_determine_all_attributes,
     publication_candidate_base_source_candidate_keys_determine_all_attributes,
+    publication_selection_storage_candidate_keys_determine_all_attributes,
+    publication_selection_occurrence_identity_candidate_keys_determine_all_attributes,
     publication_selection_candidate_keys_determine_all_attributes,
     publication_stage_anchor_candidate_keys_determine_all_attributes,
     publication_stage_order_candidate_keys_determine_all_attributes,
@@ -27007,18 +24481,10 @@ theorem all_manifest_candidate_keys_determine_attributes :
     title_sort_policy_candidate_keys_determine_all_attributes,
     display_title_choice_candidate_keys_determine_all_attributes,
     title_sort_candidate_keys_determine_all_attributes,
-    catalog_publication_anchor_candidate_keys_determine_all_attributes,
-    catalog_publication_gallery_id_candidate_keys_determine_all_attributes,
-    catalog_publication_summary_sha256_candidate_keys_determine_all_attributes,
-    catalog_publication_language_sha256_candidate_keys_determine_all_attributes,
-    catalog_publication_modified_at_candidate_keys_determine_all_attributes,
-    catalog_publication_seal_candidate_keys_determine_all_attributes,
+    catalog_publication_storage_candidate_keys_determine_all_attributes,
+    catalog_publication_occurrence_identity_candidate_keys_determine_all_attributes,
     catalog_publication_candidate_keys_determine_all_attributes,
     catalog_publication_order_candidate_keys_determine_all_attributes,
-    catalog_publication_title_anchor_candidate_keys_determine_all_attributes,
-    catalog_publication_title_source_title_sha256_candidate_keys_determine_all_attributes,
-    catalog_publication_title_source_gallery_name_candidate_keys_determine_all_attributes,
-    catalog_publication_title_seal_candidate_keys_determine_all_attributes,
     catalog_publication_title_candidate_keys_determine_all_attributes,
     catalog_publication_content_candidate_keys_determine_all_attributes,
     contributor_role_registry_candidate_keys_determine_all_attributes,

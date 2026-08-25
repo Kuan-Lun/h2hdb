@@ -10,6 +10,7 @@ __all__ = [
     "VNextCurrentProjectionContinuationError",
     "VNextCurrentProjectionError",
     "VNextCurrentProjectionUnavailableError",
+    "VNextCurrentOnlyMaintenanceOutcome",
     "VNextIngestFacade",
     "VNextIssuedAnalysisStep",
     "VNextIssuedPublicationStep",
@@ -53,6 +54,13 @@ from .vnext_canonical_value_repository import (
     CanonicalValueRepository,
     CanonicalValueUploadPlan,
     PreparedCanonicalPage,
+)
+from .vnext_cleanup_repository import (
+    CatalogPublicationMaintenanceState,
+    CleanupBatchCommand,
+    CleanupBatchResult,
+    CleanupCycle,
+    VNextCleanupRepository,
 )
 from .vnext_current_projection_repository import (
     CurrentProjectionArtifactPage,
@@ -137,6 +145,7 @@ _PREPARED_SOURCE_TOKEN = object()
 _ISSUED_SOURCE_STEP_TOKEN = object()
 _PREPARED_SOURCE_STEP_TOKEN = object()
 _SOURCE_LOCATOR_PAGE_LIMIT = 256
+_CURRENT_ONLY_BATCHES_PER_ATTEMPT = 16
 
 
 def _now_microseconds() -> int:
@@ -160,6 +169,19 @@ class VNextCurrentProjectionUnavailableError(VNextCurrentProjectionError):
 
 class VNextSourceManifestMismatchError(RuntimeError):
     """The replayed source bytes differ from their complete frozen preflight."""
+
+
+class VNextCurrentOnlyMaintenanceOutcome(StrEnum):
+    """Result of one bounded public current-only maintenance attempt."""
+
+    DONE = "DONE"
+    PROGRESSED = "PROGRESSED"
+    BLOCKED = "BLOCKED"
+    CONTENDED = "CONTENDED"
+
+
+class _CurrentOnlyMaintenancePending(RuntimeError):
+    """An interrupted current-only cleanup must finish before new ingest."""
 
 
 class _SourceAction(StrEnum):
@@ -934,6 +956,17 @@ class VNextIngestFacade:
                 now=now,
                 lease_duration=duration,
             )
+            maintenance_state = VNextCleanupRepository.current_only_maintenance_state(
+                work,
+                cycle_cutoff_at=now,
+            )
+            if maintenance_state is CatalogPublicationMaintenanceState.ACTIONABLE:
+                # Raising inside the same transaction rolls the tentative
+                # SHARED claim back.  A bounded EXCLUSIVE attempt may have
+                # removed an entire shard and closed its job while other old
+                # payload remains, so OPEN jobs alone are not a sufficient
+                # fence against recreating a predecessor pin.
+                raise _CurrentOnlyMaintenancePending
             turn = DownloadIngestRepository.claim_ingest(
                 work,
                 now=now,
@@ -946,7 +979,11 @@ class VNextIngestFacade:
             return self.__write(claim)
         except MaintenanceGateTokenCollisionError:
             raise
-        except MaintenanceGateUnavailableError, DownloadIngestUnavailableError:
+        except (
+            _CurrentOnlyMaintenancePending,
+            MaintenanceGateUnavailableError,
+            DownloadIngestUnavailableError,
+        ):
             return None
 
     def resume_ingest(self, session: VNextIngestSession) -> VNextIngestSession:
@@ -1036,6 +1073,263 @@ class VNextIngestFacade:
             if replay is None:
                 raise unavailable
             return _public_completion(replay, replayed=True)
+
+    def drain_current_only_maintenance(
+        self,
+        lease_duration_microseconds: int,
+    ) -> VNextCurrentOnlyMaintenanceOutcome:
+        """Advance one bounded gallery/CBZ current-only fixed-point attempt.
+
+        Each durable cleanup transaction selects at most 256 logical cleanup
+        keys/families; a key can execute a schema-fixed bounded compound delete
+        across its vertical family.  One public attempt advances at most 16
+        such transactions.  ``PROGRESSED``
+        means at least one advance committed *and work remains*, so callers
+        should retry promptly; ``BLOCKED`` and ``CONTENDED`` should use the
+        ordinary poll cadence.  Callers retain no capability, and interrupted
+        shard jobs resume before new work.  Every completed cycle restarts the
+        17-target dependency-priority scan from its head.
+
+        File-derived hash-cache expiration is intentionally separate from this
+        gallery/CBZ fixed point.  It requires an explicit nonzero age policy;
+        fresh cache rows therefore neither prevent ``DONE`` nor get deleted by
+        a resident idle poll.
+        """
+
+        duration = require_positive_int63(
+            lease_duration_microseconds,
+            field="current-only maintenance lease_duration_microseconds",
+        )
+        cycle_cutoff_at = require_int63(
+            self.__clock(), field="current-only maintenance cycle cutoff"
+        )
+        with self.__context.SQLConnector() as connector:
+            with connector.read_transaction():
+                maintenance_state = (
+                    VNextCleanupRepository.current_only_maintenance_state(
+                        VNextUnitOfWork(connector, backend=self.__backend),
+                        cycle_cutoff_at=cycle_cutoff_at,
+                    )
+                )
+            if maintenance_state is CatalogPublicationMaintenanceState.DONE:
+                return VNextCurrentOnlyMaintenanceOutcome.DONE
+            if maintenance_state is CatalogPublicationMaintenanceState.BLOCKED:
+                return VNextCurrentOnlyMaintenanceOutcome.BLOCKED
+
+            try:
+                claim_now = require_int63(
+                    self.__clock(),
+                    field="current-only maintenance claim now",
+                )
+                with connector.transaction():
+                    lease = MaintenanceGateRepository.claim_exclusive(
+                        VNextUnitOfWork(connector, backend=self.__backend),
+                        now=claim_now,
+                        lease_duration=duration,
+                    )
+            except MaintenanceGateUnavailableError:
+                return VNextCurrentOnlyMaintenanceOutcome.CONTENDED
+
+            try:
+                lease = self.__renew_current_only_lease(
+                    connector, lease, duration=duration
+                )
+                advanced_batches = 0
+                while advanced_batches < _CURRENT_ONLY_BATCHES_PER_ATTEMPT:
+                    lease = self.__renew_current_only_lease(
+                        connector, lease, duration=duration
+                    )
+                    cycle = self.__next_current_only_cycle(
+                        connector,
+                        lease,
+                        cycle_cutoff_at=cycle_cutoff_at,
+                    )
+                    if cycle is None:
+                        break
+                    lease = self.__renew_current_only_lease(
+                        connector, lease, duration=duration
+                    )
+                    result = self.__resume_current_only_cycle(
+                        connector, lease, cycle=cycle
+                    )
+                    while (
+                        not result.cycle_complete
+                        and advanced_batches < _CURRENT_ONLY_BATCHES_PER_ATTEMPT
+                    ):
+                        generation = result.generation
+                        if generation is None:
+                            raise RuntimeError(
+                                "open catalog cleanup lacks a generation"
+                            )
+                        lease = self.__renew_current_only_lease(
+                            connector, lease, duration=duration
+                        )
+                        result = self.__advance_current_only_shard(
+                            connector,
+                            lease,
+                            cycle=cycle,
+                            generation=generation,
+                        )
+                        advanced_batches += 1
+                    if not result.cycle_complete:
+                        break
+                    # A later target can release a foreign-key blocker for an
+                    # earlier one, so every completed cycle starts the exact
+                    # priority scan again instead of continuing linearly.
+                lease = self.__renew_current_only_lease(
+                    connector, lease, duration=duration
+                )
+                remaining = self.__current_only_state(
+                    connector,
+                    lease,
+                    cycle_cutoff_at=cycle_cutoff_at,
+                )
+                if remaining is CatalogPublicationMaintenanceState.DONE:
+                    outcome = VNextCurrentOnlyMaintenanceOutcome.DONE
+                elif advanced_batches:
+                    outcome = VNextCurrentOnlyMaintenanceOutcome.PROGRESSED
+                else:
+                    outcome = VNextCurrentOnlyMaintenanceOutcome.BLOCKED
+            except BaseException:
+                self.__release_current_only_after_failure(connector, lease)
+                raise
+
+            release_now = require_int63(
+                self.__clock(),
+                field="current-only maintenance release now",
+            )
+            with connector.transaction():
+                MaintenanceGateRepository.release(
+                    VNextUnitOfWork(connector, backend=self.__backend),
+                    lease,
+                    now=release_now,
+                )
+            return outcome
+
+    def __current_only_state(
+        self,
+        connector: SQLConnector,
+        lease: GateLease,
+        *,
+        cycle_cutoff_at: int,
+    ) -> CatalogPublicationMaintenanceState:
+        now = require_int63(
+            self.__clock(), field="current-only maintenance preflight now"
+        )
+        with connector.transaction():
+            work = VNextUnitOfWork(connector, backend=self.__backend)
+            state = VNextCleanupRepository.current_only_maintenance_state(
+                work,
+                cycle_cutoff_at=cycle_cutoff_at,
+                gate_lease=lease,
+                now=now,
+            )
+        return state
+
+    def __next_current_only_cycle(
+        self,
+        connector: SQLConnector,
+        lease: GateLease,
+        *,
+        cycle_cutoff_at: int,
+    ) -> CleanupCycle | None:
+        now = require_int63(
+            self.__clock(), field="current-only maintenance next-cycle now"
+        )
+        with connector.transaction():
+            work = VNextUnitOfWork(connector, backend=self.__backend)
+            cycle = VNextCleanupRepository.next_current_only_cycle(
+                work,
+                gate_lease=lease,
+                cycle_cutoff_at=cycle_cutoff_at,
+                now=now,
+            )
+        return cycle
+
+    def __resume_current_only_cycle(
+        self,
+        connector: SQLConnector,
+        lease: GateLease,
+        *,
+        cycle: CleanupCycle,
+    ) -> CleanupBatchResult:
+        now = require_int63(self.__clock(), field="current-only maintenance resume now")
+        with connector.transaction():
+            work = VNextUnitOfWork(connector, backend=self.__backend)
+            result = VNextCleanupRepository.resume_cycle(
+                work,
+                gate_lease=lease,
+                cycle=cycle,
+                now=now,
+            )
+        return result
+
+    def __advance_current_only_shard(
+        self,
+        connector: SQLConnector,
+        lease: GateLease,
+        *,
+        cycle: CleanupCycle,
+        generation: int,
+    ) -> CleanupBatchResult:
+        now = require_int63(
+            self.__clock(), field="current-only maintenance advance now"
+        )
+        with connector.transaction():
+            work = VNextUnitOfWork(connector, backend=self.__backend)
+            result = VNextCleanupRepository.advance(
+                work,
+                gate_lease=lease,
+                cycle=cycle,
+                command=CleanupBatchCommand(
+                    secrets.token_bytes(32),
+                    generation,
+                ),
+                now=now,
+            )
+        return result
+
+    def __renew_current_only_lease(
+        self,
+        connector: SQLConnector,
+        lease: GateLease,
+        *,
+        duration: int,
+    ) -> GateLease:
+        """Renew in its own transaction before cleanup reacquires gate locks."""
+
+        now = require_int63(
+            self.__clock(),
+            field="current-only maintenance renewal now",
+        )
+        with connector.transaction():
+            return MaintenanceGateRepository.renew(
+                VNextUnitOfWork(connector, backend=self.__backend),
+                lease,
+                now=now,
+                lease_duration=duration,
+            )
+
+    def __release_current_only_after_failure(
+        self,
+        connector: SQLConnector,
+        lease: GateLease,
+    ) -> None:
+        try:
+            now = require_int63(
+                self.__clock(),
+                field="failed current-only maintenance release now",
+            )
+            with connector.transaction():
+                MaintenanceGateRepository.release(
+                    VNextUnitOfWork(connector, backend=self.__backend),
+                    lease,
+                    now=now,
+                )
+        except MaintenanceGateUnavailableError:
+            # A process crash likewise loses this capability; expiry/takeover
+            # plus durable cleanup checkpoints make a later call safe.
+            return
 
     def ensure_policy(
         self,

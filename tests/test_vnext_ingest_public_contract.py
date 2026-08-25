@@ -9,6 +9,7 @@ from unicodedata import unidata_version
 
 import pytest
 
+import h2hdb.vnext_cleanup_repository as cleanup_module
 from h2hdb import (
     ArtifactReleaseAdapter,
     ArtifactReleaseStorageEvidence,
@@ -25,6 +26,7 @@ from h2hdb import (
     TagObservation,
     VNextArtifactProducer,
     VNextArtifactStoragePolicy,
+    VNextCurrentOnlyMaintenanceOutcome,
     VNextIngestCompletionReceipt,
     VNextIngestFacade,
     VNextIngestGalleryObservation,
@@ -39,7 +41,14 @@ from h2hdb import (
 )
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.vnext_cleanup_repository import (
+    CatalogPublicationMaintenanceState,
+    CleanupTargetKind,
+    VNextCleanupRepository,
+)
 from h2hdb.vnext_ingest_policy_repository import VNextIngestPolicyConflictError
+from h2hdb.vnext_maintenance_gate_repository import MaintenanceGateRepository
+from h2hdb.vnext_transaction import VNextUnitOfWork
 
 
 def _metadata() -> GalleryObservationMetadata:
@@ -450,6 +459,221 @@ def test_ingest_facade_try_claim_and_completion_are_public_and_replayable(
     )
 
 
+def test_public_current_only_maintenance_waits_for_ingest_then_drains(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "current-only-maintenance.sqlite3"
+    _generated_database(path)
+    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    facade = VNextIngestFacade(config, clock=lambda: 100)
+
+    session = facade.try_claim_ingest(True, 10_000)
+    assert session is not None
+    # No payload means the optimistic read-only preflight is already complete;
+    # it need not contend for EXCLUSIVE or mutate the gate generation.
+    assert (
+        facade.drain_current_only_maintenance(10_000)
+        is VNextCurrentOnlyMaintenanceOutcome.DONE
+    )
+
+    facade.complete_ingest(session)
+    with SQLiteConnector(str(path)) as connector:
+        generation_count = connector.fetch_one(
+            "SELECT COUNT(*) FROM operational_maintenance_gate_generations"
+        )
+    # Empty response-loss/idle retries are read-only and therefore do not grow
+    # the permanent gate-generation audit table on every resident poll.
+    for _attempt in range(5):
+        assert (
+            facade.drain_current_only_maintenance(10_000)
+            is VNextCurrentOnlyMaintenanceOutcome.DONE
+        )
+    with SQLiteConnector(str(path)) as connector:
+        assert (
+            connector.fetch_one(
+                "SELECT COUNT(*) FROM operational_maintenance_gate_generations"
+            )
+            == generation_count
+        )
+
+
+def test_current_only_outcome_reports_gate_contention(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "current-only-contention.sqlite3"
+    _generated_database(path)
+    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    facade = VNextIngestFacade(config, clock=lambda: 100)
+    session = facade.try_claim_ingest(True, 10_000)
+    assert session is not None
+
+    monkeypatch.setattr(
+        VNextCleanupRepository,
+        "current_only_maintenance_state",
+        staticmethod(
+            lambda *_args, **_kwargs: CatalogPublicationMaintenanceState.ACTIONABLE
+        ),
+    )
+    assert (
+        facade.drain_current_only_maintenance(10_000)
+        is VNextCurrentOnlyMaintenanceOutcome.CONTENDED
+    )
+    facade.complete_ingest(session)
+
+
+def test_current_only_failure_releases_the_latest_renewed_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "current-only-failure-release.sqlite3"
+    _generated_database(path)
+    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    ticks = iter(range(100, 10_000, 100))
+    facade = VNextIngestFacade(config, clock=lambda: next(ticks))
+
+    def fail_after_renewal(*_args: object, **_kwargs: object) -> bool:
+        raise RuntimeError("injected cleanup probe failure")
+
+    monkeypatch.setattr(
+        VNextCleanupRepository,
+        "current_only_maintenance_state",
+        staticmethod(
+            lambda *_args, **_kwargs: CatalogPublicationMaintenanceState.ACTIONABLE
+        ),
+    )
+    monkeypatch.setattr(
+        VNextCleanupRepository,
+        "next_current_only_cycle",
+        staticmethod(fail_after_renewal),
+    )
+    with pytest.raises(RuntimeError, match="injected cleanup probe failure"):
+        facade.drain_current_only_maintenance(1_000)
+
+    with SQLiteConnector(str(path)) as connector:
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM operational_maintenance_gate_holders"
+        ) == (0,)
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM operational_maintenance_gate_owners"
+        ) == (0,)
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM operational_ingest_generation_owners"
+        ) == (0,)
+
+    monkeypatch.undo()
+    session = facade.try_claim_ingest(True, 1_000)
+    assert session is not None
+    facade.complete_ingest(session)
+
+
+def test_current_only_scheduler_resumes_global_open_queue_over_32_advances(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "current-only-global-open.sqlite3"
+    _generated_database(path)
+    digest = bytes((201,)) + b"b" * 31
+
+    with SQLiteConnector(str(path)) as connector:
+        assert connector.fetch_one("PRAGMA foreign_keys") == (1,)
+        with connector.transaction():
+            work = VNextUnitOfWork(connector, backend="sqlite")
+            gate = MaintenanceGateRepository.claim_exclusive(
+                work,
+                now=1,
+                lease_duration=1_000_000,
+            )
+        for kind in cleanup_module._CURRENT_ONLY_TARGET_PRIORITY:
+            with connector.transaction():
+                VNextCleanupRepository.begin_cycle(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    target_kind=kind,
+                    shard_no=0,
+                    cycle_cutoff_at=100,
+                    max_rows_per_transaction=1,
+                    now=2,
+                )
+        connector.execute(
+            "INSERT INTO catalog_content_blobs (file_sha256, size_bytes) "
+            "VALUES (%s, 0)",
+            (digest,),
+        )
+        with connector.transaction():
+            MaintenanceGateRepository.release(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate,
+                now=3,
+            )
+
+    assert CleanupTargetKind.HASH_CACHE_OBSERVATION not in (
+        cleanup_module._CURRENT_ONLY_TARGET_PRIORITY
+    )
+    assert set(cleanup_module._CURRENT_ONLY_TARGET_PRIORITY) == set(
+        CleanupTargetKind
+    ) - {CleanupTargetKind.HASH_CACHE_OBSERVATION}
+
+    facade = VNextIngestFacade(
+        CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path))),
+        clock=lambda: 100,
+    )
+    advance_calls = 0
+    original_advance = VNextCleanupRepository.advance
+
+    def counted_advance(*args: Any, **kwargs: Any) -> Any:
+        nonlocal advance_calls
+        result = original_advance(*args, **kwargs)
+        advance_calls += 1
+        return result
+
+    monkeypatch.setattr(
+        VNextCleanupRepository,
+        "advance",
+        staticmethod(counted_advance),
+    )
+    assert facade.try_claim_ingest(True, 100_000) is None
+    outcomes = [facade.drain_current_only_maintenance(100_000)]
+    assert outcomes == [VNextCurrentOnlyMaintenanceOutcome.PROGRESSED]
+
+    with SQLiteConnector(str(path)) as connector:
+        assert connector.fetch_all(
+            "SELECT sweep.target_kind "
+            "FROM operational_cleanup_completions completion "
+            "JOIN operational_cleanup_sweep_targets sweep "
+            "ON sweep.target_key = completion.target_key "
+            "ORDER BY sweep.target_kind"
+        ) == [(CleanupTargetKind.CATALOG_PUBLICATION.value,)]
+        assert connector.fetch_one(
+            "SELECT file_sha256 FROM catalog_content_blobs WHERE file_sha256 = %s",
+            (digest,),
+        ) == (digest,)
+        assert connector.fetch_all("PRAGMA foreign_key_check") == []
+
+    for _attempt in range(11):
+        outcomes.append(facade.drain_current_only_maintenance(100_000))
+        if outcomes[-1] is VNextCurrentOnlyMaintenanceOutcome.DONE:
+            break
+    assert outcomes[-1] is VNextCurrentOnlyMaintenanceOutcome.DONE
+    assert all(
+        outcome is VNextCurrentOnlyMaintenanceOutcome.PROGRESSED
+        for outcome in outcomes[:-1]
+    )
+    with SQLiteConnector(str(path)) as connector:
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM operational_cleanup_jobs WHERE state = 'OPEN'"
+        ) == (0,)
+        assert advance_calls > 32
+        assert (
+            connector.fetch_one(
+                "SELECT file_sha256 FROM catalog_content_blobs WHERE file_sha256 = %s",
+                (digest,),
+            )
+            == ()
+        )
+        assert connector.fetch_all("PRAGMA foreign_key_check") == []
+
+
 def test_source_step_commit_accepts_renewed_same_authority_and_rejects_forgery(
     tmp_path: Path,
 ) -> None:
@@ -686,6 +910,12 @@ def test_fresh_runtime_replays_the_same_sealed_source_snapshot(
 
     now = 200
     second_facade = VNextIngestFacade(config, clock=lambda: now)
+    for _attempt in range(8):
+        source_cleanup = second_facade.drain_current_only_maintenance(100_000)
+        if source_cleanup is VNextCurrentOnlyMaintenanceOutcome.DONE:
+            break
+        assert source_cleanup is VNextCurrentOnlyMaintenanceOutcome.PROGRESSED
+    assert source_cleanup is VNextCurrentOnlyMaintenanceOutcome.DONE
     second_session = second_facade.try_claim_ingest(True, 100_000)
     assert second_session is not None
     second_policy = second_facade.ensure_policy(second_session, policy())

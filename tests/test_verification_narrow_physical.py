@@ -46,22 +46,35 @@ def _relation(
     return checker.RelationShape(table, primary_key, key + values)
 
 
-def test_current_width_policy_is_exact_closed_world_with_five_approved_bcnf_tables() -> (
+def test_current_width_policy_is_exact_closed_world_with_twelve_approved_bcnf_tables() -> (
     None
 ):
     report = checker.check_current_policy()
 
     assert report.is_policy_clean
     assert not report.is_fully_narrow
-    assert len(report.relations) == 340
+    assert len(report.relations) == 306
     assert tuple(relation.table for relation in report.violations) == (
+        "catalog_analysis_content_owner_candidate_shadows",
         "catalog_artifact_blobs",
         "catalog_artifact_semantic_inputs",
         "catalog_artifacts",
         "catalog_gallery_identities",
+        "catalog_gallery_manifests",
+        "catalog_gallery_observation_directories",
+        "catalog_gallery_observation_metadata_locals",
+        "catalog_gallery_observation_scans",
+        "catalog_gallery_observation_stat",
         "catalog_prepared_artifacts",
+        "catalog_publication_storage",
     )
     assert checker.APPROVED_WIDE_BCNF_RELATIONS == {
+        "catalog_analysis_content_owner_candidate_shadows": (
+            "content_sha256",
+            "prefer_not_already_uploaded",
+            "title_scalar_count",
+            "download_time",
+        ),
         "catalog_artifact_blobs": (
             "size_bytes",
             "artifact_locator_sha256",
@@ -83,6 +96,27 @@ def test_current_width_policy_is_exact_closed_world_with_five_approved_bcnf_tabl
             "scope_key",
             "locator_sha256",
         ),
+        "catalog_gallery_manifests": (
+            "manifest_sha256",
+            "computed_at",
+        ),
+        "catalog_gallery_observation_directories": (
+            "directory_entry_count",
+            "directory_observation_sha256",
+        ),
+        "catalog_gallery_observation_metadata_locals": (
+            "download_time",
+            "modified_time",
+        ),
+        "catalog_gallery_observation_scans": (
+            "scan_observation_sha256",
+            "scan_observation_version",
+            "source_file_count",
+        ),
+        "catalog_gallery_observation_stat": (
+            "file_count",
+            "byte_count",
+        ),
         "catalog_prepared_artifacts": (
             "artifact_sha256",
             "storage_codec_version",
@@ -90,13 +124,20 @@ def test_current_width_policy_is_exact_closed_world_with_five_approved_bcnf_tabl
             "protection_token",
             "state",
         ),
+        "catalog_publication_storage": (
+            "gallery_id",
+            "summary_sha256",
+            "language_sha256",
+            "modified_at",
+            "source_title_sha256",
+        ),
     }
     assert {relation.table for relation in report.relations} == set(
         checker.NARROW_LAYOUT_DECLARATIONS
     ) | set(checker.APPROVED_WIDE_BCNF_RELATIONS)
 
     rendered = report.render()
-    assert "relations=340, narrow=335, wide=5" in rendered
+    assert "relations=306, narrow=294, wide=12" in rendered
     assert "Approved wide relations (complete):" in rendered
     assert "catalog_gallery_identities" in rendered
 

@@ -953,13 +953,7 @@ _BOUND_BINDINGS = (
         "h2hdb.operational.build-generation.v1",
         _BUILD_GENERATION_WRITERS,
         _contract_relations("h2hdb.operational.build-generation.v1")
-        - {
-            "gallery_observation_stat_anchor",
-            "gallery_observation_stat_file_count",
-            "gallery_observation_stat_byte_count",
-            "gallery_observation_stat_seal",
-            "gallery_observation_stat",
-        },
+        - {"gallery_observation_stat"},
     ),
     _binding(
         "h2hdb.operational.attempt-identity.v1",

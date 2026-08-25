@@ -85,11 +85,13 @@ from .vnext_publication_family import (
     PublicationFamilyCollisionError,
     PublicationFamilyPartialError,
     PublicationIdentityFamily,
+    PublicationSelectionFamily,
     ensure_catalog_contributor_family,
     ensure_catalog_publication_family,
     ensure_catalog_publication_title_family,
     ensure_publication_candidate_family,
     ensure_publication_identity_family,
+    ensure_publication_selection_family,
     load_catalog_contributor_family,
     load_catalog_publication_family,
     load_catalog_publication_title_family,
@@ -223,7 +225,9 @@ _STAGES = (
     _StageSpec(b"VALIDATE_DUPLICATE_LOSER", b"16", _CURSOR_GALLERY),
     _StageSpec(b"FINALIZE_ARTIFACTS", b"17", _CURSOR_PUBLICATION_KEY),
 )
-_STAGE_BY_NAME = {stage.name: stage for stage in _STAGES}
+_CANDIDATE_STAGES = _STAGES[:-1]
+_CANDIDATE_STAGE_BY_NAME = {stage.name: stage for stage in _CANDIDATE_STAGES}
+_FINALIZATION_STAGE = _STAGES[-1]
 
 
 class PublicationCandidateRepositoryError(RuntimeError):
@@ -328,8 +332,8 @@ class PublicationCandidateBatch:
 
     def __post_init__(self) -> None:
         require_uuid16(self.candidate_id, field="publication batch candidate_id")
-        if self.stage not in _STAGE_BY_NAME:
-            raise ValueError("publication batch stage is not registered")
+        if self.stage not in _CANDIDATE_STAGE_BY_NAME:
+            raise ValueError("publication batch stage is not candidate-owned")
         require_bounded_bytes(
             self.batch_key,
             field="publication batch_key",
@@ -352,11 +356,11 @@ class PublicationCandidateBatch:
         ):
             require_int63(value, field=f"publication batch {field}")
         _validate_stage_cursor(
-            _STAGE_BY_NAME[self.stage].cursor_codec,
+            _CANDIDATE_STAGE_BY_NAME[self.stage].cursor_codec,
             self.start_cursor,
         )
         _validate_stage_cursor(
-            _STAGE_BY_NAME[self.stage].cursor_codec,
+            _CANDIDATE_STAGE_BY_NAME[self.stage].cursor_codec,
             self.next_cursor,
         )
         if self.next_state not in {_CHECKPOINT_OPEN, _CHECKPOINT_COMPLETE}:
@@ -820,11 +824,23 @@ class PublicationCandidateRepository:
                 publication_key=publication_key,
                 gid=gid,
             )
-            work.connector.execute(
-                f"INSERT INTO {_PUBLICATION_SELECTION_TABLE} "
-                "(candidate_id, gallery_id, publication_key) VALUES (%s, %s, %s)",
-                (authority.candidate.candidate_id, gallery_id, publication_key),
-            )
+            try:
+                ensure_publication_selection_family(
+                    work.connector,
+                    PublicationSelectionFamily(
+                        authority.candidate.candidate_id,
+                        gallery_id,
+                        publication_key,
+                    ),
+                    backend=work.backend,
+                )
+            except (
+                PublicationFamilyCollisionError,
+                PublicationFamilyPartialError,
+            ) as error:
+                raise PublicationCandidateConflictError(
+                    "publication selection occurrence collides with derived facts"
+                ) from error
         next_cursor = checkpoint.cursor if not rows else rows[-1][0].to_bytes(8, "big")
         return _commit_candidate_batch(
             work,
@@ -1014,7 +1030,7 @@ class PublicationCandidateRepository:
         selection = _lock_publication_checkpoint(
             work,
             candidate_key,
-            _STAGE_BY_NAME[b"VALIDATE_SELECTION"],
+            _CANDIDATE_STAGE_BY_NAME[b"VALIDATE_SELECTION"],
         )
         selection_tuple = (
             selection.generation,
@@ -1569,7 +1585,7 @@ def _load_projection_authority(
     checkpoint = _read_publication_checkpoint(
         work,
         receipt.candidate_id,
-        _STAGE_BY_NAME[b"VALIDATE_SELECTION"],
+        _CANDIDATE_STAGE_BY_NAME[b"VALIDATE_SELECTION"],
     )
     checkpoint_tuple = (
         checkpoint.generation,
@@ -2626,18 +2642,9 @@ def _populate_projection_children(database: sqlite3.Connection) -> int:
                 publication_key,
                 b"",
             )
-            title_cursor = _encode_catalog_child_cursor(
-                _CATALOG_CHILD_TITLE,
-                publication_key,
-                b"",
-            )
-            for value in (row[1], row[2]):
+            for value in (row[1], row[2], row[3], row[4], row[5]):
                 _assign_projection_canonical_consumer(
                     database, bytes(value), scalar_cursor
-                )
-            for value in (row[3], row[4], row[5]):
-                _assign_projection_canonical_consumer(
-                    database, bytes(value), title_cursor
                 )
     contributor_cursor = database.execute(
         "SELECT publication_key, position, contributor_name_sha256 "
@@ -2945,6 +2952,9 @@ def _insert_projection_child(
     if child.kind == _CATALOG_CHILD_PUBLICATION:
         summary = require_digest32(publication[1], field="publication summary_sha256")
         language = require_digest32(publication[2], field="publication language_sha256")
+        source_title = require_digest32(
+            publication[5], field="publication source_title_sha256"
+        )
         _consume_projection_canonical(
             work,
             plan,
@@ -2973,6 +2983,14 @@ def _insert_projection_child(
             raise PublicationCandidateConflictError(
                 "publication published_at differs from immutable GID authority"
             )
+        _insert_projection_title(
+            work,
+            authority,
+            plan,
+            child.publication_key,
+            publication,
+            child_cursor=child.cursor,
+        )
         try:
             ensure_catalog_publication_family(
                 work.connector,
@@ -2989,6 +3007,7 @@ def _insert_projection_child(
                         publication[4],
                         field="publication modified_at",
                     ),
+                    source_title,
                 ),
                 backend=work.backend,
             )
@@ -3013,9 +3032,30 @@ def _insert_projection_child(
         )
         return
     if child.kind == _CATALOG_CHILD_TITLE:
-        _insert_projection_title(
-            work, authority, plan, child.publication_key, publication
+        expected = CatalogPublicationTitleFamily(
+            revision,
+            child.publication_key,
+            require_digest32(publication[5], field="source_title_sha256"),
+            require_bounded_bytes(
+                publication[6],
+                field="source_gallery_name",
+                minimum=1,
+                maximum=255,
+            ),
         )
+        try:
+            ensure_catalog_publication_title_family(
+                work.connector,
+                expected,
+                backend=work.backend,
+            )
+        except (
+            PublicationFamilyCollisionError,
+            PublicationFamilyPartialError,
+        ) as error:
+            raise PublicationCandidateConflictError(
+                "catalog title projection is incomplete or conflicts"
+            ) from error
         return
     if child.kind == _CATALOG_CHILD_CONTENT:
         if publication[9] is None:
@@ -3067,12 +3107,9 @@ def _insert_projection_title(
     plan: PublicationCatalogProjectionPlan,
     publication_key: bytes,
     publication: tuple[Any, ...],
+    *,
+    child_cursor: bytes,
 ) -> None:
-    child_cursor = _encode_catalog_child_cursor(
-        _CATALOG_CHILD_TITLE,
-        publication_key,
-        b"",
-    )
     source_title = require_digest32(publication[5], field="source_title_sha256")
     source_gallery_name = require_bounded_bytes(
         publication[6],
@@ -3140,21 +3177,6 @@ def _insert_projection_title(
             "VALUES (%s, %s, %s)",
             (sort_policy, title, sort_title),
         )
-    try:
-        ensure_catalog_publication_title_family(
-            work.connector,
-            CatalogPublicationTitleFamily(
-                authority.candidate.reserved_revision,
-                publication_key,
-                source_title,
-                source_gallery_name,
-            ),
-            backend=work.backend,
-        )
-    except (PublicationFamilyCollisionError, PublicationFamilyPartialError) as error:
-        raise PublicationCandidateConflictError(
-            "catalog title family collides with planned exact facts"
-        ) from error
 
 
 def _insert_projection_contributor_child(
@@ -3421,6 +3443,7 @@ def _compare_projection_child(
             require_digest32(publication[1], field="planned summary_sha256"),
             require_digest32(publication[2], field="planned language_sha256"),
             require_int63(publication[4], field="planned modified_at"),
+            require_digest32(publication[5], field="planned source_title_sha256"),
         )
         try:
             actual_publication = load_catalog_publication_family(
@@ -4347,8 +4370,8 @@ def _prepare_candidate_batch(
         maximum=512,
     )
     timestamp = require_int63(now, field="publication batch committed_at")
-    spec = _STAGE_BY_NAME.get(stage)
-    if spec is None or stage == b"FINALIZE_ARTIFACTS":
+    spec = _CANDIDATE_STAGE_BY_NAME.get(stage)
+    if spec is None:
         raise ValueError("publication batch method selected an unsupported stage")
 
     generation = _authorize(work, gate_lease, ingest_turn, now=timestamp)
@@ -4569,10 +4592,10 @@ def _require_stage_prerequisite(
     candidate_id: bytes,
     spec: _StageSpec,
 ) -> None:
-    index = _STAGES.index(spec)
+    index = _CANDIDATE_STAGES.index(spec)
     if index == 0:
         return
-    predecessor = _STAGES[index - 1]
+    predecessor = _CANDIDATE_STAGES[index - 1]
     row = work.connector.fetch_one(
         "SELECT state.state "
         f"FROM {_PUBLICATION_CHECKPOINT_STATE_TABLE} AS state "
@@ -4742,7 +4765,7 @@ def _commit_candidate_batch(
     terminal: bool,
     now: int,
 ) -> PublicationCandidateBatch:
-    spec = _STAGE_BY_NAME[stage]
+    spec = _CANDIDATE_STAGE_BY_NAME[stage]
     _validate_stage_cursor(spec.cursor_codec, next_cursor)
     count = require_int63(row_count, field="publication batch row_count")
     if terminal != (count == 0):
@@ -5064,7 +5087,7 @@ def _candidate_batch_from_row(
         raise PublicationCandidateConflictError(
             "publication batch receipt is not an exact terminal/nonterminal transition"
         )
-    spec = _STAGE_BY_NAME[stage]
+    spec = _CANDIDATE_STAGE_BY_NAME[stage]
     if (
         not result.terminal
         and spec.cursor_codec == _CURSOR_GALLERY
@@ -5234,11 +5257,11 @@ def _require_exact_candidate_checkpoints(
                 "publication checkpoint seal is malformed"
             )
         by_stage[stage] = row
-    if set(by_stage) != set(_STAGE_BY_NAME):
+    if set(by_stage) != set(_CANDIDATE_STAGE_BY_NAME):
         raise PublicationCandidateConflictError(
-            "publication candidate does not have the exact seventeen checkpoints"
+            "publication candidate does not have the exact sixteen checkpoints"
         )
-    for spec in _STAGES:
+    for spec in _CANDIDATE_STAGES:
         row = by_stage[spec.name]
         require_positive_int63(row[1], field="publication checkpoint generation")
         cursor = require_bounded_bytes(
@@ -5267,10 +5290,10 @@ def _initialize_candidate_checkpoints(
     affected = work.connector.execute_affected(
         f"INSERT INTO {_PUBLICATION_CHECKPOINT_ANCHOR_TABLE} "
         "(candidate_id, stage) SELECT %s, stage "
-        f"FROM {_PUBLICATION_STAGE_SEAL_TABLE} ORDER BY stage",
-        (candidate_id,),
+        f"FROM {_PUBLICATION_STAGE_SEAL_TABLE} WHERE stage <> %s ORDER BY stage",
+        (candidate_id, _FINALIZATION_STAGE.name),
     )
-    if affected != len(_STAGES):
+    if affected != len(_CANDIDATE_STAGES):
         raise PublicationCandidateConflictError(
             "publication checkpoint anchor initialization was incomplete"
         )
@@ -5285,20 +5308,20 @@ def _initialize_candidate_checkpoints(
         affected = work.connector.execute_affected(
             f"INSERT INTO {table} (candidate_id, stage, {sql_column}) "
             f"SELECT %s, stage, %s FROM {_PUBLICATION_STAGE_SEAL_TABLE} "
-            "ORDER BY stage",
-            (candidate_id, value),
+            "WHERE stage <> %s ORDER BY stage",
+            (candidate_id, value, _FINALIZATION_STAGE.name),
         )
-        if affected != len(_STAGES):
+        if affected != len(_CANDIDATE_STAGES):
             raise PublicationCandidateConflictError(
                 f"publication checkpoint {column} initialization was incomplete"
             )
     affected = work.connector.execute_affected(
         f"INSERT INTO {_PUBLICATION_CHECKPOINT_SEAL_TABLE} "
         "(candidate_id, stage) SELECT %s, stage "
-        f"FROM {_PUBLICATION_STAGE_SEAL_TABLE} ORDER BY stage",
-        (candidate_id,),
+        f"FROM {_PUBLICATION_STAGE_SEAL_TABLE} WHERE stage <> %s ORDER BY stage",
+        (candidate_id, _FINALIZATION_STAGE.name),
     )
-    if affected != len(_STAGES):
+    if affected != len(_CANDIDATE_STAGES):
         raise PublicationCandidateConflictError(
             "publication checkpoint seal initialization was incomplete"
         )
