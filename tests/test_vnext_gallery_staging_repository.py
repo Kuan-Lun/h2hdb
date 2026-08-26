@@ -2721,7 +2721,7 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
             (build_id, 100),
         )
         connector.execute(
-            "UPDATE catalog_source_build_states SET state = %s " "WHERE build_id = %s",
+            "UPDATE catalog_source_build_states SET state = %s WHERE build_id = %s",
             ("SEALED", build_id),
         )
         with (

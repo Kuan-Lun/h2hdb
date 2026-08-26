@@ -148,8 +148,7 @@ class MariaDBTestProvider:
 
     def validate_bootstrap_seeds(self, connector: SQLConnector) -> Sequence[str]:
         assert connector.fetch_one(
-            "SELECT parent_id, payload FROM vnext_mariadb_parents "
-            "WHERE parent_id = 0"
+            "SELECT parent_id, payload FROM vnext_mariadb_parents WHERE parent_id = 0"
         ) == (0, b"\x00" * 32)
         return tuple(seed.seed_id for seed in self.definition.bootstrap_seeds)
 

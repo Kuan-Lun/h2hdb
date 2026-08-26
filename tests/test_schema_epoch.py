@@ -186,7 +186,7 @@ class FakeProvider:
         # generated provider will own the actual canonical-digest, bounded-leaf,
         # and seed queries named by its checksum-pinned obligation manifest.
         assert connector.fetch_one(
-            "SELECT singleton_id, epoch, schema_version " "FROM h2hdb_schema_epoch"
+            "SELECT singleton_id, epoch, schema_version FROM h2hdb_schema_epoch"
         ) == (1, 2, 1)
         expected = (
             self.definition.activation_semantic_obligation_ids

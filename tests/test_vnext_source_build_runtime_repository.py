@@ -2164,8 +2164,7 @@ def test_sealed_v3_without_working_root_fails_closed_for_missing_or_live_analysi
             ) == (0,)
         else:
             assert connector.fetch_one(
-                "SELECT state FROM catalog_analysis_run_states "
-                "WHERE analysis_id = %s",
+                "SELECT state FROM catalog_analysis_run_states WHERE analysis_id = %s",
                 (live_analysis_id,),
             ) == (analysis_state,)
         assert (

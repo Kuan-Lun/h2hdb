@@ -214,9 +214,9 @@ def test_each_operational_obligation_rejects_a_corrupted_binding() -> None:
 
     for index, obligation in enumerate(logical["semantic_obligation"]):
         mutated = deepcopy(logical)
-        mutated["semantic_obligation"][index][
-            "check"
-        ] = f"{obligation['check']}.corrupted"
+        mutated["semantic_obligation"][index]["check"] = (
+            f"{obligation['check']}.corrupted"
+        )
         with pytest.raises(
             ValueError, match="unregistered version/scope/lifecycle/class/check"
         ):

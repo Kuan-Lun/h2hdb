@@ -1085,7 +1085,9 @@ def render() -> str:
             mariadb_collation = (
                 "ascii_bin"
                 if mariadb_type.startswith(("CHAR", "VARCHAR"))
-                else "utf8mb4_nopad_bin" if mariadb_type == "LONGTEXT" else "NONE"
+                else "utf8mb4_nopad_bin"
+                if mariadb_type == "LONGTEXT"
+                else "NONE"
             )
             lines.append(
                 "[[relation.column]]\n"

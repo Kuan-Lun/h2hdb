@@ -638,7 +638,7 @@ def test_owner_transfer_and_head_cas_faults_roll_back_every_prior_write(
     )
     try:
         claim_connector.fail_affected_fragment = (
-            "UPDATE operational_download_coordination_heads " "SET current_generation"
+            "UPDATE operational_download_coordination_heads SET current_generation"
         )
         with pytest.raises(StaleWriteError, match="download coordination head"):
             _claim_download(
@@ -691,7 +691,7 @@ def test_owner_transfer_and_head_cas_faults_roll_back_every_prior_write(
             )
         before_completion = _snapshot(connector)
         connector.fail_affected_fragment = (
-            "UPDATE operational_download_coordination_heads " "SET completed_generation"
+            "UPDATE operational_download_coordination_heads SET completed_generation"
         )
         with pytest.raises(
             StaleWriteError, match="linked download coordination completion"

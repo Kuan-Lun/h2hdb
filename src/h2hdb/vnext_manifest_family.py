@@ -161,8 +161,7 @@ def database_unix_microseconds(work: VNextUnitOfWork) -> int:
         )
     else:
         row = work.connector.fetch_one(
-            "SELECT TIMESTAMPDIFF(MICROSECOND, '1970-01-01 00:00:00', "
-            "UTC_TIMESTAMP(6))"
+            "SELECT TIMESTAMPDIFF(MICROSECOND, '1970-01-01 00:00:00', UTC_TIMESTAMP(6))"
         )
     if len(row) != 1:
         raise ManifestFamilyCollisionError("database clock returned no exact scalar")
@@ -557,8 +556,7 @@ def ensure_snapshot_manifest_family(
         (_SNAPSHOT_BYTE_COUNT, "byte_count", proposed.byte_count),
     ):
         connector.execute(
-            f"INSERT INTO {table} (snapshot_manifest_sha256, {column}) "
-            "VALUES (%s, %s)",
+            f"INSERT INTO {table} (snapshot_manifest_sha256, {column}) VALUES (%s, %s)",
             (proposed.snapshot_manifest_sha256, value),
         )
     connector.execute(

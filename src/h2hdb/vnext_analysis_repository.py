@@ -8387,7 +8387,9 @@ def _encode_cursor(
     expected = (
         8
         if kind in {_CURSOR_GALLERY, _CURSOR_GID}
-        else 32 if kind == _CURSOR_DIGEST else 0
+        else 32
+        if kind == _CURSOR_DIGEST
+        else 0
     )
     if expected == 0:
         raise ValueError("analysis cursor kind is not registered")
@@ -8425,7 +8427,9 @@ def _decode_cursor(
     expected_key = (
         8
         if kind in {_CURSOR_GALLERY, _CURSOR_GID}
-        else 32 if kind == _CURSOR_DIGEST else 0
+        else 32
+        if kind == _CURSOR_DIGEST
+        else 0
     )
     if expected_key == 0:
         raise ValueError("analysis cursor kind is not registered")

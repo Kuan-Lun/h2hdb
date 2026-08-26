@@ -848,7 +848,7 @@ def _pending_redownload_scan_query(
         )
     else:
         keyset_predicate = (
-            "AND (redownload_at > %s OR " "(redownload_at = %s AND gallery_id > %s)) "
+            "AND (redownload_at > %s OR (redownload_at = %s AND gallery_id > %s)) "
         )
         parameters = (
             source_revision,

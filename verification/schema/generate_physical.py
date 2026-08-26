@@ -1110,8 +1110,6 @@ def relation_checks(
             "directory_entry_count",
             "file_no",
             "page_count",
-            "position",
-            "size_bytes",
             "source_file_count",
             "base_revision",
             "source_revision",

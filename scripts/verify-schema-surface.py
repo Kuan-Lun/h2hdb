@@ -635,7 +635,7 @@ def assert_no_view_mutations(
     if not invalid:
         return
     rendered = "\n".join(
-        f"  {mutation.source}:{mutation.line}: {mutation.verb} " f"{mutation.relation}"
+        f"  {mutation.source}:{mutation.line}: {mutation.verb} {mutation.relation}"
         for mutation in invalid
     )
     raise SchemaSurfaceError(

@@ -795,8 +795,7 @@ def _lock_download_state(work: VNextUnitOfWork, generation: int) -> _DownloadSta
     lease_row = work.lock_row(
         LockRank.DOWNLOAD_FENCE,
         encode_lock_key("download", 3, current),
-        f"SELECT lease_expires_at FROM {_DOWNLOAD_LEASE_TABLE} "
-        "WHERE generation = %s",
+        f"SELECT lease_expires_at FROM {_DOWNLOAD_LEASE_TABLE} WHERE generation = %s",
         (current,),
     )
     if lease_row and len(lease_row) != 1:

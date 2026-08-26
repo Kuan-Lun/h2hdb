@@ -61,8 +61,7 @@ def seed_manifest_policy(
             ),
         )
     connector.execute(
-        "INSERT INTO catalog_manifest_policy_anchors (manifest_policy_id) "
-        "VALUES (%s)",
+        "INSERT INTO catalog_manifest_policy_anchors (manifest_policy_id) VALUES (%s)",
         (manifest_policy_id,),
     )
     connector.execute(

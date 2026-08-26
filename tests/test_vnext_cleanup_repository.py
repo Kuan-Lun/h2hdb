@@ -1838,8 +1838,7 @@ def test_publication_selection_retains_its_derived_publication_identity(
         results = _drain(connector, gate, cycle)
         assert results[-1].deleted_count == 0
         assert connector.fetch_one(
-            "SELECT gid FROM catalog_publication_identities "
-            "WHERE publication_key = %s",
+            "SELECT gid FROM catalog_publication_identities WHERE publication_key = %s",
             (publication_key,),
         ) == (gid,)
     finally:
@@ -2820,8 +2819,7 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
             == ()
         )
         assert connector.fetch_one(
-            "SELECT gid FROM catalog_publication_identities "
-            "WHERE publication_key = %s",
+            "SELECT gid FROM catalog_publication_identities WHERE publication_key = %s",
             (publication_key,),
         ) == (gid,)
     finally:

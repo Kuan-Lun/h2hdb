@@ -408,7 +408,7 @@ def _artifact_page_query(
         predicate = "WHERE artifact.revision = %s "
         parameters: tuple[object, ...] = (revision, page_limit)
     else:
-        predicate = "WHERE artifact.revision = %s " "AND artifact.publication_key > %s "
+        predicate = "WHERE artifact.revision = %s AND artifact.publication_key > %s "
         parameters = (revision, cursor, page_limit)
     return (
         _ARTIFACT_SELECT + predicate + "ORDER BY artifact.publication_key LIMIT %s",

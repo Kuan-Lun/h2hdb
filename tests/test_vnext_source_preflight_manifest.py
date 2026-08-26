@@ -532,8 +532,7 @@ def test_live_mutation_after_prepare_stages_the_frozen_snapshot(
             frozen.byte_count,
         )
         assert connector.fetch_one(
-            "SELECT COUNT(*) FROM catalog_source_build_states "
-            "WHERE state = 'ABANDONED'"
+            "SELECT COUNT(*) FROM catalog_source_build_states WHERE state = 'ABANDONED'"
         ) == (0,)
 
 
@@ -810,8 +809,7 @@ def test_live_mariadb_manifest_mismatch_abandons_then_stable_source_replays(
     context = RepositoryContext.from_config(mariadb_config)
     with context.SQLConnector() as connector, connector.read_transaction():
         abandoned = connector.fetch_one(
-            "SELECT build_id FROM catalog_source_build_states "
-            "WHERE state = 'ABANDONED'"
+            "SELECT build_id FROM catalog_source_build_states WHERE state = 'ABANDONED'"
         )
         assert len(abandoned) == 1
         assert (

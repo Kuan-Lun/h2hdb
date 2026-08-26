@@ -363,7 +363,7 @@ def test_ingest_facade_resolves_fresh_policy_and_replays_by_natural_key(
             (created.artifact_policy_sha256,),
         ) == (1, created.artifact_policy_sha256)
         assert connector.fetch_one(
-            "SELECT next_id FROM operational_identity_allocators " "WHERE stream = %s",
+            "SELECT next_id FROM operational_identity_allocators WHERE stream = %s",
             ("POLICY",),
         ) == (7,)
 
@@ -398,8 +398,7 @@ def test_ingest_policy_compact_id_collision_fails_closed_and_rolls_back(
             (foreign.artifact_policy_sha256,),
         ) == (1,)
         connector.execute(
-            "UPDATE operational_identity_allocators SET next_id = %s "
-            "WHERE stream = %s",
+            "UPDATE operational_identity_allocators SET next_id = %s WHERE stream = %s",
             (1, "POLICY"),
         )
 

@@ -1141,7 +1141,7 @@ def test_publication_candidate_projection_uses_fixed_terminal_receipt_joins(
             ) in expected
             assert (f"exact.{quote}{attribute}{quote} IS NOT NULL") in expected
             assert (
-                f"(SELECT receipt_{attribute}." f"{quote}next_processed_count{quote}"
+                f"(SELECT receipt_{attribute}.{quote}next_processed_count{quote}"
             ) in expected
         else:
             assert (
@@ -2077,35 +2077,29 @@ def test_sqlite_overlay_view_uses_nearest_shadow_and_tombstone() -> None:
             (middle, removed_hash),
         )
 
-        assert (
-            connection.execute(
-                """
+        assert connection.execute(
+            """
             SELECT file_sha256, occurrence_count, artist_count,
                    maximum_gallery_artist_count
             FROM catalog_analysis_file_hash_decision_resolved
             WHERE analysis_id = ?
             ORDER BY file_sha256
             """,
-                (leaf,),
-            ).fetchall()
-            == [(first_hash, 4, 2, 2)]
-        )
-        assert (
-            connection.execute(
-                """
+            (leaf,),
+        ).fetchall() == [(first_hash, 4, 2, 2)]
+        assert connection.execute(
+            """
             SELECT file_sha256, occurrence_count, artist_count,
                    maximum_gallery_artist_count
             FROM catalog_analysis_file_hash_decision_resolved
             WHERE analysis_id = ?
             ORDER BY file_sha256
             """,
-                (root,),
-            ).fetchall()
-            == [
-                (first_hash, 2, 1, 1),
-                (removed_hash, 3, 1, 1),
-            ]
-        )
+            (root,),
+        ).fetchall() == [
+            (first_hash, 2, 1, 1),
+            (removed_hash, 3, 1, 1),
+        ]
 
         connection.execute(
             "INSERT INTO catalog_analysis_file_hash_decision_tombstone VALUES (?, ?)",

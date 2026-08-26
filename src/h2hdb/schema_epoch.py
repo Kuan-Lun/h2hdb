@@ -1210,7 +1210,7 @@ class SchemaEpochRunner:
         missing = expected - actual
         if missing:
             raise SchemaEpochValidationError(
-                "The schema is missing manifest objects: " f"{_format_objects(missing)}"
+                f"The schema is missing manifest objects: {_format_objects(missing)}"
             )
         provider.validate_global(connector)
         expected_seed_ids = tuple(seed.seed_id for seed in definition.bootstrap_seeds)
@@ -1449,6 +1449,5 @@ def _closing_parenthesis(value: str, opening: int) -> int | None:
 
 def _raise_wrong_mariadb_control_shape(detail: str) -> NoReturn:
     raise SchemaEpochValidationError(
-        "The existing MariaDB schema epoch control table has the wrong shape: "
-        f"{detail}"
+        f"The existing MariaDB schema epoch control table has the wrong shape: {detail}"
     )

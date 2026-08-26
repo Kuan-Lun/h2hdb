@@ -2130,8 +2130,7 @@ def _seed_abandoned_replay_blocker(
             byte_count=0,
         )
         connector.execute(
-            "INSERT INTO catalog_source_revision_anchors "
-            "(source_revision) VALUES (%s)",
+            "INSERT INTO catalog_source_revision_anchors (source_revision) VALUES (%s)",
             (source_revision,),
         )
         connector.execute(

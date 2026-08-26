@@ -187,8 +187,7 @@ def _mark_projection_finalized(
             (value, receipt_id),
         )
     connector.execute(
-        "INSERT INTO catalog_publication_commit_finalizations (receipt_id) "
-        "VALUES (%s)",
+        "INSERT INTO catalog_publication_commit_finalizations (receipt_id) VALUES (%s)",
         (receipt_id,),
     )
 

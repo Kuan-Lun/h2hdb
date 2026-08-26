@@ -170,8 +170,7 @@ def _seed_validation_receipt(
         ("catalog_publication_checkpoint_updated_ats", "updated_at", 19),
     ):
         connector.execute(
-            f"INSERT INTO {table} (candidate_id, stage, {column}) "
-            "VALUES (%s, %s, %s)",
+            f"INSERT INTO {table} (candidate_id, stage, {column}) VALUES (%s, %s, %s)",
             (_CANDIDATE, _PREPARED_STAGE, value),
         )
     connector.execute(
@@ -243,8 +242,7 @@ def _seed_publication(
             "INSERT INTO catalog_revision_descriptor_seals (revision) VALUES (1)"
         )
         connector.execute(
-            "INSERT INTO catalog_source_revision_anchors "
-            "(source_revision) VALUES (1)"
+            "INSERT INTO catalog_source_revision_anchors (source_revision) VALUES (1)"
         )
         connector.execute(
             "INSERT INTO catalog_source_revision_channels "
@@ -690,8 +688,7 @@ def test_every_post_external_commit_mutation_rolls_back(tmp_path: Path) -> None:
                     fail_at=fail_at,
                 )
             assert connector.fetch_one(
-                "SELECT state FROM catalog_prepared_artifacts "
-                "WHERE candidate_id = %s",
+                "SELECT state FROM catalog_prepared_artifacts WHERE candidate_id = %s",
                 (_CANDIDATE,),
             ) == ("PREPARED",)
             assert connector.fetch_one(

@@ -372,7 +372,7 @@ def cas_analysis_run_state(
     if previous != "OPEN" or successor not in {"COMPLETE", "ABANDONED"}:
         raise ValueError("analysis state CAS is not a registered transition")
     work.compare_and_swap(
-        f"UPDATE {_RUN_STATE} SET state = %s " "WHERE analysis_id = %s AND state = %s",
+        f"UPDATE {_RUN_STATE} SET state = %s WHERE analysis_id = %s AND state = %s",
         (successor, analysis, previous),
         authority=authority,
     )
@@ -520,8 +520,7 @@ def ensure_analysis_state_component_family(
         (*key, proposed.sealed_at),
     )
     connector.execute(
-        f"INSERT INTO {_COMPONENT_SEAL} "
-        "(analysis_id, state_component) VALUES (%s, %s)",
+        f"INSERT INTO {_COMPONENT_SEAL} (analysis_id, state_component) VALUES (%s, %s)",
         key,
     )
     return proposed, True
@@ -842,8 +841,7 @@ def ensure_analysis_exclusion_delta_family(
         return existing, False
     key = (proposed.analysis_id, proposed.file_sha256)
     connector.execute(
-        f"INSERT INTO {_EXCLUSION_ANCHOR} "
-        "(analysis_id, file_sha256) VALUES (%s, %s)",
+        f"INSERT INTO {_EXCLUSION_ANCHOR} (analysis_id, file_sha256) VALUES (%s, %s)",
         key,
     )
     connector.execute(
@@ -863,7 +861,7 @@ def ensure_analysis_exclusion_delta_family(
             key,
         )
     connector.execute(
-        f"INSERT INTO {_EXCLUSION_SEAL} " "(analysis_id, file_sha256) VALUES (%s, %s)",
+        f"INSERT INTO {_EXCLUSION_SEAL} (analysis_id, file_sha256) VALUES (%s, %s)",
         key,
     )
     return proposed, True
@@ -892,8 +890,7 @@ def insert_analysis_exclusion_delta_family(
     )
     key = (proposed.analysis_id, proposed.file_sha256)
     connector.execute(
-        f"INSERT INTO {_EXCLUSION_ANCHOR} "
-        "(analysis_id, file_sha256) VALUES (%s, %s)",
+        f"INSERT INTO {_EXCLUSION_ANCHOR} (analysis_id, file_sha256) VALUES (%s, %s)",
         key,
     )
     connector.execute(
@@ -913,7 +910,7 @@ def insert_analysis_exclusion_delta_family(
             key,
         )
     connector.execute(
-        f"INSERT INTO {_EXCLUSION_SEAL} " "(analysis_id, file_sha256) VALUES (%s, %s)",
+        f"INSERT INTO {_EXCLUSION_SEAL} (analysis_id, file_sha256) VALUES (%s, %s)",
         key,
     )
     return proposed

@@ -313,8 +313,7 @@ class OperationalEffectRepository:
         chain = _empty_chain()
         cursor = _encode_cursor(0)
         work.connector.execute(
-            f"INSERT INTO {_STREAM_TABLE} (preparation_id, created_at) "
-            "VALUES (%s, %s)",
+            f"INSERT INTO {_STREAM_TABLE} (preparation_id, created_at) VALUES (%s, %s)",
             (preparation_id, timestamp),
         )
         work.connector.execute(
@@ -1044,8 +1043,7 @@ class OperationalEffectRepository:
             if not isinstance(event.effect, DeletionConsumption):
                 continue
             attempt = work.connector.fetch_one(
-                f"SELECT gid FROM {_DELETION_ATTEMPT_TABLE} "
-                "WHERE request_token = %s",
+                f"SELECT gid FROM {_DELETION_ATTEMPT_TABLE} WHERE request_token = %s",
                 (event.effect.deletion_request_token,),
             )
             if (
