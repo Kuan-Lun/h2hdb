@@ -7580,7 +7580,7 @@ def _validate_analysis_impacted_key_contract(
             "source_gallery_name_gid",
         },
     }
-    for name, expected in expected_families.items():
+    for name in expected_families:
         family = family_by_name.get(name)
         if family is None:
             continue
@@ -8056,10 +8056,8 @@ def _validate_long_value_storage_contract(
 
 
 def _requires_semantic_classification(attribute: str) -> bool:
-    return (
-        attribute.endswith(("_sha256", "_key", "_id", "_count"))
-        or attribute == "locator"
-        or attribute.endswith("_locator")
+    return attribute == "locator" or attribute.endswith(
+        ("_sha256", "_key", "_id", "_count", "_locator")
     )
 
 
@@ -9793,7 +9791,7 @@ def _validate_vertical_families(
             for attribute in resolved[member.relation].attributes  # type: ignore[union-attr]
             if attribute not in set(member.join.member_attributes)
         )
-        if len((*key, *projected_values)) != len(set((*key, *projected_values))):
+        if len((*key, *projected_values)) != len({*key, *projected_values}):
             family_errors.append(
                 f"{prefix} projected attributes must be distinct from the family key"
             )

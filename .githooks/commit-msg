@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+message_file=$1
+first_line="$(sed -n '1p' "$message_file")"
+
+if [[ "$first_line" == Merge\ * ]]; then
+    exit 0
+fi
+
+pattern='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9._/-]+\))?(!)?: .+'
+if [[ ! "$first_line" =~ $pattern ]]; then
+    printf 'Commit message must follow Conventional Commits: %s\n' \
+        "$first_line" >&2
+    exit 1
+fi

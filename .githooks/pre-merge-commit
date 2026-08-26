@@ -2,4 +2,16 @@
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
-exec "$repo_root/.githooks/pre-commit"
+cd "$repo_root"
+
+primary="$(scripts/detect-primary-branch.sh)"
+current="$(git branch --show-current)"
+[[ "$current" == "$primary" ]] || {
+    printf 'Merge commits are permitted only on primary: %s\n' "$primary" >&2
+    exit 1
+}
+
+git config --local "branch.$primary.mergeOptions" --no-ff
+git diff --cached --check
+
+exec "$repo_root/.githooks/run-release-gate" run --index

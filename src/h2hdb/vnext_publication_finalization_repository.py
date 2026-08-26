@@ -1071,8 +1071,7 @@ def _insert_batch_receipt(
 ) -> None:
     key = (page.receipt_id, page.start_generation)
     connector.execute(
-        f"INSERT INTO {_BATCH_ANCHOR} "
-        "(receipt_id, start_generation) VALUES (%s, %s)",
+        f"INSERT INTO {_BATCH_ANCHOR} (receipt_id, start_generation) VALUES (%s, %s)",
         key,
     )
     connector.execute(
@@ -1097,7 +1096,7 @@ def _insert_batch_receipt(
             (*key, value),
         )
     connector.execute(
-        f"INSERT INTO {_BATCH_SEAL} " "(receipt_id, start_generation) VALUES (%s, %s)",
+        f"INSERT INTO {_BATCH_SEAL} (receipt_id, start_generation) VALUES (%s, %s)",
         key,
     )
 

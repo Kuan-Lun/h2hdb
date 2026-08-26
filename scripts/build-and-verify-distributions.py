@@ -11,7 +11,6 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import venv
 import zipfile
 from pathlib import Path, PurePosixPath
 
@@ -102,8 +101,7 @@ def _verify_wheel_archive(wheel: Path) -> None:
 
     if forbidden_members:
         raise RuntimeError(
-            "The wheel contains source-only administration files: "
-            f"{forbidden_members}."
+            f"The wheel contains source-only administration files: {forbidden_members}."
         )
     if forbidden_legacy_members:
         raise RuntimeError(
@@ -122,7 +120,13 @@ def _verify_sdist_archive(sdist: Path) -> None:
 
 def _verify_installed_cli(wheel: Path, scratch: Path) -> None:
     pip_environment = scratch / "pip-venv"
-    venv.EnvBuilder(with_pip=True).create(pip_environment)
+    _run(
+        sys.executable,
+        "-m",
+        "venv",
+        str(pip_environment),
+        cwd=scratch,
+    )
     if os.name == "nt":
         pip_python = pip_environment / "Scripts" / "python.exe"
     else:

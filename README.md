@@ -108,12 +108,7 @@ publication validates sealed scalar state in a short transaction.
 This repository uses a `src` layout and an independent uv environment. It is
 not part of a uv workspace, and `uv.lock` is intentionally ignored.
 
-```bash
-uv venv --python 3.14
-uv pip install -e ".[dev]"
-```
-
-Rebuild the local environment after toolchain changes with:
+Rebuild the repository-local Python and Markdown tool environments with:
 
 ```bash
 ./scripts/rebuild-env.sh
@@ -266,18 +261,11 @@ publication-candidate or source-build predecessor pins it.
 
 ## Verification
 
-The schema workflow and implementation checks are:
+The fast, read-only gate and the complete repository gate are:
 
 ```bash
-uv run --no-sync python scripts/verify-formal.py coverage --validate-only
-uv run --no-sync python scripts/verify-formal.py schema
-uv run --no-sync python scripts/verify-formal.py lean
-uv run --no-sync python scripts/verify-schema-surface.py
-uv run --no-sync black --check src tests scripts
-uv run --no-sync ruff check src tests scripts
-uv run --no-sync mypy src tests scripts
-uv run --no-sync pytest
-uv run --no-sync python -m build
+./scripts/check-fast.sh
+./scripts/check-full.sh
 ```
 
 `verify-formal.py schema` checks manifest validity and generator drift for the
@@ -319,15 +307,13 @@ hook; compose those hooks explicitly before switching this clone to `.githooks`.
 VS Code's built-in Git and command-line Git honor the installed hooks. GitHub
 web edits and clones where the installer has not run do not.
 
-Ordinary commits and merges do not run the expensive release suite. When the
-staged `project.version` in `pyproject.toml` changes, the pre-commit or
-pre-merge-commit hook performs only the cheap version and clean-tree policy.
-For a version-increasing `master` push, the pre-push hook reuses a matching
-receipt or automatically runs the complete local release gate against a clean,
-checked-out `HEAD`:
+Ordinary task commits run only `check-fast.sh`. Every merge candidate runs the
+complete exact-index release gate before the merge commit is created. The gate
+validates task-level version impact and dependency-audit evidence, then runs:
 
-- Black, Ruff, and mypy;
+- Ruff lint/format, strict mypy, and markdownlint-cli2;
 - coverage-contract and generated-schema drift checks;
+- the source and wheel schema-surface checks;
 - Lean proofs and the required small TLC profiles;
 - the complete SQLite and MariaDB 10.11.11 test suite; and
 - the installed-distribution boundary check.
@@ -339,13 +325,37 @@ non-versioned receipt under the repository's Git metadata and binds it to the
 exact committed tree and project version. The push proceeds only when that
 receipt is valid, so retrying the same commit does not rerun the suite.
 
-To verify an already committed clean `HEAD` explicitly, or to force a fresh
-verification, run:
+To verify a clean task `HEAD`, or compare an already merged tree with an explicit
+task base, run:
 
 ```bash
 uv run --no-sync python scripts/release-gate.py run
-uv run --no-sync python scripts/release-gate.py run --refresh
+uv run --no-sync python scripts/release-gate.py run --base <task-base>
 ```
+
+An integration script may validate a staged merge candidate before creating
+the merge commit:
+
+```bash
+git merge --no-ff --no-commit <task-branch>
+uv run --no-sync python scripts/release-gate.py run --index
+```
+
+The index must exactly match the working tree and contain no unresolved entries.
+The receipt is keyed by `git write-tree`, so the resulting merge commit reuses
+it as long as committing does not change the candidate tree. The normal task
+workflow runs this through `scripts/git-flow-merge.sh`.
+
+A version-changing task must first audit all direct Python and Node dependencies,
+including latest releases outside current upper bounds:
+
+```bash
+.venv/bin/python scripts/audit-dependencies.py \
+  --review-note "reviewed release notes and compatibility evidence"
+```
+
+The committed audit evidence is validated inside the same release gate; it is
+not a second release receipt and does not replace the complete tests.
 
 GitHub-hosted formal verification is manual-only. The PyPI workflow rechecks
 the version transition, builds and smoke-tests the distributions, and publishes
@@ -360,9 +370,20 @@ smoke environment, run:
 ./scripts/rebuild-multirepo-integration.sh
 ```
 
+Consumers resolve from the configured package index by default; the checked-out
+core is the only implicit local source. To exercise an explicit unpublished
+artifact or source, pass it by package name, for example:
+
+```bash
+./scripts/rebuild-multirepo-integration.sh \
+  --source h2hdb-ingest=/tmp/h2hdb_ingest.whl \
+  --source h2hdb-opds='git+https://github.com/Kuan-Lun/h2hdb-opds.git@ref'
+```
+
 See [`docs/multi-repo-deployment.md`](docs/multi-repo-deployment.md) for the
 database ownership, initialization, and consumer-adapter deployment boundary.
 
 ## License
 
-GNU Affero General Public License v3 or later. See `LICENSE`.
+GNU General Public License version 3 (GPLv3). See `LICENSE` for the complete
+terms.

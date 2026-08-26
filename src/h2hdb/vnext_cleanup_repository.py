@@ -2732,11 +2732,9 @@ def _analysis_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                     "WHERE analysis_id = %s",
                     "DELETE FROM catalog_analysis_run_policy_ids "
                     "WHERE analysis_id = %s",
-                    "DELETE FROM catalog_analysis_run_build_ids "
-                    "WHERE analysis_id = %s",
-                    "DELETE FROM catalog_analysis_run_states " "WHERE analysis_id = %s",
-                    "DELETE FROM catalog_analysis_run_anchors "
-                    "WHERE analysis_id = %s",
+                    "DELETE FROM catalog_analysis_run_build_ids WHERE analysis_id = %s",
+                    "DELETE FROM catalog_analysis_run_states WHERE analysis_id = %s",
+                    "DELETE FROM catalog_analysis_run_anchors WHERE analysis_id = %s",
                 ),
                 delete_allowed_affected=(
                     frozenset((0, 1)),

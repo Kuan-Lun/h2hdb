@@ -2981,13 +2981,13 @@ def test_gallery_parser_and_audit_contract_mutations_fail_closed() -> None:
     )
 
     one_based_file_numbers = deepcopy(logical)
-    one_based_file_numbers["gallery_staging_contract"][
-        "normalized_fact_rule"
-    ] = one_based_file_numbers["gallery_staging_contract"][
-        "normalized_fact_rule"
-    ].replace(
-        "zero-based contiguous ordinal sequence 0..n-1",
-        "one-based contiguous ordinal sequence 1..n",
+    one_based_file_numbers["gallery_staging_contract"]["normalized_fact_rule"] = (
+        one_based_file_numbers["gallery_staging_contract"][
+            "normalized_fact_rule"
+        ].replace(
+            "zero-based contiguous ordinal sequence 0..n-1",
+            "one-based contiguous ordinal sequence 1..n",
+        )
     )
     with pytest.raises(ValueError, match="exact protocol text drifts"):
         operational_refinement.check_gallery_staging_contract_v1(

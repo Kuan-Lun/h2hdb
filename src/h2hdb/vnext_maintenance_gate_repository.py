@@ -279,8 +279,7 @@ class MaintenanceGateRepository:
         for slot, replaced in enumerate(slots):
             if replaced is None:
                 work.connector.execute(
-                    f"INSERT INTO {_HOLDER_TABLE} (owner_token, slot) "
-                    "VALUES (%s, %s)",
+                    f"INSERT INTO {_HOLDER_TABLE} (owner_token, slot) VALUES (%s, %s)",
                     (token, slot),
                 )
             else:

@@ -2628,7 +2628,7 @@ def _render_derived_view(
         if backend == "mariadb":
             terminal_sql = f"CAST({terminal_sql} AS UNSIGNED)"
             next_state_sql = (
-                f"CAST({next_state_sql} AS CHAR(32) CHARSET ascii) " "COLLATE ascii_bin"
+                f"CAST({next_state_sql} AS CHAR(32) CHARSET ascii) COLLATE ascii_bin"
             )
         expressions.update(
             {
@@ -2770,8 +2770,7 @@ def _render_derived_view(
         )
         if backend == "mariadb":
             state_expression = (
-                f"CAST({state_expression} AS CHAR(32) CHARSET ascii) "
-                "COLLATE ascii_bin"
+                f"CAST({state_expression} AS CHAR(32) CHARSET ascii) COLLATE ascii_bin"
             )
             finalized_at_expression = f"CAST({finalized_at_expression} AS UNSIGNED)"
         expressions.update(
@@ -4165,9 +4164,7 @@ def _validate_physical_schema(
                 attribute for attribute in logical_relation.attributes
             )
             expected_tombstone = business_key
-            if set(column.attribute for column in shadow.columns) != set(
-                expected_shadow
-            ):
+            if {column.attribute for column in shadow.columns} != set(expected_shadow):
                 raise ValueError(
                     f"view relation {relation_spec.relation!r} shadow projection "
                     "does not equal resolved values"

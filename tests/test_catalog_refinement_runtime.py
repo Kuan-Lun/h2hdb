@@ -1061,8 +1061,7 @@ def _insert_publication_terminal_stage(
         ("catalog_publication_checkpoint_updated_ats", "updated_at", committed_at),
     ):
         connector.execute(
-            f"INSERT INTO {table} (candidate_id, stage, {column}) "
-            "VALUES (%s, %s, %s)",
+            f"INSERT INTO {table} (candidate_id, stage, {column}) VALUES (%s, %s, %s)",
             (*checkpoint_key, value),
         )
     connector.execute(
@@ -1197,8 +1196,7 @@ def _complete_publication_finalization(
         (committed_at, receipt_id),
     )
     connector.execute(
-        "INSERT INTO catalog_publication_commit_finalizations (receipt_id) "
-        "VALUES (%s)",
+        "INSERT INTO catalog_publication_commit_finalizations (receipt_id) VALUES (%s)",
         (receipt_id,),
     )
 
@@ -1477,8 +1475,7 @@ def test_incremental_impact_rejects_partial_or_nonminimum_witness_families(
             )
         elif fault == "orphan_provenance":
             connector.execute(
-                f"DELETE FROM {impacted} WHERE analysis_id = %s "
-                f"AND {key_column} = %s",
+                f"DELETE FROM {impacted} WHERE analysis_id = %s AND {key_column} = %s",
                 (analysis_id, key_value),
             )
         else:
@@ -2035,8 +2032,7 @@ def test_projection_finalized_accepts_keyed_empty_terminal_authority(
         "DELETE FROM catalog_publication_finalization_batch_seals",
         "UPDATE catalog_publication_finalization_checkpoint_generations "
         "SET generation = 3",
-        "UPDATE catalog_publication_finalization_checkpoint_cursors "
-        "SET cursor = X'01'",
+        "UPDATE catalog_publication_finalization_checkpoint_cursors SET cursor = X'01'",
         "UPDATE catalog_publication_finalization_checkpoint_counts "
         "SET processed_count = 1",
         "UPDATE catalog_publication_finalization_checkpoint_updated_ats "

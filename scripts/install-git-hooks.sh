@@ -25,4 +25,7 @@ if [[ -z "$existing_hooks_path" ]]; then
 fi
 
 git config --local core.hooksPath .githooks
-echo "Installed h2hdb Git hooks from .githooks for this clone."
+primary="$(scripts/detect-primary-branch.sh)"
+git config --local "branch.$primary.mergeOptions" --no-ff
+
+printf 'Installed h2hdb Git hooks; primary branch: %s\n' "$primary"

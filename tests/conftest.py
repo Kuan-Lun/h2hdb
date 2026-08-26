@@ -39,8 +39,7 @@ def mariadb_container() -> Iterator[Any]:
         started = container.start()
     except Exception as error:
         pytest.fail(
-            f"MariaDB tests were enabled but the testcontainer is unavailable: "
-            f"{error}",
+            f"MariaDB tests were enabled but the testcontainer is unavailable: {error}",
             pytrace=False,
         )
     try:
@@ -71,9 +70,9 @@ def mariadb_config(mariadb_container: Any) -> Iterator[CoreConfig]:
             version_row = cursor.fetchone()
             assert version_row is not None
             (server_version,) = version_row
-            assert str(server_version).startswith(
-                MARIADB_VERSION_PREFIX
-            ), server_version
+            assert str(server_version).startswith(MARIADB_VERSION_PREFIX), (
+                server_version
+            )
             cursor.execute(
                 f"CREATE DATABASE `{database}` "
                 "CHARACTER SET utf8mb4 COLLATE utf8mb4_bin"

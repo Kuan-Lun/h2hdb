@@ -327,7 +327,7 @@ def _seed_commit_authorities(
         producer.producer_fingerprint_sha256,
     )
     if not connector.fetch_one(
-        "SELECT 1 FROM catalog_canonical_value_identities " "WHERE value_sha256 = %s",
+        "SELECT 1 FROM catalog_canonical_value_identities WHERE value_sha256 = %s",
         (policy_component,),
     ):
         assert (
@@ -465,8 +465,7 @@ def _published_fixture(connector: SQLiteConnector) -> dict[str, bytes]:
     gid = 123
     key = publication_key(gid)
     connector.execute(
-        "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
-        "VALUES (%s, %s)",
+        "INSERT INTO catalog_gallery_upload_times (gid, upload_time) VALUES (%s, %s)",
         (gid, 2000000),
     )
     assert seed_publication_identity(connector, gid=gid).publication_key == key

@@ -136,8 +136,7 @@ def test_ready_rejects_common_chain_corruption(
             )
         else:
             connector.execute(
-                "DELETE FROM catalog_publication_generation_nodes "
-                "WHERE generation = 0"
+                "DELETE FROM catalog_publication_generation_nodes WHERE generation = 0"
             )
         connector.execute("PRAGMA foreign_keys = ON")
 

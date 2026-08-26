@@ -483,8 +483,7 @@ def test_live_mariadb_operational_writer_workflows(
     assert concurrent_revisions == {2, 3}
     assert _read_one(
         connector,
-        "SELECT next_revision FROM operational_revision_allocators "
-        "WHERE stream = %s",
+        "SELECT next_revision FROM operational_revision_allocators WHERE stream = %s",
         (RevisionStream.CATALOG.value,),
     ) == (4,)
 
@@ -679,7 +678,7 @@ def test_live_mariadb_operational_writer_workflows(
         byte_count=0,
     )
     connector.execute(
-        "INSERT INTO catalog_source_revision_anchors " "(source_revision) VALUES (%s)",
+        "INSERT INTO catalog_source_revision_anchors (source_revision) VALUES (%s)",
         (source_revision,),
     )
     connector.execute(
@@ -707,7 +706,7 @@ def test_live_mariadb_operational_writer_workflows(
         (catalog_revision, 0),
     )
     connector.execute(
-        "INSERT INTO catalog_revision_descriptor_seals " "(revision) VALUES (%s)",
+        "INSERT INTO catalog_revision_descriptor_seals (revision) VALUES (%s)",
         (catalog_revision,),
     )
     producer = seed_artifact_producer_fingerprint(
@@ -871,8 +870,7 @@ def test_live_mariadb_operational_writer_workflows(
     )
     with connector.transaction():
         connector.execute(
-            "INSERT INTO catalog_publication_generation_nodes "
-            "(generation) VALUES (%s)",
+            "INSERT INTO catalog_publication_generation_nodes (generation) VALUES (%s)",
             (1,),
         )
         connector.execute(
@@ -881,13 +879,12 @@ def test_live_mariadb_operational_writer_workflows(
             (1, 0),
         )
         connector.execute(
-            "INSERT INTO catalog_publication_commit_anchors "
-            "(receipt_id) VALUES (%s)",
+            "INSERT INTO catalog_publication_commit_anchors (receipt_id) VALUES (%s)",
             (receipt_id,),
         )
         for table, value_column, value in commit_members:
             connector.execute(
-                f"INSERT INTO {table} (receipt_id, {value_column}) " "VALUES (%s, %s)",
+                f"INSERT INTO {table} (receipt_id, {value_column}) VALUES (%s, %s)",
                 (receipt_id, value),
             )
         seed_publication_finalization_checkpoint(
@@ -896,7 +893,7 @@ def test_live_mariadb_operational_writer_workflows(
             updated_at=600,
         )
         connector.execute(
-            "INSERT INTO catalog_publication_commit_seals " "(receipt_id) VALUES (%s)",
+            "INSERT INTO catalog_publication_commit_seals (receipt_id) VALUES (%s)",
             (receipt_id,),
         )
     activation = _read_one(

@@ -296,13 +296,11 @@ def ensure_allocation_family(
         (proposed.value_sha256, proposed.digest_domain),
     )
     connector.execute(
-        f"INSERT INTO {_ALLOCATION_COUNT} "
-        "(value_sha256, byte_count) VALUES (%s, %s)",
+        f"INSERT INTO {_ALLOCATION_COUNT} (value_sha256, byte_count) VALUES (%s, %s)",
         (proposed.value_sha256, proposed.byte_count),
     )
     connector.execute(
-        f"INSERT INTO {_ALLOCATION_TIME} "
-        "(value_sha256, allocated_at) VALUES (%s, %s)",
+        f"INSERT INTO {_ALLOCATION_TIME} (value_sha256, allocated_at) VALUES (%s, %s)",
         (proposed.value_sha256, proposed.allocated_at),
     )
     connector.execute(
@@ -420,7 +418,7 @@ def ensure_page_family(
         (page.page_sha256,),
     )
     connector.execute(
-        f"INSERT INTO {_PAGE_PAYLOAD} " "(page_sha256, page_bytes) VALUES (%s, %s)",
+        f"INSERT INTO {_PAGE_PAYLOAD} (page_sha256, page_bytes) VALUES (%s, %s)",
         (page.page_sha256, page.page_bytes),
     )
     connector.execute(
@@ -435,8 +433,7 @@ def ensure_page_family(
         ),
     )
     connector.execute(
-        f"INSERT INTO {_PAGE_COUNT} "
-        "(page_sha256, subtree_item_count) VALUES (%s, %s)",
+        f"INSERT INTO {_PAGE_COUNT} (page_sha256, subtree_item_count) VALUES (%s, %s)",
         (page.page_sha256, page.subtree_item_count),
     )
     connector.execute(
@@ -875,7 +872,7 @@ def persist_in_memory_canonical_value(
             )
     else:
         connector.execute(
-            f"INSERT INTO {_UPLOAD} " "(generation, value_sha256) VALUES (%s, %s)",
+            f"INSERT INTO {_UPLOAD} (generation, value_sha256) VALUES (%s, %s)",
             (exact_generation, value),
         )
     tree = build_canonical_value_tree(value, allocation.byte_count, (exact_payload,))

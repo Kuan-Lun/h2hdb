@@ -553,11 +553,9 @@ _VERTICAL_POLICY_BOOTSTRAP_VALUES: Mapping[
 )
 
 
-def _expected_vertical_policy_bootstrap() -> (
-    Mapping[
-        str, tuple[tuple[str, str, tuple[tuple[str, str, str, int | str], ...]], ...]
-    ]
-):
+def _expected_vertical_policy_bootstrap() -> Mapping[
+    str, tuple[tuple[str, str, tuple[tuple[str, str, str, int | str], ...]], ...]
+]:
     """Return the exact physical seed fanout for the closed policy registries."""
 
     result: dict[

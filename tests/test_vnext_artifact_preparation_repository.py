@@ -3208,8 +3208,7 @@ def _mutate_exact_delta_case(
     if case in {"subject-current-missing", "subject-old-missing"}:
         revision = 2 if case == "subject-current-missing" else 1
         connector.execute(
-            "DELETE FROM catalog_subjects "
-            "WHERE revision = %s AND publication_key = %s",
+            "DELETE FROM catalog_subjects WHERE revision = %s AND publication_key = %s",
             (revision, publication_key),
         )
         return 1

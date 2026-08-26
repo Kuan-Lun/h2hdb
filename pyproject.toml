@@ -4,11 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "h2hdb"
-version = "0.23.0.11"
+version = "0.23.1"
 description = "Database, coordination, and revision catalog core for H2HDB"
 readme = "README.md"
 authors = [{ name = "Kuan-Lun Wang" }]
-license = { text = "GNU Affero General Public License v3" }
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
 dependencies = [
     "mysql-connector-python>=26.7.0,<27.0.0",
     "pydantic>=2.13.4,<3.0.0",
@@ -18,21 +19,20 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
-    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Programming Language :: Python :: 3.14",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "black>=26.5.1",
-    "ruff>=0.16.4",
-    "mypy>=2.3.1",
-    "pymarkdownlnt>=0.9.39",
-    "pytest>=9.1.1",
-    "hypothesis>=6.165.10,<7.0.0",
-    "testcontainers>=4.15.0",
     "build>=1.5.0",
+    "hatchling>=1.32.0",
+    "hypothesis>=6.165.10,<7.0.0",
+    "mypy>=2.3.1",
     "packaging>=26.3",
+    "pytest>=9.1.1",
+    "ruff>=0.16.4",
+    "testcontainers>=4.15.0",
 ]
 
 [project.urls]
@@ -43,15 +43,73 @@ Tracker = "https://github.com/Kuan-Lun/h2hdb/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["src/h2hdb"]
 
-[tool.black]
-target-version = ["py314"]
+[tool.h2h.version]
+release-paths = [
+    "LICENSE",
+    "src/**",
+    "verification/schema/catalog.toml",
+    "verification/schema/operational.toml",
+    "verification/schema/operational_physical.toml",
+    "verification/schema/physical.toml",
+]
 
 [tool.ruff]
 line-length = 88
 target-version = "py314"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP"]
-# E203/E226 conflict with Black's formatting choices; E501 is redundant with
-# Black's line-length enforcement and would otherwise fire on long inline SQL.
-extend-ignore = ["E203", "E226", "E501"]
+select = ["B", "C4", "E", "F", "I", "PIE", "UP"]
+# Ruff format owns line wrapping; generated data and long SQL are not safely
+# reducible to a universal source-line limit.
+ignore = [
+    "E501",
+    # Existing callbacks intentionally execute within their defining loop;
+    # changing their binding is behavioral and requires a dedicated audit.
+    "B023",
+    # These existing exception translations intentionally expose the stable
+    # domain error without making backend details part of the public chain.
+    "B904",
+    # Existing zips are guarded by independent cardinality invariants.
+    "B905",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Boundary tests deliberately probe reflective members and broad failure
+# containment; production code remains subject to the corresponding rules.
+"tests/**" = ["B007", "B009", "B017", "C408", "C420"]
+# Schema authoring/generation favors explicit constructors and one-based
+# domains where those forms mirror the formal source.
+"scripts/generate-vnext-schema-provider.py" = ["C408", "C420", "PIE808"]
+"scripts/verify-schema-surface.py" = ["C420"]
+"src/h2hdb/catalog_refinement.py" = ["PIE808"]
+"src/h2hdb/mariadb_connector.py" = ["C408"]
+"src/h2hdb/sqlite_connector.py" = ["C408"]
+"src/h2hdb/vnext_ingest_facade.py" = ["B009"]
+"src/h2hdb/vnext_ingest_publication.py" = ["B009"]
+"src/h2hdb/vnext_source_observation_spool.py" = ["B009"]
+
+[tool.mypy]
+python_version = "3.14"
+mypy_path = "src"
+files = ["src", "tests", "scripts"]
+strict = true
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["testcontainers.*"]
+ignore_missing_imports = true
+
+# The multi-repository smoke is type-checked in a core-only environment. Its
+# optional consumer imports are exercised in the disposable integration venv.
+[[tool.mypy.overrides]]
+module = [
+    "fastapi",
+    "h2h_galleryinfo_parser",
+    "h2hdb_downloader",
+    "h2hdb_ingest",
+    "h2hdb_komga",
+    "h2hdb_opds",
+    "hbrowser",
+    "httpx",
+]
+ignore_missing_imports = true

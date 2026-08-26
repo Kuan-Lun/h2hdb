@@ -707,8 +707,7 @@ def record_analysis_impacted_gid_provenance(
     witness = gallery if existing is None else existing.witness_gallery_id
     if created:
         connector.execute(
-            f"INSERT INTO {_IMPACTED_GID_STORAGE} (analysis_id, gid) "
-            "VALUES (%s, %s)",
+            f"INSERT INTO {_IMPACTED_GID_STORAGE} (analysis_id, gid) VALUES (%s, %s)",
             (analysis, exact_gid),
         )
     return AnalysisImpactedGidKeyFamily(analysis, exact_gid, witness), created

@@ -222,8 +222,7 @@ def test_writer_lookup_queries_use_declared_key_paths(tmp_path: Path) -> None:
                 (1,),
             ),
             (
-                "SELECT channel FROM catalog_source_build_channel "
-                "WHERE build_id = %s",
+                "SELECT channel FROM catalog_source_build_channel WHERE build_id = %s",
                 (build_id,),
             ),
         )
@@ -827,10 +826,10 @@ def test_source_handoff_rolls_back_each_major_statement_fault(
                 "SELECT COUNT(*) FROM operational_source_working_builds"
             ) == (0,)
             assert connector.fetch_one(
-                "SELECT COUNT(*) FROM " "operational_source_build_discovery_checkpoints"
+                "SELECT COUNT(*) FROM operational_source_build_discovery_checkpoints"
             ) == (0,)
             assert connector.fetch_one(
-                "SELECT COUNT(*) FROM " "operational_source_build_assembly_checkpoints"
+                "SELECT COUNT(*) FROM operational_source_build_assembly_checkpoints"
             ) == (0,)
             assert connector.fetch_one(
                 "SELECT COUNT(*) FROM operational_canonical_value_uploads "

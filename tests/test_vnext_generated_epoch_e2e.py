@@ -160,26 +160,23 @@ def _exercise_generated_epoch(config: CoreConfig) -> None:
         assert not connector.check_table_exists("h2hdb_schema_migrations")
         _assert_gallery_identity_schema(connector, config.database.sql_type)
         if config.database.sql_type == "mariadb":
-            assert (
-                connector.fetch_all(
-                    """
+            assert connector.fetch_all(
+                """
                 SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE
                 FROM INFORMATION_SCHEMA.COLUMNS
                 WHERE TABLE_SCHEMA = DATABASE()
                   AND TABLE_NAME = %s
                 ORDER BY ORDINAL_POSITION
                 """,
-                    ("catalog_publication_candidate_projections",),
-                )
-                == [
-                    ("candidate_id", "binary(16)", "NO"),
-                    ("create_count", "bigint(21) unsigned", "NO"),
-                    ("rebuild_count", "bigint(21) unsigned", "NO"),
-                    ("delete_count", "bigint(21) unsigned", "NO"),
-                    ("new_galleries", "bigint(21) unsigned", "NO"),
-                    ("changed_galleries", "bigint(21) unsigned", "NO"),
-                ]
-            )
+                ("catalog_publication_candidate_projections",),
+            ) == [
+                ("candidate_id", "binary(16)", "NO"),
+                ("create_count", "bigint(21) unsigned", "NO"),
+                ("rebuild_count", "bigint(21) unsigned", "NO"),
+                ("delete_count", "bigint(21) unsigned", "NO"),
+                ("new_galleries", "bigint(21) unsigned", "NO"),
+                ("changed_galleries", "bigint(21) unsigned", "NO"),
+            ]
 
     writable_context = RepositoryContext.from_config(config)
     with writable_context.SQLConnector() as connector:

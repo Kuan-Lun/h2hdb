@@ -1078,9 +1078,9 @@ def _load_builtin_semantic_validators() -> Mapping[str, SemanticValidator]:
     return MappingProxyType(installed)
 
 
-def _load_builtin_writer_hook_bindings() -> (
-    tuple[Mapping[str, WriterHookBinding], tuple[str, ...]]
-):
+def _load_builtin_writer_hook_bindings() -> tuple[
+    Mapping[str, WriterHookBinding], tuple[str, ...]
+]:
     """Resolve every recurring hook through the closed wheel registry.
 
     BUILDING-only bootstrap hooks are excluded: generated seed insertion plus

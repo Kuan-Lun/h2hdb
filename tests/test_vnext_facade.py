@@ -416,8 +416,7 @@ def _catalog_fixture(connector: SQLiteConnector) -> dict[str, object]:
     gid = 123
     publication_key_value = publication_key(gid)
     connector.execute(
-        "INSERT INTO catalog_gallery_upload_times (gid, upload_time) "
-        "VALUES (%s, %s)",
+        "INSERT INTO catalog_gallery_upload_times (gid, upload_time) VALUES (%s, %s)",
         (gid, 2_000_000),
     )
     assert seed_publication_identity(connector, gid=gid).publication_key == (

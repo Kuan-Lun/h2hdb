@@ -6,10 +6,27 @@ cd "$repo_root"
 
 git diff --cached --check
 
-# Ordinary commits stay instant. A pyproject.toml change receives only the
-# cheap staged-version policy here; the complete release gate runs pre-push.
-if git diff --cached --quiet -- pyproject.toml; then
-    exit 0
+primary="$(scripts/detect-primary-branch.sh)"
+current="$(git branch --show-current)"
+git config --local "branch.$primary.mergeOptions" --no-ff
+
+if [[ "$current" == "$primary" ]]; then
+    merge_head="$(git rev-parse --git-path MERGE_HEAD)"
+    [[ -e "$merge_head" ]] || {
+        printf 'Direct commits on primary are not allowed: %s\n' "$primary" >&2
+        exit 1
+    }
+
+    # A conflicted merge reaches pre-commit instead of pre-merge-commit.
+    exec "$repo_root/.githooks/run-release-gate" run --index
 fi
 
-exec "$repo_root/.githooks/run-release-gate" pre-commit
+scripts/check-fast.sh
+
+# A pyproject.toml change receives the cheap staged-version policy here. The
+# exact integration candidate receives the complete release gate before merge.
+if ! git diff --cached --quiet -- pyproject.toml; then
+    exec "$repo_root/.githooks/run-release-gate" pre-commit
+fi
+
+exit 0

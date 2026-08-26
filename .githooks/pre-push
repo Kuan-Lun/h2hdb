@@ -4,13 +4,15 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
+primary="$(scripts/detect-primary-branch.sh)"
+release_ref="refs/heads/$primary"
 updates=()
 has_release_candidate=0
 while IFS= read -r update; do
     [[ -z "$update" ]] && continue
     updates+=("$update")
     read -r _ local_oid remote_ref remote_oid <<<"$update"
-    if [[ "$remote_ref" == "refs/heads/master" \
+    if [[ "$remote_ref" == "$release_ref" \
         && ! "$local_oid" =~ ^0+$ \
         && ! "$remote_oid" =~ ^0+$ ]]; then
         has_release_candidate=1
@@ -23,5 +25,6 @@ if [[ "$has_release_candidate" -eq 0 ]]; then
     exit 0
 fi
 
+export H2HDB_RELEASE_BRANCH="$release_ref"
 printf '%s\n' "${updates[@]}" \
     | "$repo_root/.githooks/run-release-gate" pre-push "$@"

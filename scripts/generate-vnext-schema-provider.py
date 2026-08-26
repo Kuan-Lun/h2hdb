@@ -959,8 +959,7 @@ def _render_projection_view(
     }
     if missing:
         raise ValueError(
-            f"view {relation.get('name')!r} lacks expressions for "
-            f"{sorted(missing)!r}"
+            f"view {relation.get('name')!r} lacks expressions for {sorted(missing)!r}"
         )
     projection = ",\n  ".join(
         f"{expressions[str(column['attribute'])]} AS {q(str(column['name']))}"
@@ -1129,8 +1128,7 @@ def _render_publication_candidate_projection_view(
             )
         columns = _tables(relation.get("column"), "view columns")
         inner_projection = ",\n    ".join(
-            f"{inner_expressions[str(column['attribute'])]} "
-            f"AS {q(str(column['name']))}"
+            f"{inner_expressions[str(column['attribute'])]} AS {q(str(column['name']))}"
             for column in columns
         )
         expressions = {
