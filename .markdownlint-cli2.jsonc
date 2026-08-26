@@ -1,0 +1,23 @@
+{
+  "globs": [
+    "**/*.md",
+    "!**/.formal-tools/**",
+    "!**/.integration-venv/**",
+    "!**/.pytest_cache/**",
+    "!**/.venv/**",
+    "!**/build/**",
+    "!**/dist/**",
+    "!**/node_modules/**"
+  ],
+  "config": {
+    "default": true,
+    "MD013": {
+      "line_length": 88,
+      "code_blocks": false,
+      "tables": false
+    },
+    "MD024": {
+      "siblings_only": true
+    }
+  }
+}

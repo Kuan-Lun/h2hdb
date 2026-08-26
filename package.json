@@ -1,0 +1,10 @@
+{
+  "name": "h2hdb-development",
+  "private": true,
+  "scripts": {
+    "check:markdown": "markdownlint-cli2"
+  },
+  "devDependencies": {
+    "markdownlint-cli2": ">=0.18.1"
+  }
+}

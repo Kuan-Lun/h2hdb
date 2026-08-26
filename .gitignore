@@ -9,17 +9,20 @@ dist/
 
 !/.gitignore
 !/.github/
-!.github/**
+!/.github/**
 !/.githooks/
-!.githooks/**
+!/.githooks/**
 !/.vscode/
-!.vscode/**
-!.claude/
-!.claude/**
-!/.Codex/
-!.Codex/**
+!/.vscode/**
+!/.claude/
+!/.claude/**
+!/.markdownlint-cli2.jsonc
+!/.release/
+!/.release/**
 
 uv.lock
+package-lock.json
+node_modules/
 h2hdb.log
 /.formal-tools/
 

@@ -2,7 +2,6 @@ name: Publish to PyPI
 
 on:
   push:
-    branches: [master]
     paths:
       - pyproject.toml
 
@@ -11,6 +10,7 @@ permissions:
 
 jobs:
   validate:
+    if: ${{ github.ref_name == github.event.repository.default_branch }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -88,7 +88,7 @@ jobs:
                   f"project.version decreased from {previous} to {current}"
               )
 
-          # Creating or seeding a master branch is not a version transition.
+          # Creating or seeding the default branch is not a version transition.
           bumped = previous is not None and current > previous
           output_path = Path(os.environ["GITHUB_OUTPUT"])
           with output_path.open("a", encoding="utf-8") as output:

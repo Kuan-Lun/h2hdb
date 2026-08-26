@@ -139,18 +139,27 @@ def test_version_increase_pre_push_runs_gate_when_exact_tree_lacks_receipt(
     monkeypatch.setattr(gate, "_has_valid_receipt", lambda tree, version: False)
     clean_checks: list[None] = []
     monkeypatch.setattr(gate, "_assert_clean_head", lambda: clean_checks.append(None))
-    calls: list[tuple[str, Version, bool]] = []
+    calls: list[tuple[str, Version, bool, tuple[str, ...]]] = []
     monkeypatch.setattr(
         gate,
         "_run_release_gate",
-        lambda tree, version, refresh: calls.append((tree, version, refresh)),
+        lambda tree, version, refresh, version_arguments: calls.append(
+            (tree, version, refresh, version_arguments)
+        ),
     )
     update = "refs/heads/master local-oid refs/heads/master remote-oid\n"
 
     gate._pre_push(update)
 
     assert clean_checks == [None]
-    assert calls == [("candidate-tree", Version("1.1"), False)]
+    assert calls == [
+        (
+            "candidate-tree",
+            Version("1.1"),
+            False,
+            ("--base", "remote-oid", "--candidate", "local-oid"),
+        )
+    ]
 
 
 def test_version_increase_pre_push_reuses_exact_tree_receipt(
@@ -220,3 +229,79 @@ def test_initial_remote_master_push_does_not_count_as_a_release(
     update = "refs/heads/master local-oid refs/heads/master " + "0" * 40 + "\n"
 
     gate._pre_push(update)
+
+
+def test_explicit_index_run_verifies_the_exact_staged_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clean_checks: list[None] = []
+    monkeypatch.setattr(
+        gate,
+        "_assert_no_unstaged_or_untracked_files",
+        lambda: clean_checks.append(None),
+    )
+    monkeypatch.setattr(
+        gate,
+        "_assert_clean_head",
+        lambda: pytest.fail("an index-tree run may have staged changes"),
+    )
+    git_calls: list[tuple[str, ...]] = []
+
+    def git(*arguments: str) -> str:
+        git_calls.append(arguments)
+        return "candidate-tree"
+
+    monkeypatch.setattr(gate, "_git", git)
+    version_specs: list[str] = []
+
+    def version_from_spec(specification: str, *, missing_ok: bool = False) -> Version:
+        version_specs.append(specification)
+        return Version("1.2.3")
+
+    monkeypatch.setattr(gate, "_version_from_spec", version_from_spec)
+    calls: list[tuple[str, Version, bool, tuple[str, ...]]] = []
+    monkeypatch.setattr(
+        gate,
+        "_run_release_gate",
+        lambda tree, version, refresh, version_arguments: calls.append(
+            (tree, version, refresh, version_arguments)
+        ),
+    )
+
+    gate._explicit_run(refresh=False, index=True, base=None)
+
+    assert clean_checks == [None]
+    assert git_calls == [("write-tree",)]
+    assert version_specs == [":pyproject.toml"]
+    assert calls == [("candidate-tree", Version("1.2.3"), False, ("--index",))]
+
+
+def test_explicit_head_run_requires_a_clean_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clean_checks: list[None] = []
+    monkeypatch.setattr(
+        gate,
+        "_assert_clean_head",
+        lambda: clean_checks.append(None),
+    )
+    git_values = {("rev-parse", "HEAD^{tree}"): "head-tree"}
+    monkeypatch.setattr(gate, "_git", lambda *arguments: git_values[arguments])
+    monkeypatch.setattr(
+        gate,
+        "_version_from_spec",
+        lambda specification, missing_ok=False: Version("1.2.3"),
+    )
+    calls: list[tuple[str, Version, bool, tuple[str, ...]]] = []
+    monkeypatch.setattr(
+        gate,
+        "_run_release_gate",
+        lambda tree, version, refresh, version_arguments: calls.append(
+            (tree, version, refresh, version_arguments)
+        ),
+    )
+
+    gate._explicit_run(refresh=True, index=False, base="base-oid")
+
+    assert clean_checks == [None]
+    assert calls == [("head-tree", Version("1.2.3"), True, ("--base", "base-oid"))]

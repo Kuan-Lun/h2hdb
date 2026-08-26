@@ -63,9 +63,9 @@ The layers prove different things and are not interchangeable.
 - `lean/VNextSchema.lean` and `lean/OperationalSchema.lean` prove BCNF for the
   exact generated FD contracts; the data-plane proof also establishes the
   unbounded minimum-witness, greater-only provenance append, exact replay, and
-  child-first cleanup theorems for both impacted-key families. `lean/ArtifactDelta.lean` and
-  `GalleryDeduplication.lean` prove the listed abstract delta and deduplication
-  theorems.
+  child-first cleanup theorems for both impacted-key families.
+  `lean/ArtifactDelta.lean` and `GalleryDeduplication.lean` prove the listed
+  abstract delta and deduplication theorems.
 - `schema/physical.toml` and `schema/operational_physical.toml` give complete
   SQLite and MariaDB realizations. The refinement code introspects object kind,
   columns, types, nullability, collation, keys, FKs, checks, indexes, and view

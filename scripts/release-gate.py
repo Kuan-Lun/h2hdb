@@ -20,14 +20,18 @@ from packaging.version import InvalidVersion, Version
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 RECEIPT_SCHEMA_VERSION = 1
-RELEASE_PROFILE = "h2hdb-release-v1"
-RELEASE_BRANCH = "refs/heads/master"
+RELEASE_PROFILE = "h2hdb-release-v2"
+RELEASE_BRANCH = os.environ.get("H2HDB_RELEASE_BRANCH", "refs/heads/master")
 REQUIRED_CHECKS = (
-    "black",
-    "ruff",
+    "ruff-lint",
+    "ruff-format",
     "mypy",
+    "markdownlint-cli2",
+    "version-policy",
+    "dependency-audit-receipt",
     "coverage-contract",
     "schema-drift",
+    "schema-surface",
     "lean",
     "sqlite-mariadb-10.11.11-tests",
     "tlc-small",
@@ -237,7 +241,13 @@ def _write_receipt(tree: str, version: Version) -> Path:
     return destination
 
 
-def _run_release_gate(tree: str, version: Version, *, refresh: bool) -> None:
+def _run_release_gate(
+    tree: str,
+    version: Version,
+    *,
+    refresh: bool,
+    version_arguments: tuple[str, ...],
+) -> None:
     if not refresh and _has_valid_receipt(tree, version):
         print(
             f"Local release gate already passed for tree {tree} "
@@ -245,50 +255,11 @@ def _run_release_gate(tree: str, version: Version, *, refresh: bool) -> None:
         )
         return
 
-    python = sys.executable
-    _run("Black", (python, "-m", "black", "--check", "src", "tests", "scripts"))
-    _run("Ruff", (python, "-m", "ruff", "check", "src", "tests", "scripts"))
-    _run("mypy", (python, "-m", "mypy", "src", "tests", "scripts"))
     _run(
-        "Coverage contract",
-        (python, "scripts/verify-formal.py", "coverage", "--validate-only"),
+        "Task version and dependency-audit policy",
+        (sys.executable, "scripts/check-version.py", *version_arguments),
     )
-    _run(
-        "Schema and generated-artifact drift",
-        (python, "scripts/verify-formal.py", "schema"),
-    )
-    _run("Lean proofs", (python, "scripts/verify-formal.py", "lean"))
-
-    test_environment = os.environ.copy()
-    test_environment["H2HDB_TEST_MARIADB"] = "1"
-    _run(
-        "SQLite and MariaDB 10.11.11 tests",
-        (python, "-m", "pytest"),
-        environment=test_environment,
-    )
-
-    _run("Fetch checksum-pinned TLC", (python, "scripts/fetch-formal-tools.py"))
-    _run(
-        "Small TLC profiles",
-        (
-            python,
-            "scripts/verify-formal.py",
-            "tla",
-            "--tla-jar",
-            ".formal-tools/tla2tools-1.7.4.jar",
-        ),
-    )
-
-    with tempfile.TemporaryDirectory(prefix="h2hdb-release-distributions-") as scratch:
-        _run(
-            "Distribution boundary",
-            (
-                python,
-                "scripts/build-and-verify-distributions.py",
-                "--output-directory",
-                str(Path(scratch) / "dist"),
-            ),
-        )
+    _run("Full repository gate", ("scripts/check-full.sh",))
 
     current_tree = _git("write-tree")
     if current_tree != tree:
@@ -334,7 +305,7 @@ def _pre_commit() -> None:
     print(
         f"project.version {change}: {previous or '<none>'} -> {current}; "
         "staged release metadata is valid. The complete local release gate "
-        "will run before push."
+        "will run against the exact integration candidate."
     )
 
 
@@ -365,23 +336,47 @@ def _pre_push(document: str) -> None:
                     f"Push would publish project.version {current}, but tree {tree} "
                     "has no valid local release receipt and is not the checked-out "
                     "HEAD. Check out the exact commit and run "
-                    "`uv run --no-sync python scripts/release-gate.py run`."
+                    "`uv run --no-sync python scripts/release-gate.py run "
+                    f"--base {update.remote_oid}`."
                 )
             _assert_clean_head()
             print(
                 f"No valid local release receipt for version {current} ({tree}); "
                 "running the complete gate before push."
             )
-            _run_release_gate(tree, current, refresh=False)
+            _run_release_gate(
+                tree,
+                current,
+                refresh=False,
+                version_arguments=(
+                    "--base",
+                    update.remote_oid,
+                    "--candidate",
+                    update.local_oid,
+                ),
+            )
         print(f"Validated local release receipt for version {current} ({tree}).")
 
 
-def _explicit_run(*, refresh: bool) -> None:
-    _assert_clean_head()
-    tree = _git("rev-parse", "HEAD^{tree}")
-    version = _version_from_spec("HEAD:pyproject.toml")
+def _explicit_run(*, refresh: bool, index: bool, base: str | None) -> None:
+    version_arguments: tuple[str, ...]
+    if index:
+        _assert_no_unstaged_or_untracked_files()
+        tree = _git("write-tree")
+        version = _version_from_spec(":pyproject.toml")
+        version_arguments = ("--index",)
+    else:
+        _assert_clean_head()
+        tree = _git("rev-parse", "HEAD^{tree}")
+        version = _version_from_spec("HEAD:pyproject.toml")
+        version_arguments = () if base is None else ("--base", base)
     assert version is not None
-    _run_release_gate(tree, version, refresh=refresh)
+    _run_release_gate(
+        tree,
+        version,
+        refresh=refresh,
+        version_arguments=version_arguments,
+    )
 
 
 def _receipt_status(revision: str) -> None:
@@ -402,13 +397,29 @@ def _arguments() -> argparse.Namespace:
     subparsers.add_parser("pre-commit", help="validate a staged project.version change")
 
     pre_push = subparsers.add_parser(
-        "pre-push", help="run or validate the gate for version-increasing master pushes"
+        "pre-push",
+        help="run or validate the gate for version-increasing primary pushes",
     )
     pre_push.add_argument("remote_name", nargs="?", default="")
     pre_push.add_argument("remote_url", nargs="?", default="")
 
-    run = subparsers.add_parser("run", help="run the gate for a clean HEAD")
+    run = subparsers.add_parser(
+        "run", help="run the gate for a clean HEAD or staged index tree"
+    )
     run.add_argument("--refresh", action="store_true")
+    candidate = run.add_mutually_exclusive_group()
+    candidate.add_argument(
+        "--index",
+        action="store_true",
+        help=(
+            "verify the exact staged index tree, including a merge candidate "
+            "created with git merge --no-commit"
+        ),
+    )
+    candidate.add_argument(
+        "--base",
+        help="validate clean HEAD against this task base revision",
+    )
 
     status = subparsers.add_parser("status", help="validate a receipt")
     status.add_argument("revision", nargs="?", default="HEAD")
@@ -424,7 +435,11 @@ def main() -> None:
         elif arguments.command == "pre-push":
             _pre_push(sys.stdin.read())
         elif arguments.command == "run":
-            _explicit_run(refresh=bool(arguments.refresh))
+            _explicit_run(
+                refresh=bool(arguments.refresh),
+                index=bool(arguments.index),
+                base=str(arguments.base) if arguments.base else None,
+            )
         else:
             _receipt_status(str(arguments.revision))
     except (ReleaseGateError, subprocess.CalledProcessError) as error:
