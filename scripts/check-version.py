@@ -19,6 +19,7 @@ from typing import Any
 _VERSION_PATTERN = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 _LEGACY_VERSION_PATTERN = re.compile(r"^(\d+)\.(\d+)\.(\d+)\.(\d+)(?:\.\d+)*$")
 _IGNORED_PATHS = (
+    ".Codex/**",
     ".claude/**",
     ".github/**",
     ".githooks/**",
