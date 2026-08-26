@@ -21,7 +21,6 @@ from packaging.version import InvalidVersion, Version
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 RECEIPT_SCHEMA_VERSION = 1
 RELEASE_PROFILE = "h2hdb-release-v2"
-RELEASE_BRANCH = os.environ.get("H2HDB_RELEASE_BRANCH", "refs/heads/master")
 REQUIRED_CHECKS = (
     "ruff-lint",
     "ruff-format",
@@ -126,6 +125,32 @@ def _classify_version_change(
 
 def _is_zero_oid(value: str) -> bool:
     return bool(value) and set(value) == {"0"}
+
+
+def _detect_primary_branch() -> str:
+    completed = subprocess.run(
+        (str(REPOSITORY_ROOT / "scripts" / "detect-primary-branch.sh"),),
+        cwd=REPOSITORY_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise ReleaseGateError(
+            "Cannot detect the primary branch" + (f": {detail}" if detail else "")
+        )
+    primary = completed.stdout.strip()
+    if not primary:
+        raise ReleaseGateError("Primary branch detection returned an empty name")
+    return primary
+
+
+def _release_branch() -> str:
+    override = os.environ.get("H2HDB_RELEASE_BRANCH")
+    if override:
+        return override
+    return f"refs/heads/{_detect_primary_branch()}"
 
 
 def _parse_push_updates(document: str) -> tuple[PushUpdate, ...]:
@@ -310,9 +335,10 @@ def _pre_commit() -> None:
 
 
 def _pre_push(document: str) -> None:
+    release_branch = _release_branch()
     for update in _parse_push_updates(document):
         if (
-            update.remote_ref != RELEASE_BRANCH
+            update.remote_ref != release_branch
             or _is_zero_oid(update.local_oid)
             or _is_zero_oid(update.remote_oid)
         ):

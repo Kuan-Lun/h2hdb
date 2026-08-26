@@ -306,6 +306,8 @@ The installer refuses to disable an existing hooks path or executable legacy
 hook; compose those hooks explicitly before switching this clone to `.githooks`.
 VS Code's built-in Git and command-line Git honor the installed hooks. GitHub
 web edits and clones where the installer has not run do not.
+The installer, merge workflow, and pre-push gate resolve the primary branch via
+`scripts/detect-primary-branch.sh`; no branch name is hard-coded.
 
 Ordinary task commits run only `check-fast.sh`. Every merge candidate runs the
 complete exact-index release gate before the merge commit is created. The gate
