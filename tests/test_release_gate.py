@@ -83,6 +83,28 @@ def test_zero_oid_detection_accepts_only_nonempty_all_zero_values() -> None:
     assert not gate._is_zero_oid("0" * 39 + "1")
 
 
+def test_release_branch_prefers_the_explicit_hook_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("H2HDB_RELEASE_BRANCH", "refs/heads/release")
+    monkeypatch.setattr(
+        gate,
+        "_detect_primary_branch",
+        lambda: pytest.fail("an explicit release ref must skip primary detection"),
+    )
+
+    assert gate._release_branch() == "refs/heads/release"
+
+
+def test_release_branch_detects_a_renamed_primary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("H2HDB_RELEASE_BRANCH", raising=False)
+    monkeypatch.setattr(gate, "_detect_primary_branch", lambda: "main")
+
+    assert gate._release_branch() == "refs/heads/main"
+
+
 def test_version_increase_pre_commit_defers_the_complete_gate_until_push(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
