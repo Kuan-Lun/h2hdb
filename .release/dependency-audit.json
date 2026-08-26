@@ -1,0 +1,119 @@
+{
+  "checked_at": "2026-08-26T08:43:56+00:00",
+  "manifest_sha256": "a7e8b5c134349c95aabb0597ac5e5241ec79218d91cf0b9f27e0835986ef155a",
+  "node": [
+    {
+      "declared": ">=0.18.1",
+      "latest": "0.23.2",
+      "latest_satisfies": true,
+      "name": "markdownlint-cli2"
+    }
+  ],
+  "project_version": "0.23.1",
+  "python": [
+    {
+      "declared": "hatchling>=1.32.0,<2.0.0",
+      "group": "build",
+      "latest": "1.32.0",
+      "latest_satisfies": true,
+      "name": "hatchling",
+      "python_3_14": true,
+      "url": "https://pypi.org/project/hatchling/"
+    },
+    {
+      "declared": "mysql-connector-python>=26.7.0,<27.0.0",
+      "group": "runtime",
+      "latest": "26.7.0",
+      "latest_satisfies": true,
+      "name": "mysql-connector-python",
+      "python_3_14": true,
+      "url": "https://pypi.org/project/mysql-connector-python/"
+    },
+    {
+      "declared": "pydantic>=2.13.4,<3.0.0",
+      "group": "runtime",
+      "latest": "2.13.4",
+      "latest_satisfies": true,
+      "name": "pydantic",
+      "python_3_14": true,
+      "url": "https://pypi.org/project/pydantic/"
+    },
+    {
+      "declared": "build>=1.5.0",
+      "group": "optional:dev",
+      "latest": "1.5.0",
+      "latest_satisfies": true,
+      "name": "build",
+      "python_3_14": true,
+      "url": "https://pypi.org/project/build/"
+    },
+    {
+      "declared": "hatchling>=1.32.0",
+      "group": "optional:dev",
+      "latest": "1.32.0",
+      "latest_satisfies": true,
+      "name": "hatchling",
+      "python_3_14": true,
+      "url": "https://pypi.org/project/hatchling/"
+    },
+    {
+      "declared": "hypothesis>=6.165.10,<7.0.0",
+      "group": "optional:dev",
+      "latest": "6.165.10",
+      "latest_satisfies": true,
+      "name": "hypothesis",
+      "python_3_14": true,
+      "url": "https://pypi.org/project/hypothesis/"
+    },
+    {
+      "declared": "mypy>=2.3.1",
+      "group": "optional:dev",
+      "latest": "2.3.1",
+      "latest_satisfies": true,
+      "name": "mypy",
+      "python_3_14": true,
+      "url": "https://pypi.org/project/mypy/"
+    },
+    {
+      "declared": "packaging>=26.3",
+      "group": "optional:dev",
+      "latest": "26.3",
+      "latest_satisfies": true,
+      "name": "packaging",
+      "python_3_14": true,
+      "url": "https://pypi.org/project/packaging/"
+    },
+    {
+      "declared": "pytest>=9.1.1",
+      "group": "optional:dev",
+      "latest": "9.1.1",
+      "latest_satisfies": true,
+      "name": "pytest",
+      "python_3_14": true,
+      "url": "https://pypi.org/project/pytest/"
+    },
+    {
+      "declared": "ruff>=0.16.4",
+      "group": "optional:dev",
+      "latest": "0.16.4",
+      "latest_satisfies": true,
+      "name": "ruff",
+      "python_3_14": true,
+      "url": "https://pypi.org/project/ruff/"
+    },
+    {
+      "declared": "testcontainers>=4.15.0",
+      "group": "optional:dev",
+      "latest": "4.15.0",
+      "latest_satisfies": true,
+      "name": "testcontainers",
+      "python_3_14": true,
+      "url": "https://pypi.org/project/testcontainers/"
+    }
+  ],
+  "review": {
+    "note": "Reviewed the current registry results, upstream release notes, and Python 3.14 metadata for every direct build, runtime, optional/development, and Node dependency on 2026-08-26. All latest stable releases satisfy the declared ranges and showed no incompatible change for this project; build 1.5.1 is yanked, so 1.5.0 remains the latest stable release. No upper-bound exception or source change is required.",
+    "status": "reviewed"
+  },
+  "schema": "h2h.dependency-audit.v1"
+}
