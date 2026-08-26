@@ -156,10 +156,9 @@ installs with:
 ./scripts/rebuild-multirepo-integration.sh
 ```
 
-The script does not create or consume `uv.lock`. Its smoke installs every
-repository-owned public consumer, including `h2hdb-ingest` and
-`h2hdb-downloader`, as a local editable. The downloader resolves `hbrowser`
-from its declared PyPI range so this integration run never consumes an
-unrelated local `hbrowser` worktree. The smoke supplements—but does not
-replace—schema/Lean checks, strict coverage evidence, or live MariaDB
-integration tests.
+The script does not create or consume `uv.lock`. It installs the checked-out
+core and resolves every public consumer from the configured package index. A
+wheel, Git URL/ref, archive URL, or local project path is used only when passed
+explicitly with `--source PACKAGE=SOURCE`; no sibling checkout is discovered
+implicitly. The smoke supplements—but does not replace—schema/Lean checks,
+strict coverage evidence, or live MariaDB integration tests.

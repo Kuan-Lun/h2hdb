@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -146,8 +147,7 @@ def _assert_wide_bcnf_recompositions(database_path: Path) -> None:
         relation_types = {
             str(row[0]): str(row[1])
             for row in connection.execute(
-                "SELECT name, type FROM sqlite_master "
-                "WHERE type IN ('table', 'view')"
+                "SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view')"
             )
         }
     assert sum(kind == "table" for kind in relation_types.values()) == 381
@@ -158,6 +158,20 @@ def _assert_wide_bcnf_recompositions(database_path: Path) -> None:
 
 
 def main() -> None:
+    distributions = (
+        "h2hdb",
+        "h2h-galleryinfo-parser",
+        "h2hdb-downloader",
+        "h2hdb-ingest",
+        "h2hdb-komga",
+        "h2hdb-opds",
+        "hbrowser",
+    )
+    resolved = ", ".join(
+        f"{name}=={importlib.metadata.version(name)}" for name in distributions
+    )
+    print(f"resolved integration distributions: {resolved}")
+
     with tempfile.TemporaryDirectory(prefix="h2hdb-multirepo-") as temporary:
         root = Path(temporary).resolve()
         database_path = root / "catalog.sqlite3"
