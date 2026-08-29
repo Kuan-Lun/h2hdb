@@ -15,8 +15,8 @@ benchmark_insertion_order = "full_churn_fill_delete_different_domain_refill_five
 measurement_scope = "decimal bytes for DATA plus indexes at peak retained state"
 soft_limit_bytes = 400000000
 capacity_plan_sha256 = "d887286f1fda07ea83c0b919cd03b2cc2367b5dadded5aefc335879d68de2f18"
-catalog_physical_manifest_sha256 = "877f12e05928daaafbc296fbfc8c2f941f704620ae0c4e38ed0cb01d3e622cb0"
-operational_physical_manifest_sha256 = "d104a1dd15dab6f508d0e110fb1b55b72e7b5c5cc6373f30ef8ec8e346410c8f"
+catalog_physical_manifest_sha256 = "cc0069cd36299d94f0a2551c471abac987ad76436f932812ec36499107d679b4"
+operational_physical_manifest_sha256 = "9b95bd71af68ebe8f6d2fa7e5c2f22fbc7bf7981fd73aa44873e3d61c56e2bca"
 
 [registry_measurement]
 relation = "artifact_producer_fingerprint"
