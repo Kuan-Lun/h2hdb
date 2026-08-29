@@ -672,57 +672,6 @@ theorem event_without_matching_activation_is_invisible
     ¬ OperationalEventVisible eventPreparation activatedPreparation :=
   unactivated
 
-def AcknowledgesEveryExistingEventThrough
-    (allEvents acknowledgedEvents : List OperationalEventCoordinate)
-    (target : OperationalEventCoordinate) : Prop :=
-  ∀ event, event ∈ allEvents →
-    event.preparationId = target.preparationId →
-    event.sequenceNo ≤ target.sequenceNo →
-    event ∈ acknowledgedEvents
-
-def AckHighWaterAdvance
-    (oldHead targetEvent : OperationalEventCoordinate)
-    (allEvents acknowledgedEvents : List OperationalEventCoordinate) : Prop :=
-  targetEvent.preparationId = oldHead.preparationId ∧
-    oldHead.sequenceNo ≤ targetEvent.sequenceNo ∧
-    targetEvent ∈ allEvents ∧
-    AcknowledgesEveryExistingEventThrough
-      allEvents acknowledgedEvents targetEvent
-
-theorem ack_high_water_advance_stays_in_preparation
-    (advance : AckHighWaterAdvance
-      oldHead targetEvent allEvents acknowledgedEvents) :
-    targetEvent.preparationId = oldHead.preparationId :=
-  advance.1
-
-theorem ack_high_water_advance_is_monotone
-    (advance : AckHighWaterAdvance
-      oldHead targetEvent allEvents acknowledgedEvents) :
-    oldHead.sequenceNo ≤ targetEvent.sequenceNo :=
-  advance.2.1
-
-theorem ack_high_water_target_event_exists
-    (advance : AckHighWaterAdvance
-      oldHead targetEvent allEvents acknowledgedEvents) :
-    targetEvent ∈ allEvents :=
-  advance.2.2.1
-
-theorem ack_high_water_covers_every_preceding_existing_event
-    (advance : AckHighWaterAdvance
-      oldHead targetEvent allEvents acknowledgedEvents)
-    (eventMember : event ∈ allEvents)
-    (samePreparation : event.preparationId = targetEvent.preparationId)
-    (atOrBefore : event.sequenceNo ≤ targetEvent.sequenceNo) :
-    event ∈ acknowledgedEvents :=
-  advance.2.2.2 event eventMember samePreparation atOrBefore
-
-theorem ack_high_water_regression_is_rejected
-    (regression : targetEvent.sequenceNo < oldHead.sequenceNo) :
-    ¬ AckHighWaterAdvance
-      oldHead targetEvent allEvents acknowledgedEvents := by
-  intro advance
-  exact (Nat.not_lt_of_ge advance.2.1) regression
-
 """
 
 GALLERY_STAGING_MODEL = r"""/-!
@@ -828,7 +777,7 @@ def _machine_contract_model(manifest: dict[str, object]) -> str:
     ):
         raise ValueError("operational machine contracts are missing")
     obligation_ids = [str(value.get("id")) for value in raw_obligations]
-    if len(obligation_ids) != 15 or len(obligation_ids) != len(set(obligation_ids)):
+    if len(obligation_ids) != 17 or len(obligation_ids) != len(set(obligation_ids)):
         raise ValueError("operational semantic-obligation IDs are incomplete")
     obligation_lifecycles = {
         str(value.get("id")): str(value.get("lifecycle")) for value in raw_obligations
@@ -860,7 +809,7 @@ def _machine_contract_model(manifest: dict[str, object]) -> str:
             "root_attributes": ["candidate_id"],
             "blocking_predicate": "state IN ('PENDING','PREPARED')",
             "nonblocking_state": "COMMITTED",
-            "semantic_obligation_id": "catalog.retention.v1",
+            "semantic_obligation_id": "catalog.retention.v2",
             "release_obligation_id": "catalog.artifact-semantics.v1",
         }
     ]:
@@ -901,33 +850,33 @@ def _machine_contract_model(manifest: dict[str, object]) -> str:
             "identity_allocator",
             "deletion_request_generation",
             "deletion_request_generation_head",
+            "gallery_observation_staging_request_budget",
         ),
         "h2hdb.operational.event-integrity.v1": (
             "operational_event_stream",
             "operational_preparation",
+            "operational_preparation_checkpoint",
+            "operational_preparation_batch_receipt",
             "operational_preparation_effect_seal",
             "publication_candidate_preparation",
             "operational_activation",
             "operational_event",
             "operational_removed_gid_event",
             "operational_deletion_consumption_event",
-            "operational_event_ack",
-            "operational_event_ack_head",
+            "cleanup_job",
+            "cleanup_cycle_root",
+            "cleanup_checkpoint",
         ),
         "h2hdb.operational.cleanup-reachability.v1": (
             "cleanup_target_kind",
             "cleanup_phase",
             "cleanup_job",
+            "cleanup_cycle_root",
             "cleanup_checkpoint",
-            "source_build_descriptor_seal",
-            "publication_candidate_anchor",
-            "publication_candidate_definition_seal",
-            "publication_candidate_analysis_id",
-            "publication_candidate_reserved_revision",
-            "publication_candidate_artifact_policy_id",
-            "publication_candidate_display_title_policy_id",
-            "publication_candidate_artifacts_required",
-            "publication_candidate_created_at",
+            "source_build_descriptor",
+            "source_build_base_publication_commit",
+            "publication_candidate",
+            "publication_commit",
             "analysis_snapshot_manifest",
             "source_revision",
             "catalog_revision",
@@ -935,14 +884,14 @@ def _machine_contract_model(manifest: dict[str, object]) -> str:
             "content_blob",
             "operational_event_stream",
             "operational_preparation",
+            "operational_preparation_checkpoint",
+            "operational_preparation_batch_receipt",
             "operational_preparation_effect_seal",
             "publication_candidate_preparation",
             "operational_activation",
             "operational_event",
             "operational_removed_gid_event",
             "operational_deletion_consumption_event",
-            "operational_event_ack",
-            "operational_event_ack_head",
         ),
     }
     for (
@@ -963,6 +912,7 @@ def _machine_contract_model(manifest: dict[str, object]) -> str:
     deletion_generation_seed_ids = {
         "h2hdb.operational.deletion-request-generation.genesis.v1",
         "h2hdb.operational.deletion-request-generation-head.genesis.v1",
+        "h2hdb.operational.gallery-staging-request-budget.genesis.v1",
     }
     if not (set(expected_seed_ids) | deletion_generation_seed_ids) <= set(seed_by_id):
         raise ValueError("operational bootstrap authority seeds are incomplete")
@@ -1036,8 +986,20 @@ def _machine_contract_model(manifest: dict[str, object]) -> str:
         ("singleton_id", "current_generation", "updated_at"),
         ("uint64", "uint64", "unix_microseconds"),
     )
-    if deletion_generation != (0, 0) or deletion_generation_head != (1, 0, 0):
-        raise ValueError("deletion generation genesis is not the exact real zero fact")
+    gallery_staging_request_budget = integer_seed_values(
+        "h2hdb.operational.gallery-staging-request-budget.genesis.v1",
+        "gallery_observation_staging_request_budget",
+        ("singleton_id", "retained_request_count"),
+        ("uint64", "uint64"),
+    )
+    if (
+        deletion_generation != (0, 0)
+        or deletion_generation_head != (1, 0, 0)
+        or gallery_staging_request_budget != (1, 0)
+    ):
+        raise ValueError(
+            "operational singleton genesis is not the exact real zero fact"
+        )
     raw_absent = bootstrap.get("absent_relations")
     if not isinstance(raw_absent, list) or not all(
         isinstance(value, str) and value for value in raw_absent
@@ -1048,7 +1010,6 @@ def _machine_contract_model(manifest: dict[str, object]) -> str:
         "ingest_generation",
         "ingest_coordination_head",
         "ingest_generation_owner",
-        "ingest_generation_lease",
         "maintenance_gate_generation",
         "maintenance_gate_head",
         "maintenance_gate_owner",
@@ -1071,6 +1032,7 @@ def _machine_contract_model(manifest: dict[str, object]) -> str:
             "revision_allocator",
             "deletion_request_generation",
             "deletion_request_generation_head",
+            "gallery_observation_staging_request_budget",
             "schema_epoch_control",
         )
     ):
@@ -1086,7 +1048,8 @@ def _machine_contract_model(manifest: dict[str, object]) -> str:
 
 These values are generated from the typed machine records in operational.toml.
 Allocator rows, the real deletion generation-zero empty-queue history/head,
-and cleanup kind/phase registries are provider-owned genesis.  Deletion attempts
+the zero retained-request budget singleton, and cleanup kind/phase registries
+are provider-owned genesis.  Deletion attempts
 and per-gid heads, coordination, maintenance, owner, lease, preparation stream,
 effect seal, activation, event, cache, and work facts are absent until their
 first transaction creates real state.  Schema
@@ -1108,6 +1071,11 @@ structure DeletionGenerationHeadGenesis where
   singletonId : Nat
   currentGeneration : Nat
   updatedAt : Nat
+deriving DecidableEq, Repr
+
+structure GalleryStagingRequestBudgetGenesis where
+  singletonId : Nat
+  retainedRequestCount : Nat
 deriving DecidableEq, Repr
 
 def CleanupEligible (reachableFromRetentionRoot : Target → Prop)
@@ -1226,6 +1194,11 @@ def deletionGenerationHeadGenesis : DeletionGenerationHeadGenesis :=
     currentGeneration := {deletion_generation_head[1]},
     updatedAt := {deletion_generation_head[2]} }}
 
+def galleryStagingRequestBudgetGenesis :
+    GalleryStagingRequestBudgetGenesis :=
+  {{ singletonId := {gallery_staging_request_budget[0]},
+    retainedRequestCount := {gallery_staging_request_budget[1]} }}
+
 theorem deletion_generation_zero_is_a_real_history_fact :
     deletionGenerationGenesis.generation = 0 ∧
       deletionGenerationGenesis.allocatedAt = 0 := by
@@ -1236,6 +1209,11 @@ theorem deletion_generation_genesis_head_is_the_exact_singleton_reference :
       deletionGenerationHeadGenesis.currentGeneration =
         deletionGenerationGenesis.generation ∧
       deletionGenerationHeadGenesis.updatedAt = 0 := by
+  native_decide
+
+theorem gallery_staging_request_budget_starts_at_exact_zero :
+    galleryStagingRequestBudgetGenesis.singletonId = 1 ∧
+      galleryStagingRequestBudgetGenesis.retainedRequestCount = 0 := by
   native_decide
 
 theorem ready_validation_accepts_a_legitimately_advanced_allocator :

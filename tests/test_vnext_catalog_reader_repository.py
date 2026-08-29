@@ -6,9 +6,11 @@ from typing import Any
 from unicodedata import unidata_version
 
 import pytest
+from vnext_analysis_fixtures import seed_analysis_component, seed_analysis_run
 from vnext_canonical_value_fixtures import seed_canonical_value
 from vnext_catalog_identity_fixtures import seed_gallery_identity, seed_tag_term
 from vnext_catalog_registry_fixtures import (
+    seed_analysis_policy,
     seed_artifact_policy_semantics,
     seed_artifact_producer_fingerprint,
     seed_display_title_policy,
@@ -16,7 +18,7 @@ from vnext_catalog_registry_fixtures import (
     seed_source_scope,
     seed_title_sort_policy,
 )
-from vnext_manifest_fixtures import seed_snapshot_manifest, seed_source_build
+from vnext_manifest_fixtures import seed_sealed_source_build, seed_snapshot_manifest
 from vnext_publication_fixtures import (
     clone_catalog_publication_families,
     seed_catalog_contributor,
@@ -231,38 +233,28 @@ def _publication_commit(
     candidate_id: bytes = b"c" * 16,
     preparation_id: bytes = b"p" * 16,
 ) -> None:
-    _seed_commit_authorities(connector, preparation_id=preparation_id)
-    connector.execute(
-        "INSERT INTO catalog_source_revision_anchors (source_revision) VALUES (%s)",
-        (source_revision,),
+    analysis_id = _seed_commit_authorities(
+        connector,
+        preparation_id=preparation_id,
+        snapshot_manifest_sha256=snapshot_manifest_sha256,
+        generation=generation,
+        gallery_count=publication_count,
     )
     connector.execute(
-        "INSERT INTO catalog_source_revision_channels "
-        "(source_revision, channel) VALUES (%s, %s)",
-        (source_revision, b"default"),
+        "INSERT INTO catalog_source_revision_descriptors "
+        "(source_revision, channel, snapshot_manifest_sha256) "
+        "VALUES (%s, %s, %s)",
+        (source_revision, b"default", snapshot_manifest_sha256),
     )
     connector.execute(
-        "INSERT INTO catalog_source_revision_snapshot_manifests "
-        "(source_revision, snapshot_manifest_sha256) VALUES (%s, %s)",
-        (source_revision, snapshot_manifest_sha256),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_revision_descriptor_seals "
-        "(source_revision) VALUES (%s)",
-        (source_revision,),
-    )
-    connector.execute(
-        "INSERT INTO catalog_revision_anchors (revision) VALUES (%s)",
-        (revision,),
-    )
-    connector.execute(
-        "INSERT INTO catalog_revision_publication_counts "
+        "INSERT INTO catalog_revision_descriptors "
         "(revision, publication_count) VALUES (%s, %s)",
         (revision, publication_count),
     )
     connector.execute(
-        "INSERT INTO catalog_revision_descriptor_seals (revision) VALUES (%s)",
-        (revision,),
+        "INSERT INTO catalog_source_revision_provenance "
+        "(source_revision, analysis_id) VALUES (%s, %s)",
+        (source_revision, analysis_id),
     )
     connector.execute(
         "INSERT INTO catalog_publication_generation_nodes (generation) VALUES (%s)",
@@ -302,10 +294,14 @@ def _seed_commit_authorities(
     connector: SQLiteConnector,
     *,
     preparation_id: bytes,
-) -> None:
+    snapshot_manifest_sha256: bytes,
+    generation: int,
+    gallery_count: int,
+) -> bytes:
     """Seed complete FK-on parents for the immutable common commit fixture."""
 
     seed_manifest_policy(connector)
+    seed_analysis_policy(connector)
     seed_display_title_policy(connector)
     producer = seed_artifact_producer_fingerprint(
         connector,
@@ -360,19 +356,95 @@ def _seed_commit_authorities(
         "WHERE preparation_id = %s",
         (preparation_id,),
     ):
-        return
+        row = connector.fetch_one(
+            "SELECT run.analysis_id "
+            "FROM operational_operational_preparations AS preparation "
+            "JOIN catalog_analysis_run_descriptor AS run "
+            "ON run.build_id = preparation.build_id "
+            "WHERE preparation.preparation_id = %s",
+            (preparation_id,),
+        )
+        assert len(row) == 1
+        analysis_id = row[0]
+        assert isinstance(analysis_id, bytes)
+        return analysis_id
     scope = connector.fetch_one(
         "SELECT scope_key FROM catalog_source_scopes ORDER BY scope_key LIMIT 1"
     )
     assert len(scope) == 1
     build_id = sha256(b"reader-commit-build\0" + preparation_id).digest()[:16]
-    seed_source_build(
+    build_manifest_sha256 = sha256(b"reader-commit-manifest\0" + build_id).digest()
+    seed_sealed_source_build(
         connector,
         build_id=build_id,
         scope_key=scope[0],
-        state="SEALED",
+        manifest_sha256=build_manifest_sha256,
+        gallery_count=gallery_count,
+        file_count=0,
+        byte_count=0,
         created_at=1,
         sealed_at=2,
+    )
+    connector.execute(
+        "INSERT INTO catalog_source_build_channel (build_id, channel) VALUES (%s, %s)",
+        (build_id, b"default"),
+    )
+    if generation > 1:
+        base = connector.fetch_one(
+            "SELECT receipt_id FROM catalog_publication_commits WHERE generation = %s",
+            (generation - 1,),
+        )
+        assert len(base) == 1
+        connector.execute(
+            "INSERT INTO catalog_source_build_base_publication_commits "
+            "(build_id, base_receipt_id) VALUES (%s, %s)",
+            (build_id, base[0]),
+        )
+    analysis_id = sha256(b"reader-commit-analysis\0" + preparation_id).digest()[:16]
+    input_payload = bytearray(b"h2hdb-vnext-analysis-input\0")
+    input_payload.extend(build_manifest_sha256)
+    for count in (gallery_count, 0, 0):
+        input_payload.extend(count.to_bytes(8, "big"))
+    input_payload.extend((1).to_bytes(4, "big"))
+    input_payload.extend((1).to_bytes(8, "big"))
+    input_payload.extend((3).to_bytes(8, "big"))
+    input_payload.extend((1).to_bytes(4, "big"))
+    input_payload.extend((1).to_bytes(4, "big"))
+    seed_analysis_run(
+        connector,
+        analysis_id=analysis_id,
+        build_id=build_id,
+        policy_id=1,
+        input_manifest_sha256=sha256(input_payload).digest(),
+        started_at=2,
+        state="COMPLETE",
+        completed_at=3,
+    )
+    connector.execute(
+        "INSERT INTO catalog_analysis_state_ancestry "
+        "(analysis_id, ancestor_depth, ancestor_analysis_id) "
+        "VALUES (%s, 0, %s)",
+        (analysis_id, analysis_id),
+    )
+    for component in (
+        b"content_owner",
+        b"content_owner_candidate",
+        b"file_hash_decision",
+        b"gid_candidate",
+        b"gid_winner",
+    ):
+        seed_analysis_component(
+            connector,
+            analysis_id=analysis_id,
+            state_component=component,
+            row_count=0,
+            sealed_at=3,
+            terminal_receipt=True,
+        )
+    connector.execute(
+        "INSERT INTO catalog_analysis_snapshot_manifest "
+        "(analysis_id, snapshot_manifest_sha256) VALUES (%s, %s)",
+        (analysis_id, snapshot_manifest_sha256),
     )
     connector.execute(
         "INSERT INTO operational_operational_event_streams "
@@ -392,6 +464,7 @@ def _seed_commit_authorities(
         "VALUES (%s, 0, %s, 3)",
         (preparation_id, _EMPTY_EVENT_CHAIN),
     )
+    return analysis_id
 
 
 def _published_fixture(connector: SQLiteConnector) -> dict[str, bytes]:
@@ -1045,13 +1118,9 @@ def test_reader_uses_public_revision_not_found_error(tmp_path: Path) -> None:
             reader.get_catalog_revision(connector, 99)
         assert missing_historical.value.revision == 99
 
-        connector.execute("INSERT INTO catalog_revision_anchors (revision) VALUES (1)")
         connector.execute(
-            "INSERT INTO catalog_revision_publication_counts "
+            "INSERT INTO catalog_revision_descriptors "
             "(revision, publication_count) VALUES (1, 0)"
-        )
-        connector.execute(
-            "INSERT INTO catalog_revision_descriptor_seals (revision) VALUES (1)"
         )
         with (
             connector.read_transaction(),
@@ -1232,7 +1301,6 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
             publication_key_value=values["publication_key"],
         )
         old_only_canonical_values = (
-            values["source_root"],
             values["locator"],
             values["snapshot_manifest"],
             values["source_title"],
@@ -1255,6 +1323,10 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
             value: _canonical_root_page(connector, value)
             for value in old_only_canonical_values
         }
+        current_source_root_page = _canonical_root_page(
+            connector,
+            values["source_root"],
+        )
         seed_publication_finalization(
             connector,
             receipt_id=b"r" * 16,
@@ -1310,6 +1382,14 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
             connector,
             value_sha256=current_snapshot,
             root_page_sha256=current_snapshot_root_page,
+            present=True,
+        )
+        # Both publication builds use the same source scope.  Its root is the
+        # current metadata baseline and must outlive historical payload GC.
+        _assert_canonical_value_storage(
+            connector,
+            value_sha256=values["source_root"],
+            root_page_sha256=current_source_root_page,
             present=True,
         )
         generation_count = connector.fetch_one(
@@ -1416,6 +1496,14 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
     try:
         assert connector.fetch_one("PRAGMA foreign_keys") == (1,)
         assert connector.fetch_all("PRAGMA foreign_key_check") == []
+        assert (
+            connector.fetch_one(
+                "SELECT candidate_id FROM catalog_publication_candidates "
+                "WHERE candidate_id = %s",
+                (b"d" * 16,),
+            )
+            == ()
+        )
         for table in _CATALOG_PUBLICATION_PAYLOAD_TABLES:
             assert connector.fetch_one(
                 f"SELECT COUNT(*) FROM {table} WHERE revision = 1"
@@ -1428,12 +1516,12 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
             )
         assert connector.fetch_one(
             "SELECT snapshot_manifest_sha256 "
-            "FROM catalog_source_revision_snapshot_manifests "
+            "FROM catalog_source_revision_descriptors "
             "WHERE source_revision = 1"
         ) == (values["snapshot_manifest"],)
         assert connector.fetch_one(
             "SELECT snapshot_manifest_sha256 "
-            "FROM catalog_source_revision_snapshot_manifests "
+            "FROM catalog_source_revision_descriptors "
             "WHERE source_revision = 2"
         ) == (current_snapshot,)
         for value in old_only_canonical_values:
@@ -1452,7 +1540,7 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
         assert (
             connector.fetch_one(
                 "SELECT snapshot_manifest_sha256 "
-                "FROM catalog_source_snapshot_manifest_identity_anchors "
+                "FROM catalog_source_snapshot_manifest_identity "
                 "WHERE snapshot_manifest_sha256 = %s",
                 (values["snapshot_manifest"],),
             )
@@ -1460,7 +1548,7 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
         )
         assert connector.fetch_one(
             "SELECT snapshot_manifest_sha256 "
-            "FROM catalog_source_snapshot_manifest_identity_anchors "
+            "FROM catalog_source_snapshot_manifest_identity "
             "WHERE snapshot_manifest_sha256 = %s",
             (current_snapshot,),
         ) == (current_snapshot,)
@@ -1492,24 +1580,22 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
             "catalog_source_locator_identity",
         ):
             assert connector.fetch_one(f"SELECT COUNT(*) FROM {table}") == (0,)
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM catalog_source_scope_anchors"
-        ) == (0,)
+        assert connector.fetch_one("SELECT COUNT(*) FROM catalog_source_scopes") == (1,)
         assert connector.fetch_one("SELECT COUNT(*) FROM catalog_tag_term_anchors") == (
             0,
         )
         assert connector.fetch_one(
-            "SELECT publication_count FROM catalog_revision_publication_counts "
+            "SELECT publication_count FROM catalog_revision_descriptors "
             "WHERE revision = 1"
         ) == (1,)
         assert connector.fetch_one(
             "SELECT snapshot_manifest_sha256 "
-            "FROM catalog_source_revision_snapshot_manifests "
+            "FROM catalog_source_revision_descriptors "
             "WHERE source_revision = 1"
         ) == (values["snapshot_manifest"],)
         assert connector.fetch_one(
             "SELECT snapshot_manifest_sha256 "
-            "FROM catalog_source_revision_snapshot_manifests "
+            "FROM catalog_source_revision_descriptors "
             "WHERE source_revision = 2"
         ) == (current_snapshot,)
         assert connector.fetch_one(
@@ -1518,8 +1604,7 @@ def test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready(
             (b"default",),
         ) == (b"s" * 16,)
         assert connector.fetch_one(
-            "SELECT revision FROM catalog_publication_commit_catalog_revisions "
-            "WHERE receipt_id = %s",
+            "SELECT revision FROM catalog_publication_commits WHERE receipt_id = %s",
             (b"r" * 16,),
         ) == (1,)
     finally:

@@ -53,22 +53,48 @@ def _assert_no_legacy_migration_ledger(database_path: Path) -> None:
 
 def _assert_wide_bcnf_recompositions(database_path: Path) -> None:
     required = {
+        "catalog_analysis_batch_receipt_stored",
+        "catalog_analysis_checkpoints",
         "catalog_gallery_identities",
+        "catalog_analysis_policies",
+        "catalog_analysis_run_descriptor",
+        "catalog_analysis_stages",
+        "catalog_analysis_state_component_seals",
         "catalog_artifact_semantic_inputs",
+        "catalog_artifact_policy_semantics",
+        "catalog_artifact_producer_fingerprints",
+        "catalog_artifact_storage_codecs",
+        "catalog_artifact_zip_writer_policies",
         "catalog_prepared_artifacts",
         "catalog_artifacts",
         "catalog_artifact_blobs",
+        "catalog_build_manifest_core",
+        "catalog_display_title_policies",
         "catalog_gallery_observation_metadata_locals",
         "catalog_gallery_observation_scans",
         "catalog_gallery_observation_directories",
         "catalog_gallery_observation_stat",
         "catalog_gallery_manifests",
+        "catalog_manifest_policies",
         "catalog_publications",
         "catalog_publication_titles",
+        "catalog_publication_batch_receipt_stored",
+        "catalog_publication_candidates",
+        "catalog_publication_checkpoints",
+        "catalog_publication_commits",
+        "catalog_publication_finalization_batch_stored",
+        "catalog_publication_finalization_checkpoints",
+        "catalog_publication_stages",
         "catalog_analysis_content_owner_candidate_shadows",
         "catalog_analysis_content_owner_shadows",
         "catalog_analysis_impacted_content",
         "catalog_analysis_impacted_gid",
+        "catalog_source_build_descriptor",
+        "catalog_source_build_discoveries",
+        "catalog_source_revision_descriptors",
+        "catalog_source_scopes",
+        "catalog_source_snapshot_manifest_identity",
+        "catalog_title_sort_policy",
     }
     removed = {
         "catalog_gallery_identity_anchors",
@@ -142,6 +168,10 @@ def _assert_wide_bcnf_recompositions(database_path: Path) -> None:
         "catalog_a_impacted_gid_anchors",
         "catalog_a_impacted_gid_witnesses",
         "catalog_a_impacted_gid_seals",
+        "operational_operational_consumers",
+        "operational_operational_event_acks",
+        "operational_operational_event_ack_heads",
+        "operational_removed_gid_acks",
     }
     with sqlite3.connect(database_path) as connection:
         relation_types = {
@@ -150,11 +180,11 @@ def _assert_wide_bcnf_recompositions(database_path: Path) -> None:
                 "SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view')"
             )
         }
-    assert sum(kind == "table" for kind in relation_types.values()) == 381
-    assert sum(kind == "view" for kind in relation_types.values()) == 74
+    assert sum(kind == "table" for kind in relation_types.values()) == 230
+    assert sum(kind == "view" for kind in relation_types.values()) == 50
     assert required <= relation_types.keys()
     assert removed.isdisjoint(relation_types)
-    assert relation_types["catalog_analysis_impacted_gid"] == "view"
+    assert relation_types["catalog_analysis_impacted_gid"] == "table"
 
 
 def main() -> None:

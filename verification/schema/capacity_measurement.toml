@@ -1,0 +1,188 @@
+receipt_version = 2
+generator = "verification/schema/generate_capacity_measurement_receipt.py"
+benchmark = "verification/schema/measure_capacity_mariadb.py"
+raw_measurement = "verification/schema/capacity_measurement.json"
+generator_script_sha256 = "ff65b3d374c01afc85d208a3c78ebc8a4e70b92de0fade71528c30f76ef1f02d"
+benchmark_script_sha256 = "c18333344bb0338555d8ce1ba4101f9f6392c2ed7bc157a53b3695324bbe67d8"
+measurement_input_sha256 = "eed4ce77b762bd9ecd05b46736a1ec6e7a887ce0bd0abd4e304aa2dd1137cd0e"
+execution_mode = "testcontainers"
+benchmark_image = "mariadb:10.11.11"
+mariadb_version = "10.11.11-MariaDB-ubu2204"
+innodb_page_size = 16384
+benchmark_seed = 95965496280988374325193972463257083697
+benchmark_insert_batch_size = 5000
+benchmark_insertion_order = "full_churn_fill_delete_different_domain_refill_five_then_sixth_append_v2"
+measurement_scope = "decimal bytes for DATA plus indexes at peak retained state"
+soft_limit_bytes = 400000000
+capacity_plan_sha256 = "e6095b6c4a286a1aeceb08b741800d63fb903b20f84a0c1bc4288a4741cbb6af"
+catalog_physical_manifest_sha256 = "9da1c227ecd80ec71acf55388a3613cb4f18e5ad8c447c84e71a81928d23130b"
+operational_physical_manifest_sha256 = "832c6d147464a3a2235ebfde2be4632cba46e3364cb1d405085ab7d1a59bf0ba"
+
+[registry_measurement]
+relation = "artifact_producer_fingerprint"
+physical_shape_sha256 = "3d5c79eec6365f436b561f6e95f798ffba3b41c0844a1d79c7645b086db1e0e3"
+row_generator = "maximum_width_artifact_producer_v1"
+key_distribution = "sha256_counter_stream_fingerprint_v1"
+row_count = 50000
+actual_rows = 50000
+information_schema_estimated_rows = 49258
+engine = "INNODB"
+row_format = "DYNAMIC"
+table_collation = "utf8mb4_nopad_bin"
+data_bytes = 68960256
+index_bytes = 79888384
+total_bytes = 148848640
+safety_numerator = 2
+safety_denominator = 1
+safety_peak_bytes = 297697280
+headroom_bytes = 102302720
+
+[registry_dominance]
+measured_relation = "artifact_producer_fingerprint"
+measured_conservative_width_score = 1844
+bounded_relation_count = 6
+dominated_relations = [
+  "analysis_policy:396",
+  "artifact_policy_semantics:492",
+  "display_title_policy:260",
+  "manifest_policy:216",
+  "title_sort_policy:287",
+]
+rule = "every unmeasured 50000-row registry has a no-greater conservative clustered-row plus complete-secondary-index width score"
+
+[source_scope_measurement]
+relation = "source_scope"
+physical_shape_sha256 = "451217bbf9669fa2024bdbd183c59fb03a905810fc58cffde3dbf5f2d5fd6019"
+row_generator = "filesystem_source_scope_sha256_coordinate_v1"
+key_distribution = "sha256_coordinate_stream_scope_and_root_v1"
+row_count = 300019
+actual_rows = 300019
+information_schema_estimated_rows = 290241
+engine = "INNODB"
+row_format = "DYNAMIC"
+table_collation = "utf8mb4_nopad_bin"
+data_bytes = 48906240
+index_bytes = 158875648
+total_bytes = 207781888
+safety_numerator = 5
+safety_denominator = 4
+safety_peak_bytes = 259727360
+headroom_bytes = 140272640
+
+[staging_churn_full_measurement]
+relation = "gallery_observation_staging_request"
+physical_shape_sha256 = "678c1f5a44fdacf1c0ad347481012a37a33fe2e5051b7a096907072fc3f41227"
+row_generator = "different_domain_churn_then_five_then_sixth_requests_v2"
+key_distribution = "independent_sha256_coordinate_request_and_staging_uuid_domains_v2"
+row_count = 1500000
+actual_rows = 1500000
+information_schema_estimated_rows = 1594750
+engine = "INNODB"
+row_format = "DYNAMIC"
+table_collation = "utf8mb4_nopad_bin"
+data_bytes = 157286400
+index_bytes = 144703488
+total_bytes = 301989888
+safety_numerator = 5
+safety_denominator = 4
+safety_peak_bytes = 377487360
+headroom_bytes = 22512640
+rule = "fill the untruncated table to the complete runtime budget before any bounded delete"
+
+[staging_churn_empty]
+relation = "gallery_observation_staging_request"
+physical_shape_sha256 = "678c1f5a44fdacf1c0ad347481012a37a33fe2e5051b7a096907072fc3f41227"
+inserted_rows = 1500000
+deleted_rows = 1500000
+insert_commit_count = 300
+delete_commit_count = 300
+residual_live_rows = 0
+residual_data_bytes = 49299456
+residual_index_bytes = 40910848
+residual_total_bytes = 90210304
+rule = "after the full-cap fill, fixed 5000-row commits child-free delete all 1.5m random keys without TRUNCATE before different-domain refill"
+
+[staging_accepted_measurement]
+relation = "gallery_observation_staging_request"
+physical_shape_sha256 = "678c1f5a44fdacf1c0ad347481012a37a33fe2e5051b7a096907072fc3f41227"
+row_generator = "different_domain_churn_then_five_then_sixth_requests_v2"
+key_distribution = "independent_sha256_coordinate_request_and_staging_uuid_domains_v2"
+row_count = 1500000
+actual_rows = 1500000
+information_schema_estimated_rows = 1496682
+engine = "INNODB"
+row_format = "DYNAMIC"
+table_collation = "utf8mb4_nopad_bin"
+data_bytes = 157810688
+index_bytes = 146276352
+total_bytes = 304087040
+safety_numerator = 5
+safety_denominator = 4
+safety_peak_bytes = 380108800
+headroom_bytes = 19891200
+staging_id_count = 300000
+synthetic_rows_per_staging_id = 5
+budget_relation = "gallery_observation_staging_request_budget"
+budget_maximum_rows = 1500000
+merge_capacity_neutral = true
+distribution_note = "300000 IDs times 5 is a synthetic random-key layout at the hard row budget, not a requests-per-gallery workload claim"
+
+[staging_over_capacity_diagnostic]
+relation = "gallery_observation_staging_request"
+physical_shape_sha256 = "678c1f5a44fdacf1c0ad347481012a37a33fe2e5051b7a096907072fc3f41227"
+row_count = 1800000
+actual_rows = 1800000
+data_bytes = 189267968
+index_bytes = 169345024
+total_bytes = 358612992
+accepted = false
+reason = "row count exceeds the 1500000 runtime budget; this append is diagnostic only"
+
+[staging_retention]
+staging_relation = "gallery_observation_staging"
+staging_physical_shape_sha256 = "77a1ed6401b9f02ed6275091cc210c0d21901920e7ee839bbdf39f0e169b2fdf"
+request_relation = "gallery_observation_staging_request"
+request_physical_shape_sha256 = "678c1f5a44fdacf1c0ad347481012a37a33fe2e5051b7a096907072fc3f41227"
+budget_relation = "gallery_observation_staging_request_budget"
+budget_physical_shape_sha256 = "dd91c45011c7588c00e86fe7f290bd46fa9785edb3e00f7d025164562614c1d8"
+budget_maximum_rows = 1500000
+retire_maximum_rows_per_transaction = 256
+normal_terminal_staging_maximum = 1
+obligation_id = "h2hdb.operational.gallery-staging-request-budget.v1"
+rule = "after acknowledged seal, the live shared ingest fence retires the terminal staging child-first before the next gallery; the global budget is an emergency fail-closed backstop"
+
+[bounded_nonmeasured_relations]
+peak_rows = 285
+accounted_bytes_per_row = 1000000
+conservative_peak_bytes = 285000000
+
+[bounded_cleanup_protocol]
+job_relation = "cleanup_job"
+job_physical_shape_sha256 = "f65a6e9e891bbaecd80534b5675021160fdf875def4235e5fe40f09a1ed080a6"
+job_conservative_record_and_index_bytes = 626
+job_accounted_bytes_per_row = 8192
+job_width_headroom_bytes = 7566
+job_row_count = 5632
+job_conservative_peak_bytes = 46137344
+root_relation = "cleanup_cycle_root"
+root_physical_shape_sha256 = "796758608595627956211d2fc01a8df6e5a7bf91ea6732c46484f9fbba2c3c56"
+root_conservative_record_and_index_bytes = 534
+root_accounted_bytes_per_row = 1280
+root_width_headroom_bytes = 746
+root_row_count = 256
+root_key_maximum_bytes = 260
+root_conservative_peak_bytes = 327680
+obligation_id = "h2hdb.operational.cleanup-frozen-root-set.v1"
+
+[scenario_context]
+planning_gallery_count = 300000
+planning_average_files_per_gallery = 50
+stress_gallery_count = 1000000
+stress_is_accepted_sizing_bound = false
+rule = "file and gallery counts are scenario context; neither derives the staging request hard bound"
+
+[acceptance]
+largest_relation = "gallery_observation_staging_request"
+largest_safety_peak_bytes = 380108800
+headroom_bytes = 19891200
+all_affected_relations_below_soft_limit = true

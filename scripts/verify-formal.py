@@ -52,6 +52,9 @@ def verify_schema() -> None:
     operational_generator = (
         VERIFICATION_ROOT / "schema" / "generate_operational_physical.py"
     )
+    capacity_receipt_generator = (
+        VERIFICATION_ROOT / "schema" / "generate_capacity_measurement_receipt.py"
+    )
     operational_physical = VERIFICATION_ROOT / "schema" / "operational_physical.toml"
     operational_refinement = VERIFICATION_ROOT / "schema" / "operational_refinement.py"
     operational_lean_generator = (
@@ -70,6 +73,7 @@ def verify_schema() -> None:
     if (
         not generator.is_file()
         or not physical_generator.is_file()
+        or not capacity_receipt_generator.is_file()
         or not provider_generator.is_file()
         or not narrow_physical_checker.is_file()
     ):
@@ -78,6 +82,7 @@ def verify_schema() -> None:
     _run([sys.executable, str(physical_generator), "--check"])
     _run([sys.executable, str(operational_lean_generator), "--check"])
     _run([sys.executable, str(operational_generator), "--check"])
+    _run([sys.executable, str(capacity_receipt_generator), "--check"])
     _run(
         [
             sys.executable,

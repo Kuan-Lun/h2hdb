@@ -1467,7 +1467,7 @@ def _load_root(
         )
     receipts = connector.fetch_all(
         "SELECT receipt.receipt_id, receipt.revision, receipt.state "
-        "FROM catalog_publication_commit_candidates AS committed "
+        "FROM catalog_publication_commits AS committed "
         "JOIN catalog_publication_candidates AS candidate "
         "ON candidate.candidate_id = committed.candidate_id "
         "JOIN catalog_publication_receipts AS receipt "
@@ -1506,7 +1506,7 @@ def _load_checkpoints(
     rows = connector.fetch_all(
         "SELECT checkpoint.stage, checkpoint.state "
         "FROM catalog_publication_checkpoints AS checkpoint "
-        "JOIN catalog_publication_stage_orders AS ordering "
+        "JOIN catalog_publication_stages AS ordering "
         "ON ordering.stage = checkpoint.stage "
         "WHERE checkpoint.candidate_id = %s ORDER BY ordering.stage_order",
         (candidate_id,),

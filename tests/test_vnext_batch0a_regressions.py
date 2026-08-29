@@ -44,28 +44,17 @@ def _delete_transient_candidate_definition(
     connector: SQLiteConnector,
 ) -> None:
     connector.execute("PRAGMA foreign_keys = OFF")
-    for table in (
-        "catalog_publication_candidate_base_publication_commits",
-        "catalog_publication_candidate_definition_seals",
-        "catalog_publication_candidate_created_ats",
-        "catalog_publication_candidate_artifacts_required",
-        "catalog_publication_candidate_display_title_policy_ids",
-        "catalog_publication_candidate_artifact_policy_ids",
-        "catalog_publication_candidate_reserved_revisions",
-        "catalog_publication_candidate_analysis_ids",
-        "catalog_publication_candidate_anchors",
-    ):
-        connector.execute(
-            f"DELETE FROM {table} WHERE candidate_id = %s",
-            (publication_support._CANDIDATE,),
-        )
+    connector.execute(
+        "DELETE FROM catalog_publication_candidates WHERE candidate_id = %s",
+        (publication_support._CANDIDATE,),
+    )
     connector.execute("PRAGMA foreign_keys = ON")
 
 
 @pytest.mark.parametrize(
     ("corruption", "error_match"),
     (
-        ("sealed-member", "seal set differs from complete common commits"),
+        ("sealed-member", "anchors differ from complete retained common commits"),
         ("missing-head", "common publication head family is incomplete"),
     ),
 )
@@ -88,8 +77,7 @@ def test_ready_rejects_common_commit_or_head_corruption(
         if corruption == "sealed-member":
             connector.execute("PRAGMA foreign_keys = OFF")
             connector.execute(
-                "DELETE FROM catalog_publication_commit_committed_ats "
-                "WHERE receipt_id = %s",
+                "DELETE FROM catalog_publication_commits WHERE receipt_id = %s",
                 (b"t" * 16,),
             )
             connector.execute("PRAGMA foreign_keys = ON")
@@ -112,7 +100,7 @@ def test_ready_rejects_common_commit_or_head_corruption(
 @pytest.mark.parametrize(
     ("corruption", "error_match"),
     (
-        ("unsealed-anchor", "unsealed commit anchor"),
+        ("unsealed-anchor", "anchors differ from complete retained common commits"),
         ("missing-genesis", "generation nodes differ"),
     ),
 )
@@ -223,7 +211,7 @@ def test_commit_replay_after_candidate_cleanup_rejects_durable_corruption(
 
         assert _application_state(connector) == before
         assert connector.fetch_one(
-            "SELECT candidate_id FROM catalog_publication_commit_candidates "
+            "SELECT candidate_id FROM catalog_publication_commits "
             "WHERE receipt_id = %s",
             (committed.receipt_id,),
         ) == (committed.candidate_id,)
@@ -231,7 +219,7 @@ def test_commit_replay_after_candidate_cleanup_rejects_durable_corruption(
         connector.close()
 
 
-def test_inactive_commit_replays_after_optional_lineage_and_build_cleanup(
+def test_inactive_commit_replay_preserves_reachable_lineage_during_cleanup(
     tmp_path: Path,
 ) -> None:
     connector = publication_support._generated_database(
@@ -242,9 +230,9 @@ def test_inactive_commit_replays_after_optional_lineage_and_build_cleanup(
         publication_support._seed_candidate(connector, turn, with_base=True)
         publication_support._commit(connector, gate, turn)
 
-        # Generation one is now inactive.  Its fixture has no optional
-        # provenance/analysis, and cleanup may prune the remaining operational
-        # preparation followed by its source build.
+        # Generation one is now inactive. Its source build remains reachable from
+        # the retained immutable commit, so child-first cleanup must preserve it
+        # until publication-commit cleanup has safely retired that retry authority.
         with connector.transaction():
             MaintenanceGateRepository.release(
                 VNextUnitOfWork(connector, backend="sqlite"),
@@ -292,10 +280,10 @@ def test_inactive_commit_replays_after_optional_lineage_and_build_cleanup(
             build_cycle,
             now=121,
         )
-        assert not connector.fetch_one(
-            "SELECT build_id FROM catalog_source_build_anchors WHERE build_id = %s",
+        assert connector.fetch_one(
+            "SELECT build_id FROM catalog_source_build_descriptor WHERE build_id = %s",
             (b"z" * 16,),
-        )
+        ) == (b"z" * 16,)
 
         with connector.transaction():
             MaintenanceGateRepository.release(
@@ -331,15 +319,14 @@ def test_inactive_commit_replays_after_optional_lineage_and_build_cleanup(
 
         connector.execute("PRAGMA foreign_keys = OFF")
         connector.execute(
-            "DELETE FROM catalog_publication_commit_artifact_policies "
-            "WHERE receipt_id = %s",
+            "DELETE FROM catalog_publication_commits WHERE receipt_id = %s",
             (replay.receipt_id,),
         )
         connector.execute("PRAGMA foreign_keys = ON")
         corrupted = _application_state(connector)
         with pytest.raises(
-            publication_module.PublicationCorruptionError,
-            match="commit|descriptor|malformed",
+            publication_module.PublicationNotReadyError,
+            match="candidate is missing",
         ):
             with connector.transaction():
                 publication_module.PublicationRepository.commit(

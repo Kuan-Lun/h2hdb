@@ -63,7 +63,6 @@ def _snapshot_build_id(
         ),
         scope=scope,
         manifest_policy_id=1,
-        base_receipt_id=None,
     )
 
 
@@ -131,7 +130,7 @@ def _run_stage_to_completion(
                 now=start_now + index,
             )
         results.append(result)
-        if result.state == "COMPLETE":
+        if result.next_state == "COMPLETE":
             return tuple(results)
     raise AssertionError("live MariaDB analysis stage did not converge")
 
@@ -160,8 +159,8 @@ def _prepare_file_decision_stage(
         batch_prefix=b"maria-hash-",
         start_now=200,
     )
-    assert gallery_results[-1].state == "COMPLETE"
-    assert hash_results[-1].state == "COMPLETE"
+    assert gallery_results[-1].next_state == "COMPLETE"
+    assert hash_results[-1].next_state == "COMPLETE"
 
 
 def _file_decision_snapshot(
@@ -246,7 +245,7 @@ def test_live_mariadb_file_decision_handles_decimal_aggregate_and_replay(
                 max_rows=128,
                 now=300,
             )
-        assert committed.state == "OPEN" and committed.row_count == 2
+        assert committed.next_state == "OPEN" and committed.row_count == 2
 
         with connector.read_transaction():
             receipt_count = connector.fetch_one(

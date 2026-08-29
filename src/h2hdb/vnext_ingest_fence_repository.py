@@ -24,7 +24,6 @@ from .vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 _GENERATION_TABLE = "operational_ingest_generations"
 _HEAD_TABLE = "operational_ingest_coordination_heads"
 _OWNER_TABLE = "operational_ingest_generation_owners"
-_LEASE_TABLE = "operational_ingest_generation_leases"
 _HANDOFF_TABLE = "operational_ingest_generation_handoffs"
 
 
@@ -151,14 +150,10 @@ class IngestFenceRepository:
             (successor, timestamp),
         )
         work.connector.execute(
-            f"INSERT INTO {_OWNER_TABLE} (generation, owner_token, claimed_at) "
-            "VALUES (%s, %s, %s)",
-            (successor, token, timestamp),
-        )
-        work.connector.execute(
-            f"INSERT INTO {_LEASE_TABLE} (generation, lease_expires_at) "
-            "VALUES (%s, %s)",
-            (successor, deadline),
+            f"INSERT INTO {_OWNER_TABLE} "
+            "(generation, owner_token, claimed_at, lease_expires_at) "
+            "VALUES (%s, %s, %s, %s)",
+            (successor, token, timestamp, deadline),
         )
         work.compare_and_swap(
             f"UPDATE {_HEAD_TABLE} SET current_generation = %s, phase = %s, "
@@ -192,10 +187,15 @@ class IngestFenceRepository:
         if deadline <= current.lease_expires_at:
             return current
         work.compare_and_swap(
-            f"UPDATE {_LEASE_TABLE} SET lease_expires_at = %s "
-            "WHERE generation = %s AND lease_expires_at = %s",
-            (deadline, current.generation, current.lease_expires_at),
-            authority="ingest generation lease",
+            f"UPDATE {_OWNER_TABLE} SET lease_expires_at = %s "
+            "WHERE generation = %s AND owner_token = %s AND lease_expires_at = %s",
+            (
+                deadline,
+                current.generation,
+                current.owner_token,
+                current.lease_expires_at,
+            ),
+            authority="ingest generation owner lease",
         )
         return IngestTurn(current.generation, current.owner_token, deadline)
 
@@ -292,16 +292,10 @@ class IngestFenceRepository:
         )
         _delete_exactly_one(
             work,
-            f"DELETE FROM {_LEASE_TABLE} WHERE generation = %s "
+            f"DELETE FROM {_OWNER_TABLE} WHERE generation = %s AND owner_token = %s "
             "AND lease_expires_at = %s",
-            (current.generation, current.lease_expires_at),
-            authority="completed ingest lease",
-        )
-        _delete_exactly_one(
-            work,
-            f"DELETE FROM {_OWNER_TABLE} WHERE generation = %s AND owner_token = %s",
-            (current.generation, current.owner_token),
-            authority="completed ingest owner",
+            (current.generation, current.owner_token, current.lease_expires_at),
+            authority="completed ingest authority",
         )
 
     @staticmethod
@@ -359,24 +353,21 @@ class IngestFenceRepository:
         owner_row = work.lock_row(
             LockRank.INGEST_FENCE,
             encode_lock_key("ingest", 2, generation),
-            f"SELECT owner_token FROM {_OWNER_TABLE} WHERE generation = %s",
+            f"SELECT owner_token, lease_expires_at FROM {_OWNER_TABLE} "
+            "WHERE generation = %s",
             (generation,),
         )
+        if owner_row and len(owner_row) != 2:
+            raise IngestFenceCorruptionError("the ingest owner has an invalid shape")
         owner = (
             None
             if not owner_row
             else require_uuid16(owner_row[0], field="persisted ingest owner_token")
         )
-        lease_row = work.lock_row(
-            LockRank.INGEST_FENCE,
-            encode_lock_key("ingest", 3, generation),
-            f"SELECT lease_expires_at FROM {_LEASE_TABLE} WHERE generation = %s",
-            (generation,),
-        )
         lease = (
             None
-            if not lease_row
-            else require_int63(lease_row[0], field="persisted ingest lease_expires_at")
+            if not owner_row
+            else require_int63(owner_row[1], field="persisted ingest lease_expires_at")
         )
         return _GenerationState(started_at, completed_at, owner, lease)
 
@@ -422,16 +413,10 @@ class IngestFenceRepository:
         )
         _delete_exactly_one(
             work,
-            f"DELETE FROM {_LEASE_TABLE} WHERE generation = %s "
+            f"DELETE FROM {_OWNER_TABLE} WHERE generation = %s AND owner_token = %s "
             "AND lease_expires_at = %s",
-            (generation, lease_expires_at),
-            authority="expired ingest lease",
-        )
-        _delete_exactly_one(
-            work,
-            f"DELETE FROM {_OWNER_TABLE} WHERE generation = %s AND owner_token = %s",
-            (generation, owner_token),
-            authority="expired ingest owner",
+            (generation, owner_token, lease_expires_at),
+            authority="expired ingest authority",
         )
 
 

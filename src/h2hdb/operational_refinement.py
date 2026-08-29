@@ -1,11 +1,15 @@
 """Bounded production refinements for the vNext operational plane.
 
-READY validation is deliberately independent of catalog and operational corpus
-size. It reads only the schema-epoch singleton, exact generated registries, the
-current ingest head through primary-key lookups, the current 64-slot maintenance
-gate, the two allocator registries, and the fixed cleanup-shard control plane.
-It never audits queues, events, canonical page trees, hash caches, preparations,
-source revisions, or gallery staging rows.
+Full CHECK validation is deliberately independent of most catalog and operational
+corpus sizes except for the explicitly capped gallery-staging request budget audit,
+at most 256 frozen PUBLICATION_COMMIT roots during transient event retirement, and
+indexed global effect-root owner probes. It
+reads the schema-epoch singleton, exact generated registries, the current ingest
+head through primary-key lookups, the current 64-slot maintenance gate, the two
+allocator registries, the fixed cleanup-shard control plane, and one bounded
+``COUNT(*)`` over at most 1,500,000 retained staging requests. It never walks
+unbounded queues, event payload history, canonical page trees, hash caches, or
+source revisions. The separate public ``ready`` probe remains O(1).
 
 Those high-cardinality and temporal properties belong to the named
 same-transaction writer hooks. ``OPERATIONAL_RUNTIME_WRITER_BLOCKERS`` states
@@ -26,11 +30,13 @@ __all__ = [
     "check_build_generation_contract_v1",
     "check_canonical_hash_cache_contract_v1",
     "check_cleanup_reachability_v1",
+    "check_cleanup_frozen_root_set_v1",
     "check_download_ingest_handoff_contract_v1",
     "check_epoch_manifest_v1",
     "check_event_integrity_contract_v1",
     "check_fencing_contract_v1",
     "check_gallery_staging_contract_v1",
+    "check_gallery_staging_request_budget_v1",
     "check_maintenance_gate_contract_v1",
     "check_physical_domains_v1",
     "check_queue_history_contract_v1",
@@ -54,6 +60,40 @@ type SemanticValidator = Callable[[SQLConnector], None]
 
 _INT63_MAX = 9223372036854775807
 _CLEANUP_ID_DOMAIN = b"h2hdb-cleanup-cycle-v1\0"
+_CLEANUP_CHAIN_DOMAIN = b"h2hdb-cleanup-chain-v1\0"
+_CLEANUP_FROZEN_ROOT_SET_DOMAIN = b"h2hdb-cleanup-frozen-root-set-v1\0"
+_CLEANUP_FROZEN_ROOT_SHAPES: Mapping[str, tuple[tuple[bytes, int], ...]] = (
+    MappingProxyType(
+        {
+            "SOURCE_BUILD": ((b"b", 16),),
+            "ANALYSIS_RUN": ((b"b", 16),),
+            "CATALOG_PUBLICATION": ((b"i", 8), (b"b", 32)),
+            "PUBLICATION_COMMIT": ((b"b", 16), (b"b", 16)),
+            "CATALOG_REVISION_DESCRIPTOR": ((b"i", 8),),
+            "SOURCE_REVISION_DESCRIPTOR": ((b"i", 8),),
+            "PUBLICATION_GENERATION": ((b"i", 8),),
+            "PUBLICATION_CANDIDATE": ((b"b", 16),),
+            "OPERATIONAL_PREPARATION": ((b"b", 16),),
+            "GALLERY_OBSERVATION": ((b"i", 8), (b"i", 8)),
+            "GALLERY_OBSERVATION_STAGING": ((b"b", 16),),
+            "ARTIFACT_BLOB": ((b"b", 32),),
+            "CANONICAL_VALUE": ((b"b", 32),),
+            "CONTENT_BLOB": ((b"b", 32),),
+            "GALLERY_OBSERVATION_PAGE": ((b"b", 32),),
+            "FILE_NAME_IDENTITY": ((b"b", 32),),
+            "PUBLICATION_IDENTITY": ((b"b", 32),),
+            "GALLERY_IDENTITY": ((b"i", 8),),
+            "SOURCE_GALLERY_NAME_GID": ((b"b", 255),),
+            "GALLERY_UPLOAD_TIME": ((b"i", 8),),
+            "CANONICAL_VALUE_UPLOAD": ((b"i", 8), (b"b", 32)),
+            "HASH_CACHE_OBSERVATION": ((b"b", 32), (b"b", 32)),
+        }
+    )
+)
+_CLEANUP_STATE_ROOT_PHASE_CHAINS = {
+    "SOURCE_BUILD": ("SB_STATE", "SB_ROOT"),
+    "ANALYSIS_RUN": ("AR_COMPLETION", "AR_STATE", "AR_ROOT"),
+}
 
 
 class OperationalSemanticRegistryError(RuntimeError):
@@ -139,6 +179,12 @@ _SPECS = (
         "operational_writer.validate_cleanup_reachability",
     ),
     (
+        "h2hdb.operational.cleanup-frozen-root-set.v1",
+        "ready_and_runtime",
+        "operational_refinement.check_cleanup_frozen_root_set_v1",
+        "operational_writer.validate_cleanup_frozen_root_set",
+    ),
+    (
         "h2hdb.operational.revision-allocation.v1",
         "ready_and_runtime",
         "operational_refinement.check_revision_allocator_contract_v1",
@@ -149,6 +195,12 @@ _SPECS = (
         "ready_and_runtime",
         "operational_refinement.check_gallery_staging_contract_v1",
         "operational_writer.validate_gallery_staging",
+    ),
+    (
+        "h2hdb.operational.gallery-staging-request-budget.v1",
+        "ready_and_runtime",
+        "operational_refinement.check_gallery_staging_request_budget_v1",
+        "operational_writer.enforce_gallery_staging_request_budget",
     ),
     (
         "h2hdb.operational.bootstrap-genesis.v1",
@@ -209,10 +261,12 @@ OPERATIONAL_RUNTIME_WRITER_BLOCKERS: Mapping[str, str] = MappingProxyType(
             "never walks canonical page trees or hash-cache observations"
         ),
         "h2hdb.operational.event-integrity.v1": (
-            "event, effect-seal, and acknowledgement writers must insert the exact "
-            "subtype and advance preparation-coordinate coverage atomically; "
+            "event and effect-seal writers must insert the exact subtype and advance "
+            "preparation-coordinate coverage atomically; "
             "candidate sealing must bind exactly one sealed preparation one-to-one; "
-            "READY never scans events"
+            "full CHECK validates effect-root owners and accepts missing pairs only "
+            "under exact frozen OPEN PCOM_EVENT cursor/compound receipt authority; "
+            "the bounded writer and cleanup protocol remain completeness authority"
         ),
         "h2hdb.operational.build-generation.v1": (
             "begin/resume/takeover must reserve generation-to-build identity under "
@@ -226,6 +280,12 @@ OPERATIONAL_RUNTIME_WRITER_BLOCKERS: Mapping[str, str] = MappingProxyType(
             "every destructive batch must use the closed target/phase registry, "
             "recheck all retention roots and blockers, and delete child-first"
         ),
+        "h2hdb.operational.cleanup-frozen-root-set.v1": (
+            "begin must freeze and seal at most 256 typed roots under the sole "
+            "OPEN cleanup authority; every static phase must restrict itself to "
+            "that exact set, and terminal completion must delete membership "
+            "atomically"
+        ),
         "h2hdb.operational.revision-allocation.v1": (
             "allocation must return-and-increment the exact stream row under lock/CAS, "
             "and publication must prove revision < current next_revision"
@@ -234,6 +294,12 @@ OPERATIONAL_RUNTIME_WRITER_BLOCKERS: Mapping[str, str] = MappingProxyType(
             "staging writers must enforce live claims, complete request bytes and "
             "exact-one subtype, cursor/predecessor replay, canonical page/tree bounds, "
             "terminal metadata, allocation ownership, and final membership atomically"
+        ),
+        "h2hdb.operational.gallery-staging-request-budget.v1": (
+            "fresh staging request identities must reserve the seeded singleton "
+            "under HEAD before CHILD locks; in-band retirement and both generic "
+            "cleanup paths must release only actual deletions atomically, while "
+            "one build slot and the shared-fenced implicit ACK bound normal retention"
         ),
     }
 )
@@ -422,11 +488,17 @@ def _fetch_one(
         ) from error
 
 
-def _as_int(value: object, *, label: str, minimum: int = 0) -> int:
+def _as_int(
+    value: object,
+    *,
+    label: str,
+    minimum: int = 0,
+    maximum: int = _INT63_MAX,
+) -> int:
     if (
         isinstance(value, bool)
         or not isinstance(value, int)
-        or not minimum <= value <= _INT63_MAX
+        or not minimum <= value <= maximum <= _INT63_MAX
     ):
         raise OperationalSemanticValidationError(
             f"operational READY {label} is outside portable int63"
@@ -686,7 +758,6 @@ def check_fencing_contract_v1(connector: SQLConnector) -> None:
     head_table = _table(backend, "ingest_coordination_head")
     generation_table = _table(backend, "ingest_generation")
     owner_table = _table(backend, "ingest_generation_owner")
-    lease_table = _table(backend, "ingest_generation_lease")
     handoff_table = _table(backend, "ingest_generation_handoff")
 
     head = _exact_lookup(
@@ -736,15 +807,7 @@ def check_fencing_contract_v1(connector: SQLConnector) -> None:
         connector,
         label="current ingest owner",
         table=owner_table,
-        columns="owner_token, claimed_at",
-        key_column="generation",
-        key=current,
-    )
-    lease = _exact_lookup(
-        connector,
-        label="current ingest lease",
-        table=lease_table,
-        columns="lease_expires_at",
+        columns="owner_token, claimed_at, lease_expires_at",
         key_column="generation",
         key=current,
     )
@@ -779,7 +842,6 @@ def check_fencing_contract_v1(connector: SQLConnector) -> None:
             current != completed
             or current_row[1] is None
             or owner is not None
-            or lease is not None
             or handoff is not None
         ):
             raise OperationalSemanticValidationError(
@@ -792,7 +854,6 @@ def check_fencing_contract_v1(connector: SQLConnector) -> None:
         phase == "INGEST_REQUESTED"
         and current == completed == 0
         and owner is None
-        and lease is None
         and handoff is None
     ):
         return
@@ -801,27 +862,22 @@ def check_fencing_contract_v1(connector: SQLConnector) -> None:
         raise OperationalSemanticValidationError(
             "operational READY active ingest generation lacks an exact owner"
         )
+    if len(owner) != 3:
+        raise OperationalSemanticValidationError(
+            "operational READY active ingest owner shape is invalid"
+        )
     _as_bytes(owner[0], label="current ingest owner token", length=16)
     _as_int(owner[1], label="current ingest owner claimed_at")
+    _as_int(owner[2], label="current ingest owner lease_expires_at")
 
     if phase == "INGEST_REQUESTED":
-        if (
-            current <= completed
-            or current_row[1] is not None
-            or lease is not None
-            or handoff is None
-        ):
+        if current <= completed or current_row[1] is not None or handoff is None:
             raise OperationalSemanticValidationError(
                 "operational READY requested ingest handoff shape is invalid"
             )
         _as_int(handoff[0], label="current ingest handoff requested_at")
         return
 
-    if lease is None:
-        raise OperationalSemanticValidationError(
-            "operational READY active ingest generation lacks an exact lease"
-        )
-    _as_int(lease[0], label="current ingest lease expiry")
     if phase == "DOWNLOADING" and (
         current <= completed or current_row[1] is not None or handoff is not None
     ):
@@ -840,7 +896,6 @@ def check_download_ingest_handoff_contract_v1(connector: SQLConnector) -> None:
     head_table = _table(backend, "download_coordination_head")
     generation_table = _table(backend, "download_generation")
     owner_table = _table(backend, "download_generation_owner")
-    lease_table = _table(backend, "download_generation_lease")
     handoff_table = _table(backend, "download_ingest_handoff")
     consumption_table = _table(backend, "download_ingest_consumption")
     completion_table = _table(backend, "coordinated_ingest_completion")
@@ -882,15 +937,7 @@ def check_download_ingest_handoff_contract_v1(connector: SQLConnector) -> None:
         connector,
         label="current download owner",
         table=owner_table,
-        columns="owner_token, claimed_at",
-        key_column="generation",
-        key=current,
-    )
-    lease = _exact_lookup(
-        connector,
-        label="current download lease",
-        table=lease_table,
-        columns="lease_expires_at",
+        columns="owner_token, claimed_at, lease_expires_at",
         key_column="generation",
         key=current,
     )
@@ -917,15 +964,14 @@ def check_download_ingest_handoff_contract_v1(connector: SQLConnector) -> None:
     _as_int(current_row[0], label="current download started_at")
     _as_int(completed_row[0], label="completed download completed_at")
 
-    if (owner is None) != (lease is None):
-        raise OperationalSemanticValidationError(
-            "operational READY download owner and lease satellites disagree"
-        )
     if owner is not None:
-        assert lease is not None
+        if len(owner) != 3:
+            raise OperationalSemanticValidationError(
+                "operational READY live download owner shape is invalid"
+            )
         _as_bytes(owner[0], label="current download owner token", length=16)
         _as_int(owner[1], label="current download owner claimed_at")
-        _as_int(lease[0], label="current download lease expiry")
+        _as_int(owner[2], label="current download owner lease_expires_at")
         if (
             current <= completed
             or current_row[1] is not None
@@ -1154,6 +1200,9 @@ class _CleanupJob:
     target_kind: str
     shard_no: int
     cycle_generation: int
+    max_rows_per_transaction: int
+    frozen_root_count: int
+    frozen_root_set_sha256: bytes
     state: str
 
 
@@ -1224,6 +1273,12 @@ def _cleanup_layout(
         raise OperationalSemanticRegistryError(
             "generated cleanup sweep target lacks phases"
         )
+    for target_kind, required_tail in _CLEANUP_STATE_ROOT_PHASE_CHAINS.items():
+        actual = tuple(phase for phase, _order in normalized.get(target_kind, ()))
+        if actual[-len(required_tail) :] != required_tail:
+            raise OperationalSemanticRegistryError(
+                f"generated {target_kind} cleanup state-to-root phase chain drifts"
+            )
     return tuple(sweep), MappingProxyType(normalized)
 
 
@@ -1249,7 +1304,8 @@ def _cleanup_jobs(
         "fixed cleanup jobs",
         f"""
         SELECT j.cleanup_id, j.target_key, j.cycle_generation,
-               j.algorithm_version, j.max_rows_per_transaction, j.state,
+               j.algorithm_version, j.max_rows_per_transaction,
+               j.frozen_root_count, j.frozen_root_set_sha256, j.state,
                j.created_at, j.completed_at,
                s.target_kind, s.shard_no,
                c.target_key, c.cycle_generation,
@@ -1275,6 +1331,8 @@ def _cleanup_jobs(
             cycle_generation_value,
             algorithm_version,
             max_rows,
+            frozen_root_count_value,
+            frozen_root_set_sha256_value,
             state_value,
             created_at,
             completed_at,
@@ -1298,8 +1356,31 @@ def _cleanup_jobs(
             label="cleanup cycle generation",
             minimum=1,
         )
-        _as_int(algorithm_version, label="cleanup algorithm version", minimum=1)
-        _as_int(max_rows, label="cleanup max rows", minimum=1)
+        if (
+            _as_int(algorithm_version, label="cleanup algorithm version", minimum=1)
+            != 2
+        ):
+            raise OperationalSemanticValidationError(
+                "operational READY cleanup algorithm version is unsupported"
+            )
+        maximum_rows = _as_int(max_rows, label="cleanup max rows", minimum=1)
+        if maximum_rows > 256:
+            raise OperationalSemanticValidationError(
+                "operational READY cleanup max rows exceeds 256"
+            )
+        frozen_root_count = _as_int(
+            frozen_root_count_value,
+            label="cleanup frozen root count",
+        )
+        if frozen_root_count > maximum_rows:
+            raise OperationalSemanticValidationError(
+                "operational READY cleanup frozen roots exceed its policy"
+            )
+        frozen_root_set_sha256 = _as_bytes(
+            frozen_root_set_sha256_value,
+            label="cleanup frozen root set digest",
+            length=32,
+        )
         _as_int(created_at, label="cleanup created_at")
         state = _as_text(state_value, label="cleanup state")
         if cleanup_id != _cleanup_id(target_kind, shard_no, cycle_generation):
@@ -1357,6 +1438,9 @@ def _cleanup_jobs(
             target_kind=target_kind,
             shard_no=shard_no,
             cycle_generation=cycle_generation,
+            max_rows_per_transaction=maximum_rows,
+            frozen_root_count=frozen_root_count,
+            frozen_root_set_sha256=frozen_root_set_sha256,
             state=state,
         )
 
@@ -1378,6 +1462,157 @@ def _cleanup_jobs(
     return result
 
 
+def _validate_cleanup_frozen_root_frame(target_kind: str, frame: bytes) -> None:
+    shape = _CLEANUP_FROZEN_ROOT_SHAPES.get(target_kind)
+    if shape is None:
+        raise OperationalSemanticValidationError(
+            "operational READY cleanup frozen root kind is unregistered"
+        )
+    if not 3 <= len(frame) <= 260 or frame[0] != 1 or frame[1] != len(shape):
+        raise OperationalSemanticValidationError(
+            "operational READY cleanup frozen root frame header is invalid"
+        )
+    offset = 2
+    for tag, maximum in shape:
+        if offset >= len(frame) or frame[offset : offset + 1] != tag:
+            raise OperationalSemanticValidationError(
+                "operational READY cleanup frozen root scalar tag is invalid"
+            )
+        offset += 1
+        if tag == b"i":
+            if offset + 8 > len(frame):
+                raise OperationalSemanticValidationError(
+                    "operational READY cleanup frozen root integer is truncated"
+                )
+            if int.from_bytes(frame[offset : offset + 8], "big") > _INT63_MAX:
+                raise OperationalSemanticValidationError(
+                    "operational READY cleanup frozen root integer exceeds int63"
+                )
+            offset += 8
+            continue
+        if offset + 2 > len(frame):
+            raise OperationalSemanticValidationError(
+                "operational READY cleanup frozen root bytes are truncated"
+            )
+        size = int.from_bytes(frame[offset : offset + 2], "big")
+        offset += 2
+        variable = target_kind == "SOURCE_GALLERY_NAME_GID"
+        if (variable and not 1 <= size <= maximum) or (
+            not variable and size != maximum
+        ):
+            raise OperationalSemanticValidationError(
+                "operational READY cleanup frozen root scalar length is invalid"
+            )
+        if offset + size > len(frame):
+            raise OperationalSemanticValidationError(
+                "operational READY cleanup frozen root bytes are truncated"
+            )
+        offset += size
+    if offset != len(frame):
+        raise OperationalSemanticValidationError(
+            "operational READY cleanup frozen root frame has trailing bytes"
+        )
+
+
+def _cleanup_frozen_root_set_sha256(
+    cleanup_id: bytes,
+    frames: tuple[bytes, ...],
+) -> bytes:
+    digest = hashlib.sha256()
+    digest.update(_CLEANUP_FROZEN_ROOT_SET_DOMAIN)
+    digest.update(cleanup_id)
+    digest.update(len(frames).to_bytes(2, "big"))
+    for frame in sorted(frames):
+        digest.update(len(frame).to_bytes(2, "big"))
+        digest.update(frame)
+    return digest.digest()
+
+
+def _cleanup_next_chain_sha256(
+    prior_chain_sha256: bytes,
+    phase: str,
+    generation: int,
+    start_cursor: bytes,
+    next_cursor: bytes,
+    input_sha256: bytes,
+    row_count: int,
+) -> bytes:
+    digest = hashlib.sha256()
+    digest.update(_CLEANUP_CHAIN_DOMAIN)
+    digest.update(prior_chain_sha256)
+    digest.update(phase.encode("ascii"))
+    digest.update(b"\0")
+    digest.update(generation.to_bytes(8, "big"))
+    digest.update(len(start_cursor).to_bytes(4, "big"))
+    digest.update(start_cursor)
+    digest.update(len(next_cursor).to_bytes(4, "big"))
+    digest.update(next_cursor)
+    digest.update(input_sha256)
+    digest.update(row_count.to_bytes(8, "big"))
+    return digest.digest()
+
+
+def _validate_cleanup_frozen_roots(
+    connector: SQLConnector,
+    backend: Backend,
+    jobs: Mapping[bytes, _CleanupJob],
+) -> None:
+    relation = _table(backend, "cleanup_cycle_root")
+    rows = _fetch_all(
+        connector,
+        "cleanup frozen roots",
+        f"SELECT cleanup_id, frozen_root_key FROM {relation} "
+        "ORDER BY cleanup_id, frozen_root_key LIMIT 257",
+    )
+    if len(rows) > 256:
+        raise OperationalSemanticValidationError(
+            "operational READY cleanup frozen roots exceed global 256 cap"
+        )
+    if sum(job.state == "OPEN" for job in jobs.values()) > 1:
+        raise OperationalSemanticValidationError(
+            "operational READY cleanup has multiple OPEN jobs"
+        )
+    by_cleanup: defaultdict[bytes, list[bytes]] = defaultdict(list)
+    for cleanup_id_value, frozen_root_key_value in rows:
+        cleanup_id = _as_bytes(
+            cleanup_id_value, label="cleanup frozen root cleanup_id", length=16
+        )
+        job = jobs.get(cleanup_id)
+        if job is None:
+            raise OperationalSemanticValidationError(
+                "operational READY cleanup frozen root has no job"
+            )
+        frame = _as_bytes(
+            frozen_root_key_value,
+            label="cleanup frozen root key",
+        )
+        _validate_cleanup_frozen_root_frame(job.target_kind, frame)
+        by_cleanup[cleanup_id].append(frame)
+    for cleanup_id, job in jobs.items():
+        frames = tuple(by_cleanup.get(cleanup_id, ()))
+        if job.state == "COMPLETE":
+            if frames:
+                raise OperationalSemanticValidationError(
+                    "operational READY COMPLETE cleanup retains frozen roots"
+                )
+            continue
+        if len(frames) != job.frozen_root_count:
+            raise OperationalSemanticValidationError(
+                "operational READY cleanup frozen root count disagrees"
+            )
+        if len(set(frames)) != len(frames):
+            raise OperationalSemanticValidationError(
+                "operational READY cleanup frozen root membership is duplicated"
+            )
+        if (
+            _cleanup_frozen_root_set_sha256(cleanup_id, frames)
+            != job.frozen_root_set_sha256
+        ):
+            raise OperationalSemanticValidationError(
+                "operational READY cleanup frozen root digest disagrees"
+            )
+
+
 def _validate_cleanup_checkpoints(
     connector: SQLConnector,
     backend: Backend,
@@ -1395,6 +1630,7 @@ def _validate_cleanup_checkpoints(
         SELECT p.cleanup_id, p.phase, p.generation, p.cursor_bytes,
                p.deleted_count, p.chain_sha256, p.state,
                r.cleanup_id, r.batch_key, r.start_cursor, r.next_cursor,
+               r.prior_chain_sha256, r.prior_deleted_count,
                r.input_sha256, r.output_sha256, r.row_count,
                r.committed_generation, r.committed_at
         FROM {checkpoint_table} AS p
@@ -1423,6 +1659,8 @@ def _validate_cleanup_checkpoints(
             batch_key,
             start_cursor,
             next_cursor,
+            prior_chain_sha256,
+            prior_deleted_count,
             input_sha256,
             output_sha256,
             row_count_value,
@@ -1435,8 +1673,12 @@ def _validate_cleanup_checkpoints(
         phase = _as_text(phase_value, label="cleanup checkpoint phase")
         generation = _as_int(generation_value, label="cleanup checkpoint generation")
         cursor = _as_bytes(cursor_value, label="cleanup checkpoint cursor")
-        _as_int(deleted_count, label="cleanup checkpoint deleted count")
-        _as_bytes(chain_value, label="cleanup checkpoint chain", length=32)
+        checkpoint_deleted_count = _as_int(
+            deleted_count, label="cleanup checkpoint deleted count"
+        )
+        checkpoint_chain = _as_bytes(
+            chain_value, label="cleanup checkpoint chain", length=32
+        )
         state = _as_text(state_value, label="cleanup checkpoint state")
         job = jobs.get(cleanup_id)
         if job is None or job.state != "OPEN":
@@ -1463,16 +1705,53 @@ def _validate_cleanup_checkpoints(
                     "operational READY cleanup receipt owner disagrees"
                 )
             _as_bytes(batch_key, label="cleanup receipt batch key", length=32)
-            _as_bytes(start_cursor, label="cleanup receipt start cursor")
-            _as_bytes(next_cursor, label="cleanup receipt next cursor")
-            _as_bytes(input_sha256, label="cleanup receipt input", length=32)
-            _as_bytes(output_sha256, label="cleanup receipt output", length=32)
+            receipt_start_cursor = _as_bytes(
+                start_cursor, label="cleanup receipt start cursor"
+            )
+            receipt_next_cursor = _as_bytes(
+                next_cursor, label="cleanup receipt next cursor"
+            )
+            receipt_prior_chain = _as_bytes(
+                prior_chain_sha256,
+                label="cleanup receipt prior chain",
+                length=32,
+            )
+            receipt_prior_deleted = _as_int(
+                prior_deleted_count,
+                label="cleanup receipt prior deleted count",
+            )
+            receipt_input = _as_bytes(
+                input_sha256, label="cleanup receipt input", length=32
+            )
+            receipt_output = _as_bytes(
+                output_sha256, label="cleanup receipt output", length=32
+            )
             row_count = _as_int(row_count_value, label="cleanup receipt row count")
             receipt_generation = _as_int(
                 committed_generation, label="cleanup receipt generation"
             )
             _as_int(committed_at, label="cleanup receipt committed_at")
-            if next_cursor != cursor or receipt_generation != generation:
+            expected_output = _cleanup_next_chain_sha256(
+                receipt_prior_chain,
+                phase,
+                receipt_generation,
+                receipt_start_cursor,
+                receipt_next_cursor,
+                receipt_input,
+                row_count,
+            )
+            expected_deleted = _as_int(
+                receipt_prior_deleted + row_count,
+                label="cleanup receipt next deleted count",
+            )
+            if (
+                receipt_next_cursor != cursor
+                or expected_output != receipt_output
+                or receipt_output != checkpoint_chain
+                or receipt_generation != generation
+                or row_count > job.max_rows_per_transaction
+                or checkpoint_deleted_count != expected_deleted
+            ):
                 raise OperationalSemanticValidationError(
                     "operational READY cleanup receipt does not match checkpoint poststate"
                 )
@@ -1489,6 +1768,12 @@ def _validate_cleanup_checkpoints(
         ):
             raise OperationalSemanticValidationError(
                 "operational READY cleanup checkpoint terminal receipt equivalence fails"
+            )
+        if has_receipt and (
+            (receipt_start_cursor == receipt_next_cursor) != terminal_receipt
+        ):
+            raise OperationalSemanticValidationError(
+                "operational READY cleanup receipt cursor movement disagrees"
             )
         states[(cleanup_id, phase)] = state
 
@@ -1524,6 +1809,7 @@ def _validate_cleanup_checkpoints(
 def _validate_fixed_cleanup_state(connector: SQLConnector, backend: Backend) -> None:
     sweep, phases_by_kind = _cleanup_layout(backend)
     jobs = _cleanup_jobs(connector, backend, sweep)
+    _validate_cleanup_frozen_roots(connector, backend, jobs)
     _validate_cleanup_checkpoints(connector, backend, sweep, phases_by_kind, jobs)
 
 
@@ -1546,8 +1832,646 @@ def check_canonical_hash_cache_contract_v1(connector: SQLConnector) -> None:
     _ready_context(connector, "h2hdb.operational.canonical-hash-cache.v1")
 
 
+_PCOM_TRANSITION_PHASE_ORDER = MappingProxyType(
+    {
+        "PCOM_RELEASE_BUILD_BASE": 1,
+        "PCOM_PREPARATION_BINDING": 2,
+        "PCOM_PREPARATION_BATCH": 3,
+        "PCOM_PREPARATION_CHECKPOINT": 4,
+        "PCOM_PREPARATION": 5,
+        "PCOM_EVENT": 6,
+        "PCOM_FINALIZATION_MARKER": 7,
+        "PCOM_FINALIZATION_BATCH": 8,
+        "PCOM_COMMIT_EFFECT_ROOT": 9,
+        "PCOM_FINALIZATION_CHECKPOINT": 10,
+        "PCOM_ANCHOR": 11,
+    }
+)
+
+
+def _decode_pcom_frozen_authority(value: object) -> tuple[bytes, bytes]:
+    frame = _as_bytes(value, label="PCOM frozen root")
+    if (
+        len(frame) != 40
+        or frame[:5] != b"\x01\x02b\x00\x10"
+        or frame[21:24] != b"b\x00\x10"
+    ):
+        raise OperationalSemanticValidationError(
+            "operational READY PCOM frozen authority frame is malformed"
+        )
+    return frame[5:21], frame[24:40]
+
+
+def _decode_pcom_cursor(
+    value: object,
+    *,
+    integer_tail: bool,
+) -> tuple[bytes, bytes, int | bytes]:
+    cursor = _as_bytes(value, label="PCOM transition cursor")
+    expected_length = 51 if integer_tail else 61
+    if (
+        len(cursor) != expected_length
+        or cursor[:4] != b"\x01\x00\x00\x03"
+        or cursor[4:7] != b"b\x00\x10"
+        or cursor[23:26] != b"b\x00\x10"
+    ):
+        raise OperationalSemanticValidationError(
+            "operational READY PCOM transition cursor is malformed"
+        )
+    receipt_id = cursor[7:23]
+    second = cursor[26:42]
+    if integer_tail:
+        if cursor[42:43] != b"i":
+            raise OperationalSemanticValidationError(
+                "operational READY PCOM EVENT cursor has the wrong scalar type"
+            )
+        tail: int | bytes = int.from_bytes(cursor[43:51], "big")
+        if len(cursor) != 51:
+            raise OperationalSemanticValidationError(
+                "operational READY PCOM EVENT cursor has trailing bytes"
+            )
+    else:
+        if cursor[42:45] != b"b\x00\x10":
+            raise OperationalSemanticValidationError(
+                "operational READY PCOM compound cursor has the wrong scalar type"
+            )
+        tail = cursor[45:61]
+        if len(cursor) != 61:
+            raise OperationalSemanticValidationError(
+                "operational READY PCOM compound cursor has trailing bytes"
+            )
+    return receipt_id, second, tail
+
+
+def _decode_pcom_post_compound_cursor(value: object) -> bytes:
+    cursor = _as_bytes(value, label="PCOM post-compound cursor")
+    if (
+        len(cursor) != 42
+        or cursor[:7] != b"\x01\x00\x00\x02b\x00\x10"
+        or cursor[23:26] != b"b\x00\x10"
+        or cursor[7:23] != cursor[26:42]
+    ):
+        raise OperationalSemanticValidationError(
+            "operational READY PCOM post-compound cursor is malformed"
+        )
+    return cursor[7:23]
+
+
+def _pcom_single_row(
+    connector: SQLConnector,
+    *,
+    label: str,
+    query: str,
+    parameters: tuple[object, ...],
+) -> tuple[Any, ...]:
+    rows = _fetch_all(connector, label, query, parameters)
+    if len(rows) != 1:
+        raise OperationalSemanticValidationError(
+            f"operational READY {label} must have exactly one row"
+        )
+    return rows[0]
+
+
+def _pcom_commit_preparation(
+    connector: SQLConnector,
+    backend: Backend,
+    receipt_id: bytes,
+) -> tuple[bytes, int]:
+    commit = _table(backend, "publication_commit")
+    seal = _table(backend, "operational_preparation_effect_seal")
+    stream = _table(backend, "operational_event_stream")
+    row = _pcom_single_row(
+        connector,
+        label="PCOM commit/effect authority",
+        query=(
+            f"SELECT committed.preparation_id, effect.event_count "
+            f"FROM {commit} AS committed "
+            f"JOIN {seal} AS effect "
+            "ON effect.preparation_id = committed.preparation_id "
+            f"JOIN {stream} AS event_stream "
+            "ON event_stream.preparation_id = committed.preparation_id "
+            "WHERE committed.receipt_id = %s LIMIT 2"
+        ),
+        parameters=(receipt_id,),
+    )
+    return (
+        _as_bytes(row[0], label="PCOM preparation_id", length=16),
+        _as_int(row[1], label="PCOM event_count"),
+    )
+
+
+def _pcom_require_no_events(
+    connector: SQLConnector,
+    backend: Backend,
+    *,
+    preparation_id: bytes,
+    through_sequence_no: int | None = None,
+) -> None:
+    event = _table(backend, "operational_event")
+    predicate = "preparation_id = %s"
+    parameters: tuple[object, ...] = (preparation_id,)
+    if through_sequence_no is not None:
+        predicate += " AND sequence_no <= %s"
+        parameters += (through_sequence_no,)
+    rows = _fetch_all(
+        connector,
+        "PCOM retired event coordinates",
+        f"SELECT 1 FROM {event} WHERE {predicate} LIMIT 1",
+        parameters,
+    )
+    if rows:
+        raise OperationalSemanticValidationError(
+            "operational READY PCOM cursor-covered event coordinate reappeared"
+        )
+
+
+def _pcom_require_no_preparation(
+    connector: SQLConnector,
+    backend: Backend,
+    *,
+    preparation_id: bytes,
+) -> None:
+    preparation = _table(backend, "operational_preparation")
+    if _fetch_all(
+        connector,
+        "PCOM retired preparation",
+        f"SELECT 1 FROM {preparation} WHERE preparation_id = %s LIMIT 1",
+        (preparation_id,),
+    ):
+        raise OperationalSemanticValidationError(
+            "operational READY PCOM preparation reappeared after its root phase"
+        )
+
+
+def _pcom_require_compound_authority_absent(
+    connector: SQLConnector,
+    backend: Backend,
+    *,
+    preparation_id: bytes,
+) -> None:
+    for relation_name in (
+        "publication_candidate_preparation",
+        "operational_preparation_batch_receipt",
+        "operational_preparation_checkpoint",
+        "operational_preparation",
+        "operational_event",
+        "operational_preparation_effect_seal",
+        "operational_event_stream",
+    ):
+        table = _table(backend, relation_name)
+        if _fetch_all(
+            connector,
+            "PCOM retired effect root",
+            f"SELECT 1 FROM {table} WHERE preparation_id = %s LIMIT 1",
+            (preparation_id,),
+        ):
+            raise OperationalSemanticValidationError(
+                "operational READY PCOM compound-covered authority reappeared"
+            )
+    event = _table(backend, "operational_event")
+    for relation_name in (
+        "operational_removed_gid_event",
+        "operational_deletion_consumption_event",
+    ):
+        subtype = _table(backend, relation_name)
+        if _fetch_all(
+            connector,
+            "PCOM compound-covered typed event",
+            f"SELECT 1 FROM {subtype} AS subtype "
+            f"JOIN {event} AS event ON event.event_id = subtype.event_id "
+            "WHERE event.preparation_id = %s LIMIT 1",
+            (preparation_id,),
+        ):
+            raise OperationalSemanticValidationError(
+                "operational READY PCOM compound-covered typed event reappeared"
+            )
+
+
+def _pcom_require_post_compound_transition(
+    connector: SQLConnector,
+    backend: Backend,
+    *,
+    phase: str,
+    cursor: bytes,
+    frozen_authorities: tuple[tuple[bytes, bytes], ...],
+) -> None:
+    if phase not in {"PCOM_FINALIZATION_CHECKPOINT", "PCOM_ANCHOR"}:
+        raise OperationalSemanticValidationError(
+            "operational READY PCOM post-compound phase is invalid"
+        )
+    cursor_receipt = _decode_pcom_post_compound_cursor(cursor) if cursor else None
+    frozen_receipts = tuple(receipt_id for receipt_id, _ in frozen_authorities)
+    if cursor_receipt is not None and cursor_receipt not in frozen_receipts:
+        raise OperationalSemanticValidationError(
+            "operational READY PCOM post-compound cursor is outside frozen roots"
+        )
+    marker = _table(backend, "publication_commit_finalization")
+    batch = _table(backend, "publication_finalization_batch_receipt_stored")
+    checkpoint = _table(backend, "publication_finalization_checkpoint")
+    anchor = _table(backend, "publication_commit_anchor")
+    source_base = _table(backend, "source_build_base_publication_commit")
+    for receipt_id in frozen_receipts:
+        if _fetch_all(
+            connector,
+            "PCOM post-compound source-build base",
+            f"SELECT 1 FROM {source_base} WHERE base_receipt_id = %s LIMIT 1",
+            (receipt_id,),
+        ):
+            raise OperationalSemanticValidationError(
+                "operational READY PCOM source-build base pin reappeared"
+            )
+        for table, label in (
+            (marker, "finalization marker"),
+            (batch, "finalization batch"),
+        ):
+            if _fetch_all(
+                connector,
+                f"PCOM post-compound {label}",
+                f"SELECT 1 FROM {table} WHERE receipt_id = %s LIMIT 1",
+                (receipt_id,),
+            ):
+                raise OperationalSemanticValidationError(
+                    f"operational READY PCOM post-compound {label} reappeared"
+                )
+        checkpoint_rows = _fetch_all(
+            connector,
+            "PCOM finalization checkpoint transition",
+            f"SELECT state FROM {checkpoint} WHERE receipt_id = %s LIMIT 2",
+            (receipt_id,),
+        )
+        anchor_rows = _fetch_all(
+            connector,
+            "PCOM anchor transition",
+            f"SELECT 1 FROM {anchor} WHERE receipt_id = %s LIMIT 2",
+            (receipt_id,),
+        )
+        covered = cursor_receipt is not None and receipt_id <= cursor_receipt
+        if phase == "PCOM_FINALIZATION_CHECKPOINT":
+            expected_checkpoint = [] if covered else [("COMPLETE",)]
+            if checkpoint_rows != expected_checkpoint:
+                raise OperationalSemanticValidationError(
+                    "operational READY PCOM finalization-checkpoint coverage differs"
+                )
+            if anchor_rows != [(1,)]:
+                raise OperationalSemanticValidationError(
+                    "operational READY PCOM anchor disappeared before its phase"
+                )
+            continue
+        if checkpoint_rows:
+            raise OperationalSemanticValidationError(
+                "operational READY PCOM finalization checkpoint reappeared"
+            )
+        expected_anchor = [] if covered else [(1,)]
+        if anchor_rows != expected_anchor:
+            raise OperationalSemanticValidationError(
+                "operational READY PCOM anchor coverage differs"
+            )
+
+
+def _validate_operational_event_root_owners(
+    connector: SQLConnector,
+    backend: Backend,
+) -> None:
+    preparation = _table(backend, "operational_preparation")
+    commit = _table(backend, "publication_commit")
+    seal = _table(backend, "operational_preparation_effect_seal")
+    stream = _table(backend, "operational_event_stream")
+    orphan_seal = _fetch_all(
+        connector,
+        "orphan operational effect seal",
+        f"SELECT 1 FROM {seal} AS effect "
+        f"LEFT JOIN {preparation} AS preparation "
+        "ON preparation.preparation_id = effect.preparation_id "
+        f"LEFT JOIN {commit} AS committed "
+        "ON committed.preparation_id = effect.preparation_id "
+        "WHERE preparation.preparation_id IS NULL "
+        "AND committed.receipt_id IS NULL LIMIT 1",
+    )
+    if orphan_seal:
+        raise OperationalSemanticValidationError(
+            "operational READY effect seal lacks preparation or commit authority"
+        )
+    orphan_stream = _fetch_all(
+        connector,
+        "orphan operational event stream",
+        f"SELECT 1 FROM {stream} AS event_stream "
+        f"LEFT JOIN {preparation} AS preparation "
+        "ON preparation.preparation_id = event_stream.preparation_id "
+        f"LEFT JOIN {seal} AS effect "
+        "ON effect.preparation_id = event_stream.preparation_id "
+        "WHERE preparation.preparation_id IS NULL "
+        "AND effect.preparation_id IS NULL LIMIT 1",
+    )
+    if orphan_stream:
+        raise OperationalSemanticValidationError(
+            "operational READY event stream lacks preparation or seal authority"
+        )
+
+
+def _validate_open_pcom_event_transition(
+    connector: SQLConnector,
+    backend: Backend,
+) -> None:
+    job = _table(backend, "cleanup_job")
+    sweep = _table(backend, "cleanup_sweep_target")
+    checkpoint = _table(backend, "cleanup_checkpoint")
+    phase_registry = _table(backend, "cleanup_phase")
+    root = _table(backend, "cleanup_cycle_root")
+    receipt = _table(backend, "cleanup_batch_receipt")
+    jobs = _fetch_all(
+        connector,
+        "OPEN PCOM job",
+        f"SELECT current.cleanup_id, current.frozen_root_count "
+        f"FROM {job} AS current "
+        f"JOIN {sweep} AS target ON target.target_key = current.target_key "
+        "WHERE current.state = 'OPEN' "
+        "AND target.target_kind = 'PUBLICATION_COMMIT' LIMIT 2",
+    )
+    if not jobs:
+        return
+    if len(jobs) != 1:
+        raise OperationalSemanticValidationError(
+            "operational READY has multiple OPEN PCOM jobs"
+        )
+    cleanup_id = _as_bytes(jobs[0][0], label="OPEN PCOM cleanup_id", length=16)
+    frozen_count = _as_int(jobs[0][1], label="OPEN PCOM frozen root count")
+    if frozen_count > 256:
+        raise OperationalSemanticValidationError(
+            "operational READY OPEN PCOM roots exceed the hard cap"
+        )
+    root_rows = _fetch_all(
+        connector,
+        "OPEN PCOM frozen roots",
+        f"SELECT frozen_root_key FROM {root} WHERE cleanup_id = %s "
+        "ORDER BY frozen_root_key LIMIT 257",
+        (cleanup_id,),
+    )
+    if len(root_rows) != frozen_count:
+        raise OperationalSemanticValidationError(
+            "operational READY OPEN PCOM root count differs"
+        )
+    frozen_authorities = tuple(
+        _decode_pcom_frozen_authority(row[0]) for row in root_rows
+    )
+    frozen_receipts = tuple(receipt_id for receipt_id, _ in frozen_authorities)
+    if len(set(frozen_receipts)) != len(frozen_receipts):
+        raise OperationalSemanticValidationError(
+            "operational READY PCOM frozen receipt authority is duplicated"
+        )
+
+    current = _pcom_single_row(
+        connector,
+        label="OPEN PCOM current checkpoint",
+        query=(
+            f"SELECT state.phase, state.cursor_bytes, state.state, "
+            "state.deleted_count, registry.phase_order "
+            f"FROM {checkpoint} AS state "
+            f"JOIN {phase_registry} AS registry "
+            "ON registry.phase = state.phase "
+            "AND registry.target_kind = 'PUBLICATION_COMMIT' "
+            "WHERE state.cleanup_id = %s "
+            "AND state.state = 'OPEN' "
+            "ORDER BY registry.phase_order DESC LIMIT 2"
+        ),
+        parameters=(cleanup_id,),
+    )
+    current_phase = _as_text(current[0], label="OPEN PCOM phase")
+    current_cursor = _as_bytes(current[1], label="OPEN PCOM cursor")
+    current_order = _as_int(current[4], label="OPEN PCOM phase order", minimum=1)
+    if _PCOM_TRANSITION_PHASE_ORDER.get(current_phase) != current_order:
+        raise OperationalSemanticValidationError(
+            "operational READY OPEN PCOM phase order drifts"
+        )
+    live_authorities: dict[bytes, tuple[bytes, int]] = {}
+    if current_order < _PCOM_TRANSITION_PHASE_ORDER["PCOM_COMMIT_EFFECT_ROOT"]:
+        for receipt_id, frozen_preparation_id in frozen_authorities:
+            authority = _pcom_commit_preparation(
+                connector,
+                backend,
+                receipt_id,
+            )
+            if authority[0] != frozen_preparation_id:
+                raise OperationalSemanticValidationError(
+                    "operational READY PCOM preparation differs from frozen authority"
+                )
+            live_authorities[receipt_id] = authority
+    if current_order < _PCOM_TRANSITION_PHASE_ORDER["PCOM_EVENT"]:
+        return
+
+    if current_phase == "PCOM_EVENT":
+        decoded_cursor: tuple[bytes, bytes, int] | None = None
+        if current_cursor:
+            cursor_receipt, cursor_preparation, sequence_value = _decode_pcom_cursor(
+                current_cursor,
+                integer_tail=True,
+            )
+            assert isinstance(sequence_value, int)
+            decoded_cursor = (cursor_receipt, cursor_preparation, sequence_value)
+            if cursor_receipt not in frozen_receipts:
+                raise OperationalSemanticValidationError(
+                    "operational READY PCOM EVENT cursor is outside frozen roots"
+                )
+        for receipt_id, frozen_preparation_id in frozen_authorities:
+            preparation_id, event_count = live_authorities[receipt_id]
+            if preparation_id != frozen_preparation_id:
+                raise OperationalSemanticValidationError(
+                    "operational READY PCOM preparation differs from frozen authority"
+                )
+            _pcom_require_no_preparation(
+                connector,
+                backend,
+                preparation_id=preparation_id,
+            )
+            if decoded_cursor is None:
+                continue
+            cursor_receipt, cursor_preparation, sequence_value = decoded_cursor
+            if receipt_id < cursor_receipt:
+                _pcom_require_no_events(
+                    connector,
+                    backend,
+                    preparation_id=preparation_id,
+                )
+            elif receipt_id == cursor_receipt:
+                if (
+                    cursor_preparation != preparation_id
+                    or sequence_value >= event_count
+                ):
+                    raise OperationalSemanticValidationError(
+                        "operational READY PCOM EVENT cursor exceeds its seal"
+                    )
+                _pcom_require_no_events(
+                    connector,
+                    backend,
+                    preparation_id=preparation_id,
+                    through_sequence_no=sequence_value,
+                )
+        return
+
+    if current_order < _PCOM_TRANSITION_PHASE_ORDER["PCOM_COMMIT_EFFECT_ROOT"]:
+        for receipt_id, frozen_preparation_id in frozen_authorities:
+            preparation_id, _event_count = live_authorities[receipt_id]
+            if preparation_id != frozen_preparation_id:
+                raise OperationalSemanticValidationError(
+                    "operational READY PCOM preparation differs from frozen authority"
+                )
+            _pcom_require_no_preparation(
+                connector,
+                backend,
+                preparation_id=preparation_id,
+            )
+            _pcom_require_no_events(
+                connector,
+                backend,
+                preparation_id=preparation_id,
+            )
+        return
+
+    compound = _pcom_single_row(
+        connector,
+        label="PCOM compound checkpoint",
+        query=(
+            f"SELECT cursor_bytes, deleted_count, state FROM {checkpoint} "
+            "WHERE cleanup_id = %s AND phase = 'PCOM_COMMIT_EFFECT_ROOT' LIMIT 2"
+        ),
+        parameters=(cleanup_id,),
+    )
+    compound_cursor = _as_bytes(compound[0], label="PCOM compound cursor")
+    compound_deleted = _as_int(compound[1], label="PCOM compound deleted count")
+    compound_state = _as_text(compound[2], label="PCOM compound state")
+    if not compound_cursor:
+        if frozen_count == 0:
+            if compound_deleted != 0:
+                raise OperationalSemanticValidationError(
+                    "operational READY empty PCOM compound proof deleted rows"
+                )
+            if current_phase == "PCOM_COMMIT_EFFECT_ROOT":
+                if compound_state != "OPEN":
+                    raise OperationalSemanticValidationError(
+                        "operational READY empty PCOM compound prestate is invalid"
+                    )
+                return
+            empty_proof = _pcom_single_row(
+                connector,
+                label="empty PCOM compound receipt proof",
+                query=(
+                    f"SELECT start_cursor, next_cursor, row_count FROM {receipt} "
+                    "WHERE cleanup_id = %s "
+                    "AND phase = 'PCOM_COMMIT_EFFECT_ROOT' LIMIT 2"
+                ),
+                parameters=(cleanup_id,),
+            )
+            empty_start = _as_bytes(empty_proof[0], label="empty PCOM receipt start")
+            empty_next = _as_bytes(empty_proof[1], label="empty PCOM receipt next")
+            empty_rows = _as_int(empty_proof[2], label="empty PCOM receipt row count")
+            if compound_state != "COMPLETE" or (
+                empty_start,
+                empty_next,
+                empty_rows,
+            ) != (b"", b"", 0):
+                raise OperationalSemanticValidationError(
+                    "operational READY empty PCOM compound receipt proof differs"
+                )
+            return
+        if current_phase != "PCOM_COMMIT_EFFECT_ROOT":
+            raise OperationalSemanticValidationError(
+                "operational READY later PCOM phase lacks compound cursor proof"
+            )
+        for receipt_id, frozen_preparation_id in frozen_authorities:
+            preparation_id, _event_count = _pcom_commit_preparation(
+                connector,
+                backend,
+                receipt_id,
+            )
+            if preparation_id != frozen_preparation_id:
+                raise OperationalSemanticValidationError(
+                    "operational READY PCOM preparation differs from frozen authority"
+                )
+            _pcom_require_no_preparation(
+                connector,
+                backend,
+                preparation_id=preparation_id,
+            )
+            _pcom_require_no_events(
+                connector,
+                backend,
+                preparation_id=preparation_id,
+            )
+        return
+
+    cursor_root, cursor_receipt, cursor_preparation_value = _decode_pcom_cursor(
+        compound_cursor,
+        integer_tail=False,
+    )
+    assert isinstance(cursor_preparation_value, bytes)
+    if (
+        not frozen_receipts
+        or cursor_root != frozen_receipts[-1]
+        or cursor_receipt != cursor_root
+        or cursor_preparation_value != frozen_authorities[-1][1]
+        or compound_deleted != frozen_count
+    ):
+        raise OperationalSemanticValidationError(
+            "operational READY PCOM compound cursor does not cover frozen roots"
+        )
+    commit = _table(backend, "publication_commit")
+    for receipt_id, preparation_id in frozen_authorities:
+        if _fetch_all(
+            connector,
+            "PCOM retired commit",
+            f"SELECT 1 FROM {commit} WHERE receipt_id = %s LIMIT 1",
+            (receipt_id,),
+        ):
+            raise OperationalSemanticValidationError(
+                "operational READY PCOM compound-covered commit reappeared"
+            )
+        _pcom_require_compound_authority_absent(
+            connector,
+            backend,
+            preparation_id=preparation_id,
+        )
+
+    proof = _pcom_single_row(
+        connector,
+        label="PCOM compound receipt proof",
+        query=(
+            f"SELECT start_cursor, next_cursor, row_count FROM {receipt} "
+            "WHERE cleanup_id = %s AND phase = 'PCOM_COMMIT_EFFECT_ROOT' LIMIT 2"
+        ),
+        parameters=(cleanup_id,),
+    )
+    start_cursor = _as_bytes(proof[0], label="PCOM compound receipt start cursor")
+    next_cursor = _as_bytes(proof[1], label="PCOM compound receipt next cursor")
+    proof_rows = _as_int(proof[2], label="PCOM compound receipt row count")
+    valid_open_proof = (
+        current_phase == "PCOM_COMMIT_EFFECT_ROOT"
+        and compound_state == "OPEN"
+        and start_cursor == b""
+        and next_cursor == compound_cursor
+        and proof_rows == frozen_count
+    )
+    valid_terminal_proof = (
+        current_order > _PCOM_TRANSITION_PHASE_ORDER["PCOM_COMMIT_EFFECT_ROOT"]
+        and compound_state == "COMPLETE"
+        and start_cursor == compound_cursor
+        and next_cursor == compound_cursor
+        and proof_rows == 0
+    )
+    if not (valid_open_proof or valid_terminal_proof):
+        raise OperationalSemanticValidationError(
+            "operational READY PCOM compound cursor lacks exact receipt proof"
+        )
+    if current_phase in {"PCOM_FINALIZATION_CHECKPOINT", "PCOM_ANCHOR"}:
+        _pcom_require_post_compound_transition(
+            connector,
+            backend,
+            phase=current_phase,
+            cursor=current_cursor,
+            frozen_authorities=frozen_authorities,
+        )
+
+
 def check_event_integrity_contract_v1(connector: SQLConnector) -> None:
-    """Bind event metadata; subtype and acknowledgement checks are writer-owned."""
+    """Bind event metadata and validate exact OPEN cleanup transition authority."""
 
     backend = _ready_context(connector, "h2hdb.operational.event-integrity.v1")
     _require_key_shape(
@@ -1556,6 +2480,8 @@ def check_event_integrity_contract_v1(connector: SQLConnector) -> None:
         primary_key=("candidate_id",),
         unique_keys=(("preparation_id",),),
     )
+    _validate_operational_event_root_owners(connector, backend)
+    _validate_open_pcom_event_transition(connector, backend)
 
 
 def check_build_generation_contract_v1(connector: SQLConnector) -> None:
@@ -1613,6 +2539,21 @@ def check_cleanup_reachability_v1(connector: SQLConnector) -> None:
     ):
         _exact_seeded_relation(connector, backend, relation_name)
     _validate_fixed_cleanup_state(connector, backend)
+
+
+def check_cleanup_frozen_root_set_v1(connector: SQLConnector) -> None:
+    """Validate the bounded sealed per-cycle cleanup root set."""
+
+    backend = _ready_context(connector, "h2hdb.operational.cleanup-frozen-root-set.v1")
+    _require_key_shape(
+        backend,
+        "cleanup_cycle_root",
+        primary_key=("cleanup_id", "frozen_root_key"),
+        unique_keys=(),
+    )
+    sweep, _phases = _cleanup_layout(backend)
+    jobs = _cleanup_jobs(connector, backend, sweep)
+    _validate_cleanup_frozen_roots(connector, backend, jobs)
 
 
 def _validate_allocator_registry(
@@ -1681,6 +2622,70 @@ def check_gallery_staging_contract_v1(connector: SQLConnector) -> None:
 
     backend = _ready_context(connector, "h2hdb.operational.gallery-staging.v1")
     _validate_allocator_registry(connector, backend, "identity_allocator", "next_id")
+
+
+def check_gallery_staging_request_budget_v1(connector: SQLConnector) -> None:
+    """Validate exact capped request accounting and the one-slot physical key."""
+
+    backend = _ready_context(
+        connector, "h2hdb.operational.gallery-staging-request-budget.v1"
+    )
+    _require_key_shape(
+        backend,
+        "gallery_observation_staging_request_budget",
+        primary_key=("singleton_id",),
+        unique_keys=(),
+    )
+    _require_key_shape(
+        backend,
+        "gallery_observation_staging",
+        primary_key=("staging_id",),
+        unique_keys=(("build_id",), ("gallery_id", "observation_id")),
+    )
+    budget_table = _table(backend, "gallery_observation_staging_request_budget")
+    request_table = _table(backend, "gallery_observation_staging_request")
+    budget_rows = _fetch_all(
+        connector,
+        "gallery staging request budget singleton",
+        f"SELECT singleton_id, retained_request_count FROM {budget_table} "
+        "ORDER BY singleton_id LIMIT 2",
+    )
+    if len(budget_rows) != 1 or len(budget_rows[0]) != 2:
+        raise OperationalSemanticValidationError(
+            "gallery staging request budget singleton is missing or duplicated"
+        )
+    singleton_id = _as_int(
+        budget_rows[0][0],
+        label="gallery staging request budget singleton_id",
+        minimum=1,
+        maximum=1,
+    )
+    retained = _as_int(
+        budget_rows[0][1],
+        label="gallery staging retained_request_count",
+        maximum=1_500_000,
+    )
+    if singleton_id != 1:
+        raise OperationalSemanticValidationError(
+            "gallery staging request budget singleton identity differs"
+        )
+    count_row = _fetch_one(
+        connector,
+        "gallery staging retained request count",
+        f"SELECT COUNT(*) FROM {request_table}",
+    )
+    if (
+        len(count_row) != 1
+        or _as_int(
+            count_row[0],
+            label="gallery staging request identity count",
+            maximum=1_500_000,
+        )
+        != retained
+    ):
+        raise OperationalSemanticValidationError(
+            "gallery staging request budget disagrees with retained identities"
+        )
 
 
 def check_bootstrap_contract_v1(connector: SQLConnector) -> None:

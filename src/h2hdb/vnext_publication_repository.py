@@ -82,30 +82,12 @@ _PROJECTION_VIEW = "catalog_publication_candidate_projections"
 _ANALYSIS_MANIFEST_TABLE = "catalog_analysis_snapshot_manifest"
 _CATALOG_DESCRIPTOR_TABLE = "catalog_revision_descriptors"
 _SOURCE_DESCRIPTOR_TABLE = "catalog_source_revision_descriptors"
-_SOURCE_REVISION_ANCHOR_TABLE = "catalog_source_revision_anchors"
-_SOURCE_REVISION_CHANNEL_TABLE = "catalog_source_revision_channels"
-_SOURCE_REVISION_MANIFEST_TABLE = "catalog_source_revision_snapshot_manifests"
-_SOURCE_REVISION_SEAL_TABLE = "catalog_source_revision_descriptor_seals"
 _SOURCE_PROVENANCE_TABLE = "catalog_source_revision_provenance"
 
 _GENERATION_NODE_TABLE = "catalog_publication_generation_nodes"
 _GENERATION_SUCCESSOR_TABLE = "catalog_publication_generation_successors"
 _COMMIT_ANCHOR_TABLE = "catalog_publication_commit_anchors"
-_COMMIT_CANDIDATE_TABLE = "catalog_publication_commit_candidates"
-_COMMIT_CATALOG_REVISION_TABLE = "catalog_publication_commit_catalog_revisions"
-_COMMIT_SOURCE_REVISION_TABLE = "catalog_publication_commit_source_revisions"
-_COMMIT_GENERATION_TABLE = "catalog_publication_commit_generations"
-_COMMIT_PREPARATION_TABLE = "catalog_publication_commit_operational_preparations"
-_COMMIT_OPERATIONAL_POLICY_TABLE = "catalog_publication_commit_operational_policies"
-_COMMIT_ARTIFACT_POLICY_TABLE = "catalog_publication_commit_artifact_policies"
-_COMMIT_DISPLAY_POLICY_TABLE = "catalog_publication_commit_display_title_policies"
-_COMMIT_NEW_TABLE = "catalog_publication_commit_new_galleries"
-_COMMIT_CHANGED_TABLE = "catalog_publication_commit_changed_galleries"
-_COMMIT_REMOVED_TABLE = "catalog_publication_commit_removed_galleries"
-_COMMIT_DUPLICATE_TABLE = "catalog_publication_commit_duplicate_losers"
-_COMMIT_COMMITTED_AT_TABLE = "catalog_publication_commit_committed_ats"
-_COMMIT_SEAL_TABLE = "catalog_publication_commit_seals"
-_COMMIT_VIEW = "catalog_publication_commits"
+_COMMIT_TABLE = "catalog_publication_commits"
 _PUBLICATION_RECEIPT_VIEW = "catalog_publication_receipts"
 _COMMIT_HEAD_TABLE = "catalog_publication_commit_head_receipts"
 
@@ -486,7 +468,6 @@ class PublicationRepository:
         _require_source_build_identity(
             work.connector,
             build_id=candidate.build_id,
-            base_receipt_id=candidate_base,
         )
 
         if mapping != candidate.build_id:
@@ -572,23 +553,14 @@ class PublicationRepository:
         )
 
         connector.execute(
-            f"INSERT INTO {_SOURCE_REVISION_ANCHOR_TABLE} "
-            "(source_revision) VALUES (%s)",
-            (source_revision,),
-        )
-        connector.execute(
-            f"INSERT INTO {_SOURCE_REVISION_CHANNEL_TABLE} "
-            "(source_revision, channel) VALUES (%s, %s)",
-            (source_revision, candidate.channel),
-        )
-        connector.execute(
-            f"INSERT INTO {_SOURCE_REVISION_MANIFEST_TABLE} "
-            "(source_revision, snapshot_manifest_sha256) VALUES (%s, %s)",
-            (source_revision, candidate.snapshot_manifest_sha256),
-        )
-        connector.execute(
-            f"INSERT INTO {_SOURCE_REVISION_SEAL_TABLE} (source_revision) VALUES (%s)",
-            (source_revision,),
+            f"INSERT INTO {_SOURCE_DESCRIPTOR_TABLE} "
+            "(source_revision, channel, snapshot_manifest_sha256) "
+            "VALUES (%s, %s, %s)",
+            (
+                source_revision,
+                candidate.channel,
+                candidate.snapshot_manifest_sha256,
+            ),
         )
         connector.execute(
             f"INSERT INTO {_SOURCE_PROVENANCE_TABLE} "
@@ -659,21 +631,19 @@ def _require_replayed_publication_lineage(
     """Rebuild receipt lineage without consulting the transient candidate."""
 
     row = connector.fetch_one(
-        "SELECT committed_candidate.candidate_id, source.source_revision, "
+        "SELECT committed.candidate_id, committed.source_revision, "
         "provenance.analysis_id, analysis.build_id, analysis.state, "
         "analysis_manifest.snapshot_manifest_sha256, build_channel.channel "
-        f"FROM {_COMMIT_CANDIDATE_TABLE} AS committed_candidate "
-        f"LEFT JOIN {_COMMIT_SOURCE_REVISION_TABLE} AS source "
-        "ON source.receipt_id = committed_candidate.receipt_id "
+        f"FROM {_COMMIT_TABLE} AS committed "
         f"LEFT JOIN {_SOURCE_PROVENANCE_TABLE} AS provenance "
-        "ON provenance.source_revision = source.source_revision "
+        "ON provenance.source_revision = committed.source_revision "
         "LEFT JOIN catalog_analysis_runs AS analysis "
         "ON analysis.analysis_id = provenance.analysis_id "
         f"LEFT JOIN {_ANALYSIS_MANIFEST_TABLE} AS analysis_manifest "
         "ON analysis_manifest.analysis_id = provenance.analysis_id "
         "LEFT JOIN catalog_source_build_channel AS build_channel "
         "ON build_channel.build_id = analysis.build_id "
-        "WHERE committed_candidate.receipt_id = %s",
+        "WHERE committed.receipt_id = %s",
         (published.receipt_id,),
     )
     if len(row) != 7:
@@ -725,17 +695,13 @@ def _replayed_publication_requires_live_lineage(
             "replayed publication is inconsistent with the common head"
         )
     successor = work.connector.fetch_one(
-        f"SELECT edge.successor_generation, generation.receipt_id, "
-        "seal.receipt_id, descriptor.channel "
+        f"SELECT edge.successor_generation, committed.receipt_id, "
+        "descriptor.channel "
         f"FROM {_GENERATION_SUCCESSOR_TABLE} AS edge "
-        f"LEFT JOIN {_COMMIT_GENERATION_TABLE} AS generation "
-        "ON generation.generation = edge.successor_generation "
-        f"LEFT JOIN {_COMMIT_SEAL_TABLE} AS seal "
-        "ON seal.receipt_id = generation.receipt_id "
-        f"LEFT JOIN {_COMMIT_SOURCE_REVISION_TABLE} AS source "
-        "ON source.receipt_id = generation.receipt_id "
-        f"LEFT JOIN {_SOURCE_REVISION_CHANNEL_TABLE} AS descriptor "
-        "ON descriptor.source_revision = source.source_revision "
+        f"LEFT JOIN {_COMMIT_TABLE} AS committed "
+        "ON committed.generation = edge.successor_generation "
+        f"LEFT JOIN {_SOURCE_DESCRIPTOR_TABLE} AS descriptor "
+        "ON descriptor.source_revision = committed.source_revision "
         "WHERE edge.predecessor_generation = %s",
         (published.generation,),
     )
@@ -756,15 +722,11 @@ def _replayed_publication_requires_live_lineage(
             )
         return True
 
-    if len(successor) != 4 or any(value is None for value in successor):
+    if len(successor) != 3 or any(value is None for value in successor):
         raise PublicationCorruptionError(
             "replayed inactive publication lacks one exact sealed successor"
         )
-    if (
-        successor[0] != published.generation + 1
-        or successor[1] != successor[2]
-        or successor[3] != published.channel
-    ):
+    if successor[0] != published.generation + 1 or successor[2] != published.channel:
         raise PublicationCorruptionError(
             "replayed inactive publication successor is malformed"
         )
@@ -809,18 +771,14 @@ def _require_replayed_publication_base(
     predecessor: bytes | None = None
     if published.generation > 1:
         row = connector.fetch_one(
-            f"SELECT generation.receipt_id, seal.receipt_id, descriptor.channel "
-            f"FROM {_COMMIT_GENERATION_TABLE} AS generation "
-            f"LEFT JOIN {_COMMIT_SEAL_TABLE} AS seal "
-            "ON seal.receipt_id = generation.receipt_id "
-            f"LEFT JOIN {_COMMIT_SOURCE_REVISION_TABLE} AS source "
-            "ON source.receipt_id = generation.receipt_id "
-            f"LEFT JOIN {_SOURCE_REVISION_CHANNEL_TABLE} AS descriptor "
-            "ON descriptor.source_revision = source.source_revision "
-            "WHERE generation.generation = %s",
+            f"SELECT committed.receipt_id, descriptor.channel "
+            f"FROM {_COMMIT_TABLE} AS committed "
+            f"LEFT JOIN {_SOURCE_DESCRIPTOR_TABLE} AS descriptor "
+            "ON descriptor.source_revision = committed.source_revision "
+            "WHERE committed.generation = %s",
             (published.generation - 1,),
         )
-        if len(row) != 3 or any(value is None for value in row):
+        if len(row) != 2 or any(value is None for value in row):
             raise PublicationCorruptionError(
                 "replayed publication lacks one exact sealed predecessor commit"
             )
@@ -828,9 +786,9 @@ def _require_replayed_publication_base(
             row[0],
             field="replayed publication predecessor receipt_id",
         )
-        if row[1] != predecessor or row[2] != published.channel:
+        if row[1] != published.channel:
             raise PublicationCorruptionError(
-                "replayed publication predecessor seal or channel differs"
+                "replayed publication predecessor channel differs"
             )
 
     if build_base != predecessor or predecessor == published.receipt_id:
@@ -841,7 +799,6 @@ def _require_replayed_publication_base(
     _require_source_build_identity(
         connector,
         build_id=build_id,
-        base_receipt_id=predecessor,
     )
 
 
@@ -849,18 +806,15 @@ def _require_source_build_identity(
     connector: Any,
     *,
     build_id: bytes,
-    base_receipt_id: bytes | None,
 ) -> None:
     try:
         require_source_build_publication_identity(
             connector,
             build_id=build_id,
-            base_receipt_id=base_receipt_id,
         )
     except SourceBuildConflictError as error:
         raise PublicationCorruptionError(
-            "publication source build identity differs from its durable snapshot "
-            "and exact predecessor"
+            "publication source build identity differs from its durable snapshot"
         ) from error
 
 
@@ -909,48 +863,33 @@ def _lock_candidate(work: VNextUnitOfWork, candidate_id: bytes) -> _Candidate:
     if len(candidate_row) != 6:
         raise PublicationNotReadyError("publication candidate is missing")
     context = work.connector.fetch_one(
-        "SELECT run_build.build_id, run_input.input_manifest_sha256, "
+        "SELECT run.build_id, run.input_manifest_sha256, "
         "run_state.state, run_completed.completed_at, "
-        "b.state, sealed.sealed_at, bc.channel, bm_digest.manifest_sha256, "
-        "bm_gallery.gallery_count, bm_file.file_count, bm_byte.byte_count, "
-        "sm.snapshot_manifest_sha256, m_gallery.gallery_count, m_file.file_count, "
-        "m_byte.byte_count, run_policy.policy_id "
-        "FROM catalog_analysis_run_descriptor_seals run_seal "
-        "JOIN catalog_analysis_run_build_ids run_build "
-        "ON run_build.analysis_id = run_seal.analysis_id "
-        "JOIN catalog_analysis_run_input_manifest_sha256s run_input "
-        "ON run_input.analysis_id = run_seal.analysis_id "
+        "build_state.state, sealed.sealed_at, bc.channel, manifest.manifest_sha256, "
+        "discovery.gallery_count, manifest.file_count, manifest.byte_count, "
+        "sm.snapshot_manifest_sha256, snapshot.gallery_count, snapshot.file_count, "
+        "snapshot.byte_count, run.policy_id "
+        "FROM catalog_analysis_run_descriptor run "
         "JOIN catalog_analysis_run_states run_state "
-        "ON run_state.analysis_id = run_seal.analysis_id "
+        "ON run_state.analysis_id = run.analysis_id "
         "JOIN catalog_analysis_run_completed_ats run_completed "
-        "ON run_completed.analysis_id = run_seal.analysis_id "
-        "JOIN catalog_analysis_run_policy_ids run_policy "
-        "ON run_policy.analysis_id = run_seal.analysis_id "
-        "JOIN catalog_source_build_descriptor_seals b_seal "
-        "ON b_seal.build_id = run_build.build_id "
-        "JOIN catalog_source_build_states b ON b.build_id = b_seal.build_id "
-        "JOIN catalog_source_build_sealed_ats sealed ON sealed.build_id = b.build_id "
-        "JOIN catalog_source_build_channel bc ON bc.build_id = b.build_id "
-        "JOIN catalog_build_manifest_seals bm_seal ON bm_seal.build_id = b.build_id "
-        "JOIN catalog_build_manifest_manifest_sha256s bm_digest "
-        "ON bm_digest.build_id = bm_seal.build_id "
-        "JOIN catalog_source_build_discovery_gallery_counts bm_gallery "
-        "ON bm_gallery.build_id = bm_seal.build_id "
-        "JOIN catalog_build_manifest_file_counts bm_file "
-        "ON bm_file.build_id = bm_seal.build_id "
-        "JOIN catalog_build_manifest_byte_counts bm_byte "
-        "ON bm_byte.build_id = bm_seal.build_id "
+        "ON run_completed.analysis_id = run.analysis_id "
+        "JOIN catalog_source_build_descriptor build "
+        "ON build.build_id = run.build_id "
+        "JOIN catalog_source_build_states build_state "
+        "ON build_state.build_id = build.build_id "
+        "JOIN catalog_source_build_sealed_ats sealed "
+        "ON sealed.build_id = build.build_id "
+        "JOIN catalog_source_build_channel bc ON bc.build_id = build.build_id "
+        "JOIN catalog_build_manifest_core manifest "
+        "ON manifest.build_id = build.build_id "
+        "JOIN catalog_source_build_discoveries discovery "
+        "ON discovery.build_id = build.build_id "
         f"JOIN {_ANALYSIS_MANIFEST_TABLE} sm "
-        "ON sm.analysis_id = run_seal.analysis_id "
-        "JOIN catalog_source_snapshot_manifest_identity_seals m_seal "
-        "ON m_seal.snapshot_manifest_sha256 = sm.snapshot_manifest_sha256 "
-        "JOIN catalog_source_snapshot_manifest_identity_gallery_counts m_gallery "
-        "ON m_gallery.snapshot_manifest_sha256 = m_seal.snapshot_manifest_sha256 "
-        "JOIN catalog_source_snapshot_manifest_identity_file_counts m_file "
-        "ON m_file.snapshot_manifest_sha256 = m_seal.snapshot_manifest_sha256 "
-        "JOIN catalog_source_snapshot_manifest_identity_byte_counts m_byte "
-        "ON m_byte.snapshot_manifest_sha256 = m_seal.snapshot_manifest_sha256 "
-        "WHERE run_seal.analysis_id = %s",
+        "ON sm.analysis_id = run.analysis_id "
+        "JOIN catalog_source_snapshot_manifest_identity snapshot "
+        "ON snapshot.snapshot_manifest_sha256 = sm.snapshot_manifest_sha256 "
+        "WHERE run.analysis_id = %s",
         (candidate_row[0],),
     )
     if len(context) != 16:
@@ -1489,24 +1428,16 @@ def _lock_publication_commit_head(
     row = work.lock_row(
         LockRank.HEAD,
         encode_lock_key("publication", 0, channel),
-        "SELECT registry.channel, head.receipt_id, seal.receipt_id, "
-        "catalog.revision, source.source_revision, generation.generation, "
+        "SELECT registry.channel, head.receipt_id, committed.receipt_id, "
+        "committed.revision, committed.source_revision, committed.generation, "
         "committed.committed_at, descriptor.channel "
         "FROM catalog_channel_registry AS registry "
         f"LEFT JOIN {_COMMIT_HEAD_TABLE} AS head "
         "ON head.channel = registry.channel "
-        f"LEFT JOIN {_COMMIT_SEAL_TABLE} AS seal "
-        "ON seal.receipt_id = head.receipt_id "
-        f"LEFT JOIN {_COMMIT_CATALOG_REVISION_TABLE} AS catalog "
-        "ON catalog.receipt_id = head.receipt_id "
-        f"LEFT JOIN {_COMMIT_SOURCE_REVISION_TABLE} AS source "
-        "ON source.receipt_id = head.receipt_id "
-        f"LEFT JOIN {_COMMIT_GENERATION_TABLE} AS generation "
-        "ON generation.receipt_id = head.receipt_id "
-        f"LEFT JOIN {_COMMIT_COMMITTED_AT_TABLE} AS committed "
+        f"LEFT JOIN {_COMMIT_TABLE} AS committed "
         "ON committed.receipt_id = head.receipt_id "
-        f"LEFT JOIN {_SOURCE_REVISION_CHANNEL_TABLE} AS descriptor "
-        "ON descriptor.source_revision = source.source_revision "
+        f"LEFT JOIN {_SOURCE_DESCRIPTOR_TABLE} AS descriptor "
+        "ON descriptor.source_revision = committed.source_revision "
         "WHERE registry.channel = %s",
         (channel,),
     )
@@ -1522,7 +1453,7 @@ def _lock_publication_commit_head(
             "common publication head or its sealed commit family is incomplete"
         )
     if row[1] != row[2]:
-        raise PublicationCorruptionError("common publication head is not sealed")
+        raise PublicationCorruptionError("common publication head is not committed")
     descriptor_channel = require_bounded_bytes(
         row[7], field="head source descriptor channel", minimum=1, maximum=64
     )
@@ -1584,18 +1515,13 @@ def _require_fresh_commit_identities(
     preparation_id: bytes,
 ) -> None:
     checks = (
-        (_COMMIT_CANDIDATE_TABLE, "candidate_id", candidate_id, "candidate"),
-        (_COMMIT_CATALOG_REVISION_TABLE, "revision", revision, "catalog revision"),
-        (
-            _COMMIT_PREPARATION_TABLE,
-            "preparation_id",
-            preparation_id,
-            "operational preparation",
-        ),
+        ("candidate_id", candidate_id, "candidate"),
+        ("revision", revision, "catalog revision"),
+        ("preparation_id", preparation_id, "operational preparation"),
     )
-    for table, column, value, label in checks:
+    for column, value, label in checks:
         if connector.fetch_one(
-            f"SELECT receipt_id FROM {table} WHERE {column} = %s", (value,)
+            f"SELECT receipt_id FROM {_COMMIT_TABLE} WHERE {column} = %s", (value,)
         ):
             raise PublicationConflictError(
                 f"publication {label} is already bound to another commit"
@@ -1649,69 +1575,36 @@ def _insert_publication_commit(
         f"INSERT INTO {_COMMIT_ANCHOR_TABLE} (receipt_id) VALUES (%s)",
         (receipt_id,),
     )
-    members = (
-        (_COMMIT_CANDIDATE_TABLE, "candidate_id", candidate.candidate_id),
-        (
-            _COMMIT_CATALOG_REVISION_TABLE,
-            "revision",
-            candidate.reserved_revision,
-        ),
-        (_COMMIT_SOURCE_REVISION_TABLE, "source_revision", source_revision),
-        (_COMMIT_GENERATION_TABLE, "generation", generation),
-        (
-            _COMMIT_PREPARATION_TABLE,
-            "preparation_id",
-            preparation.preparation_id,
-        ),
-        (
-            _COMMIT_OPERATIONAL_POLICY_TABLE,
-            "operational_policy_id",
-            preparation.policy_id,
-        ),
-        (
-            _COMMIT_ARTIFACT_POLICY_TABLE,
-            "artifact_policy_id",
-            candidate.artifact_policy_id,
-        ),
-        (
-            _COMMIT_DISPLAY_POLICY_TABLE,
-            "display_title_policy_id",
-            candidate.display_title_policy_id,
-        ),
-        (_COMMIT_NEW_TABLE, "new_galleries", projection.new_galleries),
-        (
-            _COMMIT_CHANGED_TABLE,
-            "changed_galleries",
-            projection.changed_galleries,
-        ),
-        (
-            _COMMIT_REMOVED_TABLE,
-            "removed_galleries",
-            projection.removed_galleries,
-        ),
-        (
-            _COMMIT_DUPLICATE_TABLE,
-            "duplicate_losers",
-            projection.duplicate_losers,
-        ),
-        (_COMMIT_COMMITTED_AT_TABLE, "committed_at", committed_at),
-    )
-    for table, column, value in members:
-        connector.execute(
-            f"INSERT INTO {table} (receipt_id, {column}) VALUES (%s, %s)",
-            (receipt_id, value),
-        )
-    # The commit seal has a reverse FK to this total checkpoint seal.  Initialize
+    # The wide commit has a reverse FK to this total checkpoint. Initialize the
     # permanent finalization authority before making the common commit visible.
     _initialize_finalization_checkpoint(
         connector,
         receipt_id=receipt_id,
         initialized_at=committed_at,
     )
-    # This reverse-FK seal is the sole publication point for the common commit.
     connector.execute(
-        f"INSERT INTO {_COMMIT_SEAL_TABLE} (receipt_id) VALUES (%s)",
-        (receipt_id,),
+        f"INSERT INTO {_COMMIT_TABLE} "
+        "(receipt_id, candidate_id, revision, source_revision, generation, "
+        "preparation_id, operational_policy_id, artifact_policy_id, "
+        "display_title_policy_id, new_galleries, changed_galleries, "
+        "removed_galleries, duplicate_losers, committed_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        (
+            receipt_id,
+            candidate.candidate_id,
+            candidate.reserved_revision,
+            source_revision,
+            generation,
+            preparation.preparation_id,
+            preparation.policy_id,
+            candidate.artifact_policy_id,
+            candidate.display_title_policy_id,
+            projection.new_galleries,
+            projection.changed_galleries,
+            projection.removed_galleries,
+            projection.duplicate_losers,
+            committed_at,
+        ),
     )
 
 
@@ -1759,25 +1652,23 @@ def _load_published_commit_by_candidate(
     connector: Any, candidate_id: bytes
 ) -> _PublishedCommit | None:
     mapping = connector.fetch_one(
-        f"SELECT candidate.receipt_id, anchor.receipt_id, seal.receipt_id "
-        f"FROM {_COMMIT_CANDIDATE_TABLE} AS candidate "
+        f"SELECT committed.receipt_id, anchor.receipt_id "
+        f"FROM {_COMMIT_TABLE} AS committed "
         f"LEFT JOIN {_COMMIT_ANCHOR_TABLE} AS anchor "
-        "ON anchor.receipt_id = candidate.receipt_id "
-        f"LEFT JOIN {_COMMIT_SEAL_TABLE} AS seal "
-        "ON seal.receipt_id = candidate.receipt_id "
-        "WHERE candidate.candidate_id = %s",
+        "ON anchor.receipt_id = committed.receipt_id "
+        "WHERE committed.candidate_id = %s",
         (candidate_id,),
     )
     if not mapping:
         return None
-    if len(mapping) != 3 or any(value is None for value in mapping):
+    if len(mapping) != 2 or any(value is None for value in mapping):
         raise PublicationCorruptionError(
             "permanent candidate mapping names an incomplete publication commit"
         )
     receipt_id = require_uuid16(mapping[0], field="stored publication receipt_id")
-    if mapping[1] != receipt_id or mapping[2] != receipt_id:
+    if mapping[1] != receipt_id:
         raise PublicationCorruptionError(
-            "permanent candidate mapping disagrees with its anchor or seal"
+            "permanent candidate mapping disagrees with its anchor"
         )
     return _load_published_commit_by_receipt(connector, receipt_id)
 
@@ -1794,7 +1685,7 @@ def _load_published_commit_by_receipt(
         "published.duplicate_losers, published.committed_at, source.channel, "
         "source.snapshot_manifest_sha256, receipt.publication_count, "
         "receipt.finalized_at "
-        f"FROM {_COMMIT_VIEW} AS published "
+        f"FROM {_COMMIT_TABLE} AS published "
         f"JOIN {_SOURCE_DESCRIPTOR_TABLE} AS source "
         "ON source.source_revision = published.source_revision "
         f"JOIN {_CATALOG_DESCRIPTOR_TABLE} AS catalog "
@@ -1870,10 +1761,7 @@ def _validate_published_commit(connector: Any, commit: _PublishedCommit) -> None
         )
     if commit.generation > 1:
         predecessor = connector.fetch_one(
-            f"SELECT generation.receipt_id FROM {_COMMIT_GENERATION_TABLE} AS generation "
-            f"JOIN {_COMMIT_SEAL_TABLE} AS seal "
-            "ON seal.receipt_id = generation.receipt_id "
-            "WHERE generation.generation = %s",
+            f"SELECT receipt_id FROM {_COMMIT_TABLE} WHERE generation = %s",
             (commit.generation - 1,),
         )
         if len(predecessor) != 1:

@@ -46,98 +46,86 @@ def _relation(
     return checker.RelationShape(table, primary_key, key + values)
 
 
-def test_current_width_policy_is_exact_closed_world_with_twelve_approved_bcnf_tables() -> (
+def test_current_width_policy_is_exact_closed_world_with_reviewed_wide_bcnf_tables() -> (
     None
 ):
     report = checker.check_current_policy()
 
     assert report.is_policy_clean
     assert not report.is_fully_narrow
-    assert len(report.relations) == 306
+    assert len(report.relations) == 160
     assert tuple(relation.table for relation in report.violations) == (
+        "catalog_analysis_batch_receipt_stored",
+        "catalog_analysis_checkpoints",
         "catalog_analysis_content_owner_candidate_shadows",
+        "catalog_analysis_policies",
+        "catalog_analysis_run_descriptor",
+        "catalog_analysis_stages",
+        "catalog_analysis_state_component_seals",
         "catalog_artifact_blobs",
+        "catalog_artifact_policy_semantics",
+        "catalog_artifact_producer_fingerprints",
         "catalog_artifact_semantic_inputs",
+        "catalog_artifact_storage_codecs",
+        "catalog_artifact_zip_writer_policies",
         "catalog_artifacts",
+        "catalog_build_manifest_core",
+        "catalog_display_title_policies",
         "catalog_gallery_identities",
         "catalog_gallery_manifests",
         "catalog_gallery_observation_directories",
         "catalog_gallery_observation_metadata_locals",
         "catalog_gallery_observation_scans",
         "catalog_gallery_observation_stat",
+        "catalog_manifest_policies",
         "catalog_prepared_artifacts",
+        "catalog_publication_batch_receipt_stored",
+        "catalog_publication_candidates",
+        "catalog_publication_checkpoints",
+        "catalog_publication_commits",
+        "catalog_publication_finalization_batch_stored",
+        "catalog_publication_finalization_checkpoints",
+        "catalog_publication_stages",
         "catalog_publication_storage",
+        "catalog_source_build_descriptor",
+        "catalog_source_build_discoveries",
+        "catalog_source_revision_descriptors",
+        "catalog_source_scopes",
+        "catalog_source_snapshot_manifest_identity",
+        "catalog_title_sort_policy",
     )
-    assert checker.APPROVED_WIDE_BCNF_RELATIONS == {
-        "catalog_analysis_content_owner_candidate_shadows": (
-            "content_sha256",
-            "prefer_not_already_uploaded",
-            "title_scalar_count",
-            "download_time",
-        ),
-        "catalog_artifact_blobs": (
-            "size_bytes",
-            "artifact_locator_sha256",
-        ),
-        "catalog_artifact_semantic_inputs": (
-            "source_manifest_component_sha256",
-            "member_plan_component_sha256",
-            "effective_content_component_sha256",
-            "selected_component_sha256",
-            "owner_component_sha256",
-            "policy_component_sha256",
-        ),
-        "catalog_artifacts": (
-            "artifact_sha256",
-            "artifact_semantics_sha256",
-        ),
-        "catalog_gallery_identities": (
-            "gallery_key",
-            "scope_key",
-            "locator_sha256",
-        ),
-        "catalog_gallery_manifests": (
-            "manifest_sha256",
-            "computed_at",
-        ),
-        "catalog_gallery_observation_directories": (
-            "directory_entry_count",
-            "directory_observation_sha256",
-        ),
-        "catalog_gallery_observation_metadata_locals": (
-            "download_time",
-            "modified_time",
-        ),
-        "catalog_gallery_observation_scans": (
-            "scan_observation_sha256",
-            "scan_observation_version",
-            "source_file_count",
-        ),
-        "catalog_gallery_observation_stat": (
-            "file_count",
-            "byte_count",
-        ),
-        "catalog_prepared_artifacts": (
-            "artifact_sha256",
-            "storage_codec_version",
-            "storage_generation",
-            "protection_token",
-            "state",
-        ),
-        "catalog_publication_storage": (
-            "gallery_id",
-            "summary_sha256",
-            "language_sha256",
-            "modified_at",
-            "source_title_sha256",
-        ),
-    }
+    assert checker.APPROVED_WIDE_BCNF_RELATIONS[
+        "catalog_artifact_producer_fingerprints"
+    ] == (
+        "artifact_algorithm_version",
+        "producer_equivalence_class",
+        "writer_id",
+        "python_abi",
+        "pillow_build",
+        "libjpeg_build",
+        "zlib_build",
+    )
+    assert checker.APPROVED_WIDE_BCNF_RELATIONS["catalog_publication_commits"] == (
+        "candidate_id",
+        "revision",
+        "source_revision",
+        "generation",
+        "preparation_id",
+        "operational_policy_id",
+        "artifact_policy_id",
+        "display_title_policy_id",
+        "new_galleries",
+        "changed_galleries",
+        "removed_galleries",
+        "duplicate_losers",
+        "committed_at",
+    )
     assert {relation.table for relation in report.relations} == set(
         checker.NARROW_LAYOUT_DECLARATIONS
     ) | set(checker.APPROVED_WIDE_BCNF_RELATIONS)
 
     rendered = report.render()
-    assert "relations=306, narrow=294, wide=12" in rendered
+    assert "relations=160, narrow=122, wide=38" in rendered
     assert "Approved wide relations (complete):" in rendered
     assert "catalog_gallery_identities" in rendered
 
@@ -170,26 +158,43 @@ def test_composite_primary_key_plus_one_value_is_narrow() -> None:
     assert report.is_fully_narrow
 
 
-@pytest.mark.parametrize("owner", ("analysis", "publication"))
-def test_compact_batch_family_roles_come_from_generic_vertical_metadata(
+@pytest.mark.parametrize(
+    ("owner", "expected_non_key_columns"),
+    (
+        (
+            "analysis",
+            (
+                "batch_key",
+                "start_cursor",
+                "start_processed_count",
+                "page_limit",
+                "next_cursor",
+                "row_count",
+                "committed_at",
+            ),
+        ),
+        (
+            "publication",
+            (
+                "batch_key",
+                "start_cursor",
+                "start_processed_count",
+                "next_cursor",
+                "row_count",
+                "committed_at",
+            ),
+        ),
+    ),
+)
+def test_recomposed_batch_receipts_are_reviewed_wide_bcnf_relations(
     owner: str,
+    expected_non_key_columns: tuple[str, ...],
 ) -> None:
-    coordinate = checker.NARROW_LAYOUT_DECLARATIONS[
-        f"catalog_{owner}_batch_receipt_coordinates"
-    ]
-    owner_attribute = "analysis_id" if owner == "analysis" else "candidate_id"
-    assert coordinate.semantic_key == (owner_attribute, "stage", "batch_key")
-    assert coordinate.semantic_value == ("start_generation",)
-
-    row_count = checker.NARROW_LAYOUT_DECLARATIONS[
-        f"catalog_{owner}_batch_receipt_row_counts"
-    ]
-    assert row_count.semantic_key == (
-        owner_attribute,
-        "stage",
-        "start_generation",
+    table = f"catalog_{owner}_batch_receipt_stored"
+    assert checker.APPROVED_WIDE_BCNF_RELATIONS[table] == expected_non_key_columns
+    assert f"catalog_{owner}_batch_receipt_coordinates" not in (
+        checker.NARROW_LAYOUT_DECLARATIONS
     )
-    assert row_count.semantic_value == ("row_count",)
 
 
 def test_manifest_loader_excludes_views_and_non_catalog_tables() -> None:

@@ -14,8 +14,8 @@ from vnext_catalog_registry_fixtures import (
     seed_source_scope,
     seed_title_sort_policy,
 )
-from vnext_manifest_fixtures import seed_snapshot_manifest, seed_source_build
-from vnext_publication_fixtures import seed_publication_finalization_checkpoint
+from vnext_manifest_fixtures import seed_sealed_source_build, seed_snapshot_manifest
+from vnext_publication_fixtures import seed_publication_commit
 
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.sqlite_connector import SQLiteConnector
@@ -36,7 +36,6 @@ from h2hdb.vnext_operational_event_repository import (
     OperationalEffectCorruptionError,
     OperationalEffectRepository,
     OperationalEffectSeal,
-    OperationalEffectStateError,
     OperationalPreparation,
     RemovedGid,
 )
@@ -79,11 +78,14 @@ def _seed_catalog_authority(connector: SQLiteConnector) -> None:
         source_root_sha256=value_sha256,
     )
     seed_manifest_policy(connector)
-    seed_source_build(
+    seed_sealed_source_build(
         connector,
         build_id=b"b" * 16,
         scope_key=scope.scope_key,
-        state="SEALED",
+        manifest_sha256=b"m" * 32,
+        gallery_count=0,
+        file_count=0,
+        byte_count=0,
         created_at=1,
         sealed_at=2,
     )
@@ -140,11 +142,6 @@ def _seed_catalog_authority(connector: SQLiteConnector) -> None:
         "(operational_policy_id, operational_schema_version, algorithm_version, "
         "max_batch_rows) VALUES (%s, %s, %s, %s)",
         (1, 1, 1, 2),
-    )
-    connector.execute(
-        "INSERT INTO operational_operational_consumers "
-        "(consumer_id, consumer_name) VALUES (%s, %s)",
-        (1, "downloader"),
     )
 
 
@@ -235,37 +232,15 @@ def _publish_preparation(
     with connector.transaction():
         statements = (
             (
-                "INSERT INTO catalog_source_revision_anchors "
-                "(source_revision) VALUES (%s)",
-                (1,),
+                "INSERT INTO catalog_source_revision_descriptors "
+                "(source_revision, channel, snapshot_manifest_sha256) "
+                "VALUES (%s, %s, %s)",
+                (1, b"main", b"v" * 32),
             ),
             (
-                "INSERT INTO catalog_source_revision_channels "
-                "(source_revision, channel) VALUES (%s, %s)",
-                (1, b"main"),
-            ),
-            (
-                "INSERT INTO catalog_source_revision_snapshot_manifests "
-                "(source_revision, snapshot_manifest_sha256) VALUES (%s, %s)",
-                (1, b"v" * 32),
-            ),
-            (
-                "INSERT INTO catalog_source_revision_descriptor_seals "
-                "(source_revision) VALUES (%s)",
-                (1,),
-            ),
-            (
-                "INSERT INTO catalog_revision_anchors (revision) VALUES (%s)",
-                (1,),
-            ),
-            (
-                "INSERT INTO catalog_revision_publication_counts "
+                "INSERT INTO catalog_revision_descriptors "
                 "(revision, publication_count) VALUES (%s, %s)",
                 (1, 0),
-            ),
-            (
-                "INSERT INTO catalog_revision_descriptor_seals (revision) VALUES (%s)",
-                (1,),
             ),
             (
                 "INSERT INTO catalog_publication_generation_nodes "
@@ -277,87 +252,25 @@ def _publish_preparation(
                 "(successor_generation, predecessor_generation) VALUES (%s, %s)",
                 (1, 0),
             ),
-            (
-                "INSERT INTO catalog_publication_commit_anchors "
-                "(receipt_id) VALUES (%s)",
-                (receipt_id,),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_candidates "
-                "(receipt_id, candidate_id) VALUES (%s, %s)",
-                (receipt_id, b"c" * 16),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_catalog_revisions "
-                "(receipt_id, revision) VALUES (%s, %s)",
-                (receipt_id, 1),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_source_revisions "
-                "(receipt_id, source_revision) VALUES (%s, %s)",
-                (receipt_id, 1),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_generations "
-                "(receipt_id, generation) VALUES (%s, %s)",
-                (receipt_id, 1),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_operational_preparations "
-                "(receipt_id, preparation_id) VALUES (%s, %s)",
-                (receipt_id, preparation_id),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_operational_policies "
-                "(receipt_id, operational_policy_id) VALUES (%s, %s)",
-                (receipt_id, 1),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_artifact_policies "
-                "(receipt_id, artifact_policy_id) VALUES (%s, %s)",
-                (receipt_id, 1),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_display_title_policies "
-                "(receipt_id, display_title_policy_id) VALUES (%s, %s)",
-                (receipt_id, 1),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_new_galleries "
-                "(receipt_id, new_galleries) VALUES (%s, %s)",
-                (receipt_id, 0),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_changed_galleries "
-                "(receipt_id, changed_galleries) VALUES (%s, %s)",
-                (receipt_id, 0),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_removed_galleries "
-                "(receipt_id, removed_galleries) VALUES (%s, %s)",
-                (receipt_id, 0),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_duplicate_losers "
-                "(receipt_id, duplicate_losers) VALUES (%s, %s)",
-                (receipt_id, 0),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_committed_ats "
-                "(receipt_id, committed_at) VALUES (%s, %s)",
-                (receipt_id, now),
-            ),
         )
         for query, parameters in statements:
             connector.execute(query, parameters)
-        seed_publication_finalization_checkpoint(
+        seed_publication_commit(
             connector,
             receipt_id=receipt_id,
-            updated_at=now,
-        )
-        connector.execute(
-            "INSERT INTO catalog_publication_commit_seals (receipt_id) VALUES (%s)",
-            (receipt_id,),
+            candidate_id=b"c" * 16,
+            revision=1,
+            source_revision=1,
+            generation=1,
+            preparation_id=preparation_id,
+            operational_policy_id=1,
+            artifact_policy_id=1,
+            display_title_policy_id=1,
+            new_galleries=0,
+            changed_galleries=0,
+            removed_galleries=0,
+            duplicate_losers=0,
+            committed_at=now,
         )
     row = connector.fetch_one(
         "SELECT source_revision, preparation_id, operational_policy_id, activated_at "
@@ -372,7 +285,7 @@ def test_operational_repository_has_no_independent_activation_writer() -> None:
     assert not hasattr(OperationalEffectRepository, "activate")
 
 
-def test_two_typed_effects_response_loss_exact_replay_seal_activation_and_ack(
+def test_two_typed_effects_response_loss_exact_replay_seal_and_activation(
     tmp_path: Path,
 ) -> None:
     connector = _generated_database(tmp_path / "operational.sqlite3")
@@ -534,36 +447,7 @@ def test_two_typed_effects_response_loss_exact_replay_seal_activation_and_ack(
             "operational_operational_events" in statement for statement in statements
         )
 
-        with connector.transaction():
-            ack = OperationalEffectRepository.acknowledge_through(
-                VNextUnitOfWork(connector, backend="sqlite"),
-                consumer_id=1,
-                source_revision=1,
-                through_sequence_no=1,
-                now=60,
-            )
-        assert ack.evidence_count == 2
-        before_ack = connector.fetch_all(
-            "SELECT consumer_id, event_id, acked_at "
-            "FROM operational_operational_event_acks ORDER BY event_id"
-        )
-        with connector.transaction():
-            ack_replay = OperationalEffectRepository.acknowledge_through(
-                VNextUnitOfWork(connector, backend="sqlite"),
-                consumer_id=1,
-                source_revision=1,
-                through_sequence_no=1,
-                now=999,
-            )
-        assert ack_replay.replayed is True
-        assert ack_replay.updated_at == 60
-        assert (
-            connector.fetch_all(
-                "SELECT consumer_id, event_id, acked_at "
-                "FROM operational_operational_event_acks ORDER BY event_id"
-            )
-            == before_ack
-        )
+        assert not hasattr(OperationalEffectRepository, "acknowledge_through")
     finally:
         connector.close()
 
@@ -682,10 +566,10 @@ def test_every_preparation_mutation_rechecks_the_live_ingest_fence(
         connector.close()
 
 
-def test_database_policy_caps_batches_and_contiguous_ack_evidence(
+def test_database_policy_caps_transient_event_batches(
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(tmp_path / "ack-bound.sqlite3")
+    connector = _generated_database(tmp_path / "batch-bound.sqlite3")
     try:
         gate, turn = _authorities(connector)
         preparation = _begin(connector, gate, turn)
@@ -720,53 +604,10 @@ def test_database_policy_caps_batches_and_contiguous_ack_evidence(
                     now=21 + offset,
                 )
         _terminal_and_seal(connector, gate, turn, preparation.preparation_id, now=30)
-        _publish_preparation(connector, preparation.preparation_id)
-
-        with pytest.raises(OperationalBatchLimitError):
-            with connector.transaction():
-                OperationalEffectRepository.acknowledge_through(
-                    VNextUnitOfWork(connector, backend="sqlite"),
-                    consumer_id=1,
-                    source_revision=1,
-                    through_sequence_no=2,
-                    now=60,
-                )
+        activation = _publish_preparation(connector, preparation.preparation_id)
+        assert activation == (1, preparation.preparation_id, 1, 50)
         assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_operational_event_acks"
-        ) == (0,)
-
-        for target, timestamp in ((1, 61), (3, 62)):
-            with connector.transaction():
-                receipt = OperationalEffectRepository.acknowledge_through(
-                    VNextUnitOfWork(connector, backend="sqlite"),
-                    consumer_id=1,
-                    source_revision=1,
-                    through_sequence_no=target,
-                    now=timestamp,
-                )
-            assert receipt.evidence_count == 2
-        before = connector.fetch_all(
-            "SELECT through_sequence_no, updated_at "
-            "FROM operational_operational_event_ack_heads"
-        )
-        with pytest.raises(OperationalEffectStateError, match="backward"):
-            with connector.transaction():
-                OperationalEffectRepository.acknowledge_through(
-                    VNextUnitOfWork(connector, backend="sqlite"),
-                    consumer_id=1,
-                    source_revision=1,
-                    through_sequence_no=0,
-                    now=63,
-                )
-        assert (
-            connector.fetch_all(
-                "SELECT through_sequence_no, updated_at "
-                "FROM operational_operational_event_ack_heads"
-            )
-            == before
-        )
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM operational_operational_event_acks"
+            "SELECT COUNT(*) FROM operational_operational_events"
         ) == (4,)
     finally:
         connector.close()

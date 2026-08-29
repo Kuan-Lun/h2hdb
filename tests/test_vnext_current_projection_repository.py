@@ -68,53 +68,21 @@ def _insert_finalization_batch(
     row_count: int,
     committed_at: int,
 ) -> None:
-    key = (receipt_id, start_generation)
     connector.execute(
-        "INSERT INTO catalog_publication_finalization_batch_anchors "
-        "(receipt_id, start_generation) VALUES (%s, %s)",
-        key,
-    )
-    connector.execute(
-        "INSERT INTO catalog_publication_finalization_batch_coordinates "
-        "(receipt_id, batch_key, start_generation) VALUES (%s, %s, %s)",
-        (receipt_id, batch_key, start_generation),
-    )
-    for table, column, value in (
+        "INSERT INTO catalog_publication_finalization_batch_stored "
+        "(receipt_id, start_generation, batch_key, start_cursor, "
+        "start_processed_count, next_cursor, row_count, committed_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
         (
-            "catalog_publication_finalization_batch_start_cursors",
-            "start_cursor",
+            receipt_id,
+            start_generation,
+            batch_key,
             start_cursor,
-        ),
-        (
-            "catalog_publication_finalization_batch_start_counts",
-            "start_processed_count",
             start_count,
-        ),
-        (
-            "catalog_publication_finalization_batch_next_cursors",
-            "next_cursor",
             next_cursor,
-        ),
-        (
-            "catalog_publication_finalization_batch_row_counts",
-            "row_count",
             row_count,
-        ),
-        (
-            "catalog_publication_finalization_batch_committed_ats",
-            "committed_at",
             committed_at,
         ),
-    ):
-        connector.execute(
-            f"INSERT INTO {table} "
-            f"(receipt_id, start_generation, {column}) VALUES (%s, %s, %s)",
-            (*key, value),
-        )
-    connector.execute(
-        "INSERT INTO catalog_publication_finalization_batch_seals "
-        "(receipt_id, start_generation) VALUES (%s, %s)",
-        key,
     )
 
 
@@ -154,38 +122,19 @@ def _mark_projection_finalized(
         row_count=0,
         committed_at=committed_at + 2,
     )
-    for table, column, value in (
+    connector.execute(
+        "UPDATE catalog_publication_finalization_checkpoints "
+        "SET generation = %s, `cursor` = %s, processed_count = %s, "
+        "state = %s, updated_at = %s WHERE receipt_id = %s",
         (
-            "catalog_publication_finalization_checkpoint_generations",
-            "generation",
             checkpoint_generation,
-        ),
-        (
-            "catalog_publication_finalization_checkpoint_cursors",
-            "cursor",
             cursor,
-        ),
-        (
-            "catalog_publication_finalization_checkpoint_counts",
-            "processed_count",
             len(publication_keys),
-        ),
-        (
-            "catalog_publication_finalization_checkpoint_states",
-            "state",
             "COMPLETE",
-        ),
-        (
-            "catalog_publication_finalization_checkpoint_updated_ats",
-            "updated_at",
             committed_at + 2,
+            receipt_id,
         ),
-    ):
-        sql_column = f"`{column}`" if column == "cursor" else column
-        connector.execute(
-            f"UPDATE {table} SET {sql_column} = %s WHERE receipt_id = %s",
-            (value, receipt_id),
-        )
+    )
     connector.execute(
         "INSERT INTO catalog_publication_commit_finalizations (receipt_id) VALUES (%s)",
         (receipt_id,),
@@ -206,36 +155,19 @@ def _seed_projection(
     connector.execute("PRAGMA foreign_keys = OFF")
     try:
         connector.execute(
-            "INSERT INTO catalog_revision_anchors (revision) VALUES (%s)",
-            (revision,),
-        )
-        connector.execute(
-            "INSERT INTO catalog_revision_publication_counts "
-            "(revision, publication_count) VALUES (%s, %s)",
+            "INSERT INTO catalog_revision_descriptors (revision, publication_count) "
+            "VALUES (%s, %s)",
             (revision, len(gids)),
         )
         connector.execute(
-            "INSERT INTO catalog_revision_descriptor_seals (revision) VALUES (%s)",
-            (revision,),
-        )
-        connector.execute(
-            "INSERT INTO catalog_source_revision_anchors (source_revision) VALUES (%s)",
-            (source_revision,),
-        )
-        connector.execute(
-            "INSERT INTO catalog_source_revision_channels "
-            "(source_revision, channel) VALUES (%s, %s)",
-            (source_revision, channel),
-        )
-        connector.execute(
-            "INSERT INTO catalog_source_revision_snapshot_manifests "
-            "(source_revision, snapshot_manifest_sha256) VALUES (%s, %s)",
-            (source_revision, sha256(f"snapshot-{revision}".encode()).digest()),
-        )
-        connector.execute(
-            "INSERT INTO catalog_source_revision_descriptor_seals "
-            "(source_revision) VALUES (%s)",
-            (source_revision,),
+            "INSERT INTO catalog_source_revision_descriptors "
+            "(source_revision, channel, snapshot_manifest_sha256) "
+            "VALUES (%s, %s, %s)",
+            (
+                source_revision,
+                channel,
+                sha256(f"snapshot-{revision}".encode()).digest(),
+            ),
         )
         seed_publication_commit(
             connector,

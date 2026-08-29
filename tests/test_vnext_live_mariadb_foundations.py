@@ -41,6 +41,7 @@ from h2hdb.vnext_maintenance_gate_repository import (
     MaintenanceGateRepository,
 )
 from h2hdb.vnext_source_build_repository import (
+    SourceBuildManifestSummary,
     SourceBuildRepository,
     SourceDiscoveryPlan,
     SourceRootBuildCommand,
@@ -137,8 +138,10 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
     locator_plan: CanonicalValueUploadPlan | None = None
     try:
         gate, turn = _authorities(connector)
-        build_id = b"mariadb-build001"
-        root_command = SourceRootBuildCommand(("Volumes", "資料"), build_id)
+        root_command = SourceRootBuildCommand(
+            ("Volumes", "資料"),
+            SourceBuildManifestSummary.empty(),
+        )
         root_plan = root_command.prepare_root_upload()
         _put_plan(connector, gate, turn, root_plan, now=20)
         with connector.transaction():
@@ -150,6 +153,7 @@ def test_live_mariadb_canonical_source_and_gallery_identity_round_trip(
                 root_plan=root_plan,
                 now=23,
             )
+        build_id = source.build_id
 
         with SourceDiscoveryPlan.from_locators((("nested", "畫廊 A"),)) as plan:
             with connector.read_transaction():

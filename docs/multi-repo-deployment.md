@@ -8,16 +8,25 @@ or operational tables directly.
 
 ## Database ownership
 
-There is one epoch-2/version-1 database. Its 306 catalog BCNF base relations,
-73 intentional catalog views, 75 operational BCNF base relations, and one
+There is one epoch-2/version-1 database. Its 160 catalog BCNF base relations,
+49 intentional catalog views, 70 operational BCNF base relations, and one
 operational activation view are generated for both SQLite and MariaDB from the
-same logical manifests. One of the 75 operational bases is the separately
-created epoch-control relation, so the database has 306 + 75 = 381 base tables
-and 74 logical views, or 455 schema objects. The catalog graph has 38 sealed
-vertical families, 29 checked decompositions, 294 narrow bases plus 12
-intentional wide BCNF recompositions, and an exact 272-relation physical
-authority closure (218 mutation relations plus 54 read-only views). Each
-backend receives exactly 4,913 typed bootstrap rows.
+same logical manifests. One of the 70 operational bases is the separately
+created epoch-control relation, so the database has 160 + 70 = 230 base tables
+and 50 logical views, or 280 schema objects. The catalog graph has 11 sealed
+vertical families, 28 checked decompositions, 122 narrow bases plus 38 reviewed
+wide BCNF relations, and an exact 151-relation physical authority closure (114
+mutation relations plus 37 read-only views). Each backend receives exactly
+5,838 typed bootstrap rows.
+
+Operational events are publication-owned current/retry state, not OPDS history
+or a durable delivery queue. Bounded current-only cleanup retires each
+unreachable finalized non-head preparation/event/commit snapshot; there is no
+event-consumer registry or per-event acknowledgement retention contract.
+The operational count changes from 75 to 70 bases: two lease tables are folded
+into BCNF owner relations, one staging-request owner is replaced by the budget
+authority, four unreachable delivery scaffold relations are removed, and one
+frozen cleanup-root relation is added.
 
 Ingest and coordination workers receive read-write credentials. Catalog-serving
 consumers use read-only credentials and `VNextCatalogFacade`. For SQLite, mount

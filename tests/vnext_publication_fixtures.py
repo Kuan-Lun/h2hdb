@@ -1,4 +1,4 @@
-"""Shared exact seed helpers for publication-owned vertical families.
+"""Shared exact seed helpers for publication-owned immutable families.
 
 These helpers deliberately use the production family protocols.  Tests that
 need malformed or partial state must insert the selected physical member
@@ -95,74 +95,28 @@ def seed_publication_finalization(
 ) -> None:
     """Complete an existing commit's exact terminal finalization family."""
 
-    batch_key = (receipt_id, 1)
     connector.execute(
-        "INSERT INTO catalog_publication_finalization_batch_anchors "
-        "(receipt_id, start_generation) VALUES (%s, %s)",
-        batch_key,
-    )
-    connector.execute(
-        "INSERT INTO catalog_publication_finalization_batch_coordinates "
-        "(receipt_id, batch_key, start_generation) VALUES (%s, %s, %s)",
-        (receipt_id, b"terminal", 1),
-    )
-    for batch_table, batch_column, batch_value in (
+        "INSERT INTO catalog_publication_finalization_batch_stored "
+        "(receipt_id, start_generation, batch_key, start_cursor, "
+        "start_processed_count, next_cursor, row_count, committed_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
         (
-            "catalog_publication_finalization_batch_start_cursors",
-            "start_cursor",
+            receipt_id,
+            1,
+            b"terminal",
             cursor,
-        ),
-        (
-            "catalog_publication_finalization_batch_start_counts",
-            "start_processed_count",
             processed_count,
-        ),
-        (
-            "catalog_publication_finalization_batch_next_cursors",
-            "next_cursor",
             cursor,
-        ),
-        ("catalog_publication_finalization_batch_row_counts", "row_count", 0),
-        (
-            "catalog_publication_finalization_batch_committed_ats",
-            "committed_at",
+            0,
             finalized_at,
         ),
-    ):
-        connector.execute(
-            f"INSERT INTO {batch_table} "
-            f"(receipt_id, start_generation, {batch_column}) VALUES (%s, %s, %s)",
-            (*batch_key, batch_value),
-        )
-    connector.execute(
-        "INSERT INTO catalog_publication_finalization_batch_seals "
-        "(receipt_id, start_generation) VALUES (%s, %s)",
-        batch_key,
     )
-    for checkpoint_table, checkpoint_column, checkpoint_value in (
-        ("catalog_publication_finalization_checkpoint_generations", "generation", 2),
-        ("catalog_publication_finalization_checkpoint_cursors", "cursor", cursor),
-        (
-            "catalog_publication_finalization_checkpoint_counts",
-            "processed_count",
-            processed_count,
-        ),
-        ("catalog_publication_finalization_checkpoint_states", "state", "COMPLETE"),
-        (
-            "catalog_publication_finalization_checkpoint_updated_ats",
-            "updated_at",
-            finalized_at,
-        ),
-    ):
-        quoted = (
-            f"`{checkpoint_column}`"
-            if checkpoint_column == "cursor"
-            else checkpoint_column
-        )
-        connector.execute(
-            f"UPDATE {checkpoint_table} SET {quoted} = %s WHERE receipt_id = %s",
-            (checkpoint_value, receipt_id),
-        )
+    connector.execute(
+        "UPDATE catalog_publication_finalization_checkpoints "
+        "SET generation = %s, `cursor` = %s, processed_count = %s, "
+        "state = %s, updated_at = %s WHERE receipt_id = %s",
+        (2, cursor, processed_count, "COMPLETE", finalized_at, receipt_id),
+    )
     connector.execute(
         "INSERT INTO catalog_publication_commit_finalizations (receipt_id) VALUES (%s)",
         (receipt_id,),
@@ -188,75 +142,40 @@ def seed_publication_commit(
     committed_at: int,
     channel: bytes | None = None,
 ) -> None:
-    """Seed one immutable commit and its prerequisite checkpoint, seals last."""
+    """Seed one immutable wide commit after its prerequisite checkpoint."""
 
     connector.execute(
         "INSERT INTO catalog_publication_commit_anchors (receipt_id) VALUES (%s)",
         (receipt_id,),
     )
-    for table, column, value in (
-        ("catalog_publication_commit_candidates", "candidate_id", candidate_id),
-        ("catalog_publication_commit_catalog_revisions", "revision", revision),
-        (
-            "catalog_publication_commit_source_revisions",
-            "source_revision",
-            source_revision,
-        ),
-        ("catalog_publication_commit_generations", "generation", generation),
-        (
-            "catalog_publication_commit_operational_preparations",
-            "preparation_id",
-            preparation_id,
-        ),
-        (
-            "catalog_publication_commit_operational_policies",
-            "operational_policy_id",
-            operational_policy_id,
-        ),
-        (
-            "catalog_publication_commit_artifact_policies",
-            "artifact_policy_id",
-            artifact_policy_id,
-        ),
-        (
-            "catalog_publication_commit_display_title_policies",
-            "display_title_policy_id",
-            display_title_policy_id,
-        ),
-        (
-            "catalog_publication_commit_new_galleries",
-            "new_galleries",
-            new_galleries,
-        ),
-        (
-            "catalog_publication_commit_changed_galleries",
-            "changed_galleries",
-            changed_galleries,
-        ),
-        (
-            "catalog_publication_commit_removed_galleries",
-            "removed_galleries",
-            removed_galleries,
-        ),
-        (
-            "catalog_publication_commit_duplicate_losers",
-            "duplicate_losers",
-            duplicate_losers,
-        ),
-        ("catalog_publication_commit_committed_ats", "committed_at", committed_at),
-    ):
-        connector.execute(
-            f"INSERT INTO {table} (receipt_id, {column}) VALUES (%s, %s)",
-            (receipt_id, value),
-        )
     seed_publication_finalization_checkpoint(
         connector,
         receipt_id=receipt_id,
         updated_at=committed_at,
     )
     connector.execute(
-        "INSERT INTO catalog_publication_commit_seals (receipt_id) VALUES (%s)",
-        (receipt_id,),
+        "INSERT INTO catalog_publication_commits "
+        "(receipt_id, candidate_id, revision, source_revision, generation, "
+        "preparation_id, operational_policy_id, artifact_policy_id, "
+        "display_title_policy_id, new_galleries, changed_galleries, "
+        "removed_galleries, duplicate_losers, committed_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        (
+            receipt_id,
+            candidate_id,
+            revision,
+            source_revision,
+            generation,
+            preparation_id,
+            operational_policy_id,
+            artifact_policy_id,
+            display_title_policy_id,
+            new_galleries,
+            changed_galleries,
+            removed_galleries,
+            duplicate_losers,
+            committed_at,
+        ),
     )
     if channel is not None:
         connector.execute(

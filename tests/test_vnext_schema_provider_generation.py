@@ -270,26 +270,6 @@ def test_generated_batch7_artifact_delta_views_use_occurrences_and_inputs(
     ("relation_name", "table", "dependencies", "physical_dependencies"),
     [
         (
-            "source_build_discovery",
-            "catalog_source_build_discoveries",
-            (
-                "source_build_discovery_anchor",
-                "source_build_discovery_seal",
-                "source_build_discovery_scan_attempt",
-                "source_build_discovery_gallery_count",
-                "source_build_discovery_tree_observation_sha256",
-                "source_build_discovery_completed_at",
-            ),
-            (
-                "catalog_source_build_discovery_anchors",
-                "catalog_source_build_discovery_seals",
-                "catalog_source_build_discovery_scan_attempts",
-                "catalog_source_build_discovery_gallery_counts",
-                "catalog_source_build_discovery_tree_observation_sha256s",
-                "catalog_source_build_discovery_completed_ats",
-            ),
-        ),
-        (
             "gallery_observation_file_filesystem",
             "catalog_gallery_observation_file_filesystem",
             (
@@ -355,21 +335,13 @@ def test_generated_batch7_artifact_delta_views_use_occurrences_and_inputs(
             "source_build",
             "catalog_source_builds",
             (
-                "source_build_anchor",
-                "source_build_descriptor_seal",
-                "source_build_scope_key",
-                "source_build_manifest_policy_id",
+                "source_build_descriptor",
                 "source_build_state",
-                "source_build_created_at",
                 "source_build_sealed_at",
             ),
             (
-                "catalog_source_build_anchors",
-                "catalog_source_build_descriptor_seals",
-                "catalog_source_build_scope_keys",
-                "catalog_source_build_manifest_policy_ids",
+                "catalog_source_build_descriptor",
                 "catalog_source_build_states",
-                "catalog_source_build_created_ats",
                 "catalog_source_build_sealed_ats",
             ),
         ),
@@ -377,64 +349,26 @@ def test_generated_batch7_artifact_delta_views_use_occurrences_and_inputs(
             "build_manifest",
             "catalog_build_manifests",
             (
-                "build_manifest_anchor",
-                "build_manifest_seal",
-                "build_manifest_manifest_sha256",
-                "source_build_discovery_gallery_count",
-                "build_manifest_file_count",
-                "build_manifest_byte_count",
+                "build_manifest_core",
+                "source_build_discovery",
                 "source_build_sealed_at",
             ),
             (
-                "catalog_build_manifest_anchors",
-                "catalog_build_manifest_seals",
-                "catalog_build_manifest_manifest_sha256s",
-                "catalog_source_build_discovery_gallery_counts",
-                "catalog_build_manifest_file_counts",
-                "catalog_build_manifest_byte_counts",
+                "catalog_build_manifest_core",
+                "catalog_source_build_discoveries",
                 "catalog_source_build_sealed_ats",
-            ),
-        ),
-        (
-            "source_snapshot_manifest_identity",
-            "catalog_source_snapshot_manifest_identity",
-            (
-                "source_snapshot_manifest_identity_anchor",
-                "source_snapshot_manifest_identity_seal",
-                "source_snapshot_manifest_identity_gallery_count",
-                "source_snapshot_manifest_identity_file_count",
-                "source_snapshot_manifest_identity_byte_count",
-            ),
-            (
-                "catalog_source_snapshot_manifest_identity_anchors",
-                "catalog_source_snapshot_manifest_identity_seals",
-                "catalog_source_snapshot_manifest_identity_gallery_counts",
-                "catalog_source_snapshot_manifest_identity_file_counts",
-                "catalog_source_snapshot_manifest_identity_byte_counts",
             ),
         ),
         (
             "analysis_run",
             "catalog_analysis_runs",
             (
-                "analysis_run_anchor",
-                "analysis_run_descriptor_seal",
-                "analysis_run_build_id",
-                "analysis_run_policy_id",
-                "analysis_run_input_manifest_sha256",
-                "analysis_run_identity",
-                "analysis_run_started_at",
+                "analysis_run_descriptor",
                 "analysis_run_state",
                 "analysis_run_completed_at",
             ),
             (
-                "catalog_analysis_run_anchors",
-                "catalog_analysis_run_descriptor_seals",
-                "catalog_analysis_run_build_ids",
-                "catalog_analysis_run_policy_ids",
-                "catalog_analysis_run_input_manifest_sha256s",
-                "catalog_analysis_run_identities",
-                "catalog_analysis_run_started_ats",
+                "catalog_analysis_run_descriptor",
                 "catalog_analysis_run_states",
                 "catalog_analysis_run_completed_ats",
             ),
@@ -444,22 +378,6 @@ def test_generated_batch7_artifact_delta_views_use_occurrences_and_inputs(
             "catalog_analysis_state_anchors",
             ("analysis_state_ancestry",),
             ("catalog_analysis_state_ancestry",),
-        ),
-        (
-            "analysis_state_component_seal",
-            "catalog_analysis_state_component_seals",
-            (
-                "analysis_state_component_anchor",
-                "analysis_state_component_completion_seal",
-                "analysis_state_component_row_count",
-                "analysis_state_component_sealed_at",
-            ),
-            (
-                "catalog_analysis_state_component_anchors",
-                "catalog_analysis_state_component_completion_seals",
-                "catalog_analysis_state_component_row_counts",
-                "catalog_analysis_state_component_sealed_ats",
-            ),
         ),
         (
             "analysis_exclusion_delta",
@@ -479,7 +397,7 @@ def test_generated_batch7_artifact_delta_views_use_occurrences_and_inputs(
         ),
     ],
 )
-def test_generated_first_batch_views_are_exact_sealed_vertical_joins(
+def test_generated_selected_views_have_exact_manifest_dependencies(
     backend: str,
     relation_name: str,
     table: str,
@@ -512,6 +430,11 @@ def test_generated_source_build_optional_time_is_constrained_and_non_null(
     assert "'SEALED'" in source_build_sql
     assert "'OPEN', 'ABANDONED'" in source_build_sql
     assert "sealed_at" in source_build_sql
+    # MariaDB 10.11 removes these precedence-redundant branch wrappers from
+    # INFORMATION_SCHEMA.VIEWS.  Emit the canonical form for both backends so
+    # exact post-create validation does not need a broader Boolean rewriter.
+    assert "\nWHERE (" not in source_build_sql
+    assert "\n   OR (" not in source_build_sql
     sealed_at = next(
         relation
         for relation in payload["relations"]
@@ -523,9 +446,9 @@ def test_generated_source_build_optional_time_is_constrained_and_non_null(
     )
     build_manifest_sql = dict(payload["slices"])["relation:build_manifest"][0][3]
     assert (
-        'member_5."sealed_at" AS "computed_at"'
+        'terminal."sealed_at" AS "computed_at"'
         if backend == "sqlite"
-        else "member_5.`sealed_at` AS `computed_at`"
+        else "terminal.`sealed_at` AS `computed_at`"
     ) in build_manifest_sql
 
 
@@ -545,24 +468,6 @@ def test_generated_analysis_run_optional_completion_is_constrained(
 @pytest.mark.parametrize(
     ("relation_name", "table", "dependencies", "physical_dependencies"),
     [
-        (
-            "artifact_producer_fingerprint",
-            "catalog_artifact_producer_fingerprints",
-            (
-                "artifact_producer_fingerprint_anchor",
-                "artifact_producer_fingerprint_seal",
-                "artifact_producer_fingerprint_algorithm_version",
-                "artifact_producer_fingerprint_equivalence_class",
-                "artifact_producer_fingerprint_identity",
-            ),
-            (
-                "catalog_artifact_producer_fingerprint_anchors",
-                "catalog_artifact_producer_fingerprint_seals",
-                "catalog_artifact_producer_fingerprint_algorithm_versions",
-                "catalog_artifact_producer_fingerprint_equivalence_classes",
-                "catalog_artifact_producer_fingerprint_identities",
-            ),
-        ),
         (
             "source_build_base_source",
             "catalog_source_build_base_source",
@@ -672,20 +577,8 @@ def test_generated_analysis_run_optional_completion_is_constrained(
         (
             "operational_activation",
             "operational_operational_activations",
-            (
-                "publication_commit_seal",
-                "publication_commit_source_revision",
-                "publication_commit_operational_preparation",
-                "publication_commit_operational_policy",
-                "publication_commit_committed_at",
-            ),
-            (
-                "catalog_publication_commit_seals",
-                "catalog_publication_commit_source_revisions",
-                "catalog_publication_commit_operational_preparations",
-                "catalog_publication_commit_operational_policies",
-                "catalog_publication_commit_committed_ats",
-            ),
+            ("publication_commit",),
+            ("catalog_publication_commits",),
         ),
     ],
 )
@@ -719,11 +612,11 @@ def test_generated_batch_zero_views_are_exact_on_both_backends(
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
-def test_generated_discovery_completed_at_member_is_non_null(backend: str) -> None:
+def test_generated_recomposed_discovery_completed_at_is_non_null(backend: str) -> None:
     relation = next(
         value
         for value in ARTIFACT_DATA["backends"][backend]["relations"]
-        if value["relation"] == "source_build_discovery_completed_at"
+        if value["relation"] == "source_build_discovery"
     )
     completed_at = next(
         column for column in relation["columns"] if column[0] == "completed_at"
@@ -732,18 +625,77 @@ def test_generated_discovery_completed_at_member_is_non_null(backend: str) -> No
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
-def test_generated_analysis_component_sealed_at_member_is_non_null(
+def test_generated_recomposed_analysis_component_sealed_at_is_non_null(
     backend: str,
 ) -> None:
     relation = next(
         value
         for value in ARTIFACT_DATA["backends"][backend]["relations"]
-        if value["relation"] == "analysis_state_component_sealed_at"
+        if value["relation"] == "analysis_state_component_seal"
     )
     sealed_at = next(
         column for column in relation["columns"] if column[0] == "sealed_at"
     )
     assert sealed_at[3] is False
+
+
+@pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
+@pytest.mark.parametrize(
+    ("relation_name", "expected_columns"),
+    (
+        (
+            "source_build_discovery",
+            (
+                "build_id",
+                "scan_attempt",
+                "gallery_count",
+                "tree_observation_sha256",
+                "completed_at",
+            ),
+        ),
+        (
+            "source_snapshot_manifest_identity",
+            (
+                "snapshot_manifest_sha256",
+                "gallery_count",
+                "file_count",
+                "byte_count",
+            ),
+        ),
+        (
+            "analysis_state_component_seal",
+            ("analysis_id", "state_component", "row_count", "sealed_at"),
+        ),
+        (
+            "artifact_producer_fingerprint",
+            (
+                "producer_fingerprint_sha256",
+                "artifact_algorithm_version",
+                "producer_equivalence_class",
+                "writer_id",
+                "python_abi",
+                "pillow_build",
+                "libjpeg_build",
+                "zlib_build",
+            ),
+        ),
+    ),
+)
+def test_generated_selected_families_are_atomic_wide_tables(
+    backend: str,
+    relation_name: str,
+    expected_columns: tuple[str, ...],
+) -> None:
+    payload = ARTIFACT_DATA["backends"][backend]
+    relation = next(
+        value for value in payload["relations"] if value["relation"] == relation_name
+    )
+    assert relation["kind"] == "table"
+    assert relation["view_dependencies"] == ()
+    assert tuple(column[0] for column in relation["columns"]) == expected_columns
+    statements = dict(payload["slices"])[f"relation:{relation_name}"]
+    assert statements[0][1] == "table"
+    assert statements[0][3].startswith("CREATE TABLE")
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
@@ -853,7 +805,7 @@ def test_formal_seed_and_obligation_contracts_are_machine_bound() -> None:
         assert tuple(provider.writer_hook_bindings) == (
             expected_recurring_obligation_ids
         )
-        assert len(provider.writer_hook_bindings) == 25
+        assert len(provider.writer_hook_bindings) == 28
         assert not provider.blockers
         assert not any("validators are missing" in value for value in provider.blockers)
         assert not any("undeclared IDs" in value for value in provider.blockers)
@@ -910,8 +862,8 @@ def test_generated_provider_reports_every_recurring_writer_hook_exactly() -> Non
         obligation for obligation in recurring if obligation["id"] not in installed_ids
     )
 
-    assert len(recurring) == 25
-    assert len(installed_ids) == 25
+    assert len(recurring) == 28
+    assert len(installed_ids) == 28
     assert len(writer_blockers) == len(unresolved) == 0
     assert installed_ids == frozenset(value["id"] for value in recurring)
     assert installed_ids.isdisjoint(building_only_ids)
@@ -990,7 +942,7 @@ def test_generated_provider_rejects_a_noncanonical_writer_binding(
     provider = GeneratedVNextSchemaProvider("sqlite")
 
     assert target_id not in provider.writer_hook_bindings
-    assert len(provider.writer_hook_bindings) == 24
+    assert len(provider.writer_hook_bindings) == 27
     assert any(
         repr(target_id) in blocker and "non-canonical binding" in blocker
         for blocker in provider.blockers
@@ -1401,6 +1353,18 @@ def test_batch_zero_b_view_drift_remains_semantically_visible(
                 "THEN 'PROJECTION_FINALIZED' ELSE 'DB_COMMITTED'",
                 1,
             )
+        elif relation_name == "operational_activation":
+            source_revision = (
+                'committed."source_revision"'
+                if backend == "sqlite"
+                else "committed.`source_revision`"
+            )
+            revision = (
+                'committed."revision"'
+                if backend == "sqlite"
+                else "committed.`revision`"
+            )
+            wrong = sql.replace(source_revision, revision, 1)
         else:
             wrong = sql.replace(" = sealed.", " <> sealed.", 1)
         assert wrong != sql

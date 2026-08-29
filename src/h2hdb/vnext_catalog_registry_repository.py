@@ -1,15 +1,10 @@
-"""Typed, fail-closed access to sealed vNext catalog registries.
+"""Typed, fail-closed access to immutable vNext catalog registries.
 
-The catalog manifest exposes compatibility views for broad logical reads, but
-runtime hot paths use the narrow physical satellites directly.  Every loader
-below starts from a totality seal and joins every required fact plus its cold
-natural identity.  Consequently an absent or partially-written family is
-never mistaken for a usable policy.
-
-The only writer in this module is source-scope registration.  Its caller owns
-the transaction and must already hold the source-build allocation lock.  It
-derives the digest, checks both candidate-key directions, inserts the identity
-last-but-one, and publishes the family with the seal as the final statement.
+Each registry is one authoritative BCNF row.  A row is therefore either
+present in full or absent; loaders validate every value and every derived
+identity before returning it.  The source-scope writer derives its digest,
+checks both candidate-key directions, and inserts the complete row in the
+caller-owned transaction.
 """
 
 from __future__ import annotations
@@ -62,7 +57,7 @@ class CatalogRegistryError(RuntimeError):
 
 
 class CatalogRegistryNotReadyError(CatalogRegistryError):
-    """A requested family is absent, incomplete, or not yet sealed."""
+    """A requested authoritative registry row is absent."""
 
 
 class CatalogRegistryConflictError(CatalogRegistryError):
@@ -188,6 +183,8 @@ class ArtifactStorageCodecRecord:
 
 @dataclass(frozen=True, slots=True)
 class ArtifactPolicySemanticsRecord:
+    """Policy semantics with the algorithm derived from producer registration."""
+
     policy_component_sha256: bytes
     artifact_algorithm_version: int
     max_image_short_side: int
@@ -367,7 +364,7 @@ def _validated[T](label: str, factory: Callable[[], T]) -> T:
         ) from error
 
 
-def _sealed_row(
+def _required_row(
     connector: SQLConnector,
     *,
     query: str,
@@ -376,24 +373,13 @@ def _sealed_row(
 ) -> tuple[Any, ...]:
     row = connector.fetch_one(query, parameters)
     if not row:
-        raise CatalogRegistryNotReadyError(f"{label} is absent or not sealed")
+        raise CatalogRegistryNotReadyError(f"{label} is absent")
     return row
 
 
 _MANIFEST_POLICY_BY_ID = (
-    "SELECT seal.manifest_policy_id, algorithm.manifest_algorithm_version, "
-    "file_order.file_order_version "
-    "FROM catalog_manifest_policy_seals AS seal "
-    "JOIN catalog_manifest_policy_manifest_algorithm_versions AS algorithm "
-    "ON algorithm.manifest_policy_id = seal.manifest_policy_id "
-    "JOIN catalog_manifest_policy_file_order_versions AS file_order "
-    "ON file_order.manifest_policy_id = seal.manifest_policy_id "
-    "JOIN catalog_manifest_policy_identities AS identity "
-    "ON identity.manifest_policy_id = seal.manifest_policy_id "
-    "AND identity.manifest_algorithm_version = "
-    "algorithm.manifest_algorithm_version "
-    "AND identity.file_order_version = file_order.file_order_version "
-    "WHERE seal.manifest_policy_id = %s"
+    "SELECT manifest_policy_id, manifest_algorithm_version, file_order_version "
+    "FROM catalog_manifest_policies WHERE manifest_policy_id = %s"
 )
 
 
@@ -405,7 +391,7 @@ def load_manifest_policy(
         manifest_policy_id,
         field="manifest_policy_id",
     )
-    row = _sealed_row(
+    row = _required_row(
         connector,
         query=_MANIFEST_POLICY_BY_ID,
         parameters=(policy_id,),
@@ -428,23 +414,12 @@ def load_manifest_policy_by_natural(
         file_order_version,
         field="file_order_version",
     )
-    row = _sealed_row(
+    row = _required_row(
         connector,
         query=(
-            "SELECT seal.manifest_policy_id, "
-            "algorithm.manifest_algorithm_version, file_order.file_order_version "
-            "FROM catalog_manifest_policy_identities AS identity "
-            "JOIN catalog_manifest_policy_seals AS seal "
-            "ON seal.manifest_policy_id = identity.manifest_policy_id "
-            "JOIN catalog_manifest_policy_manifest_algorithm_versions AS algorithm "
-            "ON algorithm.manifest_policy_id = identity.manifest_policy_id "
-            "AND algorithm.manifest_algorithm_version = "
-            "identity.manifest_algorithm_version "
-            "JOIN catalog_manifest_policy_file_order_versions AS file_order "
-            "ON file_order.manifest_policy_id = identity.manifest_policy_id "
-            "AND file_order.file_order_version = identity.file_order_version "
-            "WHERE identity.manifest_algorithm_version = %s "
-            "AND identity.file_order_version = %s"
+            "SELECT manifest_policy_id, manifest_algorithm_version, "
+            "file_order_version FROM catalog_manifest_policies "
+            "WHERE manifest_algorithm_version = %s AND file_order_version = %s"
         ),
         parameters=(algorithm_version, order_version),
         label="manifest policy natural identity",
@@ -457,33 +432,13 @@ def load_analysis_policy(
     policy_id: int,
 ) -> AnalysisPolicyRecord:
     exact_id = require_positive_int63(policy_id, field="analysis policy_id")
-    row = _sealed_row(
+    row = _required_row(
         connector,
         query=(
-            "SELECT seal.policy_id, algorithm.algorithm_version, "
-            "artist.spam_artist_threshold, occurrence.spam_occurrence_threshold, "
-            "owner.content_owner_rule_version, winner.gid_winner_rule_version "
-            "FROM catalog_analysis_policy_seals AS seal "
-            "JOIN catalog_analysis_policy_algorithm_versions AS algorithm "
-            "ON algorithm.policy_id = seal.policy_id "
-            "JOIN catalog_analysis_policy_spam_artist_thresholds AS artist "
-            "ON artist.policy_id = seal.policy_id "
-            "JOIN catalog_analysis_policy_spam_occurrence_thresholds AS occurrence "
-            "ON occurrence.policy_id = seal.policy_id "
-            "JOIN catalog_analysis_policy_content_owner_rule_versions AS owner "
-            "ON owner.policy_id = seal.policy_id "
-            "JOIN catalog_analysis_policy_gid_winner_rule_versions AS winner "
-            "ON winner.policy_id = seal.policy_id "
-            "JOIN catalog_analysis_policy_identities AS identity "
-            "ON identity.policy_id = seal.policy_id "
-            "AND identity.algorithm_version = algorithm.algorithm_version "
-            "AND identity.spam_artist_threshold = artist.spam_artist_threshold "
-            "AND identity.spam_occurrence_threshold = "
-            "occurrence.spam_occurrence_threshold "
-            "AND identity.content_owner_rule_version = "
-            "owner.content_owner_rule_version "
-            "AND identity.gid_winner_rule_version = winner.gid_winner_rule_version "
-            "WHERE seal.policy_id = %s"
+            "SELECT policy_id, algorithm_version, spam_artist_threshold, "
+            "spam_occurrence_threshold, content_owner_rule_version, "
+            "gid_winner_rule_version FROM catalog_analysis_policies "
+            "WHERE policy_id = %s"
         ),
         parameters=(exact_id,),
         label="analysis policy",
@@ -499,53 +454,15 @@ def load_artifact_zip_writer_policy(
         artifact_algorithm_version,
         field="ZIP artifact_algorithm_version",
     )
-    row = _sealed_row(
+    row = _required_row(
         connector,
         query=(
-            "SELECT seal.artifact_algorithm_version, zip.zip_codec_version, "
-            "method.compression_method, level.compression_level, "
-            "date_fact.dos_date, time_fact.dos_time, mode.unix_mode, "
-            "flags.general_purpose_flags, system_fact.create_system, "
-            "archive.archive_name_codec_version, "
-            "artifact.artifact_name_codec_version "
-            "FROM catalog_artifact_zip_writer_policy_seals AS seal "
-            "JOIN catalog_artifact_zip_writer_policy_zip_codec_versions AS zip "
-            "ON zip.artifact_algorithm_version = seal.artifact_algorithm_version "
-            "JOIN catalog_artifact_zip_writer_policy_compression_methods AS method "
-            "ON method.artifact_algorithm_version = seal.artifact_algorithm_version "
-            "JOIN catalog_artifact_zip_writer_policy_compression_levels AS level "
-            "ON level.artifact_algorithm_version = seal.artifact_algorithm_version "
-            "JOIN catalog_artifact_zip_writer_policy_dos_dates AS date_fact "
-            "ON date_fact.artifact_algorithm_version = seal.artifact_algorithm_version "
-            "JOIN catalog_artifact_zip_writer_policy_dos_times AS time_fact "
-            "ON time_fact.artifact_algorithm_version = seal.artifact_algorithm_version "
-            "JOIN catalog_artifact_zip_writer_policy_unix_modes AS mode "
-            "ON mode.artifact_algorithm_version = seal.artifact_algorithm_version "
-            "JOIN catalog_artifact_zip_writer_policy_general_purpose_flags AS flags "
-            "ON flags.artifact_algorithm_version = seal.artifact_algorithm_version "
-            "JOIN catalog_artifact_zip_writer_policy_create_systems AS system_fact "
-            "ON system_fact.artifact_algorithm_version = seal.artifact_algorithm_version "
-            "JOIN catalog_artifact_zip_writer_policy_archive_name_codec_versions "
-            "AS archive ON archive.artifact_algorithm_version = "
-            "seal.artifact_algorithm_version "
-            "JOIN catalog_artifact_zip_writer_policy_artifact_name_codec_versions "
-            "AS artifact ON artifact.artifact_algorithm_version = "
-            "seal.artifact_algorithm_version "
-            "JOIN catalog_artifact_zip_writer_policy_identities AS identity "
-            "ON identity.artifact_algorithm_version = seal.artifact_algorithm_version "
-            "AND identity.zip_codec_version = zip.zip_codec_version "
-            "AND identity.compression_method = method.compression_method "
-            "AND identity.compression_level = level.compression_level "
-            "AND identity.dos_date = date_fact.dos_date "
-            "AND identity.dos_time = time_fact.dos_time "
-            "AND identity.unix_mode = mode.unix_mode "
-            "AND identity.general_purpose_flags = flags.general_purpose_flags "
-            "AND identity.create_system = system_fact.create_system "
-            "AND identity.archive_name_codec_version = "
-            "archive.archive_name_codec_version "
-            "AND identity.artifact_name_codec_version = "
-            "artifact.artifact_name_codec_version "
-            "WHERE seal.artifact_algorithm_version = %s"
+            "SELECT artifact_algorithm_version, zip_codec_version, "
+            "compression_method, compression_level, dos_date, dos_time, "
+            "unix_mode, general_purpose_flags, create_system, "
+            "archive_name_codec_version, artifact_name_codec_version "
+            "FROM catalog_artifact_zip_writer_policies "
+            "WHERE artifact_algorithm_version = %s"
         ),
         parameters=(algorithm_version,),
         label="artifact ZIP writer policy",
@@ -564,21 +481,12 @@ def load_artifact_storage_codec(
         storage_codec_version,
         field="storage_codec_version",
     )
-    row = _sealed_row(
+    row = _required_row(
         connector,
         query=(
-            "SELECT seal.storage_codec_version, adapter.adapter_id, "
-            "locator.locator_codec_version, "
-            "protection.protection_token_codec_version "
-            "FROM catalog_artifact_storage_codec_seals AS seal "
-            "JOIN catalog_artifact_storage_codec_adapter_ids AS adapter "
-            "ON adapter.storage_codec_version = seal.storage_codec_version "
-            "JOIN catalog_artifact_storage_codec_locator_codec_versions AS locator "
-            "ON locator.storage_codec_version = seal.storage_codec_version "
-            "JOIN catalog_artifact_storage_codec_protection_token_codec_versions "
-            "AS protection ON protection.storage_codec_version = "
-            "seal.storage_codec_version "
-            "WHERE seal.storage_codec_version = %s"
+            "SELECT storage_codec_version, adapter_id, locator_codec_version, "
+            "protection_token_codec_version FROM catalog_artifact_storage_codecs "
+            "WHERE storage_codec_version = %s"
         ),
         parameters=(codec_version,),
         label="artifact storage codec",
@@ -597,29 +505,18 @@ def load_artifact_policy_semantics(
         policy_component_sha256,
         field="artifact policy_component_sha256",
     )
-    row = _sealed_row(
+    row = _required_row(
         connector,
         query=(
-            "SELECT seal.policy_component_sha256, "
-            "algorithm.artifact_algorithm_version, side.max_image_short_side, "
-            "producer.producer_fingerprint_sha256 "
-            "FROM catalog_artifact_policy_semantics_seals AS seal "
-            "JOIN catalog_artifact_policy_semantics_artifact_algorithm_versions "
-            "AS algorithm ON algorithm.policy_component_sha256 = "
-            "seal.policy_component_sha256 "
-            "JOIN catalog_artifact_policy_semantics_max_image_short_sides AS side "
-            "ON side.policy_component_sha256 = seal.policy_component_sha256 "
-            "JOIN catalog_artifact_policy_semantics_producer_fingerprint_sha256s "
-            "AS producer ON producer.policy_component_sha256 = "
-            "seal.policy_component_sha256 "
-            "JOIN catalog_artifact_policy_semantics_identities AS identity "
-            "ON identity.policy_component_sha256 = seal.policy_component_sha256 "
-            "AND identity.artifact_algorithm_version = "
-            "algorithm.artifact_algorithm_version "
-            "AND identity.max_image_short_side = side.max_image_short_side "
-            "AND identity.producer_fingerprint_sha256 = "
-            "producer.producer_fingerprint_sha256 "
-            "WHERE seal.policy_component_sha256 = %s"
+            "SELECT semantics.policy_component_sha256, "
+            "producer.artifact_algorithm_version, "
+            "semantics.max_image_short_side, "
+            "semantics.producer_fingerprint_sha256 "
+            "FROM catalog_artifact_policy_semantics AS semantics "
+            "JOIN catalog_artifact_producer_fingerprints AS producer "
+            "ON producer.producer_fingerprint_sha256 = "
+            "semantics.producer_fingerprint_sha256 "
+            "WHERE semantics.policy_component_sha256 = %s"
         ),
         parameters=(digest,),
         label="artifact policy semantics",
@@ -638,22 +535,12 @@ def load_title_sort_policy(
         title_sort_policy_id,
         field="title_sort_policy_id",
     )
-    row = _sealed_row(
+    row = _required_row(
         connector,
         query=(
-            "SELECT seal.title_sort_policy_id, "
-            "algorithm.title_sort_algorithm_version, unicode.unicode_data_version "
-            "FROM catalog_title_sort_policy_seals AS seal "
-            "JOIN catalog_title_sort_policy_algorithm_versions AS algorithm "
-            "ON algorithm.title_sort_policy_id = seal.title_sort_policy_id "
-            "JOIN catalog_title_sort_policy_unicode_data_versions AS unicode "
-            "ON unicode.title_sort_policy_id = seal.title_sort_policy_id "
-            "JOIN catalog_title_sort_policy_identities AS identity "
-            "ON identity.title_sort_policy_id = seal.title_sort_policy_id "
-            "AND identity.title_sort_algorithm_version = "
-            "algorithm.title_sort_algorithm_version "
-            "AND identity.unicode_data_version = unicode.unicode_data_version "
-            "WHERE seal.title_sort_policy_id = %s"
+            "SELECT title_sort_policy_id, title_sort_algorithm_version, "
+            "unicode_data_version FROM catalog_title_sort_policy "
+            "WHERE title_sort_policy_id = %s"
         ),
         parameters=(policy_id,),
         label="title-sort policy",
@@ -669,23 +556,12 @@ def load_display_title_policy(
         display_title_policy_id,
         field="display_title_policy_id",
     )
-    row = _sealed_row(
+    row = _required_row(
         connector,
         query=(
-            "SELECT seal.display_title_policy_id, "
-            "algorithm.display_title_algorithm_version, "
-            "sort.title_sort_policy_id "
-            "FROM catalog_display_title_policy_seals AS seal "
-            "JOIN catalog_display_title_policy_algorithm_versions AS algorithm "
-            "ON algorithm.display_title_policy_id = seal.display_title_policy_id "
-            "JOIN catalog_display_title_policy_title_sort_policy_ids AS sort "
-            "ON sort.display_title_policy_id = seal.display_title_policy_id "
-            "JOIN catalog_display_title_policy_identities AS identity "
-            "ON identity.display_title_policy_id = seal.display_title_policy_id "
-            "AND identity.display_title_algorithm_version = "
-            "algorithm.display_title_algorithm_version "
-            "AND identity.title_sort_policy_id = sort.title_sort_policy_id "
-            "WHERE seal.display_title_policy_id = %s"
+            "SELECT display_title_policy_id, display_title_algorithm_version, "
+            "title_sort_policy_id FROM catalog_display_title_policies "
+            "WHERE display_title_policy_id = %s"
         ),
         parameters=(policy_id,),
         label="display-title policy",
@@ -701,24 +577,12 @@ def load_source_scope(
     scope_key: bytes,
 ) -> SourceScopeRecord:
     digest = require_digest32(scope_key, field="source scope_key")
-    row = _sealed_row(
+    row = _required_row(
         connector,
         query=(
-            "SELECT seal.scope_key, provider.source_provider, "
-            "root.source_root_sha256, version.identity_policy_version "
-            "FROM catalog_source_scope_seals AS seal "
-            "JOIN catalog_source_scope_source_providers AS provider "
-            "ON provider.scope_key = seal.scope_key "
-            "JOIN catalog_source_scope_source_root_sha256s AS root "
-            "ON root.scope_key = seal.scope_key "
-            "JOIN catalog_source_scope_identity_policy_versions AS version "
-            "ON version.scope_key = seal.scope_key "
-            "JOIN catalog_source_scope_identities AS identity "
-            "ON identity.scope_key = seal.scope_key "
-            "AND identity.source_provider = provider.source_provider "
-            "AND identity.source_root_sha256 = root.source_root_sha256 "
-            "AND identity.identity_policy_version = version.identity_policy_version "
-            "WHERE seal.scope_key = %s"
+            "SELECT scope_key, source_provider, source_root_sha256, "
+            "identity_policy_version FROM catalog_source_scopes "
+            "WHERE scope_key = %s"
         ),
         parameters=(digest,),
         label="source scope",
@@ -734,25 +598,13 @@ def load_artifact_producer_fingerprint(
         producer_fingerprint_sha256,
         field="artifact producer_fingerprint_sha256",
     )
-    row = _sealed_row(
+    row = _required_row(
         connector,
         query=(
-            "SELECT seal.producer_fingerprint_sha256, "
-            "algorithm.artifact_algorithm_version, "
-            "equivalence.producer_equivalence_class, identity.writer_id, "
-            "identity.python_abi, identity.pillow_build, identity.libjpeg_build, "
-            "identity.zlib_build "
-            "FROM catalog_artifact_producer_fingerprint_seals AS seal "
-            "JOIN catalog_artifact_producer_fingerprint_algorithm_versions "
-            "AS algorithm ON algorithm.producer_fingerprint_sha256 = "
-            "seal.producer_fingerprint_sha256 "
-            "JOIN catalog_artifact_producer_fingerprint_equivalence_classes "
-            "AS equivalence ON equivalence.producer_fingerprint_sha256 = "
-            "seal.producer_fingerprint_sha256 "
-            "JOIN catalog_artifact_producer_fingerprint_identities AS identity "
-            "ON identity.producer_fingerprint_sha256 = "
-            "seal.producer_fingerprint_sha256 "
-            "WHERE seal.producer_fingerprint_sha256 = %s"
+            "SELECT producer_fingerprint_sha256, artifact_algorithm_version, "
+            "producer_equivalence_class, writer_id, python_abi, pillow_build, "
+            "libjpeg_build, zlib_build FROM catalog_artifact_producer_fingerprints "
+            "WHERE producer_fingerprint_sha256 = %s"
         ),
         parameters=(digest,),
         label="artifact producer fingerprint",
@@ -770,7 +622,7 @@ def ensure_source_scope(
     source_root_sha256: bytes,
     identity_policy_version: int,
 ) -> SourceScopeWrite:
-    """Return or seal one exact source scope inside the caller's transaction.
+    """Return or insert one exact source scope inside the caller's transaction.
 
     The source-build coordinator serializes this operation with its existing
     working-root lock.  Immutable registry rows themselves are never locked
@@ -796,48 +648,20 @@ def ensure_source_scope(
             policy_version,
         ),
     )
-    expected = (
-        scope_key,
-        provider,
-        root,
-        policy_version,
-        provider,
-        root,
-        policy_version,
-        scope_key,
-        scope_key,
-    )
+    expected = (scope_key, provider, root, policy_version)
     by_digest = connector.fetch_one(
-        "SELECT anchor.scope_key, provider.source_provider, "
-        "root.source_root_sha256, version.identity_policy_version, "
-        "identity.source_provider, identity.source_root_sha256, "
-        "identity.identity_policy_version, identity.scope_key, seal.scope_key "
-        "FROM catalog_source_scope_anchors AS anchor "
-        "LEFT JOIN catalog_source_scope_source_providers AS provider "
-        "ON provider.scope_key = anchor.scope_key "
-        "LEFT JOIN catalog_source_scope_source_root_sha256s AS root "
-        "ON root.scope_key = anchor.scope_key "
-        "LEFT JOIN catalog_source_scope_identity_policy_versions AS version "
-        "ON version.scope_key = anchor.scope_key "
-        "LEFT JOIN catalog_source_scope_identities AS identity "
-        "ON identity.scope_key = anchor.scope_key "
-        "LEFT JOIN catalog_source_scope_seals AS seal "
-        "ON seal.scope_key = anchor.scope_key "
-        "WHERE anchor.scope_key = %s",
+        "SELECT scope_key, source_provider, source_root_sha256, "
+        "identity_policy_version FROM catalog_source_scopes WHERE scope_key = %s",
         (scope_key,),
     )
     by_natural = connector.fetch_one(
-        "SELECT scope_key FROM catalog_source_scope_identities "
+        "SELECT scope_key FROM catalog_source_scopes "
         "WHERE source_provider = %s AND source_root_sha256 = %s "
         "AND identity_policy_version = %s",
         (provider, root, policy_version),
     )
 
     if by_digest:
-        if any(value is None for value in by_digest):
-            raise CatalogRegistryNotReadyError(
-                "source scope family exists but is incomplete or unsealed"
-            )
         if by_digest != expected or by_natural != (scope_key,):
             raise CatalogRegistryConflictError(
                 "source scope digest collides with different durable facts"
@@ -860,32 +684,9 @@ def ensure_source_scope(
         )
 
     connector.execute(
-        "INSERT INTO catalog_source_scope_anchors (scope_key) VALUES (%s)",
-        (scope_key,),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_scope_source_providers "
-        "(scope_key, source_provider) VALUES (%s, %s)",
-        (scope_key, provider),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_scope_source_root_sha256s "
-        "(scope_key, source_root_sha256) VALUES (%s, %s)",
-        (scope_key, root),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_scope_identity_policy_versions "
-        "(scope_key, identity_policy_version) VALUES (%s, %s)",
-        (scope_key, policy_version),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_scope_identities "
-        "(source_provider, source_root_sha256, identity_policy_version, scope_key) "
+        "INSERT INTO catalog_source_scopes "
+        "(scope_key, source_provider, source_root_sha256, identity_policy_version) "
         "VALUES (%s, %s, %s, %s)",
-        (provider, root, policy_version, scope_key),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_scope_seals (scope_key) VALUES (%s)",
-        (scope_key,),
+        expected,
     )
     return SourceScopeWrite(load_source_scope(connector, scope_key), False)

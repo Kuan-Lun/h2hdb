@@ -482,6 +482,12 @@ _OBLIGATION_BINDINGS = {
         "retention_protocol",
         "operational_refinement.check_cleanup_reachability_v1",
     ),
+    "h2hdb.operational.cleanup-frozen-root-set.v1": (
+        "operational.cleanup-frozen-root-set",
+        "ready_and_runtime",
+        "transaction_protocol",
+        "operational_refinement.check_cleanup_frozen_root_set_v1",
+    ),
     "h2hdb.operational.revision-allocation.v1": (
         "operational.revision-allocation",
         "ready_and_runtime",
@@ -493,6 +499,12 @@ _OBLIGATION_BINDINGS = {
         "ready_and_runtime",
         "transaction_protocol",
         "operational_refinement.check_gallery_staging_contract_v1",
+    ),
+    "h2hdb.operational.gallery-staging-request-budget.v1": (
+        "operational.gallery-staging-request-retirement",
+        "ready_and_runtime",
+        "transaction_protocol",
+        "operational_refinement.check_gallery_staging_request_budget_v1",
     ),
     "h2hdb.operational.bootstrap-genesis.v1": (
         "operational.bootstrap",
@@ -508,14 +520,12 @@ _GENERATION_OBLIGATION_RELATION_BINDINGS = {
             "download_generation",
             "download_coordination_head",
             "download_generation_owner",
-            "download_generation_lease",
             "download_ingest_handoff",
             "download_ingest_consumption",
             "coordinated_ingest_completion",
             "ingest_generation",
             "ingest_coordination_head",
             "ingest_generation_owner",
-            "ingest_generation_lease",
         ),
         "Validate repository-issued download capabilities, exact live handoff or expired takeover, one-to-one ingest consumption, quiescent periodic ingest, coordinated completion, and zero-write exact response-loss replay across normalized download and ingest authority.",
     ),
@@ -560,32 +570,31 @@ _GENERATION_OBLIGATION_RELATION_BINDINGS = {
         (
             "operational_event_stream",
             "operational_preparation",
+            "operational_preparation_checkpoint",
+            "operational_preparation_batch_receipt",
             "operational_preparation_effect_seal",
             "publication_candidate_preparation",
             "operational_activation",
             "operational_event",
             "operational_removed_gid_event",
             "operational_deletion_consumption_event",
-            "operational_event_ack",
-            "operational_event_ack_head",
+            "cleanup_job",
+            "cleanup_cycle_root",
+            "cleanup_checkpoint",
         ),
-        "Validate invisible preparation-scoped event streams, contiguous exact digest chains and immutable effect seals, one-to-one candidate binding to an exact sealed preparation, O(1) activation, exactly one type-matching subtype, and monotone same-preparation acknowledgement only after activation and durable bounded-prefix coverage.",
+        "Bind generated event key shapes; full CHECK rejects effect seals without preparation or commit authority and streams without preparation or seal authority, and admits missing transient coordinates only for an exact frozen OPEN PUBLICATION_COMMIT covered prefix or compound receipt. Contiguous digest-chain, exact subtype, and writer-produced seal completeness remain obligations of bounded event writers and cleanup fault/integration evidence rather than an unbounded READY scan.",
     ),
     "h2hdb.operational.cleanup-reachability.v1": (
         (
             "cleanup_target_kind",
             "cleanup_phase",
             "cleanup_job",
+            "cleanup_cycle_root",
             "cleanup_checkpoint",
-            "source_build_descriptor_seal",
-            "publication_candidate_anchor",
-            "publication_candidate_definition_seal",
-            "publication_candidate_analysis_id",
-            "publication_candidate_reserved_revision",
-            "publication_candidate_artifact_policy_id",
-            "publication_candidate_display_title_policy_id",
-            "publication_candidate_artifacts_required",
-            "publication_candidate_created_at",
+            "source_build_descriptor",
+            "source_build_base_publication_commit",
+            "publication_candidate",
+            "publication_commit",
             "analysis_snapshot_manifest",
             "source_revision",
             "catalog_revision",
@@ -593,16 +602,46 @@ _GENERATION_OBLIGATION_RELATION_BINDINGS = {
             "content_blob",
             "operational_event_stream",
             "operational_preparation",
+            "operational_preparation_checkpoint",
+            "operational_preparation_batch_receipt",
             "operational_preparation_effect_seal",
             "publication_candidate_preparation",
             "operational_activation",
             "operational_event",
             "operational_removed_gid_event",
             "operational_deletion_consumption_event",
-            "operational_event_ack",
-            "operational_event_ack_head",
         ),
-        "Validate the exact seeded cleanup kind/phase registry, 32-byte target-key codecs, static writer hooks, retention-root closure, blocker identities, candidate-to-preparation binding, and conditional child-first preparation cleanup: activated effects outlive control rows, bound or unactivated COMPLETE work is retained, and ABANDONED invisible streams leave no orphan.",
+        "Validate the exact seeded cleanup kind/phase registry, 32-byte target-key codecs, frozen-root membership, static writer hooks, retention-root closure, blocker identities, and candidate-to-preparation binding. Generic preparation cleanup retains COMPLETE retry and commit-to-build lineage; only the same unreachable publication-commit lifecycle may release its safe build base, exact-delete its binding and preparation control family, compact transient typed/events with exact cursor/receipt rechecks, and atomically delete commit, effect seal, and stream, while ABANDONED invisible streams leave no orphan.",
+    ),
+    "h2hdb.operational.cleanup-frozen-root-set.v1": (
+        (
+            "cleanup_job",
+            "cleanup_cycle_root",
+            "cleanup_checkpoint",
+        ),
+        "Validate the single-OPEN serialized cleanup pipeline, exact at-most-256 immutable per-cycle frozen root membership, canonical typed frame maximum derived as 260 bytes from every registered root physical domain, count/digest seal, static-phase membership restriction, and same-transaction terminal membership removal.",
+    ),
+    "h2hdb.operational.gallery-staging-request-budget.v1": (
+        (
+            "gallery_observation_staging_request_budget",
+            "gallery_observation_staging",
+            "gallery_observation_staging_claim",
+            "gallery_observation_staging_checkpoint",
+            "gallery_observation_staging_request",
+            "gallery_observation_staging_request_chunk",
+            "gallery_observation_staging_request_predecessor",
+            "gallery_observation_staging_page_request",
+            "gallery_observation_staging_request_page",
+            "gallery_observation_staging_receipt",
+            "gallery_observation_staging_frontier",
+            "gallery_observation_staging_match_checkpoint",
+            "gallery_observation_staging_match_request",
+            "gallery_observation_staging_match_receipt",
+            "gallery_observation_staging_metadata_parser",
+            "source_working_build",
+            "source_build_gallery",
+        ),
+        "Validate the seeded exact request-budget singleton, replay-neutral reserve and actual-delete release accounting under one lock order, the 1,500,000-row emergency cap, one active staging slot per build, and shared-fenced seven-phase implicit-ACK retirement with durable-link replay and terminal generic-cleanup backstop.",
     ),
     "h2hdb.operational.bootstrap-genesis.v1": (
         (
@@ -610,8 +649,9 @@ _GENERATION_OBLIGATION_RELATION_BINDINGS = {
             "identity_allocator",
             "deletion_request_generation",
             "deletion_request_generation_head",
+            "gallery_observation_staging_request_budget",
         ),
-        "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG/POLICY identity allocator genesis rows, the real immutable deletion generation-zero empty-queue fact and its singleton head, and the declared absence of all request, event, lease, staging, work, cache, policy, and cleanup facts.",
+        "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG/POLICY identity allocator genesis rows, the real immutable deletion generation-zero empty-queue fact and its singleton head, the zero-valued request-budget singleton, and the declared absence of all request, event, lease, staging, work, cache, policy, and cleanup facts.",
     ),
 }
 
@@ -740,8 +780,10 @@ def validate_operational_machine_contract_documents(
         "operational_refinement.check_build_generation_contract_v1": check_build_generation_contract_v1,
         "operational_refinement.check_attempt_identity_contract_v1": check_attempt_identity_contract_v1,
         "operational_refinement.check_cleanup_reachability_v1": check_cleanup_reachability_v1,
+        "operational_refinement.check_cleanup_frozen_root_set_v1": check_cleanup_frozen_root_set_v1,
         "operational_refinement.check_revision_allocator_contract_v1": check_revision_allocator_contract_v1,
         "operational_refinement.check_gallery_staging_contract_v1": check_gallery_staging_contract_v1,
+        "operational_refinement.check_gallery_staging_request_budget_v1": check_gallery_staging_request_budget_v1,
         "operational_refinement.check_bootstrap_contract_v1": check_bootstrap_contract_v1,
     }
     if set(checks) != {value.check for value in obligations}:
@@ -769,14 +811,46 @@ def check_fencing_contract_v1(
         "head_relation": "ingest_coordination_head",
         "generation_relation": "ingest_generation",
         "owner_relation": "ingest_generation_owner",
-        "lease_relation": "ingest_generation_lease",
         "build_authorization_relation": "source_build_generation",
         "authorization_rule": "current_generation_and_exact_owner_and_unexpired_lease",
         "takeover_rule": "strictly_greater_generation",
         "stale_rule": "no_mutation",
-        "history_cleanup_rule": "under the exclusive maintenance gate, keyset-delete at most the fixed batch bound of ingest generations strictly older than the current head only after source_build_generation, canonical_value_upload, staging claims, handoff, and every live lease or owner resume authority are absent; delete handoff, lease, owner, then generation child-first with row-lock recheck, while current and completed head references always block",
+        "history_cleanup_rule": "under the exclusive maintenance gate, keyset-delete at most the fixed batch bound of ingest generations strictly older than the current head only after source_build_generation, canonical_value_upload, staging claims, handoff, and every live owner row carrying lease resume authority are absent; delete handoff, owner, then generation child-first with row-lock recheck, while current and completed head references always block",
     }
     _require_exact_table(logical, "fencing_contract", expected)
+    owner = _raw_relation_map(logical).get("ingest_generation_owner")
+    if owner is None or {
+        "attributes": owner.get("attributes"),
+        "declared_keys": owner.get("declared_keys"),
+        "fds": owner.get("fds"),
+        "foreign_keys": owner.get("foreign_keys", []),
+    } != {
+        "attributes": [
+            "generation",
+            "owner_token",
+            "claimed_at",
+            "lease_expires_at",
+        ],
+        "declared_keys": [["generation"], ["owner_token"]],
+        "fds": [
+            {
+                "determinant": ["generation"],
+                "dependent": ["owner_token", "claimed_at", "lease_expires_at"],
+            },
+            {
+                "determinant": ["owner_token"],
+                "dependent": ["generation", "claimed_at", "lease_expires_at"],
+            },
+        ],
+        "foreign_keys": [
+            {
+                "attributes": ["generation"],
+                "relation": "ingest_generation",
+                "referenced_attributes": ["generation"],
+            }
+        ],
+    }:
+        raise ValueError("ingest authority must be one complete BCNF owner row")
 
 
 def check_download_ingest_handoff_contract_v1(
@@ -787,7 +861,6 @@ def check_download_ingest_handoff_contract_v1(
         "download_generation_relation": "download_generation",
         "download_head_relation": "download_coordination_head",
         "download_owner_relation": "download_generation_owner",
-        "download_lease_relation": "download_generation_lease",
         "handoff_relation": "download_ingest_handoff",
         "consumption_relation": "download_ingest_consumption",
         "completion_relation": "coordinated_ingest_completion",
@@ -795,8 +868,8 @@ def check_download_ingest_handoff_contract_v1(
         "capability_bytes": 16,
         "handoff_kinds": ["DOWNLOADER", "EXPIRED_TAKEOVER"],
         "lock_order_rule": "every transaction locks the download singleton and exact current download generation satellites before the ingest singleton and exact current ingest generation satellites; each authority transition uses an exact observed-state CAS, and stale or corrupt authority performs zero writes",
-        "download_claim_rule": "the repository issues a fresh opaque 16-byte owner capability, creates a strictly greater download generation only while both download and ingest heads are quiescent, inserts exact owner and lease satellites, and CAS-advances the download current head; no new download generation may begin until the linked ingest completion has durably completed the prior download generation and advanced completed_generation",
-        "handoff_rule": "only the exact current downloader owner with an unexpired lease may insert DOWNLOADER handoff; when its lease is expired, ingest may fail-closed insert EXPIRED_TAKEOVER; either transaction atomically copies the exact owner_token into immutable handoff history and deletes both owner and lease so no live downloader authority remains",
+        "download_claim_rule": "the repository issues a fresh opaque 16-byte owner capability, creates a strictly greater download generation only while both download and ingest heads are quiescent, inserts one exact owner row carrying claimed_at and lease_expires_at, and CAS-advances the download current head; no new download generation may begin until the linked ingest completion has durably completed the prior download generation and advanced completed_generation",
+        "handoff_rule": "only the exact current downloader owner row with an unexpired lease_expires_at may insert DOWNLOADER handoff; when its lease is expired, ingest may fail-closed insert EXPIRED_TAKEOVER; either transaction atomically copies the exact owner_token into immutable handoff history and deletes the complete owner row so no live downloader authority remains",
         "consumption_rule": "one immutable handoff is consumed by exactly one immutable ingest generation and each ingest generation consumes at most one handoff; handoff validation, ingest claim, and consumption insert commit in one transaction, and an existing different tuple rejects without mutation",
         "periodic_rule": "a periodic ingest generation is allowed only while download authority is quiescent and has no handoff or consumption claim; it has no fabricated download linkage, and its completion never changes the download generation or head",
         "completion_rule": "linked completion atomically inserts the exact durable coordinated completion receipt, completes the live ingest fence, sets download_generation.completed_at, and exact-CAS advances download_coordination_head.completed_generation; periodic completion inserts the same ingest-owner receipt and completes only the ingest fence",
@@ -848,34 +921,25 @@ def check_download_ingest_handoff_contract_v1(
             ],
         ),
         "download_generation_owner": (
-            ["generation", "owner_token", "claimed_at"],
+            ["generation", "owner_token", "claimed_at", "lease_expires_at"],
             [["generation"], ["owner_token"]],
             [
                 {
                     "determinant": ["generation"],
-                    "dependent": ["owner_token", "claimed_at"],
+                    "dependent": [
+                        "owner_token",
+                        "claimed_at",
+                        "lease_expires_at",
+                    ],
                 },
                 {
                     "determinant": ["owner_token"],
-                    "dependent": ["generation", "claimed_at"],
+                    "dependent": [
+                        "generation",
+                        "claimed_at",
+                        "lease_expires_at",
+                    ],
                 },
-            ],
-            [
-                {
-                    "attributes": ["generation"],
-                    "relation": "download_generation",
-                    "referenced_attributes": ["generation"],
-                }
-            ],
-        ),
-        "download_generation_lease": (
-            ["generation", "lease_expires_at"],
-            [["generation"]],
-            [
-                {
-                    "determinant": ["generation"],
-                    "dependent": ["lease_expires_at"],
-                }
             ],
             [
                 {
@@ -1179,12 +1243,11 @@ def check_event_integrity_contract_v1(
         "empty_chain_sha256": "e3963ad6e07ac045502ad95ddb3805ac57deea8ffbb038ddf7c538a816301e71",
         "stream_rule": "begin preparation resolves or allocates one preparation_id from the policy-qualified natural key, then inserts the durable event stream, preparation, and required initial checkpoints in one transaction; commit contains all roots or none, retry resolves the same preparation, and no standalone invisible stream is permitted",
         "subtype_rule": "every bounded event-page transaction inserts each base event and exactly one subtype whose type and exact canonical subtype frame agree with event_type, byte-compares an existing coordinate on retry, and advances the durable running chain only in the same receipt and checkpoint CAS",
-        "seal_rule": "after an empty terminal work receipt, insert exactly one immutable seal with event_count equal to the next contiguous sequence number and final_chain_sha256 equal to the durable running chain, then mark the preparation COMPLETE in the same transaction; sequence numbers are exactly zero through event_count minus one, every event digest and subtype are exact, zero events require no event rows and the registered empty-chain digest, and publication trusts only this writer-produced seal without scanning events",
-        "activation_rule": "one short publication transaction locks the exact COMPLETE preparation, its effect seal, matching operational policy, and singleton deletion-generation head; only when the preparation generation is current does it insert the unique preparation and operational-policy members into the common publication commit before its final seal, while reading or writing no event rows; operational_activation is a read-only projection of that sealed commit and readers expose an event only by joining its preparation_id through the derived activation",
+        "seal_rule": "after an empty terminal work receipt, insert exactly one immutable seal with event_count equal to the next contiguous sequence number and final_chain_sha256 equal to the durable running chain, then mark the preparation COMPLETE in the same transaction; sequence numbers are exactly zero through event_count minus one, every event digest and subtype are exact, zero events require no event rows and the registered empty-chain digest, and publication trusts only this writer-produced seal without scanning events. The sole retirement exception is a matching frozen OPEN PUBLICATION_COMMIT cleanup whose compound EVENT phase atomically deletes each exactly type-matching subtype before its base event; only complete subtype/event coordinates covered by its durable receipt_id/preparation_id/sequence_no cursor may be absent, and the exception ends with the atomic COMMIT_EFFECT_ROOT receipt",
+        "activation_rule": "one short publication transaction locks the exact COMPLETE preparation, its effect seal, matching operational policy, and singleton deletion-generation head; only when the preparation generation is current does it insert the complete immutable publication_commit row last, while reading or writing no event rows; operational_activation is a read-only projection of that one wide commit authority and readers expose an event only by joining its preparation_id through the derived activation",
         "candidate_binding_rule": "before publication_candidate may become SEALED, one transaction binds it to exactly one COMPLETE preparation and exact effect seal through publication_candidate_preparation; candidate_id and preparation_id are both candidate keys, both FKs are exact, and the preparation row pins the operational policy and retained deletion generation; final publication must use this bound preparation and must not search by build/generation/policy, LIMIT 2, caller identifier, or incidental uniqueness",
-        "ack_head_relation": "operational_event_ack_head",
-        "ack_rule": "one consumer high-water sequence per preparation advances monotonically only to an existing event in that preparation after joining an immutable activation for its public source revision; each bounded CAS inserts or verifies complete acknowledgement evidence for every next contiguous event after the prior head through the target, so prior evidence plus the bounded page proves the full prefix without a history scan",
-        "cleanup_rule": "a COMPLETE preparation referenced by a sealed common commit may lose only its control rows while stream, seal, events, subtypes, derived activation, and acknowledgements remain; an uncommitted COMPLETE preparation is retained; an ABANDONED preparation with no commit member or acknowledgement authority is deleted child-first through subtypes, events, seal, preparation, and stream; OPEN and FAILED are retained and no invisible orphan stream may remain",
+        "event_lifecycle_rule": "operational events are publication-owned transient current/retry control, not a durable delivery log: only an exact active or replayable preparation/candidate/commit family retains them, no consumer registry or acknowledgement relation exists, and an unreachable finalized non-head publication_commit cleanup removes both typed subtypes and base events before atomically removing commit, effect seal, and stream",
+        "cleanup_rule": "generic OPERATIONAL_PREPARATION cleanup retains every COMPLETE preparation, including uncommitted retry authority and the commit-to-build lineage of current or replayable publication; only an unreachable finalized publication_commit cleanup under the exact live EXCLUSIVE gate may release its safe source-build base pin, remove its exact candidate/preparation binding and COMPLETE control root, delete both typed subtypes and base events child-first, then atomically delete commit, effect seal, and stream before checkpoint and anchor cleanup; an ABANDONED preparation with no commit authority is deleted child-first through subtypes, events, seal, preparation, and stream; OPEN and FAILED are retained and no invisible orphan stream may remain",
     }
     _require_exact_table(logical, "operational_event_integrity_contract", expected)
     relations = _raw_relation_map(logical)
@@ -1221,15 +1284,6 @@ def check_event_integrity_contract_v1(
             ],
             [["event_id"], ["preparation_id", "sequence_no"]],
         ),
-        "operational_event_ack_head": (
-            [
-                "consumer_id",
-                "preparation_id",
-                "through_sequence_no",
-                "updated_at",
-            ],
-            [["consumer_id", "preparation_id"]],
-        ),
     }
     for relation_name, (attributes, keys) in exact_shapes.items():
         relation = relations.get(relation_name)
@@ -1254,7 +1308,7 @@ def check_event_integrity_contract_v1(
         },
         "operational_activation": {
             "attributes": ["preparation_id"],
-            "relation": "publication_commit_operational_preparation",
+            "relation": "publication_commit",
             "referenced_attributes": ["preparation_id"],
         },
         "publication_candidate_preparation": {
@@ -1266,11 +1320,6 @@ def check_event_integrity_contract_v1(
             "attributes": ["preparation_id"],
             "relation": "operational_event_stream",
             "referenced_attributes": ["preparation_id"],
-        },
-        "operational_event_ack_head": {
-            "attributes": ["preparation_id", "through_sequence_no"],
-            "relation": "operational_event",
-            "referenced_attributes": ["preparation_id", "sequence_no"],
         },
     }
     for relation_name, foreign_key in expected_fks.items():
@@ -1290,8 +1339,8 @@ def check_build_generation_contract_v1(
         "source_build_generation_contract",
         {
             "reservation_relation": "source_build_generation",
-            "rule": "first begin or resume locks and verifies the exact current ingest head, matching owner, and unexpired lease, then transactionally reserves at most one build for that immutable ingest generation; a strictly greater live takeover generation may reserve the same build, a no-build generation has no row, and the mapping may outlive deletion of its completed owner and lease because authorization is a writer check rather than an FK",
-            "cleanup_rule": "before SOURCE_BUILD cleanup creates a job and before every destructive batch, each mapped generation must be durably completed or strictly superseded by the current coordination head; an unfinished current generation or any owner, lease, or handoff resume authority blocks phase one, while completed or superseded mappings and their residual canonical uploads are bounded owned children and make progress",
+            "rule": "first begin or resume locks and verifies the exact current ingest head, matching owner row, and its unexpired lease_expires_at, then transactionally reserves at most one build for that immutable ingest generation; a strictly greater live takeover generation may reserve the same build, a no-build generation has no row, and the mapping may outlive deletion of its completed owner because authorization is a writer check rather than an FK",
+            "cleanup_rule": "before SOURCE_BUILD cleanup creates a job and before every destructive batch, each mapped generation must be durably completed or strictly superseded by the current coordination head; an unfinished current generation or any owner row carrying lease authority or handoff resume authority blocks phase one, while completed or superseded mappings and their residual canonical uploads are bounded owned children and make progress",
         },
     )
     reservation = _raw_relation_map(logical)["source_build_generation"]
@@ -1328,8 +1377,8 @@ def check_build_generation_contract_v1(
         "expected_membership_relation": "source_build_expected_gallery",
         "observation_stat_relation": "gallery_observation_stat",
         "membership_relation": "source_build_gallery",
-        "discovery_seal_relation": "source_build_discovery_seal",
-        "build_seal_relation": "build_manifest_seal",
+        "discovery_seal_relation": "source_build_discovery",
+        "build_seal_relation": "build_manifest_core",
         "batch_rows_maximum": 256,
         "empty_manifest_chain_sha256": (
             "121f20d26c10f4c5ce6e621dc5e41b7da2c4028af840caa7547265068f2458e3"
@@ -1343,7 +1392,7 @@ def check_build_generation_contract_v1(
         assembly, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("ascii")
     if hashlib.sha256(encoded_assembly).hexdigest() != (
-        "9b76cfc1463c98c72cf9b64474fd7ec2a88d93db8541d2527cd3d3bc20a9a6c2"
+        "5c143886e10a60892554752b00ee150b15eb4107456d50cca0d952ea2d05fb57"
     ):
         raise ValueError("source-build assembly exact protocol text drifts")
 
@@ -1462,23 +1511,13 @@ def check_build_generation_contract_v1(
             "canonical_value_upload",
         ],
         "SB_GALLERY": [
+            "source_build_sealed_at",
             "source_build_discovery_checkpoint",
             "source_build_assembly_checkpoint",
-            "build_manifest_seal",
-            "build_manifest_manifest_sha256",
-            "build_manifest_file_count",
-            "build_manifest_byte_count",
-            "build_manifest_anchor",
+            "build_manifest_core",
             "source_build_gallery",
         ],
-        "SB_DISCOVERY_SEAL": ["source_build_discovery_seal"],
-        "SB_DISCOVERY_VALUES": [
-            "source_build_discovery_scan_attempt",
-            "source_build_discovery_gallery_count",
-            "source_build_discovery_tree_observation_sha256",
-            "source_build_discovery_completed_at",
-        ],
-        "SB_DISCOVERY_ANCHOR": ["source_build_discovery_anchor"],
+        "SB_DISCOVERY": ["source_build_discovery"],
         "SB_SATELLITES": [
             "source_build_expected_gallery",
             "source_build_base_publication_commit",
@@ -1567,7 +1606,7 @@ def check_attempt_identity_contract_v1(
 
 _CLEANUP_TARGET_SHAPES = {
     "SOURCE_BUILD": (
-        "source_build_anchor",
+        "source_build_descriptor",
         ("build_id",),
         "target_kind_tag16_u64be_zero8_v1",
         "source_build_unreferenced_v1",
@@ -1576,28 +1615,23 @@ _CLEANUP_TARGET_SHAPES = {
         (
             "SB_CANONICAL_UPLOAD",
             "SB_GALLERY",
-            "SB_DISCOVERY_SEAL",
-            "SB_DISCOVERY_VALUES",
-            "SB_DISCOVERY_ANCHOR",
+            "SB_DISCOVERY",
             "SB_SATELLITES",
             "SB_GENERATION",
+            "SB_STATE",
             "SB_ROOT",
         ),
     ),
     "ANALYSIS_RUN": (
-        "analysis_run_anchor",
+        "analysis_run_descriptor",
         ("analysis_id",),
         "target_kind_tag16_u64be_zero8_v1",
         "analysis_run_unpublished_leaf_v1",
         "analysis_descendant_reachability_v1",
         "h2hdb.cleanup.analysis_run.v1",
         (
-            "AR_BATCH_SEAL",
-            "AR_BATCH_VALUES",
-            "AR_BATCH_ANCHOR",
-            "AR_COMPONENT_SEAL",
-            "AR_COMPONENT_VALUES",
-            "AR_COMPONENT_ANCHOR",
+            "AR_BATCH",
+            "AR_COMPONENT",
             "AR_OVERLAY",
             "AR_FILE_HASH_VALUES",
             "AR_IMPACT_PROVENANCE",
@@ -1605,14 +1639,12 @@ _CLEANUP_TARGET_SHAPES = {
             "AR_EVIDENCE",
             "AR_EXCLUSION_VALUES",
             "AR_EXCLUSION_ANCHOR",
-            "AR_CHECKPOINT_SEAL",
-            "AR_CHECKPOINT_VALUES",
-            "AR_CHECKPOINT_ANCHOR",
+            "AR_CHECKPOINT",
             "AR_ANCESTRY",
             "AR_BASELINE",
             "AR_BINDINGS",
-            "AR_DESCRIPTOR",
-            "AR_RUN_VALUES",
+            "AR_COMPLETION",
+            "AR_STATE",
             "AR_ROOT",
         ),
     ),
@@ -1637,8 +1669,56 @@ _CLEANUP_TARGET_SHAPES = {
             "CP_ROOT",
         ),
     ),
+    "PUBLICATION_COMMIT": (
+        "publication_commit_anchor",
+        ("receipt_id",),
+        "target_kind_tag16_u64be_zero8_v1",
+        "publication_commit_unreachable_finalized_v2",
+        "publication_commit_reachability_v2",
+        "h2hdb.cleanup.publication_commit.v2",
+        (
+            "PCOM_RELEASE_BUILD_BASE",
+            "PCOM_PREPARATION_BINDING",
+            "PCOM_PREPARATION_BATCH",
+            "PCOM_PREPARATION_CHECKPOINT",
+            "PCOM_PREPARATION",
+            "PCOM_EVENT",
+            "PCOM_FINALIZATION_MARKER",
+            "PCOM_FINALIZATION_BATCH",
+            "PCOM_COMMIT_EFFECT_ROOT",
+            "PCOM_FINALIZATION_CHECKPOINT",
+            "PCOM_ANCHOR",
+        ),
+    ),
+    "CATALOG_REVISION_DESCRIPTOR": (
+        "catalog_revision_descriptor",
+        ("revision",),
+        "target_kind_tag16_u64be_zero8_v1",
+        "catalog_revision_descriptor_unreferenced_v2",
+        "catalog_revision_descriptor_references_v2",
+        "h2hdb.cleanup.catalog_revision_descriptor.v2",
+        ("CRD_ROOT",),
+    ),
+    "SOURCE_REVISION_DESCRIPTOR": (
+        "source_revision_descriptor",
+        ("source_revision",),
+        "target_kind_tag16_u64be_zero8_v1",
+        "source_revision_descriptor_unreferenced_v2",
+        "source_revision_descriptor_references_v2",
+        "h2hdb.cleanup.source_revision_descriptor.v2",
+        ("SRD_ROOT",),
+    ),
+    "PUBLICATION_GENERATION": (
+        "publication_generation_node",
+        ("generation",),
+        "target_kind_tag16_u64be_zero8_v1",
+        "publication_generation_unreferenced_prefix_v2",
+        "publication_generation_references_and_compacted_floor_v2",
+        "h2hdb.cleanup.publication_generation.v2",
+        ("PG_EDGE", "PG_ROOT"),
+    ),
     "PUBLICATION_CANDIDATE": (
-        "publication_candidate_anchor",
+        "publication_candidate",
         ("candidate_id",),
         "target_kind_tag16_u64be_zero8_v1",
         "publication_candidate_inactive_v1",
@@ -1648,12 +1728,12 @@ _CLEANUP_TARGET_SHAPES = {
             "PC_SEALS",
             "PC_PREPARED",
             "PC_INPUT",
-            "PC_BATCH_VALUES",
-            "PC_BATCH_ANCHOR",
-            "PC_CHECKPOINT_SEAL",
+            "PC_CONTRIBUTOR_NAME",
+            "PC_CONTRIBUTOR_ROLE",
+            "PC_CHECKPOINT",
             "PC_SELECTION_STORAGE",
-            "PC_CHECKPOINT_VALUES",
-            "PC_CHECKPOINT_ANCHOR",
+            "PC_CONTENT",
+            "PC_SUBJECT",
             "PC_BASES",
             "PC_SELECTION_IDENTITY",
             "PC_ROOT",
@@ -1825,6 +1905,93 @@ _CLEANUP_TARGET_SHAPES = {
     ),
 }
 
+_CLEANUP_SELECTION_ORDERS = {
+    "SOURCE_BUILD": "uuid_first_byte_then_uuid_v1",
+    "ANALYSIS_RUN": "uuid_first_byte_then_uuid_v1",
+    "CATALOG_PUBLICATION": "sha256_prefix_then_candidate_key_v1",
+    "PUBLICATION_COMMIT": "receipt_uuid_first_byte_then_uuid_v2",
+    "CATALOG_REVISION_DESCRIPTOR": "revision_mod_256_then_revision_v2",
+    "SOURCE_REVISION_DESCRIPTOR": "source_revision_mod_256_then_revision_v2",
+    "PUBLICATION_GENERATION": "generation_mod_256_then_generation_v2",
+    "PUBLICATION_CANDIDATE": "uuid_first_byte_then_uuid_v1",
+    "OPERATIONAL_PREPARATION": "uuid_first_byte_then_uuid_v1",
+    "GALLERY_OBSERVATION": "gallery_id_mod_256_then_gallery_id_observation_id_v1",
+    "ARTIFACT_BLOB": "sha256_prefix_then_candidate_key_v1",
+    "CANONICAL_VALUE": "sha256_prefix_then_candidate_key_v1",
+    "CONTENT_BLOB": "sha256_prefix_then_candidate_key_v1",
+    "GALLERY_OBSERVATION_PAGE": "sha256_prefix_then_candidate_key_v1",
+    "GALLERY_OBSERVATION_STAGING": "uuid_first_byte_then_uuid_v1",
+    "FILE_NAME_IDENTITY": "digest_first_byte_then_digest_v1",
+    "PUBLICATION_IDENTITY": "digest_first_byte_then_digest_v1",
+    "GALLERY_IDENTITY": "gallery_id_mod_256_then_gallery_id_v1",
+    "SOURCE_GALLERY_NAME_GID": "source_gallery_name_first_byte_then_bytes_v1",
+    "GALLERY_UPLOAD_TIME": "gid_mod_256_then_gid_v1",
+    "CANONICAL_VALUE_UPLOAD": "generation_then_value_sha256_v1",
+    "HASH_CACHE_OBSERVATION": "source_digest_first_byte_then_source_fingerprint_v1",
+}
+
+_CLEANUP_STATE_ROOT_HANDOFF_RULES = {
+    "SOURCE_BUILD": "SB_STATE deletes the terminal scalar only after every prior child phase is COMPLETE; SB_ROOT requires the cleanup_id-bound SB_STATE checkpoint to be COMPLETE, requires source_build_state to remain absent, and rechecks every remaining source-build reachability blocker under the same exclusive gate before deleting source_build_descriptor",
+    "ANALYSIS_RUN": "AR_COMPLETION deletes the optional COMPLETE timestamp child-first, AR_STATE deletes the terminal scalar only after every prior child phase is COMPLETE, and AR_ROOT requires the cleanup_id-bound AR_STATE checkpoint to be COMPLETE, requires analysis_run_state to remain absent, and rechecks every remaining analysis reachability blocker under the same exclusive gate before deleting analysis_run_descriptor",
+}
+
+_CLEANUP_FROZEN_ROOT_INT_ATTRIBUTES = {
+    "gallery_id",
+    "generation",
+    "gid",
+    "observation_id",
+    "revision",
+    "source_revision",
+}
+_CLEANUP_FROZEN_ROOT_UUID_ATTRIBUTES = {
+    "analysis_id",
+    "build_id",
+    "candidate_id",
+    "preparation_id",
+    "receipt_id",
+    "staging_id",
+}
+_CLEANUP_FROZEN_ROOT_DIGEST_ATTRIBUTES = {
+    "artifact_sha256",
+    "file_key",
+    "file_sha256",
+    "fingerprint_sha256",
+    "page_sha256",
+    "publication_key",
+    "source_identity_sha256",
+    "value_sha256",
+}
+
+
+def _cleanup_frozen_root_frame_bytes_by_target() -> dict[str, int]:
+    """Derive every registered target's maximum typed root-frame width."""
+
+    def scalar_bytes(attribute: str) -> int:
+        if attribute in _CLEANUP_FROZEN_ROOT_INT_ATTRIBUTES:
+            return 1 + 8
+        if attribute in _CLEANUP_FROZEN_ROOT_UUID_ATTRIBUTES:
+            return 1 + 2 + 16
+        if attribute in _CLEANUP_FROZEN_ROOT_DIGEST_ATTRIBUTES:
+            return 1 + 2 + 32
+        if attribute == "source_gallery_name":
+            return 1 + 2 + 255
+        raise ValueError(
+            f"cleanup frozen root attribute {attribute!r} lacks a physical bound"
+        )
+
+    # One version byte plus one arity byte precedes the typed scalar frames.
+    widths: dict[str, int] = {}
+    for kind, shape in _CLEANUP_TARGET_SHAPES.items():
+        attributes = shape[1]
+        if kind == "PUBLICATION_COMMIT":
+            attributes = (*attributes, "preparation_id")
+        widths[kind] = 2 + sum(scalar_bytes(attribute) for attribute in attributes)
+    return widths
+
+
+def _maximum_cleanup_frozen_root_frame_bytes() -> int:
+    return max(_cleanup_frozen_root_frame_bytes_by_target().values())
+
 
 def check_cleanup_reachability_v1(
     logical: Mapping[str, Any], _physical: Mapping[str, Any]
@@ -1838,15 +2005,22 @@ def check_cleanup_reachability_v1(
             "sweep_registry_relation": "cleanup_sweep_target",
             "phase_registry_relation": "cleanup_phase",
             "job_relation": "cleanup_job",
+            "frozen_root_relation": "cleanup_cycle_root",
             "checkpoint_relation": "cleanup_checkpoint",
             "target_key_bytes": 32,
+            "frozen_root_key_max_bytes": 260,
+            "frozen_root_count_maximum": 256,
             "registry_rule": "target kinds and phases are exact provider-seeded rows; runtime dispatch is a closed-world map from registered IDs to versioned writer functions and never interpolates a relation, predicate, blocker, or phase from database text",
-            "eligibility_rule": "under the maintenance gate and one transaction, decode the exact target key, lock the target when present, evaluate the registered eligibility predicate and every registered blocker, and create a cleanup job only when no retention root reaches the target",
-            "phase_rule": "a checkpoint phase must belong to its jobs target kind; complete phases in strictly increasing phase_order; each batch deletes only the registered relation set child-first and commits rows, receipt, and checkpoint CAS atomically",
+            "eligibility_rule": "under the exact EXCLUSIVE maintenance gate and one transaction, permit globally at most one OPEN cleanup_job, evaluate the registered initial eligibility predicate and every registered blocker, freeze at most max_rows_per_transaction and no more than 256 typed roots into cleanup_cycle_root, encode each root with the canonical version-one typed scalar frame bounded to the registered-shape maximum 260 bytes, and seal the sorted complete membership with immutable frozen_root_count plus domain-separated frozen_root_set_sha256 on cleanup_job; frozen_root_key is a cleanup-protocol identity decoded back into the registered typed root columns, never business payload, EAV, or a relation-count packing device",
+            "phase_rule": "a checkpoint phase must belong to its jobs target kind; complete phases in strictly increasing phase_order; every static phase reloads and validates the exact sealed cleanup_cycle_root set, joins only those typed roots, rejects any current-spec coordinate at or before its durable cursor that reappears, and each batch deletes only the registered relation set child-first while committing rows, receipt, and checkpoint CAS atomically. Before accepting a zero-row terminal transition, runtime probes every raw registered responsibility through the current phase under frozen root, shard, and spec extra predicates but without the mutable plan eligibility predicate; any remaining row blocks rather than falsely completing, and roots made newly eligible by an earlier deletion wait for a later cycle",
             "completion_rule": "a cleanup job becomes COMPLETE only after every registered phase has a durable empty terminal receipt, the target root phase completed, and a final blocker recheck still finds no reachable retention root",
-            "compaction_rule": "each page commit atomically advances checkpoint generation and replaces the prior ambiguity receipt so at most one receipt per live checkpoint is retained; terminal transaction updates cleanup_job COMPLETE and completed_at, upserts the shard latest cleanup_completion generation/final chain/deleted count, deletes live receipts then checkpoints, and makes completion the response-loss replay authority; stale generations cannot resume",
+            "compaction_rule": "each page commit atomically advances checkpoint generation and replaces the prior ambiguity receipt so at most one receipt per live checkpoint is retained; that receipt stores the exact prior chain and prior deleted count beside its bounded row-key input digest, and runtime plus full CHECK recompute the canonical output chain and exact post-deleted count without claiming to retain or rescan full history. Terminal transaction exact-validates then deletes cleanup_cycle_root membership, updates cleanup_job COMPLETE and completed_at, upserts the shard latest cleanup_completion generation/final chain/deleted count, deletes live receipts then checkpoints, and makes completion the response-loss replay authority; stale generations cannot resume",
         },
     )
+    if _maximum_cleanup_frozen_root_frame_bytes() != 260:
+        raise ValueError(
+            "registered cleanup root physical bounds no longer derive 260 bytes"
+        )
     targets = _raw_tables(logical.get("cleanup_target", []), "cleanup_target")
     by_kind = {
         _required_text(value, "target_kind", "cleanup target"): value
@@ -1865,6 +2039,7 @@ def check_cleanup_reachability_v1(
         "cleanup_sweep_protocol",
         {
             "version": 1,
+            "algorithm_version": 2,
             "shard_count": 256,
             "target_key_codec": "target_kind_tag16_u64be_zero8_v1",
             "cleanup_id_codec": "target_kind_tag7_u8_shard_u64be_cycle_v1",
@@ -1911,9 +2086,49 @@ def check_cleanup_reachability_v1(
             {"retained_fk_edges"} if kind != "OPERATIONAL_PREPARATION" else set()
         )
         if kind == "ANALYSIS_RUN":
-            extra_allowed.update({"conditional_blockers", "state_rule"})
+            extra_allowed.update(
+                {"conditional_blockers", "state_rule", "state_root_handoff_rule"}
+            )
         if kind == "SOURCE_BUILD":
-            extra_allowed.update({"conditional_child_rules", "terminal_staging_rule"})
+            extra_allowed.update(
+                {
+                    "conditional_child_rules",
+                    "terminal_staging_rule",
+                    "state_root_handoff_rule",
+                }
+            )
+        if kind == "PUBLICATION_COMMIT":
+            extra_allowed.add("preparation_control_handoff_rule")
+            if target.get("preparation_control_handoff_rule") != (
+                "under the exact live EXCLUSIVE maintenance gate, an unreachable finalized commit is initially eligible only with its exact candidate_id/preparation_id binding, a unique COMPLETE preparation and effect seal whose operational_policy_id matches the commit, no source or catalog working root, and no PENDING or PREPARED prepared-artifact protection. The begin transaction freezes each eligible exact (receipt_id, preparation_id) anchor/commit authority in cleanup_cycle_root and includes both identities in the sealed root-set digest; later phases select by receipt_id but fail closed if the commit preparation differs from the frozen pair. The exact closed-world order is RELEASE_BASE, PREP_BINDING, PREP_BATCH, PREP_CHECKPOINT, PREP, EVENT, FINALIZATION_MARKER, FINALIZATION_BATCH, COMMIT_EFFECT_ROOT, FINALIZATION_CHECKPOINT, ANCHOR; every phase requires the exact prior COMPLETE cleanup receipt and prior relation absence. Operational events are per-preparation publication-owned transient current/retry snapshots rather than cross-revision delta or delivery history. The compound EVENT phase locks each base event with exactly one type-matching subtype and atomically deletes subtype then event; a durable (receipt_id, preparation_id, sequence_no) cursor permits only fully absent covered subtype/event coordinates, while partial, mismatched, or ahead-of-cursor absence fails closed. An OPEN PCOM job may temporarily retain the unreachable non-head commit and seal after covered coordinates are gone; the full CHECK accepts that state only for the matching frozen OPEN PCOM job and EVENT cursor/receipt chain before COMMIT_EFFECT_ROOT, while public reads remain current-head-only and exact COMPLETE preparation authority is already removed. COMMIT_EFFECT_ROOT rechecks every pin, prior receipt, child absence, and every cursor-uncovered exact receipt_id/preparation_id commit, effect-seal, and event-stream triple; because the frozen root set is capped at 256, one bounded transaction exact-deletes commit, effect seal, and event stream in FK order with affected-count one for every triple, then commits its cleanup receipt/checkpoint CAS last. Any partial authority, mismatch, or fault rolls back the whole batch. A nonempty compound cursor must equal the final frozen receipt/preparation coordinate, start from the empty cursor, report row_count equal to frozen_root_count, and have every frozen commit, preparation, event, effect seal, and event stream absent; its monotone receipt/checkpoint chain, frozen pair authority, and full CHECK owner/orphan rejection are the durable covered-root proof. The exact empty root set instead uses the terminal empty-cursor receipt as its proof. Separately receipted finalization-checkpoint and anchor phases then complete."
+            ):
+                raise ValueError(
+                    "publication-commit preparation control handoff rule drifts"
+                )
+            if [value.get("relations") for value in target["phases"]] != [
+                ["source_build_base_publication_commit"],
+                ["publication_candidate_preparation"],
+                ["operational_preparation_batch_receipt"],
+                ["operational_preparation_checkpoint"],
+                ["operational_preparation"],
+                [
+                    "operational_removed_gid_event",
+                    "operational_deletion_consumption_event",
+                    "operational_event",
+                ],
+                ["publication_commit_finalization"],
+                ["publication_finalization_batch_receipt_stored"],
+                [
+                    "publication_commit",
+                    "operational_preparation_effect_seal",
+                    "operational_event_stream",
+                ],
+                ["publication_finalization_checkpoint"],
+                ["publication_commit_anchor"],
+            ]:
+                raise ValueError(
+                    "publication-commit preparation child-first phases drift"
+                )
         if kind == "PUBLICATION_CANDIDATE":
             extra_allowed.update({"semantic_blockers", "conditional_blockers"})
         if kind == "GALLERY_OBSERVATION":
@@ -1927,15 +2142,23 @@ def check_cleanup_reachability_v1(
         if kind in {"ARTIFACT_BLOB", "CANONICAL_VALUE"}:
             extra_allowed.update({"owned_prunable_intermediates", "required_via_paths"})
         if kind in {
+            "PUBLICATION_COMMIT",
             "PUBLICATION_CANDIDATE",
             "CANONICAL_VALUE",
             "GALLERY_OBSERVATION_PAGE",
         }:
             extra_allowed.add("machine_gates")
+        if kind in {
+            "PUBLICATION_GENERATION",
+            "CANONICAL_VALUE",
+            "GALLERY_OBSERVATION_PAGE",
+        }:
+            extra_allowed.add("phase_selectors")
         if kind == "GALLERY_OBSERVATION_PAGE":
-            extra_allowed.update({"phase_selectors", "operational_blockers"})
+            extra_allowed.add("operational_blockers")
         if kind in {
             "SOURCE_BUILD",
+            "PUBLICATION_COMMIT",
             "PUBLICATION_CANDIDATE",
             "CANONICAL_VALUE",
             "CONTENT_BLOB",
@@ -1962,6 +2185,12 @@ def check_cleanup_reachability_v1(
             )
         if set(target) != allowed_fields | extra_allowed:
             raise ValueError(f"cleanup target {kind} fields are not closed-world")
+        expected_state_root_handoff = _CLEANUP_STATE_ROOT_HANDOFF_RULES.get(kind)
+        if (
+            expected_state_root_handoff is not None
+            and target.get("state_root_handoff_rule") != expected_state_root_handoff
+        ):
+            raise ValueError(f"cleanup target {kind} state-to-root handoff rule drifts")
         root, root_key, codec, predicate, blocker, hook, phase_ids = (
             _CLEANUP_TARGET_SHAPES[kind]
         )
@@ -1979,54 +2208,9 @@ def check_cleanup_reachability_v1(
         if target.get("mode") != expected_mode:
             raise ValueError(f"cleanup target {kind} mode drifts")
         if expected_mode == "SWEEP":
-            expected_order = (
-                "gallery_id_mod_256_then_gallery_id_observation_id_v1"
-                if kind == "GALLERY_OBSERVATION"
-                else (
-                    "gallery_id_mod_256_then_gallery_id_v1"
-                    if kind == "GALLERY_IDENTITY"
-                    else (
-                        "source_gallery_name_first_byte_then_bytes_v1"
-                        if kind == "SOURCE_GALLERY_NAME_GID"
-                        else (
-                            "gid_mod_256_then_gid_v1"
-                            if kind == "GALLERY_UPLOAD_TIME"
-                            else (
-                                "source_digest_first_byte_then_source_fingerprint_v1"
-                                if kind == "HASH_CACHE_OBSERVATION"
-                                else (
-                                    "uuid_first_byte_then_uuid_v1"
-                                    if kind
-                                    in {
-                                        "SOURCE_BUILD",
-                                        "ANALYSIS_RUN",
-                                        "PUBLICATION_CANDIDATE",
-                                        "OPERATIONAL_PREPARATION",
-                                        "GALLERY_OBSERVATION_STAGING",
-                                    }
-                                    else (
-                                        "generation_then_value_sha256_v1"
-                                        if kind == "CANONICAL_VALUE_UPLOAD"
-                                        else (
-                                            "digest_first_byte_then_digest_v1"
-                                            if kind
-                                            in {
-                                                "FILE_NAME_IDENTITY",
-                                                "PUBLICATION_IDENTITY",
-                                            }
-                                            else "sha256_prefix_then_candidate_key_v1"
-                                        )
-                                    )
-                                )
-                            )
-                        )
-                    )
-                )
-            )
-            if (
-                target.get("sweep_shard_count") != 256
-                or target.get("selection_order_id") != expected_order
-            ):
+            if target.get("sweep_shard_count") != 256 or target.get(
+                "selection_order_id"
+            ) != _CLEANUP_SELECTION_ORDERS.get(kind):
                 raise ValueError(f"cleanup target {kind} sweep registry drifts")
         _required_texts(target, "retention_roots", f"cleanup target {kind}")
         phases = _raw_tables(target.get("phases", []), f"cleanup target {kind}.phases")
@@ -2077,8 +2261,7 @@ def check_cleanup_reachability_v1(
                     "ingest_generation_attribute": "ingest_generation",
                     "claim_generation_attribute": "claim_generation",
                     "owner_relation": "ingest_generation_owner",
-                    "lease_relation": "ingest_generation_lease",
-                    "rule": "under row locks and exact header plus claim recheck, cleanup rejects OPEN with a live outer lease and every SEALED allocation linked by source_build_gallery; ABANDONED is eligible only after its claim generation is stale, while REUSED becomes eligible only after the durable build link names a different sealed observation; every bounded batch rechecks the same header state, ingest generation, and claim generation",
+                    "rule": "under row locks and exact header plus claim recheck, cleanup rejects OPEN whose outer owner row has an unexpired lease_expires_at and every SEALED or RETIRING_SEALED allocation linked by source_build_gallery; ABANDONED is eligible only after its claim generation is stale, while REUSED or RETIRING_REUSED becomes eligible only after the durable build link names a different sealed observation; every bounded batch rechecks the same header state, ingest generation, and claim generation",
                 }
             ]:
                 raise ValueError("gallery staging cleanup liveness blocker drifts")
@@ -2089,8 +2272,8 @@ def check_cleanup_reachability_v1(
                 "cleanup target SOURCE_BUILD",
             )
             if not any(
-                "sole ABANDONED analysis retirement family" in root
-                and "illegal ABANDONED-plus-sibling families" in root
+                "at-most-one ABANDONED analysis retirement family" in root
+                and "schema-unreachable sibling analysis" in root
                 for root in retention_roots
             ):
                 raise ValueError("source-build successor-fence retention drifts")
@@ -2107,33 +2290,33 @@ def check_cleanup_reachability_v1(
             ):
                 raise ValueError("source-build base provenance retention drifts")
             if not any(
-                "sole ABANDONED analysis" in root
+                "at-most-one ABANDONED analysis" in root
                 and "globally latest source_build_generation" in root
                 for root in retention_roots
             ):
                 raise ValueError("latest analysis retirement retention drifts")
             if not any(
-                "ABANDONED analysis and a sibling run" in root
-                and "whole-family repair" in root
+                "schema-unreachable sibling family" in root
+                and "audit-bypassing damaged database" in root
                 for root in retention_roots
             ):
                 raise ValueError("multi-analysis retirement retention drifts")
             if target.get("conditional_blockers") != [
                 "source_head.source_revision->source_revision_provenance.analysis_id when the revision is the active channel head",
                 "a source-build base receipt retains its exact provenance analysis even after that receipt ceases to be the active head",
-                "a latest-mapped sole ABANDONED run is released only by a strictly newer source-build mapping; any ABANDONED-plus-sibling family remains fail-closed and is never automatically released",
+                "a latest-mapped ABANDONED run is released only by a strictly newer source-build mapping; any schema-unreachable sibling family remains fail-closed and is never automatically released",
             ]:
                 raise ValueError("active source-head provenance blocker drifts")
             if target.get("state_rule") != (
                 "OPEN is never cleanup-eligible; only COMPLETE or ABANDONED may be "
-                "selected. A valid OPEN-to-ABANDONED CAS requires the target to be "
-                "the sole run for its build, the exact source working assignment to "
-                "equal the build's database-owned created_at, and no catalog working "
-                "candidate, snapshot binding, publication candidate, source-revision "
-                "provenance, or operational preparation; it atomically removes that "
-                "exact working root. Cleanup retains the globally latest sole "
-                "ABANDONED proof until a successor mapping and permanently retains "
-                "every illegal ABANDONED-plus-sibling family for explicit repair"
+                "selected. The schema enforces at most one analysis run per build. A "
+                "valid OPEN-to-ABANDONED CAS requires that run, the exact source working "
+                "assignment to equal the build's database-owned created_at, and no "
+                "catalog working candidate, snapshot binding, publication candidate, "
+                "source-revision provenance, or operational preparation; it atomically "
+                "removes that exact working root. Cleanup retains the globally latest "
+                "ABANDONED proof until a successor mapping and fails closed if an "
+                "audit-bypassing damaged database exposes an impossible sibling family"
             ):
                 raise ValueError("analysis cleanup state rule drifts")
         if kind == "PUBLICATION_CANDIDATE":
@@ -2143,7 +2326,7 @@ def check_cleanup_reachability_v1(
                 "cleanup target PUBLICATION_CANDIDATE",
             )
             if not any(
-                "publication_commit_candidate.candidate_id" in root
+                "publication_commit.candidate_id" in root
                 and "source_build_base_publication_commit.base_receipt_id" in root
                 for root in retention_roots
             ):
@@ -2155,7 +2338,7 @@ def check_cleanup_reachability_v1(
                     "root_attributes": ["candidate_id"],
                     "blocking_predicate": "state IN ('PENDING','PREPARED')",
                     "nonblocking_state": "COMMITTED",
-                    "semantic_obligation_id": "catalog.retention.v1",
+                    "semantic_obligation_id": "catalog.retention.v2",
                     "release_obligation_id": "catalog.artifact-semantics.v1",
                 }
             ]:
@@ -2181,7 +2364,7 @@ def check_cleanup_reachability_v1(
             "attributes": ["preparation_id"],
         },
         {
-            "relation": "publication_commit_operational_preparation",
+            "relation": "publication_commit",
             "attributes": ["preparation_id"],
         },
     ]:
@@ -2192,12 +2375,10 @@ def check_cleanup_reachability_v1(
         "operational_event",
         "operational_removed_gid_event",
         "operational_deletion_consumption_event",
-        "operational_event_ack",
-        "operational_event_ack_head",
     ]:
         raise ValueError("operational activation outliving registry drifts")
     if prep.get("conditional_cleanup_rule") != (
-        "under the exclusive gate, any publication_candidate_preparation row blocks preparation cleanup; after candidate cleanup, COMPLETE is eligible only when its unique sealed publication_commit_operational_preparation exists and deletes batch receipts, checkpoints, and preparation while every committed effect relation and derived activation remains; ABANDONED is eligible only with commit-member, acknowledgement, and candidate-binding authority absent and deletes receipts, checkpoints, both typed subtypes, base events, seal, preparation, then stream; every phase locks and rechecks state and sealed commit membership, FAILED must first transition to ABANDONED, and completion rejects any remaining invisible uncommitted stream"
+        "under the exclusive gate, generic OPERATIONAL_PREPARATION cleanup never selects COMPLETE; the unreachable finalized PUBLICATION_COMMIT lifecycle first releases every safe build-base pin, exact-removes its candidate/preparation binding and COMPLETE control family, then deletes both typed subtypes and base events before one atomic commit/effect-seal/event-stream phase; ABANDONED is eligible only with commit and candidate-binding authority absent and deletes receipts, checkpoints, both typed subtypes, base events, seal, preparation, then stream; FAILED must first transition to ABANDONED, and completion rejects any remaining invisible uncommitted stream"
     ):
         raise ValueError("operational preparation conditional cleanup rule drifts")
     if [value.get("relations") for value in prep["phases"]] != [
@@ -2209,8 +2390,12 @@ def check_cleanup_reachability_v1(
         ["operational_preparation", "operational_event_stream"],
     ]:
         raise ValueError("operational preparation child-first effect phases drift")
-    if not isinstance(prep.get("rationale"), str) or "outlive" not in str(
-        prep["rationale"]
+    if not isinstance(prep.get("rationale"), str) or any(
+        term not in str(prep["rationale"])
+        for term in (
+            "commit-to-preparation-to-build lineage",
+            "publication-owned transient current/retry control",
+        )
     ):
         raise ValueError("operational preparation outliving rationale is absent")
     canonical = by_kind["CANONICAL_VALUE"]
@@ -2228,48 +2413,24 @@ def check_cleanup_reachability_v1(
         [
             "publication_candidate_preparation",
             "publication_candidate_projection_seal",
-            "publication_batch_receipt_seal",
+            "publication_batch_receipt_stored",
             "artifact_operation",
             "catalog_publication_storage",
         ],
         ["prepared_artifact", "catalog_contributor_seal"],
         ["artifact_input", "catalog_contributor_identity"],
-        [
-            "publication_batch_receipt_coordinate",
-            "publication_batch_receipt_start_cursor",
-            "publication_batch_receipt_start_processed_count",
-            "publication_batch_receipt_next_cursor",
-            "publication_batch_receipt_row_count",
-            "publication_batch_receipt_committed_at",
-            "catalog_contributor_name_sha256",
-        ],
-        ["publication_batch_receipt_anchor", "catalog_contributor_role"],
-        ["publication_checkpoint_seal", "catalog_contributor_anchor"],
+        ["catalog_contributor_name_sha256"],
+        ["catalog_contributor_role"],
+        ["publication_checkpoint", "catalog_contributor_anchor"],
         ["publication_selection_storage", "catalog_publication_order"],
-        [
-            "publication_checkpoint_generation",
-            "publication_checkpoint_cursor",
-            "publication_checkpoint_processed_count",
-            "publication_checkpoint_state",
-            "publication_checkpoint_updated_at",
-            "catalog_publication_content",
-        ],
-        ["publication_checkpoint_anchor", "catalog_subject"],
+        ["catalog_publication_content"],
+        ["catalog_subject"],
         ["publication_candidate_base_publication_commit", "catalog_artifact"],
         [
             "publication_selection_occurrence_identity",
             "catalog_publication_occurrence_identity",
         ],
-        [
-            "publication_candidate_definition_seal",
-            "publication_candidate_created_at",
-            "publication_candidate_artifacts_required",
-            "publication_candidate_display_title_policy_id",
-            "publication_candidate_artifact_policy_id",
-            "publication_candidate_reserved_revision",
-            "publication_candidate_analysis_id",
-            "publication_candidate_anchor",
-        ],
+        ["publication_candidate"],
     ]
     if [phase.get("relations") for phase in candidate["phases"]] != (
         expected_candidate_phase_relations
@@ -2283,28 +2444,28 @@ def check_cleanup_reachability_v1(
         not isinstance(candidate_retention_roots, list)
         or not candidate_retention_roots
         or candidate_retention_roots[-1]
-        != "an uncommitted candidate exclusively owns every catalog projection row whose revision equals its unique reserved_revision; each projection selector and every phase eligibility recheck require the exact candidate to have no publication_commit_candidate, while a committed reserved projection blocks PUBLICATION_CANDIDATE cleanup until higher-priority CATALOG_PUBLICATION cleanup removes that payload under its current-head finalization gates"
+        != "an uncommitted candidate exclusively owns every catalog projection row whose revision equals its unique reserved_revision; each projection selector and every phase eligibility recheck require the exact candidate to have no publication_commit, while a committed reserved projection blocks PUBLICATION_CANDIDATE cleanup until higher-priority CATALOG_PUBLICATION cleanup removes that payload under its current-head finalization gates"
     ):
         raise ValueError(
             "publication candidate uncommitted reserved-projection boundary drifts"
         )
     upload_cleanup = by_kind["CANONICAL_VALUE_UPLOAD"]
     if upload_cleanup.get("claim_rule") != (
-        "under the exclusive maintenance gate, keyset-select at most the fixed batch bound by generation then value_sha256; for every claim lock and recheck current head, generation history, owner, lease, optional source_build_generation mapping, canonical allocation domain, and exact claim. Delete only if the generation is completed or strictly superseded and never current/live. A missing mapping is accepted only for source_root_v1, the sole bootstrap domain; every other domain requires its retained mapping. Receipt and checkpoint CAS commit atomically, after which the unblocked allocation becomes ordinary CANONICAL_VALUE GC work"
+        "under the exclusive maintenance gate, keyset-select at most the fixed batch bound by generation then value_sha256; for every claim lock and recheck current head, generation history, the complete owner row including lease_expires_at, optional source_build_generation mapping, canonical allocation domain, and exact claim. Delete only if the generation is completed or strictly superseded and never current/live. A missing mapping is accepted only for source_root_v1, the sole bootstrap domain; every other domain requires its retained mapping. Receipt and checkpoint CAS commit atomically, after which the unblocked allocation becomes ordinary CANONICAL_VALUE GC work"
     ):
         raise ValueError("canonical upload independent stale-claim cleanup drifts")
     staging_compaction = by_kind["GALLERY_OBSERVATION_STAGING"]
     if staging_compaction.get("retained_fk_edges") != [] or staging_compaction.get(
         "compaction_rule"
     ) != (
-        "under the exclusive maintenance gate, keyset-select terminal staging headers in fixed digest shards; lock and recheck header, claim, exact source_build_gallery outcome, and final observation. SEALED is eligible only after the link names its own final allocation; REUSED only after the link names a different final observation. Delete at most the fixed batch bound child-first; predecessor_selectors delete only outgoing rows whose request_sha256 owner is this staging. Runtime locks both owners and rejects every cross-owner predecessor at insertion; any corrupt incoming edge from another staging is a cleanup blocker and is never deleted by this staging. Preserve gallery_observation_allocation, allocation_page, normalized facts, roots, pages, and final membership. OPEN always blocks; after compaction only live OPEN staging blocks SOURCE_BUILD cleanup. A REUSED allocation with no remaining staging header, final gallery_observation, or source_build_gallery reference is an exact GALLERY_OBSERVATION orphan eligible for bounded data cleanup"
+        "under the exclusive maintenance gate, keyset-select terminal staging headers in fixed digest shards; before every bounded delete batch in the same transaction, recompute the provisional four-root identity, require final observation identity, FILE-root file_count, immutable terminal_byte_count, final stat, manifest, claim and exact source_build_gallery outcome, then enforce SEALED or RETIRING_SEALED link equality versus REUSED or RETIRING_REUSED link inequality. Delete at most the fixed batch bound child-first; predecessor_selectors delete only outgoing rows whose ownership-bearing request belongs to this staging. Runtime locks both request rows and rejects every cross-owner predecessor in either direction at insertion and retirement; any corrupt cross-owner edge or durable authority is a cleanup blocker and produces zero committed deletes. Preserve gallery_observation_allocation, allocation_page, normalized facts, roots, pages, and final membership. OPEN always blocks; after compaction only live OPEN staging blocks SOURCE_BUILD cleanup. A REUSED or RETIRING_REUSED allocation with no remaining staging header, final gallery_observation, or source_build_gallery reference is an exact GALLERY_OBSERVATION orphan eligible for bounded data cleanup"
     ):
         raise ValueError("terminal gallery-staging compaction boundary drifts")
     predecessor_selectors = [
         {
             "relation": "gallery_observation_staging_request_predecessor",
             "attribute": "request_sha256",
-            "owner_relation": "gallery_observation_staging_request_owner",
+            "owner_relation": "gallery_observation_staging_request",
             "owner_attribute": "request_sha256",
         },
     ]
@@ -2313,10 +2474,10 @@ def check_cleanup_reachability_v1(
             "relation": "gallery_observation_staging_request_predecessor",
             "incoming_attribute": "prior_request_sha256",
             "successor_attribute": "request_sha256",
-            "owner_relation": "gallery_observation_staging_request_owner",
+            "owner_relation": "gallery_observation_staging_request",
             "owner_request_attribute": "request_sha256",
             "owner_staging_attribute": "staging_id",
-            "rule": "lock both request_owner rows; an incoming edge whose successor owner differs from the selected staging blocks cleanup and is never deleted by that staging",
+            "rule": "lock both ownership-bearing request rows; an incoming edge whose successor owner differs from the selected staging blocks cleanup and is never deleted by that staging",
         }
     ]
     if any(
@@ -2334,12 +2495,12 @@ def check_cleanup_reachability_v1(
             "generation_relation": "ingest_generation",
             "owner_relation": "ingest_generation_owner",
             "handoff_relation": "ingest_generation_handoff",
-            "rule": "before job creation, phase one, and every destructive batch, lock and recheck every mapping for the selected build; any mapping not durably completed and not strictly superseded by the current coordination head blocks the whole job before deletion. For an eligible mapping, bounded cleanup deletes residual canonical_value_upload claims after the same completed-or-superseded recheck and finally deletes the mapping; current owner, lease, or handoff resume authority always rejects",
+            "rule": "before job creation, phase one, and every destructive batch, lock and recheck every mapping for the selected build; any mapping not durably completed and not strictly superseded by the current coordination head blocks the whole job before deletion. For an eligible mapping, bounded cleanup deletes residual canonical_value_upload claims after the same completed-or-superseded recheck and finally deletes the mapping; a current owner row carrying lease authority or handoff resume authority always rejects",
         }
     ]:
         raise ValueError("source-build generation liveness rule drifts")
     if by_kind["SOURCE_BUILD"].get("terminal_staging_rule") != (
-        "every remaining staging FK blocks SOURCE_BUILD job creation. OPEN is a live blocker; SEALED and REUSED are pending work for the independent GALLERY_OBSERVATION_STAGING compactor, which preserves final membership and data facts. Therefore SB_GALLERY starts only after terminal control rows are compacted, eliminating the staging-to-membership cleanup cycle"
+        "every remaining staging FK blocks SOURCE_BUILD job creation. OPEN is a live blocker; SEALED, REUSED, RETIRING_SEALED, and RETIRING_REUSED are pending work for in-band retirement or the independent GALLERY_OBSERVATION_STAGING compactor, which preserves final membership and data facts. Therefore SB_GALLERY starts only after terminal control rows are compacted, eliminating the staging-to-membership cleanup cycle"
     ):
         raise ValueError("source-build terminal staging compaction rule drifts")
     _require_exact_table(
@@ -2475,7 +2636,9 @@ def _validate_catalog_cleanup_fk_coverage(
             for phase in data_target.get("child_phases", [])
             for relation in phase
         }
-        if (deleted & set(relations)) - {root} != data_owned:
+        if (deleted & set(relations)) - {root} != (data_owned & set(relations)) - {
+            root
+        }:
             raise ValueError(
                 f"cleanup target {kind} phase ownership differs from catalog retention authority"
             )
@@ -2500,6 +2663,7 @@ def _validate_catalog_cleanup_fk_coverage(
                 f"cleanup target {kind} semantic blockers differ from catalog retention authority"
             )
         if kind in {
+            "PUBLICATION_COMMIT",
             "PUBLICATION_CANDIDATE",
             "CANONICAL_VALUE",
             "GALLERY_OBSERVATION_PAGE",
@@ -2507,9 +2671,13 @@ def _validate_catalog_cleanup_fk_coverage(
             raise ValueError(
                 f"cleanup target {kind} machine gates differ from catalog retention authority"
             )
-        if kind == "GALLERY_OBSERVATION_PAGE" and target.get(
+        if kind in {
+            "PUBLICATION_GENERATION",
+            "CANONICAL_VALUE",
+            "GALLERY_OBSERVATION_PAGE",
+        } and target.get("phase_selectors", []) != data_target.get(
             "phase_selectors", []
-        ) != data_target.get("phase_selectors", []):
+        ):
             raise ValueError(
                 f"cleanup target {kind} phase selectors differ from catalog retention authority"
             )
@@ -2612,13 +2780,11 @@ def _validate_catalog_cleanup_fk_coverage(
                 ("hash_cache_observation", ("fingerprint_sha256",)),
             }
         if kind == "OPERATIONAL_PREPARATION":
-            # The permanent catalog commit member points at the effect seal,
+            # The permanent wide catalog commit points at the effect seal,
             # which is an owned child of this cleanup root.  Keep that
             # cross-manifest boundary explicit even though it is represented
             # as an external logical relation in the operational manifest.
-            expected_blockers.add(
-                ("publication_commit_operational_preparation", ("preparation_id",))
-            )
+            expected_blockers.add(("publication_commit", ("preparation_id",)))
         if actual_blockers != expected_blockers:
             raise ValueError(
                 f"cleanup target {kind} operational FK boundary is incomplete: "
@@ -2643,6 +2809,67 @@ def check_revision_allocator_contract_v1(
     )
 
 
+def check_cleanup_frozen_root_set_v1(
+    logical: Mapping[str, Any], physical: Mapping[str, Any]
+) -> None:
+    """Validate the typed bounded frozen-root membership shape."""
+
+    contract = logical.get("cleanup_reachability_contract")
+    if not isinstance(contract, Mapping) or any(
+        contract.get(field) != expected
+        for field, expected in {
+            "version": 1,
+            "job_relation": "cleanup_job",
+            "frozen_root_relation": "cleanup_cycle_root",
+            "frozen_root_key_max_bytes": 260,
+            "frozen_root_count_maximum": 256,
+        }.items()
+    ):
+        raise ValueError("cleanup frozen-root contract drifts")
+    relations = _raw_relation_map(logical)
+    if relations["cleanup_cycle_root"].get("declared_keys") != [
+        ["cleanup_id", "frozen_root_key"]
+    ] or relations["cleanup_cycle_root"].get("foreign_keys") != [
+        {
+            "attributes": ["cleanup_id"],
+            "relation": "cleanup_job",
+            "referenced_attributes": ["cleanup_id"],
+        }
+    ]:
+        raise ValueError("cleanup frozen-root relation authority drifts")
+    physical_root = _raw_relation_map(physical)["cleanup_cycle_root"]
+    columns = {
+        _required_text(column, "attribute", "cleanup frozen-root column"): column
+        for column in _raw_tables(
+            physical_root.get("column", []), "cleanup frozen-root columns"
+        )
+    }
+    frozen_column = columns.get("frozen_root_key")
+    if not isinstance(frozen_column, Mapping):
+        raise ValueError("cleanup frozen-root physical column is absent")
+    mariadb = frozen_column.get("mariadb")
+    if not isinstance(mariadb, Mapping) or mariadb.get("type") != "VARBINARY(260)":
+        raise ValueError("cleanup frozen-root maximum physical width drifts")
+    checks = {
+        _required_text(check, "name", "cleanup frozen-root check"): check
+        for check in _raw_tables(
+            physical_root.get("check", []), "cleanup frozen-root checks"
+        )
+    }
+    bound = checks.get("ck_cleanup_cycle_root_frame_bounds")
+    if (
+        not isinstance(bound, Mapping)
+        or bound.get("sqlite_expression")
+        != ("length(frozen_root_key) >= 3 AND length(frozen_root_key) <= 260")
+        or bound.get("mariadb_expression")
+        != (
+            "octet_length(frozen_root_key) >= 3 AND "
+            "octet_length(frozen_root_key) <= 260"
+        )
+    ):
+        raise ValueError("cleanup frozen-root frame check drifts")
+
+
 def check_gallery_staging_contract_v1(
     logical: Mapping[str, Any], physical: Mapping[str, Any]
 ) -> None:
@@ -2657,9 +2884,9 @@ def check_gallery_staging_contract_v1(
         "claim_relation": "gallery_observation_staging_claim",
         "checkpoint_relation": "gallery_observation_staging_checkpoint",
         "request_relation": "gallery_observation_staging_request",
+        "request_budget_relation": "gallery_observation_staging_request_budget",
         "request_chunk_relation": "gallery_observation_staging_request_chunk",
         "request_predecessor_relation": "gallery_observation_staging_request_predecessor",
-        "request_owner_relation": "gallery_observation_staging_request_owner",
         "page_request_relation": "gallery_observation_staging_page_request",
         "request_page_relation": "gallery_observation_staging_request_page",
         "receipt_relation": "gallery_observation_staging_receipt",
@@ -2676,7 +2903,7 @@ def check_gallery_staging_contract_v1(
         "page_bytes_maximum": 65536,
         "max_level": 8,
         "portable_id_maximum": 9223372036854775807,
-        "predecessor_rule": "a predecessor edge is inserted only after locking both request_owner rows and proving both request identities belong to the same staging_id, the exact request frame names that prior digest, and the prior request has no successor; cross-staging predecessor edges fail closed, and cleanup deletes only outgoing edges owned by the selected staging while a corrupt cross-owner incoming edge is a blocker",
+        "predecessor_rule": "a predecessor edge is inserted only after locking both ownership-bearing request rows and proving both request identities belong to the same staging_id, the exact request frame names that prior digest, and the prior request has no successor; cross-staging predecessor edges fail closed, and cleanup deletes only outgoing edges owned by the selected staging while a corrupt cross-owner incoming edge is a blocker",
         "durable_parser_phases": [
             "PREFIX",
             "VERSION",
@@ -2714,7 +2941,7 @@ def check_gallery_staging_contract_v1(
         contract, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("ascii")
     if hashlib.sha256(encoded_contract).hexdigest() != (
-        "e83d528d69fa4eb675255c167e7edff784bbabe2ba1f6848aaa35698c4022f8c"
+        "83dae97917cf141292613c33fa53d9ab3623df697b2a2d51ba6b8612da76cd6f"
     ):
         raise ValueError("gallery staging exact protocol text drifts")
     gc_boundary = logical.get("gallery_page_gc_boundary")
@@ -2733,7 +2960,7 @@ def check_gallery_staging_contract_v1(
         "gallery_observation_allocator": [["gallery_id"]],
         "gallery_observation_staging": [
             ["staging_id"],
-            ["build_id", "gallery_id"],
+            ["build_id"],
             ["gallery_id", "observation_id"],
         ],
         "gallery_observation_staging_claim": [["staging_id"]],
@@ -2741,8 +2968,8 @@ def check_gallery_staging_contract_v1(
             ["staging_id", "component", "level"],
         ],
         "gallery_observation_staging_request": [["request_sha256"]],
+        "gallery_observation_staging_request_budget": [["singleton_id"]],
         "gallery_observation_staging_request_chunk": [["request_sha256", "position"]],
-        "gallery_observation_staging_request_owner": [["request_sha256"]],
         "gallery_observation_staging_request_predecessor": [
             ["request_sha256"],
             ["prior_request_sha256"],
@@ -2773,6 +3000,30 @@ def check_gallery_staging_contract_v1(
     for relation_name, expected_keys in keys.items():
         if relations[relation_name].get("declared_keys") != expected_keys:
             raise ValueError(f"{relation_name} staging candidate keys drift")
+    request = relations["gallery_observation_staging_request"]
+    if {
+        "attributes": request.get("attributes"),
+        "fds": request.get("fds"),
+        "foreign_keys": request.get("foreign_keys", []),
+    } != {
+        "attributes": ["request_sha256", "staging_id"],
+        "fds": [
+            {
+                "determinant": ["request_sha256"],
+                "dependent": ["staging_id"],
+            }
+        ],
+        "foreign_keys": [
+            {
+                "attributes": ["staging_id"],
+                "relation": "gallery_observation_staging",
+                "referenced_attributes": ["staging_id"],
+            }
+        ],
+    }:
+        raise ValueError(
+            "request identity and staging ownership must share one BCNF row"
+        )
     if relations["gallery_observation_staging_checkpoint"]["fds"] != [
         {
             "determinant": ["staging_id", "component", "level"],
@@ -2796,11 +3047,51 @@ def check_gallery_staging_contract_v1(
         "committed_at",
     ]:
         raise ValueError("gallery staging receipt lacks exact FILE byte-count pre/post")
+    staging = relations["gallery_observation_staging"]
+    if staging.get("fds") != [
+        {
+            "determinant": ["staging_id"],
+            "dependent": [
+                "build_id",
+                "gallery_id",
+                "observation_id",
+                "state",
+                "created_at",
+                "sealed_at",
+                "terminal_byte_count",
+            ],
+        },
+        {
+            "determinant": ["build_id"],
+            "dependent": [
+                "staging_id",
+                "gallery_id",
+                "observation_id",
+                "state",
+                "created_at",
+                "sealed_at",
+                "terminal_byte_count",
+            ],
+        },
+        {
+            "determinant": ["gallery_id", "observation_id"],
+            "dependent": [
+                "staging_id",
+                "build_id",
+                "state",
+                "created_at",
+                "sealed_at",
+                "terminal_byte_count",
+            ],
+        },
+    ]:
+        raise ValueError("gallery staging build slot FD drifts")
     physical_relations = _raw_relation_map(physical)
     required_checks = {
         "gallery_observation_staging": {
             "ck_gallery_observation_staging_state_time",
             "ck_gallery_observation_staging_identity_portable",
+            "ck_gallery_observation_staging_terminal_byte_count_nonneg",
         },
         "gallery_observation_staging_claim": {
             "ck_gallery_observation_staging_claim_generation_portable",
@@ -2835,6 +3126,10 @@ def check_gallery_staging_contract_v1(
         "gallery_observation_staging_metadata_parser": {
             "ck_gallery_observation_staging_metadata_parser_phase",
             "ck_gallery_observation_staging_metadata_parser_carry_bounded",
+        },
+        "gallery_observation_staging_request_budget": {
+            "ck_gallery_observation_staging_request_budget_singleton",
+            "ck_gallery_observation_staging_request_budget_count",
         },
     }
     for relation_name, names in required_checks.items():
@@ -2872,6 +3167,156 @@ def check_gallery_staging_contract_v1(
         for field in ("sqlite_expression", "mariadb_expression")
     ):
         raise ValueError("metadata parser physical phase registry is not exact")
+
+
+def check_gallery_staging_request_budget_v1(
+    logical: Mapping[str, Any], physical: Mapping[str, Any]
+) -> None:
+    """Bind in-band staging retirement to exact bounded request accounting."""
+
+    _require_exact_table(
+        logical,
+        "gallery_staging_request_budget_contract",
+        {
+            "version": 1,
+            "relation": "gallery_observation_staging_request_budget",
+            "request_relation": "gallery_observation_staging_request",
+            "singleton_id": 1,
+            "hard_retained_request_cap": 1500000,
+            "normal_terminal_staging_maximum_per_build": 1,
+            "reserve_writer": "GalleryObservationStagingRepository._persist_request_identity",
+            "retirement_release_writer": "GalleryObservationStagingRepository.retire_sealed",
+            "cleanup_release_writer": "VNextCleanupRepository.advance",
+            "retirement_release_phase": "REQUEST_IDENTITY",
+            "cleanup_release_phases": [
+                "GOS_REQUEST_IDENTITY",
+                "GO_STAGING_REQUEST_IDENTITY",
+            ],
+            "reserve_rule": "after exact response-loss replay resolution and every required allocator lock, but before any fresh request CHILD lock, lock the singleton once at HEAD; page/fact writes performed before that lock remain inside the same transaction and capacity failure rolls them back; exact-CAS plus one for the leaf and each deterministic carry or terminal branch request under that retained lock, require every intermediate count at most 1500000, and roll back the complete delta with every later failure; exact replay never reserves",
+            "release_rule": "STAGING_RETIRE and both generic request-identity cleanup phases lock the same singleton HEAD before request CHILD locks, delete at most 256 exact request identities, and exact-CAS subtract only the actual affected-row count in the same transaction; missing singleton, underflow, over-cap value, affected-row mismatch, or rollback leaves both identities and counter unchanged",
+            "backpressure_rule": "at 1500000 a fresh request raises public GalleryStagingCapacityError with the retained count and performs zero writes; normal terminal work is automatically retired before another gallery begins, while an oversized OPEN gallery must be abandoned and its lease made stale before exclusive cleanup can reclaim it",
+            "full_audit_rule": "the full READY check compares the one bounded singleton value with COUNT of gallery_observation_staging_request and requires exact congruence in zero through 1500000; the O(1) ready probe never scans requests",
+        },
+    )
+    _require_exact_table(
+        logical,
+        "gallery_staging_retirement_contract",
+        {
+            "version": 1,
+            "staging_relation": "gallery_observation_staging",
+            "claim_relation": "gallery_observation_staging_claim",
+            "completion_relation": "source_build_gallery",
+            "serialized_by_relation": "source_working_build",
+            "serialized_by_key": ["slot"],
+            "maximum_rows_per_transaction": 256,
+            "maximum_terminal_stagings_per_build": 1,
+            "terminal_states": ["SEALED", "REUSED"],
+            "retiring_states": ["RETIRING_SEALED", "RETIRING_REUSED"],
+            "phase_order": [
+                {
+                    "phase": "RECEIPT_FRONTIER",
+                    "order": 1,
+                    "relations": [
+                        "gallery_observation_staging_receipt",
+                        "gallery_observation_staging_frontier",
+                        "gallery_observation_staging_match_receipt",
+                    ],
+                },
+                {
+                    "phase": "PAGE_ASSOCIATION",
+                    "order": 2,
+                    "relations": ["gallery_observation_staging_request_page"],
+                },
+                {
+                    "phase": "REQUEST_DESCRIPTOR",
+                    "order": 3,
+                    "relations": [
+                        "gallery_observation_staging_page_request",
+                        "gallery_observation_staging_match_request",
+                        "gallery_observation_staging_request_predecessor",
+                        "gallery_observation_staging_request_chunk",
+                    ],
+                },
+                {
+                    "phase": "REQUEST_IDENTITY",
+                    "order": 4,
+                    "relations": ["gallery_observation_staging_request"],
+                },
+                {
+                    "phase": "CHECKPOINT",
+                    "order": 5,
+                    "relations": [
+                        "gallery_observation_staging_checkpoint",
+                        "gallery_observation_staging_match_checkpoint",
+                        "gallery_observation_staging_metadata_parser",
+                    ],
+                },
+                {
+                    "phase": "CLAIM",
+                    "order": 6,
+                    "relations": ["gallery_observation_staging_claim"],
+                },
+                {
+                    "phase": "ROOT",
+                    "order": 7,
+                    "relations": ["gallery_observation_staging"],
+                },
+            ],
+            "implicit_ack_rule": "after the facade accepts a fresh or reconstructed GalleryStagingSeal, the next source advance is the implicit ACK: under the shared gate, exact live ingest fence, source working-build lock and durable link validation, the first retirement transaction CASes SEALED to RETIRING_SEALED or REUSED to RETIRING_REUSED and deletes the first child batch atomically; rollback preserves ordinary seal replay authority, while RETIRING states make every old page or seal retry raise typed GalleryStagingRetiredError",
+            "recovery_rule": "a crash after seal commit but before response is first reconstructed as a replayed GalleryStagingSeal without ACK; only its following source advance may ACK. A partial RETIRING staging whose claim still exists is taken over only by a new exact live ingest generation after locking the same working build and incrementing the claim generation; after the CLAIM phase committed and only ROOT remains, the exact live global ingest fence plus the same working-build lock is the recovery authority. STAGING_FIND requires at most one terminal unretired staging and fails closed on an audit-bypassing duplicate",
+            "validation_rule": "every batch reconstructs the provisional four-root descriptor, compares its digest with the final gallery_observation identity, requires final stat file_count equal the FILE root count and final stat byte_count equal the immutable staging terminal_byte_count captured from the terminal FILE checkpoint, requires policy-derived gallery_manifest congruence, and enforces SEALED or RETIRING_SEALED link equality versus REUSED or RETIRING_REUSED link inequality; any cross-owner predecessor in either direction blocks retirement",
+            "deletion_rule": "each transaction inspects phases in fixed order, processes only the first nonempty phase, locks at most 256 exact rows child-first, and never deletes catalog allocation, pages, roots, normalized facts, final observation, manifest, or source_build_gallery; request identity deletion atomically releases the exact budget count",
+            "replay_rule": "after ROOT deletion, the exact source_build_gallery plus final observation identity, stat, manifest policy and manifest are the bounded completion replay authority; no staging history row is retained, and caller-supplied state is nonauthoritative",
+            "generic_cleanup_rule": "the exclusive GALLERY_OBSERVATION_STAGING backstop accepts all four terminal states and, before every bounded delete batch in the same transaction, applies the same provisional descriptor, final identity, stat file_count, immutable terminal_byte_count, manifest, and link equality or inequality validation used by in-band retirement; GALLERY_OBSERVATION applies that validator before each staging-control delete batch and retains provisional facts while any SEALED, REUSED, RETIRING_SEALED, or RETIRING_REUSED staging root remains",
+        },
+    )
+    relations = _raw_relation_map(logical)
+    budget = relations["gallery_observation_staging_request_budget"]
+    if budget != {
+        "name": "gallery_observation_staging_request_budget",
+        "kind": "source_of_truth",
+        "attributes": ["singleton_id", "retained_request_count"],
+        "declared_keys": [["singleton_id"]],
+        "fds": [
+            {
+                "determinant": ["singleton_id"],
+                "dependent": ["retained_request_count"],
+            }
+        ],
+        "rationale": "One normalized singleton is the global emergency backpressure authority. It stores only the exact bounded aggregate count required for O(1) reserve/release decisions; full READY audit independently compares it with the retained request identities, while normal in-band retirement keeps steady work to one staging gallery.",
+    }:
+        raise ValueError("gallery staging request budget relation drifts")
+    staging = relations["gallery_observation_staging"]
+    if staging.get("declared_keys") != [
+        ["staging_id"],
+        ["build_id"],
+        ["gallery_id", "observation_id"],
+    ]:
+        raise ValueError("gallery staging build slot key drifts")
+    physical_budget = _raw_relation_map(physical)[
+        "gallery_observation_staging_request_budget"
+    ]
+    if physical_budget.get("primary_key") != ["singleton_id"]:
+        raise ValueError("gallery staging request budget physical key drifts")
+    checks = {
+        _required_text(item, "name", "gallery request budget check"): item
+        for item in _raw_tables(
+            physical_budget.get("check", []), "gallery request budget checks"
+        )
+    }
+    expected_checks = {
+        "ck_gallery_observation_staging_request_budget_singleton": "singleton_id = 1",
+        "ck_gallery_observation_staging_request_budget_count": (
+            "retained_request_count >= 0 AND retained_request_count <= 1500000"
+        ),
+    }
+    for name, expression in expected_checks.items():
+        check = checks.get(name)
+        if not isinstance(check, Mapping) or any(
+            check.get(field) != expression
+            for field in ("sqlite_expression", "mariadb_expression")
+        ):
+            raise ValueError("gallery staging request budget physical checks drift")
 
 
 @dataclass(frozen=True)
@@ -4127,6 +4572,7 @@ def check_physical_domains_v1(
         "input_sha256",
         "manifest_sha256",
         "output_sha256",
+        "prior_chain_sha256",
         "source_identity_sha256",
         "target_key",
     }
@@ -4300,6 +4746,7 @@ def _validate_bootstrap(
         "identity_allocator",
         "deletion_request_generation",
         "deletion_request_generation_head",
+        "gallery_observation_staging_request_budget",
         "cleanup_target_kind",
         "cleanup_phase",
         "cleanup_sweep_target",
@@ -4328,6 +4775,13 @@ def _validate_bootstrap(
             "deletion_request_generation_head",
             (1, 0, 0),
             ("uint64", "uint64", "unix_microseconds"),
+        ),
+    }
+    request_budget_rows = {
+        "h2hdb.operational.gallery-staging-request-budget.genesis.v1": (
+            "gallery_observation_staging_request_budget",
+            (1, 0),
+            ("uint64", "uint64"),
         ),
     }
     targets = _raw_tables(logical.get("cleanup_target", []), "cleanup_target")
@@ -4416,14 +4870,17 @@ def _validate_bootstrap(
         elif relation in {
             "deletion_request_generation",
             "deletion_request_generation_head",
+            "gallery_observation_staging_request_budget",
         }:
-            deletion_row = deletion_generation_rows.get(seed_id)
-            if deletion_row is None or deletion_row[0] != relation:
+            singleton_row = (deletion_generation_rows | request_budget_rows).get(
+                seed_id
+            )
+            if singleton_row is None or singleton_row[0] != relation:
                 expected_values = None
                 expected_types = ()
             else:
-                expected_values = deletion_row[1]
-                expected_types = deletion_row[2]
+                expected_values = singleton_row[1]
+                expected_types = singleton_row[2]
         elif relation == "cleanup_target_kind":
             expected_values = target_rows.get(seed_id)
             expected_types = ("ascii_enum",)
@@ -4455,6 +4912,7 @@ def _validate_bootstrap(
         set(allocator_rows)
         | set(identity_allocator_rows)
         | set(deletion_generation_rows)
+        | set(request_budget_rows)
         | set(target_rows)
         | set(phase_rows)
     )
@@ -4467,6 +4925,10 @@ def _validate_bootstrap(
         "SOURCE_BUILD": "7b973d41884dbcdc84faa93629b8db70",
         "ANALYSIS_RUN": "aee565cf30cb51de9e454dfcb1577234",
         "CATALOG_PUBLICATION": "322a87b56f3c8fac8d3b5985d8cc11bd",
+        "PUBLICATION_COMMIT": "44bfa9ebeb45cf3ff4630d01fa0c04f5",
+        "CATALOG_REVISION_DESCRIPTOR": "c289a29354f92824e2c1a4fbb2eaf37c",
+        "SOURCE_REVISION_DESCRIPTOR": "9a7d079272849273b3d015fce8899fa4",
+        "PUBLICATION_GENERATION": "d24e2784401c1d65d634c015bee1bb7d",
         "PUBLICATION_CANDIDATE": "dc636b256645946128b728969d39be48",
         "OPERATIONAL_PREPARATION": "93f08650a665d7d4d98b72e183ed7e74",
         "GALLERY_OBSERVATION": "a5ea90668cd7204ebc7d72e131405102",

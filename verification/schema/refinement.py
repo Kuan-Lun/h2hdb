@@ -364,6 +364,7 @@ _DERIVED_VIEW_FIELDS: Mapping[str, frozenset[str]] = {
     "analysis_gid_winner_keyset": frozenset(),
     "artifact_delta_old": frozenset(),
     "artifact_delta_new": frozenset(),
+    "build_manifest_projection": frozenset(),
     "analysis_impacted_gid_projection": frozenset(),
     "analysis_impacted_gid_provenance_projection": frozenset(),
     "catalog_publication_occurrence_identity": frozenset(),
@@ -387,7 +388,6 @@ _DERIVED_VIEW_FIELDS: Mapping[str, frozenset[str]] = {
             "terminal_attribute",
             "committed_generation_attribute",
             "committed_at_attribute",
-            "coordinate_relation",
             "stored_relation",
             "checkpoint_relation",
         }
@@ -399,6 +399,7 @@ _DERIVED_VIEW_FIELDS: Mapping[str, frozenset[str]] = {
     "publication_commit_head_projection": frozenset({"projection"}),
     "publication_receipt": frozenset(),
     "publication_commit_activation": frozenset(),
+    "lifecycle_projection": frozenset(),
 }
 
 _DERIVED_VIEW_OPTIONAL_FIELDS: Mapping[str, frozenset[str]] = {
@@ -1867,35 +1868,29 @@ SELECT
   {projection}
 FROM {quote(ancestry.table)} AS path
 JOIN {quote(shadow.table)} AS shadow
-  ON shadow.{quote(shadow.column_for("analysis_id"))}
-   = path.{quote(ancestry.column_for("ancestor_analysis_id"))}
+  ON shadow.{quote(shadow.column_for("analysis_id"))} = path.{quote(ancestry.column_for("ancestor_analysis_id"))}
 WHERE NOT EXISTS (
   SELECT 1
   FROM {quote(tombstone.table)} AS same_tomb
-  WHERE same_tomb.{quote(tombstone.column_for("analysis_id"))}
-      = path.{quote(ancestry.column_for("ancestor_analysis_id"))}
+  WHERE same_tomb.{quote(tombstone.column_for("analysis_id"))} = path.{quote(ancestry.column_for("ancestor_analysis_id"))}
     AND {same_key_tombstone}
 )
 AND NOT EXISTS (
   SELECT 1
   FROM {quote(ancestry.table)} AS nearer
-  WHERE nearer.{quote(ancestry.column_for("analysis_id"))}
-      = path.{quote(ancestry.column_for("analysis_id"))}
-    AND nearer.{quote(ancestry.column_for("ancestor_depth"))}
-      < path.{quote(ancestry.column_for("ancestor_depth"))}
+  WHERE nearer.{quote(ancestry.column_for("analysis_id"))} = path.{quote(ancestry.column_for("analysis_id"))}
+    AND nearer.{quote(ancestry.column_for("ancestor_depth"))} < path.{quote(ancestry.column_for("ancestor_depth"))}
     AND (
       EXISTS (
         SELECT 1
         FROM {quote(shadow.table)} AS near_shadow
-        WHERE near_shadow.{quote(shadow.column_for("analysis_id"))}
-            = nearer.{quote(ancestry.column_for("ancestor_analysis_id"))}
+        WHERE near_shadow.{quote(shadow.column_for("analysis_id"))} = nearer.{quote(ancestry.column_for("ancestor_analysis_id"))}
           AND {nearer_shadow_key}
       )
       OR EXISTS (
         SELECT 1
         FROM {quote(tombstone.table)} AS near_tomb
-        WHERE near_tomb.{quote(tombstone.column_for("analysis_id"))}
-            = nearer.{quote(ancestry.column_for("ancestor_analysis_id"))}
+        WHERE near_tomb.{quote(tombstone.column_for("analysis_id"))} = nearer.{quote(ancestry.column_for("ancestor_analysis_id"))}
           AND {nearer_tombstone_key}
       )
     )
@@ -2197,7 +2192,100 @@ def _render_derived_view(
     pattern = spec.pattern
     expressions: dict[str, str]
     from_sql: str
-    if pattern in {
+    if pattern == "lifecycle_projection":
+        if len(sources) != 3:
+            raise ValueError(
+                "lifecycle_projection requires descriptor, state, terminal"
+            )
+        descriptor, state, terminal = sources
+        present_state = {
+            "analysis_run": "COMPLETE",
+            "source_build": "SEALED",
+        }.get(relation.relation)
+        if present_state is None:
+            raise ValueError(f"unsupported lifecycle projection {relation.relation!r}")
+        descriptor_attributes = {item.attribute for item in descriptor.columns}
+        state_attributes = {item.attribute for item in state.columns}
+        terminal_attributes = {item.attribute for item in terminal.columns}
+        expressions = {}
+        for item in relation.columns:
+            if item.attribute in descriptor_attributes:
+                source, alias = descriptor, "descriptor"
+            elif item.attribute in state_attributes:
+                source, alias = state, "mutable_state"
+            elif item.attribute in terminal_attributes:
+                source, alias = terminal, "terminal"
+            else:
+                raise ValueError(
+                    f"lifecycle projection cannot source {item.attribute!r}"
+                )
+            expressions[item.attribute] = f"{alias}.{column(source, item.attribute)}"
+        key_attributes = tuple(relation.primary_key)
+        state_join = "\n AND ".join(
+            f"mutable_state.{column(state, attribute)} "
+            f"= descriptor.{column(descriptor, attribute)}"
+            for attribute in key_attributes
+        )
+        terminal_join = "\n AND ".join(
+            f"terminal.{column(terminal, attribute)} "
+            f"= descriptor.{column(descriptor, attribute)}"
+            for attribute in key_attributes
+        )
+
+        def literal(value: str) -> str:
+            return "'" + value.replace("'", "''") + "'"
+
+        state_column = f"mutable_state.{column(state, 'state')}"
+        terminal_key = f"terminal.{column(terminal, key_attributes[0])}"
+        from_sql = (
+            f"FROM {table(descriptor)} AS descriptor\n"
+            f"JOIN {table(state)} AS mutable_state\n"
+            f"  ON {state_join}\n"
+            f"LEFT JOIN {table(terminal)} AS terminal\n"
+            f"  ON {terminal_join}\n"
+            f"WHERE {state_column} = {literal(present_state)} "
+            f"AND {terminal_key} IS NOT NULL\n"
+            f"   OR {state_column} IN ({literal('OPEN')}, "
+            f"{literal('ABANDONED')}) AND {terminal_key} IS NULL"
+        )
+    elif pattern == "build_manifest_projection":
+        source_by_name = {source.relation: source for source in sources}
+        if set(source_by_name) != {
+            "build_manifest_core",
+            "source_build_discovery",
+            "source_build_sealed_at",
+        }:
+            raise ValueError("build_manifest_projection source set drift")
+        core = source_by_name["build_manifest_core"]
+        discovery = source_by_name["source_build_discovery"]
+        terminal = source_by_name["source_build_sealed_at"]
+        core_attributes = {item.attribute for item in core.columns}
+        expressions = {}
+        for item in relation.columns:
+            if item.attribute in core_attributes:
+                expressions[item.attribute] = f"core.{column(core, item.attribute)}"
+            elif item.attribute == "gallery_count":
+                expressions[item.attribute] = (
+                    f"discovery.{column(discovery, 'gallery_count')}"
+                )
+            elif item.attribute == "computed_at":
+                expressions[item.attribute] = (
+                    f"terminal.{column(terminal, 'sealed_at')}"
+                )
+            else:
+                raise ValueError(
+                    f"build_manifest_projection cannot source {item.attribute!r}"
+                )
+        from_sql = (
+            f"FROM {table(core)} AS core\n"
+            f"JOIN {table(discovery)} AS discovery\n"
+            f"  ON discovery.{column(discovery, 'build_id')}\n"
+            f"   = core.{column(core, 'build_id')}\n"
+            f"JOIN {table(terminal)} AS terminal\n"
+            f"  ON terminal.{column(terminal, 'build_id')}\n"
+            f"   = core.{column(core, 'build_id')}"
+        )
+    elif pattern in {
         "publication_selection_occurrence_identity",
         "catalog_publication_occurrence_identity",
     }:
@@ -2419,7 +2507,7 @@ def _render_derived_view(
         source_by_name = {source.relation: source for source in sources}
         selection = source_by_name["analysis_gid_winner_selection"]
         impacted = source_by_name["analysis_impacted_gid"]
-        run_build = source_by_name["analysis_run_build_id"]
+        run_build = source_by_name["analysis_run_descriptor"]
         build_gallery = source_by_name["source_build_gallery"]
         metadata = source_by_name["gallery_observation_metadata"]
         expressions = {
@@ -2811,36 +2899,18 @@ def _render_derived_view(
         )
     elif pattern == "publication_commit_activation":
         source_by_name = {source.relation: source for source in sources}
-        seal = source_by_name["publication_commit_seal"]
-        source_member = source_by_name["publication_commit_source_revision"]
-        preparation = source_by_name["publication_commit_operational_preparation"]
-        policy = source_by_name["publication_commit_operational_policy"]
-        timestamp = source_by_name["publication_commit_committed_at"]
+        if set(source_by_name) != {"publication_commit"}:
+            raise ValueError("publication commit activation source set drift")
+        commit = source_by_name["publication_commit"]
         expressions = {
-            "source_revision": (
-                f"source_member.{column(source_member, 'source_revision')}"
-            ),
-            "preparation_id": (
-                f"preparation_member.{column(preparation, 'preparation_id')}"
-            ),
+            "source_revision": f"committed.{column(commit, 'source_revision')}",
+            "preparation_id": f"committed.{column(commit, 'preparation_id')}",
             "operational_policy_id": (
-                f"policy_member.{column(policy, 'operational_policy_id')}"
+                f"committed.{column(commit, 'operational_policy_id')}"
             ),
-            "activated_at": f"time_member.{column(timestamp, 'committed_at')}",
+            "activated_at": f"committed.{column(commit, 'committed_at')}",
         }
-        joins = []
-        for source, alias in (
-            (source_member, "source_member"),
-            (preparation, "preparation_member"),
-            (policy, "policy_member"),
-            (timestamp, "time_member"),
-        ):
-            joins.append(
-                f"JOIN {table(source)} AS {alias}\n"
-                f"  ON {alias}.{column(source, 'receipt_id')}\n"
-                f"   = sealed.{column(seal, 'receipt_id')}"
-            )
-        from_sql = f"FROM {table(seal)} AS sealed\n" + "\n".join(joins)
+        from_sql = f"FROM {table(commit)} AS committed"
     else:  # pragma: no cover - parser is closed-world
         raise ValueError(f"unsupported derived view pattern {pattern!r}")
 
@@ -3680,7 +3750,6 @@ def _validate_physical_schema(
             "policy_component_sha256",
         ) or artifact_policy_semantics.unique_keys != (
             (
-                "artifact_algorithm_version",
                 "max_image_short_side",
                 "producer_fingerprint_sha256",
             ),
@@ -3693,7 +3762,6 @@ def _validate_physical_schema(
         }
         if set(semantic_columns) != {
             "policy_component_sha256",
-            "artifact_algorithm_version",
             "max_image_short_side",
             "producer_fingerprint_sha256",
         }:
@@ -3714,8 +3782,9 @@ def _validate_physical_schema(
         storage_codec = physical.relation("artifact_storage_codec")
         if producer is None or zip_policy is None or storage_codec is None:
             raise ValueError("artifact closed producer/storage registries are missing")
+        producer_columns = tuple(column.attribute for column in producer.columns)
         if (
-            producer.kind != "view"
+            producer.kind != "table"
             or producer.primary_key != ("producer_fingerprint_sha256",)
             or producer.unique_keys
             != (
@@ -3728,32 +3797,36 @@ def _validate_physical_schema(
                     "zlib_build",
                 ),
             )
-        ):
-            raise ValueError("artifact producer fingerprint view has wrong keys")
-        producer_equivalence = physical.relation(
-            "artifact_producer_fingerprint_equivalence_class"
-        )
-        if (
-            producer_equivalence is None
-            or producer_equivalence.primary_key != ("producer_fingerprint_sha256",)
-            or producer_equivalence.unique_keys != (("producer_equivalence_class",),)
-        ):
-            raise ValueError("artifact producer equivalence codec has wrong keys")
-        producer_identity = physical.relation("artifact_producer_fingerprint_identity")
-        if (
-            producer_identity is None
-            or producer_identity.primary_key
+            or producer_columns
             != (
+                "producer_fingerprint_sha256",
+                "artifact_algorithm_version",
+                "producer_equivalence_class",
                 "writer_id",
                 "python_abi",
                 "pillow_build",
                 "libjpeg_build",
                 "zlib_build",
             )
-            or producer_identity.unique_keys != (("producer_fingerprint_sha256",),)
         ):
-            raise ValueError("artifact producer natural identity has wrong keys")
-        if zip_policy.primary_key != ("artifact_algorithm_version",):
+            raise ValueError("artifact producer fingerprint table has wrong shape")
+        if zip_policy.primary_key != ("artifact_algorithm_version",) or (
+            zip_policy.unique_keys
+            != (
+                (
+                    "zip_codec_version",
+                    "compression_method",
+                    "compression_level",
+                    "dos_date",
+                    "dos_time",
+                    "unix_mode",
+                    "general_purpose_flags",
+                    "create_system",
+                    "archive_name_codec_version",
+                    "artifact_name_codec_version",
+                ),
+            )
+        ):
             raise ValueError("artifact ZIP writer policy has wrong primary key")
         if storage_codec.primary_key != ("storage_codec_version",) or (
             storage_codec.unique_keys != (("adapter_id",),)
@@ -4585,7 +4658,7 @@ def _validate_physical_schema(
                 expected_sources = (
                     "analysis_gid_winner_selection",
                     "analysis_impacted_gid",
-                    "analysis_run_build_id",
+                    "analysis_run_descriptor",
                     "source_build_gallery",
                     "gallery_observation_metadata",
                 )
@@ -4606,7 +4679,13 @@ def _validate_physical_schema(
                         "gid",
                         "witness_gallery_id",
                     ),
-                    "analysis_run_build_id": ("analysis_id", "build_id"),
+                    "analysis_run_descriptor": (
+                        "analysis_id",
+                        "build_id",
+                        "policy_id",
+                        "input_manifest_sha256",
+                        "started_at",
+                    ),
                     "source_build_gallery": (
                         "build_id",
                         "gallery_id",

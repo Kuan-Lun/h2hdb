@@ -7,11 +7,12 @@ non-key attribute.  The product policy checked here is stricter and purely
 physical: every ``catalog_*`` base table has a primary key plus at most one
 atomic value column.  Views are excluded, so read models may remain wide.
 
-The current epoch intentionally recomposes a closed set of gallery-linear BCNF
-families into complete rows.  The exact exception registry admits only those
-reviewed shapes and rejects any additional or changed wide relation, while the
-closed semantic-role registry rejects a hidden value moved into the primary key
-or an undeclared base table.
+The current epoch intentionally recomposes a closed set of BCNF families whose
+peak retained cardinality is bounded by their declared lifecycle and cleanup
+contract.  The exact exception registry admits only those reviewed shapes and
+rejects any additional or changed wide relation, while the closed semantic-role
+registry rejects a hidden value moved into the primary key or an undeclared
+base table.
 """
 
 from __future__ import annotations
@@ -117,15 +118,65 @@ class NarrowPhysicalReport:
 # the exception also fails until this registry and the resulting narrow layout
 # declarations are updated together.
 APPROVED_WIDE_BCNF_RELATIONS: Mapping[str, tuple[str, ...]] = {
+    "catalog_analysis_batch_receipt_stored": (
+        "batch_key",
+        "start_cursor",
+        "start_processed_count",
+        "page_limit",
+        "next_cursor",
+        "row_count",
+        "committed_at",
+    ),
+    "catalog_analysis_checkpoints": (
+        "generation",
+        "cursor",
+        "processed_count",
+        "state",
+        "updated_at",
+    ),
     "catalog_analysis_content_owner_candidate_shadows": (
         "content_sha256",
         "prefer_not_already_uploaded",
         "title_scalar_count",
         "download_time",
     ),
+    "catalog_analysis_policies": (
+        "algorithm_version",
+        "spam_artist_threshold",
+        "spam_occurrence_threshold",
+        "content_owner_rule_version",
+        "gid_winner_rule_version",
+    ),
+    "catalog_analysis_run_descriptor": (
+        "build_id",
+        "policy_id",
+        "input_manifest_sha256",
+        "started_at",
+    ),
+    "catalog_analysis_stages": (
+        "stage_order",
+        "cursor_codec",
+    ),
+    "catalog_analysis_state_component_seals": (
+        "row_count",
+        "sealed_at",
+    ),
     "catalog_artifact_blobs": (
         "size_bytes",
         "artifact_locator_sha256",
+    ),
+    "catalog_artifact_policy_semantics": (
+        "max_image_short_side",
+        "producer_fingerprint_sha256",
+    ),
+    "catalog_artifact_producer_fingerprints": (
+        "artifact_algorithm_version",
+        "producer_equivalence_class",
+        "writer_id",
+        "python_abi",
+        "pillow_build",
+        "libjpeg_build",
+        "zlib_build",
     ),
     "catalog_artifact_semantic_inputs": (
         "source_manifest_component_sha256",
@@ -135,9 +186,35 @@ APPROVED_WIDE_BCNF_RELATIONS: Mapping[str, tuple[str, ...]] = {
         "owner_component_sha256",
         "policy_component_sha256",
     ),
+    "catalog_artifact_storage_codecs": (
+        "adapter_id",
+        "locator_codec_version",
+        "protection_token_codec_version",
+    ),
+    "catalog_artifact_zip_writer_policies": (
+        "zip_codec_version",
+        "compression_method",
+        "compression_level",
+        "dos_date",
+        "dos_time",
+        "unix_mode",
+        "general_purpose_flags",
+        "create_system",
+        "archive_name_codec_version",
+        "artifact_name_codec_version",
+    ),
     "catalog_artifacts": (
         "artifact_sha256",
         "artifact_semantics_sha256",
+    ),
+    "catalog_build_manifest_core": (
+        "manifest_sha256",
+        "file_count",
+        "byte_count",
+    ),
+    "catalog_display_title_policies": (
+        "display_title_algorithm_version",
+        "title_sort_policy_id",
     ),
     "catalog_gallery_identities": (
         "gallery_key",
@@ -165,6 +242,10 @@ APPROVED_WIDE_BCNF_RELATIONS: Mapping[str, tuple[str, ...]] = {
         "file_count",
         "byte_count",
     ),
+    "catalog_manifest_policies": (
+        "manifest_algorithm_version",
+        "file_order_version",
+    ),
     "catalog_prepared_artifacts": (
         "artifact_sha256",
         "storage_codec_version",
@@ -172,12 +253,98 @@ APPROVED_WIDE_BCNF_RELATIONS: Mapping[str, tuple[str, ...]] = {
         "protection_token",
         "state",
     ),
+    "catalog_publication_batch_receipt_stored": (
+        "batch_key",
+        "start_cursor",
+        "start_processed_count",
+        "next_cursor",
+        "row_count",
+        "committed_at",
+    ),
+    "catalog_publication_candidates": (
+        "analysis_id",
+        "reserved_revision",
+        "artifact_policy_id",
+        "display_title_policy_id",
+        "artifacts_required",
+        "created_at",
+    ),
+    "catalog_publication_checkpoints": (
+        "generation",
+        "cursor",
+        "processed_count",
+        "state",
+        "updated_at",
+    ),
+    "catalog_publication_commits": (
+        "candidate_id",
+        "revision",
+        "source_revision",
+        "generation",
+        "preparation_id",
+        "operational_policy_id",
+        "artifact_policy_id",
+        "display_title_policy_id",
+        "new_galleries",
+        "changed_galleries",
+        "removed_galleries",
+        "duplicate_losers",
+        "committed_at",
+    ),
+    "catalog_publication_finalization_batch_stored": (
+        "batch_key",
+        "start_cursor",
+        "start_processed_count",
+        "next_cursor",
+        "row_count",
+        "committed_at",
+    ),
+    "catalog_publication_finalization_checkpoints": (
+        "generation",
+        "cursor",
+        "processed_count",
+        "state",
+        "updated_at",
+    ),
+    "catalog_publication_stages": (
+        "stage_order",
+        "cursor_codec",
+    ),
     "catalog_publication_storage": (
         "gallery_id",
         "summary_sha256",
         "language_sha256",
         "modified_at",
         "source_title_sha256",
+    ),
+    "catalog_source_build_descriptor": (
+        "scope_key",
+        "manifest_policy_id",
+        "created_at",
+    ),
+    "catalog_source_build_discoveries": (
+        "scan_attempt",
+        "gallery_count",
+        "tree_observation_sha256",
+        "completed_at",
+    ),
+    "catalog_source_revision_descriptors": (
+        "channel",
+        "snapshot_manifest_sha256",
+    ),
+    "catalog_source_scopes": (
+        "source_provider",
+        "source_root_sha256",
+        "identity_policy_version",
+    ),
+    "catalog_source_snapshot_manifest_identity": (
+        "gallery_count",
+        "file_count",
+        "byte_count",
+    ),
+    "catalog_title_sort_policy": (
+        "title_sort_algorithm_version",
+        "unicode_data_version",
     ),
 }
 
@@ -203,29 +370,9 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
         semantic_key=("source_provider",),
         semantic_value=(),
     ),
-    "catalog_source_build_anchors": NarrowLayoutDeclaration(
-        semantic_key=("build_id",),
-        semantic_value=(),
-    ),
-    "catalog_source_build_scope_keys": NarrowLayoutDeclaration(
-        semantic_key=("build_id",),
-        semantic_value=("scope_key",),
-    ),
-    "catalog_source_build_manifest_policy_ids": NarrowLayoutDeclaration(
-        semantic_key=("build_id",),
-        semantic_value=("manifest_policy_id",),
-    ),
     "catalog_source_build_states": NarrowLayoutDeclaration(
         semantic_key=("build_id",),
         semantic_value=("state",),
-    ),
-    "catalog_source_build_created_ats": NarrowLayoutDeclaration(
-        semantic_key=("build_id",),
-        semantic_value=("created_at",),
-    ),
-    "catalog_source_build_descriptor_seals": NarrowLayoutDeclaration(
-        semantic_key=("build_id",),
-        semantic_value=(),
     ),
     "catalog_source_build_sealed_ats": NarrowLayoutDeclaration(
         semantic_key=("build_id",),
@@ -234,32 +381,6 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
     "catalog_source_build_channel": NarrowLayoutDeclaration(
         semantic_key=("build_id",),
         semantic_value=("channel",),
-    ),
-    "catalog_source_build_discovery_anchors": NarrowLayoutDeclaration(
-        semantic_key=("build_id",),
-        semantic_value=(),
-    ),
-    "catalog_source_build_discovery_scan_attempts": NarrowLayoutDeclaration(
-        semantic_key=("build_id",),
-        semantic_value=("scan_attempt",),
-    ),
-    "catalog_source_build_discovery_gallery_counts": NarrowLayoutDeclaration(
-        semantic_key=("build_id",),
-        semantic_value=("gallery_count",),
-    ),
-    "catalog_source_build_discovery_tree_observation_sha256s": (
-        NarrowLayoutDeclaration(
-            semantic_key=("build_id",),
-            semantic_value=("tree_observation_sha256",),
-        )
-    ),
-    "catalog_source_build_discovery_completed_ats": NarrowLayoutDeclaration(
-        semantic_key=("build_id",),
-        semantic_value=("completed_at",),
-    ),
-    "catalog_source_build_discovery_seals": NarrowLayoutDeclaration(
-        semantic_key=("build_id",),
-        semantic_value=(),
     ),
     "catalog_source_build_expected_gallery": NarrowLayoutDeclaration(
         semantic_key=("build_id", "position"),
@@ -331,26 +452,6 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
         semantic_key=("build_id", "gallery_id"),
         semantic_value=("observation_id",),
     ),
-    "catalog_build_manifest_anchors": NarrowLayoutDeclaration(
-        semantic_key=("build_id",),
-        semantic_value=(),
-    ),
-    "catalog_build_manifest_manifest_sha256s": NarrowLayoutDeclaration(
-        semantic_key=("build_id",),
-        semantic_value=("manifest_sha256",),
-    ),
-    "catalog_build_manifest_file_counts": NarrowLayoutDeclaration(
-        semantic_key=("build_id",),
-        semantic_value=("file_count",),
-    ),
-    "catalog_build_manifest_byte_counts": NarrowLayoutDeclaration(
-        semantic_key=("build_id",),
-        semantic_value=("byte_count",),
-    ),
-    "catalog_build_manifest_seals": NarrowLayoutDeclaration(
-        semantic_key=("build_id",),
-        semantic_value=(),
-    ),
     "catalog_content_blobs": NarrowLayoutDeclaration(
         semantic_key=("file_sha256",),
         semantic_value=("size_bytes",),
@@ -406,32 +507,6 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
     "catalog_analysis_snapshot_manifest": NarrowLayoutDeclaration(
         semantic_key=("analysis_id",),
         semantic_value=("snapshot_manifest_sha256",),
-    ),
-    "catalog_source_snapshot_manifest_identity_anchors": NarrowLayoutDeclaration(
-        semantic_key=("snapshot_manifest_sha256",),
-        semantic_value=(),
-    ),
-    "catalog_source_snapshot_manifest_identity_gallery_counts": (
-        NarrowLayoutDeclaration(
-            semantic_key=("snapshot_manifest_sha256",),
-            semantic_value=("gallery_count",),
-        )
-    ),
-    "catalog_source_snapshot_manifest_identity_file_counts": (
-        NarrowLayoutDeclaration(
-            semantic_key=("snapshot_manifest_sha256",),
-            semantic_value=("file_count",),
-        )
-    ),
-    "catalog_source_snapshot_manifest_identity_byte_counts": (
-        NarrowLayoutDeclaration(
-            semantic_key=("snapshot_manifest_sha256",),
-            semantic_value=("byte_count",),
-        )
-    ),
-    "catalog_source_snapshot_manifest_identity_seals": NarrowLayoutDeclaration(
-        semantic_key=("snapshot_manifest_sha256",),
-        semantic_value=(),
     ),
     "catalog_source_revision_provenance": NarrowLayoutDeclaration(
         semantic_key=("source_revision",),
@@ -539,36 +614,6 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
         semantic_key=("revision", "publication_key"),
         semantic_value=("catalog_occurrence_sha256",),
     ),
-    "catalog_artifact_producer_fingerprint_anchors": NarrowLayoutDeclaration(
-        semantic_key=("producer_fingerprint_sha256",),
-        semantic_value=(),
-    ),
-    "catalog_artifact_producer_fingerprint_algorithm_versions": (
-        NarrowLayoutDeclaration(
-            semantic_key=("producer_fingerprint_sha256",),
-            semantic_value=("artifact_algorithm_version",),
-        )
-    ),
-    "catalog_artifact_producer_fingerprint_equivalence_classes": (
-        NarrowLayoutDeclaration(
-            semantic_key=("producer_fingerprint_sha256",),
-            semantic_value=("producer_equivalence_class",),
-        )
-    ),
-    "catalog_artifact_producer_fingerprint_identities": NarrowLayoutDeclaration(
-        semantic_key=(
-            "writer_id",
-            "python_abi",
-            "pillow_build",
-            "libjpeg_build",
-            "zlib_build",
-        ),
-        semantic_value=("producer_fingerprint_sha256",),
-    ),
-    "catalog_artifact_producer_fingerprint_seals": NarrowLayoutDeclaration(
-        semantic_key=("producer_fingerprint_sha256",),
-        semantic_value=(),
-    ),
     "catalog_artifact_policies": NarrowLayoutDeclaration(
         semantic_key=("artifact_policy_id",),
         semantic_value=("policy_component_sha256",),
@@ -630,6 +675,22 @@ _EXPLICIT_NARROW_LAYOUT_DECLARATIONS: Mapping[str, NarrowLayoutDeclaration] = {
     "catalog_publication_commit_head_receipts": NarrowLayoutDeclaration(
         semantic_key=("channel",),
         semantic_value=("receipt_id",),
+    ),
+    "catalog_analysis_run_states": NarrowLayoutDeclaration(
+        semantic_key=("analysis_id",),
+        semantic_value=("state",),
+    ),
+    "catalog_analysis_run_completed_ats": NarrowLayoutDeclaration(
+        semantic_key=("analysis_id",),
+        semantic_value=("completed_at",),
+    ),
+    "catalog_publication_commit_anchors": NarrowLayoutDeclaration(
+        semantic_key=("receipt_id",),
+        semantic_value=(),
+    ),
+    "catalog_revision_descriptors": NarrowLayoutDeclaration(
+        semantic_key=("revision",),
+        semantic_value=("publication_count",),
     ),
 }
 

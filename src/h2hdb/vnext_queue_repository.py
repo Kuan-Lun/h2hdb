@@ -385,19 +385,15 @@ class VNextQueueRepository:
         catalog_rows = work.connector.fetch_all(
             "SELECT identity.gid, redownload.gallery_id, removed.gid, deletion.gid "
             "FROM catalog_publication_commit_head_receipts AS head "
-            "JOIN catalog_publication_commit_seals AS commit_seal "
-            "ON commit_seal.receipt_id = head.receipt_id "
-            "JOIN catalog_publication_commit_catalog_revisions AS catalog "
-            "ON catalog.receipt_id = commit_seal.receipt_id "
-            "JOIN catalog_publication_commit_source_revisions AS source "
-            "ON source.receipt_id = commit_seal.receipt_id "
+            "JOIN catalog_publication_commits AS commit_row "
+            "ON commit_row.receipt_id = head.receipt_id "
             "JOIN catalog_publications AS publication "
-            "ON publication.revision = catalog.revision "
+            "ON publication.revision = commit_row.revision "
             "JOIN catalog_publication_identities AS identity "
             "ON identity.publication_key = publication.publication_key "
             "LEFT JOIN operational_gallery_redownload_states AS redownload "
             "ON redownload.gallery_id = publication.gallery_id "
-            "AND redownload.through_source_revision = source.source_revision "
+            "AND redownload.through_source_revision = commit_row.source_revision "
             "AND redownload.redownload_at <= %s "
             "LEFT JOIN operational_removed_gids AS removed "
             "ON removed.gid = identity.gid "
@@ -886,14 +882,10 @@ def _current_publication_pin(
     work: VNextUnitOfWork,
 ) -> tuple[int, int] | None:
     rows = work.connector.fetch_all(
-        "SELECT catalog.revision, source.source_revision "
+        "SELECT commit_row.revision, commit_row.source_revision "
         "FROM catalog_publication_commit_head_receipts AS head "
-        "JOIN catalog_publication_commit_seals AS commit_seal "
-        "ON commit_seal.receipt_id = head.receipt_id "
-        "JOIN catalog_publication_commit_catalog_revisions AS catalog "
-        "ON catalog.receipt_id = commit_seal.receipt_id "
-        "JOIN catalog_publication_commit_source_revisions AS source "
-        "ON source.receipt_id = commit_seal.receipt_id "
+        "JOIN catalog_publication_commits AS commit_row "
+        "ON commit_row.receipt_id = head.receipt_id "
         "WHERE head.channel = %s",
         (b"default",),
     )
@@ -933,13 +925,8 @@ def _validate_pending_redownload_cursor(
     cursor: PendingRedownloadCursor,
 ) -> None:
     pin_rows = work.connector.fetch_all(
-        "SELECT commit_seal.receipt_id "
-        "FROM catalog_publication_commit_seals AS commit_seal "
-        "JOIN catalog_publication_commit_catalog_revisions AS catalog "
-        "ON catalog.receipt_id = commit_seal.receipt_id "
-        "JOIN catalog_publication_commit_source_revisions AS source "
-        "ON source.receipt_id = commit_seal.receipt_id "
-        "WHERE catalog.revision = %s AND source.source_revision = %s",
+        "SELECT receipt_id FROM catalog_publication_commits "
+        "WHERE revision = %s AND source_revision = %s",
         (cursor.catalog_revision, cursor.source_revision),
     )
     if len(pin_rows) != 1 or len(pin_rows[0]) != 1:

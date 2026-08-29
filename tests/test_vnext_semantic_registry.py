@@ -58,7 +58,7 @@ def test_catalog_semantic_registry_and_writer_bindings_are_closed_world() -> Non
         if obligation_id.startswith("catalog.") and lifecycle == "ready_and_runtime"
     )
     assert tuple(validators) == expected
-    assert len(validators) == 11
+    assert len(validators) == 12
     assert "catalog.bootstrap.v1" not in validators
     assert tuple(validator.__name__ for validator in validators.values()) == tuple(
         ready_check.rsplit(".", 1)[1]
@@ -68,7 +68,7 @@ def test_catalog_semantic_registry_and_writer_bindings_are_closed_world() -> Non
     with pytest.raises(TypeError):
         validators["catalog.bootstrap.v1"] = catalog_refinement.check_bootstrap_v1  # type: ignore[index]
 
-    assert len(catalog_writer.BUILTIN_WRITER_HOOK_BINDINGS) == 25
+    assert len(catalog_writer.BUILTIN_WRITER_HOOK_BINDINGS) == 28
     hook = catalog_writer.BUILTIN_WRITER_HOOKS[0]
     binding = catalog_writer.resolve_writer_hook(
         hook.obligation_id,

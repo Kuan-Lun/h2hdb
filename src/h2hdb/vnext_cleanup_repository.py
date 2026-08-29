@@ -5,7 +5,7 @@ predicates.  Runtime dispatch therefore stays closed-world: every supported
 target and phase below is bound to literal SQL owned by this module.  Database
 text is never interpolated into a statement.
 
-All eighteen provider-seeded target kinds are implemented here.  The large
+All twenty-two provider-seeded target kinds are implemented here.  The large
 child-first targets use source-owned, immutable statement specifications; the
 database registry is checked for exact equality but is never treated as SQL or
 as an authorization predicate.
@@ -39,6 +39,16 @@ from .vnext_domains import (
     require_positive_int63,
     require_uuid16,
 )
+from .vnext_gallery_staging_budget import (
+    GalleryStagingBudgetCorruptionError,
+    lock_gallery_staging_request_budget,
+    release_gallery_staging_request_budget,
+)
+from .vnext_gallery_staging_repository import (
+    GalleryStagingConflictError,
+    GalleryStagingNotReadyError,
+    validate_terminal_staging_retirement_authority,
+)
 from .vnext_maintenance_gate_repository import (
     GateLease,
     GateMode,
@@ -50,7 +60,10 @@ _CLEANUP_ID_DOMAIN = b"h2hdb-cleanup-cycle-v1\0"
 _TARGET_KEY_DOMAIN = b"h2hdb-cleanup-target-v1\0"
 _CHAIN_DOMAIN = b"h2hdb-cleanup-chain-v1\0"
 _INPUT_DOMAIN = b"h2hdb-cleanup-input-v1\0"
+_FROZEN_ROOT_SET_DOMAIN = b"h2hdb-cleanup-frozen-root-set-v1\0"
 _MAX_BATCH_ROWS = 256
+_MAX_FROZEN_ROOT_KEY_BYTES = 260
+_CLEANUP_ALGORITHM_VERSION = 2
 _EMPTY_CURSOR = b""
 
 _SWEEP_TABLE = "operational_cleanup_sweep_targets"
@@ -59,12 +72,17 @@ _JOB_TABLE = "operational_cleanup_jobs"
 _CHECKPOINT_TABLE = "operational_cleanup_checkpoints"
 _RECEIPT_TABLE = "operational_cleanup_batch_receipts"
 _COMPLETION_TABLE = "operational_cleanup_completions"
+_FROZEN_ROOT_TABLE = "operational_cleanup_cycle_roots"
 
 
 class CleanupTargetKind(StrEnum):
     SOURCE_BUILD = "SOURCE_BUILD"
     ANALYSIS_RUN = "ANALYSIS_RUN"
     CATALOG_PUBLICATION = "CATALOG_PUBLICATION"
+    PUBLICATION_COMMIT = "PUBLICATION_COMMIT"
+    CATALOG_REVISION_DESCRIPTOR = "CATALOG_REVISION_DESCRIPTOR"
+    SOURCE_REVISION_DESCRIPTOR = "SOURCE_REVISION_DESCRIPTOR"
+    PUBLICATION_GENERATION = "PUBLICATION_GENERATION"
     PUBLICATION_CANDIDATE = "PUBLICATION_CANDIDATE"
     OPERATIONAL_PREPARATION = "OPERATIONAL_PREPARATION"
     GALLERY_OBSERVATION = "GALLERY_OBSERVATION"
@@ -84,6 +102,10 @@ class CleanupTargetKind(StrEnum):
 
 _MAINTENANCE_TARGET_PRIORITY = (
     CleanupTargetKind.CATALOG_PUBLICATION,
+    CleanupTargetKind.PUBLICATION_COMMIT,
+    CleanupTargetKind.CATALOG_REVISION_DESCRIPTOR,
+    CleanupTargetKind.SOURCE_REVISION_DESCRIPTOR,
+    CleanupTargetKind.PUBLICATION_GENERATION,
     CleanupTargetKind.PUBLICATION_CANDIDATE,
     CleanupTargetKind.OPERATIONAL_PREPARATION,
     CleanupTargetKind.GALLERY_OBSERVATION_STAGING,
@@ -228,6 +250,8 @@ class _Checkpoint:
     receipt_row_count: int | None
     receipt_start_cursor: bytes | None
     receipt_next_cursor: bytes | None
+    receipt_prior_chain_sha256: bytes | None
+    receipt_prior_deleted_count: int | None
     receipt_input_sha256: bytes | None
     receipt_output_sha256: bytes | None
     receipt_committed_at: int | None
@@ -283,7 +307,7 @@ class VNextCleanupRepository:
             "SELECT 1 FROM catalog_publication_occurrence_identities AS publication "
             "JOIN catalog_publication_commit_head_receipts AS head "
             "ON head.channel = %s "
-            "JOIN catalog_publication_commit_catalog_revisions AS current "
+            "JOIN catalog_publication_commits AS current "
             "ON current.receipt_id = head.receipt_id "
             "WHERE publication.revision < current.revision LIMIT 1",
             (b"default",),
@@ -394,12 +418,15 @@ class VNextCleanupRepository:
         gate_lease: GateLease | None = None,
         now: int | None = None,
     ) -> CatalogPublicationMaintenanceState:
-        """Classify the 17-target gallery/CBZ current-only fixed point.
+        """Classify the gallery/CBZ fixed point across 21 of 22 targets.
 
-        ``HASH_CACHE_OBSERVATION`` is deliberately excluded.  It is a
+        New ``HASH_CACHE_OBSERVATION`` work is deliberately excluded.  It is a
         file-derived, age-based cache policy rather than gallery/CBZ history;
         including it with a zero max age would make every resident idle poll
-        delete newly observed cache rows and prevent a stable fixed point.
+        delete newly observed cache rows and prevent a stable fixed point.  An
+        already OPEN hash-cache cycle is nevertheless surfaced as ACTIONABLE
+        so the sole serialized cleanup authority can always be handed off and
+        completed after process loss.
 
         A lease-free call is an optimistic read-only hint.  Supplying the
         exact EXCLUSIVE lease and ``now`` performs the same exact probes under
@@ -434,12 +461,14 @@ class VNextCleanupRepository:
         cycle_cutoff_at: int,
         now: int,
     ) -> CleanupCycle | None:
-        """Resume an OPEN job or begin the first actionable priority target.
+        """Resume the sole OPEN job or begin the first actionable target.
 
         The exact candidate probe and cycle creation share the EXCLUSIVE
         transaction.  A completed cycle is followed by a new call, which
         restarts the priority scan from the first target and therefore reaches
-        a dependency fixed point without walking all 4,608 target shards.
+        a dependency fixed point without walking all 5,376 target shards.  A
+        previously opened hash-cache cycle is resumed as a liveness handoff;
+        this path never starts new hash-cache work.
         """
 
         timestamp = require_int63(now, field="current-only maintenance next now")
@@ -522,6 +551,15 @@ class VNextCleanupRepository:
             )
         if checkpoint is None:
             raise CleanupCorruptionError("OPEN cleanup cycle lacks a checkpoint")
+        if requested.target_kind is CleanupTargetKind.PUBLICATION_COMMIT and (
+            checkpoint.phase in {"PCOM_FINALIZATION_CHECKPOINT", "PCOM_ANCHOR"}
+        ):
+            _require_publication_commit_post_compound_transition(
+                work,
+                cycle=requested,
+                phase=checkpoint.phase,
+                cursor=checkpoint.cursor,
+            )
         return _checkpoint_result(requested, checkpoint, row_count=0, replayed=True)
 
     @staticmethod
@@ -545,6 +583,15 @@ class VNextCleanupRepository:
             )
         if checkpoint is None:
             raise CleanupCorruptionError("OPEN cleanup cycle lacks a checkpoint")
+        if requested.target_kind is CleanupTargetKind.PUBLICATION_COMMIT and (
+            checkpoint.phase in {"PCOM_FINALIZATION_CHECKPOINT", "PCOM_ANCHOR"}
+        ):
+            _require_publication_commit_post_compound_transition(
+                work,
+                cycle=requested,
+                phase=checkpoint.phase,
+                cursor=checkpoint.cursor,
+            )
 
         if (
             checkpoint.generation == attempt.expected_generation + 1
@@ -607,9 +654,10 @@ class VNextCleanupRepository:
             f"""
             INSERT INTO {_RECEIPT_TABLE}
                 (cleanup_id, phase, batch_key, start_cursor, next_cursor,
+                 prior_chain_sha256, prior_deleted_count,
                  input_sha256, output_sha256, row_count,
                  committed_generation, committed_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 requested.cleanup_id,
@@ -617,6 +665,8 @@ class VNextCleanupRepository:
                 attempt.batch_key,
                 checkpoint.cursor,
                 mutation.next_cursor,
+                checkpoint.chain_sha256,
+                checkpoint.deleted_count,
                 input_sha256,
                 next_chain,
                 row_count,
@@ -703,6 +753,30 @@ class VNextCleanupRepository:
         )
 
 
+def _require_serialized_open_cycle(
+    work: VNextUnitOfWork,
+    *,
+    requested_target_key: bytes,
+) -> None:
+    rows = work.connector.fetch_all(
+        f"SELECT target_key FROM {_JOB_TABLE} "
+        "WHERE state = 'OPEN' ORDER BY target_key LIMIT 2"
+    )
+    if len(rows) > 1:
+        raise CleanupCorruptionError(
+            "serialized cleanup protocol has multiple OPEN cycles"
+        )
+    if not rows:
+        return
+    if len(rows[0]) != 1:
+        raise CleanupCorruptionError("OPEN cleanup cycle probe returned invalid shape")
+    open_target_key = require_digest32(rows[0][0], field="OPEN cleanup target_key")
+    if open_target_key != requested_target_key:
+        raise CleanupUnavailableError(
+            "another serialized cleanup cycle must complete first"
+        )
+
+
 def _begin_cycle_under_exclusive(
     work: VNextUnitOfWork,
     *,
@@ -717,6 +791,10 @@ def _begin_cycle_under_exclusive(
 
     _validate_strategy_seeds(work, kind)
     expected_target_key = _target_key(kind, shard)
+    _require_serialized_open_cycle(
+        work,
+        requested_target_key=expected_target_key,
+    )
     row = work.lock_row(
         LockRank.CHECKPOINT,
         encode_lock_key("cleanup-sweep", expected_target_key),
@@ -724,8 +802,9 @@ def _begin_cycle_under_exclusive(
         SELECT s.target_key,
                j.cleanup_id, j.cycle_generation, j.cycle_cutoff_at,
                j.algorithm_version, j.max_rows_per_transaction,
-               j.hash_cache_max_age_microseconds, j.state,
-               j.created_at, j.completed_at,
+               j.hash_cache_max_age_microseconds,
+               j.frozen_root_count, j.frozen_root_set_sha256,
+               j.state, j.created_at, j.completed_at,
                c.cycle_generation, c.final_chain_sha256, c.deleted_count
         FROM {_SWEEP_TABLE} AS s
         LEFT JOIN {_JOB_TABLE} AS j ON j.target_key = s.target_key
@@ -741,7 +820,7 @@ def _begin_cycle_under_exclusive(
         generation = 1
     else:
         existing = _cycle_from_job_row(kind, shard, row)
-        state = _as_text(row[7], field="cleanup job state")
+        state = _as_text(row[9], field="cleanup job state")
         if state == "OPEN":
             _require_cycle_policy(
                 existing,
@@ -749,10 +828,12 @@ def _begin_cycle_under_exclusive(
                 max_rows=max_rows,
                 max_age=max_age,
             )
+            _load_frozen_roots(work, existing, _STATIC_PLANS.get(kind))
             return existing
         if state != "COMPLETE":
             raise CleanupCorruptionError("cleanup job has an invalid state")
         _require_complete_job(row, existing)
+        _require_no_frozen_roots(work, existing.cleanup_id)
         if existing.cycle_generation == INT63_MAX:
             raise CleanupCycleExhaustedError(
                 "cleanup cycle generation reached portable int63 maximum"
@@ -791,19 +872,24 @@ def _begin_cycle_under_exclusive(
         INSERT INTO {_JOB_TABLE}
             (cleanup_id, target_key, cycle_generation, cycle_cutoff_at,
              algorithm_version, max_rows_per_transaction,
-             hash_cache_max_age_microseconds, state, created_at, completed_at)
-        VALUES (%s, %s, %s, %s, 1, %s, %s, 'OPEN', %s, NULL)
+             hash_cache_max_age_microseconds,
+             frozen_root_count, frozen_root_set_sha256,
+             state, created_at, completed_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, 0, %s, 'OPEN', %s, NULL)
         """,
         (
             cycle.cleanup_id,
             cycle.target_key,
             cycle.cycle_generation,
             cycle.cycle_cutoff_at,
+            _CLEANUP_ALGORITHM_VERSION,
             cycle.max_rows_per_transaction,
             cycle.hash_cache_max_age_microseconds,
+            _frozen_root_set_sha256(cycle.cleanup_id, ()),
             now,
         ),
     )
+    _freeze_static_cycle_roots(work, cycle)
     first_phase = _STRATEGIES[kind].phases[0]
     _insert_checkpoint(
         work,
@@ -884,6 +970,10 @@ def _target_key(kind: CleanupTargetKind, shard_no: int) -> bytes:
 def _cycle_from_job_row(
     kind: CleanupTargetKind, shard_no: int, row: tuple[object, ...]
 ) -> CleanupCycle:
+    if require_int63(row[4], field="stored cleanup algorithm_version") != (
+        _CLEANUP_ALGORITHM_VERSION
+    ):
+        raise CleanupCorruptionError("cleanup algorithm_version is unsupported")
     return CleanupCycle(
         cleanup_id=require_uuid16(row[1], field="stored cleanup_id"),
         target_kind=kind,
@@ -920,10 +1010,12 @@ def _require_cycle_policy(
 
 
 def _require_complete_job(row: tuple[object, ...], cycle: CleanupCycle) -> None:
-    if row[9] is None or row[10] != cycle.cycle_generation:
+    if row[11] is None or row[12] != cycle.cycle_generation:
         raise CleanupCorruptionError("COMPLETE cleanup job lacks exact completion")
-    require_digest32(row[11], field="cleanup final_chain_sha256")
-    require_int63(row[12], field="cleanup completion deleted_count")
+    _require_frozen_root_count(row[7])
+    require_digest32(row[8], field="cleanup frozen_root_set_sha256")
+    require_digest32(row[13], field="cleanup final_chain_sha256")
+    require_int63(row[14], field="cleanup completion deleted_count")
 
 
 def _insert_checkpoint(
@@ -989,10 +1081,12 @@ def _lock_cycle(
         f"""
         SELECT j.cleanup_id, j.cycle_generation, j.cycle_cutoff_at,
                j.algorithm_version, j.max_rows_per_transaction,
-               j.hash_cache_max_age_microseconds, j.state,
+               j.hash_cache_max_age_microseconds,
+               j.frozen_root_count, j.frozen_root_set_sha256, j.state,
                p.phase, p.generation, p.cursor_bytes, p.deleted_count,
                p.chain_sha256, p.state,
                r.batch_key, r.start_cursor, r.next_cursor,
+               r.prior_chain_sha256, r.prior_deleted_count,
                r.input_sha256, r.output_sha256, r.row_count,
                r.committed_generation, r.committed_at
         FROM {_JOB_TABLE} AS j
@@ -1018,72 +1112,92 @@ def _lock_cycle(
         raise CleanupUnavailableError("cleanup cycle is missing")
     if row[0] != cycle.cleanup_id or row[1] != cycle.cycle_generation:
         raise CleanupUnavailableError("cleanup cycle capability is stale")
-    if row[2] != cycle.cycle_cutoff_at or row[3] != 1:
+    if row[2] != cycle.cycle_cutoff_at or row[3] != _CLEANUP_ALGORITHM_VERSION:
         raise CleanupCorruptionError("cleanup cycle immutable policy changed")
     if (
         row[4] != cycle.max_rows_per_transaction
         or row[5] != cycle.hash_cache_max_age_microseconds
     ):
         raise CleanupCorruptionError("cleanup cycle batch policy changed")
-    state = _as_text(row[6], field="cleanup job state")
+    frozen_count = _require_frozen_root_count(row[6])
+    frozen_digest = require_digest32(row[7], field="cleanup frozen_root_set_sha256")
+    state = _as_text(row[8], field="cleanup job state")
     if state == "COMPLETE":
-        if row[7] is not None:
+        if row[9] is not None:
             raise CleanupCorruptionError("COMPLETE cleanup retains a checkpoint")
+        _require_no_frozen_roots(work, cycle.cleanup_id)
         return state, None
-    if state != "OPEN" or row[7] is None:
+    if state != "OPEN" or row[9] is None:
         raise CleanupCorruptionError("OPEN cleanup lacks one current checkpoint")
+    _load_frozen_roots(
+        work,
+        cycle,
+        _STATIC_PLANS.get(cycle.target_kind),
+        expected_count=frozen_count,
+        expected_digest=frozen_digest,
+    )
     checkpoint = _Checkpoint(
-        phase=_as_text(row[7], field="cleanup phase"),
+        phase=_as_text(row[9], field="cleanup phase"),
         generation=require_positive_int63(
-            row[8], field="cleanup checkpoint generation"
+            row[10], field="cleanup checkpoint generation"
         ),
-        cursor=require_bounded_bytes(row[9], field="cleanup cursor", maximum=2048),
-        deleted_count=require_int63(row[10], field="cleanup deleted_count"),
-        chain_sha256=require_digest32(row[11], field="cleanup chain_sha256"),
-        state=_as_text(row[12], field="cleanup checkpoint state"),
+        cursor=require_bounded_bytes(row[11], field="cleanup cursor", maximum=2048),
+        deleted_count=require_int63(row[12], field="cleanup deleted_count"),
+        chain_sha256=require_digest32(row[13], field="cleanup chain_sha256"),
+        state=_as_text(row[14], field="cleanup checkpoint state"),
         receipt_batch_key=(
             None
-            if row[13] is None
-            else require_digest32(row[13], field="cleanup receipt batch_key")
+            if row[15] is None
+            else require_digest32(row[15], field="cleanup receipt batch_key")
         ),
         receipt_generation=(
             None
-            if row[19] is None
-            else require_positive_int63(row[19], field="cleanup receipt generation")
+            if row[23] is None
+            else require_positive_int63(row[23], field="cleanup receipt generation")
         ),
         receipt_row_count=(
             None
-            if row[18] is None
-            else require_int63(row[18], field="cleanup receipt row_count")
+            if row[22] is None
+            else require_int63(row[22], field="cleanup receipt row_count")
         ),
         receipt_start_cursor=(
             None
-            if row[14] is None
+            if row[16] is None
             else require_bounded_bytes(
-                row[14], field="cleanup receipt start_cursor", maximum=2048
+                row[16], field="cleanup receipt start_cursor", maximum=2048
             )
         ),
         receipt_next_cursor=(
             None
-            if row[15] is None
+            if row[17] is None
             else require_bounded_bytes(
-                row[15], field="cleanup receipt next_cursor", maximum=2048
+                row[17], field="cleanup receipt next_cursor", maximum=2048
             )
         ),
         receipt_input_sha256=(
             None
-            if row[16] is None
-            else require_digest32(row[16], field="cleanup receipt input_sha256")
+            if row[20] is None
+            else require_digest32(row[20], field="cleanup receipt input_sha256")
         ),
         receipt_output_sha256=(
             None
-            if row[17] is None
-            else require_digest32(row[17], field="cleanup receipt output_sha256")
+            if row[21] is None
+            else require_digest32(row[21], field="cleanup receipt output_sha256")
+        ),
+        receipt_prior_chain_sha256=(
+            None
+            if row[18] is None
+            else require_digest32(row[18], field="cleanup receipt prior_chain_sha256")
+        ),
+        receipt_prior_deleted_count=(
+            None
+            if row[19] is None
+            else require_int63(row[19], field="cleanup receipt prior_deleted_count")
         ),
         receipt_committed_at=(
             None
-            if row[20] is None
-            else require_int63(row[20], field="cleanup receipt committed_at")
+            if row[24] is None
+            else require_int63(row[24], field="cleanup receipt committed_at")
         ),
     )
     _validate_checkpoint_receipt(cycle, checkpoint)
@@ -1097,6 +1211,8 @@ def _validate_checkpoint_receipt(cycle: CleanupCycle, checkpoint: _Checkpoint) -
         checkpoint.receipt_row_count,
         checkpoint.receipt_start_cursor,
         checkpoint.receipt_next_cursor,
+        checkpoint.receipt_prior_chain_sha256,
+        checkpoint.receipt_prior_deleted_count,
         checkpoint.receipt_input_sha256,
         checkpoint.receipt_output_sha256,
         checkpoint.receipt_committed_at,
@@ -1113,13 +1229,30 @@ def _validate_checkpoint_receipt(cycle: CleanupCycle, checkpoint: _Checkpoint) -
     assert checkpoint.receipt_row_count is not None
     assert checkpoint.receipt_start_cursor is not None
     assert checkpoint.receipt_next_cursor is not None
+    assert checkpoint.receipt_prior_chain_sha256 is not None
+    assert checkpoint.receipt_prior_deleted_count is not None
+    assert checkpoint.receipt_input_sha256 is not None
     assert checkpoint.receipt_output_sha256 is not None
+    expected_deleted_count = require_int63(
+        checkpoint.receipt_prior_deleted_count + checkpoint.receipt_row_count,
+        field="cleanup receipt next deleted_count",
+    )
+    expected_output_sha256 = _next_chain(
+        checkpoint.receipt_prior_chain_sha256,
+        checkpoint.phase,
+        checkpoint.receipt_generation,
+        checkpoint.receipt_start_cursor,
+        checkpoint.receipt_next_cursor,
+        checkpoint.receipt_input_sha256,
+        checkpoint.receipt_row_count,
+    )
     if (
         checkpoint.receipt_generation != checkpoint.generation
         or checkpoint.receipt_next_cursor != checkpoint.cursor
+        or expected_output_sha256 != checkpoint.receipt_output_sha256
         or checkpoint.receipt_output_sha256 != checkpoint.chain_sha256
         or checkpoint.receipt_row_count > cycle.max_rows_per_transaction
-        or checkpoint.deleted_count < checkpoint.receipt_row_count
+        or checkpoint.deleted_count != expected_deleted_count
     ):
         raise CleanupCorruptionError(
             "cleanup latest receipt does not match its checkpoint"
@@ -1153,6 +1286,7 @@ def _terminal_transition_replay(
     rows = work.connector.fetch_all(
         f"""
         SELECT r.phase, r.batch_key, r.start_cursor, r.next_cursor,
+               r.prior_chain_sha256, r.prior_deleted_count,
                r.input_sha256, r.output_sha256, r.row_count,
                r.committed_generation, r.committed_at,
                prior.generation, prior.cursor_bytes, prior.deleted_count,
@@ -1189,31 +1323,54 @@ def _terminal_transition_replay(
     next_cursor = require_bounded_bytes(
         row[3], field="cleanup terminal replay next_cursor", maximum=2048
     )
-    require_digest32(row[4], field="cleanup terminal replay input_sha256")
+    receipt_prior_chain = require_digest32(
+        row[4], field="cleanup terminal replay prior_chain_sha256"
+    )
+    receipt_prior_deleted = require_int63(
+        row[5], field="cleanup terminal replay prior_deleted_count"
+    )
+    input_sha256 = require_digest32(
+        row[6], field="cleanup terminal replay input_sha256"
+    )
     output_sha256 = require_digest32(
-        row[5], field="cleanup terminal replay output_sha256"
+        row[7], field="cleanup terminal replay output_sha256"
     )
-    row_count = require_int63(row[6], field="cleanup terminal replay row_count")
+    row_count = require_int63(row[8], field="cleanup terminal replay row_count")
     receipt_generation = require_positive_int63(
-        row[7], field="cleanup terminal replay receipt generation"
+        row[9], field="cleanup terminal replay receipt generation"
     )
-    require_int63(row[8], field="cleanup terminal replay committed_at")
+    require_int63(row[10], field="cleanup terminal replay committed_at")
     prior_generation = require_positive_int63(
-        row[9], field="cleanup terminal checkpoint generation"
+        row[11], field="cleanup terminal checkpoint generation"
     )
     prior_cursor = require_bounded_bytes(
-        row[10], field="cleanup terminal checkpoint cursor", maximum=2048
+        row[12], field="cleanup terminal checkpoint cursor", maximum=2048
     )
-    prior_deleted = require_int63(
-        row[11], field="cleanup terminal checkpoint deleted_count"
+    checkpoint_deleted = require_int63(
+        row[13], field="cleanup terminal checkpoint deleted_count"
     )
-    prior_chain = require_digest32(row[12], field="cleanup terminal checkpoint chain")
-    prior_state = _as_text(row[13], field="cleanup terminal checkpoint state")
+    checkpoint_chain = require_digest32(
+        row[14], field="cleanup terminal checkpoint chain"
+    )
+    prior_state = _as_text(row[15], field="cleanup terminal checkpoint state")
     prior_order = require_positive_int63(
-        row[14], field="cleanup terminal prior phase_order"
+        row[16], field="cleanup terminal prior phase_order"
     )
     current_order = require_positive_int63(
-        row[15], field="cleanup terminal current phase_order"
+        row[17], field="cleanup terminal current phase_order"
+    )
+    expected_output = _next_chain(
+        receipt_prior_chain,
+        prior_phase,
+        receipt_generation,
+        start_cursor,
+        next_cursor,
+        input_sha256,
+        row_count,
+    )
+    expected_deleted = require_int63(
+        receipt_prior_deleted + row_count,
+        field="cleanup terminal replay next deleted_count",
     )
     if (
         batch_key != command.batch_key
@@ -1222,8 +1379,9 @@ def _terminal_transition_replay(
         or receipt_generation != command.expected_generation + 1
         or prior_generation != receipt_generation
         or prior_cursor != next_cursor
-        or prior_deleted < row_count
-        or prior_chain != output_sha256
+        or checkpoint_deleted != expected_deleted
+        or expected_output != output_sha256
+        or checkpoint_chain != output_sha256
         or prior_state != "COMPLETE"
         or current_order != prior_order + 1
     ):
@@ -1353,6 +1511,17 @@ def _complete_cycle(
     deleted_count: int,
     now: int,
 ) -> None:
+    frozen_roots = _load_frozen_roots(
+        work,
+        cycle,
+        _STATIC_PLANS.get(cycle.target_kind),
+    )
+    removed_roots = work.connector.execute_affected(
+        f"DELETE FROM {_FROZEN_ROOT_TABLE} WHERE cleanup_id = %s",
+        (cycle.cleanup_id,),
+    )
+    if removed_roots != len(frozen_roots):
+        raise CleanupUnavailableError("cleanup frozen root set changed")
     work.connector.execute(
         f"DELETE FROM {_RECEIPT_TABLE} WHERE cleanup_id = %s",
         (cycle.cleanup_id,),
@@ -1686,167 +1855,29 @@ def _select_artifact_blobs(
     return _Mutation(keys[-1] if keys else cursor, keys)
 
 
-def _hash_cache_cursor(cursor: bytes) -> tuple[bytes, bytes, int]:
-    if not cursor:
-        return bytes(32), bytes(32), 1
-    value = require_bounded_bytes(
-        cursor, field="hash-cache cleanup cursor", minimum=64, maximum=64
-    )
-    return value[:32], value[32:], 0
-
-
 def _hash_cache_cutoff(cycle: CleanupCycle) -> int:
     if cycle.hash_cache_max_age_microseconds > cycle.cycle_cutoff_at:
         raise CleanupCorruptionError("hash-cache cleanup cutoff underflows")
     return cycle.cycle_cutoff_at - cycle.hash_cache_max_age_microseconds
 
 
-def _select_hash_cache_files(
-    work: VNextUnitOfWork, cycle: CleanupCycle, cursor: bytes
-) -> _Mutation:
-    source_cursor, fingerprint_cursor, first = _hash_cache_cursor(cursor)
-    cutoff = _hash_cache_cutoff(cycle)
-    lower = bytes((cycle.shard_no,)) + bytes(31)
-    upper = b"" if cycle.shard_no == 255 else bytes((cycle.shard_no + 1,)) + bytes(31)
-    no_upper = 1 if cycle.shard_no == 255 else 0
-    rows = work.connector.fetch_all(
-        """
-        SELECT c.source_identity_sha256, c.fingerprint_sha256
-        FROM operational_file_hash_caches AS c
-        JOIN operational_hash_cache_observations AS o
-          ON o.source_identity_sha256 = c.source_identity_sha256
-         AND o.fingerprint_sha256 = c.fingerprint_sha256
-        WHERE c.source_identity_sha256 >= %s
-          AND (%s = 1 OR c.source_identity_sha256 < %s)
-          AND (%s = 1 OR c.source_identity_sha256 > %s
-               OR (c.source_identity_sha256 = %s AND c.fingerprint_sha256 > %s))
-          AND o.observed_at <= %s
-        ORDER BY c.source_identity_sha256, c.fingerprint_sha256
-        LIMIT %s
-        """,
-        (
-            lower,
-            no_upper,
-            upper,
-            first,
-            source_cursor,
-            source_cursor,
-            fingerprint_cursor,
-            cutoff,
-            cycle.max_rows_per_transaction,
-        ),
-    )
-    pairs = tuple(
-        (
-            require_digest32(row[0], field="hash-cache source key"),
-            require_digest32(row[1], field="hash-cache fingerprint key"),
-        )
-        for row in rows
-    )
-    keys = tuple(source + fingerprint for source, fingerprint in pairs)
-    for source, fingerprint in pairs:
-        lock_key = source + fingerprint
-        locked = work.lock_row(
-            LockRank.CHILD,
-            encode_lock_key("cleanup-hash-cache-file", lock_key),
-            """
-            SELECT c.source_identity_sha256, c.fingerprint_sha256
-            FROM operational_file_hash_caches AS c
-            JOIN operational_hash_cache_observations AS o
-              ON o.source_identity_sha256 = c.source_identity_sha256
-             AND o.fingerprint_sha256 = c.fingerprint_sha256
-            WHERE c.source_identity_sha256 = %s AND c.fingerprint_sha256 = %s
-              AND o.observed_at <= %s
-            """,
-            (source, fingerprint, cutoff),
-        )
-        if locked != (source, fingerprint):
-            raise CleanupRetentionBlockedError("hash-cache row became live")
-        if (
-            work.connector.execute_affected(
-                "DELETE FROM operational_file_hash_caches "
-                "WHERE source_identity_sha256 = %s AND fingerprint_sha256 = %s",
-                (source, fingerprint),
-            )
-            != 1
-        ):
-            raise CleanupUnavailableError("hash-cache file row changed")
-    return _Mutation(keys[-1] if keys else cursor, keys)
+_HASH_CACHE_ELIGIBILITY = "r.observed_at <= %s"
 
 
-def _select_hash_cache_observations(
-    work: VNextUnitOfWork, cycle: CleanupCycle, cursor: bytes
-) -> _Mutation:
-    source_cursor, fingerprint_cursor, first = _hash_cache_cursor(cursor)
-    cutoff = _hash_cache_cutoff(cycle)
-    lower = bytes((cycle.shard_no,)) + bytes(31)
-    upper = b"" if cycle.shard_no == 255 else bytes((cycle.shard_no + 1,)) + bytes(31)
-    no_upper = 1 if cycle.shard_no == 255 else 0
-    rows = work.connector.fetch_all(
-        """
-        SELECT o.source_identity_sha256, o.fingerprint_sha256
-        FROM operational_hash_cache_observations AS o
-        WHERE o.source_identity_sha256 >= %s
-          AND (%s = 1 OR o.source_identity_sha256 < %s)
-          AND (%s = 1 OR o.source_identity_sha256 > %s
-               OR (o.source_identity_sha256 = %s AND o.fingerprint_sha256 > %s))
-          AND o.observed_at <= %s
-          AND NOT EXISTS (
-              SELECT 1 FROM operational_file_hash_caches c
-              WHERE c.source_identity_sha256 = o.source_identity_sha256
-                AND c.fingerprint_sha256 = o.fingerprint_sha256)
-        ORDER BY o.source_identity_sha256, o.fingerprint_sha256
-        LIMIT %s
-        """,
-        (
-            lower,
-            no_upper,
-            upper,
-            first,
-            source_cursor,
-            source_cursor,
-            fingerprint_cursor,
-            cutoff,
-            cycle.max_rows_per_transaction,
+def _hash_cache_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
+    root = "operational_hash_cache_observations"
+    key = ("source_identity_sha256", "fingerprint_sha256")
+    return {
+        "HC_FILE": (
+            _owned_spec(
+                "operational_file_hash_caches",
+                key,
+                root,
+                key,
+            ),
         ),
-    )
-    pairs = tuple(
-        (
-            require_digest32(row[0], field="hash-cache source key"),
-            require_digest32(row[1], field="hash-cache fingerprint key"),
-        )
-        for row in rows
-    )
-    keys = tuple(source + fingerprint for source, fingerprint in pairs)
-    for source, fingerprint in pairs:
-        lock_key = source + fingerprint
-        locked = work.lock_row(
-            LockRank.CHILD,
-            encode_lock_key("cleanup-hash-cache-observation", lock_key),
-            """
-            SELECT o.source_identity_sha256, o.fingerprint_sha256
-            FROM operational_hash_cache_observations AS o
-            WHERE o.source_identity_sha256 = %s AND o.fingerprint_sha256 = %s
-              AND o.observed_at <= %s
-              AND NOT EXISTS (
-                  SELECT 1 FROM operational_file_hash_caches c
-                  WHERE c.source_identity_sha256 = o.source_identity_sha256
-                    AND c.fingerprint_sha256 = o.fingerprint_sha256)
-            """,
-            (source, fingerprint, cutoff),
-        )
-        if locked != (source, fingerprint):
-            raise CleanupRetentionBlockedError("hash-cache observation became live")
-        if (
-            work.connector.execute_affected(
-                "DELETE FROM operational_hash_cache_observations "
-                "WHERE source_identity_sha256 = %s AND fingerprint_sha256 = %s",
-                (source, fingerprint),
-            )
-            != 1
-        ):
-            raise CleanupUnavailableError("hash-cache observation changed")
-    return _Mutation(keys[-1] if keys else cursor, keys)
+        "HC_ROOT": (_owned_spec(root, key, root, key),),
+    }
 
 
 # The specifications below are immutable Python constants.  Their SQL is
@@ -1887,6 +1918,80 @@ class _StaticTargetPlan:
     phases: dict[str, tuple[_StaticDeleteSpec, ...]]
     uses_cutoff: bool = False
     variable_width_shard: bool = False
+
+
+_FROZEN_ROOT_INT_ATTRIBUTES = frozenset(
+    {
+        "gallery_id",
+        "generation",
+        "gid",
+        "observation_id",
+        "revision",
+        "source_revision",
+    }
+)
+_FROZEN_ROOT_UUID_ATTRIBUTES = frozenset(
+    {
+        "analysis_id",
+        "build_id",
+        "candidate_id",
+        "preparation_id",
+        "receipt_id",
+        "staging_id",
+    }
+)
+_FROZEN_ROOT_DIGEST_ATTRIBUTES = frozenset(
+    {
+        "artifact_sha256",
+        "file_key",
+        "file_sha256",
+        "fingerprint_sha256",
+        "page_sha256",
+        "publication_key",
+        "source_identity_sha256",
+        "value_sha256",
+    }
+)
+
+
+def _frozen_root_attributes(plan: _StaticTargetPlan) -> tuple[str, ...]:
+    """Return the immutable authority carried by one frozen protocol root."""
+
+    if plan.kind is CleanupTargetKind.PUBLICATION_COMMIT:
+        return (*plan.root_key, "preparation_id")
+    return plan.root_key
+
+
+def _validate_frozen_root_values(
+    plan: _StaticTargetPlan,
+    root: Sequence[_StaticScalar],
+) -> None:
+    attributes = _frozen_root_attributes(plan)
+    if len(root) != len(attributes):
+        raise CleanupCorruptionError("cleanup frozen root arity drifted")
+    for attribute, value in zip(attributes, root, strict=True):
+        if attribute in _FROZEN_ROOT_INT_ATTRIBUTES:
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise CleanupCorruptionError("cleanup frozen root integer type drifted")
+            require_int63(value, field=f"cleanup frozen root {attribute}")
+            continue
+        if attribute in _FROZEN_ROOT_UUID_ATTRIBUTES:
+            require_uuid16(value, field=f"cleanup frozen root {attribute}")
+            continue
+        if attribute in _FROZEN_ROOT_DIGEST_ATTRIBUTES:
+            require_digest32(value, field=f"cleanup frozen root {attribute}")
+            continue
+        if attribute == "source_gallery_name":
+            require_bounded_bytes(
+                value,
+                field="cleanup frozen root source_gallery_name",
+                minimum=1,
+                maximum=255,
+            )
+            continue
+        raise CleanupCorruptionError(
+            f"cleanup root attribute {attribute!r} lacks a registered codec"
+        )
 
 
 def _identifier(value: str) -> str:
@@ -1985,6 +2090,106 @@ def _encode_static_scalar(value: _StaticScalar) -> bytes:
     raise CleanupCorruptionError("cleanup cursor contains an unsupported key type")
 
 
+def _encode_frozen_root_key(values: Sequence[_StaticScalar]) -> bytes:
+    if not values or len(values) > 255:
+        raise CleanupCorruptionError("cleanup frozen root key arity is invalid")
+    encoded = bytearray(b"\x01" + bytes((len(values),)))
+    for value in values:
+        encoded.extend(_encode_static_scalar(value))
+    return require_bounded_bytes(
+        bytes(encoded),
+        field="cleanup frozen root key",
+        maximum=_MAX_FROZEN_ROOT_KEY_BYTES,
+    )
+
+
+def _decode_static_scalars(
+    payload: bytes,
+    *,
+    offset: int,
+    count: int,
+    field: str,
+) -> tuple[_StaticScalar, ...]:
+    values: list[_StaticScalar] = []
+    for _ in range(count):
+        if offset >= len(payload):
+            raise CleanupCorruptionError(f"{field} is truncated")
+        tag = payload[offset : offset + 1]
+        offset += 1
+        if tag == b"i":
+            if offset + 8 > len(payload):
+                raise CleanupCorruptionError(f"{field} integer is truncated")
+            values.append(int.from_bytes(payload[offset : offset + 8], "big"))
+            offset += 8
+            continue
+        if tag not in {b"b", b"s"} or offset + 2 > len(payload):
+            raise CleanupCorruptionError(f"{field} tag is invalid")
+        size = int.from_bytes(payload[offset : offset + 2], "big")
+        offset += 2
+        if offset + size > len(payload):
+            raise CleanupCorruptionError(f"{field} bytes are truncated")
+        value = payload[offset : offset + size]
+        offset += size
+        try:
+            values.append(
+                value if tag == b"b" else value.decode("utf-8", errors="strict")
+            )
+        except UnicodeDecodeError as error:
+            raise CleanupCorruptionError(f"{field} text is not strict UTF-8") from error
+    if offset != len(payload):
+        raise CleanupCorruptionError(f"{field} has trailing bytes")
+    return tuple(values)
+
+
+def _decode_frozen_root_key(
+    value: object,
+    *,
+    root_arity: int,
+) -> tuple[_StaticScalar, ...]:
+    payload = require_bounded_bytes(
+        value,
+        field="cleanup frozen root key",
+        minimum=3,
+        maximum=_MAX_FROZEN_ROOT_KEY_BYTES,
+    )
+    if payload[0] != 1 or payload[1] != root_arity:
+        raise CleanupCorruptionError("cleanup frozen root key codec is invalid")
+    return _decode_static_scalars(
+        payload,
+        offset=2,
+        count=root_arity,
+        field="cleanup frozen root key",
+    )
+
+
+def _require_frozen_root_count(value: object) -> int:
+    count = require_int63(value, field="cleanup frozen_root_count")
+    if count > _MAX_BATCH_ROWS:
+        raise CleanupCorruptionError("cleanup frozen root set exceeds its hard cap")
+    return count
+
+
+def _frozen_root_set_sha256(
+    cleanup_id: bytes,
+    encoded_roots: Sequence[bytes],
+) -> bytes:
+    digest = hashlib.sha256()
+    digest.update(_FROZEN_ROOT_SET_DOMAIN)
+    digest.update(require_uuid16(cleanup_id, field="cleanup frozen root cleanup_id"))
+    ordered = tuple(sorted(encoded_roots))
+    digest.update(len(ordered).to_bytes(2, "big"))
+    for encoded in ordered:
+        value = require_bounded_bytes(
+            encoded,
+            field="cleanup frozen root key",
+            minimum=3,
+            maximum=_MAX_FROZEN_ROOT_KEY_BYTES,
+        )
+        digest.update(len(value).to_bytes(2, "big"))
+        digest.update(value)
+    return digest.digest()
+
+
 def _encode_static_cursor(index: int, values: Sequence[_StaticScalar]) -> bytes:
     if not 0 <= index <= 65535 or len(values) > 255:
         raise CleanupCorruptionError("cleanup static cursor header is invalid")
@@ -2012,31 +2217,12 @@ def _decode_static_cursor(
     count = payload[3]
     if count != root_arity + len(specs[index].primary_key):
         raise CleanupCorruptionError("cleanup static cursor arity is invalid")
-    offset = 4
-    values: list[_StaticScalar] = []
-    for _ in range(count):
-        if offset >= len(payload):
-            raise CleanupCorruptionError("cleanup static cursor is truncated")
-        tag = payload[offset : offset + 1]
-        offset += 1
-        if tag == b"i":
-            if offset + 8 > len(payload):
-                raise CleanupCorruptionError("cleanup integer cursor is truncated")
-            values.append(int.from_bytes(payload[offset : offset + 8], "big"))
-            offset += 8
-            continue
-        if tag not in {b"b", b"s"} or offset + 2 > len(payload):
-            raise CleanupCorruptionError("cleanup static cursor tag is invalid")
-        size = int.from_bytes(payload[offset : offset + 2], "big")
-        offset += 2
-        if offset + size > len(payload):
-            raise CleanupCorruptionError("cleanup byte cursor is truncated")
-        value = payload[offset : offset + size]
-        offset += size
-        values.append(value if tag == b"b" else value.decode("utf-8", errors="strict"))
-    if offset != len(payload):
-        raise CleanupCorruptionError("cleanup static cursor has trailing bytes")
-    return index, tuple(values)
+    return index, _decode_static_scalars(
+        payload,
+        offset=4,
+        count=count,
+        field="cleanup static cursor",
+    )
 
 
 def _keyset_predicate(columns: Sequence[str]) -> str:
@@ -2059,7 +2245,33 @@ def _keyset_parameters(values: Sequence[_StaticScalar]) -> tuple[_StaticScalar, 
 def _static_policy_parameters(
     plan: _StaticTargetPlan, cycle: CleanupCycle
 ) -> tuple[object, ...]:
+    if plan.kind is CleanupTargetKind.HASH_CACHE_OBSERVATION:
+        return (_hash_cache_cutoff(cycle),)
     return (cycle.cycle_cutoff_at,) if plan.uses_cutoff else ()
+
+
+def _static_shard_sql(plan: _StaticTargetPlan) -> str:
+    if plan.shard_width is None:
+        return f"MOD(r.{plan.shard_column}, 256) = %s"
+    return f"r.{plan.shard_column} >= %s AND (%s = 1 OR r.{plan.shard_column} < %s)"
+
+
+def _frozen_root_predicate(
+    plan: _StaticTargetPlan,
+    roots: Sequence[tuple[_StaticScalar, ...]],
+) -> tuple[str, tuple[_StaticScalar, ...]]:
+    if not roots:
+        return "0 = 1", ()
+    branches: list[str] = []
+    parameters: list[_StaticScalar] = []
+    for root in roots:
+        if len(root) != len(_frozen_root_attributes(plan)):
+            raise CleanupCorruptionError("cleanup frozen root arity drifted")
+        branches.append(
+            "(" + " AND ".join(f"r.{column} = %s" for column in plan.root_key) + ")"
+        )
+        parameters.extend(root[: len(plan.root_key)])
+    return " OR ".join(branches), tuple(parameters)
 
 
 def _static_select_sql(
@@ -2067,31 +2279,32 @@ def _static_select_sql(
     spec: _StaticDeleteSpec,
     *,
     exact: bool,
+    frozen_root_predicate: str,
     has_after: bool = False,
+    eligibility: str | None = None,
 ) -> str:
     root_columns = tuple(f"r.{column}" for column in plan.root_key)
     primary_columns = tuple(f"c.{column}" for column in spec.primary_key)
     ordered = root_columns + primary_columns
     select = ", ".join(ordered)
-    shard_sql = (
-        f"MOD(r.{plan.shard_column}, 256) = %s"
-        if plan.shard_width is None
-        else f"r.{plan.shard_column} >= %s AND (%s = 1 OR r.{plan.shard_column} < %s)"
-    )
+    shard_sql = _static_shard_sql(plan)
+    eligible = plan.eligibility if eligibility is None else eligibility
     if exact:
         exact_root = " AND ".join(f"{column} = %s" for column in root_columns)
         exact_pk = " AND ".join(f"{column} = %s" for column in primary_columns)
         return (
-            f"SELECT {select} FROM {spec.source} WHERE ({plan.eligibility}) "
+            f"SELECT {select} FROM {spec.source} WHERE ({eligible}) "
             f"AND ({spec.extra_predicate}) AND ({shard_sql}) "
+            f"AND ({frozen_root_predicate}) "
             f"AND {exact_root} AND {exact_pk}"
         )
     keyset_sql = ""
     if has_after:
         keyset_sql = f" AND ({_keyset_predicate(ordered)})"
     return (
-        f"SELECT {select} FROM {spec.source} WHERE ({plan.eligibility}) "
+        f"SELECT {select} FROM {spec.source} WHERE ({eligible}) "
         f"AND ({spec.extra_predicate}) AND ({shard_sql}) "
+        f"AND ({frozen_root_predicate}) "
         f"{keyset_sql} ORDER BY {select} LIMIT %s"
     )
 
@@ -2110,6 +2323,249 @@ def _static_shard_parameters(
     if not plan.variable_width_shard:
         upper += bytes(plan.shard_width - 1)
     return (lower, 0, upper)
+
+
+def _static_raw_responsibility_exists(
+    work: VNextUnitOfWork,
+    *,
+    plan: _StaticTargetPlan,
+    spec: _StaticDeleteSpec,
+    frozen_root_predicate: str,
+    frozen_root_parameters: tuple[_StaticScalar, ...],
+    shard_parameters: tuple[object, ...],
+    through: tuple[_StaticScalar, ...] | None = None,
+) -> bool:
+    ordered = tuple(f"r.{column}" for column in plan.root_key) + tuple(
+        f"c.{column}" for column in spec.primary_key
+    )
+    covered = ""
+    parameters: tuple[object, ...] = shard_parameters + frozen_root_parameters
+    if through is not None:
+        if len(through) != len(ordered):
+            raise CleanupCorruptionError(
+                "cleanup raw responsibility cursor arity drifted"
+            )
+        covered = f" AND NOT ({_keyset_predicate(ordered)})"
+        parameters += _keyset_parameters(through)
+    row = work.connector.fetch_one(
+        f"SELECT 1 FROM {spec.source} WHERE ({spec.extra_predicate}) "
+        f"AND ({_static_shard_sql(plan)}) "
+        f"AND ({frozen_root_predicate}){covered} LIMIT 1",
+        parameters,
+    )
+    if not row:
+        return False
+    if row != (1,):
+        raise CleanupCorruptionError(
+            "cleanup raw responsibility probe returned an invalid shape"
+        )
+    return True
+
+
+def _validate_static_cursor_covered_postcondition(
+    work: VNextUnitOfWork,
+    *,
+    plan: _StaticTargetPlan,
+    phase: str,
+    start_index: int,
+    start_values: tuple[_StaticScalar, ...] | None,
+    frozen_root_predicate: str,
+    frozen_root_parameters: tuple[_StaticScalar, ...],
+    shard_parameters: tuple[object, ...],
+) -> None:
+    """Reject reappearance in the current spec's durable keyset prefix."""
+
+    current_specs = plan.phases[phase]
+    if start_values is not None and _static_raw_responsibility_exists(
+        work,
+        plan=plan,
+        spec=current_specs[start_index],
+        frozen_root_predicate=frozen_root_predicate,
+        frozen_root_parameters=frozen_root_parameters,
+        shard_parameters=shard_parameters,
+        through=start_values,
+    ):
+        raise CleanupCorruptionError(
+            f"{plan.kind.value} cursor-covered cleanup row reappeared"
+        )
+
+
+def _require_static_terminal_responsibility_empty(
+    work: VNextUnitOfWork,
+    *,
+    plan: _StaticTargetPlan,
+    phase: str,
+    frozen_root_predicate: str,
+    frozen_root_parameters: tuple[_StaticScalar, ...],
+    shard_parameters: tuple[object, ...],
+) -> None:
+    phase_names = tuple(plan.phases)
+    try:
+        phase_index = phase_names.index(phase)
+    except ValueError as error:
+        raise CleanupCorruptionError(
+            "cleanup static phase is outside its registered plan"
+        ) from error
+    for checked_phase in phase_names[: phase_index + 1]:
+        for spec in plan.phases[checked_phase]:
+            if _static_raw_responsibility_exists(
+                work,
+                plan=plan,
+                spec=spec,
+                frozen_root_predicate=frozen_root_predicate,
+                frozen_root_parameters=frozen_root_parameters,
+                shard_parameters=shard_parameters,
+            ):
+                raise CleanupRetentionBlockedError(
+                    f"{plan.kind.value} still owns rows hidden by a retention predicate"
+                )
+
+
+def _freeze_static_cycle_roots(
+    work: VNextUnitOfWork,
+    cycle: CleanupCycle,
+) -> None:
+    plan = _STATIC_PLANS.get(cycle.target_kind)
+    if plan is None:
+        return
+    root_columns = ", ".join(f"r.{column}" for column in plan.root_key)
+    if plan.kind is CleanupTargetKind.PUBLICATION_COMMIT:
+        selected_columns = f"{root_columns}, committed.preparation_id"
+        root_source = (
+            f"{plan.root_table} AS r "
+            "JOIN catalog_publication_commits AS committed "
+            "ON committed.receipt_id = r.receipt_id"
+        )
+    else:
+        selected_columns = root_columns
+        root_source = f"{plan.root_table} AS r"
+    query = (
+        f"SELECT {selected_columns} FROM {root_source} "
+        f"WHERE ({plan.eligibility}) AND ({_static_shard_sql(plan)}) "
+        f"ORDER BY {selected_columns} LIMIT %s"
+    )
+    rows = work.connector.fetch_all(
+        query,
+        _static_policy_parameters(plan, cycle)
+        + _static_shard_parameters(plan, cycle)
+        + (cycle.max_rows_per_transaction,),
+    )
+    roots = tuple(_static_values(row) for row in rows)
+    for root in roots:
+        _validate_frozen_root_values(plan, root)
+    encoded_roots = tuple(_encode_frozen_root_key(root) for root in roots)
+    if len(set(encoded_roots)) != len(encoded_roots):
+        raise CleanupCorruptionError("cleanup frozen root query returned duplicates")
+    for encoded in encoded_roots:
+        work.connector.execute(
+            f"INSERT INTO {_FROZEN_ROOT_TABLE} (cleanup_id, frozen_root_key) "
+            "VALUES (%s, %s)",
+            (cycle.cleanup_id, encoded),
+        )
+    if not encoded_roots:
+        return
+    expected_empty_digest = _frozen_root_set_sha256(cycle.cleanup_id, ())
+    affected = work.connector.execute_affected(
+        f"UPDATE {_JOB_TABLE} "
+        "SET frozen_root_count = %s, frozen_root_set_sha256 = %s "
+        "WHERE cleanup_id = %s AND target_key = %s "
+        "AND cycle_generation = %s AND algorithm_version = %s "
+        "AND frozen_root_count = 0 AND frozen_root_set_sha256 = %s "
+        "AND state = 'OPEN'",
+        (
+            len(encoded_roots),
+            _frozen_root_set_sha256(cycle.cleanup_id, encoded_roots),
+            cycle.cleanup_id,
+            cycle.target_key,
+            cycle.cycle_generation,
+            _CLEANUP_ALGORITHM_VERSION,
+            expected_empty_digest,
+        ),
+    )
+    if affected != 1:
+        raise CleanupUnavailableError("cleanup frozen root seal changed")
+
+
+def _load_frozen_roots(
+    work: VNextUnitOfWork,
+    cycle: CleanupCycle,
+    plan: _StaticTargetPlan | None,
+    *,
+    expected_count: int | None = None,
+    expected_digest: bytes | None = None,
+) -> tuple[tuple[_StaticScalar, ...], ...]:
+    if expected_count is None or expected_digest is None:
+        job = work.connector.fetch_one(
+            f"SELECT frozen_root_count, frozen_root_set_sha256 "
+            f"FROM {_JOB_TABLE} WHERE cleanup_id = %s AND target_key = %s "
+            "AND cycle_generation = %s AND state = 'OPEN'",
+            (cycle.cleanup_id, cycle.target_key, cycle.cycle_generation),
+        )
+        if not job or len(job) != 2:
+            raise CleanupUnavailableError("OPEN cleanup frozen root seal is missing")
+        expected_count = _require_frozen_root_count(job[0])
+        expected_digest = require_digest32(
+            job[1], field="cleanup frozen_root_set_sha256"
+        )
+    else:
+        expected_count = _require_frozen_root_count(expected_count)
+        expected_digest = require_digest32(
+            expected_digest, field="cleanup frozen_root_set_sha256"
+        )
+    if expected_count > cycle.max_rows_per_transaction:
+        raise CleanupCorruptionError("cleanup frozen root count exceeds cycle policy")
+    rows = work.connector.fetch_all(
+        f"SELECT frozen_root_key FROM {_FROZEN_ROOT_TABLE} "
+        "WHERE cleanup_id = %s ORDER BY frozen_root_key LIMIT %s",
+        (cycle.cleanup_id, cycle.max_rows_per_transaction + 1),
+    )
+    if len(rows) != expected_count:
+        raise CleanupCorruptionError("cleanup frozen root membership count drifted")
+    encoded_roots: list[bytes] = []
+    roots: list[tuple[_StaticScalar, ...]] = []
+    for row in rows:
+        if len(row) != 1:
+            raise CleanupCorruptionError("cleanup frozen root row shape is invalid")
+        encoded = require_bounded_bytes(
+            row[0],
+            field="cleanup frozen root key",
+            minimum=3,
+            maximum=_MAX_FROZEN_ROOT_KEY_BYTES,
+        )
+        encoded_roots.append(encoded)
+        if plan is None:
+            raise CleanupCorruptionError(
+                "non-static cleanup cycle retained a frozen root"
+            )
+        root = _decode_frozen_root_key(
+            encoded,
+            root_arity=len(_frozen_root_attributes(plan)),
+        )
+        _validate_frozen_root_values(plan, root)
+        if _encode_frozen_root_key(root) != encoded:
+            raise CleanupCorruptionError("cleanup frozen root key is non-canonical")
+        roots.append(root)
+    if len(set(encoded_roots)) != expected_count or len(set(roots)) != expected_count:
+        raise CleanupCorruptionError("cleanup frozen root membership is duplicated")
+    if len(roots) != expected_count:
+        raise CleanupCorruptionError("cleanup decoded frozen root count drifted")
+    if _frozen_root_set_sha256(cycle.cleanup_id, encoded_roots) != expected_digest:
+        raise CleanupCorruptionError("cleanup frozen root seal digest drifted")
+    if plan is None and expected_count != 0:
+        raise CleanupCorruptionError("non-static cleanup has frozen root membership")
+    return tuple(roots)
+
+
+def _require_no_frozen_roots(work: VNextUnitOfWork, cleanup_id: bytes) -> None:
+    row = work.connector.fetch_one(
+        f"SELECT 1 FROM {_FROZEN_ROOT_TABLE} WHERE cleanup_id = %s LIMIT 1",
+        (cleanup_id,),
+    )
+    if not row:
+        return
+    if row != (1,):
+        raise CleanupCorruptionError("cleanup frozen root probe is malformed")
+    raise CleanupCorruptionError("COMPLETE cleanup retains frozen root membership")
 
 
 def _static_values(row: Sequence[object]) -> tuple[_StaticScalar, ...]:
@@ -2136,13 +2592,46 @@ def _run_static_phase(
     cursor: bytes,
     plan: _StaticTargetPlan,
     phase: str,
+    *,
+    eligibility: str | None = None,
+    policy_parameters: tuple[object, ...] | None = None,
 ) -> _Mutation:
     specs = plan.phases[phase]
+    frozen_roots = _load_frozen_roots(work, cycle, plan)
     start_index, start_values = _decode_static_cursor(cursor, specs, len(plan.root_key))
+    _validate_terminal_staging_cleanup_roots(
+        work,
+        kind=plan.kind,
+        phase=phase,
+        frozen_roots=frozen_roots,
+        cursor_relation_index=start_index,
+        cursor_values=start_values,
+    )
+    request_budget_retained: int | None = None
+    if phase in {"GOS_REQUEST_IDENTITY", "GO_STAGING_REQUEST_IDENTITY"}:
+        try:
+            request_budget_retained = lock_gallery_staging_request_budget(work)
+        except GalleryStagingBudgetCorruptionError as error:
+            raise CleanupCorruptionError(str(error)) from error
+    frozen_predicate, frozen_parameters = _frozen_root_predicate(plan, frozen_roots)
     deleted: list[bytes] = []
     next_cursor = cursor
-    policy = _static_policy_parameters(plan, cycle)
+    policy = (
+        _static_policy_parameters(plan, cycle)
+        if policy_parameters is None
+        else policy_parameters
+    )
     shard = _static_shard_parameters(plan, cycle)
+    _validate_static_cursor_covered_postcondition(
+        work,
+        plan=plan,
+        phase=phase,
+        start_index=start_index,
+        start_values=start_values,
+        frozen_root_predicate=frozen_predicate,
+        frozen_root_parameters=frozen_parameters,
+        shard_parameters=shard,
+    )
     for index in range(start_index, len(specs)):
         spec = specs[index]
         deleted_primary_keys: set[tuple[_StaticScalar, ...]] = set()
@@ -2153,9 +2642,14 @@ def _run_static_phase(
         while len(deleted) < cycle.max_rows_per_transaction:
             remaining = cycle.max_rows_per_transaction - len(deleted)
             query = _static_select_sql(
-                plan, spec, exact=False, has_after=after is not None
+                plan,
+                spec,
+                exact=False,
+                frozen_root_predicate=frozen_predicate,
+                has_after=after is not None,
+                eligibility=eligibility,
             )
-            parameters: tuple[object, ...] = policy + shard
+            parameters: tuple[object, ...] = policy + shard + frozen_parameters
             if after is not None:
                 parameters += _keyset_parameters(after)
             parameters += (remaining,)
@@ -2186,8 +2680,14 @@ def _run_static_phase(
                     # exactly once while still advancing past every joined
                     # root/key tuple in the deterministic cursor order.
                     continue
-                exact_query = _static_select_sql(plan, spec, exact=True)
-                exact_parameters = policy + shard + root + primary
+                exact_query = _static_select_sql(
+                    plan,
+                    spec,
+                    exact=True,
+                    frozen_root_predicate=frozen_predicate,
+                    eligibility=eligibility,
+                )
+                exact_parameters = policy + shard + frozen_parameters + root + primary
                 lock_key = encode_lock_key(
                     "cleanup-static",
                     plan.kind.value,
@@ -2234,7 +2734,139 @@ def _run_static_phase(
                 candidates
             ):
                 break
+    if request_budget_retained is not None and deleted:
+        try:
+            release_gallery_staging_request_budget(
+                work,
+                retained_request_count=request_budget_retained,
+                deleted_count=len(deleted),
+            )
+        except GalleryStagingBudgetCorruptionError as error:
+            raise CleanupCorruptionError(str(error)) from error
+    if not deleted:
+        _require_static_terminal_responsibility_empty(
+            work,
+            plan=plan,
+            phase=phase,
+            frozen_root_predicate=frozen_predicate,
+            frozen_root_parameters=frozen_parameters,
+            shard_parameters=shard,
+        )
     return _Mutation(next_cursor, tuple(deleted))
+
+
+def _validate_terminal_staging_cleanup_roots(
+    work: VNextUnitOfWork,
+    *,
+    kind: CleanupTargetKind,
+    phase: str,
+    frozen_roots: tuple[tuple[_StaticScalar, ...], ...],
+    cursor_relation_index: int,
+    cursor_values: tuple[_StaticScalar, ...] | None,
+) -> None:
+    """Fail closed before a generic transaction deletes terminal staging data."""
+
+    staging_ids: list[bytes] = []
+    if kind is CleanupTargetKind.GALLERY_OBSERVATION_STAGING:
+        for root in frozen_roots:
+            if len(root) != 1:
+                raise CleanupCorruptionError(
+                    "staging cleanup frozen root has an invalid shape"
+                )
+            staging_ids.append(require_uuid16(root[0], field="cleanup staging_id"))
+    elif kind is CleanupTargetKind.GALLERY_OBSERVATION and phase.startswith(
+        "GO_STAGING_"
+    ):
+        for root in frozen_roots:
+            if len(root) != 2:
+                raise CleanupCorruptionError(
+                    "observation cleanup frozen root has an invalid shape"
+                )
+            gallery_id = require_positive_int63(
+                root[0], field="cleanup staging gallery_id"
+            )
+            observation_id = require_positive_int63(
+                root[1], field="cleanup staging observation_id"
+            )
+            rows = work.connector.fetch_all(
+                "SELECT staging_id FROM "
+                "operational_gallery_observation_stagings "
+                "WHERE gallery_id = %s AND observation_id = %s "
+                "AND state IN ('SEALED', 'REUSED', 'RETIRING_SEALED', "
+                "'RETIRING_REUSED') ORDER BY staging_id LIMIT 2",
+                (gallery_id, observation_id),
+            )
+            if len(rows) > 1:
+                raise CleanupCorruptionError(
+                    "observation cleanup found multiple terminal staging roots"
+                )
+            for row in rows:
+                if len(row) != 1:
+                    raise CleanupCorruptionError(
+                        "observation cleanup staging probe has an invalid shape"
+                    )
+                staging_ids.append(require_uuid16(row[0], field="cleanup staging_id"))
+    else:
+        return
+
+    try:
+        for staging_id in staging_ids:
+            authority = validate_terminal_staging_retirement_authority(
+                work.connector,
+                staging_id=staging_id,
+            )
+            if (
+                kind is CleanupTargetKind.GALLERY_OBSERVATION_STAGING
+                and authority is None
+                and not _gos_root_checkpoint_covers_staging(
+                    staging_id=staging_id,
+                    phase=phase,
+                    frozen_roots=frozen_roots,
+                    cursor_relation_index=cursor_relation_index,
+                    cursor_values=cursor_values,
+                )
+            ):
+                raise CleanupCorruptionError(
+                    "staging cleanup frozen root disappeared before its batch"
+                )
+    except (
+        GalleryStagingConflictError,
+        GalleryStagingNotReadyError,
+        TypeError,
+        ValueError,
+    ) as error:
+        raise CleanupCorruptionError(
+            "terminal staging retirement authority is corrupt"
+        ) from error
+
+
+def _gos_root_checkpoint_covers_staging(
+    *,
+    staging_id: bytes,
+    phase: str,
+    frozen_roots: tuple[tuple[_StaticScalar, ...], ...],
+    cursor_relation_index: int,
+    cursor_values: tuple[_StaticScalar, ...] | None,
+) -> bool:
+    """Prove that an absent GOS header was deleted by a committed ROOT batch."""
+
+    if phase != "GOS_ROOT" or cursor_values is None:
+        return False
+    if cursor_relation_index != 0 or len(cursor_values) != 2:
+        raise CleanupCorruptionError("staging ROOT checkpoint cursor is malformed")
+    cursor_root = require_uuid16(cursor_values[0], field="staging ROOT checkpoint root")
+    cursor_primary = require_uuid16(
+        cursor_values[1], field="staging ROOT checkpoint primary key"
+    )
+    if cursor_root != cursor_primary or (cursor_root,) not in frozen_roots:
+        raise CleanupCorruptionError(
+            "staging ROOT checkpoint cursor is outside its frozen root set"
+        )
+    # GOS_ROOT is the strategy's sole relation and orders both fixed-width keys
+    # bytewise.  The durable keyset cursor therefore proves that every frozen
+    # staging key through cursor_root was selected and deleted in an earlier
+    # atomic batch.  A missing later key still fails closed.
+    return staging_id <= cursor_root
 
 
 def _static_mutator(kind: CleanupTargetKind, phase: str) -> _Mutator:
@@ -2246,13 +2878,915 @@ def _static_mutator(kind: CleanupTargetKind, phase: str) -> _Mutator:
     return mutate
 
 
-_SOURCE_BUILD_ELIGIBILITY = """
+def _source_build_mutator(phase: str) -> _Mutator:
+    def mutate(work: VNextUnitOfWork, cycle: CleanupCycle, cursor: bytes) -> _Mutation:
+        if cycle.target_kind is not CleanupTargetKind.SOURCE_BUILD:
+            raise CleanupCorruptionError("source-build cleanup kind drifted")
+        plan = _STATIC_PLANS[CleanupTargetKind.SOURCE_BUILD]
+        if phase != "SB_ROOT":
+            return _run_static_phase(work, cycle, cursor, plan, phase)
+        return _run_static_phase(
+            work,
+            cycle,
+            cursor,
+            plan,
+            phase,
+            eligibility=_SOURCE_BUILD_AFTER_STATE_ELIGIBILITY,
+            policy_parameters=(cycle.cleanup_id,),
+        )
+
+    return mutate
+
+
+def _analysis_run_mutator(phase: str) -> _Mutator:
+    def mutate(work: VNextUnitOfWork, cycle: CleanupCycle, cursor: bytes) -> _Mutation:
+        if cycle.target_kind is not CleanupTargetKind.ANALYSIS_RUN:
+            raise CleanupCorruptionError("analysis-run cleanup kind drifted")
+        plan = _STATIC_PLANS[CleanupTargetKind.ANALYSIS_RUN]
+        if phase != "AR_ROOT":
+            return _run_static_phase(work, cycle, cursor, plan, phase)
+        return _run_static_phase(
+            work,
+            cycle,
+            cursor,
+            plan,
+            phase,
+            eligibility=_ANALYSIS_RUN_AFTER_STATE_ELIGIBILITY,
+            policy_parameters=(cycle.cleanup_id,),
+        )
+
+    return mutate
+
+
+def _publication_commit_mutator(phase: str) -> _Mutator:
+    def mutate(work: VNextUnitOfWork, cycle: CleanupCycle, cursor: bytes) -> _Mutation:
+        if cycle.target_kind is not CleanupTargetKind.PUBLICATION_COMMIT:
+            raise CleanupCorruptionError("publication-commit cleanup kind drifted")
+        plan = _STATIC_PLANS[CleanupTargetKind.PUBLICATION_COMMIT]
+        if phase in {
+            "PCOM_RELEASE_BUILD_BASE",
+            "PCOM_PREPARATION_BINDING",
+            "PCOM_PREPARATION_BATCH",
+            "PCOM_PREPARATION_CHECKPOINT",
+            "PCOM_PREPARATION",
+            "PCOM_FINALIZATION_MARKER",
+            "PCOM_FINALIZATION_BATCH",
+        }:
+            _require_publication_commit_frozen_preparation_mapping(
+                work,
+                cycle=cycle,
+            )
+        if phase == "PCOM_RELEASE_BUILD_BASE":
+            return _run_static_phase(work, cycle, cursor, plan, phase)
+        if phase in {
+            "PCOM_PREPARATION_BINDING",
+            "PCOM_PREPARATION_BATCH",
+            "PCOM_PREPARATION_CHECKPOINT",
+            "PCOM_PREPARATION",
+        }:
+            _validate_publication_commit_preparation_authority(
+                work,
+                cycle=cycle,
+                phase=phase,
+                cursor=cursor,
+            )
+        if phase == "PCOM_EVENT":
+            return _run_publication_commit_event_phase(work, cycle, cursor)
+        if phase == "PCOM_COMMIT_EFFECT_ROOT":
+            return _run_publication_commit_effect_root_phase(work, cycle, cursor)
+        if phase == "PCOM_PREPARATION_BINDING":
+            eligibility = _PUBLICATION_COMMIT_AFTER_BUILD_BASE_ELIGIBILITY
+        elif phase == "PCOM_PREPARATION_BATCH":
+            eligibility = _PUBLICATION_COMMIT_AFTER_PREPARATION_BINDING_ELIGIBILITY
+        elif phase == "PCOM_PREPARATION_CHECKPOINT":
+            eligibility = _PUBLICATION_COMMIT_AFTER_PREPARATION_BATCH_ELIGIBILITY
+        elif phase == "PCOM_PREPARATION":
+            eligibility = _PUBLICATION_COMMIT_AFTER_PREPARATION_CHECKPOINT_ELIGIBILITY
+        elif phase == "PCOM_FINALIZATION_MARKER":
+            eligibility = _PUBLICATION_COMMIT_AFTER_EVENT_ELIGIBILITY
+        elif phase == "PCOM_FINALIZATION_BATCH":
+            eligibility = _PUBLICATION_COMMIT_AFTER_MARKER_ELIGIBILITY
+        elif phase == "PCOM_FINALIZATION_CHECKPOINT":
+            eligibility = _PUBLICATION_COMMIT_AFTER_COMPOUND_ROOT_ELIGIBILITY
+        else:
+            eligibility = _PUBLICATION_COMMIT_AFTER_CHECKPOINT_ELIGIBILITY
+        return _run_static_phase(
+            work,
+            cycle,
+            cursor,
+            plan,
+            phase,
+            eligibility=eligibility,
+            policy_parameters=(cycle.cleanup_id,),
+        )
+
+    return mutate
+
+
+def _require_publication_commit_frozen_preparation_mapping(
+    work: VNextUnitOfWork,
+    *,
+    cycle: CleanupCycle,
+) -> None:
+    plan = _STATIC_PLANS[CleanupTargetKind.PUBLICATION_COMMIT]
+    for root in _load_frozen_roots(work, cycle, plan):
+        receipt_id = require_uuid16(
+            root[0],
+            field="publication-commit frozen receipt_id",
+        )
+        preparation_id = require_uuid16(
+            root[1],
+            field="publication-commit frozen preparation_id",
+        )
+        if work.connector.fetch_one(
+            "SELECT preparation_id FROM catalog_publication_commits "
+            "WHERE receipt_id = %s",
+            (receipt_id,),
+        ) != (preparation_id,):
+            raise CleanupCorruptionError(
+                "publication-commit preparation differs from its frozen authority"
+            )
+
+
+def _validate_publication_commit_preparation_authority(
+    work: VNextUnitOfWork,
+    *,
+    cycle: CleanupCycle,
+    phase: str,
+    cursor: bytes,
+) -> None:
+    """Validate the exact commit-owned preparation control family before DML."""
+
+    plan = _STATIC_PLANS[CleanupTargetKind.PUBLICATION_COMMIT]
+    specs = plan.phases[phase]
+    relation_index, cursor_values = _decode_static_cursor(
+        cursor,
+        specs,
+        len(plan.root_key),
+    )
+    frozen_roots = _load_frozen_roots(work, cycle, plan)
+    for root in frozen_roots:
+        if len(root) != 2:
+            raise CleanupCorruptionError(
+                "publication-commit frozen root has an invalid shape"
+            )
+        receipt_id = require_uuid16(
+            root[0],
+            field="publication-commit cleanup receipt_id",
+        )
+        frozen_preparation_id = require_uuid16(
+            root[1],
+            field="publication-commit cleanup preparation_id",
+        )
+        row = work.connector.fetch_one(
+            "SELECT committed.candidate_id, committed.preparation_id, "
+            "committed.operational_policy_id, preparation.preparation_id, "
+            "preparation.state, preparation.operational_policy_id, "
+            "by_candidate.candidate_id, by_candidate.preparation_id, "
+            "by_preparation.candidate_id, by_preparation.preparation_id "
+            "FROM catalog_publication_commit_anchors AS anchor "
+            "LEFT JOIN catalog_publication_commits AS committed "
+            "ON committed.receipt_id = anchor.receipt_id "
+            "LEFT JOIN operational_operational_preparations AS preparation "
+            "ON preparation.preparation_id = committed.preparation_id "
+            "LEFT JOIN operational_publication_candidate_preparations AS "
+            "by_candidate ON by_candidate.candidate_id = committed.candidate_id "
+            "LEFT JOIN operational_publication_candidate_preparations AS "
+            "by_preparation "
+            "ON by_preparation.preparation_id = committed.preparation_id "
+            "WHERE anchor.receipt_id = %s",
+            (receipt_id,),
+        )
+        if not row or len(row) != 10:
+            raise CleanupCorruptionError(
+                "publication-commit preparation authority is incomplete"
+            )
+        try:
+            candidate_id = require_uuid16(
+                row[0], field="publication-commit preparation candidate_id"
+            )
+            preparation_id = require_uuid16(
+                row[1], field="publication-commit preparation_id"
+            )
+            operational_policy_id = require_positive_int63(
+                row[2], field="publication-commit operational_policy_id"
+            )
+        except (TypeError, ValueError) as error:
+            raise CleanupCorruptionError(
+                "publication-commit preparation identity is malformed"
+            ) from error
+        if preparation_id != frozen_preparation_id:
+            raise CleanupCorruptionError(
+                "publication-commit preparation differs from its frozen authority"
+            )
+
+        candidate_binding = row[6:8]
+        preparation_binding = row[8:10]
+        absent_binding = (None, None)
+        exact_binding = (candidate_id, preparation_id)
+        if candidate_binding not in {absent_binding, exact_binding} or (
+            preparation_binding not in {absent_binding, exact_binding}
+        ):
+            raise CleanupCorruptionError(
+                "publication-commit candidate/preparation binding differs"
+            )
+        if candidate_binding != preparation_binding:
+            raise CleanupCorruptionError(
+                "publication-commit candidate/preparation binding is partial"
+            )
+        if phase == "PCOM_PREPARATION_BINDING":
+            if candidate_binding == absent_binding and not (
+                _publication_commit_preparation_cursor_covers_root(
+                    receipt_id=receipt_id,
+                    candidate_id=candidate_id,
+                    preparation_id=preparation_id,
+                    phase=phase,
+                    relation_index=relation_index,
+                    cursor_values=cursor_values,
+                )
+            ):
+                raise CleanupCorruptionError(
+                    "publication-commit preparation binding disappeared before its phase"
+                )
+        elif candidate_binding != absent_binding:
+            raise CleanupCorruptionError(
+                "publication-commit preparation binding survived its cleanup phase"
+            )
+
+        if row[3:6] == (preparation_id, "COMPLETE", operational_policy_id):
+            continue
+        if any(value is not None for value in row[3:6]):
+            raise CleanupCorruptionError(
+                "publication-commit preparation state or identity differs"
+            )
+        if not _publication_commit_preparation_cursor_covers_root(
+            receipt_id=receipt_id,
+            candidate_id=candidate_id,
+            preparation_id=preparation_id,
+            phase=phase,
+            relation_index=relation_index,
+            cursor_values=cursor_values,
+        ):
+            raise CleanupCorruptionError(
+                "publication-commit preparation disappeared before its root phase"
+            )
+
+
+def _publication_commit_preparation_cursor_covers_root(
+    *,
+    receipt_id: bytes,
+    candidate_id: bytes,
+    preparation_id: bytes,
+    phase: str,
+    relation_index: int,
+    cursor_values: tuple[_StaticScalar, ...] | None,
+) -> bool:
+    if cursor_values is None:
+        return False
+    if relation_index != 0:
+        raise CleanupCorruptionError(
+            "publication-commit preparation ROOT cursor is malformed"
+        )
+    expected_arity = 3 if phase == "PCOM_PREPARATION_BINDING" else 2
+    if (
+        phase not in {"PCOM_PREPARATION_BINDING", "PCOM_PREPARATION"}
+        or len(cursor_values) != expected_arity
+    ):
+        raise CleanupCorruptionError(
+            "publication-commit preparation ROOT cursor is malformed"
+        )
+    cursor_receipt = require_uuid16(
+        cursor_values[0], field="publication-commit preparation cursor receipt_id"
+    )
+    if phase == "PCOM_PREPARATION_BINDING":
+        cursor_candidate = require_uuid16(
+            cursor_values[1],
+            field="publication-commit preparation cursor candidate_id",
+        )
+        cursor_preparation = require_uuid16(
+            cursor_values[2],
+            field="publication-commit preparation cursor preparation_id",
+        )
+        cursor_identity_matches = (
+            candidate_id == cursor_candidate and preparation_id == cursor_preparation
+        )
+    else:
+        cursor_preparation = require_uuid16(
+            cursor_values[1],
+            field="publication-commit preparation cursor preparation_id",
+        )
+        cursor_identity_matches = preparation_id == cursor_preparation
+    return receipt_id < cursor_receipt or (
+        receipt_id == cursor_receipt and cursor_identity_matches
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _PublicationCommitEventCandidate:
+    receipt_id: bytes
+    preparation_id: bytes
+    sequence_no: int
+    event_id: bytes
+    event_type: str
+
+    @property
+    def cursor_values(self) -> tuple[_StaticScalar, ...]:
+        return (self.receipt_id, self.preparation_id, self.sequence_no)
+
+
+def _publication_commit_event_cursor(
+    cursor: bytes,
+    *,
+    plan: _StaticTargetPlan,
+) -> tuple[bytes, bytes, int] | None:
+    spec = plan.phases["PCOM_EVENT"]
+    relation_index, values = _decode_static_cursor(
+        cursor,
+        spec,
+        len(plan.root_key),
+    )
+    if values is None:
+        return None
+    if relation_index != 0 or len(values) != 3:
+        raise CleanupCorruptionError("publication-commit EVENT cursor is malformed")
+    return (
+        require_uuid16(values[0], field="PCOM EVENT cursor receipt_id"),
+        require_uuid16(values[1], field="PCOM EVENT cursor preparation_id"),
+        require_int63(values[2], field="PCOM EVENT cursor sequence_no"),
+    )
+
+
+def _publication_commit_event_authority(
+    work: VNextUnitOfWork,
+    *,
+    cleanup_id: bytes,
+    receipt_id: bytes,
+) -> tuple[bytes, int]:
+    row = work.connector.fetch_one(
+        "SELECT committed.preparation_id, seal.event_count "
+        "FROM catalog_publication_commit_anchors AS r "
+        "JOIN catalog_publication_commits AS committed "
+        "ON committed.receipt_id = r.receipt_id "
+        "JOIN operational_operational_preparation_effect_seals AS seal "
+        "ON seal.preparation_id = committed.preparation_id "
+        "JOIN operational_operational_event_streams AS stream "
+        "ON stream.preparation_id = committed.preparation_id "
+        f"WHERE ({_PUBLICATION_COMMIT_EVENT_ELIGIBILITY}) "
+        "AND r.receipt_id = %s",
+        (cleanup_id, receipt_id),
+    )
+    if not row or len(row) != 2:
+        raise CleanupRetentionBlockedError("PUBLICATION_COMMIT EVENT authority changed")
+    return (
+        require_uuid16(row[0], field="PCOM EVENT preparation_id"),
+        require_int63(row[1], field="PCOM EVENT event_count"),
+    )
+
+
+def _validate_publication_commit_event_row(
+    row: Sequence[object],
+    *,
+    receipt_id: bytes,
+    preparation_id: bytes,
+    expected_sequence_no: int,
+) -> _PublicationCommitEventCandidate:
+    if len(row) != 5:
+        raise CleanupCorruptionError("PCOM EVENT row shape is invalid")
+    sequence_no = require_int63(row[0], field="PCOM EVENT sequence_no")
+    if sequence_no != expected_sequence_no:
+        raise CleanupCorruptionError(
+            "PCOM EVENT sequence coordinates are not contiguous"
+        )
+    event_id = require_uuid16(row[1], field="PCOM EVENT event_id")
+    event_type = _as_text(row[2], field="PCOM EVENT event_type")
+    removed_event_id = row[3]
+    deletion_event_id = row[4]
+    if event_type == "REMOVED_GID":
+        if removed_event_id != event_id or deletion_event_id is not None:
+            raise CleanupCorruptionError(
+                "PCOM EVENT lacks its exact REMOVED_GID subtype"
+            )
+    elif event_type == "DELETION_CONSUMPTION":
+        if deletion_event_id != event_id or removed_event_id is not None:
+            raise CleanupCorruptionError(
+                "PCOM EVENT lacks its exact DELETION_CONSUMPTION subtype"
+            )
+    else:
+        raise CleanupCorruptionError("PCOM EVENT type is outside the closed registry")
+    return _PublicationCommitEventCandidate(
+        receipt_id,
+        preparation_id,
+        sequence_no,
+        event_id,
+        event_type,
+    )
+
+
+def _run_publication_commit_event_phase(
+    work: VNextUnitOfWork,
+    cycle: CleanupCycle,
+    cursor: bytes,
+) -> _Mutation:
+    """Atomically retire each exact subtype/base-event coordinate."""
+
+    plan = _STATIC_PLANS[CleanupTargetKind.PUBLICATION_COMMIT]
+    frozen_roots = _load_frozen_roots(work, cycle, plan)
+    event_cursor = _publication_commit_event_cursor(cursor, plan=plan)
+    frozen_authorities = tuple(
+        (
+            require_uuid16(root[0], field="PCOM EVENT frozen receipt_id"),
+            require_uuid16(root[1], field="PCOM EVENT frozen preparation_id"),
+        )
+        for root in frozen_roots
+    )
+    frozen_receipts = tuple(receipt_id for receipt_id, _ in frozen_authorities)
+    if event_cursor is not None and event_cursor[0] not in frozen_receipts:
+        raise CleanupCorruptionError("PCOM EVENT cursor is outside its frozen roots")
+
+    candidates: list[_PublicationCommitEventCandidate] = []
+    remaining = cycle.max_rows_per_transaction
+    for receipt_id, frozen_preparation_id in frozen_authorities:
+        preparation_id, event_count = _publication_commit_event_authority(
+            work,
+            cleanup_id=cycle.cleanup_id,
+            receipt_id=receipt_id,
+        )
+        if preparation_id != frozen_preparation_id:
+            raise CleanupCorruptionError(
+                "PCOM EVENT preparation differs from its frozen authority"
+            )
+        start_sequence = 0
+        if event_cursor is not None:
+            cursor_receipt, cursor_preparation, cursor_sequence = event_cursor
+            if receipt_id < cursor_receipt:
+                start_sequence = event_count
+            elif receipt_id == cursor_receipt:
+                if (
+                    cursor_preparation != preparation_id
+                    or cursor_sequence >= event_count
+                ):
+                    raise CleanupCorruptionError(
+                        "PCOM EVENT cursor identity exceeds its sealed authority"
+                    )
+                start_sequence = cursor_sequence + 1
+
+        if start_sequence:
+            covered = work.connector.fetch_one(
+                "SELECT 1 FROM operational_operational_events "
+                "WHERE preparation_id = %s AND sequence_no < %s LIMIT 1",
+                (preparation_id, start_sequence),
+            )
+            if covered:
+                if covered != (1,):
+                    raise CleanupCorruptionError(
+                        "PCOM EVENT covered-coordinate probe is malformed"
+                    )
+                raise CleanupCorruptionError(
+                    "PCOM EVENT cursor-covered coordinate reappeared"
+                )
+
+        if start_sequence == event_count:
+            extra = work.connector.fetch_one(
+                "SELECT 1 FROM operational_operational_events "
+                "WHERE preparation_id = %s AND sequence_no >= %s LIMIT 1",
+                (preparation_id, event_count),
+            )
+            if extra:
+                raise CleanupCorruptionError(
+                    "PCOM EVENT row exceeds the immutable seal count"
+                )
+            continue
+        if start_sequence > event_count:
+            raise CleanupCorruptionError("PCOM EVENT cursor exceeds the seal count")
+        if remaining == 0:
+            continue
+
+        rows = work.connector.fetch_all(
+            "SELECT event.sequence_no, event.event_id, event.event_type, "
+            "removed.event_id, consumed.event_id "
+            "FROM operational_operational_events AS event "
+            "LEFT JOIN operational_operational_removed_gid_events AS removed "
+            "ON removed.event_id = event.event_id "
+            "LEFT JOIN operational_operational_deletion_consumption_events AS consumed "
+            "ON consumed.event_id = event.event_id "
+            "WHERE event.preparation_id = %s AND event.sequence_no >= %s "
+            "ORDER BY event.sequence_no LIMIT %s",
+            (preparation_id, start_sequence, remaining),
+        )
+        if not rows:
+            raise CleanupCorruptionError(
+                "PCOM EVENT has an uncovered sealed sequence gap"
+            )
+        expected = start_sequence
+        for row in rows:
+            candidate = _validate_publication_commit_event_row(
+                row,
+                receipt_id=receipt_id,
+                preparation_id=preparation_id,
+                expected_sequence_no=expected,
+            )
+            if candidate.sequence_no >= event_count:
+                raise CleanupCorruptionError(
+                    "PCOM EVENT row exceeds the immutable seal count"
+                )
+            candidates.append(candidate)
+            expected += 1
+        if len(rows) < remaining and expected != event_count:
+            raise CleanupCorruptionError(
+                "PCOM EVENT has an uncovered sealed sequence gap"
+            )
+        remaining -= len(rows)
+
+    for candidate in sorted(
+        candidates,
+        key=lambda value: encode_lock_key(
+            "cleanup-static",
+            CleanupTargetKind.PUBLICATION_COMMIT.value,
+            "PCOM_EVENT",
+            0,
+            *value.cursor_values,
+        ),
+    ):
+        locked = work.lock_row(
+            LockRank.CHILD,
+            encode_lock_key(
+                "cleanup-static",
+                CleanupTargetKind.PUBLICATION_COMMIT.value,
+                "PCOM_EVENT",
+                0,
+                *candidate.cursor_values,
+            ),
+            "SELECT event.sequence_no, event.event_id, event.event_type, "
+            "removed.event_id, consumed.event_id "
+            "FROM operational_operational_events AS event "
+            "LEFT JOIN operational_operational_removed_gid_events AS removed "
+            "ON removed.event_id = event.event_id "
+            "LEFT JOIN operational_operational_deletion_consumption_events AS consumed "
+            "ON consumed.event_id = event.event_id "
+            "WHERE event.preparation_id = %s AND event.sequence_no = %s",
+            (candidate.preparation_id, candidate.sequence_no),
+        )
+        exact = _validate_publication_commit_event_row(
+            locked,
+            receipt_id=candidate.receipt_id,
+            preparation_id=candidate.preparation_id,
+            expected_sequence_no=candidate.sequence_no,
+        )
+        if exact != candidate:
+            raise CleanupRetentionBlockedError("PCOM EVENT coordinate changed")
+        subtype_table = (
+            "operational_operational_removed_gid_events"
+            if candidate.event_type == "REMOVED_GID"
+            else "operational_operational_deletion_consumption_events"
+        )
+        if (
+            work.connector.execute_affected(
+                f"DELETE FROM {subtype_table} WHERE event_id = %s",
+                (candidate.event_id,),
+            )
+            != 1
+        ):
+            raise CleanupUnavailableError("PCOM EVENT subtype changed")
+        if (
+            work.connector.execute_affected(
+                "DELETE FROM operational_operational_events "
+                "WHERE event_id = %s AND preparation_id = %s AND sequence_no = %s",
+                (
+                    candidate.event_id,
+                    candidate.preparation_id,
+                    candidate.sequence_no,
+                ),
+            )
+            != 1
+        ):
+            raise CleanupUnavailableError("PCOM EVENT base row changed")
+
+    row_keys = tuple(
+        _encode_static_cursor(0, candidate.cursor_values) for candidate in candidates
+    )
+    next_cursor = row_keys[-1] if row_keys else cursor
+    return _Mutation(next_cursor, row_keys)
+
+
+def _run_publication_commit_effect_root_phase(
+    work: VNextUnitOfWork,
+    cycle: CleanupCycle,
+    cursor: bytes,
+) -> _Mutation:
+    """Delete every frozen commit/seal/stream triple in one bounded transaction."""
+
+    plan = _STATIC_PLANS[CleanupTargetKind.PUBLICATION_COMMIT]
+    specs = plan.phases["PCOM_COMMIT_EFFECT_ROOT"]
+    relation_index, cursor_values = _decode_static_cursor(
+        cursor,
+        specs,
+        len(plan.root_key),
+    )
+    frozen_roots = _load_frozen_roots(work, cycle, plan)
+    frozen_authorities = tuple(
+        (
+            require_uuid16(root[0], field="PCOM compound frozen receipt_id"),
+            require_uuid16(root[1], field="PCOM compound frozen preparation_id"),
+        )
+        for root in frozen_roots
+    )
+    frozen_receipts = tuple(receipt_id for receipt_id, _ in frozen_authorities)
+    spec = specs[0]
+    if cursor_values is not None:
+        if relation_index != 0 or len(cursor_values) != 3:
+            raise CleanupCorruptionError("PCOM compound cursor is malformed")
+        cursor_root = require_uuid16(
+            cursor_values[0], field="PCOM compound cursor root receipt_id"
+        )
+        cursor_receipt = require_uuid16(
+            cursor_values[1], field="PCOM compound cursor commit receipt_id"
+        )
+        cursor_preparation = require_uuid16(
+            cursor_values[2], field="PCOM compound cursor preparation_id"
+        )
+        if (
+            not frozen_receipts
+            or cursor_root != frozen_receipts[-1]
+            or cursor_receipt != cursor_root
+            or cursor_preparation != frozen_authorities[-1][1]
+        ):
+            raise CleanupCorruptionError(
+                "PCOM compound cursor does not cover the exact frozen root set"
+            )
+        receipt = work.connector.fetch_one(
+            f"SELECT start_cursor, next_cursor, row_count FROM {_RECEIPT_TABLE} "
+            "WHERE cleanup_id = %s AND phase = 'PCOM_COMMIT_EFFECT_ROOT'",
+            (cycle.cleanup_id,),
+        )
+        if receipt != (_EMPTY_CURSOR, cursor, len(frozen_receipts)):
+            raise CleanupCorruptionError(
+                "PCOM compound cursor lacks its exact one-batch receipt proof"
+            )
+        for receipt_id, preparation_id in frozen_authorities:
+            if work.connector.fetch_one(
+                "SELECT 1 FROM catalog_publication_commits "
+                "WHERE receipt_id = %s LIMIT 1",
+                (receipt_id,),
+            ):
+                raise CleanupCorruptionError(
+                    "PCOM compound cursor-covered commit reappeared"
+                )
+            _require_publication_commit_compound_authority_absent(
+                work,
+                preparation_id=preparation_id,
+            )
+        return _Mutation(cursor, ())
+
+    candidates: list[tuple[_StaticScalar, ...]] = []
+    for receipt_id, frozen_preparation_id in frozen_authorities:
+        row = work.connector.fetch_one(
+            "SELECT r.receipt_id, committed.receipt_id, committed.preparation_id "
+            "FROM catalog_publication_commit_anchors AS r "
+            "JOIN catalog_publication_commits AS committed "
+            "ON committed.receipt_id = r.receipt_id "
+            "JOIN operational_operational_preparation_effect_seals AS seal "
+            "ON seal.preparation_id = committed.preparation_id "
+            "JOIN operational_operational_event_streams AS stream "
+            "ON stream.preparation_id = committed.preparation_id "
+            f"WHERE ({_PUBLICATION_COMMIT_AFTER_BATCH_ELIGIBILITY}) "
+            "AND r.receipt_id = %s",
+            (cycle.cleanup_id, receipt_id),
+        )
+        if not row or len(row) != 3:
+            raise CleanupCorruptionError(
+                "PCOM compound root is missing or only partially present"
+            )
+        candidate = _static_values(row)
+        if candidate[0] != receipt_id or candidate[1] != receipt_id:
+            raise CleanupCorruptionError("PCOM compound receipt identity differs")
+        preparation_id = require_uuid16(
+            candidate[2], field="PCOM compound preparation_id"
+        )
+        if preparation_id != frozen_preparation_id:
+            raise CleanupCorruptionError(
+                "PCOM compound preparation differs from its frozen authority"
+            )
+        candidates.append(candidate)
+
+    for candidate in sorted(
+        candidates,
+        key=lambda value: encode_lock_key(
+            "cleanup-static",
+            CleanupTargetKind.PUBLICATION_COMMIT.value,
+            "PCOM_COMMIT_EFFECT_ROOT",
+            0,
+            *value,
+        ),
+    ):
+        locked = work.lock_row(
+            LockRank.CHILD,
+            encode_lock_key(
+                "cleanup-static",
+                CleanupTargetKind.PUBLICATION_COMMIT.value,
+                "PCOM_COMMIT_EFFECT_ROOT",
+                0,
+                *candidate,
+            ),
+            "SELECT r.receipt_id, committed.receipt_id, committed.preparation_id "
+            "FROM catalog_publication_commit_anchors AS r "
+            "JOIN catalog_publication_commits AS committed "
+            "ON committed.receipt_id = r.receipt_id "
+            "JOIN operational_operational_preparation_effect_seals AS seal "
+            "ON seal.preparation_id = committed.preparation_id "
+            "JOIN operational_operational_event_streams AS stream "
+            "ON stream.preparation_id = committed.preparation_id "
+            f"WHERE ({_PUBLICATION_COMMIT_AFTER_BATCH_ELIGIBILITY}) "
+            "AND r.receipt_id = %s AND committed.receipt_id = %s "
+            "AND committed.preparation_id = %s",
+            (cycle.cleanup_id, *candidate),
+        )
+        if _static_values(locked) != candidate:
+            raise CleanupRetentionBlockedError("PCOM compound root changed")
+        primary = candidate[1:]
+        for statement_index, statement in enumerate(spec.delete_sql):
+            assert spec.delete_parameter_indexes is not None
+            indexes = spec.delete_parameter_indexes[statement_index]
+            parameters = tuple(primary[index] for index in indexes)
+            if work.connector.execute_affected(statement, parameters) != 1:
+                raise CleanupUnavailableError("PCOM compound root changed")
+
+    for _receipt_id, preparation_id in frozen_authorities:
+        _require_publication_commit_compound_authority_absent(
+            work,
+            preparation_id=preparation_id,
+        )
+    row_keys = tuple(_encode_static_cursor(0, candidate) for candidate in candidates)
+    return _Mutation(row_keys[-1] if row_keys else cursor, row_keys)
+
+
+def _require_publication_commit_compound_authority_absent(
+    work: VNextUnitOfWork,
+    *,
+    preparation_id: bytes,
+) -> None:
+    for table in (
+        "operational_publication_candidate_preparations",
+        "operational_operational_preparation_batch_receipts",
+        "operational_operational_preparation_checkpoints",
+        "operational_operational_preparations",
+        "operational_operational_events",
+        "operational_operational_preparation_effect_seals",
+        "operational_operational_event_streams",
+    ):
+        if work.connector.fetch_one(
+            f"SELECT 1 FROM {table} WHERE preparation_id = %s LIMIT 1",
+            (preparation_id,),
+        ):
+            raise CleanupCorruptionError(
+                "PCOM compound cursor-covered preparation authority reappeared"
+            )
+    for subtype_table in (
+        "operational_operational_removed_gid_events",
+        "operational_operational_deletion_consumption_events",
+    ):
+        if work.connector.fetch_one(
+            f"SELECT 1 FROM {subtype_table} AS subtype "
+            "JOIN operational_operational_events AS event "
+            "ON event.event_id = subtype.event_id "
+            "WHERE event.preparation_id = %s LIMIT 1",
+            (preparation_id,),
+        ):
+            raise CleanupCorruptionError(
+                "PCOM compound cursor-covered typed event reappeared"
+            )
+
+
+def _require_publication_commit_post_compound_transition(
+    work: VNextUnitOfWork,
+    *,
+    cycle: CleanupCycle,
+    phase: str,
+    cursor: bytes,
+) -> None:
+    plan = _STATIC_PLANS[CleanupTargetKind.PUBLICATION_COMMIT]
+    if phase not in {"PCOM_FINALIZATION_CHECKPOINT", "PCOM_ANCHOR"}:
+        raise CleanupCorruptionError("PCOM post-compound phase is invalid")
+    relation_index, cursor_values = _decode_static_cursor(
+        cursor,
+        plan.phases[phase],
+        len(plan.root_key),
+    )
+    cursor_receipt: bytes | None = None
+    if cursor_values is not None:
+        if relation_index != 0 or len(cursor_values) != 2:
+            raise CleanupCorruptionError("PCOM post-compound cursor is malformed")
+        cursor_receipt = require_uuid16(
+            cursor_values[0], field="PCOM post-compound cursor root receipt_id"
+        )
+        if (
+            require_uuid16(
+                cursor_values[1],
+                field="PCOM post-compound cursor row receipt_id",
+            )
+            != cursor_receipt
+        ):
+            raise CleanupCorruptionError(
+                "PCOM post-compound cursor receipt identity differs"
+            )
+
+    frozen_roots = _load_frozen_roots(work, cycle, plan)
+    frozen_receipts = tuple(
+        require_uuid16(root[0], field="PCOM post-compound frozen receipt_id")
+        for root in frozen_roots
+    )
+    if cursor_receipt is not None and cursor_receipt not in frozen_receipts:
+        raise CleanupCorruptionError(
+            "PCOM post-compound cursor is outside its frozen roots"
+        )
+    for root in frozen_roots:
+        receipt_id = require_uuid16(
+            root[0], field="PCOM post-compound frozen receipt_id"
+        )
+        preparation_id = require_uuid16(
+            root[1], field="PCOM post-compound frozen preparation_id"
+        )
+        if work.connector.fetch_one(
+            "SELECT 1 FROM catalog_publication_commits WHERE receipt_id = %s LIMIT 1",
+            (receipt_id,),
+        ):
+            raise CleanupCorruptionError(
+                "PCOM post-compound commit authority reappeared"
+            )
+        if work.connector.fetch_one(
+            "SELECT 1 FROM catalog_source_build_base_publication_commits "
+            "WHERE base_receipt_id = %s LIMIT 1",
+            (receipt_id,),
+        ):
+            raise CleanupCorruptionError(
+                "PCOM post-compound source-build base pin reappeared"
+            )
+        _require_publication_commit_compound_authority_absent(
+            work,
+            preparation_id=preparation_id,
+        )
+        for table, label in (
+            (
+                "catalog_publication_commit_finalizations",
+                "finalization marker",
+            ),
+            (
+                "catalog_publication_finalization_batch_stored",
+                "finalization batch",
+            ),
+        ):
+            if work.connector.fetch_one(
+                f"SELECT 1 FROM {table} WHERE receipt_id = %s LIMIT 1",
+                (receipt_id,),
+            ):
+                raise CleanupCorruptionError(f"PCOM post-compound {label} reappeared")
+
+        checkpoint_row = work.connector.fetch_one(
+            "SELECT state FROM catalog_publication_finalization_checkpoints "
+            "WHERE receipt_id = %s",
+            (receipt_id,),
+        )
+        anchor_row = work.connector.fetch_one(
+            "SELECT 1 FROM catalog_publication_commit_anchors WHERE receipt_id = %s",
+            (receipt_id,),
+        )
+        covered = cursor_receipt is not None and receipt_id <= cursor_receipt
+        if phase == "PCOM_FINALIZATION_CHECKPOINT":
+            if (checkpoint_row == ()) != covered:
+                raise CleanupCorruptionError(
+                    "PCOM finalization-checkpoint cursor coverage differs"
+                )
+            if not covered and checkpoint_row != ("COMPLETE",):
+                raise CleanupCorruptionError(
+                    "PCOM uncovered finalization checkpoint is not COMPLETE"
+                )
+            if anchor_row != (1,):
+                raise CleanupCorruptionError(
+                    "PCOM anchor disappeared before its cleanup phase"
+                )
+            continue
+        if checkpoint_row:
+            raise CleanupCorruptionError(
+                "PCOM finalization checkpoint reappeared after its phase"
+            )
+        if (anchor_row == ()) != covered:
+            raise CleanupCorruptionError("PCOM anchor cursor coverage differs")
+        if not covered and anchor_row != (1,):
+            raise CleanupCorruptionError("PCOM uncovered anchor authority differs")
+
+
+_SOURCE_BUILD_TERMINAL_ELIGIBILITY = """
 EXISTS (
     SELECT 1 FROM catalog_source_build_states terminal
     WHERE terminal.build_id = r.build_id
       AND terminal.state IN ('SEALED', 'ABANDONED'))
+"""
+
+_SOURCE_BUILD_REACHABILITY_ELIGIBILITY = """
+NOT EXISTS (
+    SELECT 1 FROM catalog_analysis_run_descriptor x WHERE x.build_id = r.build_id)
 AND NOT EXISTS (
-    SELECT 1 FROM catalog_analysis_run_build_ids x WHERE x.build_id = r.build_id)
+    SELECT 1 FROM catalog_source_build_base_publication_commits x
+    WHERE x.build_id = r.build_id)
 AND NOT EXISTS (
     SELECT 1 FROM operational_source_working_builds x
     WHERE x.build_id = r.build_id)
@@ -2264,14 +3798,14 @@ AND NOT EXISTS (
     WHERE x.build_id = r.build_id)
 AND NOT EXISTS (
     SELECT 1 FROM operational_source_build_generations older
-    JOIN catalog_analysis_run_build_ids retired_build
+    JOIN catalog_analysis_run_descriptor retired_build
       ON retired_build.build_id = older.build_id
     JOIN catalog_analysis_run_states retired
       ON retired.analysis_id = retired_build.analysis_id
     WHERE older.build_id <> r.build_id
       AND retired.state = 'ABANDONED'
       AND NOT EXISTS (
-          SELECT 1 FROM catalog_analysis_run_build_ids sibling
+          SELECT 1 FROM catalog_analysis_run_descriptor sibling
           WHERE sibling.build_id = retired_build.build_id
             AND sibling.analysis_id <> retired.analysis_id)
       AND older.generation < (
@@ -2292,35 +3826,54 @@ AND NOT EXISTS (
     WHERE m.build_id = r.build_id)
 AND NOT EXISTS (
     SELECT 1 FROM operational_source_build_generations m
-    JOIN operational_ingest_generation_leases l ON l.generation = m.generation
-    WHERE m.build_id = r.build_id)
-AND NOT EXISTS (
-    SELECT 1 FROM operational_source_build_generations m
     JOIN operational_ingest_generation_handoffs h ON h.generation = m.generation
     WHERE m.build_id = r.build_id)
 """
 
-_ANALYSIS_RUN_ELIGIBILITY = """
+_SOURCE_BUILD_ELIGIBILITY = (
+    _SOURCE_BUILD_TERMINAL_ELIGIBILITY
+    + "\nAND "
+    + _SOURCE_BUILD_REACHABILITY_ELIGIBILITY
+)
+
+_SOURCE_BUILD_AFTER_STATE_ELIGIBILITY = (
+    """
+NOT EXISTS (
+    SELECT 1 FROM catalog_source_build_states state
+    WHERE state.build_id = r.build_id)
+AND EXISTS (
+    SELECT 1 FROM operational_cleanup_checkpoints completed
+    WHERE completed.cleanup_id = %s
+      AND completed.phase = 'SB_STATE'
+      AND completed.state = 'COMPLETE')
+AND """
+    + _SOURCE_BUILD_REACHABILITY_ELIGIBILITY
+)
+
+_ANALYSIS_RUN_TERMINAL_ELIGIBILITY = """
 EXISTS (
     SELECT 1 FROM catalog_analysis_run_states terminal
     WHERE terminal.analysis_id = r.analysis_id
       AND terminal.state IN ('COMPLETE', 'ABANDONED'))
-AND NOT EXISTS (
-    SELECT 1 FROM catalog_analysis_run_build_ids member
-    JOIN catalog_analysis_run_build_ids retired_member
+"""
+
+_ANALYSIS_RUN_REACHABILITY_ELIGIBILITY = """
+NOT EXISTS (
+    SELECT 1 FROM catalog_analysis_run_descriptor member
+    JOIN catalog_analysis_run_descriptor retired_member
       ON retired_member.build_id = member.build_id
     JOIN catalog_analysis_run_states retired
       ON retired.analysis_id = retired_member.analysis_id
     WHERE member.analysis_id = r.analysis_id
       AND retired.state = 'ABANDONED'
       AND EXISTS (
-          SELECT 1 FROM catalog_analysis_run_build_ids sibling
+          SELECT 1 FROM catalog_analysis_run_descriptor sibling
           WHERE sibling.build_id = member.build_id
             AND sibling.analysis_id <> retired.analysis_id))
 AND NOT EXISTS (
     SELECT 1
     FROM catalog_analysis_run_states retired
-    JOIN catalog_analysis_run_build_ids build
+    JOIN catalog_analysis_run_descriptor build
       ON build.analysis_id = retired.analysis_id
     JOIN operational_source_build_generations mapped
       ON mapped.build_id = build.build_id
@@ -2330,16 +3883,16 @@ AND NOT EXISTS (
           SELECT 1 FROM operational_source_build_generations newer
           WHERE newer.generation > mapped.generation)
       AND NOT EXISTS (
-          SELECT 1 FROM catalog_analysis_run_build_ids sibling
+          SELECT 1 FROM catalog_analysis_run_descriptor sibling
           WHERE sibling.build_id = build.build_id
             AND sibling.analysis_id <> retired.analysis_id))
 AND NOT EXISTS (
-    SELECT 1 FROM catalog_analysis_run_build_ids build
+    SELECT 1 FROM catalog_analysis_run_descriptor build
     JOIN operational_source_working_builds working
       ON working.build_id = build.build_id
     WHERE build.analysis_id = r.analysis_id)
 AND NOT EXISTS (
-    SELECT 1 FROM catalog_publication_candidate_analysis_ids x
+    SELECT 1 FROM catalog_publication_candidates x
     WHERE x.analysis_id = r.analysis_id)
 AND NOT EXISTS (
     SELECT 1 FROM catalog_analysis_baselines x
@@ -2350,19 +3903,39 @@ AND NOT EXISTS (
       AND x.analysis_id <> r.analysis_id)
 AND NOT EXISTS (
     SELECT 1 FROM catalog_publication_commit_head_receipts h
-    JOIN catalog_publication_commit_source_revisions committed
+    JOIN catalog_publication_commits committed
       ON committed.receipt_id = h.receipt_id
     JOIN catalog_source_revision_provenance p
       ON p.source_revision = committed.source_revision
     WHERE p.analysis_id = r.analysis_id)
 AND NOT EXISTS (
     SELECT 1 FROM catalog_source_revision_provenance p
-    JOIN catalog_publication_commit_source_revisions committed
+    JOIN catalog_publication_commits committed
       ON committed.source_revision = p.source_revision
     JOIN catalog_source_build_base_publication_commits base
       ON base.base_receipt_id = committed.receipt_id
     WHERE p.analysis_id = r.analysis_id)
 """
+
+_ANALYSIS_RUN_ELIGIBILITY = (
+    _ANALYSIS_RUN_TERMINAL_ELIGIBILITY
+    + "\nAND "
+    + _ANALYSIS_RUN_REACHABILITY_ELIGIBILITY
+)
+
+_ANALYSIS_RUN_AFTER_STATE_ELIGIBILITY = (
+    """
+NOT EXISTS (
+    SELECT 1 FROM catalog_analysis_run_states state
+    WHERE state.analysis_id = r.analysis_id)
+AND EXISTS (
+    SELECT 1 FROM operational_cleanup_checkpoints completed
+    WHERE completed.cleanup_id = %s
+      AND completed.phase = 'AR_STATE'
+      AND completed.state = 'COMPLETE')
+AND """
+    + _ANALYSIS_RUN_REACHABILITY_ELIGIBILITY
+)
 
 _PUBLICATION_CANDIDATE_ELIGIBILITY = """
 NOT EXISTS (
@@ -2373,7 +3946,7 @@ AND NOT EXISTS (
     WHERE protected.candidate_id = r.candidate_id
       AND protected.state IN ('PENDING', 'PREPARED'))
 AND NOT EXISTS (
-    SELECT 1 FROM catalog_publication_commit_candidates committed
+    SELECT 1 FROM catalog_publication_commits committed
     WHERE committed.candidate_id = r.candidate_id
       AND (
         NOT EXISTS (
@@ -2383,13 +3956,13 @@ AND NOT EXISTS (
             SELECT 1 FROM catalog_publication_commit_head_receipts head
             WHERE head.receipt_id = committed.receipt_id)))
 AND NOT EXISTS (
-    SELECT 1 FROM catalog_publication_commit_candidates committed
+    SELECT 1 FROM catalog_publication_commits committed
     JOIN catalog_source_build_base_publication_commits base
       ON base.base_receipt_id = committed.receipt_id
     WHERE committed.candidate_id = r.candidate_id)
 AND NOT EXISTS (
-    SELECT 1 FROM catalog_publication_commit_candidates committed
-    JOIN catalog_publication_candidate_reserved_revisions reserved
+    SELECT 1 FROM catalog_publication_commits committed
+    JOIN catalog_publication_candidates reserved
       ON reserved.candidate_id = committed.candidate_id
     JOIN catalog_publication_occurrence_identities projected
       ON projected.revision = reserved.reserved_revision
@@ -2413,17 +3986,607 @@ AND NOT EXISTS (
     SELECT 1 FROM catalog_publication_candidate_base_publication_commits base
     JOIN operational_catalog_working_candidates working
       ON working.candidate_id = base.candidate_id
-    JOIN catalog_publication_commit_catalog_revisions pinned
+    JOIN catalog_publication_commits pinned
       ON pinned.receipt_id = base.base_receipt_id
     WHERE pinned.revision = r.revision)
 AND NOT EXISTS (
     SELECT 1 FROM catalog_source_build_base_publication_commits base
     JOIN operational_source_working_builds working
       ON working.build_id = base.build_id
-    JOIN catalog_publication_commit_catalog_revisions pinned
+    JOIN catalog_publication_commits pinned
       ON pinned.receipt_id = base.base_receipt_id
     WHERE pinned.revision = r.revision)
 """
+
+
+_PUBLICATION_COMMIT_REPLACEMENT_ELIGIBILITY = """
+EXISTS (
+    SELECT 1
+    FROM catalog_publication_commits committed
+    JOIN catalog_publication_finalization_checkpoints checkpoint
+      ON checkpoint.receipt_id = committed.receipt_id
+     AND checkpoint.state = 'COMPLETE'
+    JOIN catalog_source_revision_descriptors source_revision
+      ON source_revision.source_revision = committed.source_revision
+    JOIN catalog_publication_commit_head_receipts head
+      ON head.channel = source_revision.channel
+    JOIN catalog_publication_commits replacement
+      ON replacement.receipt_id = head.receipt_id
+    JOIN catalog_publication_receipts replacement_receipt
+      ON replacement_receipt.receipt_id = replacement.receipt_id
+    WHERE committed.receipt_id = r.receipt_id
+      AND replacement.revision > committed.revision
+      AND replacement_receipt.state = 'PROJECTION_FINALIZED'
+      AND replacement_receipt.finalized_at IS NOT NULL
+      AND NOT EXISTS (
+          SELECT 1 FROM catalog_publication_commit_head_receipts retained_head
+          WHERE retained_head.receipt_id = committed.receipt_id)
+      AND NOT EXISTS (
+          SELECT 1 FROM catalog_publication_candidate_base_publication_commits base
+          WHERE base.base_receipt_id = committed.receipt_id)
+      AND NOT EXISTS (
+          SELECT 1 FROM operational_gallery_redownload_states protected
+          WHERE protected.through_source_revision = committed.source_revision)
+      AND NOT EXISTS (
+          SELECT 1 FROM catalog_prepared_artifacts protected
+          WHERE protected.candidate_id = committed.candidate_id
+            AND protected.state IN ('PENDING', 'PREPARED'))
+      AND NOT EXISTS (
+          SELECT 1
+          FROM operational_operational_preparations preparation
+          JOIN operational_source_working_builds working
+            ON working.build_id = preparation.build_id
+          WHERE preparation.preparation_id = committed.preparation_id)
+      AND NOT EXISTS (
+          SELECT 1 FROM operational_catalog_working_candidates working
+          WHERE working.candidate_id = committed.candidate_id))
+"""
+
+_PUBLICATION_COMMIT_SAFE_BUILD_BASE_RELEASE = """
+AND NOT EXISTS (
+    SELECT 1
+    FROM catalog_source_build_base_publication_commits base
+    LEFT JOIN catalog_source_build_states build_state
+      ON build_state.build_id = base.build_id
+    WHERE base.base_receipt_id = r.receipt_id
+      AND (
+        build_state.build_id IS NULL
+        OR build_state.state = 'OPEN'
+        OR EXISTS (
+            SELECT 1 FROM operational_source_working_builds working
+            WHERE working.build_id = base.build_id)
+        OR NOT EXISTS (
+            SELECT 1
+            FROM catalog_analysis_run_descriptor completed_analysis
+            JOIN catalog_analysis_run_states completed_state
+              ON completed_state.analysis_id = completed_analysis.analysis_id
+            WHERE completed_analysis.build_id = base.build_id
+              AND completed_state.state = 'COMPLETE')
+        OR EXISTS (
+            SELECT 1
+            FROM catalog_analysis_run_descriptor analysis
+            LEFT JOIN catalog_analysis_run_states analysis_state
+              ON analysis_state.analysis_id = analysis.analysis_id
+            WHERE analysis.build_id = base.build_id
+              AND (
+                analysis_state.analysis_id IS NULL
+                OR analysis_state.state NOT IN ('COMPLETE', 'ABANDONED')
+                OR (
+                  analysis_state.state = 'COMPLETE'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM catalog_source_revision_provenance provenance
+                      JOIN catalog_publication_commits handoff
+                        ON handoff.source_revision = provenance.source_revision
+                      JOIN catalog_publication_commit_head_receipts handoff_head
+                        ON handoff_head.receipt_id = handoff.receipt_id
+                      JOIN catalog_publication_receipts handoff_receipt
+                        ON handoff_receipt.receipt_id = handoff.receipt_id
+                      JOIN catalog_source_revision_descriptors handoff_source
+                        ON handoff_source.source_revision = handoff.source_revision
+                      JOIN catalog_publication_commits base_commit
+                        ON base_commit.receipt_id = base.base_receipt_id
+                      JOIN catalog_source_revision_descriptors base_source
+                        ON base_source.source_revision = base_commit.source_revision
+                      WHERE provenance.analysis_id = analysis.analysis_id
+                        AND handoff_head.channel = base_source.channel
+                        AND handoff_source.channel = handoff_head.channel
+                        AND handoff.revision > base_commit.revision
+                        AND handoff_receipt.state = 'PROJECTION_FINALIZED'
+                        AND handoff_receipt.finalized_at IS NOT NULL))))))
+"""
+
+_PUBLICATION_COMMIT_EXACT_PREPARATION_AUTHORITY = """
+AND EXISTS (
+    SELECT 1
+    FROM catalog_publication_commits preparation_owner
+    JOIN operational_operational_preparations preparation
+      ON preparation.preparation_id = preparation_owner.preparation_id
+    WHERE preparation_owner.receipt_id = r.receipt_id
+      AND preparation.state = 'COMPLETE'
+      AND preparation.operational_policy_id =
+          preparation_owner.operational_policy_id)
+"""
+
+_PUBLICATION_COMMIT_EXACT_PREPARATION_BINDING_AUTHORITY = """
+AND EXISTS (
+    SELECT 1 FROM catalog_publication_commits preparation_owner
+    JOIN operational_publication_candidate_preparations binding
+      ON binding.candidate_id = preparation_owner.candidate_id
+     AND binding.preparation_id = preparation_owner.preparation_id
+    WHERE preparation_owner.receipt_id = r.receipt_id
+)
+"""
+
+_PUBLICATION_COMMIT_PREPARATION_BINDING_ABSENT = """
+AND NOT EXISTS (
+    SELECT 1
+    FROM catalog_publication_commits preparation_owner
+    JOIN operational_publication_candidate_preparations binding
+      ON (binding.candidate_id = preparation_owner.candidate_id
+          OR binding.preparation_id = preparation_owner.preparation_id)
+    WHERE preparation_owner.receipt_id = r.receipt_id)
+"""
+
+_PUBLICATION_COMMIT_PREPARATION_BATCH_ABSENT = """
+AND NOT EXISTS (
+    SELECT 1
+    FROM catalog_publication_commits preparation_owner
+    JOIN operational_operational_preparation_batch_receipts batch
+      ON batch.preparation_id = preparation_owner.preparation_id
+    WHERE preparation_owner.receipt_id = r.receipt_id)
+"""
+
+_PUBLICATION_COMMIT_PREPARATION_CHECKPOINT_ABSENT = """
+AND NOT EXISTS (
+    SELECT 1
+    FROM catalog_publication_commits preparation_owner
+    JOIN operational_operational_preparation_checkpoints checkpoint
+      ON checkpoint.preparation_id = preparation_owner.preparation_id
+    WHERE preparation_owner.receipt_id = r.receipt_id)
+"""
+
+_PUBLICATION_COMMIT_PREPARATION_ABSENT = """
+AND NOT EXISTS (
+    SELECT 1
+    FROM catalog_publication_commits preparation_owner
+    JOIN operational_operational_preparations preparation
+      ON preparation.preparation_id = preparation_owner.preparation_id
+    WHERE preparation_owner.receipt_id = r.receipt_id)
+"""
+
+_PUBLICATION_COMMIT_EVENTS_ABSENT = """
+AND NOT EXISTS (
+    SELECT 1
+    FROM catalog_publication_commits preparation_owner
+    JOIN operational_operational_events event
+      ON event.preparation_id = preparation_owner.preparation_id
+    WHERE preparation_owner.receipt_id = r.receipt_id)
+AND NOT EXISTS (
+    SELECT 1
+    FROM catalog_publication_commits preparation_owner
+    JOIN operational_operational_events event
+      ON event.preparation_id = preparation_owner.preparation_id
+    JOIN operational_operational_removed_gid_events removed
+      ON removed.event_id = event.event_id
+    WHERE preparation_owner.receipt_id = r.receipt_id)
+AND NOT EXISTS (
+    SELECT 1
+    FROM catalog_publication_commits preparation_owner
+    JOIN operational_operational_events event
+      ON event.preparation_id = preparation_owner.preparation_id
+    JOIN operational_operational_deletion_consumption_events consumed
+      ON consumed.event_id = event.event_id
+    WHERE preparation_owner.receipt_id = r.receipt_id)
+"""
+
+_PUBLICATION_COMMIT_ELIGIBILITY = (
+    _PUBLICATION_COMMIT_REPLACEMENT_ELIGIBILITY
+    + _PUBLICATION_COMMIT_SAFE_BUILD_BASE_RELEASE
+    + _PUBLICATION_COMMIT_EXACT_PREPARATION_AUTHORITY
+    + _PUBLICATION_COMMIT_EXACT_PREPARATION_BINDING_AUTHORITY
+    + """
+AND EXISTS (
+    SELECT 1 FROM catalog_publication_commit_finalizations finalized
+    WHERE finalized.receipt_id = r.receipt_id)
+"""
+)
+
+_PUBLICATION_COMMIT_AFTER_BUILD_BASE_ELIGIBILITY = (
+    _PUBLICATION_COMMIT_REPLACEMENT_ELIGIBILITY
+    + _PUBLICATION_COMMIT_EXACT_PREPARATION_AUTHORITY
+    + _PUBLICATION_COMMIT_EXACT_PREPARATION_BINDING_AUTHORITY
+    + """
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_source_build_base_publication_commits base
+    WHERE base.base_receipt_id = r.receipt_id)
+AND EXISTS (
+    SELECT 1 FROM catalog_publication_commit_finalizations finalized
+    WHERE finalized.receipt_id = r.receipt_id)
+AND EXISTS (
+    SELECT 1 FROM operational_cleanup_checkpoints completed
+    WHERE completed.cleanup_id = %s
+      AND completed.phase = 'PCOM_RELEASE_BUILD_BASE'
+      AND completed.state = 'COMPLETE')
+"""
+)
+
+_PUBLICATION_COMMIT_AFTER_PREPARATION_BINDING_ELIGIBILITY = (
+    _PUBLICATION_COMMIT_REPLACEMENT_ELIGIBILITY
+    + _PUBLICATION_COMMIT_EXACT_PREPARATION_AUTHORITY
+    + _PUBLICATION_COMMIT_PREPARATION_BINDING_ABSENT
+    + """
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_source_build_base_publication_commits base
+    WHERE base.base_receipt_id = r.receipt_id)
+AND EXISTS (
+    SELECT 1 FROM catalog_publication_commit_finalizations finalized
+    WHERE finalized.receipt_id = r.receipt_id)
+AND EXISTS (
+    SELECT 1 FROM operational_cleanup_checkpoints completed
+    WHERE completed.cleanup_id = %s
+      AND completed.phase = 'PCOM_PREPARATION_BINDING'
+      AND completed.state = 'COMPLETE')
+"""
+)
+
+_PUBLICATION_COMMIT_AFTER_PREPARATION_BATCH_ELIGIBILITY = (
+    _PUBLICATION_COMMIT_REPLACEMENT_ELIGIBILITY
+    + _PUBLICATION_COMMIT_EXACT_PREPARATION_AUTHORITY
+    + _PUBLICATION_COMMIT_PREPARATION_BINDING_ABSENT
+    + _PUBLICATION_COMMIT_PREPARATION_BATCH_ABSENT
+    + """
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_source_build_base_publication_commits base
+    WHERE base.base_receipt_id = r.receipt_id)
+AND EXISTS (
+    SELECT 1 FROM catalog_publication_commit_finalizations finalized
+    WHERE finalized.receipt_id = r.receipt_id)
+AND EXISTS (
+    SELECT 1 FROM operational_cleanup_checkpoints completed
+    WHERE completed.cleanup_id = %s
+      AND completed.phase = 'PCOM_PREPARATION_BATCH'
+      AND completed.state = 'COMPLETE')
+"""
+)
+
+_PUBLICATION_COMMIT_AFTER_PREPARATION_CHECKPOINT_ELIGIBILITY = (
+    _PUBLICATION_COMMIT_REPLACEMENT_ELIGIBILITY
+    + _PUBLICATION_COMMIT_EXACT_PREPARATION_AUTHORITY
+    + _PUBLICATION_COMMIT_PREPARATION_BINDING_ABSENT
+    + _PUBLICATION_COMMIT_PREPARATION_BATCH_ABSENT
+    + _PUBLICATION_COMMIT_PREPARATION_CHECKPOINT_ABSENT
+    + """
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_source_build_base_publication_commits base
+    WHERE base.base_receipt_id = r.receipt_id)
+AND EXISTS (
+    SELECT 1 FROM catalog_publication_commit_finalizations finalized
+    WHERE finalized.receipt_id = r.receipt_id)
+AND EXISTS (
+    SELECT 1 FROM operational_cleanup_checkpoints completed
+    WHERE completed.cleanup_id = %s
+      AND completed.phase = 'PCOM_PREPARATION_CHECKPOINT'
+      AND completed.state = 'COMPLETE')
+"""
+)
+
+_PUBLICATION_COMMIT_EVENT_ELIGIBILITY = (
+    _PUBLICATION_COMMIT_REPLACEMENT_ELIGIBILITY
+    + _PUBLICATION_COMMIT_PREPARATION_BINDING_ABSENT
+    + _PUBLICATION_COMMIT_PREPARATION_BATCH_ABSENT
+    + _PUBLICATION_COMMIT_PREPARATION_CHECKPOINT_ABSENT
+    + _PUBLICATION_COMMIT_PREPARATION_ABSENT
+    + """
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_source_build_base_publication_commits base
+    WHERE base.base_receipt_id = r.receipt_id)
+AND EXISTS (
+    SELECT 1 FROM catalog_publication_commit_finalizations finalized
+    WHERE finalized.receipt_id = r.receipt_id)
+AND EXISTS (
+    SELECT 1 FROM operational_cleanup_checkpoints completed
+    WHERE completed.cleanup_id = %s
+      AND completed.phase = 'PCOM_PREPARATION'
+      AND completed.state = 'COMPLETE')
+"""
+)
+
+_PUBLICATION_COMMIT_AFTER_EVENT_ELIGIBILITY = (
+    _PUBLICATION_COMMIT_REPLACEMENT_ELIGIBILITY
+    + _PUBLICATION_COMMIT_PREPARATION_BINDING_ABSENT
+    + _PUBLICATION_COMMIT_PREPARATION_BATCH_ABSENT
+    + _PUBLICATION_COMMIT_PREPARATION_CHECKPOINT_ABSENT
+    + _PUBLICATION_COMMIT_PREPARATION_ABSENT
+    + _PUBLICATION_COMMIT_EVENTS_ABSENT
+    + """
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_source_build_base_publication_commits base
+    WHERE base.base_receipt_id = r.receipt_id)
+AND EXISTS (
+    SELECT 1 FROM catalog_publication_commit_finalizations finalized
+    WHERE finalized.receipt_id = r.receipt_id)
+AND EXISTS (
+    SELECT 1 FROM operational_cleanup_checkpoints completed
+    WHERE completed.cleanup_id = %s
+      AND completed.phase = 'PCOM_EVENT'
+      AND completed.state = 'COMPLETE')
+"""
+)
+
+_PUBLICATION_COMMIT_AFTER_MARKER_ELIGIBILITY = (
+    _PUBLICATION_COMMIT_REPLACEMENT_ELIGIBILITY
+    + _PUBLICATION_COMMIT_PREPARATION_BINDING_ABSENT
+    + _PUBLICATION_COMMIT_PREPARATION_BATCH_ABSENT
+    + _PUBLICATION_COMMIT_PREPARATION_CHECKPOINT_ABSENT
+    + _PUBLICATION_COMMIT_PREPARATION_ABSENT
+    + _PUBLICATION_COMMIT_EVENTS_ABSENT
+    + """
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_source_build_base_publication_commits base
+    WHERE base.base_receipt_id = r.receipt_id)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_publication_commit_finalizations finalized
+    WHERE finalized.receipt_id = r.receipt_id)
+AND EXISTS (
+    SELECT 1 FROM operational_cleanup_checkpoints completed
+    WHERE completed.cleanup_id = %s
+      AND completed.phase = 'PCOM_FINALIZATION_MARKER'
+      AND completed.state = 'COMPLETE')
+"""
+)
+
+_PUBLICATION_COMMIT_AFTER_BATCH_ELIGIBILITY = (
+    _PUBLICATION_COMMIT_REPLACEMENT_ELIGIBILITY
+    + _PUBLICATION_COMMIT_PREPARATION_BINDING_ABSENT
+    + _PUBLICATION_COMMIT_PREPARATION_BATCH_ABSENT
+    + _PUBLICATION_COMMIT_PREPARATION_CHECKPOINT_ABSENT
+    + _PUBLICATION_COMMIT_PREPARATION_ABSENT
+    + _PUBLICATION_COMMIT_EVENTS_ABSENT
+    + """
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_source_build_base_publication_commits base
+    WHERE base.base_receipt_id = r.receipt_id)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_publication_commit_finalizations finalized
+    WHERE finalized.receipt_id = r.receipt_id)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_publication_finalization_batch_stored batch
+    WHERE batch.receipt_id = r.receipt_id)
+AND EXISTS (
+    SELECT 1 FROM operational_cleanup_checkpoints completed
+    WHERE completed.cleanup_id = %s
+      AND completed.phase = 'PCOM_FINALIZATION_BATCH'
+      AND completed.state = 'COMPLETE')
+"""
+)
+
+_PUBLICATION_COMMIT_AFTER_COMPOUND_ROOT_ELIGIBILITY = """
+NOT EXISTS (
+    SELECT 1 FROM catalog_publication_commits committed
+    WHERE committed.receipt_id = r.receipt_id)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_publication_commit_finalizations finalized
+    WHERE finalized.receipt_id = r.receipt_id)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_publication_finalization_batch_stored batch
+    WHERE batch.receipt_id = r.receipt_id)
+AND EXISTS (
+    SELECT 1 FROM operational_cleanup_checkpoints completed
+    WHERE completed.cleanup_id = %s
+      AND completed.phase = 'PCOM_COMMIT_EFFECT_ROOT'
+      AND completed.state = 'COMPLETE')
+"""
+
+_PUBLICATION_COMMIT_AFTER_CHECKPOINT_ELIGIBILITY = """
+NOT EXISTS (
+    SELECT 1 FROM catalog_publication_commits committed
+    WHERE committed.receipt_id = r.receipt_id)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_publication_commit_finalizations finalized
+    WHERE finalized.receipt_id = r.receipt_id)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_publication_finalization_batch_stored batch
+    WHERE batch.receipt_id = r.receipt_id)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_publication_finalization_checkpoints checkpoint
+    WHERE checkpoint.receipt_id = r.receipt_id)
+AND EXISTS (
+    SELECT 1 FROM operational_cleanup_checkpoints completed
+    WHERE completed.cleanup_id = %s
+      AND completed.phase = 'PCOM_FINALIZATION_CHECKPOINT'
+      AND completed.state = 'COMPLETE')
+"""
+
+_CATALOG_REVISION_DESCRIPTOR_ELIGIBILITY = """
+NOT EXISTS (
+    SELECT 1 FROM catalog_publication_occurrence_identities retained
+    WHERE retained.revision = r.revision)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_publication_commits retained
+    WHERE retained.revision = r.revision)
+"""
+
+_SOURCE_REVISION_DESCRIPTOR_ELIGIBILITY = """
+NOT EXISTS (
+    SELECT 1 FROM catalog_source_revision_provenance retained
+    WHERE retained.source_revision = r.source_revision)
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_publication_commits retained
+    WHERE retained.source_revision = r.source_revision)
+"""
+
+_PUBLICATION_GENERATION_ELIGIBILITY = """
+NOT EXISTS (
+    SELECT 1 FROM catalog_publication_commits retained
+    WHERE retained.generation = r.generation)
+AND (
+    SELECT MIN(retained.generation) FROM catalog_publication_commits retained) > 1
+AND r.generation < (
+    SELECT MIN(retained.generation) FROM catalog_publication_commits retained)
+"""
+
+
+def _publication_commit_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
+    root = "catalog_publication_commit_anchors"
+    key = ("receipt_id",)
+    return {
+        "PCOM_RELEASE_BUILD_BASE": (
+            _owned_spec(
+                "catalog_source_build_base_publication_commits",
+                ("build_id",),
+                root,
+                key,
+                ("base_receipt_id",),
+            ),
+        ),
+        "PCOM_PREPARATION_BINDING": (
+            _indirect_spec(
+                "operational_publication_candidate_preparations",
+                ("candidate_id", "preparation_id"),
+                "operational_publication_candidate_preparations AS c "
+                "JOIN catalog_publication_commits AS committed "
+                "ON committed.candidate_id = c.candidate_id "
+                "AND committed.preparation_id = c.preparation_id "
+                "JOIN catalog_publication_commit_anchors AS r "
+                "ON r.receipt_id = committed.receipt_id",
+            ),
+        ),
+        "PCOM_PREPARATION_BATCH": (
+            _indirect_spec(
+                "operational_operational_preparation_batch_receipts",
+                ("preparation_id", "phase", "batch_key"),
+                "operational_operational_preparation_batch_receipts AS c "
+                "JOIN catalog_publication_commits AS committed "
+                "ON committed.preparation_id = c.preparation_id "
+                "JOIN catalog_publication_commit_anchors AS r "
+                "ON r.receipt_id = committed.receipt_id",
+            ),
+        ),
+        "PCOM_PREPARATION_CHECKPOINT": (
+            _indirect_spec(
+                "operational_operational_preparation_checkpoints",
+                ("preparation_id", "phase"),
+                "operational_operational_preparation_checkpoints AS c "
+                "JOIN catalog_publication_commits AS committed "
+                "ON committed.preparation_id = c.preparation_id "
+                "JOIN catalog_publication_commit_anchors AS r "
+                "ON r.receipt_id = committed.receipt_id",
+            ),
+        ),
+        "PCOM_PREPARATION": (
+            _indirect_spec(
+                "operational_operational_preparations",
+                ("preparation_id",),
+                "operational_operational_preparations AS c "
+                "JOIN catalog_publication_commits AS committed "
+                "ON committed.preparation_id = c.preparation_id "
+                "JOIN catalog_publication_commit_anchors AS r "
+                "ON r.receipt_id = committed.receipt_id",
+                extra_predicate="c.state = 'COMPLETE'",
+            ),
+        ),
+        "PCOM_EVENT": (
+            _indirect_spec(
+                "operational_operational_events",
+                ("preparation_id", "sequence_no"),
+                "operational_operational_events AS c "
+                "JOIN catalog_publication_commits AS committed "
+                "ON committed.preparation_id = c.preparation_id "
+                "JOIN catalog_publication_commit_anchors AS r "
+                "ON r.receipt_id = committed.receipt_id",
+            ),
+        ),
+        "PCOM_FINALIZATION_MARKER": (
+            _owned_spec(
+                "catalog_publication_commit_finalizations",
+                key,
+                root,
+                key,
+            ),
+        ),
+        "PCOM_FINALIZATION_BATCH": (
+            _owned_spec(
+                "catalog_publication_finalization_batch_stored",
+                ("receipt_id", "start_generation"),
+                root,
+                key,
+            ),
+        ),
+        "PCOM_COMMIT_EFFECT_ROOT": (
+            _indirect_spec(
+                "catalog_publication_commits",
+                ("receipt_id", "preparation_id"),
+                "catalog_publication_commits AS c "
+                "JOIN operational_operational_preparation_effect_seals AS seal "
+                "ON seal.preparation_id = c.preparation_id "
+                "JOIN operational_operational_event_streams AS stream "
+                "ON stream.preparation_id = c.preparation_id "
+                "JOIN catalog_publication_commit_anchors AS r "
+                "ON r.receipt_id = c.receipt_id",
+                delete_sql=(
+                    "DELETE FROM catalog_publication_commits "
+                    "WHERE receipt_id = %s AND preparation_id = %s",
+                    "DELETE FROM operational_operational_preparation_effect_seals "
+                    "WHERE preparation_id = %s",
+                    "DELETE FROM operational_operational_event_streams "
+                    "WHERE preparation_id = %s",
+                ),
+                delete_parameter_indexes=((0, 1), (1,), (1,)),
+                delete_allowed_affected=(
+                    frozenset((1,)),
+                    frozenset((1,)),
+                    frozenset((1,)),
+                ),
+            ),
+        ),
+        "PCOM_FINALIZATION_CHECKPOINT": (
+            _owned_spec(
+                "catalog_publication_finalization_checkpoints",
+                key,
+                root,
+                key,
+            ),
+        ),
+        "PCOM_ANCHOR": (_owned_spec(root, key, root, key),),
+    }
+
+
+def _catalog_revision_descriptor_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
+    root = "catalog_revision_descriptors"
+    key = ("revision",)
+    return {"CRD_ROOT": (_owned_spec(root, key, root, key),)}
+
+
+def _source_revision_descriptor_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
+    root = "catalog_source_revision_descriptors"
+    key = ("source_revision",)
+    return {"SRD_ROOT": (_owned_spec(root, key, root, key),)}
+
+
+def _publication_generation_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
+    root = "catalog_publication_generation_nodes"
+    key = ("generation",)
+    edge = "catalog_publication_generation_successors"
+    return {
+        "PG_EDGE": (
+            _owned_spec(
+                edge,
+                ("successor_generation",),
+                root,
+                key,
+                ("successor_generation",),
+            ),
+            _owned_spec(
+                edge,
+                ("successor_generation",),
+                root,
+                key,
+                ("predecessor_generation",),
+            ),
+        ),
+        "PG_ROOT": (_owned_spec(root, key, root, key),),
+    }
 
 
 def _catalog_publication_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
@@ -2497,74 +4660,22 @@ def _catalog_publication_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
 
 
 def _analysis_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
-    root = "catalog_analysis_run_anchors"
+    root = "catalog_analysis_run_descriptor"
     key = ("analysis_id",)
 
     def direct(table: str, pk: tuple[str, ...]) -> _StaticDeleteSpec:
         return _owned_spec(table, pk, root, key)
 
     return {
-        "AR_BATCH_SEAL": (
+        "AR_BATCH": (
             direct(
-                "catalog_analysis_batch_receipt_seals",
+                "catalog_analysis_batch_receipt_stored",
                 ("analysis_id", "stage", "start_generation"),
             ),
         ),
-        "AR_BATCH_VALUES": (
+        "AR_COMPONENT": (
             direct(
-                "catalog_analysis_batch_receipt_coordinates",
-                ("analysis_id", "stage", "batch_key"),
-            ),
-            direct(
-                "catalog_analysis_batch_receipt_committed_ats",
-                ("analysis_id", "stage", "start_generation"),
-            ),
-            direct(
-                "catalog_analysis_batch_receipt_row_counts",
-                ("analysis_id", "stage", "start_generation"),
-            ),
-            direct(
-                "catalog_analysis_batch_receipt_next_cursors",
-                ("analysis_id", "stage", "start_generation"),
-            ),
-            direct(
-                "catalog_analysis_batch_receipt_start_processed_counts",
-                ("analysis_id", "stage", "start_generation"),
-            ),
-            direct(
-                "catalog_analysis_batch_receipt_page_limits",
-                ("analysis_id", "stage", "start_generation"),
-            ),
-            direct(
-                "catalog_analysis_batch_receipt_start_cursors",
-                ("analysis_id", "stage", "start_generation"),
-            ),
-        ),
-        "AR_BATCH_ANCHOR": (
-            direct(
-                "catalog_analysis_batch_receipt_anchors",
-                ("analysis_id", "stage", "start_generation"),
-            ),
-        ),
-        "AR_COMPONENT_SEAL": (
-            direct(
-                "catalog_analysis_state_component_completion_seals",
-                ("analysis_id", "state_component"),
-            ),
-        ),
-        "AR_COMPONENT_VALUES": (
-            direct(
-                "catalog_analysis_state_component_row_counts",
-                ("analysis_id", "state_component"),
-            ),
-            direct(
-                "catalog_analysis_state_component_sealed_ats",
-                ("analysis_id", "state_component"),
-            ),
-        ),
-        "AR_COMPONENT_ANCHOR": (
-            direct(
-                "catalog_analysis_state_component_anchors",
+                "catalog_analysis_state_component_seals",
                 ("analysis_id", "state_component"),
             ),
         ),
@@ -2680,21 +4791,8 @@ def _analysis_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                 ("analysis_id", "file_sha256"),
             ),
         ),
-        "AR_CHECKPOINT_SEAL": (
-            direct("catalog_analysis_checkpoint_seals", ("analysis_id", "stage")),
-        ),
-        "AR_CHECKPOINT_VALUES": (
-            direct("catalog_analysis_checkpoint_updated_ats", ("analysis_id", "stage")),
-            direct("catalog_analysis_checkpoint_states", ("analysis_id", "stage")),
-            direct(
-                "catalog_analysis_checkpoint_processed_counts",
-                ("analysis_id", "stage"),
-            ),
-            direct("catalog_analysis_checkpoint_cursors", ("analysis_id", "stage")),
-            direct("catalog_analysis_checkpoint_generations", ("analysis_id", "stage")),
-        ),
-        "AR_CHECKPOINT_ANCHOR": (
-            direct("catalog_analysis_checkpoint_anchors", ("analysis_id", "stage")),
+        "AR_CHECKPOINT": (
+            direct("catalog_analysis_checkpoints", ("analysis_id", "stage")),
         ),
         "AR_ANCESTRY": (
             direct(
@@ -2707,66 +4805,27 @@ def _analysis_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
             direct("catalog_source_revision_provenance", ("source_revision",)),
             direct("catalog_analysis_snapshot_manifest", ("analysis_id",)),
         ),
-        # The terminal state is part of cleanup eligibility, so the descriptor,
-        # run values, and anchor must leave in one final compound mutation.  An
-        # empty phase preserves the provider's closed 19-phase protocol without
-        # making the terminal row unreachable between transactions.
-        "AR_DESCRIPTOR": (),
-        "AR_RUN_VALUES": (),
-        "AR_ROOT": (
-            _owned_spec(
-                root,
-                key,
-                root,
-                key,
-                delete_sql=(
-                    "DELETE FROM catalog_analysis_run_completed_ats "
-                    "WHERE analysis_id = %s",
-                    "DELETE FROM catalog_analysis_run_descriptor_seals "
-                    "WHERE analysis_id = %s",
-                    "DELETE FROM catalog_analysis_run_identities "
-                    "WHERE analysis_id = %s",
-                    "DELETE FROM catalog_analysis_run_started_ats "
-                    "WHERE analysis_id = %s",
-                    "DELETE FROM catalog_analysis_run_input_manifest_sha256s "
-                    "WHERE analysis_id = %s",
-                    "DELETE FROM catalog_analysis_run_policy_ids "
-                    "WHERE analysis_id = %s",
-                    "DELETE FROM catalog_analysis_run_build_ids WHERE analysis_id = %s",
-                    "DELETE FROM catalog_analysis_run_states WHERE analysis_id = %s",
-                    "DELETE FROM catalog_analysis_run_anchors WHERE analysis_id = %s",
-                ),
-                delete_allowed_affected=(
-                    frozenset((0, 1)),
-                    frozenset((1,)),
-                    frozenset((1,)),
-                    frozenset((1,)),
-                    frozenset((1,)),
-                    frozenset((1,)),
-                    frozenset((1,)),
-                    frozenset((1,)),
-                    frozenset((1,)),
-                ),
-            ),
-        ),
+        "AR_COMPLETION": (direct("catalog_analysis_run_completed_ats", key),),
+        "AR_STATE": (direct("catalog_analysis_run_states", key),),
+        "AR_ROOT": (direct(root, key),),
     }
 
 
 def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
-    root = "catalog_publication_candidate_anchors"
+    root = "catalog_publication_candidates"
     key = ("candidate_id",)
 
     def direct(table: str, pk: tuple[str, ...]) -> _StaticDeleteSpec:
         return _owned_spec(table, pk, root, key)
 
     uncommitted = (
-        "NOT EXISTS (SELECT 1 FROM catalog_publication_commit_candidates committed "
+        "NOT EXISTS (SELECT 1 FROM catalog_publication_commits committed "
         "WHERE committed.candidate_id = r.candidate_id)"
     )
 
     prepared_source = (
         "catalog_prepared_artifacts AS c "
-        "JOIN catalog_publication_candidate_anchors AS r "
+        "JOIN catalog_publication_candidates AS r "
         "ON r.candidate_id = c.candidate_id"
     )
     prepared_key = ("candidate_id", "publication_key")
@@ -2786,7 +4845,7 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         "JOIN catalog_publication_selection_occurrence_identities AS occurrence "
         "ON occurrence.selection_occurrence_sha256 = "
         "c.selection_occurrence_sha256 "
-        "JOIN catalog_publication_candidate_anchors AS r "
+        "JOIN catalog_publication_candidates AS r "
         "ON r.candidate_id = occurrence.candidate_id",
     )
     projection_storage = _indirect_spec(
@@ -2795,9 +4854,9 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         "catalog_publication_storage AS c "
         "JOIN catalog_publication_occurrence_identities AS occurrence "
         "ON occurrence.catalog_occurrence_sha256 = c.catalog_occurrence_sha256 "
-        "JOIN catalog_publication_candidate_reserved_revisions AS reserved "
+        "JOIN catalog_publication_candidates AS reserved "
         "ON reserved.reserved_revision = occurrence.revision "
-        "JOIN catalog_publication_candidate_anchors AS r "
+        "JOIN catalog_publication_candidates AS r "
         "ON r.candidate_id = reserved.candidate_id",
         extra_predicate=uncommitted,
     )
@@ -2807,9 +4866,9 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
             table,
             primary_key,
             f"{table} AS c "
-            "JOIN catalog_publication_candidate_reserved_revisions AS reserved "
+            "JOIN catalog_publication_candidates AS reserved "
             "ON reserved.reserved_revision = c.revision "
-            "JOIN catalog_publication_candidate_anchors AS r "
+            "JOIN catalog_publication_candidates AS r "
             "ON r.candidate_id = reserved.candidate_id",
             extra_predicate=uncommitted,
         )
@@ -2822,7 +4881,7 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                 ("candidate_id",),
             ),
             direct(
-                "catalog_publication_batch_receipt_seals",
+                "catalog_publication_batch_receipt_stored",
                 ("candidate_id", "stage", "start_generation"),
             ),
             direct("catalog_artifact_operations", ("candidate_id", "publication_key")),
@@ -2850,48 +4909,20 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                 ),
             ),
         ),
-        "PC_BATCH_VALUES": (
-            direct(
-                "catalog_publication_batch_receipt_coordinates",
-                ("candidate_id", "stage", "batch_key"),
-            ),
-            direct(
-                "catalog_publication_batch_receipt_committed_ats",
-                ("candidate_id", "stage", "start_generation"),
-            ),
-            direct(
-                "catalog_publication_batch_receipt_row_counts",
-                ("candidate_id", "stage", "start_generation"),
-            ),
-            direct(
-                "catalog_publication_batch_receipt_next_cursors",
-                ("candidate_id", "stage", "start_generation"),
-            ),
-            direct(
-                "catalog_publication_batch_receipt_start_processed_counts",
-                ("candidate_id", "stage", "start_generation"),
-            ),
-            direct(
-                "catalog_publication_batch_receipt_start_cursors",
-                ("candidate_id", "stage", "start_generation"),
-            ),
+        "PC_CONTRIBUTOR_NAME": (
             projection(
                 "catalog_contributor_name_sha256s",
                 ("revision", "publication_key", "position"),
             ),
         ),
-        "PC_BATCH_ANCHOR": (
-            direct(
-                "catalog_publication_batch_receipt_anchors",
-                ("candidate_id", "stage", "start_generation"),
-            ),
+        "PC_CONTRIBUTOR_ROLE": (
             projection(
                 "catalog_contributor_roles",
                 ("revision", "publication_key", "position"),
             ),
         ),
-        "PC_CHECKPOINT_SEAL": (
-            direct("catalog_publication_checkpoint_seals", ("candidate_id", "stage")),
+        "PC_CHECKPOINT": (
+            direct("catalog_publication_checkpoints", ("candidate_id", "stage")),
             projection(
                 "catalog_contributor_anchors",
                 ("revision", "publication_key", "position"),
@@ -2901,25 +4932,10 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
             selection_storage,
             projection("catalog_publication_order", ("revision", "position")),
         ),
-        "PC_CHECKPOINT_VALUES": (
-            direct(
-                "catalog_publication_checkpoint_updated_ats",
-                ("candidate_id", "stage"),
-            ),
-            direct("catalog_publication_checkpoint_states", ("candidate_id", "stage")),
-            direct(
-                "catalog_publication_checkpoint_processed_counts",
-                ("candidate_id", "stage"),
-            ),
-            direct("catalog_publication_checkpoint_cursors", ("candidate_id", "stage")),
-            direct(
-                "catalog_publication_checkpoint_generations",
-                ("candidate_id", "stage"),
-            ),
+        "PC_CONTENT": (
             projection("catalog_publication_contents", ("revision", "publication_key")),
         ),
-        "PC_CHECKPOINT_ANCHOR": (
-            direct("catalog_publication_checkpoint_anchors", ("candidate_id", "stage")),
+        "PC_SUBJECT": (
             projection(
                 "catalog_subjects",
                 ("revision", "publication_key", "position"),
@@ -2942,27 +4958,12 @@ def _publication_candidate_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                 ("revision", "publication_key"),
             ),
         ),
-        "PC_ROOT": (
-            direct(
-                "catalog_publication_candidate_definition_seals",
-                key,
-            ),
-            direct("catalog_publication_candidate_created_ats", key),
-            direct("catalog_publication_candidate_artifacts_required", key),
-            direct(
-                "catalog_publication_candidate_display_title_policy_ids",
-                key,
-            ),
-            direct("catalog_publication_candidate_artifact_policy_ids", key),
-            direct("catalog_publication_candidate_reserved_revisions", key),
-            direct("catalog_publication_candidate_analysis_ids", key),
-            direct(root, key),
-        ),
+        "PC_ROOT": (direct(root, key),),
     }
 
 
 def _source_build_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
-    root = "catalog_source_build_anchors"
+    root = "catalog_source_build_descriptor"
     key = ("build_id",)
 
     def direct(table: str, pk: tuple[str, ...]) -> _StaticDeleteSpec:
@@ -2974,7 +4975,7 @@ def _source_build_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         "operational_canonical_value_uploads AS c "
         "JOIN operational_source_build_generations AS m "
         "ON m.generation = c.generation "
-        "JOIN catalog_source_build_anchors AS r ON r.build_id = m.build_id",
+        "JOIN catalog_source_build_descriptor AS r ON r.build_id = m.build_id",
     )
     return {
         "SB_CANONICAL_UPLOAD": (
@@ -2989,30 +4990,13 @@ def _source_build_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
             upload,
         ),
         "SB_GALLERY": (
+            direct("catalog_source_build_sealed_ats", ("build_id",)),
             direct("operational_source_build_discovery_checkpoints", ("build_id",)),
             direct("operational_source_build_assembly_checkpoints", ("build_id",)),
-            direct("catalog_build_manifest_seals", ("build_id",)),
-            direct("catalog_build_manifest_manifest_sha256s", ("build_id",)),
-            direct("catalog_build_manifest_file_counts", ("build_id",)),
-            direct("catalog_build_manifest_byte_counts", ("build_id",)),
-            direct("catalog_build_manifest_anchors", ("build_id",)),
+            direct("catalog_build_manifest_core", ("build_id",)),
             direct("catalog_source_build_galleries", ("build_id", "gallery_id")),
         ),
-        "SB_DISCOVERY_SEAL": (
-            direct("catalog_source_build_discovery_seals", ("build_id",)),
-        ),
-        "SB_DISCOVERY_VALUES": (
-            direct("catalog_source_build_discovery_scan_attempts", ("build_id",)),
-            direct("catalog_source_build_discovery_gallery_counts", ("build_id",)),
-            direct(
-                "catalog_source_build_discovery_tree_observation_sha256s",
-                ("build_id",),
-            ),
-            direct("catalog_source_build_discovery_completed_ats", ("build_id",)),
-        ),
-        "SB_DISCOVERY_ANCHOR": (
-            direct("catalog_source_build_discovery_anchors", ("build_id",)),
-        ),
+        "SB_DISCOVERY": (direct("catalog_source_build_discoveries", ("build_id",)),),
         "SB_SATELLITES": (
             direct("catalog_source_build_expected_gallery", ("build_id", "position")),
             direct("catalog_source_build_base_publication_commits", ("build_id",)),
@@ -3021,43 +5005,19 @@ def _source_build_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         "SB_GENERATION": (
             direct("operational_source_build_generations", ("generation",)),
         ),
-        "SB_ROOT": (
-            _owned_spec(
-                root,
-                key,
-                root,
-                key,
-                delete_sql=(
-                    "DELETE FROM catalog_source_build_sealed_ats WHERE build_id = %s",
-                    "DELETE FROM catalog_source_build_descriptor_seals WHERE build_id = %s",
-                    "DELETE FROM catalog_source_build_states WHERE build_id = %s",
-                    "DELETE FROM catalog_source_build_created_ats WHERE build_id = %s",
-                    "DELETE FROM catalog_source_build_manifest_policy_ids WHERE build_id = %s",
-                    "DELETE FROM catalog_source_build_scope_keys WHERE build_id = %s",
-                    "DELETE FROM catalog_source_build_anchors WHERE build_id = %s",
-                ),
-                delete_allowed_affected=(
-                    frozenset((0, 1)),
-                    frozenset((1,)),
-                    frozenset((1,)),
-                    frozenset((1,)),
-                    frozenset((1,)),
-                    frozenset((1,)),
-                    frozenset((1,)),
-                ),
-            ),
-        ),
+        "SB_STATE": (direct("catalog_source_build_states", key),),
+        "SB_ROOT": (direct(root, key),),
     }
 
 
 _GALLERY_OBSERVATION_STAGING_ELIGIBILITY = """
 (
-    (r.state = 'SEALED' AND EXISTS (
+    (r.state IN ('SEALED', 'RETIRING_SEALED') AND EXISTS (
         SELECT 1 FROM catalog_source_build_galleries m
         WHERE m.build_id = r.build_id AND m.gallery_id = r.gallery_id
           AND m.observation_id = r.observation_id))
     OR
-    (r.state = 'REUSED' AND EXISTS (
+    (r.state IN ('REUSED', 'RETIRING_REUSED') AND EXISTS (
         SELECT 1 FROM catalog_source_build_galleries m
         WHERE m.build_id = r.build_id AND m.gallery_id = r.gallery_id
           AND m.observation_id <> r.observation_id))
@@ -3065,12 +5025,13 @@ _GALLERY_OBSERVATION_STAGING_ELIGIBILITY = """
 AND NOT EXISTS (
     SELECT 1
     FROM operational_gallery_observation_staging_request_predecessors p
-    JOIN operational_gallery_observation_staging_request_owners prior_owner
+    JOIN operational_gallery_observation_staging_requests prior_owner
       ON prior_owner.request_sha256 = p.prior_request_sha256
-    JOIN operational_gallery_observation_staging_request_owners next_owner
+    JOIN operational_gallery_observation_staging_requests next_owner
       ON next_owner.request_sha256 = p.request_sha256
-    WHERE prior_owner.staging_id = r.staging_id
-      AND next_owner.staging_id <> r.staging_id)
+    WHERE prior_owner.staging_id <> next_owner.staging_id
+      AND (prior_owner.staging_id = r.staging_id
+        OR next_owner.staging_id = r.staging_id))
 """
 
 _GALLERY_OBSERVATION_ELIGIBILITY = """
@@ -3088,10 +5049,8 @@ AND NOT EXISTS (
               ON head.current_generation = claim.ingest_generation
             JOIN operational_ingest_generation_owners owner
               ON owner.generation = claim.ingest_generation
-            JOIN operational_ingest_generation_leases lease
-              ON lease.generation = claim.ingest_generation
             WHERE claim.staging_id = s.staging_id
-              AND lease.lease_expires_at > %s))
+              AND owner.lease_expires_at > %s))
         OR
         (s.state = 'REUSED' AND EXISTS (
             SELECT 1 FROM catalog_source_build_galleries linked
@@ -3101,11 +5060,11 @@ AND NOT EXISTS (
 AND NOT EXISTS (
     SELECT 1
     FROM operational_gallery_observation_stagings s
-    JOIN operational_gallery_observation_staging_request_owners prior_owner
+    JOIN operational_gallery_observation_staging_requests prior_owner
       ON prior_owner.staging_id = s.staging_id
     JOIN operational_gallery_observation_staging_request_predecessors p
       ON p.prior_request_sha256 = prior_owner.request_sha256
-    JOIN operational_gallery_observation_staging_request_owners next_owner
+    JOIN operational_gallery_observation_staging_requests next_owner
       ON next_owner.request_sha256 = p.request_sha256
     WHERE s.gallery_id = r.gallery_id AND s.observation_id = r.observation_id
       AND next_owner.staging_id <> s.staging_id)
@@ -3133,7 +5092,7 @@ def _staging_request_spec(
         table,
         primary_key,
         f"{table} AS c "
-        "JOIN operational_gallery_observation_staging_request_owners AS owned "
+        "JOIN operational_gallery_observation_staging_requests AS owned "
         "ON owned.request_sha256 = c.request_sha256 "
         "JOIN operational_gallery_observation_stagings AS r "
         "ON r.staging_id = owned.staging_id",
@@ -3146,15 +5105,13 @@ def _staging_request_spec(
 
 
 def _gallery_observation_staging_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
-    owner_pair = _indirect_spec(
-        "operational_gallery_observation_staging_request_owners",
+    request_identity = _indirect_spec(
+        "operational_gallery_observation_staging_requests",
         ("request_sha256",),
-        "operational_gallery_observation_staging_request_owners AS c "
+        "operational_gallery_observation_staging_requests AS c "
         "JOIN operational_gallery_observation_stagings AS r "
         "ON r.staging_id = c.staging_id",
         delete_sql=(
-            "DELETE FROM operational_gallery_observation_staging_request_owners "
-            "WHERE request_sha256 = %s",
             "DELETE FROM operational_gallery_observation_staging_requests "
             "WHERE request_sha256 = %s",
         ),
@@ -3203,7 +5160,7 @@ def _gallery_observation_staging_phases() -> dict[str, tuple[_StaticDeleteSpec, 
                 ("request_sha256", "position"),
             ),
         ),
-        "GOS_REQUEST_IDENTITY": (owner_pair,),
+        "GOS_REQUEST_IDENTITY": (request_identity,),
         "GOS_CHECKPOINT": (
             _staging_owned_spec(
                 "operational_gallery_observation_staging_checkpoints",
@@ -3261,7 +5218,7 @@ def _observation_request_spec(
         table,
         primary_key,
         f"{table} AS c "
-        "JOIN operational_gallery_observation_staging_request_owners AS owned "
+        "JOIN operational_gallery_observation_staging_requests AS owned "
         "ON owned.request_sha256 = c.request_sha256 "
         "JOIN operational_gallery_observation_stagings AS staged "
         "ON staged.staging_id = owned.staging_id "
@@ -3283,18 +5240,16 @@ def _gallery_observation_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
     def direct(table: str, pk: tuple[str, ...]) -> _StaticDeleteSpec:
         return _owned_spec(table, pk, root, key)
 
-    owner_pair = _indirect_spec(
-        "operational_gallery_observation_staging_request_owners",
+    request_identity = _indirect_spec(
+        "operational_gallery_observation_staging_requests",
         ("request_sha256",),
-        "operational_gallery_observation_staging_request_owners AS c "
+        "operational_gallery_observation_staging_requests AS c "
         "JOIN operational_gallery_observation_stagings AS staged "
         "ON staged.staging_id = c.staging_id "
         "JOIN catalog_gallery_observation_allocations AS r "
         "ON r.gallery_id = staged.gallery_id "
         "AND r.observation_id = staged.observation_id",
         delete_sql=(
-            "DELETE FROM operational_gallery_observation_staging_request_owners "
-            "WHERE request_sha256 = %s",
             "DELETE FROM operational_gallery_observation_staging_requests "
             "WHERE request_sha256 = %s",
         ),
@@ -3343,7 +5298,7 @@ def _gallery_observation_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
                 ("request_sha256", "position"),
             ),
         ),
-        "GO_STAGING_REQUEST_IDENTITY": (owner_pair,),
+        "GO_STAGING_REQUEST_IDENTITY": (request_identity,),
         "GO_STAGING_CHECKPOINT": (
             _observation_staging_direct(
                 "operational_gallery_observation_staging_checkpoints",
@@ -3484,23 +5439,10 @@ _OPERATIONAL_PREPARATION_ELIGIBILITY = """
 NOT EXISTS (
     SELECT 1 FROM operational_publication_candidate_preparations bound
     WHERE bound.preparation_id = r.preparation_id)
-AND (
-    (r.state = 'COMPLETE' AND EXISTS (
-        SELECT 1 FROM catalog_publication_commit_operational_preparations committed
-        WHERE committed.preparation_id = r.preparation_id))
-    OR
-    (r.state = 'ABANDONED'
-     AND NOT EXISTS (
-        SELECT 1 FROM catalog_publication_commit_operational_preparations committed
-        WHERE committed.preparation_id = r.preparation_id)
-     AND NOT EXISTS (
-        SELECT 1 FROM operational_operational_event_ack_heads head
-        WHERE head.preparation_id = r.preparation_id)
-     AND NOT EXISTS (
-        SELECT 1 FROM operational_operational_event_acks ack
-        JOIN operational_operational_events event ON event.event_id = ack.event_id
-        WHERE event.preparation_id = r.preparation_id))
-)
+AND r.state = 'ABANDONED'
+AND NOT EXISTS (
+    SELECT 1 FROM catalog_publication_commits committed
+    WHERE committed.preparation_id = r.preparation_id)
 """
 
 
@@ -3520,7 +5462,6 @@ def _operational_preparation_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]
         "JOIN operational_operational_preparations AS r "
         "ON r.preparation_id = event.preparation_id"
     )
-    complete_root = direct(root, key, "r.state = 'COMPLETE'")
     abandoned_root = _owned_spec(
         root,
         key,
@@ -3575,7 +5516,7 @@ def _operational_preparation_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]
                 abandoned,
             ),
         ),
-        "OP_ROOT": (complete_root, abandoned_root),
+        "OP_ROOT": (abandoned_root,),
     }
 
 
@@ -3770,9 +5711,7 @@ EXISTS (
             AND history.completed_at IS NOT NULL)))
 AND NOT EXISTS (
     SELECT 1 FROM operational_ingest_generation_owners owner
-    JOIN operational_ingest_generation_leases lease
-      ON lease.generation = owner.generation
-    WHERE owner.generation = r.generation AND lease.lease_expires_at > %s)
+    WHERE owner.generation = r.generation AND owner.lease_expires_at > %s)
 AND NOT EXISTS (
     SELECT 1 FROM operational_ingest_generation_handoffs handoff
     WHERE handoff.generation = r.generation)
@@ -3799,23 +5738,19 @@ def _live_display_title_choice(alias: str) -> str:
     EXISTS (
         SELECT 1
         FROM catalog_publication_commit_head_receipts head
-        JOIN catalog_publication_commit_catalog_revisions current_revision
+        JOIN catalog_publication_commits current_revision
           ON current_revision.receipt_id = head.receipt_id
-        JOIN catalog_publication_commit_display_title_policies current_policy
-          ON current_policy.receipt_id = head.receipt_id
         JOIN catalog_publication_titles current_title
           ON current_title.revision = current_revision.revision
-        WHERE current_policy.display_title_policy_id = {child}.display_title_policy_id
+        WHERE current_revision.display_title_policy_id = {child}.display_title_policy_id
           AND current_title.source_title_sha256 = {child}.source_title_sha256
           AND current_title.source_gallery_name = {child}.source_gallery_name)
     OR EXISTS (
         SELECT 1
-        FROM catalog_publication_candidate_reserved_revisions candidate_revision
-        JOIN catalog_publication_candidate_display_title_policy_ids candidate_policy
-          ON candidate_policy.candidate_id = candidate_revision.candidate_id
+        FROM catalog_publication_candidates candidate_revision
         JOIN catalog_publication_titles candidate_title
           ON candidate_title.revision = candidate_revision.reserved_revision
-        WHERE candidate_policy.display_title_policy_id = {child}.display_title_policy_id
+        WHERE candidate_revision.display_title_policy_id = {child}.display_title_policy_id
           AND candidate_title.source_title_sha256 = {child}.source_title_sha256
           AND candidate_title.source_gallery_name = {child}.source_gallery_name
           AND (
@@ -3823,7 +5758,7 @@ def _live_display_title_choice(alias: str) -> str:
                 SELECT 1 FROM operational_catalog_working_candidates working
                 WHERE working.candidate_id = candidate_revision.candidate_id)
             OR NOT EXISTS (
-                SELECT 1 FROM catalog_publication_commit_candidates committed
+                SELECT 1 FROM catalog_publication_commits committed
                 WHERE committed.candidate_id = candidate_revision.candidate_id)))
     """
 
@@ -3834,7 +5769,7 @@ def _live_title_sort(alias: str) -> str:
     EXISTS (
         SELECT 1
         FROM catalog_display_title_choices choice
-        JOIN catalog_display_title_policy_title_sort_policy_ids policy
+        JOIN catalog_display_title_policies policy
           ON policy.display_title_policy_id = choice.display_title_policy_id
         WHERE policy.title_sort_policy_id = {child}.title_sort_policy_id
           AND choice.title_sha256 = {child}.title_sha256
@@ -3849,12 +5784,12 @@ AND NOT EXISTS (SELECT 1 FROM operational_hash_cache_observations x
                 WHERE x.source_identity_sha256 = r.value_sha256
                    OR x.fingerprint_sha256 = r.value_sha256)
 AND NOT EXISTS (
-    SELECT 1 FROM catalog_source_scope_source_root_sha256s scope_root
-    JOIN catalog_source_build_scope_keys build
+    SELECT 1 FROM catalog_source_scopes scope_root
+    JOIN catalog_source_build_descriptor build
       ON build.scope_key = scope_root.scope_key
     WHERE scope_root.source_root_sha256 = r.value_sha256)
 AND NOT EXISTS (
-    SELECT 1 FROM catalog_source_scope_source_root_sha256s scope_root
+    SELECT 1 FROM catalog_source_scopes scope_root
     JOIN catalog_gallery_identities gallery
       ON gallery.scope_key = scope_root.scope_key
     WHERE scope_root.source_root_sha256 = r.value_sha256)
@@ -3876,18 +5811,18 @@ AND NOT EXISTS (
     WHERE term.tag_value_sha256 = r.value_sha256)
 AND NOT EXISTS (
     SELECT 1 FROM catalog_source_head_revisions current_source
-    JOIN catalog_source_revision_snapshot_manifests manifest
+    JOIN catalog_source_revision_descriptors manifest
       ON manifest.source_revision = current_source.source_revision
     WHERE manifest.snapshot_manifest_sha256 = r.value_sha256)
 AND NOT EXISTS (
     SELECT 1 FROM operational_source_working_builds working
-    JOIN catalog_analysis_run_build_ids live_analysis
+    JOIN catalog_analysis_run_descriptor live_analysis
       ON live_analysis.build_id = working.build_id
     JOIN catalog_analysis_snapshot_manifest manifest
       ON manifest.analysis_id = live_analysis.analysis_id
     WHERE manifest.snapshot_manifest_sha256 = r.value_sha256)
 AND NOT EXISTS (
-    SELECT 1 FROM catalog_publication_candidate_analysis_ids live_analysis
+    SELECT 1 FROM catalog_publication_candidates live_analysis
     JOIN catalog_analysis_snapshot_manifest manifest
       ON manifest.analysis_id = live_analysis.analysis_id
     WHERE manifest.snapshot_manifest_sha256 = r.value_sha256
@@ -3896,7 +5831,7 @@ AND NOT EXISTS (
             SELECT 1 FROM operational_catalog_working_candidates working
             WHERE working.candidate_id = live_analysis.candidate_id)
         OR NOT EXISTS (
-            SELECT 1 FROM catalog_publication_commit_candidates committed
+            SELECT 1 FROM catalog_publication_commits committed
             WHERE committed.candidate_id = live_analysis.candidate_id)))
 AND NOT EXISTS (SELECT 1 FROM catalog_a_impacted_content_provenance x
                 WHERE x.content_sha256 = r.value_sha256)
@@ -3909,12 +5844,12 @@ AND NOT EXISTS (SELECT 1 FROM catalog_analysis_content_owner_shadows x
 AND NOT EXISTS (SELECT 1 FROM catalog_analysis_content_owner_tombstones x
                 WHERE x.content_sha256 = r.value_sha256)
 AND NOT EXISTS (
-    SELECT 1 FROM catalog_publication_candidate_artifact_policy_ids x
+    SELECT 1 FROM catalog_publication_candidates x
     JOIN catalog_artifact_policies policy
       ON policy.artifact_policy_id = x.artifact_policy_id
     WHERE policy.policy_component_sha256 = r.value_sha256)
 AND NOT EXISTS (
-    SELECT 1 FROM catalog_publication_commit_artifact_policies committed
+    SELECT 1 FROM catalog_publication_commits committed
     JOIN catalog_artifact_policies policy
       ON policy.artifact_policy_id = committed.artifact_policy_id
     WHERE policy.policy_component_sha256 = r.value_sha256)
@@ -3986,24 +5921,11 @@ def _canonical_value_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
     )
     source_scope = (
         _indirect_spec(
-            "catalog_source_scope_anchors",
+            "catalog_source_scopes",
             ("scope_key",),
-            "catalog_source_scope_anchors AS c "
-            "JOIN catalog_source_scope_source_root_sha256s AS scope_root "
-            "ON scope_root.scope_key = c.scope_key "
+            "catalog_source_scopes AS c "
             "JOIN catalog_canonical_value_allocation_anchors AS r "
-            "ON r.value_sha256 = scope_root.source_root_sha256",
-            delete_sql=(
-                "DELETE FROM catalog_source_scope_seals WHERE scope_key = %s",
-                "DELETE FROM catalog_source_scope_identities WHERE scope_key = %s",
-                "DELETE FROM catalog_source_scope_identity_policy_versions "
-                "WHERE scope_key = %s",
-                "DELETE FROM catalog_source_scope_source_providers "
-                "WHERE scope_key = %s",
-                "DELETE FROM catalog_source_scope_source_root_sha256s "
-                "WHERE scope_key = %s",
-                "DELETE FROM catalog_source_scope_anchors WHERE scope_key = %s",
-            ),
+            "ON r.value_sha256 = c.source_root_sha256",
         ),
     )
     locator = _indirect_spec(
@@ -4028,23 +5950,11 @@ def _canonical_value_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
         ),
     )
     snapshot = _indirect_spec(
-        "catalog_source_snapshot_manifest_identity_anchors",
+        "catalog_source_snapshot_manifest_identity",
         ("snapshot_manifest_sha256",),
-        "catalog_source_snapshot_manifest_identity_anchors AS c "
+        "catalog_source_snapshot_manifest_identity AS c "
         "JOIN catalog_canonical_value_allocation_anchors AS r "
         "ON r.value_sha256 = c.snapshot_manifest_sha256",
-        delete_sql=(
-            "DELETE FROM catalog_source_snapshot_manifest_identity_seals "
-            "WHERE snapshot_manifest_sha256 = %s",
-            "DELETE FROM catalog_source_snapshot_manifest_identity_gallery_counts "
-            "WHERE snapshot_manifest_sha256 = %s",
-            "DELETE FROM catalog_source_snapshot_manifest_identity_file_counts "
-            "WHERE snapshot_manifest_sha256 = %s",
-            "DELETE FROM catalog_source_snapshot_manifest_identity_byte_counts "
-            "WHERE snapshot_manifest_sha256 = %s",
-            "DELETE FROM catalog_source_snapshot_manifest_identity_anchors "
-            "WHERE snapshot_manifest_sha256 = %s",
-        ),
     )
     policy = _indirect_spec(
         "catalog_artifact_policies",
@@ -4064,22 +5974,14 @@ def _canonical_value_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
             "WHERE artifact_semantics_sha256 = %s",
         ),
     )
-    policy_semantics = tuple(
+    policy_semantics = (
         _indirect_spec(
-            table,
+            "catalog_artifact_policy_semantics",
             ("policy_component_sha256",),
-            f"{table} AS c "
+            "catalog_artifact_policy_semantics AS c "
             "JOIN catalog_canonical_value_allocation_anchors AS r "
             "ON r.value_sha256 = c.policy_component_sha256",
-        )
-        for table in (
-            "catalog_artifact_policy_semantics_seals",
-            "catalog_artifact_policy_semantics_identities",
-            "catalog_artifact_policy_semantics_producer_fingerprint_sha256s",
-            "catalog_artifact_policy_semantics_max_image_short_sides",
-            "catalog_artifact_policy_semantics_artifact_algorithm_versions",
-            "catalog_artifact_policy_semantics_anchors",
-        )
+        ),
     )
     parent = _indirect_spec(
         "catalog_canonical_value_page_parents",
@@ -4180,7 +6082,7 @@ def _canonical_value_phases() -> dict[str, tuple[_StaticDeleteSpec, ...]]:
 _STATIC_PLANS: dict[CleanupTargetKind, _StaticTargetPlan] = {
     CleanupTargetKind.SOURCE_BUILD: _StaticTargetPlan(
         CleanupTargetKind.SOURCE_BUILD,
-        "catalog_source_build_anchors",
+        "catalog_source_build_descriptor",
         ("build_id",),
         "build_id",
         16,
@@ -4189,7 +6091,7 @@ _STATIC_PLANS: dict[CleanupTargetKind, _StaticTargetPlan] = {
     ),
     CleanupTargetKind.ANALYSIS_RUN: _StaticTargetPlan(
         CleanupTargetKind.ANALYSIS_RUN,
-        "catalog_analysis_run_anchors",
+        "catalog_analysis_run_descriptor",
         ("analysis_id",),
         "analysis_id",
         16,
@@ -4205,9 +6107,45 @@ _STATIC_PLANS: dict[CleanupTargetKind, _StaticTargetPlan] = {
         _CATALOG_PUBLICATION_ELIGIBILITY,
         _catalog_publication_phases(),
     ),
+    CleanupTargetKind.PUBLICATION_COMMIT: _StaticTargetPlan(
+        CleanupTargetKind.PUBLICATION_COMMIT,
+        "catalog_publication_commit_anchors",
+        ("receipt_id",),
+        "receipt_id",
+        16,
+        _PUBLICATION_COMMIT_ELIGIBILITY,
+        _publication_commit_phases(),
+    ),
+    CleanupTargetKind.CATALOG_REVISION_DESCRIPTOR: _StaticTargetPlan(
+        CleanupTargetKind.CATALOG_REVISION_DESCRIPTOR,
+        "catalog_revision_descriptors",
+        ("revision",),
+        "revision",
+        None,
+        _CATALOG_REVISION_DESCRIPTOR_ELIGIBILITY,
+        _catalog_revision_descriptor_phases(),
+    ),
+    CleanupTargetKind.SOURCE_REVISION_DESCRIPTOR: _StaticTargetPlan(
+        CleanupTargetKind.SOURCE_REVISION_DESCRIPTOR,
+        "catalog_source_revision_descriptors",
+        ("source_revision",),
+        "source_revision",
+        None,
+        _SOURCE_REVISION_DESCRIPTOR_ELIGIBILITY,
+        _source_revision_descriptor_phases(),
+    ),
+    CleanupTargetKind.PUBLICATION_GENERATION: _StaticTargetPlan(
+        CleanupTargetKind.PUBLICATION_GENERATION,
+        "catalog_publication_generation_nodes",
+        ("generation",),
+        "generation",
+        None,
+        _PUBLICATION_GENERATION_ELIGIBILITY,
+        _publication_generation_phases(),
+    ),
     CleanupTargetKind.PUBLICATION_CANDIDATE: _StaticTargetPlan(
         CleanupTargetKind.PUBLICATION_CANDIDATE,
-        "catalog_publication_candidate_anchors",
+        "catalog_publication_candidates",
         ("candidate_id",),
         "candidate_id",
         16,
@@ -4298,6 +6236,15 @@ _STATIC_PLANS: dict[CleanupTargetKind, _StaticTargetPlan] = {
         _canonical_upload_phases(),
         uses_cutoff=True,
     ),
+    CleanupTargetKind.HASH_CACHE_OBSERVATION: _StaticTargetPlan(
+        CleanupTargetKind.HASH_CACHE_OBSERVATION,
+        "operational_hash_cache_observations",
+        ("source_identity_sha256", "fingerprint_sha256"),
+        "source_identity_sha256",
+        32,
+        _HASH_CACHE_ELIGIBILITY,
+        _hash_cache_phases(),
+    ),
 }
 
 
@@ -4310,11 +6257,10 @@ def _load_open_current_only_cycle(work: VNextUnitOfWork) -> CleanupCycle | None:
                job.hash_cache_max_age_microseconds
         FROM {_SWEEP_TABLE} AS sweep
         JOIN {_JOB_TABLE} AS job ON job.target_key = sweep.target_key
-        WHERE job.state = 'OPEN' AND sweep.target_kind <> %s
+        WHERE job.state = 'OPEN'
         ORDER BY {_CURRENT_ONLY_OPEN_ORDER_SQL}, sweep.shard_no
         LIMIT 1
-        """,
-        (CleanupTargetKind.HASH_CACHE_OBSERVATION.value,),
+        """
     )
     if not row:
         return None
@@ -4330,12 +6276,14 @@ def _load_open_current_only_cycle(work: VNextUnitOfWork) -> CleanupCycle | None:
         raise CleanupCorruptionError(
             "current-only interrupted cycle has an unknown target"
         ) from error
-    if kind not in _CURRENT_ONLY_TARGET_PRIORITY:
+    if kind not in _MAINTENANCE_TARGET_PRIORITY:
         raise CleanupCorruptionError(
             "current-only interrupted cycle has an excluded target"
         )
     shard = _require_shard(row[1])
-    if require_int63(row[6], field="cleanup algorithm_version") != 1:
+    if require_int63(row[6], field="cleanup algorithm_version") != (
+        _CLEANUP_ALGORITHM_VERSION
+    ):
         raise CleanupCorruptionError("cleanup algorithm_version is unsupported")
     cycle = CleanupCycle(
         cleanup_id=require_uuid16(row[3], field="stored cleanup_id"),
@@ -4514,7 +6462,7 @@ def _catalog_publication_payload_is_blocked(work: VNextUnitOfWork) -> bool:
         FROM catalog_publication_occurrence_identities AS publication
         JOIN catalog_publication_commit_head_receipts AS head
           ON head.channel = %s
-        JOIN catalog_publication_commit_catalog_revisions AS current
+        JOIN catalog_publication_commits AS current
           ON current.receipt_id = head.receipt_id
         WHERE publication.revision < current.revision
         LIMIT 1
@@ -4531,7 +6479,7 @@ def _catalog_publication_payload_is_blocked(work: VNextUnitOfWork) -> bool:
 def _publication_candidate_payload_is_blocked(work: VNextUnitOfWork) -> bool:
     row = work.connector.fetch_one("""
         SELECT 1
-        FROM catalog_publication_candidate_anchors AS candidate
+        FROM catalog_publication_candidates AS candidate
         WHERE NOT EXISTS (
             SELECT 1 FROM operational_catalog_working_candidates working
             WHERE working.candidate_id = candidate.candidate_id)
@@ -4557,10 +6505,38 @@ def _static_strategy(kind: CleanupTargetKind) -> _Strategy:
 
 
 _STRATEGIES: dict[CleanupTargetKind, _Strategy] = {
-    CleanupTargetKind.SOURCE_BUILD: _static_strategy(CleanupTargetKind.SOURCE_BUILD),
-    CleanupTargetKind.ANALYSIS_RUN: _static_strategy(CleanupTargetKind.ANALYSIS_RUN),
+    CleanupTargetKind.SOURCE_BUILD: _Strategy(
+        tuple(_STATIC_PLANS[CleanupTargetKind.SOURCE_BUILD].phases),
+        tuple(
+            _source_build_mutator(phase)
+            for phase in _STATIC_PLANS[CleanupTargetKind.SOURCE_BUILD].phases
+        ),
+    ),
+    CleanupTargetKind.ANALYSIS_RUN: _Strategy(
+        tuple(_STATIC_PLANS[CleanupTargetKind.ANALYSIS_RUN].phases),
+        tuple(
+            _analysis_run_mutator(phase)
+            for phase in _STATIC_PLANS[CleanupTargetKind.ANALYSIS_RUN].phases
+        ),
+    ),
     CleanupTargetKind.CATALOG_PUBLICATION: _static_strategy(
         CleanupTargetKind.CATALOG_PUBLICATION
+    ),
+    CleanupTargetKind.PUBLICATION_COMMIT: _Strategy(
+        tuple(_STATIC_PLANS[CleanupTargetKind.PUBLICATION_COMMIT].phases),
+        tuple(
+            _publication_commit_mutator(phase)
+            for phase in _STATIC_PLANS[CleanupTargetKind.PUBLICATION_COMMIT].phases
+        ),
+    ),
+    CleanupTargetKind.CATALOG_REVISION_DESCRIPTOR: _static_strategy(
+        CleanupTargetKind.CATALOG_REVISION_DESCRIPTOR
+    ),
+    CleanupTargetKind.SOURCE_REVISION_DESCRIPTOR: _static_strategy(
+        CleanupTargetKind.SOURCE_REVISION_DESCRIPTOR
+    ),
+    CleanupTargetKind.PUBLICATION_GENERATION: _static_strategy(
+        CleanupTargetKind.PUBLICATION_GENERATION
     ),
     CleanupTargetKind.PUBLICATION_CANDIDATE: _static_strategy(
         CleanupTargetKind.PUBLICATION_CANDIDATE
@@ -4603,9 +6579,8 @@ _STRATEGIES: dict[CleanupTargetKind, _Strategy] = {
     CleanupTargetKind.CANONICAL_VALUE_UPLOAD: _static_strategy(
         CleanupTargetKind.CANONICAL_VALUE_UPLOAD
     ),
-    CleanupTargetKind.HASH_CACHE_OBSERVATION: _Strategy(
-        ("HC_FILE", "HC_ROOT"),
-        (_select_hash_cache_files, _select_hash_cache_observations),
+    CleanupTargetKind.HASH_CACHE_OBSERVATION: _static_strategy(
+        CleanupTargetKind.HASH_CACHE_OBSERVATION
     ),
 }
 

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 __all__ = [
     "DeletionConsumption",
-    "OperationalAckReceipt",
     "OperationalBatchLimitError",
     "OperationalBatchReceipt",
     "OperationalEffect",
@@ -55,16 +54,8 @@ _SEAL_TABLE = "operational_operational_preparation_effect_seals"
 _EVENT_TABLE = "operational_operational_events"
 _REMOVED_TABLE = "operational_operational_removed_gid_events"
 _DELETION_TABLE = "operational_operational_deletion_consumption_events"
-_CONSUMER_TABLE = "operational_operational_consumers"
-_ACK_TABLE = "operational_operational_event_acks"
-_ACK_HEAD_TABLE = "operational_operational_event_ack_heads"
 
 _SOURCE_BUILD_STATE_TABLE = "catalog_source_build_states"
-_COMMIT_SEAL_TABLE = "catalog_publication_commit_seals"
-_COMMIT_SOURCE_REVISION_TABLE = "catalog_publication_commit_source_revisions"
-_COMMIT_PREPARATION_TABLE = "catalog_publication_commit_operational_preparations"
-_COMMIT_POLICY_TABLE = "catalog_publication_commit_operational_policies"
-_COMMIT_TIME_TABLE = "catalog_publication_commit_committed_ats"
 _DELETION_ATTEMPT_TABLE = "operational_deletion_request_attempts"
 _DELETION_GENERATION_HEAD_TABLE = "operational_deletion_request_generation_heads"
 _BUILD_GENERATION_TABLE = "operational_source_build_generations"
@@ -158,18 +149,6 @@ class OperationalEffectSeal:
 
 
 @dataclass(frozen=True, slots=True)
-class OperationalAckReceipt:
-    consumer_id: int
-    source_revision: int
-    preparation_id: bytes
-    previous_through_sequence_no: int | None
-    through_sequence_no: int
-    evidence_count: int
-    updated_at: int
-    replayed: bool
-
-
-@dataclass(frozen=True, slots=True)
 class _PreparationRow:
     build_id: bytes
     deletion_request_generation: int
@@ -200,7 +179,7 @@ class _PreparedEvent:
 
 
 class OperationalEffectRepository:
-    """Prepare and seal effects, then acknowledge commit-derived activation."""
+    """Prepare and seal one transient publication-owned effect snapshot."""
 
     @staticmethod
     def begin(
@@ -722,220 +701,6 @@ class OperationalEffectRepository:
         return seal
 
     @staticmethod
-    def acknowledge_through(
-        work: VNextUnitOfWork,
-        *,
-        consumer_id: int,
-        source_revision: int,
-        through_sequence_no: int,
-        now: int,
-    ) -> OperationalAckReceipt:
-        consumer = require_int63(consumer_id, field="operational consumer id")
-        revision = require_positive_int63(source_revision, field="ack source_revision")
-        target = require_int63(through_sequence_no, field="ack through_sequence_no")
-        timestamp = require_int63(now, field="operational acked_at")
-
-        source_member = work.lock_row(
-            LockRank.WORKING_ROOT,
-            encode_lock_key("operational-ack-authority", revision, consumer),
-            f"SELECT receipt_id FROM {_COMMIT_SOURCE_REVISION_TABLE} "
-            "WHERE source_revision = %s",
-            (revision,),
-        )
-        if len(source_member) != 1:
-            raise OperationalEffectStateError("operational activation is missing")
-        receipt_id = require_uuid16(
-            source_member[0], field="activation publication receipt id"
-        )
-        activation_row = work.connector.fetch_one(
-            f"SELECT preparation.preparation_id, policy.operational_policy_id, "
-            f"committed.committed_at FROM {_COMMIT_SEAL_TABLE} sealed "
-            f"JOIN {_COMMIT_PREPARATION_TABLE} preparation "
-            "ON preparation.receipt_id = sealed.receipt_id "
-            f"JOIN {_COMMIT_POLICY_TABLE} policy "
-            "ON policy.receipt_id = sealed.receipt_id "
-            f"JOIN {_COMMIT_TIME_TABLE} committed "
-            "ON committed.receipt_id = sealed.receipt_id "
-            "WHERE sealed.receipt_id = %s",
-            (receipt_id,),
-        )
-        if len(activation_row) != 3:
-            raise OperationalEffectCorruptionError(
-                "sealed publication activation members are incomplete"
-            )
-        preparation = require_uuid16(activation_row[0], field="ack preparation id")
-        policy_id = require_int63(activation_row[1], field="ack operational policy id")
-        activated_at = require_int63(activation_row[2], field="stored activated_at")
-        immutable_authority = work.connector.fetch_one(
-            f"SELECT s.event_count, p.max_batch_rows, c.consumer_id "
-            f"FROM {_SEAL_TABLE} s "
-            f"JOIN {_POLICY_TABLE} p ON p.operational_policy_id = %s "
-            f"JOIN {_CONSUMER_TABLE} c ON c.consumer_id = %s "
-            "WHERE s.preparation_id = %s",
-            (policy_id, consumer, preparation),
-        )
-        if len(immutable_authority) != 3:
-            raise OperationalEffectStateError(
-                "effect seal, policy, or consumer is missing"
-            )
-        event_count = require_int63(immutable_authority[0], field="sealed event count")
-        cap = _require_batch_cap(immutable_authority[1])
-        require_int63(immutable_authority[2], field="stored consumer id")
-        if target >= event_count:
-            raise OperationalEffectStateError(
-                "acknowledgement target is outside the sealed event prefix"
-            )
-
-        head_row = work.lock_row(
-            LockRank.CHECKPOINT,
-            encode_lock_key("operational-ack-head", consumer, preparation),
-            f"SELECT through_sequence_no, updated_at FROM {_ACK_HEAD_TABLE} "
-            "WHERE consumer_id = %s AND preparation_id = %s",
-            (consumer, preparation),
-        )
-        previous: int | None
-        previous_updated_at: int | None
-        if head_row:
-            if len(head_row) != 2:
-                raise OperationalEffectCorruptionError(
-                    "acknowledgement head returned malformed facts"
-                )
-            previous = require_int63(
-                head_row[0], field="stored ack through_sequence_no"
-            )
-            previous_updated_at = require_int63(
-                head_row[1], field="stored ack updated_at"
-            )
-            if target < previous:
-                raise OperationalEffectStateError(
-                    "acknowledgement head cannot move backward"
-                )
-            if target == previous:
-                OperationalEffectRepository._validate_existing_ack(
-                    work, consumer, preparation, target
-                )
-                return OperationalAckReceipt(
-                    consumer,
-                    revision,
-                    preparation,
-                    previous,
-                    target,
-                    0,
-                    previous_updated_at,
-                    True,
-                )
-            start = previous + 1
-        else:
-            previous = None
-            previous_updated_at = None
-            start = 0
-
-        evidence_count = target - start + 1
-        if evidence_count > cap:
-            raise OperationalBatchLimitError(
-                f"acknowledgement requires {evidence_count} rows; policy permits {cap}"
-            )
-        if timestamp < activated_at or (
-            previous_updated_at is not None and timestamp < previous_updated_at
-        ):
-            raise OperationalEffectStateError(
-                "acknowledgement timestamp precedes its durable authority"
-            )
-        events = work.connector.fetch_all(
-            f"SELECT sequence_no, event_id FROM {_EVENT_TABLE} "
-            "WHERE preparation_id = %s AND sequence_no >= %s "
-            "AND sequence_no <= %s ORDER BY sequence_no LIMIT %s",
-            (preparation, start, target, cap + 1),
-        )
-        if len(events) != evidence_count:
-            raise OperationalEffectCorruptionError(
-                "sealed acknowledgement range is not a complete event prefix"
-            )
-
-        event_ids: list[bytes] = []
-        for offset, event_row in enumerate(events):
-            if len(event_row) != 2:
-                raise OperationalEffectCorruptionError(
-                    "acknowledgement event row is malformed"
-                )
-            sequence = require_int63(
-                event_row[0], field="acknowledgement event sequence"
-            )
-            event_id = require_uuid16(event_row[1], field="acknowledgement event id")
-            if sequence != start + offset:
-                raise OperationalEffectCorruptionError(
-                    "acknowledgement evidence is not contiguous"
-                )
-            event_ids.append(event_id)
-
-        existing_acks: dict[bytes, int] = {}
-        ack_rows = work.connector.fetch_all(
-            f"SELECT a.event_id, a.acked_at FROM {_ACK_TABLE} a "
-            f"JOIN {_EVENT_TABLE} e ON e.event_id = a.event_id "
-            "WHERE a.consumer_id = %s AND e.preparation_id = %s "
-            "AND e.sequence_no >= %s AND e.sequence_no <= %s "
-            "ORDER BY e.sequence_no LIMIT %s",
-            (consumer, preparation, start, target, cap + 1),
-        )
-        for ack_row in ack_rows:
-            if len(ack_row) != 2:
-                raise OperationalEffectCorruptionError(
-                    "acknowledgement evidence row is malformed"
-                )
-            event_id = require_uuid16(
-                ack_row[0], field="stored acknowledgement event id"
-            )
-            existing_acks[event_id] = require_int63(
-                ack_row[1], field="stored acknowledgement timestamp"
-            )
-        if any(event_id not in event_ids for event_id in existing_acks):
-            raise OperationalEffectCorruptionError(
-                "acknowledgement evidence escapes the requested range"
-            )
-        for event_id in event_ids:
-            if event_id not in existing_acks:
-                work.connector.execute(
-                    f"INSERT INTO {_ACK_TABLE} (consumer_id, event_id, acked_at) "
-                    "VALUES (%s, %s, %s)",
-                    (consumer, event_id, timestamp),
-                )
-
-        if previous is None:
-            work.compare_and_swap(
-                f"INSERT INTO {_ACK_HEAD_TABLE} "
-                "(consumer_id, preparation_id, through_sequence_no, updated_at) "
-                "VALUES (%s, %s, %s, %s)",
-                (consumer, preparation, target, timestamp),
-                authority="operational acknowledgement head creation",
-            )
-        else:
-            assert previous_updated_at is not None
-            work.compare_and_swap(
-                f"UPDATE {_ACK_HEAD_TABLE} SET through_sequence_no = %s, "
-                "updated_at = %s WHERE consumer_id = %s AND preparation_id = %s "
-                "AND through_sequence_no = %s AND updated_at = %s",
-                (
-                    target,
-                    timestamp,
-                    consumer,
-                    preparation,
-                    previous,
-                    previous_updated_at,
-                ),
-                authority="operational acknowledgement head",
-            )
-        return OperationalAckReceipt(
-            consumer,
-            revision,
-            preparation,
-            previous,
-            target,
-            evidence_count,
-            timestamp,
-            False,
-        )
-
-    @staticmethod
     def _lock_preparation(
         work: VNextUnitOfWork, preparation_id: bytes
     ) -> _PreparationRow:
@@ -1210,26 +975,6 @@ class OperationalEffectRepository:
             checkpoint=checkpoint,
             receipt_row=row,
         )
-
-    @staticmethod
-    def _validate_existing_ack(
-        work: VNextUnitOfWork,
-        consumer_id: int,
-        preparation_id: bytes,
-        sequence_no: int,
-    ) -> None:
-        row = work.connector.fetch_one(
-            f"SELECT a.acked_at FROM {_ACK_TABLE} a "
-            f"JOIN {_EVENT_TABLE} e ON e.event_id = a.event_id "
-            "WHERE a.consumer_id = %s AND e.preparation_id = %s "
-            "AND e.sequence_no = %s",
-            (consumer_id, preparation_id, sequence_no),
-        )
-        if len(row) != 1:
-            raise OperationalEffectCorruptionError(
-                "acknowledgement head lacks its terminal evidence"
-            )
-        require_int63(row[0], field="stored acknowledgement timestamp")
 
 
 def _load_preparation_build(

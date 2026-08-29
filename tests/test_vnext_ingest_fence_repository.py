@@ -58,12 +58,8 @@ def _authority_snapshot(connector: SQLiteConnector) -> tuple[object, ...]:
             "last_transition_at FROM operational_ingest_coordination_heads"
         ),
         connector.fetch_all(
-            "SELECT generation, owner_token, claimed_at "
+            "SELECT generation, owner_token, claimed_at, lease_expires_at "
             "FROM operational_ingest_generation_owners ORDER BY generation"
-        ),
-        connector.fetch_all(
-            "SELECT generation, lease_expires_at "
-            "FROM operational_ingest_generation_leases ORDER BY generation"
         ),
     )
 
@@ -159,12 +155,6 @@ def test_expired_takeover_fences_old_turn_and_completion_cleans_authority(
         assert (
             connector.fetch_all(
                 "SELECT generation FROM operational_ingest_generation_owners"
-            )
-            == []
-        )
-        assert (
-            connector.fetch_all(
-                "SELECT generation FROM operational_ingest_generation_leases"
             )
             == []
         )

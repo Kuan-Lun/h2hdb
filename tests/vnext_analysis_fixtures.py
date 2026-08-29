@@ -1,4 +1,4 @@
-"""Narrow seal-last analysis-family fixtures shared by runtime tests."""
+"""Atomic BCNF analysis-family fixtures shared by runtime tests."""
 
 from __future__ import annotations
 
@@ -132,103 +132,53 @@ def seed_analysis_component(
         stage = _COMPONENT_STAGE[state_component][0]
         cursor = _live_cursor(state_component, row_count)
         checkpoint = connector.fetch_one(
-            "SELECT generation FROM catalog_analysis_checkpoint_generations "
+            "SELECT generation, `cursor`, processed_count, state, updated_at "
+            "FROM catalog_analysis_checkpoints "
             "WHERE analysis_id = %s AND stage = %s",
             (analysis_id, stage),
         )
         if checkpoint:
             generation = int(checkpoint[0])
+            processed_count = int(checkpoint[2])
             connector.execute(
-                "UPDATE catalog_analysis_checkpoint_cursors SET cursor = %s "
+                "UPDATE catalog_analysis_checkpoints SET generation = %s, "
+                "`cursor` = %s, state = %s, updated_at = %s "
                 "WHERE analysis_id = %s AND stage = %s",
-                (cursor, analysis_id, stage),
-            )
-            connector.execute(
-                "UPDATE catalog_analysis_checkpoint_states SET state = %s "
-                "WHERE analysis_id = %s AND stage = %s",
-                ("COMPLETE", analysis_id, stage),
-            )
-            connector.execute(
-                "UPDATE catalog_analysis_checkpoint_updated_ats SET updated_at = %s "
-                "WHERE analysis_id = %s AND stage = %s",
-                (sealed_at, analysis_id, stage),
-            )
-            connector.execute(
-                "UPDATE catalog_analysis_checkpoint_generations SET generation = %s "
-                "WHERE analysis_id = %s AND stage = %s",
-                (generation + 1, analysis_id, stage),
+                (
+                    generation + 1,
+                    cursor,
+                    "COMPLETE",
+                    sealed_at,
+                    analysis_id,
+                    stage,
+                ),
             )
         else:
             generation = 1
-            key = (analysis_id, stage)
+            processed_count = 0
             connector.execute(
-                "INSERT INTO catalog_analysis_checkpoint_anchors "
-                "(analysis_id, stage) VALUES (%s, %s)",
-                key,
+                "INSERT INTO catalog_analysis_checkpoints "
+                "(analysis_id, stage, generation, `cursor`, processed_count, "
+                "state, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (analysis_id, stage, 2, cursor, 0, "COMPLETE", sealed_at),
             )
-            for table, column, value in (
-                ("catalog_analysis_checkpoint_generations", "generation", 2),
-                ("catalog_analysis_checkpoint_cursors", "cursor", cursor),
-                (
-                    "catalog_analysis_checkpoint_processed_counts",
-                    "processed_count",
-                    0,
-                ),
-                ("catalog_analysis_checkpoint_states", "state", "COMPLETE"),
-                (
-                    "catalog_analysis_checkpoint_updated_ats",
-                    "updated_at",
-                    sealed_at,
-                ),
-            ):
-                connector.execute(
-                    f"INSERT INTO {table} (analysis_id, stage, {column}) "
-                    "VALUES (%s, %s, %s)",
-                    (*key, value),
-                )
-            connector.execute(
-                "INSERT INTO catalog_analysis_checkpoint_seals "
-                "(analysis_id, stage) VALUES (%s, %s)",
-                key,
-            )
-        receipt_key = (analysis_id, stage, generation)
         connector.execute(
-            "INSERT INTO catalog_analysis_batch_receipt_anchors "
-            "(analysis_id, stage, start_generation) VALUES (%s, %s, %s)",
-            receipt_key,
-        )
-        connector.execute(
-            "INSERT INTO catalog_analysis_batch_receipt_coordinates "
-            "(analysis_id, stage, batch_key, start_generation) "
-            "VALUES (%s, %s, %s, %s)",
-            (analysis_id, stage, b"fixture-terminal-" + state_component, generation),
-        )
-        for table, column, value in (
-            ("catalog_analysis_batch_receipt_start_cursors", "start_cursor", cursor),
+            "INSERT INTO catalog_analysis_batch_receipt_stored "
+            "(analysis_id, stage, start_generation, batch_key, start_cursor, "
+            "start_processed_count, page_limit, next_cursor, row_count, "
+            "committed_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
-                "catalog_analysis_batch_receipt_start_processed_counts",
-                "start_processed_count",
+                analysis_id,
+                stage,
+                generation,
+                b"fixture-terminal-" + state_component,
+                cursor,
+                processed_count,
+                128,
+                cursor,
                 0,
-            ),
-            ("catalog_analysis_batch_receipt_page_limits", "page_limit", 128),
-            ("catalog_analysis_batch_receipt_next_cursors", "next_cursor", cursor),
-            ("catalog_analysis_batch_receipt_row_counts", "row_count", 0),
-            (
-                "catalog_analysis_batch_receipt_committed_ats",
-                "committed_at",
                 sealed_at,
             ),
-        ):
-            connector.execute(
-                f"INSERT INTO {table} "
-                f"(analysis_id, stage, start_generation, {column}) "
-                "VALUES (%s, %s, %s, %s)",
-                (*receipt_key, value),
-            )
-        connector.execute(
-            "INSERT INTO catalog_analysis_batch_receipt_seals "
-            "(analysis_id, stage, start_generation) VALUES (%s, %s, %s)",
-            receipt_key,
         )
     ensure_analysis_state_component_family(
         connector,
@@ -251,7 +201,7 @@ def set_analysis_component_live_count(
     stage = _COMPONENT_STAGE[state_component][0]
     cursor = _live_cursor(state_component, row_count)
     connector.execute(
-        "UPDATE catalog_analysis_state_component_row_counts SET row_count = %s "
+        "UPDATE catalog_analysis_state_component_seals SET row_count = %s "
         "WHERE analysis_id = %s AND state_component = %s",
         (row_count, analysis_id, state_component),
     )
@@ -263,17 +213,14 @@ def set_analysis_component_live_count(
     if len(terminal) != 1:
         raise AssertionError("analysis component fixture lacks one terminal receipt")
     receipt_key = (analysis_id, stage, int(terminal[0]))
-    for table, column in (
-        ("catalog_analysis_batch_receipt_start_cursors", "start_cursor"),
-        ("catalog_analysis_batch_receipt_next_cursors", "next_cursor"),
-    ):
-        connector.execute(
-            f"UPDATE {table} SET {column} = %s "
-            "WHERE analysis_id = %s AND stage = %s AND start_generation = %s",
-            (cursor, *receipt_key),
-        )
     connector.execute(
-        "UPDATE catalog_analysis_checkpoint_cursors SET cursor = %s "
+        "UPDATE catalog_analysis_batch_receipt_stored SET start_cursor = %s, "
+        "next_cursor = %s WHERE analysis_id = %s AND stage = %s "
+        "AND start_generation = %s",
+        (cursor, cursor, *receipt_key),
+    )
+    connector.execute(
+        "UPDATE catalog_analysis_checkpoints SET `cursor` = %s "
         "WHERE analysis_id = %s AND stage = %s",
         (cursor, analysis_id, stage),
     )
@@ -298,17 +245,17 @@ def set_analysis_component_sealed_at(
         raise AssertionError("analysis component fixture lacks one terminal receipt")
     receipt_key = (analysis_id, stage, int(terminal[0]))
     connector.execute(
-        "UPDATE catalog_analysis_state_component_sealed_ats SET sealed_at = %s "
+        "UPDATE catalog_analysis_state_component_seals SET sealed_at = %s "
         "WHERE analysis_id = %s AND state_component = %s",
         (sealed_at, analysis_id, state_component),
     )
     connector.execute(
-        "UPDATE catalog_analysis_batch_receipt_committed_ats SET committed_at = %s "
+        "UPDATE catalog_analysis_batch_receipt_stored SET committed_at = %s "
         "WHERE analysis_id = %s AND stage = %s AND start_generation = %s",
         (sealed_at, *receipt_key),
     )
     connector.execute(
-        "UPDATE catalog_analysis_checkpoint_updated_ats SET updated_at = %s "
+        "UPDATE catalog_analysis_checkpoints SET updated_at = %s "
         "WHERE analysis_id = %s AND stage = %s",
         (sealed_at, analysis_id, stage),
     )

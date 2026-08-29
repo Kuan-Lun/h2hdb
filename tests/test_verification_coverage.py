@@ -61,11 +61,11 @@ def test_required_invariant_coverage_is_closed_and_nonempty() -> None:
     assert required_ids
     assert set(report.required_invariants) == required_ids
     assert report.evidence_ids
-    assert len(report.blockers) == 46
-    assert sum(blocker.startswith("catalog.") for blocker in report.blockers) == 20
+    assert len(report.blockers) == 48
+    assert sum(blocker.startswith("catalog.") for blocker in report.blockers) == 21
     assert (
         sum(blocker.startswith("h2hdb.operational.") for blocker in report.blockers)
-        == 26
+        == 27
     )
 
 
@@ -249,9 +249,9 @@ def test_coverage_cli_is_a_required_machine_gate() -> None:
     )
 
     assert result.returncode == 1, result.stderr
-    assert "formal coverage blocked: invariants=27" in result.stdout
+    assert "formal coverage blocked: invariants=30" in result.stdout
     assert "catalog.identity-codecs.v1:fault:" in result.stdout
-    assert "catalog.retention.v1:integration:" in result.stdout
+    assert "catalog.retention.v2:integration:" in result.stdout
     assert "h2hdb.operational.gallery-staging.v1:fault:" in result.stdout
 
 
@@ -272,7 +272,7 @@ def test_coverage_validate_only_reports_production_blockers() -> None:
     assert result.returncode == 0, result.stderr
     assert (
         "formal coverage contract valid; production readiness blocked: "
-        "invariants=27 evidence=109 blockers=46"
+        "invariants=30 evidence=121 blockers=48"
     ) in result.stdout
     assert "catalog.identity-codecs.v1:fault:" in result.stdout
     assert "h2hdb.operational.gallery-staging.v1:integration:" in result.stdout

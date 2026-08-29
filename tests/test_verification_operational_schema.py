@@ -28,6 +28,14 @@ CHECKER_PATH = ROOT / "verification" / "schema" / "check_contract.py"
 CATALOG_PATH = ROOT / "verification" / "schema" / "catalog.toml"
 LOGICAL_PATH = ROOT / "verification" / "schema" / "operational.toml"
 PHYSICAL_PATH = ROOT / "verification" / "schema" / "operational_physical.toml"
+
+
+def _empty_cleanup_frozen_root_digest(cleanup_id: bytes) -> bytes:
+    return hashlib.sha256(
+        b"h2hdb-cleanup-frozen-root-set-v1\0" + cleanup_id + bytes(2)
+    ).digest()
+
+
 GENERATOR_PATH = ROOT / "verification" / "schema" / "generate_operational_physical.py"
 OPERATIONAL_REFINEMENT_PATH = (
     ROOT / "verification" / "schema" / "operational_refinement.py"
@@ -63,6 +71,15 @@ def _load_operational_refinement() -> ModuleType:
 
 operational_refinement = _load_operational_refinement()
 refinement = operational_refinement.refinement
+
+
+def test_cleanup_frozen_root_bound_is_derived_from_every_registered_shape() -> None:
+    frame_bytes = operational_refinement._cleanup_frozen_root_frame_bytes_by_target()
+    assert set(frame_bytes) == set(operational_refinement._CLEANUP_TARGET_SHAPES)
+    assert len(frame_bytes) == 22
+    assert all(size <= 260 for size in frame_bytes.values())
+    assert max(frame_bytes.values()) == 260
+    assert frame_bytes["SOURCE_GALLERY_NAME_GID"] == 260
 
 
 class _SQLiteReader:
@@ -197,12 +214,12 @@ def test_operational_contract_is_closed_world_bcnf_and_scope_separated() -> None
     assert contract.scope == "operational_control_plane"
     assert contract.excluded_data_plane_components
     assert not contract.excluded_operational_components
-    assert len(contract.relations) == 76
-    assert len(report.relations) == 76
+    assert len(contract.relations) == 71
+    assert len(report.relations) == 71
     assert not report.lossless_decompositions
     assert not report.dependency_preserving_decompositions
     assert all(not checker.bcnf_violations(value) for value in contract.relations)
-    assert len(contract.external_relations) == 64
+    assert len(contract.external_relations) == 52
     assert {
         "canonical_value_allocation",
         "canonical_value_page",
@@ -399,8 +416,12 @@ def test_operational_greenfield_identity_and_history_shapes() -> None:
         frozenset({"event_id"}),
         frozenset({"preparation_id", "sequence_no"}),
     }
-    ack_head = relations["operational_event_ack_head"]
-    assert set(ack_head.declared_keys) == {frozenset({"consumer_id", "preparation_id"})}
+    assert {
+        "operational_consumer",
+        "operational_event_ack",
+        "operational_event_ack_head",
+        "removed_gid_ack",
+    }.isdisjoint(relations)
     deletion_generation = relations["deletion_request_generation"]
     assert deletion_generation.attributes == ("generation", "allocated_at")
     assert deletion_generation.declared_keys == (frozenset({"generation"}),)
@@ -485,8 +506,10 @@ def test_operational_sqlite_history_and_attempts_accept_required_reuse() -> None
         assert all(len(value) == 16 for value in values)
 
         connection.executemany(
-            "INSERT INTO catalog_source_build_descriptor_seals (build_id) VALUES (?)",
-            ((first_build,), (second_build,)),
+            "INSERT INTO catalog_source_build_descriptor "
+            "(build_id, scope_key, manifest_policy_id, created_at) "
+            "VALUES (?, ?, 1, 1)",
+            ((first_build, b"s" * 32), (second_build, b"t" * 32)),
         )
         connection.execute(
             "INSERT INTO operational_deletion_request_generations "
@@ -529,10 +552,10 @@ def test_operational_sqlite_history_and_attempts_accept_required_reuse() -> None
         connection.executemany(
             """
             INSERT INTO operational_ingest_generation_owners
-                (generation, owner_token, claimed_at)
-            VALUES (?, ?, ?)
+                (generation, owner_token, claimed_at, lease_expires_at)
+            VALUES (?, ?, ?, ?)
             """,
-            ((1, first_owner, 1), (2, second_owner, 2)),
+            ((1, first_owner, 1, 10), (2, second_owner, 2, 20)),
         )
         connection.execute(
             """
@@ -623,16 +646,27 @@ def test_operational_sqlite_history_and_attempts_accept_required_reuse() -> None
             INSERT INTO operational_cleanup_jobs
                 (cleanup_id, target_key, cycle_generation,
                  cycle_cutoff_at,algorithm_version,max_rows_per_transaction,
-                 hash_cache_max_age_microseconds,state,created_at,completed_at)
-            VALUES (?, ?, 1, 1000, 1, 100, 100, 'OPEN', 1, NULL)
+                 hash_cache_max_age_microseconds,frozen_root_count,
+                 frozen_root_set_sha256,state,created_at,completed_at)
+            VALUES (?, ?, 1, 1000, 2, 100, 100, 0, ?, 'OPEN', 1, NULL)
             """,
-            (first_cleanup, target_key),
+            (
+                first_cleanup,
+                target_key,
+                _empty_cleanup_frozen_root_digest(first_cleanup),
+            ),
         )
         connection.execute(
             """UPDATE operational_cleanup_jobs
-               SET cleanup_id=?, cycle_generation=2, created_at=2
+               SET cleanup_id=?, cycle_generation=2, created_at=2,
+                   frozen_root_set_sha256=?
                WHERE target_key=? AND cleanup_id=? AND cycle_generation=1""",
-            (second_cleanup, target_key, first_cleanup),
+            (
+                second_cleanup,
+                _empty_cleanup_frozen_root_digest(second_cleanup),
+                target_key,
+                first_cleanup,
+            ),
         )
         connection.execute(
             "INSERT INTO operational_cleanup_phases (phase,target_kind,phase_order) "
@@ -690,7 +724,7 @@ def test_operational_sqlite_history_and_attempts_accept_required_reuse() -> None
         connection.close()
 
 
-def test_operational_sqlite_event_types_subtypes_and_ack_coordinates() -> None:
+def test_operational_sqlite_event_types_subtypes_and_activation() -> None:
     _logical, _local_names, physical, stubs = _schemas()
     connection = sqlite3.connect(":memory:")
     try:
@@ -802,28 +836,13 @@ def test_operational_sqlite_event_types_subtypes_and_ack_coordinates() -> None:
         )
         receipt_id = bytes([7]) * 16
         connection.execute(
-            "INSERT INTO catalog_publication_commit_source_revisions "
-            "(receipt_id, source_revision) VALUES (?, 1)",
-            (receipt_id,),
-        )
-        connection.execute(
-            "INSERT INTO catalog_publication_commit_operational_preparations "
-            "(receipt_id, preparation_id) VALUES (?, ?)",
-            (receipt_id, preparation),
-        )
-        connection.execute(
-            "INSERT INTO catalog_publication_commit_operational_policies "
-            "(receipt_id, operational_policy_id) VALUES (?, 1)",
-            (receipt_id,),
-        )
-        connection.execute(
-            "INSERT INTO catalog_publication_commit_committed_ats "
-            "(receipt_id, committed_at) VALUES (?, 2)",
-            (receipt_id,),
-        )
-        connection.execute(
-            "INSERT INTO catalog_publication_commit_seals (receipt_id) VALUES (?)",
-            (receipt_id,),
+            "INSERT INTO catalog_publication_commits "
+            "(receipt_id, candidate_id, revision, source_revision, generation, "
+            "preparation_id, operational_policy_id, artifact_policy_id, "
+            "display_title_policy_id, new_galleries, changed_galleries, "
+            "removed_galleries, duplicate_losers, committed_at) "
+            "VALUES (?, ?, 1, 1, 1, ?, 1, 1, 1, 0, 0, 0, 0, 2)",
+            (receipt_id, bytes([8]) * 16, preparation),
         )
         assert connection.execute("""
             SELECT COUNT(*)
@@ -831,33 +850,6 @@ def test_operational_sqlite_event_types_subtypes_and_ack_coordinates() -> None:
             JOIN operational_operational_activations AS activation
               ON activation.preparation_id = event.preparation_id
             """).fetchone() == (2,)
-        connection.execute("""
-            INSERT INTO operational_operational_consumers
-                (consumer_id, consumer_name)
-            VALUES (1, 'fixture-consumer')
-            """)
-        connection.executemany(
-            """
-            INSERT INTO operational_operational_event_acks
-                (consumer_id, event_id, acked_at)
-            VALUES (1, ?, ?)
-            """,
-            ((removed_event, 1), (deletion_event, 2)),
-        )
-        connection.execute(
-            """
-            INSERT INTO operational_operational_event_ack_heads
-                (consumer_id, preparation_id, through_sequence_no, updated_at)
-            VALUES (1, ?, 1, 2)
-            """,
-            (preparation,),
-        )
-        with pytest.raises(sqlite3.IntegrityError):
-            connection.execute("""
-                UPDATE operational_operational_event_ack_heads
-                SET through_sequence_no = 2
-                WHERE consumer_id = 1
-                """)
         empty_preparation = bytes([6]) * 16
         empty_chain = bytes.fromhex(
             "e3963ad6e07ac045502ad95ddb3805ac57deea8ffbb038ddf7c538a816301e71"
@@ -902,8 +894,10 @@ def test_generation_retention_rows_outlive_ephemeral_owner_authority() -> None:
         build_id = bytes([8]) * 16
         value_sha256 = bytes([9]) * 32
         connection.execute(
-            "INSERT INTO catalog_source_build_descriptor_seals (build_id) VALUES (?)",
-            (build_id,),
+            "INSERT INTO catalog_source_build_descriptor "
+            "(build_id, scope_key, manifest_policy_id, created_at) "
+            "VALUES (?, ?, 1, 1)",
+            (build_id, b"s" * 32),
         )
         connection.execute(
             "INSERT INTO catalog_canonical_value_allocation_anchors "
@@ -922,7 +916,8 @@ def test_generation_retention_rows_outlive_ephemeral_owner_authority() -> None:
         )
         connection.execute(
             "INSERT INTO operational_ingest_generation_owners "
-            "(generation, owner_token, claimed_at) VALUES (?, ?, 1)",
+            "(generation, owner_token, claimed_at, lease_expires_at) "
+            "VALUES (?, ?, 1, 100)",
             (generation, owner),
         )
         connection.execute(
@@ -959,7 +954,7 @@ def test_operational_external_fk_must_target_declared_candidate_key() -> None:
     external = next(
         value
         for value in contract.external_relations
-        if value.name == "source_build_descriptor_seal"
+        if value.name == "source_build_descriptor"
     )
     invalid_external = replace(external, declared_keys=(frozenset({"missing"}),))
     invalid = replace(
@@ -1122,6 +1117,41 @@ def test_source_build_authority_is_fail_closed_across_manifests() -> None:
     ):
         checker.validate_cross_manifest_contracts(drifted_retention, operational)
 
+    publication_commit_target = next(
+        target
+        for target in catalog.retention_targets
+        if target.target == "PUBLICATION_COMMIT"
+    )
+    incomplete_publication_target = replace(
+        publication_commit_target,
+        child_phases=tuple(
+            tuple(
+                relation_name
+                for relation_name in phase
+                if relation_name != "operational_event_stream"
+            )
+            for phase in publication_commit_target.child_phases
+        ),
+    )
+    drifted_publication_retention = replace(
+        catalog,
+        retention_targets=tuple(
+            (
+                incomplete_publication_target
+                if target.target == publication_commit_target.target
+                else target
+            )
+            for target in catalog.retention_targets
+        ),
+    )
+    with pytest.raises(
+        checker.ContractValidationError,
+        match="exact operational preparation and transient-event children",
+    ):
+        checker.validate_cross_manifest_contracts(
+            drifted_publication_retention, operational
+        )
+
 
 def test_operational_physical_manifest_is_generated_without_drift() -> None:
     completed = subprocess.run(
@@ -1133,7 +1163,7 @@ def test_operational_physical_manifest_is_generated_without_drift() -> None:
     assert completed.returncode == 0, completed.stderr
     provider_relations = operational_refinement.provider_relation_names(PHYSICAL_PATH)
     assert "schema_epoch_control" not in provider_relations
-    assert len(provider_relations) == 75
+    assert len(provider_relations) == 70
     _logical, _local_names, physical, _stubs = _schemas()
     assert provider_relations == tuple(
         name for name in physical.source_slice if name != "schema_epoch_control"
@@ -1153,13 +1183,24 @@ def test_operational_physical_manifest_is_generated_without_drift() -> None:
                 )
 
 
+def test_operational_physical_relation_member_names_are_unique() -> None:
+    with PHYSICAL_PATH.open("rb") as stream:
+        manifest = tomllib.load(stream)
+    for relation in manifest["relation"]:
+        for member in ("foreign_key", "required_index", "check"):
+            names = [value["name"] for value in relation.get(member, [])]
+            assert len(names) == len(set(names)), (
+                f"{relation['name']} has duplicate {member} names: {names}"
+            )
+
+
 def test_operational_machine_obligations_and_genesis_are_closed_world() -> None:
     machine = operational_refinement.validate_operational_machine_contract(
         LOGICAL_PATH, PHYSICAL_PATH
     )
 
-    assert len(machine.obligations) == 15
-    assert len({value.obligation_id for value in machine.obligations}) == 15
+    assert len(machine.obligations) == 17
+    assert len({value.obligation_id for value in machine.obligations}) == 17
     assert all(value.version == 1 for value in machine.obligations)
     assert all(value.scope.startswith("operational.") for value in machine.obligations)
     assert all(
@@ -1197,12 +1238,13 @@ def test_operational_machine_obligations_and_genesis_are_closed_world() -> None:
         "identity_allocator",
         "deletion_request_generation",
         "deletion_request_generation_head",
+        "gallery_observation_staging_request_budget",
         "cleanup_target_kind",
         "cleanup_phase",
         "cleanup_sweep_target",
     )
     assert machine.epoch_owned_relation == "schema_epoch_control"
-    assert len(machine.absent_relations) == 68
+    assert len(machine.absent_relations) == 62
     with PHYSICAL_PATH.open("rb") as stream:
         physical_document = tomllib.load(stream)
     assert len(machine.seeds) == len(physical_document.get("bootstrap_seed", ()))
@@ -1239,6 +1281,11 @@ def test_operational_machine_obligations_and_genesis_are_closed_world() -> None:
         "deletion_request_generation": (0, 0),
         "deletion_request_generation_head": (1, 0, 0),
     }
+    assert [
+        tuple(cell.value for cell in value.cells)
+        for value in machine.seeds
+        if value.relation == "gallery_observation_staging_request_budget"
+    ] == [(1, 0)]
     queue_obligation = next(
         value
         for value in machine.obligations
@@ -1343,10 +1390,24 @@ def test_cleanup_fk_descendant_and_root_codec_mutations_fail_closed() -> None:
             missing_intermediary, physical
         )
 
+    for kind in ("SOURCE_BUILD", "ANALYSIS_RUN"):
+        drifted_handoff = deepcopy(logical)
+        target = next(
+            value
+            for value in drifted_handoff["cleanup_target"]
+            if value["target_kind"] == kind
+        )
+        target["state_root_handoff_rule"] += " without a checkpoint"
+        with pytest.raises(ValueError, match="state-to-root handoff rule drifts"):
+            operational_refinement.check_cleanup_reachability_v1(
+                drifted_handoff,
+                physical,
+            )
+
     for kind, fragment, error in (
         (
             "SOURCE_BUILD",
-            "sole ABANDONED analysis retirement family",
+            "at-most-one ABANDONED analysis retirement family",
             "successor-fence retention",
         ),
         (
@@ -1361,12 +1422,12 @@ def test_cleanup_fk_descendant_and_root_codec_mutations_fail_closed() -> None:
         ),
         (
             "ANALYSIS_RUN",
-            "ABANDONED analysis and a sibling run",
+            "schema-unreachable sibling family",
             "multi-analysis retirement retention",
         ),
         (
             "PUBLICATION_CANDIDATE",
-            "publication_commit_candidate.candidate_id",
+            "publication_commit.candidate_id",
             "base candidate retention",
         ),
     ):
@@ -2810,7 +2871,7 @@ def test_successful_gallery_staging_compacts_before_source_build_cleanup() -> No
         {
             "relation": "gallery_observation_staging_request_predecessor",
             "attribute": "request_sha256",
-            "owner_relation": "gallery_observation_staging_request_owner",
+            "owner_relation": "gallery_observation_staging_request",
             "owner_attribute": "request_sha256",
         },
     ]
@@ -2819,10 +2880,10 @@ def test_successful_gallery_staging_compacts_before_source_build_cleanup() -> No
             "relation": "gallery_observation_staging_request_predecessor",
             "incoming_attribute": "prior_request_sha256",
             "successor_attribute": "request_sha256",
-            "owner_relation": "gallery_observation_staging_request_owner",
+            "owner_relation": "gallery_observation_staging_request",
             "owner_request_attribute": "request_sha256",
             "owner_staging_attribute": "staging_id",
-            "rule": "lock both request_owner rows; an incoming edge whose successor owner differs from the selected staging blocks cleanup and is never deleted by that staging",
+            "rule": "lock both ownership-bearing request rows; an incoming edge whose successor owner differs from the selected staging blocks cleanup and is never deleted by that staging",
         }
     ]
 
@@ -2861,22 +2922,40 @@ def test_cleanup_registry_foreign_keys_are_enforced_by_sqlite_and_mariadb() -> N
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
                 "INSERT INTO operational_cleanup_jobs "
-                "(cleanup_id,target_key,cycle_generation,cycle_cutoff_at,algorithm_version,max_rows_per_transaction,hash_cache_max_age_microseconds,state,created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
-                (bytes(16), bytes(32), 1, 1000, 1, 100, 100, "OPEN", 0),
+                "(cleanup_id,target_key,cycle_generation,cycle_cutoff_at,"
+                "algorithm_version,max_rows_per_transaction,"
+                "hash_cache_max_age_microseconds,frozen_root_count,"
+                "frozen_root_set_sha256,state,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    bytes(16),
+                    bytes(32),
+                    1,
+                    1000,
+                    2,
+                    100,
+                    100,
+                    0,
+                    _empty_cleanup_frozen_root_digest(bytes(16)),
+                    "OPEN",
+                    0,
+                ),
             )
         invalid_jobs = (
-            (b"a" * 16, 1, 100, "ROGUE", 0, None),
-            (b"b" * 16, 1, 0, "OPEN", 0, None),
-            (b"c" * 16, 0, 100, "OPEN", 0, None),
-            (b"d" * 16, 1, 100, "OPEN", 0, 7),
-            (b"e" * 16, 1, 100, "COMPLETE", 0, None),
-            (b"f" * 16, 1, 100, "COMPLETE", 7, 6),
+            (b"a" * 16, 2, 100, 0, "ROGUE", 0, None),
+            (b"b" * 16, 2, 0, 0, "OPEN", 0, None),
+            (b"c" * 16, 1, 100, 0, "OPEN", 0, None),
+            (b"d" * 16, 2, 257, 0, "OPEN", 0, None),
+            (b"e" * 16, 2, 100, 101, "OPEN", 0, None),
+            (b"f" * 16, 2, 100, 0, "OPEN", 0, 7),
+            (b"g" * 16, 2, 100, 0, "COMPLETE", 0, None),
+            (b"h" * 16, 2, 100, 0, "COMPLETE", 7, 6),
         )
         for (
             cleanup_id,
             algorithm_version,
             max_rows,
+            frozen_root_count,
             state,
             created_at,
             completed_at,
@@ -2886,8 +2965,9 @@ def test_cleanup_registry_foreign_keys_are_enforced_by_sqlite_and_mariadb() -> N
                     "INSERT INTO operational_cleanup_jobs "
                     "(cleanup_id,target_key,cycle_generation,cycle_cutoff_at,"
                     "algorithm_version,max_rows_per_transaction,"
-                    "hash_cache_max_age_microseconds,state,created_at,completed_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    "hash_cache_max_age_microseconds,frozen_root_count,"
+                    "frozen_root_set_sha256,state,created_at,completed_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         cleanup_id,
                         target_key,
@@ -2896,6 +2976,8 @@ def test_cleanup_registry_foreign_keys_are_enforced_by_sqlite_and_mariadb() -> N
                         algorithm_version,
                         max_rows,
                         100,
+                        frozen_root_count,
+                        _empty_cleanup_frozen_root_digest(cleanup_id),
                         state,
                         created_at,
                         completed_at,
@@ -2915,7 +2997,18 @@ def test_cleanup_registry_foreign_keys_are_enforced_by_sqlite_and_mariadb() -> N
         in joined
     )
     assert "state IN ('OPEN', 'COMPLETE')" in joined
-    assert "algorithm_version > 0 AND max_rows_per_transaction > 0" in joined
+    assert (
+        "CONSTRAINT `ck_cleanup_job_progress_bounds` CHECK "
+        "(algorithm_version = 2 AND max_rows_per_transaction > 0 AND "
+        "max_rows_per_transaction <= 256 AND frozen_root_count >= 0 AND "
+        "frozen_root_count <= max_rows_per_transaction)"
+    ) in joined
+    assert "`frozen_root_key` VARBINARY(260) NOT NULL" in joined
+    assert (
+        "CONSTRAINT `ck_cleanup_cycle_root_frame_bounds` CHECK "
+        "(octet_length(frozen_root_key) >= 3 AND "
+        "octet_length(frozen_root_key) <= 260)"
+    ) in joined
     assert "completed_at >= created_at" in joined
 
 
@@ -3114,7 +3207,10 @@ def test_operational_machine_binding_and_typed_seed_mutations_fail_closed() -> N
     activation["foreign_keys"] = [
         value
         for value in activation["foreign_keys"]
-        if value["relation"] != "publication_commit_operational_preparation"
+        if not (
+            value["relation"] == "publication_commit"
+            and value["attributes"] == ["preparation_id"]
+        )
     ]
     with pytest.raises(ValueError, match="lacks exact effect FK"):
         operational_refinement.validate_operational_machine_contract_documents(
@@ -3182,14 +3278,12 @@ def test_every_operational_foreign_key_has_explicit_left_prefix_access() -> None
         "ix_maintenance_gate_owner_fk_1",
         "ix_deletion_request_generation_head_fk_1",
         "ix_gallery_observation_staging_claim_fk_2",
-        "ix_gallery_observation_staging_request_owner_fk_2",
+        "ix_gallery_observation_staging_request_fk_1",
         "ix_gallery_observation_staging_request_page_fk_2",
         "ix_canonical_value_upload_fk_2",
         "ix_gallery_redownload_state_fk_2",
         "ix_operational_preparation_fk_3",
         "ix_operational_preparation_fk_4",
-        "ix_operational_event_ack_head_fk_2",
-        "ix_removed_gid_ack_fk_2",
         "ix_hash_cache_observation_fk_2",
         "ix_cleanup_checkpoint_fk_2",
     }
@@ -3253,7 +3347,7 @@ def test_complete_operational_sqlite_fixture_physically_refines() -> None:
 
     assert report.conforms, report.render()
     assert report.fully_conforms
-    assert len(report.checked_relations) == 76
+    assert len(report.checked_relations) == 71
     assert report.pending_relations == ()
     assert database.table("h2hdb_schema_epoch") is not None
     assert database.table("operational_cleanup_batch_receipts") is not None
@@ -3270,14 +3364,12 @@ def test_complete_operational_sqlite_fixture_physically_refines() -> None:
         "ix_maintenance_gate_owner_fk_1",
         "ix_deletion_request_generation_head_fk_1",
         "ix_gallery_observation_staging_claim_fk_2",
-        "ix_gallery_observation_staging_request_owner_fk_2",
+        "ix_gallery_observation_staging_request_fk_1",
         "ix_gallery_observation_staging_request_page_fk_2",
         "ix_canonical_value_upload_fk_2",
         "ix_gallery_redownload_state_fk_2",
         "ix_operational_preparation_fk_3",
         "ix_operational_preparation_fk_4",
-        "ix_operational_event_ack_head_fk_2",
-        "ix_removed_gid_ack_fk_2",
         "ix_hash_cache_observation_fk_2",
         "ix_cleanup_checkpoint_fk_2",
     } <= sqlite_index_names
@@ -3398,12 +3490,9 @@ def test_source_root_upload_can_bootstrap_before_build_mapping_in_sqlite() -> No
             )
             connection.execute(
                 "INSERT INTO operational_ingest_generation_owners "
-                "(generation, owner_token, claimed_at) VALUES (1, ?, 1)",
+                "(generation, owner_token, claimed_at, lease_expires_at) "
+                "VALUES (1, ?, 1, 100)",
                 (owner,),
-            )
-            connection.execute(
-                "INSERT INTO operational_ingest_generation_leases "
-                "(generation, lease_expires_at) VALUES (1, 100)"
             )
             connection.execute(
                 "INSERT INTO catalog_canonical_value_allocation_anchors "
@@ -3431,8 +3520,10 @@ def test_source_root_upload_can_bootstrap_before_build_mapping_in_sqlite() -> No
 
         with connection:
             connection.execute(
-                "INSERT INTO catalog_source_build_descriptor_seals (build_id) VALUES (?)",
-                (build_id,),
+                "INSERT INTO catalog_source_build_descriptor "
+                "(build_id, scope_key, manifest_policy_id, created_at) "
+                "VALUES (?, ?, 1, 1)",
+                (build_id, b"s" * 32),
             )
             connection.execute(
                 "INSERT INTO operational_source_build_generations "
@@ -3651,11 +3742,13 @@ def test_operational_mariadb_renderer_uses_exact_binary_domains() -> None:
     assert "`event_count` BIGINT UNSIGNED NOT NULL" in effect_seal_ddl
     assert "`final_chain_sha256` BINARY(32) NOT NULL" in effect_seal_ddl
     assert "`sealed_at` BIGINT UNSIGNED NOT NULL" in effect_seal_ddl
-    assert "FROM `catalog_publication_commit_seals` AS sealed" in activation_ddl
-    assert "catalog_publication_commit_source_revisions" in activation_ddl
-    assert "catalog_publication_commit_operational_preparations" in activation_ddl
-    assert "catalog_publication_commit_operational_policies" in activation_ddl
-    assert "catalog_publication_commit_committed_ats" in activation_ddl
+    assert "FROM `catalog_publication_commits` AS committed" in activation_ddl
+    assert "committed.`source_revision` AS `source_revision`" in activation_ddl
+    assert "committed.`preparation_id` AS `preparation_id`" in activation_ddl
+    assert (
+        "committed.`operational_policy_id` AS `operational_policy_id`" in activation_ddl
+    )
+    assert "committed.`committed_at` AS `activated_at`" in activation_ddl
     assert "UNIQUE (`preparation_id`, `sequence_no`)" in event_ddl
     assert "`source_revision`" not in event_ddl
     assert (
@@ -3691,19 +3784,11 @@ def test_operational_activation_accepts_only_mariadb_inner_join_reformatting() -
         if "operational_operational_activations" in statement
     )
     actual = """SELECT
-      source_member.source_revision AS source_revision,
-      preparation_member.preparation_id AS preparation_id,
-      policy_member.operational_policy_id AS operational_policy_id,
-      time_member.committed_at AS activated_at
-    FROM ((((test_database.catalog_publication_commit_seals sealed
-      JOIN test_database.catalog_publication_commit_source_revisions source_member
-        ON(source_member.receipt_id = sealed.receipt_id))
-      JOIN test_database.catalog_publication_commit_operational_preparations preparation_member
-        ON(preparation_member.receipt_id = sealed.receipt_id))
-      JOIN test_database.catalog_publication_commit_operational_policies policy_member
-        ON(policy_member.receipt_id = sealed.receipt_id))
-      JOIN test_database.catalog_publication_commit_committed_ats time_member
-        ON(time_member.receipt_id = sealed.receipt_id))"""
+      committed.source_revision AS source_revision,
+      committed.preparation_id AS preparation_id,
+      committed.operational_policy_id AS operational_policy_id,
+      committed.committed_at AS activated_at
+    FROM test_database.catalog_publication_commits committed"""
     table_names = tuple(
         relation.table
         for relation in relation_by_name.values()
@@ -3724,10 +3809,7 @@ def test_operational_activation_accepts_only_mariadb_inner_join_reformatting() -
     assert actual_normalized == expected_normalized
     assert (
         refinement._normalize_view_definition(
-            actual.replace(
-                "catalog_publication_commit_committed_ats",
-                "catalog_publication_commit_operational_policies",
-            ),
+            actual.replace("committed.committed_at", "committed.operational_policy_id"),
             table_names=table_names,
             collapse_inner_join_tree=True,
         )
@@ -3786,12 +3868,9 @@ def test_complete_operational_mariadb_fixture_physically_refines(
             )
             connector.execute(
                 "INSERT INTO operational_ingest_generation_owners "
-                "(generation, owner_token, claimed_at) VALUES (1, %s, 1)",
+                "(generation, owner_token, claimed_at, lease_expires_at) "
+                "VALUES (1, %s, 1, 100)",
                 (owner,),
-            )
-            connector.execute(
-                "INSERT INTO operational_ingest_generation_leases "
-                "(generation, lease_expires_at) VALUES (1, 100)"
             )
             connector.execute(
                 "INSERT INTO catalog_canonical_value_allocation_anchors "
@@ -3814,8 +3893,10 @@ def test_complete_operational_mariadb_fixture_physically_refines(
         connector.commit()
         with connector.transaction():
             connector.execute(
-                "INSERT INTO catalog_source_build_descriptor_seals (build_id) VALUES (%s)",
-                (build_id,),
+                "INSERT INTO catalog_source_build_descriptor "
+                "(build_id, scope_key, manifest_policy_id, created_at) "
+                "VALUES (%s, %s, 1, 1)",
+                (build_id, b"s" * 32),
             )
             connector.execute(
                 "INSERT INTO operational_source_build_generations "
@@ -3867,14 +3948,12 @@ def test_complete_operational_mariadb_fixture_physically_refines(
         "ix_maintenance_gate_owner_fk_1",
         "ix_deletion_request_generation_head_fk_1",
         "ix_gallery_observation_staging_claim_fk_2",
-        "ix_gallery_observation_staging_request_owner_fk_2",
+        "ix_gallery_observation_staging_request_fk_1",
         "ix_gallery_observation_staging_request_page_fk_2",
         "ix_canonical_value_upload_fk_2",
         "ix_gallery_redownload_state_fk_2",
         "ix_operational_preparation_fk_3",
         "ix_operational_preparation_fk_4",
-        "ix_operational_event_ack_head_fk_2",
-        "ix_removed_gid_ack_fk_2",
         "ix_hash_cache_observation_fk_2",
     } <= mariadb_index_names
     refinement.assert_physical_refines(report, require_complete=True)

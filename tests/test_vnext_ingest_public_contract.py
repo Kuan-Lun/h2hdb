@@ -4,12 +4,14 @@ import sqlite3
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
-from typing import Any, BinaryIO
+from types import SimpleNamespace
+from typing import Any, BinaryIO, cast
 from unicodedata import unidata_version
 
 import pytest
 
 import h2hdb.vnext_cleanup_repository as cleanup_module
+import h2hdb.vnext_ingest_policy_repository as policy_module
 from h2hdb import (
     ArtifactReleaseAdapter,
     ArtifactReleaseStorageEvidence,
@@ -39,8 +41,10 @@ from h2hdb import (
     VNextPreparedSourceStep,
     artifact_producer_fingerprint_sha256,
 )
+from h2hdb import vnext_identity as identity
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.vnext_catalog_registry_repository import ArtifactProducerFingerprintRecord
 from h2hdb.vnext_cleanup_repository import (
     CatalogPublicationMaintenanceState,
     CleanupTargetKind,
@@ -368,6 +372,156 @@ def test_ingest_facade_resolves_fresh_policy_and_replays_by_natural_key(
         ) == (7,)
 
 
+def test_ingest_policy_capacity_failure_rolls_back_all_registry_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "ingest-policy-capacity.sqlite3"
+    _generated_database(path)
+    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    facade = VNextIngestFacade(config, clock=lambda: 100)
+    session = facade.try_claim_ingest(True, 1_000)
+    assert session is not None
+    monkeypatch.setattr(policy_module, "RECOMPOSED_REGISTRY_MAXIMUM_ROWS", 0)
+
+    with pytest.raises(
+        policy_module.VNextIngestPolicyNotReadyError,
+        match="recomposition capacity",
+    ):
+        facade.ensure_policy(
+            session,
+            VNextIngestPolicy(
+                producer=VNextArtifactProducer(
+                    writer_id=b"writer",
+                    python_abi=b"cp313",
+                    pillow_build=b"pillow-11",
+                    libjpeg_build=b"libjpeg-turbo-3",
+                    zlib_build=b"zlib-1.3",
+                ),
+                storage=VNextArtifactStoragePolicy(adapter_id=b"managed-filesystem"),
+            ),
+        )
+
+    with SQLiteConnector(str(path)) as connector:
+        for table in (
+            "catalog_artifact_producer_fingerprints",
+            "catalog_artifact_policy_semantics",
+            "catalog_artifact_policies",
+            "catalog_manifest_policies",
+            "catalog_analysis_policies",
+            "catalog_title_sort_policy",
+            "catalog_display_title_policies",
+        ):
+            assert connector.fetch_one(f"SELECT COUNT(*) FROM {table}") == (0,)
+
+
+def test_artifact_policy_semantics_capacity_allows_replay_and_rolls_back_fresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "artifact-policy-semantics-capacity.sqlite3"
+    _generated_database(path)
+    config = CoreConfig(database=DatabaseConfig(sql_type="sqlite", database=str(path)))
+    facade = VNextIngestFacade(config, clock=lambda: 100)
+    session = facade.try_claim_ingest(True, 1_000)
+    assert session is not None
+    policy = VNextIngestPolicy(
+        producer=VNextArtifactProducer(
+            writer_id=b"writer",
+            python_abi=b"cp313",
+            pillow_build=b"pillow-11",
+            libjpeg_build=b"libjpeg-turbo-3",
+            zlib_build=b"zlib-1.3",
+        ),
+        storage=VNextArtifactStoragePolicy(adapter_id=b"managed-filesystem"),
+    )
+    created = facade.ensure_policy(session, policy)
+
+    measured_tables = (
+        "catalog_artifact_producer_fingerprints",
+        "catalog_artifact_policy_semantics",
+        "catalog_artifact_policies",
+        "catalog_canonical_value_identities",
+        "catalog_canonical_value_allocation_anchors",
+        "catalog_canonical_value_page_anchors",
+    )
+    with SQLiteConnector(str(path)) as connector:
+        before = {
+            table: connector.fetch_one(f"SELECT COUNT(*) FROM {table}")
+            for table in measured_tables
+        }
+        allocator_before = connector.fetch_one(
+            "SELECT next_id FROM operational_identity_allocators WHERE stream = %s",
+            ("POLICY",),
+        )
+
+    monkeypatch.setattr(policy_module, "RECOMPOSED_REGISTRY_MAXIMUM_ROWS", 1)
+    replayed = facade.ensure_policy(session, policy)
+    assert replayed.artifact_policy_sha256 == created.artifact_policy_sha256
+    assert replayed.replayed is True
+
+    with pytest.raises(
+        policy_module.VNextIngestPolicyNotReadyError,
+        match="artifact policy semantics registry reached its recomposition capacity",
+    ):
+        facade.ensure_policy(session, replace(policy, max_image_short_side=4096))
+
+    with SQLiteConnector(str(path)) as connector:
+        after = {
+            table: connector.fetch_one(f"SELECT COUNT(*) FROM {table}")
+            for table in measured_tables
+        }
+        allocator_after = connector.fetch_one(
+            "SELECT next_id FROM operational_identity_allocators WHERE stream = %s",
+            ("POLICY",),
+        )
+    assert after == before
+    assert allocator_after == allocator_before
+
+
+def test_artifact_policy_semantics_rejects_algorithm_different_from_producer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    policy = VNextIngestPolicy(
+        producer=VNextArtifactProducer(
+            writer_id=b"writer",
+            python_abi=b"cp313",
+            pillow_build=b"pillow-11",
+            libjpeg_build=b"libjpeg-turbo-3",
+            zlib_build=b"zlib-1.3",
+        ),
+        storage=VNextArtifactStoragePolicy(adapter_id=b"managed-filesystem"),
+    )
+    fingerprint = policy.producer_fingerprint_sha256
+    producer = ArtifactProducerFingerprintRecord(
+        fingerprint,
+        policy.artifact_algorithm_version + 1,
+        identity.artifact_producer_equivalence_class(fingerprint),
+        policy.producer.writer_id,
+        policy.producer.python_abi,
+        policy.producer.pillow_build,
+        policy.producer.libjpeg_build,
+        policy.producer.zlib_build,
+    )
+    monkeypatch.setattr(
+        policy_module,
+        "load_artifact_producer_fingerprint",
+        lambda _connector, _fingerprint: producer,
+    )
+    work = cast(VNextUnitOfWork, SimpleNamespace(connector=object()))
+
+    with pytest.raises(
+        VNextIngestPolicyConflictError,
+        match="algorithm differs from its registered producer",
+    ):
+        policy_module._ensure_artifact_policy(
+            work,
+            ingest_turn=cast(Any, None),
+            policy=policy,
+            now=1,
+        )
+
+
 def test_ingest_policy_compact_id_collision_fails_closed_and_rolls_back(
     tmp_path: Path,
 ) -> None:
@@ -415,7 +569,7 @@ def test_ingest_policy_compact_id_collision_fails_closed_and_rolls_back(
         ) == (1,)
         assert not connector.fetch_one(
             "SELECT policy_component_sha256 "
-            "FROM catalog_artifact_policy_semantics_seals "
+            "FROM catalog_artifact_policy_semantics "
             "WHERE policy_component_sha256 = %s",
             (policy.artifact_policy_sha256,),
         )
@@ -566,16 +720,24 @@ def test_current_only_failure_releases_the_latest_renewed_gate(
     facade.complete_ingest(session)
 
 
-def test_current_only_scheduler_resumes_global_open_queue_over_32_advances(
+def test_current_only_scheduler_resumes_single_open_cycle_over_32_advances(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    path = tmp_path / "current-only-global-open.sqlite3"
+    path = tmp_path / "current-only-serialized-open.sqlite3"
     _generated_database(path)
-    digest = bytes((201,)) + b"b" * 31
+    digests = tuple(
+        bytes((201,)) + ordinal.to_bytes(31, "big") for ordinal in range(1, 34)
+    )
 
     with SQLiteConnector(str(path)) as connector:
         assert connector.fetch_one("PRAGMA foreign_keys") == (1,)
+        for digest in digests:
+            connector.execute(
+                "INSERT INTO catalog_content_blobs (file_sha256, size_bytes) "
+                "VALUES (%s, 0)",
+                (digest,),
+            )
         with connector.transaction():
             work = VNextUnitOfWork(connector, backend="sqlite")
             gate = MaintenanceGateRepository.claim_exclusive(
@@ -583,22 +745,16 @@ def test_current_only_scheduler_resumes_global_open_queue_over_32_advances(
                 now=1,
                 lease_duration=1_000_000,
             )
-        for kind in cleanup_module._CURRENT_ONLY_TARGET_PRIORITY:
-            with connector.transaction():
-                VNextCleanupRepository.begin_cycle(
-                    VNextUnitOfWork(connector, backend="sqlite"),
-                    gate_lease=gate,
-                    target_kind=kind,
-                    shard_no=0,
-                    cycle_cutoff_at=100,
-                    max_rows_per_transaction=1,
-                    now=2,
-                )
-        connector.execute(
-            "INSERT INTO catalog_content_blobs (file_sha256, size_bytes) "
-            "VALUES (%s, 0)",
-            (digest,),
-        )
+        with connector.transaction():
+            VNextCleanupRepository.begin_cycle(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                target_kind=CleanupTargetKind.CONTENT_BLOB,
+                shard_no=201,
+                cycle_cutoff_at=100,
+                max_rows_per_transaction=1,
+                now=2,
+            )
         with connector.transaction():
             MaintenanceGateRepository.release(
                 VNextUnitOfWork(connector, backend="sqlite"),
@@ -636,17 +792,19 @@ def test_current_only_scheduler_resumes_global_open_queue_over_32_advances(
     assert outcomes == [VNextCurrentOnlyMaintenanceOutcome.PROGRESSED]
 
     with SQLiteConnector(str(path)) as connector:
-        assert connector.fetch_all(
-            "SELECT sweep.target_kind "
-            "FROM operational_cleanup_completions completion "
-            "JOIN operational_cleanup_sweep_targets sweep "
-            "ON sweep.target_key = completion.target_key "
-            "ORDER BY sweep.target_kind"
-        ) == [(CleanupTargetKind.CATALOG_PUBLICATION.value,)]
-        assert connector.fetch_one(
-            "SELECT file_sha256 FROM catalog_content_blobs WHERE file_sha256 = %s",
-            (digest,),
-        ) == (digest,)
+        assert (
+            connector.fetch_all(
+                "SELECT sweep.target_kind "
+                "FROM operational_cleanup_completions completion "
+                "JOIN operational_cleanup_sweep_targets sweep "
+                "ON sweep.target_key = completion.target_key "
+                "ORDER BY sweep.target_kind"
+            )
+            == []
+        )
+        assert connector.fetch_one("SELECT COUNT(*) FROM catalog_content_blobs") == (
+            17,
+        )
         assert connector.fetch_all("PRAGMA foreign_key_check") == []
 
     for _attempt in range(11):
@@ -663,13 +821,13 @@ def test_current_only_scheduler_resumes_global_open_queue_over_32_advances(
             "SELECT COUNT(*) FROM operational_cleanup_jobs WHERE state = 'OPEN'"
         ) == (0,)
         assert advance_calls > 32
-        assert (
-            connector.fetch_one(
-                "SELECT file_sha256 FROM catalog_content_blobs WHERE file_sha256 = %s",
-                (digest,),
-            )
-            == ()
-        )
+        assert connector.fetch_one("SELECT COUNT(*) FROM catalog_content_blobs") == (0,)
+        assert connector.fetch_all(
+            "SELECT sweep.target_kind "
+            "FROM operational_cleanup_completions completion "
+            "JOIN operational_cleanup_sweep_targets sweep "
+            "ON sweep.target_key = completion.target_key"
+        ) == [(CleanupTargetKind.CONTENT_BLOB.value,)]
         assert connector.fetch_all("PRAGMA foreign_key_check") == []
 
 

@@ -66,23 +66,33 @@ def _seed_current_catalog_candidates(
     connector.execute("PRAGMA foreign_keys = OFF")
     try:
         connector.execute(
-            "INSERT INTO catalog_publication_commit_seals (receipt_id) VALUES (%s)",
-            (receipt_id,),
+            "INSERT INTO catalog_publication_commits "
+            "(receipt_id, candidate_id, revision, source_revision, generation, "
+            "preparation_id, operational_policy_id, artifact_policy_id, "
+            "display_title_policy_id, new_galleries, changed_galleries, "
+            "removed_galleries, duplicate_losers, committed_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (
+                receipt_id,
+                b"c" * 16,
+                1,
+                1,
+                1,
+                b"p" * 16,
+                1,
+                1,
+                1,
+                len(rows),
+                0,
+                0,
+                0,
+                1,
+            ),
         )
         connector.execute(
             "INSERT INTO catalog_publication_commit_head_receipts "
             "(channel, receipt_id) VALUES (%s, %s)",
             (b"default", receipt_id),
-        )
-        connector.execute(
-            "INSERT INTO catalog_publication_commit_catalog_revisions "
-            "(receipt_id, revision) VALUES (%s, %s)",
-            (receipt_id, 1),
-        )
-        connector.execute(
-            "INSERT INTO catalog_publication_commit_source_revisions "
-            "(receipt_id, source_revision) VALUES (%s, %s)",
-            (receipt_id, 1),
         )
         for gid, gallery_id, redownload_at in rows:
             publication_key = identity.publication_key(gid)

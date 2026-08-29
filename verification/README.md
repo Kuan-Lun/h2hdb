@@ -10,27 +10,26 @@ recurring semantic validator and production writer binding.
 
 The generated contract currently contains:
 
-- 306 data-plane base relations checked as BCNF, plus 73 executable logical
-  views and 38 reusable sealed vertical families;
-- 29 explicitly checked lossless and dependency-preserving decompositions;
-- an exact 272-relation catalog physical-domain closure, split into 218
-  mutation relations and 54 read-only views;
-- 75 operational BCNF base relations plus one derived activation view for
+- 160 data-plane base relations checked as BCNF, plus 49 executable logical
+  views and 11 reusable sealed vertical families;
+- 28 explicitly checked lossless and dependency-preserving decompositions;
+- an exact 151-relation catalog physical-domain closure, split into 114
+  mutation relations and 37 read-only views;
+- 70 operational BCNF base relations plus one derived activation view for
   fencing, downloader-to-ingest handoff, staging, allocation, receipts,
   maintenance, queues, caches, and bounded cleanup;
-- 27 versioned semantic obligations: 12 data-plane and 15 operational; and
-- 4,913 typed bootstrap rows per backend, including the real deletion-request
-  generation-zero history/head and 18 cleanup target kinds
+- 30 versioned semantic obligations: 13 data-plane and 17 operational; and
+- 5,838 typed bootstrap rows per backend, including the real deletion-request
+  generation-zero history/head and 22 cleanup target kinds
   expanded into 256 fixed shards each.
 
 There are no declared BCNF exceptions among base tables. BCNF does not impose
 the narrower product layout: a separate closed-world gate requires every
 ordinary physical `catalog_*` base table to be its semantic primary key plus at
-most one atomic non-key column. It reports 294 narrow bases and 12 exact
-approved-wide BCNF recompositions: seven gallery-linear current-state rows plus
-gallery identity, artifact semantic input, prepared artifact, catalog artifact
-occurrence, and artifact blob with its mandatory locator. Every nontrivial
-determinant is a candidate key. Views are excluded and may
+most one atomic non-key column. It reports 122 narrow bases and 38 exact
+reviewed-wide BCNF relations. Twenty-seven selected families replace 178 former
+physical relations with 32 bases under the explicit capacity contract. Every
+nontrivial determinant is a candidate key. Views are excluded and may
 deliberately expose denormalized read shapes. The counts above are checked from
 the manifests rather than copied into the runtime provider by hand.
 
@@ -172,17 +171,22 @@ checks—COMPLETE preparation, exact seal and policy, and current deletion
 generation—before atomically sealing one common publication commit and swapping
 its single receipt head. Operational activation is a read-only view derived
 from the sealed commit's source revision, preparation, policy, and commit time;
-there is no independent activation mutation. Readers and acknowledgement
-writers reach events through activation;
-ack heads are preparation-scoped and advance by bounded contiguous evidence.
+there is no independent activation mutation. These events are
+publication-owned current/retry control, not an OPDS requirement or a durable
+delivery log, and the schema has no event-consumer registry or acknowledgement
+relations.
 
-Activated COMPLETE preparation control rows may be compacted while the stream,
-seal, events, subtypes, activation, and acknowledgements outlive source
-storage. Unactivated COMPLETE work remains a publication/retry root. Only an
-ABANDONED preparation with no activation or acknowledgement authority can have
-its entire invisible stream removed child-first.
+The current publication and replayable COMPLETE work retain their exact
+preparation, stream, seal, typed events, and source-build lineage. Generic
+preparation cleanup removes only unbound ABANDONED work. Once a finalized
+non-head publication is unreachable, its dedicated frozen cleanup releases the
+safe build-base pin and candidate binding, removes the COMPLETE preparation
+control, atomically removes each exactly matching subtype/base-event pair under
+a durable `(receipt_id, preparation_id, sequence_no)` cursor, and atomically
+removes the commit, effect seal, and stream before the final checkpoint and
+anchor. There is no retained cross-revision event history.
 
-Cleanup is a fixed 18-by-256 shard control plane. Each shard reuses one current
+Cleanup is a fixed 22-by-256 shard control plane. Each shard reuses one current
 job and latest completion generation; deterministic int63 identities prevent
 ABA without unbounded attempt history. Candidate selection is keyset bounded,
 child-first phases are closed against the catalog and operational FK graphs,
@@ -211,7 +215,7 @@ They do not erase the remaining exhaustive fault and cross-backend gaps.
 
 The default generated provider now completes initialize, replay, read-only full
 check, readiness, and public open on fresh SQLite and live MariaDB, validating
-all 4,913 bootstrap rows per backend. This closes the catalog and operational
+all 5,838 bootstrap rows per backend. This closes the catalog and operational
 bootstrap
 runtime/integration claims, while their row-by-row corruption and partial-commit
 fault matrices remain explicit blockers.
@@ -248,6 +252,96 @@ zero after reporting valid, explicit production blockers. Plain `coverage` is
 the strict production-readiness gate and is expected to fail while those
 blockers remain. `all` retains the strict behavior and does not accept
 `--validate-only`.
+
+The preserved capacity benchmark JSON binds the benchmark script, deterministic SHA-256
+row generators, fixed seed, 5,000-row batch size, insertion order, MariaDB
+10.11.11, a 16,384-byte InnoDB page, each measured relation's exact physical
+shape hash, and the tables' engine, row format, and collation. Only the pinned
+Testcontainers execution path is accepted, so direct-host evidence cannot be
+mislabelled with the container image. It deliberately
+does not bind whole physical-manifest hashes: that would create a cycle when a
+new operational capacity relation is generated. The final receipt binds the
+reviewed measurements to both complete generated physical manifests and to the
+capacity plan. The manual profile is too expensive for every commit or release
+gate; the inexpensive receipt drift check remains in the schema gate.
+
+The staging profile first fills the table to 1.5 million different-domain
+random request keys and staging UUIDs in 300 commits, measures that full-cap
+state, then child-free
+deletes the entire fill in 300 bounded commits. It refills the same untruncated
+table with different request and staging-UUID domains to the accepted
+1.5-million-row budget,
+measures it, then appends to 1.8 million rows for a rejected diagnostic.
+It separately measures 300,019 exact-shape `source_scope` rows and 50,000
+maximum-width registry rows. Re-measure after any covered relation shape,
+benchmark protocol, or storage-setting change, review the JSON, then generate
+the receipt:
+
+```bash
+uv run --no-sync python verification/schema/measure_capacity_mariadb.py \
+  --output /tmp/h2hdb-capacity-measurement.json
+uv run --no-sync python \
+  verification/schema/generate_capacity_measurement_receipt.py \
+  --measurement /tmp/h2hdb-capacity-measurement.json
+```
+
+The generator preserves the reviewed raw JSON as
+`schema/capacity_measurement.json`, binds its exact hash into the generated
+receipt, and makes the inexpensive schema gate reproduce the receipt from that
+raw evidence byte-for-byte. The generator rejects a measurement made with
+another benchmark script, relation shape, server version, InnoDB page size,
+table storage setting, seed, row distribution, insertion order, or row count.
+Measured DATA plus index bytes live only in the receipt, so changing a result
+cannot silently author schema or runtime limits in `catalog.toml`. This is
+manually reviewed empirical evidence, not a cryptographic attestation of who
+ran MariaDB; trusted CI signing would be required for an anti-forgery claim.
+
+The measured `artifact_producer_fingerprint` registry is also checked against
+the complete six-relation bounded registry set. An executable conservative
+clustered-row plus all-secondary-index width score must show that every
+unmeasured 50,000-row registry is no wider than the measured relation; widening
+any unmeasured registry past it invalidates the receipt gate.
+
+The bounded cleanup protocol has a separate generated-physical width guard.
+It charges maximum column encodings (including text charset width and variable
+length prefixes), NULL bitmaps, a conservative clustered-record envelope, and
+every deduplicated secondary index with its primary-key suffix. The receipt
+records the resulting score, per-row account, and headroom for `cleanup_job`
+and `cleanup_cycle_root`; widening either shape beyond its account invalidates
+the receipt. This is soft-cap sizing evidence, not a claim that an InnoDB
+tablespace, MVCC history, or filesystem high-water mark has an unbounded hard
+maximum.
+
+The accepted staging capacity is the 1,500,000-row executable emergency budget,
+with the larger of the full pre-delete fill and post-delete/refill allocations
+multiplied by the policy safety ratio 5/4 before comparison with decimal 400
+MB. The multiplier is conservative
+acceptance policy, not a promise that an `.ibd` high-water mark or MVCC history
+can never exceed the live-row estimate. Normal ingest does not accumulate that
+many rows: after a seal outcome is acknowledged, the live shared ingest fence
+runs bounded child-first `STAGING_RETIRE` transactions before admitting the next
+gallery. Exclusive current-only cleanup is a recovery backstop. The synthetic
+300,000 IDs times five rows only exercises random key/index distribution at the
+hard budget; it does not assert five requests per gallery. Likewise, the stated
+average of 50 files per gallery is scenario context and never derives a request
+bound.
+
+`source_scope` is a retained planning peak rather than the staging emergency
+cap: 300,000 gallery scopes plus the conservative 19-row reachable build
+lineage (a depth-16 current chain of 17, one latest ABANDONED build that needs a
+newer generation before cleanup, and one working successor). Its exact primary,
+natural unique, three referential unique, and root index shape is measured
+directly at 300,019 rows and receives the same 5/4
+safety ratio. The one-million-gallery value remains unaccepted stress context,
+not a staging row formula or accepted sizing bound.
+
+The largest non-measured current-only control family is bounded at 285 rows:
+19 simultaneously reachable analysis runs times 15 stages. Component seals are
+bounded at 95 rows. A finalized current-head publication candidate can coexist
+with one working candidate until the next exclusive fixed-point cleanup, so
+candidate checkpoints and receipts are bounded at 2 times 16, or 32 rows. The
+receipt conservatively accounts one decimal megabyte per row for this class,
+yielding a 285,000,000-byte sizing bound.
 
 TLC 1.7.4, its JAR checksum, and the fallback container digest are pinned in
 `tools.lock.toml`:

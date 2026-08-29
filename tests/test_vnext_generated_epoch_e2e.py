@@ -22,6 +22,12 @@ _REMOVED_GALLERY_IDENTITY_TABLES = (
     "catalog_gallery_identity_gallery_keys",
     "catalog_gallery_identity_seals",
 )
+_REMOVED_OPERATIONAL_EVENT_DELIVERY_TABLES = (
+    "operational_operational_consumers",
+    "operational_operational_event_acks",
+    "operational_operational_event_ack_heads",
+    "operational_removed_gid_acks",
+)
 
 
 def _read_only(config: CoreConfig) -> CoreConfig:
@@ -40,6 +46,10 @@ def _assert_gallery_identity_schema(connector: SQLConnector, backend: str) -> No
         not connector.check_table_exists(table)
         for table in _REMOVED_GALLERY_IDENTITY_TABLES
     )
+    assert all(
+        not connector.check_table_exists(table)
+        for table in _REMOVED_OPERATIONAL_EVENT_DELIVERY_TABLES
+    )
 
     if backend == "mariadb":
         assert connector.fetch_one("""
@@ -47,7 +57,7 @@ def _assert_gallery_identity_schema(connector: SQLConnector, backend: str) -> No
             FROM INFORMATION_SCHEMA.TABLES
             WHERE TABLE_SCHEMA = DATABASE()
               AND TABLE_TYPE = 'BASE TABLE'
-            """) == (381,)
+            """) == (230,)
         mariadb_foreign_keys = connector.fetch_all(
             """
             SELECT CONSTRAINT_NAME, COLUMN_NAME,
@@ -64,7 +74,7 @@ def _assert_gallery_identity_schema(connector: SQLConnector, backend: str) -> No
             (
                 "fk_gallery_identity_1",
                 "scope_key",
-                "catalog_source_scope_seals",
+                "catalog_source_scopes",
                 "scope_key",
             ),
             (
@@ -100,7 +110,7 @@ def _assert_gallery_identity_schema(connector: SQLConnector, backend: str) -> No
         FROM sqlite_master
         WHERE type = 'table'
           AND name NOT LIKE 'sqlite_%'
-    """) == (381,)
+    """) == (230,)
     sqlite_foreign_keys = {
         (str(row[2]), str(row[3]), str(row[4]))
         for row in connector.fetch_all(
@@ -108,7 +118,7 @@ def _assert_gallery_identity_schema(connector: SQLConnector, backend: str) -> No
         )
     }
     assert sqlite_foreign_keys == {
-        ("catalog_source_scope_seals", "scope_key", "scope_key"),
+        ("catalog_source_scopes", "scope_key", "scope_key"),
         (
             "catalog_source_locator_identity",
             "locator_sha256",
@@ -192,7 +202,7 @@ def _exercise_generated_epoch(config: CoreConfig) -> None:
     backend = config.database.sql_type
     backends = cast(Mapping[str, Mapping[str, object]], ARTIFACT["backends"])
     bootstrap_seeds = cast(Sequence[object], backends[backend]["bootstrap_seeds"])
-    assert len(bootstrap_seeds) == 4_913
+    assert len(bootstrap_seeds) == 5_838
 
 
 def test_default_generated_epoch_end_to_end_on_sqlite(

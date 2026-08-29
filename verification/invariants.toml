@@ -93,7 +93,7 @@ id = "runtime.cleanup-reachability"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "supporting"
-claim = "The executable checker validates target codecs, candidate root keys, every catalog FK descendant, explicit blockers, registry seeds, conditional activated-control versus abandoned-stream preparation cleanup, and child-first phase order."
+claim = "The executable checker validates target codecs, candidate root keys, every catalog FK descendant, explicit blockers, registry seeds, generic ABANDONED-only preparation cleanup, publication-commit-owned COMPLETE preparation/event retirement, and child-first phase order."
 assumptions = []
 [[evidence.location]]
 path = "verification/schema/operational_refinement.py"
@@ -256,8 +256,8 @@ id = "runtime.event-integrity"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "supporting"
-claim = "The executable refinement checker binds atomic no-orphan preparation-stream begin, durable preparation-scoped streams, exact event and chain codecs, immutable completeness seals, O(1) activation, typed subtype agreement, and bounded preparation-scoped acknowledgement-head coverage."
-assumptions = []
+claim = "The executable READY refinement binds generated candidate/preparation key shape, rejects effect seals and event streams without a live preparation/commit/seal owner, and validates the exact covered-prefix cursor plus compound receipt proof for an OPEN publication-commit cleanup."
+assumptions = ["Exact event coordinates, digest chains, type-matching subtype completeness and seal construction remain trusted bounded writer/cleanup obligations; the full READY check deliberately does not rescan every event row."]
 [[evidence.location]]
 path = "verification/schema/operational_refinement.py"
 symbol = "check_event_integrity_contract_v1"
@@ -365,6 +365,29 @@ path = "verification/tla/GalleryStagingSmall.cfg"
 symbol = "CleanupNeverDeletesLiveStagingOrUpload"
 
 [[evidence]]
+id = "tla.gallery-staging-retirement.small"
+layer = "tla"
+strength = "bounded_model_check"
+directness = "direct"
+claim = "TLC exhaustively checks the finite GalleryStagingRetirement Small profile for single-build-slot admission, separate seal delivery and implicit shared-fenced ACK, RETIRING old-retry rejection, seven child-first phases, generic exclusive recovery, and exact request-budget congruence."
+assumptions = [
+  "The profile bounds the budget and generation sets to two and abstracts every SQL phase to a small natural row count.",
+  "The model does not establish Python/SQL refinement, database isolation, byte/digest validation, capacity beyond the selected constants, or MariaDB behavior.",
+]
+[[evidence.location]]
+path = "verification/tla/GalleryStagingRetirement.tla"
+symbol = "BudgetExactlyMatchesRetainedRequests"
+[[evidence.location]]
+path = "verification/tla/GalleryStagingRetirement.tla"
+symbol = "RetiringRequiresDeliveredImplicitAck"
+[[evidence.location]]
+path = "verification/tla/GalleryStagingRetirement.tla"
+symbol = "DeletionIsChildFirst"
+[[evidence.location]]
+path = "verification/tla/GalleryStagingRetirementSmall.cfg"
+symbol = "RootDeletionRequiresEmptyChildren"
+
+[[evidence]]
 id = "fd.data.closed-world"
 layer = "fd"
 strength = "closed_world_fd_contract"
@@ -462,7 +485,7 @@ id = "tla.data.lifecycle.small"
 layer = "tla"
 strength = "bounded_model_check"
 directness = "supporting"
-claim = "TLC exhaustively checks sealed-build publication, prepared/protected artifacts, atomic head/revision agreement, and active/protected GC safety in CatalogCore, plus the normalized common commit, graph-derived candidate lifecycle, permanent issue/external-release/commit finalizer, exact terminal marker, and response-loss replay after candidate cleanup in PublicationLifecycle, only for their finite Small-profile constants."
+claim = "TLC exhaustively checks sealed-build publication, prepared/protected artifacts, atomic head/revision agreement, and active/protected GC safety in CatalogCore, plus the normalized common commit, graph-derived candidate lifecycle, permanent finalization checkpoint with at most one current receipt per owner, atomic successor-CAS/predecessor deletion, current-response replay, stale predecessor retry, exact terminal timestamp authority, and replay after candidate cleanup in PublicationLifecycle, only for their finite Small-profile constants."
 assumptions = [
   "Owners, builds, artifacts, revisions, candidates, batch keys, time, and generations are the finite Small-profile constants.",
   "CatalogCore and PublicationLifecycle are lifecycle abstractions and do not establish Python, SQL, byte-codec, or writer-hook refinement.",
@@ -487,10 +510,22 @@ path = "verification/tla/PublicationLifecycle.tla"
 symbol = "ExternalReleasePrecedesCommittedRow"
 [[evidence.location]]
 path = "verification/tla/PublicationLifecycle.tla"
-symbol = "FinalizationReplaySurvivesCandidateCleanup"
+symbol = "CurrentFinalizationReceiptIsUnique"
 [[evidence.location]]
 path = "verification/tla/PublicationLifecycle.tla"
-symbol = "ResponseLossHasPermanentReplayAuthority"
+symbol = "SuccessorCASAndPredecessorDeleteAreAtomic"
+[[evidence.location]]
+path = "verification/tla/PublicationLifecycle.tla"
+symbol = "TerminalCurrentReceiptReplaySurvivesCandidateCleanup"
+[[evidence.location]]
+path = "verification/tla/PublicationLifecycle.tla"
+symbol = "ResponseLossHasCurrentReplayAuthority"
+[[evidence.location]]
+path = "verification/tla/PublicationLifecycle.tla"
+symbol = "StalePredecessorRetryHasZeroDurableWrites"
+[[evidence.location]]
+path = "verification/tla/PublicationLifecycle.tla"
+symbol = "TerminalCurrentReceiptIsFinalizedAtAuthority"
 [[evidence.location]]
 path = "verification/tla/CatalogCoreSmall.cfg"
 symbol = "HeadPointsOnlyToSealedAndAnalyzedBuild"
@@ -706,7 +741,7 @@ id = "integration.data.sqlite-refinement"
 layer = "integration"
 strength = "sqlite_integration"
 directness = "supporting"
-claim = "A complete generated SQLite data schema is created, re-applied idempotently, introspected, and required to refine all 171 logical data relations (154 base relations plus 17 logical views)."
+claim = "A complete generated SQLite data schema is created, re-applied idempotently, introspected, and required to refine all 209 logical data relations (160 base relations plus 49 logical views)."
 assumptions = ["Schema-shape refinement does not by itself establish writer transaction semantics."]
 [[evidence.location]]
 path = "tests/test_verification_schema_refinement.py"
@@ -886,6 +921,45 @@ symbol = "test_depth_zero_all_five_components_snapshot_handoff_and_replay"
 [[evidence.location]]
 path = "tests/test_vnext_analysis_repository.py"
 symbol = "test_depth_one_removed_gallery_materializes_all_downstream_tombstones"
+
+[[evidence]]
+id = "runtime.production.published-baseline-prune"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "direct"
+claim = "The production publication-finalization terminal transaction derives the published analysis only from the immutable commit, source provenance and snapshot binding, requires one COMPLETE sealed self-only depth-zero result, exact-deletes its obsolete working baseline with the PROJECTION_FINALIZED marker, and retains every positive-depth baseline."
+assumptions = ["Publication commit and source provenance identities are immutable after commit; generated foreign keys preserve their declared lineage."]
+[[evidence.location]]
+path = "src/h2hdb/vnext_publication_finalization_repository.py"
+symbol = "PublicationFinalizationRepository.commit_page"
+[[evidence.location]]
+path = "src/h2hdb/vnext_publication_finalization_repository.py"
+symbol = "_published_depth_zero_working_baseline"
+
+[[evidence]]
+id = "fault.production.published-baseline-prune"
+layer = "fault"
+strength = "negative_control"
+directness = "direct"
+claim = "Fault injection at every database mutation proves the terminal receipt, checkpoint, finalization marker and depth-zero baseline prune roll back together; retained terminal replay performs zero DML after the baseline and transient candidate state are gone."
+assumptions = ["Injected connector exceptions exercise the same transaction rollback path as production exceptions."]
+[[evidence.location]]
+path = "tests/test_vnext_publication_finalization_repository.py"
+symbol = "test_terminal_baseline_prune_rolls_back_with_every_database_mutation"
+[[evidence.location]]
+path = "tests/test_vnext_publication_finalization_repository.py"
+symbol = "test_terminal_handoff_prunes_only_the_published_depth_zero_working_baseline"
+
+[[evidence]]
+id = "integration.sqlite.published-baseline-prune"
+layer = "integration"
+strength = "sqlite_integration"
+directness = "direct"
+claim = "Generated SQLite executes the exact terminal safe-handoff prune and response-loss replay, retaining the self-only depth-zero ancestry while releasing its predecessor baseline pin."
+assumptions = ["This executes SQLite and does not establish MariaDB transaction behavior."]
+[[evidence.location]]
+path = "tests/test_vnext_publication_finalization_repository.py"
+symbol = "test_terminal_handoff_prunes_only_the_published_depth_zero_working_baseline"
 [[evidence.location]]
 path = "tests/test_vnext_analysis_repository.py"
 symbol = "test_incremental_overlay_has_exact_changed_shadow_tombstone_and_full_resolution"
@@ -1110,7 +1184,7 @@ id = "runtime.production.publication"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The production publication repository locks and revalidates fixed sealed authority, atomically inserts complete source and catalog descriptors, the common generation edge, all mandatory commit members, and an OPEN commit-owned finalization checkpoint, seals the common commit last, and swaps its single receipt head; the finalization repository separately issues bounded pages, performs external release outside every transaction, and commits permanent receipt-owned batches and the PK-only terminal marker."
+claim = "The production publication repository locks and revalidates fixed sealed authority, atomically inserts complete source and catalog descriptors, the common generation edge, all mandatory commit members, and an OPEN commit-owned finalization checkpoint, seals the common commit last, and swaps its single receipt head; the finalization repository separately issues bounded pages, performs external release outside every transaction, and atomically advances the checkpoint, inserts one current receipt, deletes its safely acknowledged predecessor, and writes the PK-only terminal marker while retaining the terminal current receipt as finalized_at authority."
 assumptions = ["The connector transaction covers every pointer mutation and the recovery receipt as one commit boundary."]
 [[evidence.location]]
 path = "src/h2hdb/vnext_publication_repository.py"
@@ -1127,7 +1201,7 @@ id = "fault.production.publication"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "Publication tests race the common receipt head and deletion-generation authority, inject every common-commit mutation failure, reject missing or conflicting O(1) authority, exercise post-external finalization races, and inject every permanent finalization commit mutation failure while proving atomic rollback and exact recovery replay."
+claim = "Publication tests race the common receipt head and deletion-generation authority, inject every common-commit mutation failure, reject missing or conflicting O(1) authority, exercise post-external finalization races, and inject every current-only finalization commit mutation failure while proving atomic rollback, predecessor pruning, current recovery replay, and stale rejection of a superseded key."
 assumptions = ["Injected connector and storage-adapter exceptions use the same transaction rollback and idempotent external-release paths as production exceptions."]
 [[evidence.location]]
 path = "tests/test_vnext_publication_repository.py"
@@ -1141,13 +1215,19 @@ symbol = "test_post_external_races_fail_closed"
 [[evidence.location]]
 path = "tests/test_vnext_publication_finalization_repository.py"
 symbol = "test_every_post_external_commit_mutation_rolls_back"
+[[evidence.location]]
+path = "tests/test_vnext_publication_finalization_repository.py"
+symbol = "test_missing_finalization_predecessor_rolls_back_successor_and_checkpoint"
+[[evidence.location]]
+path = "tests/test_vnext_publication_finalization_repository.py"
+symbol = "test_terminal_marker_checkpoint_and_finalized_at_are_one_derived_commit"
 
 [[evidence]]
 id = "integration.sqlite.publication"
 layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
-claim = "Generated SQLite E2E executes production genesis and successor publication through one sealed common commit and receipt-head swap, then exercises permanent bounded finalization, terminal-marker/timestamp derivation, and response-loss replay after transient candidate cleanup."
+claim = "Generated SQLite E2E executes production genesis and successor publication through one sealed common commit and receipt-head swap, then exercises bounded current-only finalization, atomic predecessor pruning, terminal-marker/timestamp derivation from the retained current receipt, and response-loss replay after transient candidate cleanup."
 assumptions = ["This executes SQLite and does not establish MariaDB transaction behavior."]
 [[evidence.location]]
 path = "tests/test_vnext_publication_repository.py"
@@ -1157,7 +1237,7 @@ path = "tests/test_vnext_publication_repository.py"
 symbol = "test_response_loss_replay_and_new_turn_recovery_need_no_old_mapping"
 [[evidence.location]]
 path = "tests/test_vnext_publication_finalization_repository.py"
-symbol = "test_permanent_batch_replays_after_cleanup_and_expired_gate"
+symbol = "test_current_batch_replays_after_cleanup_and_expired_gate"
 [[evidence.location]]
 path = "tests/test_vnext_publication_finalization_repository.py"
 symbol = "test_terminal_marker_checkpoint_and_finalized_at_are_one_derived_commit"
@@ -1233,12 +1313,83 @@ path = "tests/test_vnext_gallery_staging_repository.py"
 symbol = "test_mariadb_staging_authority_locks_use_for_update_in_global_order"
 
 [[evidence]]
+id = "runtime.production.gallery-staging-request-budget"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "direct"
+claim = "The manifest and production refinements bind the seeded singleton cap of 1,500,000 to exact request insert/delete deltas, single-build-slot terminal retirement, seven at-most-256-row child-first phases, and full-audit counter congruence; runtime reservations are bound to the exact unit of work that owns the retained HEAD lock."
+assumptions = ["The O(1) readiness probe intentionally does not scan the request family; exact COUNT congruence belongs to the full READY audit."]
+[[evidence.location]]
+path = "verification/schema/operational_refinement.py"
+symbol = "check_gallery_staging_request_budget_v1"
+[[evidence.location]]
+path = "src/h2hdb/operational_refinement.py"
+symbol = "check_gallery_staging_request_budget_v1"
+[[evidence.location]]
+path = "src/h2hdb/vnext_gallery_staging_budget.py"
+symbol = "GalleryStagingRequestBudgetReservation"
+[[evidence.location]]
+path = "src/h2hdb/vnext_gallery_staging_repository.py"
+symbol = "GalleryObservationStagingRepository.retire_sealed"
+
+[[evidence]]
+id = "fault.production.gallery-staging-request-budget"
+layer = "fault"
+strength = "negative_control"
+directness = "direct"
+claim = "SQLite regressions prove zero-write first-reservation backpressure, whole-transaction rollback when a terminal carry exceeds capacity after its leaf reservation, atomic rollback of the initial RETIRING CAS plus child delete, stale-generation rejection after CLAIM removal, exact replay neutrality, and exact counter decrements across two REQUEST_IDENTITY batches."
+assumptions = ["The tests inject representative transaction failures and capacity boundaries, not a fault after every SQL statement in all seven retirement phases."]
+[[evidence.location]]
+path = "tests/test_vnext_gallery_staging_repository.py"
+symbol = "test_request_budget_backpressure_is_zero_write_and_replay_is_neutral"
+[[evidence.location]]
+path = "tests/test_vnext_gallery_staging_repository.py"
+symbol = "test_fresh_tag_allocator_precedes_request_budget_head_lock"
+[[evidence.location]]
+path = "tests/test_vnext_gallery_staging_repository.py"
+symbol = "test_terminal_retirement_is_child_first_bounded_and_replayable"
+[[evidence.location]]
+path = "tests/test_vnext_gallery_staging_repository.py"
+symbol = "test_metadata_256_leaf_boundary_carries_to_one_minimal_root"
+
+[[evidence]]
+id = "integration.sqlite.gallery-staging-retirement"
+layer = "integration"
+strength = "sqlite_integration"
+directness = "direct"
+claim = "Generated SQLite E2E stages fresh TAG authority, seals and retires SEALED and REUSED observations, distinguishes reconstructed unacknowledged from already-RETIRING work, enforces the one-build slot, drains seven phases child-first, and keeps the singleton exactly congruent through 261 retained requests split across 256 and five-row identity batches."
+assumptions = ["This executes SQLite and does not establish MariaDB row locking, constraint timing, or concurrent-session behavior."]
+[[evidence.location]]
+path = "tests/test_vnext_gallery_staging_repository.py"
+symbol = "test_terminal_retirement_is_child_first_bounded_and_replayable"
+[[evidence.location]]
+path = "tests/test_vnext_gallery_staging_repository.py"
+symbol = "test_fresh_tag_allocator_precedes_request_budget_head_lock"
+[[evidence.location]]
+path = "tests/test_vnext_gallery_staging_repository.py"
+symbol = "test_metadata_256_leaf_boundary_carries_to_one_minimal_root"
+[[evidence.location]]
+path = "tests/test_vnext_gallery_staging_repository.py"
+symbol = "test_identical_observation_on_a_later_build_reuses_canonical_identity"
+
+[[evidence]]
+id = "integration.live-mariadb.gallery-staging-request-budget"
+layer = "integration"
+strength = "mariadb_integration"
+directness = "direct"
+claim = "MariaDB 10.11.11 enforces the unique per-build staging slot for RETIRING states, serializes concurrent request reserve and actual-delete release transactions through the shared singleton budget row while preserving exact counter-to-row congruence, and rolls back the counter plus request insert together after an injected failure."
+assumptions = ["H2HDB_TEST_MARIADB=1 and Docker are required to run the pinned live backend fixture; this focused concurrency case does not execute all seven retirement phases on MariaDB."]
+[[evidence.location]]
+path = "tests/test_vnext_live_mariadb_operational.py"
+symbol = "test_live_mariadb_gallery_staging_budget_and_retiring_slot_serialize"
+
+[[evidence]]
 id = "runtime.production.cleanup"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The production cleanup repository uses the fixed eighteen-kind phase registry, deterministic sharded identities, exclusive-gate authorization, bounded keyset selection, exact retained-root blockers, receipted checkpoint replay, and static child-first delete plans; CATALOG_PUBLICATION removes only finalized non-head payload after the current head is projection-finalized and live predecessor pins release, while PUBLICATION_CANDIDATE eligibility and every phase recheck retain every PENDING or PREPARED protection family, so only terminal release-acknowledged COMMITTED families can be deleted child-first."
-assumptions = ["Every cleanup cycle is invoked while the supplied exclusive maintenance lease remains live and is revalidated at each batch."]
+claim = "The production cleanup repository uses the fixed twenty-two-kind phase registry, deterministic sharded identities, exclusive-gate authorization, bounded keyset selection, exact retained-root blockers, latest-transition receipts that recompute chain and deleted-count poststate from durable prestate, cursor-covered reappearance checks, terminal raw-responsibility proofs, and static child-first delete plans. CATALOG_PUBLICATION removes only finalized non-head payload after the current head is projection-finalized and live predecessor pins release; PUBLICATION_CANDIDATE retains every unresolved PENDING or PREPARED protection family; generic OPERATIONAL_PREPARATION removes only ABANDONED families; and PUBLICATION_COMMIT owns bounded transient event plus COMPLETE preparation retirement under an exact frozen receipt/preparation authority before its unreachable commit family."
+assumptions = ["Every cleanup cycle is invoked while the supplied exclusive maintenance lease remains live and is revalidated at each batch.", "Generic raw postconditions prove the declared responsibility source and predicate; compound or owner-losing families use explicit direct postconditions rather than claiming a universal scan of every physical satellite."]
 [[evidence.location]]
 path = "src/h2hdb/vnext_cleanup_repository.py"
 symbol = "VNextCleanupRepository"
@@ -1251,8 +1402,8 @@ id = "fault.production.cleanup"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "Cleanup tests reject registry drift, shared or stale gate authority, live retention roots, receipt corruption and stale attempts, retain unresolved PENDING and PREPARED artifact-protection families before every delete, prove empty-terminal replay, and roll back a paired child-first delete when its second write fails."
-assumptions = ["The current injected-write test covers one paired strategy and does not interrupt every statement in every one of the eighteen strategies."]
+claim = "Cleanup tests reject registry drift, shared or stale gate authority, live retention roots, forged latest-receipt prestate and stale attempts, retain unresolved PENDING and PREPARED artifact-protection families before every delete, preserve COMPLETE preparations outside their owning publication-commit lifecycle, distinguish blocked terminal responsibility from a true empty phase and resume the same phase after pin release, prove empty-terminal replay, validate exact typed event coordinates, reject every post-compound publication relation-family reappearance, and roll back paired event and compound commit/effect-root deletes on injected faults."
+assumptions = ["The injected-write matrix covers the publication-owned transient event and compound commit/effect-root boundaries plus representative paired strategies, but does not interrupt every statement in all twenty-two strategies."]
 [[evidence.location]]
 path = "tests/test_vnext_cleanup_repository.py"
 symbol = "test_cleanup_fails_closed_for_shared_gate_and_registry_drift"
@@ -1264,18 +1415,30 @@ path = "tests/test_vnext_cleanup_repository.py"
 symbol = "test_candidate_cleanup_retains_unresolved_protection_families"
 [[evidence.location]]
 path = "tests/test_vnext_cleanup_repository.py"
-symbol = "test_paired_staging_identity_delete_rolls_back_on_second_write_fault"
+symbol = "test_staging_identity_delete_rolls_back_on_write_fault"
+[[evidence.location]]
+path = "tests/test_vnext_cleanup_repository.py"
+symbol = "test_publication_commit_event_phase_rejects_partial_or_mismatched_coordinates"
+[[evidence.location]]
+path = "tests/test_vnext_cleanup_repository.py"
+symbol = "test_publication_commit_effect_root_fault_rolls_back_all_three_rows"
+[[evidence.location]]
+path = "tests/test_vnext_cleanup_repository.py"
+symbol = "test_publication_commit_dynamic_pin_blocks_terminal_and_same_phase_resumes"
+[[evidence.location]]
+path = "tests/test_vnext_cleanup_repository.py"
+symbol = "test_publication_commit_post_compound_phase_rejects_every_reappearing_family"
 
 [[evidence]]
 id = "integration.sqlite.cleanup"
 layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
-claim = "Generated SQLite E2E executes all eighteen static production strategies, child-first source, analysis, catalog-publication, candidate and staging cleanup, activated-effect preservation, abandoned-stream deletion, bounded replay, and retention blocking. The public current-only facade runs against an FK-on READY rev1-to-rev2 database containing every catalog-publication payload phase including artifact, requires multiple bounded attempts, rejects the stale reader pin, removes all eleven old payload families, preserves current payload and audit descriptors, and remains READY."
+claim = "Generated SQLite E2E executes all twenty-two static production strategies, child-first source, analysis, publication-commit, revision-descriptor, publication-generation, catalog-publication, candidate and staging cleanup, generic COMPLETE-preparation preservation, ABANDONED-stream deletion, publication-owned transient event retirement, bounded replay, and retention blocking. The public current-only facade runs against an FK-on READY rev1-to-rev2 database containing every catalog-publication payload phase including artifact, requires multiple bounded attempts, rejects the stale reader pin, removes all eleven old payload families, preserves current payload and audit descriptors, and remains READY."
 assumptions = ["This executes SQLite and does not establish MariaDB transaction behavior."]
 [[evidence.location]]
 path = "tests/test_vnext_cleanup_repository.py"
-symbol = "test_all_eighteen_strategies_match_the_closed_phase_registry"
+symbol = "test_all_twenty_two_strategies_match_the_closed_phase_registry"
 [[evidence.location]]
 path = "tests/test_vnext_cleanup_repository.py"
 symbol = "test_source_analysis_and_candidate_strategies_delete_child_first"
@@ -1287,7 +1450,10 @@ path = "tests/test_vnext_cleanup_repository.py"
 symbol = "test_candidate_cleanup_deletes_committed_prepared_family_child_first"
 [[evidence.location]]
 path = "tests/test_vnext_cleanup_repository.py"
-symbol = "test_operational_preparation_cleanup_preserves_activated_effects"
+symbol = "test_operational_preparation_cleanup_preserves_every_complete_preparation"
+[[evidence.location]]
+path = "tests/test_vnext_cleanup_repository.py"
+symbol = "test_publication_commit_cleanup_is_child_first_replayable_and_fenced"
 [[evidence.location]]
 path = "tests/test_vnext_catalog_reader_repository.py"
 symbol = "test_fk_on_current_only_facade_drains_all_payload_and_keeps_ready"
@@ -1302,6 +1468,62 @@ assumptions = ["SQL-shape recording cannot establish MariaDB isolation, locking,
 [[evidence.location]]
 path = "tests/test_vnext_cleanup_repository.py"
 symbol = "test_cleanup_sql_is_bounded_static_and_has_portable_mariadb_lock_shape"
+
+[[evidence]]
+id = "runtime.production.cleanup-frozen-root-set"
+layer = "runtime_refinement"
+strength = "executable_contract_check"
+directness = "direct"
+claim = "Cleanup begin admits globally one OPEN cycle, freezes and seals at most 256 initially eligible typed roots using the exact maximum-260-byte canonical protocol frame, freezes PUBLICATION_COMMIT as an exact receipt_id/preparation_id pair, and makes every static phase reload the count/digest-validated set before restricting typed SQL predicates to those roots; completion removes membership in the same transaction."
+assumptions = ["The exact EXCLUSIVE maintenance gate serializes begin and advance transactions."]
+[[evidence.location]]
+path = "src/h2hdb/vnext_cleanup_repository.py"
+symbol = "_freeze_static_cycle_roots"
+[[evidence.location]]
+path = "src/h2hdb/vnext_cleanup_repository.py"
+symbol = "_load_frozen_roots"
+
+[[evidence]]
+id = "fault.production.cleanup-frozen-root-set"
+layer = "fault"
+strength = "negative_control"
+directness = "direct"
+claim = "SQLite regressions accept the exact 256-root boundary, reject a second OPEN cycle, count/digest/frame, duplicate-root and publication receipt/preparation mapping corruption with zero writes, and inject terminal faults proving frozen membership and cleanup state roll back together."
+assumptions = []
+[[evidence.location]]
+path = "tests/test_vnext_cleanup_repository.py"
+symbol = "test_frozen_root_set_corruption_and_serialized_open_cycle_fail_closed"
+[[evidence.location]]
+path = "tests/test_vnext_cleanup_repository.py"
+symbol = "test_frozen_root_terminal_completion_rolls_back_atomically"
+[[evidence.location]]
+path = "tests/test_vnext_cleanup_repository.py"
+symbol = "test_frozen_root_set_accepts_exact_256_root_boundary"
+[[evidence.location]]
+path = "tests/test_vnext_cleanup_repository.py"
+symbol = "test_publication_commit_frozen_root_binds_exact_preparation_authority"
+
+[[evidence]]
+id = "integration.sqlite.cleanup-frozen-root-set"
+layer = "integration"
+strength = "sqlite_integration"
+directness = "direct"
+claim = "An FK-on SQLite seventeen-run analysis lineage proves one cycle deletes only the initially frozen depth-16 leaf and cannot admit its newly eligible parent after earlier child phases; the next cycle may then freeze that parent."
+assumptions = ["SQLite does not establish MariaDB transaction or row-lock behavior."]
+[[evidence.location]]
+path = "tests/test_vnext_publication_finalization_repository.py"
+symbol = "test_depth_sixteen_compaction_prune_releases_the_old_chain_to_fixed_point_cleanup"
+
+[[evidence]]
+id = "integration.live-mariadb.cleanup-frozen-root-set"
+layer = "integration"
+strength = "mariadb_integration"
+directness = "direct"
+claim = "MariaDB 10.11.11 executes a real FK-backed frozen hash-cache root selection, child-first deletion, terminal completion replay, and an injected transaction abort that rolls back frozen membership plus cleanup authority atomically."
+assumptions = ["H2HDB_TEST_MARIADB=1 and Docker are required to run the pinned live backend fixture."]
+[[evidence.location]]
+path = "tests/test_vnext_live_mariadb_operational.py"
+symbol = "test_live_mariadb_cleanup_frozen_root_set_and_rollback"
 
 [[evidence]]
 id = "runtime.production.source-build"
@@ -1367,7 +1589,7 @@ id = "runtime.production.schema-epoch"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "SchemaEpochRunner constructs only an admissible empty epoch, records and revalidates exact DDL, 4,913 bootstrap seeds per backend and all 25 semantic-obligation writer bindings, resumes committed create-only slices and idempotent seeds, runs wheel validators read-only, and publishes READY by exact compare-and-swap; full check deliberately performs the documented linear scan of the single sealed publication generation chain for exact nodes, edges, commits, arithmetic, no-fork/no-gap/no-orphan and maximum-head consistency, while quick readiness remains epoch-only O(1); the default generated wheel provider completes initialize, replay, read-only full check and readiness on fresh SQLite and MariaDB 10.11.11."
+claim = "SchemaEpochRunner constructs only an admissible empty epoch, records and revalidates exact DDL, 5,838 bootstrap seeds per backend and all 30 semantic-obligation writer bindings, resumes committed create-only slices and idempotent seeds, runs wheel validators read-only, and publishes READY by exact compare-and-swap; full check deliberately performs the documented linear scan of the single sealed publication generation chain for exact nodes, edges, commits, arithmetic, no-fork/no-gap/no-orphan and maximum-head consistency, while quick readiness remains epoch-only O(1); the default generated wheel provider completes initialize, replay, read-only full check and readiness on fresh SQLite and MariaDB 10.11.11."
 assumptions = ["The MariaDB 10.11.11 test remains an opt-in testcontainer integration gate."]
 [[evidence.location]]
 path = "src/h2hdb/schema_epoch.py"
@@ -1404,7 +1626,7 @@ id = "integration.sqlite.schema-epoch"
 layer = "integration"
 strength = "sqlite_integration"
 directness = "direct"
-claim = "SQLite integration executes the production epoch runner from an empty database through create-only slices, exact bootstrap and semantic validation, READY publication, read-only READY revalidation, and committed retry convergence; the default generated provider additionally initializes, replays and validates all 4,913 SQLite seeds and 25 resolved writer bindings."
+claim = "SQLite integration executes the production epoch runner from an empty database through create-only slices, exact bootstrap and semantic validation, READY publication, read-only READY revalidation, and committed retry convergence; the default generated provider additionally initializes, replays and validates all 5,838 SQLite seeds and 30 resolved writer bindings."
 assumptions = []
 [[evidence.location]]
 path = "tests/test_schema_epoch.py"
@@ -1421,7 +1643,7 @@ id = "integration.live-mariadb.schema-epoch"
 layer = "integration"
 strength = "mariadb_integration"
 directness = "direct"
-claim = "Live MariaDB 10.11.11 integration executes the production epoch runner through empty-database READY, read-only full revalidation, committed partial-DDL resume, committed seed resume, and fail-closed rejection with advisory-lock release; the default generated provider additionally initializes, replays and validates all 4,913 MariaDB seeds, all 25 resolved writer bindings, and the non-null publication-candidate projection metadata."
+claim = "Live MariaDB 10.11.11 integration executes the production epoch runner through empty-database READY, read-only full revalidation, committed partial-DDL resume, committed seed resume, and fail-closed rejection with advisory-lock release; the default generated provider additionally initializes, replays and validates all 5,838 MariaDB seeds, all 30 resolved writer bindings, and the non-null publication-candidate projection metadata."
 assumptions = ["The MariaDB 10.11.11 tests remain opt-in testcontainer integration gates."]
 [[evidence.location]]
 path = "tests/test_schema_epoch_mariadb.py"
@@ -1441,7 +1663,7 @@ id = "integration.live-mariadb.operational-workflows"
 layer = "integration"
 strength = "mariadb_integration"
 directness = "direct"
-claim = "A live MariaDB 10.11.11 test applies the complete generated schema and seeds and executes production fencing, maintenance, allocation, queue, canonical hash-cache, typed event, activation and acknowledgement workflows while tracing the SELECT FOR UPDATE statements actually sent to the server."
+claim = "A live MariaDB 10.11.11 test applies the complete generated schema and seeds and executes production fencing, maintenance, allocation, queue, canonical hash-cache, typed transient-event and derived-activation workflows while tracing the SELECT FOR UPDATE statements actually sent to the server."
 assumptions = ["The finite workflow omits exhaustion, forced stale allocator CAS, activation joined to the publication pointer transaction, deliberate event corruption, cleanup, and true SHA-256 collision or cache eviction."]
 [[evidence.location]]
 path = "tests/test_vnext_live_mariadb_operational.py"
@@ -1452,7 +1674,7 @@ id = "runtime.production.writer-bindings"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The wheel-owned closed registry installs all 25 exact obligation, hook-name and version bindings whose families contain canonical public production repository methods, typed transaction owners and mutation relations inside the generated authority closure. Physical-domain bindings additionally install the closed guard tuples; nine boundary tests prove the exact 54 catalog, nine operational and one schema-epoch writer families, the 272-relation catalog physical-domain authority set with exactly 218 mutation relations, and the exact exclusion of all 54 read-only catalog views from mutation authority while rejecting forged values before SQL or event derivation."
+claim = "The wheel-owned closed registry installs all 30 exact obligation, hook-name and version bindings whose families contain canonical public production repository methods, typed transaction owners and mutation relations inside the generated authority closure. Physical-domain bindings additionally install the closed guard tuples; nine boundary tests prove the exact 54 catalog, nine operational and one schema-epoch writer families, the 151-relation catalog physical-domain authority set with exactly 114 mutation relations, and the exact exclusion of all 37 read-only catalog views from mutation authority while rejecting forged values before SQL or event derivation."
 assumptions = ["Binding evidence identifies the complete mutation-owner family; each referenced repository evidence record establishes the corresponding runtime semantics at those entrypoints. The adversarial boundary set is representative and does not constitute the exhaustive cross-backend fault matrix required by the fault layer."]
 [[evidence.location]]
 path = "src/h2hdb/catalog_writer.py"
@@ -1573,7 +1795,7 @@ id = "runtime.production.operational-event"
 layer = "runtime_refinement"
 strength = "executable_contract_check"
 directness = "direct"
-claim = "The production operational-effect repository binds policy-qualified preparation identity, writes bounded contiguous typed effects with exact digest-chain receipt and checkpoint CAS, seals only an empty terminal page, activates against the deletion generation, and advances bounded contiguous acknowledgement evidence."
+claim = "The production operational-effect repository binds policy-qualified preparation identity, writes bounded contiguous typed effects with exact digest-chain receipt and checkpoint CAS, seals only an empty terminal page, and leaves activation to the exact publication transaction."
 assumptions = ["Final publication uses its own transaction hook to bind activation to the source and catalog pointer commit."]
 [[evidence.location]]
 path = "src/h2hdb/vnext_operational_event_repository.py"
@@ -1581,16 +1803,12 @@ symbol = "OperationalEffectRepository"
 [[evidence.location]]
 path = "src/h2hdb/vnext_operational_event_repository.py"
 symbol = "append_batch"
-[[evidence.location]]
-path = "src/h2hdb/vnext_operational_event_repository.py"
-symbol = "acknowledge_through"
-
 [[evidence]]
 id = "fault.production.operational-event"
 layer = "fault"
 strength = "negative_control"
 directness = "direct"
-claim = "Operational-effect tests prove stale checkpoint compare-and-swap rolls back every typed effect, every preparation mutation rechecks the live fence, a sealed effect remains invisible without a sealed publication commit, no independent activation writer exists, exact response-loss replay is zero-write, and acknowledgement requires contiguous evidence."
+claim = "Operational-effect tests prove stale checkpoint compare-and-swap rolls back every typed effect, every preparation mutation rechecks the live fence, a sealed effect remains invisible without a sealed publication commit, no independent activation writer exists, and exact response-loss replay is zero-write."
 assumptions = ["The current matrix does not corrupt every event and chain byte or inject after every individual SQL statement."]
 [[evidence.location]]
 path = "tests/test_vnext_operational_event_repository.py"
@@ -1749,6 +1967,15 @@ fault = { status = "blocked", evidence = ["fault.production.analysis"], blocker 
 integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement", "integration.data.overlay-sqlite", "integration.sqlite.analysis", "integration.mariadb-shape.analysis"], blocker = "SQLite executes all five production components, independent seal validation and depth-one tombstones, but MariaDB evidence checks SQL shape only and no live MariaDB overlay and seal workflow has run." }
 
 [[invariant]]
+id = "catalog.published-baseline-prune.v1"
+fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore does not model the concrete depth-limited SQL ancestry, publication-finalization receipt family, or cleanup reachability graph." }
+runtime_refinement = { status = "covered", evidence = ["runtime.production.writer-bindings", "runtime.production.published-baseline-prune"] }
+fault = { status = "covered", evidence = ["fault.production.published-baseline-prune"] }
+integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.published-baseline-prune"], blocker = "SQLite executes terminal safe-handoff pruning and exact replay, but no live MariaDB terminal finalization has proved the same row-lock, delete and rollback behavior." }
+
+[[invariant]]
 id = "catalog.artifact-semantics.v1"
 fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
 lean = { status = "covered", evidence = ["lean.data.artifact-delta"] }
@@ -1764,7 +1991,7 @@ lean = { status = "supporting", evidence = ["lean.data.all-bcnf"] }
 tla = { status = "supporting", evidence = ["tla.data.lifecycle.small"] }
 runtime_refinement = { status = "covered", evidence = ["runtime.data.publication-atomicity", "runtime.production.writer-bindings", "runtime.production.publication-candidate", "runtime.production.artifact-preparation", "runtime.production.publication"] }
 fault = { status = "covered", evidence = ["fault.production.publication-candidate", "fault.production.artifact-preparation", "fault.production.publication"] }
-integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.publication-candidate", "integration.sqlite.artifact-preparation", "integration.sqlite.publication", "integration.mariadb-shape.publication-candidate", "integration.mariadb-shape.artifact-preparation", "integration.mariadb-shape.publication"], blocker = "SQLite executes projection, durable PENDING artifact-intent seal, external protect, exact PREPARED confirmation, the sealed common commit with its OPEN permanent checkpoint and single receipt-head swap, bounded issue/external-release/commit batches, the exact terminal marker, and response-loss replay after candidate cleanup; MariaDB evidence checks SQL shape only, so no live MariaDB atomic publication and permanent-finalization workflow or artifact protect/release race has run." }
+integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.publication-candidate", "integration.sqlite.artifact-preparation", "integration.sqlite.publication", "integration.mariadb-shape.publication-candidate", "integration.mariadb-shape.artifact-preparation", "integration.mariadb-shape.publication"], blocker = "SQLite executes projection, durable PENDING artifact-intent seal, external protect, exact PREPARED confirmation, the sealed common commit with its OPEN permanent checkpoint and single receipt-head swap, bounded issue/external-release/commit batches with current-only predecessor pruning, the exact terminal current receipt and marker, and response-loss replay after candidate cleanup; MariaDB evidence checks SQL shape only, so no live MariaDB atomic publication and current-only finalization workflow or artifact protect/release race has run." }
 
 [[invariant]]
 id = "catalog.state-machines.v1"
@@ -1803,13 +2030,13 @@ fault = { status = "blocked", evidence = ["fault.data.binding-corruption"], bloc
 integration = { status = "covered", evidence = ["integration.data.bootstrap-sqlite", "integration.sqlite.schema-epoch", "integration.live-mariadb.schema-epoch"] }
 
 [[invariant]]
-id = "catalog.retention.v1"
+id = "catalog.retention.v2"
 fd = { status = "supporting", evidence = ["fd.data.closed-world"] }
 lean = { status = "covered", evidence = ["lean.data.retention"] }
 tla = { status = "supporting", evidence = ["tla.data.lifecycle.small", "tla.data.vertical-family.small"] }
 runtime_refinement = { status = "covered", evidence = ["runtime.data.retention", "runtime.production.writer-bindings", "runtime.production.cleanup"] }
-fault = { status = "blocked", evidence = ["fault.data.binding-corruption", "fault.production.cleanup"], blocker = "The production matrix rejects live roots, registry and receipt corruption and rolls back one paired delete, but it does not race every retention root or interrupt every phase of all eighteen strategies." }
-integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.cleanup", "integration.mariadb-shape.cleanup"], blocker = "SQLite executes all eighteen production strategies and retained-root blockers, but MariaDB evidence checks static SQL shape only and no live MariaDB cleanup, resume, and publication-race workflow has run." }
+fault = { status = "blocked", evidence = ["fault.data.binding-corruption", "fault.production.cleanup"], blocker = "The production matrix rejects live roots, registry and receipt corruption and rolls back one paired delete, but it does not race every retention root or interrupt every phase of all twenty-two strategies." }
+integration = { status = "blocked", evidence = ["integration.data.sqlite-refinement", "integration.sqlite.cleanup", "integration.mariadb-shape.cleanup"], blocker = "SQLite executes all twenty-two production strategies and retained-root blockers, but MariaDB evidence checks static SQL shape only and no live MariaDB cleanup, resume, and publication-race workflow has run." }
 
 [[invariant]]
 id = "h2hdb.operational.physical-domains.v1"
@@ -1887,10 +2114,10 @@ integration = { status = "blocked", evidence = ["integration.operational.sqlite-
 id = "h2hdb.operational.event-integrity.v1"
 fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
 lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
-tla = { status = "not_applicable", rationale = "CatalogCore does not model preparation-scoped invisible event streams, exact digest chains and seals, O(1) activation, typed subrelations, or per-consumer acknowledgement heads." }
-runtime_refinement = { status = "covered", evidence = ["runtime.event-integrity", "runtime.production.writer-bindings", "runtime.production.operational-event", "runtime.production.artifact-preparation", "runtime.production.publication"] }
-fault = { status = "blocked", evidence = ["fault.operational.binding-corruption", "fault.production.operational-event", "fault.production.artifact-preparation", "fault.production.publication"], blocker = "Typed effect rollback, zero-event seal, deletion-generation race, preparation binding and pointer rollback are direct, but no closed matrix corrupts every coordinate, chain, subtype, activation order, acknowledgement and head transition." }
-integration = { status = "blocked", evidence = ["integration.operational.sqlite-refinement", "integration.live-mariadb.operational-workflows"], blocker = "Live MariaDB prepares invisible typed effects, seals, observes derived activation, and advances contiguous acknowledgement with replay, but it does not execute the complete sealed common-publication-commit lifecycle or a corruption and statement-fault matrix." }
+tla = { status = "not_applicable", rationale = "CatalogCore does not model preparation-scoped invisible event streams, exact digest chains and seals, O(1) activation, typed subrelations, or compound current-only event retirement." }
+runtime_refinement = { status = "covered", evidence = ["runtime.event-integrity", "runtime.production.writer-bindings", "runtime.production.operational-event", "runtime.production.artifact-preparation", "runtime.production.publication", "runtime.production.cleanup"] }
+fault = { status = "blocked", evidence = ["fault.operational.binding-corruption", "fault.production.operational-event", "fault.production.artifact-preparation", "fault.production.publication", "fault.production.cleanup"], blocker = "Typed effect rollback, zero-event seal, deletion-generation race, preparation binding, pointer rollback, typed event cleanup and compound commit/effect-root rollback are direct, but no closed matrix corrupts every coordinate, digest-chain byte, subtype, activation order, frozen-root frame and cleanup transition." }
+integration = { status = "blocked", evidence = ["integration.operational.sqlite-refinement", "integration.sqlite.cleanup", "integration.live-mariadb.operational-workflows"], blocker = "SQLite executes publication-owned transient event retirement and its compound root transition, while live MariaDB prepares invisible typed effects, seals and observes derived activation; live MariaDB still does not execute current-only publication-commit retirement or a complete corruption and statement-fault matrix." }
 
 [[invariant]]
 id = "h2hdb.operational.build-generation.v1"
@@ -1916,8 +2143,17 @@ fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
 lean = { status = "covered", evidence = ["lean.operational.cleanup-reachability"] }
 tla = { status = "not_applicable", rationale = "CatalogCore models retained publications abstractly but does not model the concrete closed-world cleanup target codecs, catalog FK descendant graph, or child-first SQL phase registry." }
 runtime_refinement = { status = "covered", evidence = ["runtime.cleanup-reachability", "runtime.production.writer-bindings", "runtime.production.artifact-release", "runtime.production.cleanup"] }
-fault = { status = "blocked", evidence = ["fault.cleanup-reachability", "fault.production.artifact-release", "fault.production.cleanup"], blocker = "SQLite directly checks PENDING and PREPARED artifact retention, exact release acknowledgement, COMMITTED child-first deletion, activated-effect preservation, abandoned-stream deletion and paired-write rollback, but no fault matrix races every retention root or interrupts every cleanup phase after an external tombstone." }
-integration = { status = "blocked", evidence = ["integration.cleanup-registry-fks", "integration.sqlite.artifact-release", "integration.sqlite.cleanup", "integration.mariadb-shape.artifact-release", "integration.mariadb-shape.cleanup"], blocker = "SQLite executes terminal artifact release before candidate deletion, COMPLETE control compaction and ABANDONED full-stream cleanup; MariaDB evidence records release-page and cleanup SQL shape only, so no live MariaDB external-release, cleanup, publication, or activation race has run." }
+fault = { status = "blocked", evidence = ["fault.cleanup-reachability", "fault.production.artifact-release", "fault.production.cleanup"], blocker = "SQLite directly checks PENDING and PREPARED artifact retention, exact release acknowledgement, COMMITTED child-first deletion, generic COMPLETE-preparation preservation, ABANDONED-stream deletion, and publication-commit-owned COMPLETE preparation/transient-event retirement with compound rollback, but no fault matrix races every retention root or interrupts every cleanup phase after an external tombstone." }
+integration = { status = "blocked", evidence = ["integration.cleanup-registry-fks", "integration.sqlite.artifact-release", "integration.sqlite.cleanup", "integration.mariadb-shape.artifact-release", "integration.mariadb-shape.cleanup"], blocker = "SQLite executes terminal artifact release before candidate deletion, retains COMPLETE commit-to-preparation-to-build lineage until the same publication-commit cycle releases its safe build base and preparation control family, and executes ABANDONED full-stream cleanup; MariaDB evidence records release-page and cleanup SQL shape only, so no live MariaDB external-release, cleanup, publication, or activation race has run." }
+
+[[invariant]]
+id = "h2hdb.operational.cleanup-frozen-root-set.v1"
+fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
+tla = { status = "not_applicable", rationale = "CatalogCore does not model the concrete per-cycle typed frozen-root frame, membership digest, or static SQL phase restriction." }
+runtime_refinement = { status = "covered", evidence = ["runtime.production.writer-bindings", "runtime.production.cleanup-frozen-root-set"] }
+fault = { status = "covered", evidence = ["fault.production.cleanup-frozen-root-set"] }
+integration = { status = "covered", evidence = ["integration.sqlite.cleanup-frozen-root-set", "integration.live-mariadb.cleanup-frozen-root-set"] }
 
 [[invariant]]
 id = "h2hdb.operational.revision-allocation.v1"
@@ -1945,3 +2181,12 @@ tla = { status = "covered", evidence = ["tla.gallery-staging.small"] }
 runtime_refinement = { status = "covered", evidence = ["runtime.gallery-staging-model", "runtime.production.writer-bindings", "runtime.production.gallery-staging"] }
 fault = { status = "blocked", evidence = ["fault.operational.binding-corruption", "fault.production.gallery-staging"], blocker = "Production tests cover begin and seal rollback, stale takeover, replay and multiple corruption paths, but no injected matrix interrupts every page, carry, metadata-parser, match, reuse, and cleanup statement." }
 integration = { status = "blocked", evidence = ["integration.operational.sqlite-refinement", "integration.sqlite.gallery-staging", "integration.mariadb-shape.gallery-staging"], blocker = "SQLite stages, crashes, resumes, seals and reuses a 257-file gallery, while MariaDB evidence records lock shape only; no live MariaDB giant-gallery staging and reclaim workflow has run." }
+
+[[invariant]]
+id = "h2hdb.operational.gallery-staging-request-budget.v1"
+fd = { status = "supporting", evidence = ["fd.operational.closed-world"] }
+lean = { status = "supporting", evidence = ["lean.operational.all-bcnf"] }
+tla = { status = "covered", evidence = ["tla.gallery-staging-retirement.small"] }
+runtime_refinement = { status = "covered", evidence = ["runtime.production.writer-bindings", "runtime.production.gallery-staging", "runtime.production.gallery-staging-request-budget", "runtime.production.cleanup"] }
+fault = { status = "blocked", evidence = ["fault.production.gallery-staging-request-budget", "fault.production.cleanup"], blocker = "Direct tests cover capacity at the first reservation and after a leaf reservation, retirement CAS rollback, stale-generation ROOT recovery, multi-batch release, and replay neutrality, but do not interrupt every SQL statement in every in-band and generic cleanup phase." }
+integration = { status = "covered", evidence = ["integration.sqlite.gallery-staging-retirement", "integration.live-mariadb.gallery-staging-request-budget"] }

@@ -58,7 +58,7 @@ def render(manifest_bytes: bytes) -> str:
             "gid_winner_selection_relation": "analysis_gid_winner_selection",
             "gid_winner_shadow_relation": "analysis_gid_winner_shadow",
             "gid_keyset_relation": "analysis_impacted_gid",
-            "gid_run_build_relation": "analysis_run_build_id",
+            "gid_run_build_relation": "analysis_run_descriptor",
             "gid_build_membership_relation": "source_build_gallery",
             "gid_metadata_relation": "gallery_observation_metadata",
             "gid_order_attributes": [

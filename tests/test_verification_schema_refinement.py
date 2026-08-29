@@ -46,7 +46,7 @@ def test_data_bootstrap_cells_are_exact_typed_scalars() -> None:
         document = tomllib.load(stream)
 
     seeds = document["bootstrap_seed"]
-    assert len(seeds) == 177
+    assert len(seeds) == 65
     for seed in seeds:
         assert seed["version"] == 1
         assert seed["value"]
@@ -74,7 +74,7 @@ def test_data_runtime_obligation_bindings_are_an_exact_machine_bijection() -> No
         if not path.startswith("machine_contract.")
     }
     bindings = document["runtime_obligation_binding"]
-    assert len(bindings) == len(owners) == len(document["runtime_obligations"]) == 85
+    assert len(bindings) == len(owners) == len(document["runtime_obligations"]) == 86
     assert len({binding["path"] for binding in bindings}) == len(bindings)
     assert tuple(binding["text"] for binding in bindings) == tuple(
         document["runtime_obligations"]
@@ -95,7 +95,7 @@ def test_snapshot_audit_digests_do_not_fk_pin_canonical_payload() -> None:
         source_fks = {
             (row[3], row[2], row[4])
             for row in connection.execute(
-                "PRAGMA foreign_key_list(catalog_source_revision_snapshot_manifests)"
+                "PRAGMA foreign_key_list(catalog_source_revision_descriptors)"
             )
         }
         analysis_fks = {
@@ -106,15 +106,15 @@ def test_snapshot_audit_digests_do_not_fk_pin_canonical_payload() -> None:
         }
         assert source_fks == {
             (
-                "source_revision",
-                "catalog_source_revision_anchors",
-                "source_revision",
+                "channel",
+                "catalog_channel_registry",
+                "channel",
             )
         }
         assert analysis_fks == {
             (
                 "analysis_id",
-                "catalog_analysis_run_descriptor_seals",
+                "catalog_analysis_run_descriptor",
                 "analysis_id",
             )
         }
@@ -125,29 +125,16 @@ def test_snapshot_audit_digests_do_not_fk_pin_canonical_payload() -> None:
             (b"default",),
         )
         connection.execute(
-            "INSERT INTO catalog_source_revision_anchors (source_revision) VALUES (1)"
-        )
-        connection.execute(
-            "INSERT INTO catalog_source_revision_channels "
-            "(source_revision, channel) VALUES (1, ?)",
-            (b"default",),
-        )
-        connection.execute(
-            "INSERT INTO catalog_source_revision_snapshot_manifests "
-            "(source_revision, snapshot_manifest_sha256) VALUES (1, ?)",
-            (missing_payload_digest,),
-        )
-        connection.execute(
-            "INSERT INTO catalog_source_revision_descriptor_seals "
-            "(source_revision) VALUES (1)"
+            "INSERT INTO catalog_source_revision_descriptors "
+            "(source_revision, channel, snapshot_manifest_sha256) VALUES (1, ?, ?)",
+            (b"default", missing_payload_digest),
         )
         assert connection.execute(
-            "SELECT snapshot_manifest_sha256 "
-            "FROM catalog_source_revision_snapshot_manifests"
+            "SELECT snapshot_manifest_sha256 FROM catalog_source_revision_descriptors"
         ).fetchone() == (missing_payload_digest,)
         assert (
             connection.execute(
-                "SELECT 1 FROM catalog_source_snapshot_manifest_identity_anchors"
+                "SELECT 1 FROM catalog_source_snapshot_manifest_identity"
             ).fetchone()
             is None
         )
@@ -160,9 +147,9 @@ def test_physical_loader_rejects_bootstrap_partition_drift(tmp_path: Path) -> No
     original = PHYSICAL.read_text(encoding="utf-8")
     invalid = original.replace(
         'seeded_relations = ["canonical_digest_policy", "channel_registry", '
-        '"source_provider_registry", "analysis_stage_anchor"',
+        '"source_provider_registry", "analysis_stage"',
         'seeded_relations = ["canonical_digest_policy", "channel_registry", '
-        '"source_provider_registry", "manifest_policy_anchor"',
+        '"source_provider_registry", "manifest_policy"',
         1,
     )
     assert invalid != original
@@ -419,8 +406,8 @@ def test_physical_spec_is_closed_world_and_uses_real_overlay_views() -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
 
-    assert len(logical.relations) == 379
-    assert len(physical_spec.implemented_relations) == 379
+    assert len(logical.relations) == 209
+    assert len(physical_spec.implemented_relations) == 209
     assert len(physical_spec.pending_relations) == 0
     assert set(physical_spec.source_slice) == {
         relation.relation for relation in physical_spec.implemented_relations
@@ -432,22 +419,22 @@ def test_physical_spec_is_closed_world_and_uses_real_overlay_views() -> None:
     assert physical_spec.relation("analysis_batch_receipt") is not None
     assert physical_spec.relation("source_revision") is not None
     assert "publication_head" not in physical_spec.pending_relations
-    manifest_fact = physical_spec.relation("manifest_policy_manifest_algorithm_version")
-    manifest_identity = physical_spec.relation("manifest_policy_identity")
-    assert manifest_fact is not None
-    assert manifest_identity is not None
-    assert manifest_fact.unique_keys == ()
-    assert manifest_fact.referential_unique_keys == (
+    manifest_policy = physical_spec.relation("manifest_policy")
+    assert manifest_policy is not None
+    assert tuple(column.attribute for column in manifest_policy.columns) == (
+        "manifest_policy_id",
+        "manifest_algorithm_version",
+        "file_order_version",
+    )
+    assert manifest_policy.primary_key == ("manifest_policy_id",)
+    assert manifest_policy.unique_keys == (
+        ("manifest_algorithm_version", "file_order_version"),
+    )
+    assert manifest_policy.referential_unique_keys == (
         ("manifest_policy_id", "manifest_algorithm_version"),
+        ("manifest_policy_id", "file_order_version"),
     )
-    assert any(
-        foreign_key.attributes == ("manifest_policy_id", "manifest_algorithm_version")
-        and foreign_key.referenced_relation
-        == "manifest_policy_manifest_algorithm_version"
-        and foreign_key.referenced_attributes
-        == ("manifest_policy_id", "manifest_algorithm_version")
-        for foreign_key in manifest_identity.foreign_keys
-    )
+    assert manifest_policy.kind == "table"
     publication = physical_spec.relation("catalog_publication")
     assert publication is not None
     assert tuple(column.attribute for column in publication.columns) == (
@@ -600,7 +587,7 @@ def test_physical_spec_is_closed_world_and_uses_real_overlay_views() -> None:
             assert column.attribute not in foreign_key_attributes
     assert direct_occurrences == {
         "metadata_fingerprint": 1,
-        "cursor": 6,
+        "cursor": 3,
         "protection_token": 1,
     }
     assert not any(
@@ -750,7 +737,6 @@ def test_sqlite_canonical_page_positions_match_runtime_domains() -> None:
     assert artifact_policy is not None
     assert artifact_policy.unique_keys == (
         (
-            "artifact_algorithm_version",
             "max_image_short_side",
             "producer_fingerprint_sha256",
         ),
@@ -769,7 +755,7 @@ def test_sqlite_canonical_page_positions_match_runtime_domains() -> None:
     )
     assert refinement.maximum_mariadb_index_width(physical_spec) == (
         640,
-        "artifact_producer_fingerprint_identity",
+        "artifact_producer_fingerprint",
         (
             "writer_id",
             "python_abi",
@@ -925,82 +911,81 @@ def test_physical_metadata_projection_cannot_omit_an_authority_source() -> None:
         refinement._validate_physical_schema(broken, logical)
 
 
-def test_physical_optional_vertical_metadata_is_closed_and_directional() -> None:
+def test_physical_lifecycle_projection_sources_are_closed_and_directional() -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
     source_build = physical_spec.relation("source_build")
     assert source_build is not None
-    assert source_build.vertical_view is not None
-    optional = next(
-        member
-        for member in source_build.vertical_view.members
-        if member.relation == "source_build_sealed_at"
-    )
-    wrongly_required = replace(optional, required=True)
-    broken_view = replace(
-        source_build.vertical_view,
-        members=tuple(
-            wrongly_required if member is optional else member
-            for member in source_build.vertical_view.members
+    assert source_build.vertical_view is None
+    assert source_build.derived_view == refinement.DerivedViewSpec(
+        pattern="lifecycle_projection",
+        source_relations=(
+            "source_build_descriptor",
+            "source_build_state",
+            "source_build_sealed_at",
         ),
     )
-    broken_source_build = replace(source_build, vertical_view=broken_view)
-    broken = replace(
-        physical_spec,
-        relations=tuple(
-            broken_source_build if relation is source_build else relation
-            for relation in physical_spec.relations
-        ),
-    )
-    with pytest.raises(ValueError, match="lacks its participation FK"):
-        refinement._validate_physical_schema(broken, logical)
-
-    no_presence = replace(
+    broken_source_build = replace(
         source_build,
-        vertical_view=replace(source_build.vertical_view, optional_presence=None),
-    )
-    broken = replace(
-        physical_spec,
-        relations=tuple(
-            no_presence if relation is source_build else relation
-            for relation in physical_spec.relations
+        derived_view=replace(
+            source_build.derived_view,
+            source_relations=(
+                "source_build_descriptor",
+                "source_build_state",
+            ),
         ),
     )
-    with pytest.raises(ValueError, match="optional members require one closed"):
-        refinement._validate_physical_schema(broken, logical)
+    relation_by_name = {
+        relation.relation: (
+            broken_source_build if relation is source_build else relation
+        )
+        for relation in physical_spec.relations
+    }
+    with pytest.raises(
+        ValueError,
+        match="lifecycle_projection requires descriptor, state, terminal",
+    ):
+        refinement._render_view(
+            broken_source_build,
+            relation_by_name,
+            "sqlite",
+        )
 
 
-def test_physical_vertical_projection_alias_cannot_drift() -> None:
+def test_physical_build_manifest_projection_sources_cannot_drift() -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
     build_manifest = physical_spec.relation("build_manifest")
     assert build_manifest is not None
-    assert build_manifest.vertical_view is not None
-    timestamp = next(
-        member
-        for member in build_manifest.vertical_view.members
-        if member.relation == "source_build_sealed_at"
+    assert build_manifest.vertical_view is None
+    assert build_manifest.derived_view == refinement.DerivedViewSpec(
+        pattern="build_manifest_projection",
+        source_relations=(
+            "build_manifest_core",
+            "source_build_discovery",
+            "source_build_sealed_at",
+        ),
     )
-    broken_timestamp = replace(timestamp, projection_attribute="sealed_at")
     broken_manifest = replace(
         build_manifest,
-        vertical_view=replace(
-            build_manifest.vertical_view,
-            members=tuple(
-                broken_timestamp if member is timestamp else member
-                for member in build_manifest.vertical_view.members
+        derived_view=replace(
+            build_manifest.derived_view,
+            source_relations=(
+                "build_manifest_core",
+                "source_build_discovery",
             ),
         ),
     )
-    broken = replace(
-        physical_spec,
-        relations=tuple(
-            broken_manifest if relation is build_manifest else relation
-            for relation in physical_spec.relations
-        ),
-    )
-    with pytest.raises(ValueError, match="projection is not exactly"):
-        refinement._validate_physical_schema(broken, logical)
+    relation_by_name = {
+        relation.relation: broken_manifest if relation is build_manifest else relation
+        for relation in physical_spec.relations
+    }
+    with pytest.raises(ValueError, match="build_manifest_projection source set drift"):
+        refinement._render_view(
+            broken_manifest,
+            relation_by_name,
+            "sqlite",
+        )
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
@@ -1023,7 +1008,6 @@ def test_batch3b_refinement_and_provider_views_are_exactly_equal(
             "source_build",
             "build_manifest",
             "gallery_observation_metadata",
-            "source_snapshot_manifest_identity",
         )
     }
     artifact = cast(dict[str, Any], ARTIFACT)
@@ -1033,7 +1017,6 @@ def test_batch3b_refinement_and_provider_views_are_exactly_equal(
         "source_build",
         "build_manifest",
         "gallery_observation_metadata",
-        "source_snapshot_manifest_identity",
     ):
         provider_statements = provider_slices[f"relation:{relation_name}"]
         assert len(provider_statements) == 1
@@ -1051,6 +1034,29 @@ def test_batch3b_refinement_and_provider_views_are_exactly_equal(
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
+def test_every_refinement_and_provider_view_is_exactly_equal(backend: str) -> None:
+    logical = refinement.load_logical_schema(CATALOG)
+    physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
+    relation_by_name = {
+        relation.relation: relation for relation in physical_spec.relations
+    }
+    artifact = cast(dict[str, Any], ARTIFACT)
+    provider_slices = dict(artifact["backends"][backend]["slices"])
+
+    for relation in physical_spec.relations:
+        if relation.kind != "view":
+            continue
+        provider_statements = provider_slices[f"relation:{relation.relation}"]
+        assert len(provider_statements) == 1
+        assert provider_statements[0][3] == refinement._render_view(
+            relation,
+            relation_by_name,
+            backend,
+            idempotent=True,
+        )
+
+
+@pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
 def test_batch4_refinement_and_provider_views_are_exactly_equal(
     backend: str,
 ) -> None:
@@ -1064,7 +1070,6 @@ def test_batch4_refinement_and_provider_views_are_exactly_equal(
     for relation_name in (
         "analysis_run",
         "analysis_state_anchor",
-        "analysis_state_component_seal",
         "analysis_exclusion_delta",
     ):
         expected = refinement._render_view(
@@ -1083,6 +1088,13 @@ def test_batch4_refinement_and_provider_views_are_exactly_equal(
     assert "'OPEN', 'ABANDONED'" in analysis_run_sql
     endpoint_sql = provider_slices["relation:analysis_state_anchor"][0][3]
     assert "NOT EXISTS" in endpoint_sql
+    component_seal = relation_by_name["analysis_state_component_seal"]
+    assert component_seal.kind == "table"
+    assert component_seal.vertical_view is None
+    assert component_seal.derived_view is None
+    assert provider_slices["relation:analysis_state_component_seal"][0][3].startswith(
+        "CREATE TABLE"
+    )
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "mariadb"])
@@ -1214,7 +1226,7 @@ def test_fresh_complete_sqlite_ddl_refines_physical_spec() -> None:
     assert report.conforms
     assert report.fully_conforms
     assert not report.ddl_only
-    assert len(report.checked_relations) == 379
+    assert len(report.checked_relations) == 209
     assert len(report.pending_relations) == 0
     assert report.mismatches == ()
     assert report.render().splitlines()[0] == (
@@ -1305,25 +1317,6 @@ def test_metadata_projection_requires_one_complete_local_row() -> None:
 @pytest.mark.parametrize(
     ("anchor", "key", "members", "seal", "view", "expected"),
     [
-        (
-            "catalog_source_build_discovery_anchors",
-            (b"b" * 16,),
-            (
-                (
-                    "catalog_source_build_discovery_scan_attempts",
-                    (b"b" * 16, b"a" * 16),
-                ),
-                ("catalog_source_build_discovery_gallery_counts", (b"b" * 16, 0)),
-                (
-                    "catalog_source_build_discovery_tree_observation_sha256s",
-                    (b"b" * 16, b"t" * 32),
-                ),
-                ("catalog_source_build_discovery_completed_ats", (b"b" * 16, 5)),
-            ),
-            "catalog_source_build_discovery_seals",
-            "catalog_source_build_discoveries",
-            (b"b" * 16, b"a" * 16, 0, b"t" * 32, 5),
-        ),
         (
             "catalog_gallery_observation_file_filesystem_anchors",
             (1, 2, b"k" * 32),
@@ -1710,7 +1703,7 @@ def test_secondary_sealed_projection_metadata_drift_is_rejected() -> None:
         refinement._validate_physical_schema(broken, logical)
 
 
-def test_artifact_producer_view_requires_natural_identity_and_seal() -> None:
+def test_recomposed_artifact_producer_table_is_atomic_and_uniquely_keyed() -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
     digest = b"d" * 32
@@ -1719,164 +1712,80 @@ def test_artifact_producer_view_requires_natural_identity_and_seal() -> None:
     try:
         connection.executescript(refinement.render_sqlite_ddl(physical_spec))
         connection.execute("PRAGMA foreign_keys = OFF")
-        connection.execute(
-            "INSERT INTO catalog_artifact_producer_fingerprint_anchors VALUES (?)",
-            (digest,),
-        )
-        connection.execute(
-            "INSERT INTO catalog_artifact_producer_fingerprint_algorithm_versions "
-            "VALUES (?, ?)",
-            (digest, 1),
-        )
-        connection.execute(
-            "INSERT INTO catalog_artifact_producer_fingerprint_equivalence_classes "
-            "VALUES (?, ?)",
-            (digest, b"equivalent"),
-        )
-        connection.commit()
-        connection.execute("PRAGMA foreign_keys = ON")
-        assert (
+        with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
-                "SELECT * FROM catalog_artifact_producer_fingerprints"
-            ).fetchall()
-            == []
-        )
-        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
-            connection.execute(
-                "INSERT INTO catalog_artifact_producer_fingerprint_seals VALUES (?)",
-                (digest,),
+                "INSERT INTO catalog_artifact_producer_fingerprints "
+                "(producer_fingerprint_sha256, artifact_algorithm_version) "
+                "VALUES (?, ?)",
+                (digest, 1),
             )
         connection.execute(
-            "INSERT INTO catalog_artifact_producer_fingerprint_identities "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (*producer_fields, digest),
-        )
-        connection.execute(
-            "INSERT INTO catalog_artifact_producer_fingerprint_seals VALUES (?)",
-            (digest,),
+            "INSERT INTO catalog_artifact_producer_fingerprints "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (digest, 1, b"equivalent", *producer_fields),
         )
         assert connection.execute(
             "SELECT * FROM catalog_artifact_producer_fingerprints"
         ).fetchone() == (digest, 1, b"equivalent", *producer_fields)
-        with pytest.raises(sqlite3.OperationalError, match="view"):
+        with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
                 "INSERT INTO catalog_artifact_producer_fingerprints "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (digest, 1, b"equivalent", *producer_fields),
+                (b"e" * 32, 1, b"equivalent", *producer_fields),
             )
     finally:
         connection.close()
 
 
-def test_generation_views_derive_one_mapping_value_and_are_read_only() -> None:
+def test_generation_views_derive_one_wide_commit_mapping_and_are_read_only() -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
     build_id = b"b" * 16
     candidate_id = b"c" * 16
     channel = b"default"
+    receipt_id = b"r" * 16
+    preparation_id = b"p" * 16
     connection = sqlite3.connect(":memory:")
     try:
         connection.executescript(refinement.render_sqlite_ddl(physical_spec))
         connection.execute("PRAGMA foreign_keys = OFF")
-        receipt_id = b"r" * 16
-        preparation_id = b"p" * 16
-        snapshot_manifest = b"s" * 32
-        for statement, values in (
+        connection.execute(
+            "INSERT INTO catalog_publication_commits VALUES "
+            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                "INSERT INTO catalog_source_revision_anchors VALUES (?)",
-                (7,),
+                receipt_id,
+                candidate_id,
+                9,
+                7,
+                4,
+                preparation_id,
+                1,
+                1,
+                1,
+                1,
+                2,
+                3,
+                4,
+                12,
             ),
-            (
-                "INSERT INTO catalog_source_revision_channels VALUES (?, ?)",
-                (7, channel),
-            ),
-            (
-                "INSERT INTO catalog_source_revision_snapshot_manifests VALUES (?, ?)",
-                (7, snapshot_manifest),
-            ),
-            (
-                "INSERT INTO catalog_source_revision_descriptor_seals VALUES (?)",
-                (7,),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_anchors VALUES (?)",
-                (receipt_id,),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_candidates VALUES (?, ?)",
-                (receipt_id, candidate_id),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_catalog_revisions VALUES (?, ?)",
-                (receipt_id, 9),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_source_revisions VALUES (?, ?)",
-                (receipt_id, 7),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_generations VALUES (?, ?)",
-                (receipt_id, 4),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_operational_preparations "
-                "VALUES (?, ?)",
-                (receipt_id, preparation_id),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_operational_policies "
-                "VALUES (?, ?)",
-                (receipt_id, 1),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_artifact_policies VALUES (?, ?)",
-                (receipt_id, 1),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_display_title_policies "
-                "VALUES (?, ?)",
-                (receipt_id, 1),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_new_galleries VALUES (?, ?)",
-                (receipt_id, 1),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_changed_galleries "
-                "VALUES (?, ?)",
-                (receipt_id, 2),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_removed_galleries VALUES (?, ?)",
-                (receipt_id, 3),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_duplicate_losers VALUES (?, ?)",
-                (receipt_id, 4),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_committed_ats VALUES (?, ?)",
-                (receipt_id, 12),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_seals VALUES (?)",
-                (receipt_id,),
-            ),
-            (
-                "INSERT INTO catalog_source_build_base_publication_commits VALUES (?, ?)",
-                (build_id, receipt_id),
-            ),
-            (
-                "INSERT INTO catalog_publication_candidate_base_publication_commits "
-                "VALUES (?, ?)",
-                (candidate_id, receipt_id),
-            ),
-            (
-                "INSERT INTO catalog_publication_commit_head_receipts VALUES (?, ?)",
-                (channel, receipt_id),
-            ),
-        ):
-            connection.execute(statement, values)
+        )
+        connection.execute(
+            "INSERT INTO catalog_source_build_base_publication_commits VALUES (?, ?)",
+            (build_id, receipt_id),
+        )
+        connection.execute(
+            "INSERT INTO catalog_publication_candidate_base_publication_commits "
+            "VALUES (?, ?)",
+            (candidate_id, receipt_id),
+        )
+        connection.execute(
+            "INSERT INTO catalog_source_revision_descriptors VALUES (?, ?, ?)",
+            (7, channel, b"s" * 32),
+        )
+        connection.execute(
+            "INSERT INTO catalog_publication_commit_head_receipts VALUES (?, ?)",
+            (channel, receipt_id),
+        )
 
         assert connection.execute(
             "SELECT * FROM catalog_source_build_base_source"
@@ -1912,22 +1821,10 @@ def test_generation_views_derive_one_mapping_value_and_are_read_only() -> None:
             "catalog_gallery_observation_download_times",
         ),
         (
-            "source_build_discovery",
-            "catalog_source_build_discoveries",
-            "catalog_source_build_discovery_scan_attempts",
-            "catalog_source_build_discovery_gallery_counts",
-        ),
-        (
             "gallery_observation_file_filesystem",
             "catalog_gallery_observation_file_filesystem",
             "catalog_gallery_observation_file_filesystem_devices",
             "catalog_gallery_observation_file_filesystem_inodes",
-        ),
-        (
-            "artifact_producer_fingerprint",
-            "catalog_artifact_producer_fingerprints",
-            "catalog_artifact_producer_fingerprint_algorithm_versions",
-            "catalog_artifact_producer_fingerprint_equivalence_classes",
         ),
         (
             "source_build_base_source",
@@ -2156,67 +2053,35 @@ def test_analysis_sqlite_fixture_enforces_group_membership_and_checks() -> None:
             )
 
         stage = b"changed_gallery"
-        for statement, values in (
+        connection.execute(
+            "INSERT INTO catalog_analysis_batch_receipt_stored "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                "INSERT INTO catalog_analysis_batch_receipt_anchors VALUES (?, ?, ?)",
-                (analysis_id, stage, 1),
+                analysis_id,
+                stage,
+                1,
+                b"batch-1",
+                b"",
+                0,
+                128,
+                b"next",
+                2,
+                1_767_225_602_000_000,
             ),
-            (
-                "INSERT INTO catalog_analysis_batch_receipt_coordinates "
-                "VALUES (?, ?, ?, ?)",
-                (analysis_id, stage, b"batch-1", 1),
-            ),
-            (
-                "INSERT INTO catalog_analysis_batch_receipt_start_cursors "
-                "VALUES (?, ?, ?, ?)",
-                (analysis_id, stage, 1, b""),
-            ),
-            (
-                "INSERT INTO catalog_analysis_batch_receipt_start_processed_counts "
-                "VALUES (?, ?, ?, ?)",
-                (analysis_id, stage, 1, 0),
-            ),
-            (
-                "INSERT INTO catalog_analysis_batch_receipt_page_limits "
-                "VALUES (?, ?, ?, ?)",
-                (analysis_id, stage, 1, 128),
-            ),
-            (
-                "INSERT INTO catalog_analysis_batch_receipt_next_cursors "
-                "VALUES (?, ?, ?, ?)",
-                (analysis_id, stage, 1, b"next"),
-            ),
-            (
-                "INSERT INTO catalog_analysis_batch_receipt_row_counts "
-                "VALUES (?, ?, ?, ?)",
-                (analysis_id, stage, 1, 2),
-            ),
-            (
-                "INSERT INTO catalog_analysis_batch_receipt_committed_ats "
-                "VALUES (?, ?, ?, ?)",
-                (analysis_id, stage, 1, 1_767_225_602_000_000),
-            ),
-            (
-                "INSERT INTO catalog_analysis_batch_receipt_seals VALUES (?, ?, ?)",
-                (analysis_id, stage, 1),
-            ),
-        ):
-            connection.execute(statement, values)
+        )
         assert connection.execute(
             "SELECT row_count FROM catalog_analysis_batch_receipts"
         ).fetchone() == (2,)
 
-        # state_component is an exact binary domain.  Its enum predicate must
-        # use binary literals as well; SQLite TEXT literals can never satisfy
-        # the simultaneous typeof(...)=blob constraint.
+        # state_component is an exact binary domain in the atomic wide seal.
         connection.execute(
-            "INSERT INTO catalog_analysis_state_component_anchors VALUES (?, ?)",
-            (analysis_id, b"file_hash_decision"),
+            "INSERT INTO catalog_analysis_state_component_seals VALUES (?, ?, ?, ?)",
+            (analysis_id, b"file_hash_decision", 0, 1),
         )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
-                "INSERT INTO catalog_analysis_state_component_anchors VALUES (?, ?)",
-                (analysis_id, "content_owner"),
+                "INSERT INTO catalog_analysis_state_component_seals VALUES (?, ?, ?, ?)",
+                (analysis_id, "content_owner", 0, 1),
             )
     finally:
         connection.close()
@@ -2234,40 +2099,35 @@ def test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states()
 
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
-                "INSERT INTO catalog_content_blobs VALUES (?, ?)",
-                ("a" * 32, 1),
+                "INSERT INTO catalog_content_blobs VALUES (?, ?)", ("a" * 32, 1)
             )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
-                "INSERT INTO catalog_content_blobs VALUES (?, ?)",
-                (b"a" * 32, 1.5),
+                "INSERT INTO catalog_content_blobs VALUES (?, ?)", (b"a" * 32, 1.5)
             )
 
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
-                "INSERT INTO catalog_source_revision_anchors VALUES (?)",
-                (0,),
+                "INSERT INTO catalog_source_revision_descriptors VALUES (?, ?, ?)",
+                (0, b"default", b"s" * 32),
             )
         connection.execute(
-            "INSERT INTO catalog_source_revision_anchors VALUES (?)",
-            (1,),
+            "INSERT INTO catalog_source_revision_descriptors VALUES (?, ?, ?)",
+            (1, b"default", b"s" * 32),
         )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
-                "INSERT INTO catalog_revision_anchors VALUES (?)",
-                (0,),
+                "INSERT INTO catalog_revision_descriptors VALUES (?, ?)", (0, 0)
             )
         connection.execute(
-            "INSERT INTO catalog_revision_anchors VALUES (?)",
-            (1,),
+            "INSERT INTO catalog_revision_descriptors VALUES (?, ?)", (1, 0)
+        )
+
+        connection.execute(
+            "INSERT INTO catalog_publication_generation_nodes VALUES (?)", (0,)
         )
         connection.execute(
-            "INSERT INTO catalog_publication_generation_nodes VALUES (?)",
-            (0,),
-        )
-        connection.execute(
-            "INSERT INTO catalog_publication_generation_nodes VALUES (?)",
-            (1,),
+            "INSERT INTO catalog_publication_generation_nodes VALUES (?)", (1,)
         )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
@@ -2280,8 +2140,7 @@ def test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states()
         )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
-                "INSERT INTO catalog_source_build_base_publication_commits "
-                "VALUES (?, ?)",
+                "INSERT INTO catalog_source_build_base_publication_commits VALUES (?, ?)",
                 (b"b" * 16, b"r" * 15),
             )
         connection.execute(
@@ -2290,60 +2149,32 @@ def test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states()
         )
 
         connection.execute(
-            "INSERT INTO catalog_title_sort_policy_anchors VALUES (?)", (1,)
+            "INSERT INTO catalog_title_sort_policy VALUES (?, ?, ?)",
+            (1, 1, b"16.0.0"),
         )
-        connection.execute(
-            "INSERT INTO catalog_title_sort_policy_algorithm_versions VALUES (?, ?)",
-            (1, 1),
-        )
-        connection.execute(
-            "INSERT INTO catalog_title_sort_policy_unicode_data_versions VALUES (?, ?)",
-            (1, b"16.0.0"),
-        )
-        connection.execute(
-            "INSERT INTO catalog_title_sort_policy_identities VALUES (?, ?, ?)",
-            (1, b"16.0.0", 1),
-        )
-        connection.execute(
-            "INSERT INTO catalog_title_sort_policy_seals VALUES (?)", (1,)
-        )
-        for malformed_unicode_version in (b"", b"v" * 33, "16.0.0"):
+        for policy_id, malformed_unicode_version in enumerate(
+            (b"", b"v" * 33, "16.0.0"), start=2
+        ):
             with pytest.raises(sqlite3.IntegrityError):
                 connection.execute(
-                    "INSERT INTO catalog_title_sort_policy_unicode_data_versions "
-                    "VALUES (?, ?)",
-                    (2, malformed_unicode_version),
+                    "INSERT INTO catalog_title_sort_policy VALUES (?, ?, ?)",
+                    (policy_id, policy_id, malformed_unicode_version),
                 )
 
         builds = (
-            (b"c" * 16, b"d" * 32, "OPEN", 2),
+            (b"c" * 16, b"d" * 32, "OPEN", None),
             (b"e" * 16, b"f" * 32, "SEALED", None),
             (b"g" * 16, b"h" * 32, "ABANDONED", 2),
             (b"i" * 16, b"j" * 32, "ABANDONED", None),
         )
         for build_id, scope_key, state, sealed_at in builds:
             connection.execute(
-                "INSERT INTO catalog_source_build_anchors VALUES (?)", (build_id,)
-            )
-            connection.execute(
-                "INSERT INTO catalog_source_build_scope_keys VALUES (?, ?)",
-                (build_id, scope_key),
-            )
-            connection.execute(
-                "INSERT INTO catalog_source_build_manifest_policy_ids VALUES (?, ?)",
-                (build_id, 1),
+                "INSERT INTO catalog_source_build_descriptor VALUES (?, ?, ?, ?)",
+                (build_id, scope_key, 1, 1),
             )
             connection.execute(
                 "INSERT INTO catalog_source_build_states VALUES (?, ?)",
                 (build_id, state),
-            )
-            connection.execute(
-                "INSERT INTO catalog_source_build_created_ats VALUES (?, ?)",
-                (build_id, 1),
-            )
-            connection.execute(
-                "INSERT INTO catalog_source_build_descriptor_seals VALUES (?)",
-                (build_id,),
             )
             if sealed_at is not None:
                 connection.execute(
@@ -2352,12 +2183,21 @@ def test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states()
                 )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
+                "INSERT INTO catalog_source_build_states VALUES (?, ?)",
+                (b"z" * 16, "BROKEN"),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
                 "INSERT INTO catalog_source_build_sealed_ats VALUES (?, ?)",
                 (b"z" * 16, None),
             )
         assert connection.execute(
-            "SELECT build_id, state, sealed_at FROM catalog_source_builds"
-        ).fetchall() == [(b"i" * 16, "ABANDONED", None)]
+            "SELECT build_id, state, sealed_at FROM catalog_source_builds "
+            "ORDER BY build_id"
+        ).fetchall() == [
+            (b"c" * 16, "OPEN", None),
+            (b"i" * 16, "ABANDONED", None),
+        ]
 
         analyses = (
             (b"k" * 16, b"K" * 16, 1, "COMPLETE", 2),
@@ -2367,35 +2207,12 @@ def test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states()
         )
         for analysis_id, build_id, policy_id, state, completed_at in analyses:
             connection.execute(
-                "INSERT INTO catalog_analysis_run_anchors VALUES (?)", (analysis_id,)
-            )
-            connection.execute(
-                "INSERT INTO catalog_analysis_run_build_ids VALUES (?, ?)",
-                (analysis_id, build_id),
-            )
-            connection.execute(
-                "INSERT INTO catalog_analysis_run_policy_ids VALUES (?, ?)",
-                (analysis_id, policy_id),
-            )
-            connection.execute(
-                "INSERT INTO catalog_analysis_run_input_manifest_sha256s VALUES (?, ?)",
-                (analysis_id, bytes([policy_id]) * 32),
-            )
-            connection.execute(
-                "INSERT INTO catalog_analysis_run_identities VALUES (?, ?, ?)",
-                (build_id, policy_id, analysis_id),
-            )
-            connection.execute(
-                "INSERT INTO catalog_analysis_run_started_ats VALUES (?, 1)",
-                (analysis_id,),
+                "INSERT INTO catalog_analysis_run_descriptor VALUES (?, ?, ?, ?, ?)",
+                (analysis_id, build_id, policy_id, bytes([policy_id]) * 32, 1),
             )
             connection.execute(
                 "INSERT INTO catalog_analysis_run_states VALUES (?, ?)",
                 (analysis_id, state),
-            )
-            connection.execute(
-                "INSERT INTO catalog_analysis_run_descriptor_seals VALUES (?)",
-                (analysis_id,),
             )
             if completed_at is not None:
                 connection.execute(
@@ -2418,13 +2235,19 @@ def test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states()
         for invalid_page_limit in (0, 129):
             with pytest.raises(sqlite3.IntegrityError):
                 connection.execute(
-                    "INSERT INTO catalog_analysis_batch_receipt_page_limits "
-                    "VALUES (?, ?, ?, ?)",
+                    "INSERT INTO catalog_analysis_batch_receipt_stored "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         b"x" * 16,
                         b"changed_gallery",
                         invalid_page_limit + 1,
+                        bytes([invalid_page_limit % 256 or 1]),
+                        b"",
+                        0,
                         invalid_page_limit,
+                        b"next",
+                        1,
+                        1,
                     ),
                 )
 
@@ -2447,13 +2270,13 @@ def test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states()
                 )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
-                "INSERT INTO catalog_analysis_checkpoint_cursors VALUES (?, ?, ?)",
-                (b"a" * 16, b"HASH", b"c" * 2049),
+                "INSERT INTO catalog_analysis_checkpoints VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (b"a" * 16, b"changed_gallery", 1, b"c" * 2049, 0, "OPEN", 1),
             )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
-                "INSERT INTO catalog_publication_checkpoint_cursors VALUES (?, ?, ?)",
-                (b"p" * 16, b"ITEMS", b"c" * 2049),
+                "INSERT INTO catalog_publication_checkpoints VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (b"p" * 16, b"ITEMS", 1, b"c" * 2049, 0, "OPEN", 1),
             )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
@@ -2472,37 +2295,25 @@ def test_sqlite_fixture_enforces_storage_classes_positive_revisions_and_states()
         connection.close()
 
 
-def test_sqlite_vertical_identity_cannot_disagree_with_narrow_facts() -> None:
+def test_sqlite_recomposed_manifest_policy_enforces_both_candidate_keys() -> None:
     logical = refinement.load_logical_schema(CATALOG)
     physical_spec = refinement.load_physical_schema(PHYSICAL, logical)
     connection = sqlite3.connect(":memory:")
     try:
-        connection.execute("PRAGMA foreign_keys = ON")
         connection.executescript(refinement.render_sqlite_ddl(physical_spec))
         connection.execute(
-            "INSERT INTO catalog_manifest_policy_anchors VALUES (?)", (1,)
+            "INSERT INTO catalog_manifest_policies VALUES (?, ?, ?)", (1, 1, 1)
         )
-        connection.execute(
-            "INSERT INTO catalog_manifest_policy_manifest_algorithm_versions "
-            "VALUES (?, ?)",
-            (1, 1),
-        )
-        connection.execute(
-            "INSERT INTO catalog_manifest_policy_file_order_versions VALUES (?, ?)",
-            (1, 1),
-        )
-
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
-                "INSERT INTO catalog_manifest_policy_identities VALUES (?, ?, ?)",
-                (2, 1, 1),
+                "INSERT INTO catalog_manifest_policies VALUES (?, ?, ?)", (2, 1, 1)
             )
-
-        connection.execute(
-            "INSERT INTO catalog_manifest_policy_identities VALUES (?, ?, ?)",
-            (1, 1, 1),
-        )
-        connection.execute("INSERT INTO catalog_manifest_policy_seals VALUES (?)", (1,))
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO catalog_manifest_policies "
+                "(manifest_policy_id, manifest_algorithm_version) VALUES (?, ?)",
+                (2, 2),
+            )
         assert connection.execute(
             "SELECT * FROM catalog_manifest_policies"
         ).fetchall() == [(1, 1, 1)]
@@ -2535,9 +2346,7 @@ def test_mariadb_renderer_preserves_exact_binary_types_checks_and_views() -> Non
     commit_preparation_position = next(
         position
         for position, statement in enumerate(statements)
-        if statement.startswith(
-            "CREATE TABLE `catalog_publication_commit_operational_preparations`"
-        )
+        if statement.startswith("CREATE TABLE `catalog_publication_commits`")
     )
     assert (
         statements.index(
@@ -2555,7 +2364,7 @@ def test_mariadb_renderer_preserves_exact_binary_types_checks_and_views() -> Non
         sum(
             value.startswith("CREATE SQL SECURITY INVOKER VIEW") for value in statements
         )
-        == 73
+        == 49
     )
     assert "`analysis_id` BINARY(16) NOT NULL" in ddl
     assert "`locator_sha256` BINARY(32) NOT NULL" in ddl

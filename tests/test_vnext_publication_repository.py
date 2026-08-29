@@ -19,9 +19,13 @@ from vnext_catalog_registry_fixtures import (
     seed_title_sort_policy,
 )
 from vnext_manifest_fixtures import (
-    seed_build_manifest,
+    seed_sealed_source_build,
     seed_snapshot_manifest,
-    seed_source_build,
+)
+from vnext_publication_fixtures import (
+    seed_publication_candidate,
+    seed_publication_commit,
+    seed_publication_finalization,
 )
 
 from h2hdb import vnext_identity as identity
@@ -65,7 +69,6 @@ _PRODUCER_FIELDS = (
 _PRODUCER_FINGERPRINT = identity.artifact_producer_fingerprint_sha256(*_PRODUCER_FIELDS)
 _SOURCE_ROOT = b"r" * 32
 _SCOPE_KEY = identity.source_scope_key("filesystem", _SOURCE_ROOT, 1)
-_DEFAULT_BUILD_IDENTITY_BASE = object()
 
 
 def _generated_database(path: Path) -> SQLiteConnector:
@@ -207,17 +210,9 @@ def _catalog_descriptor(
     connector: SQLiteConnector, *, revision: int, publication_count: int
 ) -> None:
     connector.execute(
-        "INSERT INTO catalog_revision_anchors (revision) VALUES (%s)",
-        (revision,),
-    )
-    connector.execute(
-        "INSERT INTO catalog_revision_publication_counts "
+        "INSERT INTO catalog_revision_descriptors "
         "(revision, publication_count) VALUES (%s, %s)",
         (revision, publication_count),
-    )
-    connector.execute(
-        "INSERT INTO catalog_revision_descriptor_seals (revision) VALUES (%s)",
-        (revision,),
     )
 
 
@@ -228,23 +223,9 @@ def _source_descriptor(
     snapshot: bytes,
 ) -> None:
     connector.execute(
-        "INSERT INTO catalog_source_revision_anchors (source_revision) VALUES (%s)",
-        (source_revision,),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_revision_channels "
-        "(source_revision, channel) VALUES (%s, %s)",
-        (source_revision, _CHANNEL),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_revision_snapshot_manifests "
-        "(source_revision, snapshot_manifest_sha256) VALUES (%s, %s)",
-        (source_revision, snapshot),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_revision_descriptor_seals "
-        "(source_revision) VALUES (%s)",
-        (source_revision,),
+        "INSERT INTO catalog_source_revision_descriptors "
+        "(source_revision, channel, snapshot_manifest_sha256) VALUES (%s, %s, %s)",
+        (source_revision, _CHANNEL, snapshot),
     )
 
 
@@ -264,101 +245,19 @@ def _publication_validation_receipts(connector: SQLiteConnector) -> None:
         b"VALIDATE_DUPLICATE_LOSER",
     )
     for stage in stages:
-        checkpoint_key = (_CANDIDATE, stage)
         connector.execute(
-            "INSERT INTO catalog_publication_checkpoint_anchors "
-            "(candidate_id, stage) VALUES (%s, %s)",
-            checkpoint_key,
-        )
-        for table, column, value in (
-            ("catalog_publication_checkpoint_generations", "generation", 2),
-            ("catalog_publication_checkpoint_cursors", "cursor", b""),
-            (
-                "catalog_publication_checkpoint_processed_counts",
-                "processed_count",
-                0,
-            ),
-            ("catalog_publication_checkpoint_states", "state", "COMPLETE"),
-            ("catalog_publication_checkpoint_updated_ats", "updated_at", 44),
-        ):
-            connector.execute(
-                f"INSERT INTO {table} (candidate_id, stage, {column}) "
-                "VALUES (%s, %s, %s)",
-                (*checkpoint_key, value),
-            )
-        connector.execute(
-            "INSERT INTO catalog_publication_checkpoint_seals "
-            "(candidate_id, stage) VALUES (%s, %s)",
-            checkpoint_key,
-        )
-
-        batch_key = (_CANDIDATE, stage, 1)
-        connector.execute(
-            "INSERT INTO catalog_publication_batch_receipt_anchors "
-            "(candidate_id, stage, start_generation) VALUES (%s, %s, %s)",
-            batch_key,
+            "INSERT INTO catalog_publication_checkpoints "
+            "(candidate_id, stage, generation, `cursor`, processed_count, "
+            "state, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (_CANDIDATE, stage, 2, b"", 0, "COMPLETE", 44),
         )
         connector.execute(
-            "INSERT INTO catalog_publication_batch_receipt_coordinates "
-            "(candidate_id, stage, batch_key, start_generation) "
-            "VALUES (%s, %s, %s, %s)",
-            (_CANDIDATE, stage, b"terminal", 1),
+            "INSERT INTO catalog_publication_batch_receipt_stored "
+            "(candidate_id, stage, start_generation, batch_key, start_cursor, "
+            "start_processed_count, next_cursor, row_count, committed_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (_CANDIDATE, stage, 1, b"terminal", b"", 0, b"", 0, 44),
         )
-        for table, column, value in (
-            ("catalog_publication_batch_receipt_start_cursors", "start_cursor", b""),
-            (
-                "catalog_publication_batch_receipt_start_processed_counts",
-                "start_processed_count",
-                0,
-            ),
-            ("catalog_publication_batch_receipt_next_cursors", "next_cursor", b""),
-            ("catalog_publication_batch_receipt_row_counts", "row_count", 0),
-            ("catalog_publication_batch_receipt_committed_ats", "committed_at", 44),
-        ):
-            connector.execute(
-                f"INSERT INTO {table} "
-                f"(candidate_id, stage, start_generation, {column}) "
-                "VALUES (%s, %s, %s, %s)",
-                (*batch_key, value),
-            )
-        connector.execute(
-            "INSERT INTO catalog_publication_batch_receipt_seals "
-            "(candidate_id, stage, start_generation) VALUES (%s, %s, %s)",
-            batch_key,
-        )
-
-
-def _permanent_finalization_checkpoint(
-    connector: SQLiteConnector,
-    *,
-    receipt_id: bytes,
-    updated_at: int,
-) -> None:
-    connector.execute(
-        "INSERT INTO catalog_publication_finalization_checkpoint_anchors "
-        "(receipt_id) VALUES (%s)",
-        (receipt_id,),
-    )
-    for table, column, value in (
-        ("catalog_publication_finalization_checkpoint_generations", "generation", 1),
-        ("catalog_publication_finalization_checkpoint_cursors", "cursor", b""),
-        ("catalog_publication_finalization_checkpoint_counts", "processed_count", 0),
-        ("catalog_publication_finalization_checkpoint_states", "state", "OPEN"),
-        (
-            "catalog_publication_finalization_checkpoint_updated_ats",
-            "updated_at",
-            updated_at,
-        ),
-    ):
-        connector.execute(
-            f"INSERT INTO {table} (receipt_id, {column}) VALUES (%s, %s)",
-            (receipt_id, value),
-        )
-    connector.execute(
-        "INSERT INTO catalog_publication_finalization_checkpoint_seals "
-        "(receipt_id) VALUES (%s)",
-        (receipt_id,),
-    )
 
 
 def _base_publication_commit(connector: SQLiteConnector, *, snapshot: bytes) -> bytes:
@@ -368,11 +267,14 @@ def _base_publication_commit(connector: SQLiteConnector, *, snapshot: bytes) -> 
     base_build_id = b"z" * 16
     _source_descriptor(connector, source_revision=1, snapshot=snapshot)
     _catalog_descriptor(connector, revision=1, publication_count=0)
-    seed_source_build(
+    seed_sealed_source_build(
         connector,
         build_id=base_build_id,
         scope_key=_SCOPE_KEY,
-        state="SEALED",
+        manifest_sha256=b"q" * 32,
+        gallery_count=0,
+        file_count=0,
+        byte_count=0,
         created_at=5,
         sealed_at=10,
     )
@@ -401,55 +303,23 @@ def _base_publication_commit(connector: SQLiteConnector, *, snapshot: bytes) -> 
         "INSERT INTO catalog_publication_generation_successors "
         "(successor_generation, predecessor_generation) VALUES (1, 0)"
     )
-    connector.execute(
-        "INSERT INTO catalog_publication_commit_anchors (receipt_id) VALUES (%s)",
-        (receipt_id,),
-    )
-    members = (
-        ("catalog_publication_commit_candidates", "candidate_id", candidate_id),
-        ("catalog_publication_commit_catalog_revisions", "revision", 1),
-        ("catalog_publication_commit_source_revisions", "source_revision", 1),
-        ("catalog_publication_commit_generations", "generation", 1),
-        (
-            "catalog_publication_commit_operational_preparations",
-            "preparation_id",
-            preparation_id,
-        ),
-        (
-            "catalog_publication_commit_operational_policies",
-            "operational_policy_id",
-            1,
-        ),
-        ("catalog_publication_commit_artifact_policies", "artifact_policy_id", 1),
-        (
-            "catalog_publication_commit_display_title_policies",
-            "display_title_policy_id",
-            1,
-        ),
-        ("catalog_publication_commit_new_galleries", "new_galleries", 0),
-        ("catalog_publication_commit_changed_galleries", "changed_galleries", 0),
-        ("catalog_publication_commit_removed_galleries", "removed_galleries", 0),
-        ("catalog_publication_commit_duplicate_losers", "duplicate_losers", 0),
-        ("catalog_publication_commit_committed_ats", "committed_at", 20),
-    )
-    for table, column, value in members:
-        connector.execute(
-            f"INSERT INTO {table} (receipt_id, {column}) VALUES (%s, %s)",
-            (receipt_id, value),
-        )
-    _permanent_finalization_checkpoint(
+    seed_publication_commit(
         connector,
         receipt_id=receipt_id,
-        updated_at=20,
-    )
-    connector.execute(
-        "INSERT INTO catalog_publication_commit_seals (receipt_id) VALUES (%s)",
-        (receipt_id,),
-    )
-    connector.execute(
-        "INSERT INTO catalog_publication_commit_head_receipts "
-        "(channel, receipt_id) VALUES (%s, %s)",
-        (_CHANNEL, receipt_id),
+        candidate_id=candidate_id,
+        revision=1,
+        source_revision=1,
+        generation=1,
+        preparation_id=preparation_id,
+        operational_policy_id=1,
+        artifact_policy_id=1,
+        display_title_policy_id=1,
+        new_galleries=0,
+        changed_galleries=0,
+        removed_galleries=0,
+        duplicate_losers=0,
+        committed_at=20,
+        channel=_CHANNEL,
     )
     return receipt_id
 
@@ -459,7 +329,6 @@ def _seed_candidate(
     turn: IngestTurn,
     *,
     with_base: bool = False,
-    identity_base: bytes | None | object = _DEFAULT_BUILD_IDENTITY_BASE,
     recovery_created_at: int | None = None,
 ) -> int:
     global _BUILD
@@ -480,11 +349,6 @@ def _seed_candidate(
             (2, "SOURCE"),
         )
 
-    exact_identity_base = (
-        base_receipt if identity_base is _DEFAULT_BUILD_IDENTITY_BASE else identity_base
-    )
-    if exact_identity_base is not None and not isinstance(exact_identity_base, bytes):
-        raise TypeError("fixture identity_base must be bytes or None")
     summary = SourceBuildManifestSummary(build_manifest, 1, 0, 0)
     canonical_build = source_build_identity(
         snapshot_attempt_id=source_build_snapshot_attempt_id(
@@ -493,7 +357,6 @@ def _seed_candidate(
         ),
         scope=_SCOPE_KEY,
         manifest_policy_id=1,
-        base_receipt_id=exact_identity_base,
     )
     _BUILD = (
         canonical_build
@@ -505,17 +368,19 @@ def _seed_candidate(
             ),
             scope=_SCOPE_KEY,
             manifest_policy_id=1,
-            base_receipt_id=exact_identity_base,
             created_at=recovery_created_at,
         )
     )
     created_at = 15 if recovery_created_at is None else recovery_created_at
 
-    seed_source_build(
+    seed_sealed_source_build(
         connector,
         build_id=_BUILD,
         scope_key=_SCOPE_KEY,
-        state="SEALED",
+        manifest_sha256=build_manifest,
+        gallery_count=1,
+        file_count=0,
+        byte_count=0,
         created_at=created_at,
         sealed_at=20,
     )
@@ -529,15 +394,6 @@ def _seed_candidate(
             "(build_id, base_receipt_id) VALUES (%s, %s)",
             (_BUILD, base_receipt),
         )
-    seed_build_manifest(
-        connector,
-        build_id=_BUILD,
-        manifest_sha256=build_manifest,
-        gallery_count=1,
-        file_count=0,
-        byte_count=0,
-        computed_at=20,
-    )
     seed_analysis_run(
         connector,
         analysis_id=_ANALYSIS,
@@ -568,34 +424,15 @@ def _seed_candidate(
         "(analysis_id, snapshot_manifest_sha256) VALUES (%s, %s)",
         (_ANALYSIS, snapshot),
     )
-    connector.execute(
-        "INSERT INTO catalog_publication_candidate_anchors (candidate_id) VALUES (%s)",
-        (_CANDIDATE,),
-    )
-    for table, column, value in (
-        ("catalog_publication_candidate_analysis_ids", "analysis_id", _ANALYSIS),
-        (
-            "catalog_publication_candidate_reserved_revisions",
-            "reserved_revision",
-            reserved_revision,
-        ),
-        ("catalog_publication_candidate_artifact_policy_ids", "artifact_policy_id", 1),
-        (
-            "catalog_publication_candidate_display_title_policy_ids",
-            "display_title_policy_id",
-            1,
-        ),
-        ("catalog_publication_candidate_artifacts_required", "artifacts_required", 0),
-        ("catalog_publication_candidate_created_ats", "created_at", 36),
-    ):
-        connector.execute(
-            f"INSERT INTO {table} (candidate_id, {column}) VALUES (%s, %s)",
-            (_CANDIDATE, value),
-        )
-    connector.execute(
-        "INSERT INTO catalog_publication_candidate_definition_seals "
-        "(candidate_id) VALUES (%s)",
-        (_CANDIDATE,),
+    seed_publication_candidate(
+        connector,
+        candidate_id=_CANDIDATE,
+        analysis_id=_ANALYSIS,
+        reserved_revision=reserved_revision,
+        artifact_policy_id=1,
+        display_title_policy_id=1,
+        artifacts_required=False,
+        created_at=36,
     )
     if with_base:
         connector.execute(
@@ -687,73 +524,12 @@ def _finalize_empty_publication(
     receipt_id: bytes,
     finalized_at: int,
 ) -> None:
-    batch_key = (receipt_id, 1)
-    connector.execute(
-        "INSERT INTO catalog_publication_finalization_batch_anchors "
-        "(receipt_id, start_generation) VALUES (%s, %s)",
-        batch_key,
-    )
-    connector.execute(
-        "INSERT INTO catalog_publication_finalization_batch_coordinates "
-        "(receipt_id, batch_key, start_generation) VALUES (%s, %s, %s)",
-        (receipt_id, b"terminal", 1),
-    )
-    for table, column, value in (
-        (
-            "catalog_publication_finalization_batch_start_cursors",
-            "start_cursor",
-            b"",
-        ),
-        (
-            "catalog_publication_finalization_batch_start_counts",
-            "start_processed_count",
-            0,
-        ),
-        (
-            "catalog_publication_finalization_batch_next_cursors",
-            "next_cursor",
-            b"",
-        ),
-        ("catalog_publication_finalization_batch_row_counts", "row_count", 0),
-        (
-            "catalog_publication_finalization_batch_committed_ats",
-            "committed_at",
-            finalized_at,
-        ),
-    ):
-        connector.execute(
-            f"INSERT INTO {table} "
-            f"(receipt_id, start_generation, {column}) VALUES (%s, %s, %s)",
-            (*batch_key, value),
-        )
-    connector.execute(
-        "INSERT INTO catalog_publication_finalization_batch_seals "
-        "(receipt_id, start_generation) VALUES (%s, %s)",
-        batch_key,
-    )
-    for checkpoint_table, checkpoint_column, checkpoint_value in (
-        ("catalog_publication_finalization_checkpoint_generations", "generation", 2),
-        ("catalog_publication_finalization_checkpoint_cursors", "cursor", b""),
-        ("catalog_publication_finalization_checkpoint_counts", "processed_count", 0),
-        ("catalog_publication_finalization_checkpoint_states", "state", "COMPLETE"),
-        (
-            "catalog_publication_finalization_checkpoint_updated_ats",
-            "updated_at",
-            finalized_at,
-        ),
-    ):
-        sql_column = (
-            f"`{checkpoint_column}`"
-            if checkpoint_column == "cursor"
-            else checkpoint_column
-        )
-        connector.execute(
-            f"UPDATE {checkpoint_table} SET {sql_column} = %s WHERE receipt_id = %s",
-            (checkpoint_value, receipt_id),
-        )
-    connector.execute(
-        "INSERT INTO catalog_publication_commit_finalizations (receipt_id) VALUES (%s)",
-        (receipt_id,),
+    seed_publication_finalization(
+        connector,
+        receipt_id=receipt_id,
+        cursor=b"",
+        processed_count=0,
+        finalized_at=finalized_at,
     )
     assert connector.fetch_one(
         "SELECT state, finalized_at FROM catalog_publication_receipts "
@@ -795,7 +571,7 @@ def _prepare_finalized_replay(
     )
     if with_working:
         created_at_row = connector.fetch_one(
-            "SELECT created_at FROM catalog_source_build_created_ats "
+            "SELECT created_at FROM catalog_source_build_descriptor "
             "WHERE build_id = %s",
             (_BUILD,),
         )
@@ -810,7 +586,7 @@ def _prepare_finalized_replay(
 
 def _candidate_lifecycle(connector: SQLiteConnector) -> str:
     if connector.fetch_one(
-        "SELECT 1 FROM catalog_publication_commit_candidates WHERE candidate_id = %s",
+        "SELECT 1 FROM catalog_publication_commits WHERE candidate_id = %s",
         (_CANDIDATE,),
     ):
         return "PUBLISHED"
@@ -821,8 +597,7 @@ def _candidate_lifecycle(connector: SQLiteConnector) -> str:
     ):
         return "SEALED"
     if connector.fetch_one(
-        "SELECT 1 FROM catalog_publication_candidate_definition_seals "
-        "WHERE candidate_id = %s",
+        "SELECT 1 FROM catalog_publication_candidates WHERE candidate_id = %s",
         (_CANDIDATE,),
     ):
         return "OPEN"
@@ -1331,7 +1106,7 @@ def test_v3_source_build_fresh_publication_and_replay_reject_creation_time_tampe
 
     assert (
         connector.execute_affected(
-            "UPDATE catalog_source_build_created_ats SET created_at = %s "
+            "UPDATE catalog_source_build_descriptor SET created_at = %s "
             "WHERE build_id = %s",
             (14, recovery_build),
         )
@@ -1381,8 +1156,7 @@ def test_response_loss_replay_requires_exact_source_provenance_lineage(
         (_CHANNEL,),
     ) == (published.receipt_id,)
     assert connector.fetch_one(
-        "SELECT candidate_id FROM catalog_publication_commit_candidates "
-        "WHERE receipt_id = %s",
+        "SELECT candidate_id FROM catalog_publication_commits WHERE receipt_id = %s",
         (published.receipt_id,),
     ) == (_CANDIDATE,)
     connector.close()
@@ -1488,93 +1262,6 @@ def test_replayed_publication_requires_exact_generation_predecessor_base(
     connector.close()
 
 
-@pytest.mark.parametrize("pathway", ["fresh", "replay", "release"])
-def test_publication_rejects_build_identity_derived_from_another_base(
-    tmp_path: Path,
-    pathway: str,
-) -> None:
-    summary = SourceBuildManifestSummary(b"d" * 32, 1, 0, 0)
-    identity_base = b"f" * 16
-    durable_base = b"h" * 16
-    wrong_build = source_build_identity(
-        snapshot_attempt_id=source_build_snapshot_attempt_id(
-            _SOURCE_ROOT,
-            summary,
-        ),
-        scope=_SCOPE_KEY,
-        manifest_policy_id=1,
-        base_receipt_id=identity_base,
-    )
-    connector = _generated_database(tmp_path / f"wrong-build-base-{pathway}.sqlite3")
-    gate, turn = _authorities(connector)
-    _seed_candidate(
-        connector,
-        turn,
-        with_base=True,
-        identity_base=identity_base,
-    )
-    assert _BUILD == wrong_build
-    assert connector.fetch_one(
-        "SELECT base_receipt_id FROM "
-        "catalog_source_build_base_publication_commits WHERE build_id = %s",
-        (wrong_build,),
-    ) == (durable_base,)
-
-    if pathway == "fresh":
-        with pytest.raises(PublicationCorruptionError, match="identity|predecessor"):
-            _commit(connector, gate, turn)
-        assert connector.fetch_one(
-            "SELECT build_id, assigned_at FROM operational_source_working_builds "
-            "WHERE slot = %s",
-            (1,),
-        ) == (wrong_build, 15)
-        assert not connector.fetch_one(
-            "SELECT receipt_id FROM catalog_publication_commit_candidates "
-            "WHERE candidate_id = %s",
-            (_CANDIDATE,),
-        )
-        assert connector.fetch_one(
-            "SELECT receipt_id FROM catalog_publication_commit_head_receipts "
-            "WHERE channel = %s",
-            (_CHANNEL,),
-        ) == (durable_base,)
-    elif pathway == "replay":
-        with patch("h2hdb.vnext_publication_repository._require_source_build_identity"):
-            published = _commit(connector, gate, turn)
-        with pytest.raises(PublicationCorruptionError, match="identity|predecessor"):
-            _commit(connector, gate, turn, now=103)
-        assert connector.fetch_one(
-            "SELECT receipt_id FROM catalog_publication_commit_head_receipts "
-            "WHERE channel = %s",
-            (_CHANNEL,),
-        ) == (published.receipt_id,)
-    else:
-        with patch("h2hdb.vnext_publication_repository._require_source_build_identity"):
-            published, replay_turn = _prepare_finalized_replay(
-                connector,
-                gate,
-                turn,
-            )
-        with (
-            pytest.raises(PublicationCorruptionError, match="identity|predecessor"),
-            connector.transaction(),
-        ):
-            PublicationRepository.release_replayed_source_working(
-                VNextUnitOfWork(connector, backend="sqlite"),
-                gate_lease=gate,
-                ingest_turn=replay_turn,
-                build_id=wrong_build,
-                receipt_id=published.receipt_id,
-                now=120,
-            )
-        assert connector.fetch_one(
-            "SELECT build_id, assigned_at FROM operational_source_working_builds "
-            "WHERE slot = %s",
-            (1,),
-        ) == (wrong_build, 15)
-    connector.close()
-
-
 @pytest.mark.parametrize("corruption", ["edge", "genesis-node"])
 def test_response_loss_replay_rejects_corrupt_generation_chain(
     tmp_path: Path,
@@ -1633,22 +1320,16 @@ def test_head_races_fail_without_partial_publication(tmp_path: Path, race: str) 
             (1, 50, 1),
         )
 
-    expected_error = (
-        PublicationCorruptionError
-        if race == "common-head"
-        else PublicationHeadRaceError
-    )
-    with pytest.raises(expected_error):
+    with pytest.raises(PublicationHeadRaceError):
         _commit(connector, gate, turn)
 
     assert _candidate_lifecycle(connector) == "SEALED"
     assert not connector.fetch_one(
-        "SELECT 1 FROM catalog_publication_commit_candidates WHERE candidate_id = %s",
+        "SELECT 1 FROM catalog_publication_commits WHERE candidate_id = %s",
         (_CANDIDATE,),
     )
     assert not connector.fetch_one(
-        "SELECT 1 FROM catalog_source_revision_descriptor_seals "
-        "WHERE source_revision = %s",
+        "SELECT 1 FROM catalog_source_revision_descriptors WHERE source_revision = %s",
         (reserved,),
     )
     connector.close()
@@ -1697,11 +1378,42 @@ def test_each_pointer_mutation_fault_rolls_back_the_whole_publication(
     _seed_candidate(base, turn)
     base.close()
 
-    # Genesis has 33 pointer-transaction mutations: allocator; generation node
-    # and edge; four source-descriptor members; provenance; commit anchor,
-    # thirteen members, seven-member permanent finalization checkpoint family,
-    # and commit seal; common head; and two exact working-root deletes.
-    for failure_at in range(1, 34):
+    # Derive the recomposed transaction's exact write count once, then inject
+    # every real write/CAS point without encoding a physical decomposition.
+    probe_path = tmp_path / "fault-probe.sqlite3"
+    copyfile(base_path, probe_path)
+    probe = SQLiteConnector(str(probe_path))
+    probe.connect()
+    probe_execute = probe.execute
+    probe_execute_affected = probe.execute_affected
+    mutation_count = 0
+
+    def count_execute(query: str, data: tuple[Any, ...] = ()) -> None:
+        nonlocal mutation_count
+        mutation_count += 1
+        probe_execute(query, data)
+
+    def count_execute_affected(
+        query: str,
+        data: tuple[Any, ...] = (),
+    ) -> int:
+        nonlocal mutation_count
+        mutation_count += 1
+        return probe_execute_affected(query, data)
+
+    with (
+        patch.object(probe, "execute", side_effect=count_execute),
+        patch.object(
+            probe,
+            "execute_affected",
+            side_effect=count_execute_affected,
+        ),
+    ):
+        _commit(probe, gate, turn)
+    probe.close()
+    assert mutation_count > 0
+
+    for failure_at in range(1, mutation_count + 1):
         path = tmp_path / f"fault-{failure_at}.sqlite3"
         copyfile(base_path, path)
         connector = SQLiteConnector(str(path))

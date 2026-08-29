@@ -96,6 +96,10 @@ _SPECS: tuple[tuple[str, str], ...] = (
         "catalog_writer.validate_overlay_component_transition",
     ),
     (
+        "catalog.published-baseline-prune.v1",
+        "catalog_writer.prune_published_analysis_baseline",
+    ),
+    (
         "catalog.artifact-semantics.v1",
         "catalog_writer.validate_artifact_semantics",
     ),
@@ -107,7 +111,7 @@ _SPECS: tuple[tuple[str, str], ...] = (
     ("catalog.role-derivation.v1", "catalog_writer.validate_file_role"),
     ("catalog.physical-domains.v1", "catalog_writer.validate_physical_domain"),
     ("catalog.bootstrap.v1", "schema_epoch.write_catalog_bootstrap"),
-    ("catalog.retention.v1", "catalog_writer.validate_retention_transition"),
+    ("catalog.retention.v2", "catalog_writer.validate_retention_transition"),
     (
         "h2hdb.operational.physical-domains.v1",
         "operational_writer.validate_physical_domains",
@@ -157,6 +161,10 @@ _SPECS: tuple[tuple[str, str], ...] = (
         "operational_writer.validate_cleanup_reachability",
     ),
     (
+        "h2hdb.operational.cleanup-frozen-root-set.v1",
+        "operational_writer.validate_cleanup_frozen_root_set",
+    ),
+    (
         "h2hdb.operational.revision-allocation.v1",
         "operational_writer.validate_revision_allocation",
     ),
@@ -165,13 +173,22 @@ _SPECS: tuple[tuple[str, str], ...] = (
         "operational_writer.validate_gallery_staging",
     ),
     (
+        "h2hdb.operational.gallery-staging-request-budget.v1",
+        "operational_writer.enforce_gallery_staging_request_budget",
+    ),
+    (
         "h2hdb.operational.bootstrap-genesis.v1",
         "schema_epoch.write_operational_bootstrap",
     ),
 )
 
 BUILTIN_WRITER_HOOKS = tuple(
-    WriterHook(obligation_id, name, 1) for obligation_id, name in _SPECS
+    WriterHook(
+        obligation_id,
+        name,
+        2 if obligation_id == "catalog.retention.v2" else 1,
+    )
+    for obligation_id, name in _SPECS
 )
 _HOOKS_BY_ID: Mapping[str, WriterHook] = MappingProxyType(
     {hook.obligation_id: hook for hook in BUILTIN_WRITER_HOOKS}
@@ -523,15 +540,7 @@ _ARTIFACT_BATCH_WRITERS: tuple[WriterEntrypoint, ...] = (
     ArtifactPreparationRepository.validate_duplicate_loser_batch,
 )
 
-_ARTIFACT_PRODUCER_REGISTRY_RELATIONS = frozenset(
-    {
-        "artifact_producer_fingerprint_anchor",
-        "artifact_producer_fingerprint_algorithm_version",
-        "artifact_producer_fingerprint_equivalence_class",
-        "artifact_producer_fingerprint_identity",
-        "artifact_producer_fingerprint_seal",
-    }
-)
+_ARTIFACT_PRODUCER_REGISTRY_RELATIONS = frozenset({"artifact_producer_fingerprint"})
 
 _PUBLICATION_CANDIDATE_BATCH_WRITERS: tuple[WriterEntrypoint, ...] = (
     PublicationCandidateRepository.process_selection_batch,
@@ -551,6 +560,7 @@ _GALLERY_STAGING_WRITERS: tuple[WriterEntrypoint, ...] = (
     GalleryObservationStagingRepository.put_metadata,
     GalleryObservationStagingRepository.match_files_to_directory,
     GalleryObservationStagingRepository.seal,
+    GalleryObservationStagingRepository.retire_sealed,
 )
 
 _IDENTITY_WRITERS: tuple[WriterEntrypoint, ...] = (
@@ -746,7 +756,6 @@ _EVENT_INTEGRITY_WRITERS: tuple[WriterEntrypoint, ...] = (
     OperationalEffectRepository.begin,
     OperationalEffectRepository.append_batch,
     OperationalEffectRepository.seal,
-    OperationalEffectRepository.acknowledge_through,
     ArtifactPreparationRepository.bind_operational_preparation,
     ArtifactPreparationRepository.confirm_prepared_artifact,
     PublicationRepository.commit,
@@ -816,6 +825,19 @@ _BOUND_BINDINGS = (
         "catalog.overlay-resolution-seal.v1",
         (*_ANALYSIS_BATCH_WRITERS, AnalysisRepository.handoff_snapshot_manifest),
         _contract_relations("catalog.overlay-resolution-seal.v1") - {"analysis_stage"},
+    ),
+    _binding(
+        "catalog.published-baseline-prune.v1",
+        (PublicationFinalizationRepository.commit_page,),
+        frozenset(
+            {
+                "analysis_baseline",
+                "prepared_artifact",
+                "publication_finalization_checkpoint",
+                "publication_finalization_batch_receipt",
+                "publication_commit_finalization",
+            }
+        ),
     ),
     _binding(
         "catalog.artifact-semantics.v1",
@@ -890,9 +912,9 @@ _BOUND_BINDINGS = (
         domain_guards=CATALOG_PHYSICAL_DOMAIN_GUARDS,
     ),
     _binding(
-        "catalog.retention.v1",
+        "catalog.retention.v2",
         _CLEANUP_WRITERS,
-        _contract_relations("catalog.retention.v1")
+        _contract_relations("catalog.retention.v2")
         - {"source_head", "publication_head"},
     ),
     _binding(
@@ -966,6 +988,11 @@ _BOUND_BINDINGS = (
         _contract_relations("h2hdb.operational.cleanup-reachability.v1"),
     ),
     _binding(
+        "h2hdb.operational.cleanup-frozen-root-set.v1",
+        _CLEANUP_WRITERS,
+        _contract_relations("h2hdb.operational.cleanup-frozen-root-set.v1"),
+    ),
+    _binding(
         "h2hdb.operational.revision-allocation.v1",
         _REVISION_ALLOCATION_WRITERS,
         _contract_relations("h2hdb.operational.revision-allocation.v1"),
@@ -975,6 +1002,11 @@ _BOUND_BINDINGS = (
         _GALLERY_STAGING_WRITERS,
         _contract_relations("h2hdb.operational.gallery-staging.v1")
         - {"source_build", "gallery_identity"},
+    ),
+    _binding(
+        "h2hdb.operational.gallery-staging-request-budget.v1",
+        (*_GALLERY_STAGING_WRITERS, *_CLEANUP_WRITERS),
+        _contract_relations("h2hdb.operational.gallery-staging-request-budget.v1"),
     ),
 )
 

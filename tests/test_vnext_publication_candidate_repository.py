@@ -29,9 +29,8 @@ from vnext_gallery_page_fixtures import (
     seed_gallery_page_descriptor,
 )
 from vnext_manifest_fixtures import (
-    seed_build_manifest,
+    seed_sealed_source_build,
     seed_snapshot_manifest,
-    seed_source_build,
 )
 from vnext_publication_fixtures import seed_publication_commit
 
@@ -47,6 +46,7 @@ from h2hdb.vnext_maintenance_gate_repository import (
 from h2hdb.vnext_publication_candidate_repository import (
     PublicationCandidate,
     PublicationCandidateConflictError,
+    PublicationCandidateCorruptionError,
     PublicationCandidateHeadRaceError,
     PublicationCandidateNotReadyError,
     PublicationCandidateRepository,
@@ -165,36 +165,14 @@ def _seed_base_publication_commit(
     snapshot_manifest_sha256: bytes,
 ) -> None:
     connector.execute(
-        "INSERT INTO catalog_source_revision_anchors (source_revision) VALUES (%s)",
-        (1,),
+        "INSERT INTO catalog_source_revision_descriptors "
+        "(source_revision, channel, snapshot_manifest_sha256) VALUES (%s, %s, %s)",
+        (1, _CHANNEL, snapshot_manifest_sha256),
     )
     connector.execute(
-        "INSERT INTO catalog_source_revision_channels (source_revision, channel) "
-        "VALUES (%s, %s)",
-        (1, _CHANNEL),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_revision_snapshot_manifests "
-        "(source_revision, snapshot_manifest_sha256) VALUES (%s, %s)",
-        (1, snapshot_manifest_sha256),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_revision_descriptor_seals (source_revision) "
-        "VALUES (%s)",
-        (1,),
-    )
-    connector.execute(
-        "INSERT INTO catalog_revision_anchors (revision) VALUES (%s)",
-        (1,),
-    )
-    connector.execute(
-        "INSERT INTO catalog_revision_publication_counts "
+        "INSERT INTO catalog_revision_descriptors "
         "(revision, publication_count) VALUES (%s, %s)",
         (1, 0),
-    )
-    connector.execute(
-        "INSERT INTO catalog_revision_descriptor_seals (revision) VALUES (%s)",
-        (1,),
     )
     connector.execute(
         "INSERT INTO catalog_publication_generation_nodes (generation) VALUES (%s)",
@@ -321,26 +299,20 @@ def _seed_completed_analysis(
     )
     seed_display_title_policy(connector)
     seed_analysis_policy(connector)
-    seed_source_build(
+    seed_sealed_source_build(
         connector,
         build_id=_BUILD,
         scope_key=scope.scope_key,
-        state="SEALED",
+        manifest_sha256=b"d" * 32,
+        gallery_count=0,
+        file_count=0,
+        byte_count=0,
         created_at=15,
         sealed_at=20,
     )
     connector.execute(
         "INSERT INTO catalog_source_build_channel (build_id, channel) VALUES (%s, %s)",
         (_BUILD, _CHANNEL),
-    )
-    seed_build_manifest(
-        connector,
-        build_id=_BUILD,
-        manifest_sha256=b"d" * 32,
-        gallery_count=0,
-        file_count=0,
-        byte_count=0,
-        computed_at=20,
     )
     seed_analysis_run(
         connector,
@@ -407,7 +379,7 @@ def _seed_selected_galleries(
     locator_components_by_gallery: dict[int, tuple[str, ...]] | None = None,
 ) -> None:
     scopes = connector.fetch_all(
-        "SELECT scope_key FROM catalog_source_scope_seals ORDER BY scope_key LIMIT 2"
+        "SELECT scope_key FROM catalog_source_scopes ORDER BY scope_key LIMIT 2"
     )
     assert len(scopes) == 1
     scope_key = scopes[0][0]
@@ -530,13 +502,12 @@ def _seed_selected_galleries(
             (_ANALYSIS, gallery_id),
         )
     connector.execute(
-        "UPDATE catalog_source_build_discovery_gallery_counts "
+        "UPDATE catalog_source_build_discoveries "
         "SET gallery_count = %s WHERE build_id = %s",
         (count, _BUILD),
     )
     connector.execute(
-        "UPDATE catalog_source_snapshot_manifest_identity_gallery_counts "
-        "SET gallery_count = %s",
+        "UPDATE catalog_source_snapshot_manifest_identity SET gallery_count = %s",
         (count,),
     )
     set_analysis_component_live_count(
@@ -790,11 +761,6 @@ def test_begin_derives_revision_channel_and_exact_optional_bases(
         "FROM catalog_publication_candidates WHERE candidate_id = %s",
         (_CANDIDATE,),
     ) == (_ANALYSIS, expected_revision, 1, 1, 0, 100)
-    assert connector.fetch_one(
-        "SELECT candidate_id FROM catalog_publication_candidate_definition_seals "
-        "WHERE candidate_id = %s",
-        (_CANDIDATE,),
-    ) == (_CANDIDATE,)
     assert not connector.fetch_one(
         "SELECT candidate_id FROM catalog_publication_candidate_projection_seals "
         "WHERE candidate_id = %s",
@@ -1007,8 +973,7 @@ def test_begin_rejects_drifted_closed_stage_registry_before_reservation(
     gate, turn = _authorities(connector)
     _seed_completed_analysis(connector, turn, with_base=False)
     connector.execute(
-        "UPDATE catalog_publication_stage_cursor_codecs SET cursor_codec = %s "
-        "WHERE stage = %s",
+        "UPDATE catalog_publication_stages SET cursor_codec = %s WHERE stage = %s",
         (b"caller_bytes_v1", b"BUILD_SELECTION"),
     )
 
@@ -1080,7 +1045,7 @@ def test_begin_or_resume_base_race_fails_without_allocator_leak(
             "SELECT candidate_id FROM catalog_publication_candidate_projection_seals"
         )
         assert not connector.fetch_one(
-            "SELECT receipt_id FROM catalog_publication_commit_candidates "
+            "SELECT receipt_id FROM catalog_publication_commits "
             "WHERE candidate_id = %s",
             (_CANDIDATE,),
         )
@@ -1096,8 +1061,8 @@ def test_each_begin_mutation_fault_rolls_back_allocator_candidate_and_bases(
     _seed_completed_analysis(base, turn, with_base=True)
     base.close()
 
-    # Allocator, candidate, common base, seven checkpoint-family writes, working root.
-    for failure_at in range(1, 12):
+    # Allocator, candidate, common base, atomic checkpoint set, working root.
+    for failure_at in range(1, 6):
         path = tmp_path / f"begin-fault-{failure_at}.sqlite3"
         copyfile(base_path, path)
         connector = SQLiteConnector(str(path))
@@ -1628,8 +1593,8 @@ def test_catalog_projection_major_statement_faults_roll_back_all_children(
         original_execute_affected = connector.execute_affected
         failures = (
             "INSERT INTO catalog_publication_occurrence_identities",
-            "INSERT INTO catalog_publication_batch_receipt_seals",
-            "UPDATE catalog_publication_checkpoint_generations",
+            "INSERT INTO catalog_publication_batch_receipt_stored",
+            "UPDATE catalog_publication_checkpoints",
         )
         for index, target in enumerate(failures):
 
@@ -1668,9 +1633,7 @@ def test_catalog_projection_major_statement_faults_roll_back_all_children(
                         batch_key=b"fault-" + bytes((index,)),
                         now=112 + index,
                     )
-            assert not connector.fetch_one(
-                "SELECT 1 FROM catalog_revision_descriptor_seals"
-            )
+            assert not connector.fetch_one("SELECT 1 FROM catalog_revision_descriptors")
             assert not connector.fetch_one("SELECT 1 FROM catalog_publications")
             assert not connector.fetch_one("SELECT 1 FROM catalog_publication_order")
             assert not connector.fetch_one("SELECT 1 FROM catalog_publication_titles")
@@ -1712,9 +1675,7 @@ def test_catalog_projection_major_statement_faults_roll_back_all_children(
                     batch_key=b"missing-claim",
                     now=120,
                 )
-        assert not connector.fetch_one(
-            "SELECT 1 FROM catalog_revision_descriptor_seals"
-        )
+        assert not connector.fetch_one("SELECT 1 FROM catalog_revision_descriptors")
     connector.close()
 
 
@@ -1842,6 +1803,117 @@ def test_selection_response_loss_replays_under_a_new_live_ingest_turn(
     connector.close()
 
 
+def test_selection_receipts_retain_only_the_current_batch(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "selection-current-receipt.sqlite3")
+    gate, turn = _authorities(connector)
+    _seed_completed_analysis(connector, turn, with_base=False)
+    _seed_selected_galleries(connector, count=1)
+    _begin(connector, gate, turn)
+
+    with connector.transaction():
+        first = PublicationCandidateRepository.process_selection_batch(
+            VNextUnitOfWork(connector, backend="sqlite"),
+            gate_lease=gate,
+            ingest_turn=turn,
+            candidate_id=_CANDIDATE,
+            batch_key=b"current-first",
+            now=101,
+        )
+    assert not first.terminal and first.start_generation == 1
+
+    with connector.transaction():
+        terminal = PublicationCandidateRepository.process_selection_batch(
+            VNextUnitOfWork(connector, backend="sqlite"),
+            gate_lease=gate,
+            ingest_turn=turn,
+            candidate_id=_CANDIDATE,
+            batch_key=b"current-terminal",
+            now=102,
+        )
+    assert terminal.terminal and terminal.start_generation == 2
+    assert connector.fetch_all(
+        "SELECT start_generation, batch_key "
+        "FROM catalog_publication_batch_receipt_stored "
+        "WHERE candidate_id = %s AND stage = %s",
+        (_CANDIDATE, b"BUILD_SELECTION"),
+    ) == [(2, b"current-terminal")]
+
+    with connector.transaction():
+        replayed = PublicationCandidateRepository.process_selection_batch(
+            VNextUnitOfWork(connector, backend="sqlite"),
+            gate_lease=gate,
+            ingest_turn=turn,
+            candidate_id=_CANDIDATE,
+            batch_key=b"current-terminal",
+            now=103,
+        )
+    assert replayed.replayed
+    assert replayed.committed_at == terminal.committed_at == 102
+
+    with pytest.raises(PublicationCandidateNotReadyError, match="already COMPLETE"):
+        with connector.transaction():
+            PublicationCandidateRepository.process_selection_batch(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                ingest_turn=turn,
+                candidate_id=_CANDIDATE,
+                batch_key=b"current-first",
+                now=104,
+            )
+    connector.close()
+
+
+def test_selection_missing_predecessor_rolls_back_successor_and_checkpoint(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "selection-missing-receipt.sqlite3")
+    gate, turn = _authorities(connector)
+    _seed_completed_analysis(connector, turn, with_base=False)
+    _seed_selected_galleries(connector, count=1)
+    _begin(connector, gate, turn)
+
+    with connector.transaction():
+        PublicationCandidateRepository.process_selection_batch(
+            VNextUnitOfWork(connector, backend="sqlite"),
+            gate_lease=gate,
+            ingest_turn=turn,
+            candidate_id=_CANDIDATE,
+            batch_key=b"predecessor",
+            now=101,
+        )
+    connector.execute(
+        "DELETE FROM catalog_publication_batch_receipt_stored "
+        "WHERE candidate_id = %s AND stage = %s AND start_generation = %s",
+        (_CANDIDATE, b"BUILD_SELECTION", 1),
+    )
+
+    with pytest.raises(PublicationCandidateCorruptionError, match="predecessor"):
+        with connector.transaction():
+            PublicationCandidateRepository.process_selection_batch(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                ingest_turn=turn,
+                candidate_id=_CANDIDATE,
+                batch_key=b"successor",
+                now=102,
+            )
+
+    assert connector.fetch_one(
+        "SELECT generation, cursor, processed_count, state, updated_at "
+        "FROM catalog_publication_checkpoints "
+        "WHERE candidate_id = %s AND stage = %s",
+        (_CANDIDATE, b"BUILD_SELECTION"),
+    ) == (2, (1).to_bytes(8, "big"), 1, "OPEN", 101)
+    assert connector.fetch_one(
+        "SELECT COUNT(*) FROM catalog_publication_batch_receipt_stored "
+        "WHERE candidate_id = %s AND stage = %s",
+        (_CANDIDATE, b"BUILD_SELECTION"),
+    ) == (0,)
+    connector.close()
+
+
 def test_selection_reauthorizes_candidate_base_heads_before_mutation(
     tmp_path: Path,
 ) -> None:
@@ -1937,8 +2009,8 @@ def test_each_selection_batch_mutation_fault_rolls_back_children_receipt_and_cas
     _begin(base, gate, turn)
     base.close()
 
-    # Identity, selection, eight receipt-family writes, and four changed CAS members.
-    for failure_at in range(1, 15):
+    # Identity, two selection projections, atomic receipt, atomic checkpoint CAS.
+    for failure_at in range(1, 6):
         path = tmp_path / f"selection-fault-{failure_at}.sqlite3"
         copyfile(base_path, path)
         connector = SQLiteConnector(str(path))
@@ -2031,7 +2103,7 @@ def test_mariadb_begin_lock_sql_uses_server_placeholders_and_for_update() -> Non
         _CHANNEL,
     ) == (None, None)
     assert "catalog_publication_commit_head_receipts" in connector.query
-    assert "catalog_publication_commit_generations" in connector.query
+    assert "catalog_publication_commits" in connector.query
     assert connector.query.endswith(" FOR UPDATE")
 
 
@@ -2127,13 +2199,21 @@ def test_mariadb_selection_and_checkpoint_sql_keep_closed_server_shape() -> None
     assert "artifact_id" not in connector.query
 
     module._initialize_candidate_checkpoints(work, _CANDIDATE, now=100)
-    assert "SELECT %s, stage" in connector.query
+    assert "SELECT %s, stage, %s, %s, %s, %s, %s" in connector.query
     assert (
-        "FROM catalog_publication_stage_seals WHERE stage <> %s ORDER BY stage"
+        "FROM catalog_publication_stages WHERE stage <> %s ORDER BY stage"
         in connector.query
     )
-    assert connector.data == (_CANDIDATE, b"FINALIZE_ARTIFACTS")
-    assert connector.query.count("%s") == 2 and "?" not in connector.query
+    assert connector.data == (
+        _CANDIDATE,
+        1,
+        b"",
+        0,
+        "OPEN",
+        100,
+        b"FINALIZE_ARTIFACTS",
+    )
+    assert connector.query.count("%s") == 7 and "?" not in connector.query
 
 
 @pytest.mark.parametrize(

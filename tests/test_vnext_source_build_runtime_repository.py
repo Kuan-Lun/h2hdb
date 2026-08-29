@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Callable
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
@@ -8,10 +9,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from vnext_analysis_fixtures import (
-    complete_analysis_run,
-    seed_analysis_component,
-)
+from vnext_analysis_fixtures import complete_analysis_run, seed_analysis_component
 from vnext_canonical_value_fixtures import seed_canonical_value
 from vnext_catalog_identity_fixtures import seed_gallery_identity
 from vnext_catalog_registry_fixtures import (
@@ -24,7 +22,6 @@ from vnext_manifest_fixtures import (
     seed_gallery_manifest,
     seed_snapshot_manifest,
 )
-from vnext_publication_fixtures import seed_publication_finalization_checkpoint
 
 import h2hdb.vnext_source_build_repository as source_build_module
 from h2hdb._generated_vnext_schema import ARTIFACT
@@ -40,7 +37,9 @@ from h2hdb.vnext_identity import (
     decode_canonical_value_page,
     gallery_key,
     iter_source_relative_locator_payload,
+    source_relative_locator_digest,
     source_root_digest,
+    source_scope_key,
 )
 from h2hdb.vnext_ingest_fence_repository import (
     IngestFenceRepository,
@@ -50,6 +49,14 @@ from h2hdb.vnext_ingest_fence_repository import (
 from h2hdb.vnext_maintenance_gate_repository import (
     GateLease,
     MaintenanceGateRepository,
+)
+from h2hdb.vnext_manifest_family import (
+    ManifestFamilyCollisionError,
+    ensure_build_manifest_family,
+    ensure_snapshot_manifest_family,
+    load_build_manifest_family,
+    load_snapshot_manifest_family,
+    load_source_build_family,
 )
 from h2hdb.vnext_source_build_repository import (
     AssemblyBatchAttempt,
@@ -63,6 +70,7 @@ from h2hdb.vnext_source_build_repository import (
     require_source_build_publication_identity,
     source_build_recovery_identity,
     source_build_snapshot_attempt_id,
+    source_manifest_chain_step,
 )
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
@@ -100,6 +108,144 @@ def _authorities(connector: SQLiteConnector) -> tuple[GateLease, IngestTurn]:
             lease_duration=1_000_000,
         )
     return gate, turn
+
+
+def test_source_root_command_requires_frozen_manifest_summary() -> None:
+    with pytest.raises(TypeError, match="manifest_summary"):
+        SourceRootBuildCommand(  # type: ignore[call-arg]  # verify required API input
+            (),
+        )
+
+    summary = SourceBuildManifestSummary.empty()
+    attempt_id = source_build_snapshot_attempt_id(source_root_digest(()), summary)
+    command = SourceRootBuildCommand((), summary)
+    assert (command.build_attempt_id, command.manifest_summary) == (attempt_id, summary)
+
+
+def test_recomposed_manifest_relations_are_atomic_and_exactly_replayable(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "wide-manifest.sqlite3")
+    try:
+        root_sha256 = b"r" * 32
+        snapshot_sha256 = b"s" * 32
+        seed_canonical_value(
+            connector,
+            value_sha256=root_sha256,
+            digest_domain=b"source_root_v1",
+            page_sha256=b"R" * 32,
+            page_bytes=b"root",
+            subtree_item_count=4,
+            allocated_at=1,
+        )
+        seed_canonical_value(
+            connector,
+            value_sha256=snapshot_sha256,
+            digest_domain=b"source_snapshot_manifest_v1",
+            page_sha256=b"S" * 32,
+            page_bytes=b"snapshot",
+            subtree_item_count=8,
+            allocated_at=2,
+        )
+        scope = seed_source_scope(connector, source_root_sha256=root_sha256)
+        build_id = b"b" * 16
+        manifest_sha256 = b"m" * 32
+        with connector.transaction():
+            source_build_module._insert_or_validate_build(
+                connector,
+                build_id=build_id,
+                scope=scope.scope_key,
+                manifest_policy_id=1,
+                created_at=10,
+            )
+            source_build_module._persist_source_build_discovery(
+                connector,
+                build_id=build_id,
+                scan_attempt=b"d" * 16,
+                gallery_count=3,
+                tree_observation_sha256=b"t" * 32,
+                completed_at=15,
+            )
+            manifest = ensure_build_manifest_family(
+                connector,
+                build_id=build_id,
+                manifest_sha256=manifest_sha256,
+                gallery_count=3,
+                file_count=150,
+                byte_count=1_000,
+                computed_at=20,
+            )
+            connector.execute(
+                "UPDATE catalog_source_build_states SET state = %s "
+                "WHERE build_id = %s AND state = %s",
+                ("SEALED", build_id, "OPEN"),
+            )
+            snapshot = ensure_snapshot_manifest_family(
+                connector,
+                snapshot_manifest_sha256=snapshot_sha256,
+                gallery_count=3,
+                file_count=150,
+                byte_count=1_000,
+            )
+
+        assert connector.fetch_one(
+            "SELECT build_id, scope_key, manifest_policy_id, created_at "
+            "FROM catalog_source_build_descriptor WHERE build_id = %s",
+            (build_id,),
+        ) == (build_id, scope.scope_key, 1, 10)
+        assert connector.fetch_one(
+            "SELECT build_id, scan_attempt, gallery_count, "
+            "tree_observation_sha256, completed_at "
+            "FROM catalog_source_build_discoveries WHERE build_id = %s",
+            (build_id,),
+        ) == (build_id, b"d" * 16, 3, b"t" * 32, 15)
+        assert connector.fetch_one(
+            "SELECT build_id, manifest_sha256, file_count, byte_count "
+            "FROM catalog_build_manifest_core WHERE build_id = %s",
+            (build_id,),
+        ) == (build_id, manifest_sha256, 150, 1_000)
+        assert load_source_build_family(connector, build_id=build_id) is not None
+        assert load_build_manifest_family(connector, build_id=build_id) == manifest
+        assert (
+            load_snapshot_manifest_family(
+                connector,
+                snapshot_manifest_sha256=snapshot_sha256,
+            )
+            == snapshot
+        )
+
+        assert (
+            ensure_build_manifest_family(
+                connector,
+                build_id=build_id,
+                manifest_sha256=manifest_sha256,
+                gallery_count=3,
+                file_count=150,
+                byte_count=1_000,
+                computed_at=20,
+            )
+            == manifest
+        )
+        with pytest.raises(ManifestFamilyCollisionError, match="replay differs"):
+            ensure_build_manifest_family(
+                connector,
+                build_id=build_id,
+                manifest_sha256=manifest_sha256,
+                gallery_count=3,
+                file_count=151,
+                byte_count=1_000,
+                computed_at=20,
+            )
+        with pytest.raises(ManifestFamilyCollisionError, match="conflicting"):
+            ensure_snapshot_manifest_family(
+                connector,
+                snapshot_manifest_sha256=snapshot_sha256,
+                gallery_count=4,
+                file_count=150,
+                byte_count=1_000,
+            )
+    finally:
+        connector.close()
 
 
 def _upload(
@@ -140,9 +286,12 @@ def _upload(
 
 def _open_build(
     connector: SQLiteConnector,
+    *,
+    command: SourceRootBuildCommand | None = None,
 ) -> tuple[GateLease, IngestTurn, SourceRootBuildCommand]:
     gate, turn = _authorities(connector)
-    command = SourceRootBuildCommand((), b"b" * 16)
+    if command is None:
+        command = _snapshot_command((), SourceBuildManifestSummary.empty())
     with command.prepare_root_upload() as root:
         _upload(connector, gate, turn, root, now=21)
         with connector.transaction():
@@ -157,19 +306,79 @@ def _open_build(
     return gate, turn, command
 
 
+def _frozen_fixture_summary(
+    *,
+    root: tuple[str, ...],
+    locators: tuple[tuple[str, ...], ...],
+    file_count_for_position: Callable[[int], int],
+    byte_count_for_position: Callable[[int], int],
+) -> SourceBuildManifestSummary:
+    """Compute the complete adapter-owned summary before database handoff."""
+
+    scope = source_scope_key("filesystem", source_root_digest(root), 1)
+    chain = SourceBuildManifestSummary.empty().manifest_sha256
+    total_files = 0
+    total_bytes = 0
+    locator_digests = sorted(
+        source_relative_locator_digest("source_relative_locator_v1", locator)
+        for locator in locators
+    )
+    for position, locator_sha256 in enumerate(locator_digests):
+        file_count = require_int63(
+            file_count_for_position(position),
+            field="fixture file_count",
+        )
+        byte_count = require_int63(
+            byte_count_for_position(position),
+            field="fixture byte_count",
+        )
+        total_files += file_count
+        total_bytes += byte_count
+        chain = source_manifest_chain_step(
+            chain,
+            position=position,
+            gallery_key_bytes=gallery_key(scope, locator_sha256),
+            observation_identity_sha256=locator_sha256,
+            gallery_manifest_sha256=artifact_source_manifest_digest(
+                locator_sha256,
+                1,
+                1,
+            ),
+            file_count=file_count,
+            byte_count=byte_count,
+        )
+    return SourceBuildManifestSummary(
+        chain,
+        len(locator_digests),
+        total_files,
+        total_bytes,
+    )
+
+
+def _working_build_id(connector: SQLiteConnector) -> bytes:
+    row = connector.fetch_one(
+        "SELECT build_id FROM operational_source_working_builds WHERE slot = %s",
+        (1,),
+    )
+    if len(row) != 1:
+        raise AssertionError("fixture lacks one exact source working build")
+    return require_uuid16(row[0], field="fixture source working build_id")
+
+
 def test_source_build_database_clock_and_abandonment_replay(
     tmp_path: Path,
 ) -> None:
     connector = _generated_database(tmp_path / "source-abandon.sqlite3")
     try:
-        gate, turn, command = _open_build(connector)
+        gate, turn, _command = _open_build(connector)
+        build_id = _working_build_id(connector)
         created = connector.fetch_one(
             "SELECT created.created_at, working.assigned_at "
-            "FROM catalog_source_build_created_ats created "
+            "FROM catalog_source_build_descriptor created "
             "JOIN operational_source_working_builds working "
             "ON working.build_id = created.build_id "
             "WHERE created.build_id = %s",
-            (command.build_attempt_id,),
+            (build_id,),
         )
         assert created[0] == created[1]
         assert created[0] != 24
@@ -184,13 +393,13 @@ def test_source_build_database_clock_and_abandonment_replay(
                 VNextUnitOfWork(connector, backend="sqlite"),
                 gate_lease=gate,
                 ingest_turn=turn,
-                build_id=command.build_attempt_id,
+                build_id=build_id,
                 now=25,
             )
         assert not abandoned.replayed
         assert connector.fetch_one(
             "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
-            (command.build_attempt_id,),
+            (build_id,),
         ) == ("ABANDONED",)
         assert (
             connector.fetch_all("SELECT * FROM operational_source_working_builds") == []
@@ -199,7 +408,7 @@ def test_source_build_database_clock_and_abandonment_replay(
             "SELECT build_id FROM operational_source_build_generations "
             "WHERE generation = %s",
             (turn.generation,),
-        ) == (command.build_attempt_id,)
+        ) == (build_id,)
 
         before = connector.fetch_all(
             "SELECT build_id, state FROM catalog_source_build_states"
@@ -209,7 +418,7 @@ def test_source_build_database_clock_and_abandonment_replay(
                 VNextUnitOfWork(connector, backend="sqlite"),
                 gate_lease=gate,
                 ingest_turn=turn,
-                build_id=command.build_attempt_id,
+                build_id=build_id,
                 now=26,
             )
         assert replay.replayed
@@ -220,7 +429,7 @@ def test_source_build_database_clock_and_abandonment_replay(
             == before
         )
 
-        replacement = SourceRootBuildCommand((), b"n" * 16)
+        replacement = _snapshot_command((), SourceBuildManifestSummary.empty())
         with replacement.prepare_root_upload() as root:
             _upload(connector, gate, turn, root, now=27)
             with (
@@ -245,7 +454,8 @@ def test_source_build_abandonment_rolls_back_slot_delete_on_cas_fault(
 ) -> None:
     connector = _generated_database(tmp_path / "source-abandon-fault.sqlite3")
     try:
-        gate, turn, command = _open_build(connector)
+        gate, turn, _command = _open_build(connector)
+        build_id = _working_build_id(connector)
         original = connector.execute_affected
 
         def fail_state_cas(query: str, data: tuple[Any, ...] = ()) -> int:
@@ -261,16 +471,16 @@ def test_source_build_abandonment_rolls_back_slot_delete_on_cas_fault(
                         VNextUnitOfWork(connector, backend="sqlite"),
                         gate_lease=gate,
                         ingest_turn=turn,
-                        build_id=command.build_attempt_id,
+                        build_id=build_id,
                         now=25,
                     )
         assert connector.fetch_one(
             "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
-            (command.build_attempt_id,),
+            (build_id,),
         ) == ("OPEN",)
         assert connector.fetch_one(
             "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
-        ) == (command.build_attempt_id,)
+        ) == (build_id,)
     finally:
         connector.close()
 
@@ -288,35 +498,13 @@ def _published_commit(
 ) -> None:
     connector.execute("PRAGMA foreign_keys = OFF")
     connector.execute(
-        "INSERT INTO catalog_source_revision_anchors (source_revision) VALUES (%s)",
-        (source_revision,),
+        "INSERT INTO catalog_source_revision_descriptors "
+        "(source_revision, channel, snapshot_manifest_sha256) VALUES (%s, %s, %s)",
+        (source_revision, b"default", snapshot),
     )
     connector.execute(
-        "INSERT INTO catalog_source_revision_channels "
-        "(source_revision, channel) VALUES (%s, %s)",
-        (source_revision, b"default"),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_revision_snapshot_manifests "
-        "(source_revision, snapshot_manifest_sha256) VALUES (%s, %s)",
-        (source_revision, snapshot),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_revision_descriptor_seals "
-        "(source_revision) VALUES (%s)",
-        (source_revision,),
-    )
-    connector.execute(
-        "INSERT INTO catalog_revision_anchors (revision) VALUES (%s)",
-        (revision,),
-    )
-    connector.execute(
-        "INSERT INTO catalog_revision_publication_counts "
-        "(revision, publication_count) VALUES (%s, 0)",
-        (revision,),
-    )
-    connector.execute(
-        "INSERT INTO catalog_revision_descriptor_seals (revision) VALUES (%s)",
+        "INSERT INTO catalog_revision_descriptors (revision, publication_count) "
+        "VALUES (%s, 0)",
         (revision,),
     )
     connector.execute(
@@ -332,53 +520,29 @@ def _published_commit(
         "INSERT INTO catalog_publication_commit_anchors (receipt_id) VALUES (%s)",
         (receipt_id,),
     )
-    members = (
-        ("catalog_publication_commit_candidates", "candidate_id", candidate_id),
+    connector.execute(
+        "INSERT INTO catalog_publication_commits "
+        "(receipt_id, candidate_id, revision, source_revision, generation, "
+        "preparation_id, operational_policy_id, artifact_policy_id, "
+        "display_title_policy_id, new_galleries, changed_galleries, "
+        "removed_galleries, duplicate_losers, committed_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
         (
-            "catalog_publication_commit_catalog_revisions",
-            "revision",
+            receipt_id,
+            candidate_id,
             revision,
-        ),
-        (
-            "catalog_publication_commit_source_revisions",
-            "source_revision",
             source_revision,
-        ),
-        ("catalog_publication_commit_generations", "generation", generation),
-        (
-            "catalog_publication_commit_operational_preparations",
-            "preparation_id",
+            generation,
             bytes((generation,)) * 16,
-        ),
-        (
-            "catalog_publication_commit_operational_policies",
-            "operational_policy_id",
             1,
-        ),
-        ("catalog_publication_commit_artifact_policies", "artifact_policy_id", 1),
-        (
-            "catalog_publication_commit_display_title_policies",
-            "display_title_policy_id",
             1,
-        ),
-        ("catalog_publication_commit_new_galleries", "new_galleries", 0),
-        ("catalog_publication_commit_changed_galleries", "changed_galleries", 0),
-        ("catalog_publication_commit_removed_galleries", "removed_galleries", 0),
-        ("catalog_publication_commit_duplicate_losers", "duplicate_losers", 0),
-        (
-            "catalog_publication_commit_committed_ats",
-            "committed_at",
+            1,
+            0,
+            0,
+            0,
+            0,
             committed_at,
         ),
-    )
-    for table, column, value in members:
-        connector.execute(
-            f"INSERT INTO {table} (receipt_id, {column}) VALUES (%s, %s)",
-            (receipt_id, value),
-        )
-    connector.execute(
-        "INSERT INTO catalog_publication_commit_seals (receipt_id) VALUES (%s)",
-        (receipt_id,),
     )
     if generation == 1:
         connector.execute(
@@ -401,6 +565,7 @@ def _link_published_candidate_to_build(
     candidate_id: bytes,
     build_id: bytes,
     revision: int,
+    snapshot_manifest_sha256: bytes,
     timestamp: int,
 ) -> None:
     """Seed the sealed candidate-to-analysis-to-build proof used by publication."""
@@ -409,38 +574,31 @@ def _link_published_candidate_to_build(
     connector.execute("PRAGMA foreign_keys = OFF")
     try:
         connector.execute(
-            "INSERT INTO catalog_analysis_run_anchors (analysis_id) VALUES (%s)",
-            (analysis_id,),
-        )
-        for table, column, value in (
-            ("catalog_analysis_run_build_ids", "build_id", build_id),
-            ("catalog_analysis_run_policy_ids", "policy_id", 1),
+            "INSERT INTO catalog_analysis_run_descriptor "
+            "(analysis_id, build_id, policy_id, input_manifest_sha256, started_at) "
+            "VALUES (%s, %s, %s, %s, %s)",
             (
-                "catalog_analysis_run_input_manifest_sha256s",
-                "input_manifest_sha256",
+                analysis_id,
+                build_id,
+                1,
                 sha256(b"source-working-recovery-input\0" + build_id).digest(),
+                timestamp,
             ),
-            ("catalog_analysis_run_started_ats", "started_at", timestamp),
-            ("catalog_analysis_run_states", "state", "COMPLETE"),
-        ):
-            connector.execute(
-                f"INSERT INTO {table} (analysis_id, {column}) VALUES (%s, %s)",
-                (analysis_id, value),
-            )
-        connector.execute(
-            "INSERT INTO catalog_analysis_run_identities "
-            "(build_id, policy_id, analysis_id) VALUES (%s, %s, %s)",
-            (build_id, 1, analysis_id),
         )
         connector.execute(
-            "INSERT INTO catalog_analysis_run_descriptor_seals "
-            "(analysis_id) VALUES (%s)",
-            (analysis_id,),
+            "INSERT INTO catalog_analysis_run_states (analysis_id, state) "
+            "VALUES (%s, %s)",
+            (analysis_id, "COMPLETE"),
         )
         connector.execute(
             "INSERT INTO catalog_analysis_run_completed_ats "
             "(analysis_id, completed_at) VALUES (%s, %s)",
             (analysis_id, timestamp + 1),
+        )
+        connector.execute(
+            "INSERT INTO catalog_analysis_snapshot_manifest "
+            "(analysis_id, snapshot_manifest_sha256) VALUES (%s, %s)",
+            (analysis_id, snapshot_manifest_sha256),
         )
         connector.execute(
             "INSERT INTO catalog_source_revision_provenance "
@@ -449,42 +607,11 @@ def _link_published_candidate_to_build(
         )
 
         connector.execute(
-            "INSERT INTO catalog_publication_candidate_anchors "
-            "(candidate_id) VALUES (%s)",
-            (candidate_id,),
-        )
-        for table, column, value in (
-            ("catalog_publication_candidate_analysis_ids", "analysis_id", analysis_id),
-            (
-                "catalog_publication_candidate_reserved_revisions",
-                "reserved_revision",
-                revision,
-            ),
-            (
-                "catalog_publication_candidate_artifact_policy_ids",
-                "artifact_policy_id",
-                1,
-            ),
-            (
-                "catalog_publication_candidate_display_title_policy_ids",
-                "display_title_policy_id",
-                1,
-            ),
-            (
-                "catalog_publication_candidate_artifacts_required",
-                "artifacts_required",
-                0,
-            ),
-            ("catalog_publication_candidate_created_ats", "created_at", timestamp + 2),
-        ):
-            connector.execute(
-                f"INSERT INTO {table} (candidate_id, {column}) VALUES (%s, %s)",
-                (candidate_id, value),
-            )
-        connector.execute(
-            "INSERT INTO catalog_publication_candidate_definition_seals "
-            "(candidate_id) VALUES (%s)",
-            (candidate_id,),
+            "INSERT INTO catalog_publication_candidates "
+            "(candidate_id, analysis_id, reserved_revision, artifact_policy_id, "
+            "display_title_policy_id, artifacts_required, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (candidate_id, analysis_id, revision, 1, 1, 0, timestamp + 2),
         )
     finally:
         connector.execute("PRAGMA foreign_keys = ON")
@@ -501,37 +628,25 @@ def _seed_complete_analysis_for_build(
     connector.execute("PRAGMA foreign_keys = OFF")
     try:
         connector.execute(
-            "INSERT INTO catalog_analysis_run_anchors (analysis_id) VALUES (%s)",
-            (analysis_id,),
-        )
-        for table, column, value in (
-            ("catalog_analysis_run_build_ids", "build_id", build_id),
-            ("catalog_analysis_run_policy_ids", "policy_id", policy_id),
+            "INSERT INTO catalog_analysis_run_descriptor "
+            "(analysis_id, build_id, policy_id, input_manifest_sha256, started_at) "
+            "VALUES (%s, %s, %s, %s, %s)",
             (
-                "catalog_analysis_run_input_manifest_sha256s",
-                "input_manifest_sha256",
+                analysis_id,
+                build_id,
+                policy_id,
                 sha256(
                     b"foreign-provenance-input\0"
                     + build_id
                     + policy_id.to_bytes(8, "big")
                 ).digest(),
+                timestamp,
             ),
-            ("catalog_analysis_run_started_ats", "started_at", timestamp),
-            ("catalog_analysis_run_states", "state", "COMPLETE"),
-        ):
-            connector.execute(
-                f"INSERT INTO {table} (analysis_id, {column}) VALUES (%s, %s)",
-                (analysis_id, value),
-            )
-        connector.execute(
-            "INSERT INTO catalog_analysis_run_identities "
-            "(build_id, policy_id, analysis_id) VALUES (%s, %s, %s)",
-            (build_id, policy_id, analysis_id),
         )
         connector.execute(
-            "INSERT INTO catalog_analysis_run_descriptor_seals "
-            "(analysis_id) VALUES (%s)",
-            (analysis_id,),
+            "INSERT INTO catalog_analysis_run_states (analysis_id, state) "
+            "VALUES (%s, %s)",
+            (analysis_id, "COMPLETE"),
         )
         connector.execute(
             "INSERT INTO catalog_analysis_run_completed_ats "
@@ -591,6 +706,7 @@ def _seed_publication_state(
         candidate_id=candidate_id,
         build_id=build_id,
         revision=source_revision,
+        snapshot_manifest_sha256=snapshot,
         timestamp=committed_at - 3,
     )
     build_base = connector.fetch_one(
@@ -604,70 +720,25 @@ def _seed_publication_state(
             "(candidate_id, base_receipt_id) VALUES (%s, %s)",
             (candidate_id, build_base[0]),
         )
-    seed_publication_finalization_checkpoint(
-        connector,
-        receipt_id=receipt_id,
-        updated_at=committed_at,
+    connector.execute(
+        "INSERT INTO catalog_publication_finalization_checkpoints "
+        "(receipt_id, generation, cursor, processed_count, state, updated_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s)",
+        (receipt_id, 1, b"", 0, "OPEN", committed_at),
     )
     if finalized:
-        key = (receipt_id, 1)
         connector.execute(
-            "INSERT INTO catalog_publication_finalization_batch_anchors "
-            "(receipt_id, start_generation) VALUES (%s, %s)",
-            key,
+            "INSERT INTO catalog_publication_finalization_batch_stored "
+            "(receipt_id, start_generation, batch_key, start_cursor, "
+            "start_processed_count, next_cursor, row_count, committed_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (receipt_id, 1, b"terminal", b"", 0, b"", 0, committed_at + 1),
         )
         connector.execute(
-            "INSERT INTO catalog_publication_finalization_batch_coordinates "
-            "(receipt_id, batch_key, start_generation) VALUES (%s, %s, %s)",
-            (receipt_id, b"terminal", 1),
-        )
-        for table, column, value in (
-            (
-                "catalog_publication_finalization_batch_start_cursors",
-                "start_cursor",
-                b"",
-            ),
-            (
-                "catalog_publication_finalization_batch_start_counts",
-                "start_processed_count",
-                0,
-            ),
-            (
-                "catalog_publication_finalization_batch_next_cursors",
-                "next_cursor",
-                b"",
-            ),
-            ("catalog_publication_finalization_batch_row_counts", "row_count", 0),
-            (
-                "catalog_publication_finalization_batch_committed_ats",
-                "committed_at",
-                committed_at + 1,
-            ),
-        ):
-            connector.execute(
-                f"INSERT INTO {table} "
-                f"(receipt_id, start_generation, {column}) VALUES (%s, %s, %s)",
-                (*key, value),
-            )
-        connector.execute(
-            "INSERT INTO catalog_publication_finalization_batch_seals "
-            "(receipt_id, start_generation) VALUES (%s, %s)",
-            key,
-        )
-        connector.execute(
-            "UPDATE catalog_publication_finalization_checkpoint_generations "
-            "SET generation = 2 WHERE receipt_id = %s",
-            (receipt_id,),
-        )
-        connector.execute(
-            "UPDATE catalog_publication_finalization_checkpoint_states "
-            "SET state = 'COMPLETE' WHERE receipt_id = %s",
-            (receipt_id,),
-        )
-        connector.execute(
-            "UPDATE catalog_publication_finalization_checkpoint_updated_ats "
-            "SET updated_at = %s WHERE receipt_id = %s",
-            (committed_at + 1, receipt_id),
+            "UPDATE catalog_publication_finalization_checkpoints SET "
+            "generation = %s, cursor = %s, processed_count = %s, state = %s, "
+            "updated_at = %s WHERE receipt_id = %s",
+            (2, b"", 0, "COMPLETE", committed_at + 1, receipt_id),
         )
         connector.execute(
             "INSERT INTO catalog_publication_commit_finalizations "
@@ -692,11 +763,7 @@ def _snapshot_command(
     root: tuple[str, ...],
     summary: SourceBuildManifestSummary,
 ) -> SourceRootBuildCommand:
-    return SourceRootBuildCommand(
-        root,
-        source_build_snapshot_attempt_id(source_root_digest(root), summary),
-        summary,
-    )
+    return SourceRootBuildCommand(root, summary)
 
 
 def _handoff_snapshot_command(
@@ -729,22 +796,13 @@ def _force_sealed_snapshot_build(
 ) -> int:
     created_at = require_int63(
         connector.fetch_one(
-            "SELECT created_at FROM catalog_source_build_created_ats "
+            "SELECT created_at FROM catalog_source_build_descriptor "
             "WHERE build_id = %s",
             (build_id,),
         )[0],
         field="fixture source build created_at",
     )
     sealed_at = created_at + 1
-    connector.execute(
-        "UPDATE catalog_source_build_states SET state = %s WHERE build_id = %s",
-        ("SEALED", build_id),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_build_sealed_ats (build_id, sealed_at) "
-        "VALUES (%s, %s)",
-        (build_id, sealed_at),
-    )
     seed_build_manifest(
         connector,
         build_id=build_id,
@@ -753,6 +811,11 @@ def _force_sealed_snapshot_build(
         file_count=summary.file_count,
         byte_count=summary.byte_count,
         computed_at=sealed_at,
+    )
+    connector.execute(
+        "UPDATE catalog_source_build_states SET state = %s "
+        "WHERE build_id = %s AND state = %s",
+        ("SEALED", build_id, "OPEN"),
     )
     cursor = (
         b""
@@ -801,7 +864,7 @@ def _restore_sealed_source_working(
 ) -> int:
     created_at = require_int63(
         connector.fetch_one(
-            "SELECT created_at FROM catalog_source_build_created_ats "
+            "SELECT created_at FROM catalog_source_build_descriptor "
             "WHERE build_id = %s",
             (build_id,),
         )[0],
@@ -823,7 +886,7 @@ def _seal_published_analysis_baseline(
 ) -> bytes:
     analysis_id = require_uuid16(
         connector.fetch_one(
-            "SELECT analysis_id FROM catalog_publication_candidate_analysis_ids "
+            "SELECT analysis_id FROM catalog_publication_candidates "
             "WHERE candidate_id = %s",
             (candidate_id,),
         )[0],
@@ -947,17 +1010,14 @@ def test_open_canonical_snapshot_working_build_resumes_in_new_generation(
         connector.close()
 
 
-def test_current_finalized_multi_policy_build_remains_authoritative(
+def test_current_finalized_build_remains_authoritative(
     tmp_path: Path,
 ) -> None:
-    connector = _generated_database(
-        tmp_path / "snapshot-finalized-multi-policy.sqlite3"
-    )
+    connector = _generated_database(tmp_path / "snapshot-finalized-current.sqlite3")
     try:
         seed_analysis_policy(connector)
-        seed_analysis_policy(connector, policy_id=2, algorithm_version=2)
         gate, first_turn = _authorities(connector)
-        root = ("multi-policy-current",)
+        root = ("finalized-current",)
         current_summary = SourceBuildManifestSummary.empty()
         successor_summary = SourceBuildManifestSummary(b"B" * 32, 1, 0, 0)
         current_command = _snapshot_command(root, current_summary)
@@ -984,38 +1044,29 @@ def test_current_finalized_multi_policy_build_remains_authoritative(
             committed_at=sealed_at + 10,
             finalized=True,
         )
-        secondary_analysis_id = b"2" * 16
-        _seed_complete_analysis_for_build(
-            connector,
-            analysis_id=secondary_analysis_id,
-            build_id=current_build,
-            policy_id=2,
-            timestamp=sealed_at + 8,
-        )
         published_analysis_id = connector.fetch_one(
-            "SELECT analysis_id FROM catalog_publication_candidate_analysis_ids "
+            "SELECT analysis_id FROM catalog_publication_candidates "
             "WHERE candidate_id = %s",
             (candidate_id,),
         )[0]
+        # The serialized pipeline admits exactly one analysis for each build;
+        # the finalized publication therefore has one unambiguous authority.
         assert connector.fetch_all(
             "SELECT analysis_id, policy_id, state FROM catalog_analysis_runs "
             "WHERE build_id = %s ORDER BY policy_id",
             (current_build,),
         ) == [
             (published_analysis_id, 1, "COMPLETE"),
-            (secondary_analysis_id, 2, "COMPLETE"),
         ]
         assert connector.fetch_one(
             "SELECT provenance.analysis_id, candidate.analysis_id "
             "FROM catalog_publication_commit_heads AS head "
-            "JOIN catalog_publication_commit_source_revisions AS source "
-            "ON source.receipt_id = head.receipt_id "
+            "JOIN catalog_publication_commits AS committed "
+            "ON committed.receipt_id = head.receipt_id "
             "JOIN catalog_source_revision_provenance AS provenance "
-            "ON provenance.source_revision = source.source_revision "
-            "JOIN catalog_publication_commit_candidates AS committed_candidate "
-            "ON committed_candidate.receipt_id = head.receipt_id "
-            "JOIN catalog_publication_candidate_analysis_ids AS candidate "
-            "ON candidate.candidate_id = committed_candidate.candidate_id "
+            "ON provenance.source_revision = committed.source_revision "
+            "JOIN catalog_publication_candidates AS candidate "
+            "ON candidate.candidate_id = committed.candidate_id "
             "WHERE head.channel = %s",
             (b"default",),
         ) == (published_analysis_id, published_analysis_id)
@@ -1196,7 +1247,7 @@ def test_snapshot_recurrence_derives_successor_from_current_publication_base(
         # B is the current head.  The exact frozen A snapshot must be rebased
         # to a fresh C successor, not trapped in another historical replay.
         created_a = connector.fetch_one(
-            "SELECT created_at FROM catalog_source_build_created_ats "
+            "SELECT created_at FROM catalog_source_build_descriptor "
             "WHERE build_id = %s",
             (build_a,),
         )[0]
@@ -1382,7 +1433,7 @@ def test_abandoned_snapshot_recovery_churn_replays_and_resumes_sealed_after_rest
         )
         assert len({build_a0, build_b0, build_a1}) == 3
         created_a1 = connector.fetch_one(
-            "SELECT created_at FROM catalog_source_build_created_ats "
+            "SELECT created_at FROM catalog_source_build_descriptor "
             "WHERE build_id = %s",
             (build_a1,),
         )[0]
@@ -1392,12 +1443,11 @@ def test_abandoned_snapshot_recovery_churn_replays_and_resumes_sealed_after_rest
                 summary_a,
             ),
             scope=connector.fetch_one(
-                "SELECT scope_key FROM catalog_source_build_scope_keys "
+                "SELECT scope_key FROM catalog_source_build_descriptor "
                 "WHERE build_id = %s",
                 (build_a1,),
             )[0],
             manifest_policy_id=1,
-            base_receipt_id=base_receipt,
             created_at=created_a1,
         )
 
@@ -1464,7 +1514,7 @@ def test_abandoned_snapshot_recovery_churn_replays_and_resumes_sealed_after_rest
             summary=summary_b,
         )
         created_b2 = connector.fetch_one(
-            "SELECT created_at FROM catalog_source_build_created_ats "
+            "SELECT created_at FROM catalog_source_build_descriptor "
             "WHERE build_id = %s",
             (build_b2,),
         )[0]
@@ -1476,7 +1526,6 @@ def test_abandoned_snapshot_recovery_churn_replays_and_resumes_sealed_after_rest
         require_source_build_publication_identity(
             connector,
             build_id=build_b2,
-            base_receipt_id=base_receipt,
         )
 
         # A new connection models process restart.  A SEALED-unpublished v3
@@ -1504,7 +1553,7 @@ def test_abandoned_snapshot_recovery_churn_replays_and_resumes_sealed_after_rest
 
         assert (
             connector.execute_affected(
-                "UPDATE catalog_source_build_created_ats SET created_at = %s "
+                "UPDATE catalog_source_build_descriptor SET created_at = %s "
                 "WHERE build_id = %s",
                 (created_b2 + 1, build_b2),
             )
@@ -1514,10 +1563,9 @@ def test_abandoned_snapshot_recovery_churn_replays_and_resumes_sealed_after_rest
             require_source_build_publication_identity(
                 connector,
                 build_id=build_b2,
-                base_receipt_id=base_receipt,
             )
         connector.execute(
-            "UPDATE catalog_source_build_created_ats SET created_at = %s "
+            "UPDATE catalog_source_build_descriptor SET created_at = %s "
             "WHERE build_id = %s",
             (created_b2, build_b2),
         )
@@ -1529,12 +1577,10 @@ def test_abandoned_snapshot_recovery_churn_replays_and_resumes_sealed_after_rest
             )
             == 1
         )
-        with pytest.raises(SourceBuildConflictError, match="identity|snapshot|base"):
-            require_source_build_publication_identity(
-                connector,
-                build_id=build_b2,
-                base_receipt_id=None,
-            )
+        require_source_build_publication_identity(
+            connector,
+            build_id=build_b2,
+        )
         connector.execute(
             "INSERT INTO catalog_source_build_base_publication_commits "
             "(build_id, base_receipt_id) VALUES (%s, %s)",
@@ -1643,7 +1689,7 @@ def test_recovery_clock_collision_is_zero_write_then_self_heals(
         )
         assert (
             connector.execute_affected(
-                "UPDATE catalog_source_build_manifest_policy_ids "
+                "UPDATE catalog_source_build_descriptor "
                 "SET manifest_policy_id = %s WHERE build_id = %s",
                 (2, build_a0),
             )
@@ -1658,7 +1704,7 @@ def test_recovery_clock_collision_is_zero_write_then_self_heals(
                 now=50,
             )
         connector.execute(
-            "UPDATE catalog_source_build_manifest_policy_ids "
+            "UPDATE catalog_source_build_descriptor "
             "SET manifest_policy_id = %s WHERE build_id = %s",
             (1, build_a0),
         )
@@ -1690,22 +1736,9 @@ def test_recovery_clock_collision_is_zero_write_then_self_heals(
             )
             == 1
         )
-        with pytest.raises(SourceBuildConflictError, match="base"):
-            _handoff_snapshot_command(
-                connector,
-                gate,
-                turn_retry,
-                _snapshot_command(root, summary_a),
-                now=50,
-            )
-        connector.execute(
-            "INSERT INTO catalog_source_build_base_publication_commits "
-            "(build_id, base_receipt_id) VALUES (%s, %s)",
-            (build_a0, b"1" * 16),
-        )
         assert (
             connector.execute_affected(
-                "UPDATE catalog_source_build_manifest_policy_ids "
+                "UPDATE catalog_source_build_descriptor "
                 "SET manifest_policy_id = %s WHERE build_id = %s",
                 (2, build_a1),
             )
@@ -1720,13 +1753,13 @@ def test_recovery_clock_collision_is_zero_write_then_self_heals(
                 now=50,
             )
         connector.execute(
-            "UPDATE catalog_source_build_manifest_policy_ids "
+            "UPDATE catalog_source_build_descriptor "
             "SET manifest_policy_id = %s WHERE build_id = %s",
             (1, build_a1),
         )
         assert (
             connector.execute_affected(
-                "UPDATE catalog_source_build_created_ats SET created_at = %s "
+                "UPDATE catalog_source_build_descriptor SET created_at = %s "
                 "WHERE build_id = %s",
                 (collision_clock + 1, build_a1),
             )
@@ -1741,7 +1774,7 @@ def test_recovery_clock_collision_is_zero_write_then_self_heals(
                 now=50,
             )
         connector.execute(
-            "UPDATE catalog_source_build_created_ats SET created_at = %s "
+            "UPDATE catalog_source_build_descriptor SET created_at = %s "
             "WHERE build_id = %s",
             (collision_clock, build_a1),
         )
@@ -1773,21 +1806,8 @@ def test_recovery_clock_collision_is_zero_write_then_self_heals(
             )
             == 1
         )
-        with pytest.raises(SourceBuildConflictError, match="base"):
-            _handoff_snapshot_command(
-                connector,
-                gate,
-                turn_retry,
-                _snapshot_command(root, summary_a),
-                now=50,
-            )
-        connector.execute(
-            "INSERT INTO catalog_source_build_base_publication_commits "
-            "(build_id, base_receipt_id) VALUES (%s, %s)",
-            (build_a1, b"1" * 16),
-        )
         anchors_before = connector.fetch_all(
-            "SELECT build_id FROM catalog_source_build_anchors ORDER BY build_id"
+            "SELECT build_id FROM catalog_source_build_descriptor ORDER BY build_id"
         )
         mappings_before = connector.fetch_all(
             "SELECT build_id, generation FROM operational_source_build_generations "
@@ -1803,7 +1823,7 @@ def test_recovery_clock_collision_is_zero_write_then_self_heals(
             )
         assert (
             connector.fetch_all(
-                "SELECT build_id FROM catalog_source_build_anchors ORDER BY build_id"
+                "SELECT build_id FROM catalog_source_build_descriptor ORDER BY build_id"
             )
             == anchors_before
         )
@@ -1828,7 +1848,7 @@ def test_recovery_clock_collision_is_zero_write_then_self_heals(
         )
         assert build_a2 != build_a1
         assert connector.fetch_one(
-            "SELECT created_at FROM catalog_source_build_created_ats "
+            "SELECT created_at FROM catalog_source_build_descriptor "
             "WHERE build_id = %s",
             (build_a2,),
         ) == (clock[0],)
@@ -1921,12 +1941,11 @@ def test_analysis_abandonment_recovery_repeats_v3_and_self_heals_after_clock_tic
         assert recovery_build == source_build_recovery_identity(
             snapshot_attempt_id=command.build_attempt_id,
             scope=connector.fetch_one(
-                "SELECT scope_key FROM catalog_source_build_scope_keys "
+                "SELECT scope_key FROM catalog_source_build_descriptor "
                 "WHERE build_id = %s",
                 (recovery_build,),
             )[0],
             manifest_policy_id=1,
-            base_receipt_id=base_receipt_id,
             created_at=clock[0],
         )
         _force_sealed_snapshot_build(
@@ -2119,7 +2138,7 @@ def test_sealed_v3_without_working_root_fails_closed_for_missing_or_live_analysi
                 live_analysis_id = live_analysis.analysis_id
             if analysis_state == "COMPLETE" and live_analysis_id is not None:
                 started_at = connector.fetch_one(
-                    "SELECT started_at FROM catalog_analysis_run_started_ats "
+                    "SELECT started_at FROM catalog_analysis_run_descriptor "
                     "WHERE analysis_id = %s",
                     (live_analysis_id,),
                 )[0]
@@ -2219,424 +2238,26 @@ def test_different_root_snapshot_takeover_abandons_open_working_build(
         connector.close()
 
 
-def test_sealed_unpublished_legacy_working_build_resumes_after_upgrade(
-    tmp_path: Path,
-) -> None:
-    connector = _generated_database(tmp_path / "sealed-legacy-upgrade.sqlite3")
-    try:
-        gate, base_turn = _authorities(connector)
-        summary = SourceBuildManifestSummary.empty()
-        base_build = _handoff_snapshot_command(
-            connector,
-            gate,
-            base_turn,
-            _snapshot_command(("legacy-base",), summary),
-            now=20,
-        )
-        sealed_base = _force_sealed_snapshot_build(
-            connector,
-            build_id=base_build,
-            summary=summary,
-        )
-        base_receipt = b"1" * 16
-        _seed_publication_state(
-            connector,
-            receipt_id=base_receipt,
-            candidate_id=b"q" * 16,
-            build_id=base_build,
-            snapshot=summary.manifest_sha256,
-            committed_at=sealed_base + 10,
-            finalized=True,
-        )
-        with connector.transaction():
-            IngestFenceRepository.complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
-                base_turn,
-                now=30,
-            )
-            legacy_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
-                owner_token=b"l" * 16,
-                now=31,
-                lease_duration=100,
-            )
-
-        root = ("legacy-upgrade",)
-        with SourceDiscoveryPlan.from_locators(()) as plan:
-            legacy_digest = sha256(b"h2hdb-vnext-ingest-source-build-attempt-v1\0")
-            legacy_digest.update(source_root_digest(root))
-            legacy_digest.update((0).to_bytes(8, "big"))
-            legacy_digest.update(plan.tree_observation_sha256)
-            legacy_digest.update((1).to_bytes(8, "big"))
-            legacy_build = legacy_digest.digest()[:16]
-            assert (
-                _handoff_snapshot_command(
-                    connector,
-                    gate,
-                    legacy_turn,
-                    SourceRootBuildCommand(root, legacy_build),
-                    now=32,
-                )
-                == legacy_build
-            )
-            legacy_created_at = connector.fetch_one(
-                "SELECT created_at FROM catalog_source_build_created_ats "
-                "WHERE build_id = %s",
-                (legacy_build,),
-            )[0]
-            connector.execute(
-                "UPDATE catalog_publication_commit_committed_ats "
-                "SET committed_at = %s WHERE receipt_id = %s",
-                (legacy_created_at - 1, base_receipt),
-            )
-            batch = SourceBuildRepository.prepare_discovery_batch(
-                connector,
-                build_id=legacy_build,
-                plan=plan,
-            )
-            with connector.transaction():
-                receipt = SourceBuildRepository.commit_discovery_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
-                    gate_lease=gate,
-                    ingest_turn=legacy_turn,
-                    batch=batch,
-                    resolved=(),
-                    now=40,
-                )
-            assert receipt.terminal
-        with connector.transaction():
-            sealed = SourceBuildRepository.assemble_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
-                gate_lease=gate,
-                ingest_turn=legacy_turn,
-                build_id=legacy_build,
-                attempt=SourceBuildRepository.issue_assembly_batch(),
-                now=50,
-            )
-        assert sealed.terminal
-        sealed_at = connector.fetch_one(
-            "SELECT sealed_at FROM catalog_source_build_sealed_ats WHERE build_id = %s",
-            (legacy_build,),
-        )[0]
-        analysis_id = b"L" * 16
-        _seed_complete_analysis_for_build(
-            connector,
-            analysis_id=analysis_id,
-            build_id=legacy_build,
-            timestamp=sealed_at + 1,
-        )
-
-        with connector.transaction():
-            resumed_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
-                owner_token=b"r" * 16,
-                now=132,
-                lease_duration=100,
-            )
-        assert (
-            _handoff_snapshot_command(
-                connector,
-                gate,
-                resumed_turn,
-                _snapshot_command(root, summary),
-                now=133,
-            )
-            == legacy_build
-        )
-        assert connector.fetch_one(
-            "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
-            (legacy_build,),
-        ) == ("SEALED",)
-        assert connector.fetch_one(
-            "SELECT build_id, state FROM catalog_analysis_runs WHERE analysis_id = %s",
-            (analysis_id,),
-        ) == (legacy_build, "COMPLETE")
-        assert connector.fetch_one(
-            "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
-        ) == (legacy_build,)
-    finally:
-        connector.close()
-
-
-@pytest.mark.parametrize("corruption", ["deleted", "foreign"])
-def test_legacy_snapshot_reuse_requires_exact_historical_base_head(
-    tmp_path: Path,
-    corruption: str,
-) -> None:
-    connector = _generated_database(tmp_path / f"legacy-base-{corruption}.sqlite3")
-    try:
-        gate, turn_zero = _authorities(connector)
-        summary = SourceBuildManifestSummary.empty()
-
-        build_zero = _handoff_snapshot_command(
-            connector,
-            gate,
-            turn_zero,
-            _snapshot_command(("history-zero",), summary),
-            now=20,
-        )
-        sealed_zero = _force_sealed_snapshot_build(
-            connector,
-            build_id=build_zero,
-            summary=summary,
-        )
-        receipt_zero = b"0" * 16
-        _seed_publication_state(
-            connector,
-            receipt_id=receipt_zero,
-            candidate_id=b"p" * 16,
-            build_id=build_zero,
-            snapshot=summary.manifest_sha256,
-            committed_at=sealed_zero + 10,
-            finalized=True,
-        )
-        with connector.transaction():
-            IngestFenceRepository.complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
-                turn_zero,
-                now=30,
-            )
-            turn_one = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
-                owner_token=b"j" * 16,
-                now=31,
-                lease_duration=1_000_000,
-            )
-
-        build_one = _handoff_snapshot_command(
-            connector,
-            gate,
-            turn_one,
-            _snapshot_command(("history-one",), summary),
-            now=32,
-        )
-        sealed_one = _force_sealed_snapshot_build(
-            connector,
-            build_id=build_one,
-            summary=summary,
-        )
-        receipt_one = b"1" * 16
-        _seed_publication_state(
-            connector,
-            receipt_id=receipt_one,
-            candidate_id=b"q" * 16,
-            build_id=build_one,
-            snapshot=summary.manifest_sha256,
-            committed_at=sealed_one + 10,
-            finalized=True,
-            revision=2,
-            source_revision=2,
-            generation=2,
-        )
-        with connector.transaction():
-            IngestFenceRepository.complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
-                turn_one,
-                now=40,
-            )
-            legacy_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
-                owner_token=b"k" * 16,
-                now=41,
-                lease_duration=1_000_000,
-            )
-
-        legacy_root = ("legacy-successor",)
-        with SourceDiscoveryPlan.from_locators(()) as discovery:
-            legacy_digest = sha256(b"h2hdb-vnext-ingest-source-build-attempt-v1\0")
-            legacy_digest.update(source_root_digest(legacy_root))
-            legacy_digest.update((0).to_bytes(8, "big"))
-            legacy_digest.update(discovery.tree_observation_sha256)
-            legacy_digest.update((1).to_bytes(8, "big"))
-            legacy_build = legacy_digest.digest()[:16]
-            legacy_command = SourceRootBuildCommand(legacy_root, legacy_build)
-            assert (
-                _handoff_snapshot_command(
-                    connector,
-                    gate,
-                    legacy_turn,
-                    legacy_command,
-                    now=42,
-                )
-                == legacy_build
-            )
-            assert connector.fetch_one(
-                "SELECT base_receipt_id FROM "
-                "catalog_source_build_base_publication_commits "
-                "WHERE build_id = %s",
-                (legacy_build,),
-            ) == (receipt_one,)
-
-            legacy_created_at = require_int63(
-                connector.fetch_one(
-                    "SELECT created_at FROM catalog_source_build_created_ats "
-                    "WHERE build_id = %s",
-                    (legacy_build,),
-                )[0],
-                field="legacy fixture created_at",
-            )
-            assert (
-                connector.execute_affected(
-                    "UPDATE catalog_publication_commit_committed_ats "
-                    "SET committed_at = %s WHERE receipt_id = %s",
-                    (legacy_created_at - 2, receipt_zero),
-                )
-                == 1
-            )
-            assert (
-                connector.execute_affected(
-                    "UPDATE catalog_publication_commit_committed_ats "
-                    "SET committed_at = %s WHERE receipt_id = %s",
-                    (legacy_created_at - 1, receipt_one),
-                )
-                == 1
-            )
-
-            batch = SourceBuildRepository.prepare_discovery_batch(
-                connector,
-                build_id=legacy_build,
-                plan=discovery,
-            )
-            with connector.transaction():
-                discovery_receipt = SourceBuildRepository.commit_discovery_batch(
-                    VNextUnitOfWork(connector, backend="sqlite"),
-                    gate_lease=gate,
-                    ingest_turn=legacy_turn,
-                    batch=batch,
-                    resolved=(),
-                    now=50,
-                )
-            assert discovery_receipt.terminal
-        with connector.transaction():
-            assembly_receipt = SourceBuildRepository.assemble_batch(
-                VNextUnitOfWork(connector, backend="sqlite"),
-                gate_lease=gate,
-                ingest_turn=legacy_turn,
-                build_id=legacy_build,
-                attempt=SourceBuildRepository.issue_assembly_batch(),
-                now=51,
-            )
-        assert assembly_receipt.terminal
-        assert (
-            connector.execute_affected(
-                "DELETE FROM operational_source_working_builds WHERE build_id = %s",
-                (legacy_build,),
-            )
-            == 1
-        )
-        receipt_legacy = b"2" * 16
-        candidate_legacy = b"r" * 16
-        _seed_publication_state(
-            connector,
-            receipt_id=receipt_legacy,
-            candidate_id=candidate_legacy,
-            build_id=legacy_build,
-            snapshot=summary.manifest_sha256,
-            committed_at=legacy_created_at + 10,
-            finalized=True,
-            revision=3,
-            source_revision=3,
-            generation=3,
-        )
-        with connector.transaction():
-            IngestFenceRepository.complete(
-                VNextUnitOfWork(connector, backend="sqlite"),
-                legacy_turn,
-                now=60,
-            )
-
-        if corruption == "deleted":
-            assert (
-                connector.execute_affected(
-                    "DELETE FROM catalog_source_build_base_publication_commits "
-                    "WHERE build_id = %s",
-                    (legacy_build,),
-                )
-                == 1
-            )
-            assert (
-                connector.execute_affected(
-                    "DELETE FROM "
-                    "catalog_publication_candidate_base_publication_commits "
-                    "WHERE candidate_id = %s",
-                    (candidate_legacy,),
-                )
-                == 1
-            )
-            expected_base: tuple[bytes, ...] = ()
-        else:
-            assert (
-                connector.execute_affected(
-                    "UPDATE catalog_source_build_base_publication_commits "
-                    "SET base_receipt_id = %s WHERE build_id = %s",
-                    (receipt_zero, legacy_build),
-                )
-                == 1
-            )
-            assert (
-                connector.execute_affected(
-                    "UPDATE "
-                    "catalog_publication_candidate_base_publication_commits "
-                    "SET base_receipt_id = %s WHERE candidate_id = %s",
-                    (receipt_zero, candidate_legacy),
-                )
-                == 1
-            )
-            expected_base = (receipt_zero,)
-
-        with connector.transaction():
-            replay_turn = IngestFenceRepository.claim(
-                VNextUnitOfWork(connector, backend="sqlite"),
-                owner_token=b"l" * 16,
-                now=61,
-                lease_duration=1_000_000,
-            )
-        with pytest.raises(SourceBuildConflictError, match="legacy|base|creation"):
-            _handoff_snapshot_command(
-                connector,
-                gate,
-                replay_turn,
-                _snapshot_command(legacy_root, summary),
-                now=62,
-            )
-        assert (
-            connector.fetch_one(
-                "SELECT base_receipt_id FROM "
-                "catalog_source_build_base_publication_commits WHERE build_id = %s",
-                (legacy_build,),
-            )
-            == expected_base
-        )
-    finally:
-        connector.close()
-
-
 def test_handoff_pins_common_commit_and_replay_ignores_later_head_advance(
     tmp_path: Path,
 ) -> None:
     connector = _generated_database(tmp_path / "handoff-base-replay.sqlite3")
     try:
-        gate, turn = _authorities(connector)
-        command = SourceRootBuildCommand((), b"b" * 16)
+        gate, _sealed_base, base_receipt_id = _analysis_ready_published_base(
+            connector,
+            root=("handoff-base",),
+        )
+        with connector.transaction():
+            turn = IngestFenceRepository.claim(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                owner_token=b"r" * 16,
+                now=31,
+                lease_duration=1_000_000,
+            )
+        summary = SourceBuildManifestSummary(b"R" * 32, 1, 0, 0)
+        command = _snapshot_command(("handoff-replay",), summary)
         with command.prepare_root_upload() as root:
-            _upload(connector, gate, turn, root, now=12)
-            seed_snapshot_manifest(
-                connector,
-                snapshot_manifest_sha256=root.value_sha256,
-                gallery_count=0,
-                file_count=0,
-                byte_count=0,
-            )
-            _published_commit(
-                connector,
-                receipt_id=b"1" * 16,
-                candidate_id=b"c" * 16,
-                revision=1,
-                source_revision=1,
-                generation=1,
-                snapshot=root.value_sha256,
-                committed_at=15,
-            )
+            _upload(connector, gate, turn, root, now=32)
 
             with connector.transaction():
                 first = SourceBuildRepository.handoff_root(
@@ -2645,31 +2266,45 @@ def test_handoff_pins_common_commit_and_replay_ignores_later_head_advance(
                     ingest_turn=turn,
                     command=command,
                     root_plan=root,
-                    now=24,
+                    now=33,
                 )
             assert not first.replayed
             assert connector.fetch_one(
                 "SELECT build_id, base_receipt_id "
                 "FROM catalog_source_build_base_publication_commits"
-            ) == (command.build_attempt_id, b"1" * 16)
+                " WHERE build_id = %s",
+                (first.build_id,),
+            ) == (first.build_id, base_receipt_id)
             assert connector.fetch_one(
                 "SELECT build_id, base_source_revision, base_source_generation "
-                "FROM catalog_source_build_base_source"
-            ) == (command.build_attempt_id, 1, 1)
+                "FROM catalog_source_build_base_source WHERE build_id = %s",
+                (first.build_id,),
+            ) == (first.build_id, 1, 1)
 
-            _published_commit(
+            sealed_at = _force_sealed_snapshot_build(
+                connector,
+                build_id=first.build_id,
+                summary=summary,
+            )
+            _restore_sealed_source_working(
+                connector,
+                build_id=first.build_id,
+            )
+            _seed_publication_state(
                 connector,
                 receipt_id=b"2" * 16,
                 candidate_id=b"d" * 16,
+                build_id=first.build_id,
                 revision=2,
                 source_revision=2,
                 generation=2,
-                snapshot=root.value_sha256,
-                committed_at=25,
+                snapshot=summary.manifest_sha256,
+                committed_at=sealed_at + 10,
+                finalized=True,
             )
 
             with command.prepare_root_upload() as replay_root:
-                _upload(connector, gate, turn, replay_root, now=26)
+                _upload(connector, gate, turn, replay_root, now=34)
                 with connector.transaction():
                     replay = SourceBuildRepository.handoff_root(
                         VNextUnitOfWork(connector, backend="sqlite"),
@@ -2677,13 +2312,15 @@ def test_handoff_pins_common_commit_and_replay_ignores_later_head_advance(
                         ingest_turn=turn,
                         command=command,
                         root_plan=replay_root,
-                        now=29,
+                        now=35,
                     )
             assert replay.replayed and replay.build_id == first.build_id
             assert connector.fetch_all(
                 "SELECT build_id, base_receipt_id "
-                "FROM catalog_source_build_base_publication_commits"
-            ) == [(command.build_attempt_id, b"1" * 16)]
+                "FROM catalog_source_build_base_publication_commits "
+                "WHERE build_id = %s",
+                (first.build_id,),
+            ) == [(first.build_id, base_receipt_id)]
     finally:
         connector.close()
 
@@ -2694,6 +2331,7 @@ def test_successor_generation_reuse_does_not_rebase_existing_sealed_build(
     connector = _generated_database(tmp_path / "handoff-sealed-successor.sqlite3")
     try:
         gate, first_turn, command = _open_build(connector)
+        build_id = _working_build_id(connector)
         with SourceDiscoveryPlan.from_locators(()) as plan:
             assert (
                 _finish_discovery(
@@ -2710,7 +2348,7 @@ def test_successor_generation_reuse_does_not_rebase_existing_sealed_build(
                 VNextUnitOfWork(connector, backend="sqlite"),
                 gate_lease=gate,
                 ingest_turn=first_turn,
-                build_id=command.build_attempt_id,
+                build_id=build_id,
                 attempt=SourceBuildRepository.issue_assembly_batch(),
                 now=40,
             )
@@ -2723,23 +2361,22 @@ def test_successor_generation_reuse_does_not_rebase_existing_sealed_build(
             == []
         )
 
-        snapshot = command.source_root_sha256
-        seed_snapshot_manifest(
-            connector,
-            snapshot_manifest_sha256=snapshot,
-            gallery_count=0,
-            file_count=0,
-            byte_count=0,
+        sealed_at = require_int63(
+            connector.fetch_one(
+                "SELECT sealed_at FROM catalog_source_build_sealed_ats "
+                "WHERE build_id = %s",
+                (build_id,),
+            )[0],
+            field="sealed current source build timestamp",
         )
-        _published_commit(
+        _seed_publication_state(
             connector,
             receipt_id=b"1" * 16,
             candidate_id=b"c" * 16,
-            revision=1,
-            source_revision=1,
-            generation=1,
-            snapshot=snapshot,
-            committed_at=50,
+            build_id=build_id,
+            snapshot=command.manifest_summary.manifest_sha256,
+            committed_at=sealed_at + 10,
+            finalized=True,
         )
         with connector.transaction():
             IngestFenceRepository.complete(
@@ -2767,7 +2404,7 @@ def test_successor_generation_reuse_does_not_rebase_existing_sealed_build(
                     now=56,
                 )
 
-        assert successor.build_id == command.build_attempt_id
+        assert successor.build_id == build_id
         assert successor.generation == second_turn.generation
         assert (
             connector.fetch_all(
@@ -2791,8 +2428,9 @@ def _sealed_published_source(
     connector: SQLiteConnector,
     *,
     finalized: bool,
-) -> tuple[GateLease, SourceRootBuildCommand, bytes]:
+) -> tuple[GateLease, SourceRootBuildCommand, bytes, bytes]:
     gate, first_turn, command = _open_build(connector)
+    build_id = _working_build_id(connector)
     with SourceDiscoveryPlan.from_locators(()) as plan:
         assert _finish_discovery(connector, gate, first_turn, plan, now=30) == ()
     with connector.transaction():
@@ -2800,20 +2438,20 @@ def _sealed_published_source(
             VNextUnitOfWork(connector, backend="sqlite"),
             gate_lease=gate,
             ingest_turn=first_turn,
-            build_id=command.build_attempt_id,
+            build_id=build_id,
             attempt=SourceBuildRepository.issue_assembly_batch(),
             now=40,
         )
     assert sealed.terminal
     sealed_at = connector.fetch_one(
         "SELECT sealed_at FROM catalog_source_build_sealed_ats WHERE build_id = %s",
-        (command.build_attempt_id,),
+        (build_id,),
     )[0]
     assert (
         connector.execute_affected(
             "DELETE FROM operational_source_working_builds "
             "WHERE slot = 1 AND build_id = %s",
-            (command.build_attempt_id,),
+            (build_id,),
         )
         == 1
     )
@@ -2822,7 +2460,7 @@ def _sealed_published_source(
         connector,
         receipt_id=receipt_id,
         candidate_id=b"c" * 16,
-        build_id=command.build_attempt_id,
+        build_id=build_id,
         snapshot=command.source_root_sha256,
         committed_at=sealed_at + 10,
         finalized=finalized,
@@ -2833,7 +2471,7 @@ def _sealed_published_source(
             first_turn,
             now=45,
         )
-    return gate, command, receipt_id
+    return gate, command, build_id, receipt_id
 
 
 def _reservation_snapshot(connector: SQLiteConnector) -> tuple[Any, ...]:
@@ -2863,7 +2501,7 @@ def test_handoff_atomically_replaces_finalized_head_replay_left_by_expired_turn(
         tmp_path / "handoff-finalized-replay-recovery.sqlite3"
     )
     try:
-        gate, published, receipt_id = _sealed_published_source(
+        gate, published, published_build, receipt_id = _sealed_published_source(
             connector,
             finalized=True,
         )
@@ -2888,7 +2526,7 @@ def test_handoff_atomically_replaces_finalized_head_replay_left_by_expired_turn(
         assert replay.generation == 2
         assert connector.fetch_one(
             "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
-        ) == (published.build_attempt_id,)
+        ) == (published_build,)
 
         # Generation 2 loses its response/turn before terminal publication replay
         # can release the transient source root.  Its lease is the fencing proof;
@@ -2900,7 +2538,9 @@ def test_handoff_atomically_replaces_finalized_head_replay_left_by_expired_turn(
                 now=56,
                 lease_duration=100,
             )
-        replacement = SourceRootBuildCommand(("replacement",), b"n" * 16)
+        replacement = _snapshot_command(
+            ("replacement",), SourceBuildManifestSummary.empty()
+        )
         with replacement.prepare_root_upload() as replacement_root:
             _upload(connector, gate, replacement_turn, replacement_root, now=57)
             before_fault = _reservation_snapshot(connector)
@@ -2913,8 +2553,7 @@ def test_handoff_atomically_replaces_finalized_head_replay_left_by_expired_turn(
             ) -> None:
                 if (
                     "operational_source_working_builds" in query
-                    and replacement.build_attempt_id in data
-                    and query.lstrip().upper().startswith(("INSERT", "UPDATE"))
+                    and query.lstrip().upper().startswith("INSERT")
                 ):
                     raise RuntimeError("injected replacement working-root fault")
                 original_execute(query, data)
@@ -2925,8 +2564,7 @@ def test_handoff_atomically_replaces_finalized_head_replay_left_by_expired_turn(
             ) -> int:
                 if (
                     "operational_source_working_builds" in query
-                    and replacement.build_attempt_id in data
-                    and query.lstrip().upper().startswith(("INSERT", "UPDATE"))
+                    and query.lstrip().upper().startswith("INSERT")
                 ):
                     raise RuntimeError("injected replacement working-root fault")
                 return original_execute_affected(query, data)
@@ -2965,20 +2603,20 @@ def test_handoff_atomically_replaces_finalized_head_replay_left_by_expired_turn(
         assert recovered.generation == replacement_turn.generation == 3
         assert connector.fetch_one(
             "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
-        ) == (replacement.build_attempt_id,)
+        ) == (recovered.build_id,)
         assert connector.fetch_one(
             "SELECT build_id FROM operational_source_build_generations "
             "WHERE generation = %s",
             (replacement_turn.generation,),
-        ) == (replacement.build_attempt_id,)
+        ) == (recovered.build_id,)
         assert connector.fetch_one(
             "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
-            (published.build_attempt_id,),
+            (published_build,),
         ) == ("SEALED",)
         assert connector.fetch_one(
             "SELECT base_receipt_id "
             "FROM catalog_source_build_base_publication_commits WHERE build_id = %s",
-            (replacement.build_attempt_id,),
+            (recovered.build_id,),
         ) == (receipt_id,)
     finally:
         connector.close()
@@ -2991,7 +2629,7 @@ def test_handoff_stale_recovery_rejects_candidate_provenance_build_mismatch(
         tmp_path / "handoff-candidate-provenance-mismatch.sqlite3"
     )
     try:
-        gate, published, _receipt_id = _sealed_published_source(
+        gate, _published, published_build, _receipt_id = _sealed_published_source(
             connector,
             finalized=True,
         )
@@ -3002,11 +2640,11 @@ def test_handoff_stale_recovery_rejects_candidate_provenance_build_mismatch(
                 now=46,
                 lease_duration=10,
             )
-        foreign = SourceRootBuildCommand(("foreign",), b"f" * 16)
+        foreign = _snapshot_command(("foreign",), SourceBuildManifestSummary.empty())
         with foreign.prepare_root_upload() as foreign_root:
             _upload(connector, gate, stale_turn, foreign_root, now=47)
             with connector.transaction():
-                SourceBuildRepository.handoff_root(
+                foreign_handoff = SourceBuildRepository.handoff_root(
                     VNextUnitOfWork(connector, backend="sqlite"),
                     gate_lease=gate,
                     ingest_turn=stale_turn,
@@ -3017,7 +2655,7 @@ def test_handoff_stale_recovery_rejects_candidate_provenance_build_mismatch(
         with SourceDiscoveryPlan.from_locators(()) as plan:
             batch = SourceBuildRepository.prepare_discovery_batch(
                 connector,
-                build_id=foreign.build_attempt_id,
+                build_id=foreign_handoff.build_id,
                 plan=plan,
             )
             with connector.transaction():
@@ -3034,7 +2672,7 @@ def test_handoff_stale_recovery_rejects_candidate_provenance_build_mismatch(
                 VNextUnitOfWork(connector, backend="sqlite"),
                 gate_lease=gate,
                 ingest_turn=stale_turn,
-                build_id=foreign.build_attempt_id,
+                build_id=foreign_handoff.build_id,
                 attempt=SourceBuildRepository.issue_assembly_batch(),
                 now=52,
             )
@@ -3044,7 +2682,7 @@ def test_handoff_stale_recovery_rejects_candidate_provenance_build_mismatch(
         _seed_complete_analysis_for_build(
             connector,
             analysis_id=foreign_analysis,
-            build_id=foreign.build_attempt_id,
+            build_id=foreign_handoff.build_id,
             timestamp=53,
         )
         assert (
@@ -3063,21 +2701,19 @@ def test_handoff_stale_recovery_rejects_candidate_provenance_build_mismatch(
         assert connector.fetch_one(
             "SELECT candidate_analysis.build_id, provenance_analysis.build_id "
             "FROM catalog_publication_commit_heads AS head "
-            "JOIN catalog_publication_commit_candidates AS committed_candidate "
-            "ON committed_candidate.receipt_id = head.receipt_id "
-            "JOIN catalog_publication_candidate_analysis_ids AS candidate "
-            "ON candidate.candidate_id = committed_candidate.candidate_id "
+            "JOIN catalog_publication_commits AS committed "
+            "ON committed.receipt_id = head.receipt_id "
+            "JOIN catalog_publication_candidates AS candidate "
+            "ON candidate.candidate_id = committed.candidate_id "
             "JOIN catalog_analysis_runs AS candidate_analysis "
             "ON candidate_analysis.analysis_id = candidate.analysis_id "
-            "JOIN catalog_publication_commit_source_revisions AS source "
-            "ON source.receipt_id = head.receipt_id "
             "JOIN catalog_source_revision_provenance AS provenance "
-            "ON provenance.source_revision = source.source_revision "
+            "ON provenance.source_revision = committed.source_revision "
             "JOIN catalog_analysis_runs AS provenance_analysis "
             "ON provenance_analysis.analysis_id = provenance.analysis_id "
             "WHERE head.channel = %s",
             (b"default",),
-        ) == (published.build_attempt_id, foreign.build_attempt_id)
+        ) == (published_build, foreign_handoff.build_id)
 
         with connector.transaction():
             replacement_turn = IngestFenceRepository.claim(
@@ -3086,7 +2722,9 @@ def test_handoff_stale_recovery_rejects_candidate_provenance_build_mismatch(
                 now=56,
                 lease_duration=100,
             )
-        replacement = SourceRootBuildCommand(("replacement",), b"n" * 16)
+        replacement = _snapshot_command(
+            ("replacement",), SourceBuildManifestSummary.empty()
+        )
         with replacement.prepare_root_upload() as replacement_root:
             _upload(connector, gate, replacement_turn, replacement_root, now=57)
             before = _reservation_snapshot(connector)
@@ -3114,7 +2752,7 @@ def test_handoff_does_not_replace_nonfinalized_working_root(
         tmp_path / "handoff-working-nonfinalized-fail-closed.sqlite3"
     )
     try:
-        gate, published, _receipt_id = _sealed_published_source(
+        gate, _published, published_build, _receipt_id = _sealed_published_source(
             connector,
             finalized=False,
         )
@@ -3125,18 +2763,15 @@ def test_handoff_does_not_replace_nonfinalized_working_root(
                 now=46,
                 lease_duration=10,
             )
-        working = published
-        with working.prepare_root_upload() as working_root:
-            _upload(connector, gate, stale_turn, working_root, now=47)
-            with connector.transaction():
-                SourceBuildRepository.handoff_root(
-                    VNextUnitOfWork(connector, backend="sqlite"),
-                    gate_lease=gate,
-                    ingest_turn=stale_turn,
-                    command=working,
-                    root_plan=working_root,
-                    now=50,
-                )
+        _restore_sealed_source_working(
+            connector,
+            build_id=published_build,
+        )
+        connector.execute(
+            "INSERT INTO operational_source_build_generations "
+            "(generation, build_id) VALUES (%s, %s)",
+            (stale_turn.generation, published_build),
+        )
         with connector.transaction():
             replacement_turn = IngestFenceRepository.claim(
                 VNextUnitOfWork(connector, backend="sqlite"),
@@ -3144,7 +2779,9 @@ def test_handoff_does_not_replace_nonfinalized_working_root(
                 now=56,
                 lease_duration=100,
             )
-        replacement = SourceRootBuildCommand(("replacement",), b"n" * 16)
+        replacement = _snapshot_command(
+            ("replacement",), SourceBuildManifestSummary.empty()
+        )
         with replacement.prepare_root_upload() as replacement_root:
             _upload(connector, gate, replacement_turn, replacement_root, now=57)
             before = _reservation_snapshot(connector)
@@ -3163,15 +2800,11 @@ def test_handoff_does_not_replace_nonfinalized_working_root(
         assert _reservation_snapshot(connector) == before
         assert connector.fetch_one(
             "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
-        ) == (working.build_attempt_id,)
+        ) == (published_build,)
         assert not connector.fetch_one(
             "SELECT build_id FROM operational_source_build_generations "
             "WHERE generation = %s",
             (replacement_turn.generation,),
-        )
-        assert not connector.fetch_one(
-            "SELECT build_id FROM catalog_source_build_anchors WHERE build_id = %s",
-            (replacement.build_attempt_id,),
         )
     finally:
         connector.close()
@@ -3184,7 +2817,7 @@ def test_handoff_rejects_forged_sealed_stale_working_assignment(
         tmp_path / "handoff-working-sealed-assignment.sqlite3"
     )
     try:
-        gate, published, _receipt_id = _sealed_published_source(
+        gate, published, published_build, _receipt_id = _sealed_published_source(
             connector,
             finalized=True,
         )
@@ -3221,12 +2854,17 @@ def test_handoff_rejects_forged_sealed_stale_working_assignment(
                 now=56,
                 lease_duration=100,
             )
-        replacement = SourceRootBuildCommand(("replacement",), b"n" * 16)
+        replacement = _snapshot_command(
+            ("replacement",), SourceBuildManifestSummary.empty()
+        )
         with replacement.prepare_root_upload() as replacement_root:
             _upload(connector, gate, replacement_turn, replacement_root, now=57)
             with (
                 connector.transaction(),
-                pytest.raises(SourceBuildConflictError, match="assignment|created_at"),
+                pytest.raises(
+                    SourceBuildConflictError,
+                    match="assignment|created_at|working root",
+                ),
             ):
                 SourceBuildRepository.handoff_root(
                     VNextUnitOfWork(connector, backend="sqlite"),
@@ -3240,7 +2878,7 @@ def test_handoff_rejects_forged_sealed_stale_working_assignment(
             "SELECT build_id, assigned_at FROM operational_source_working_builds "
             "WHERE slot = %s",
             (1,),
-        ) == (published.build_attempt_id, 999)
+        ) == (published_build, 999)
     finally:
         connector.close()
 
@@ -3252,7 +2890,7 @@ def test_handoff_atomically_abandons_prior_generation_open_working_root(
         tmp_path / "handoff-working-stale-open-recovery.sqlite3"
     )
     try:
-        gate, _published, _receipt_id = _sealed_published_source(
+        gate, _published, _published_build, _receipt_id = _sealed_published_source(
             connector,
             finalized=True,
         )
@@ -3263,11 +2901,11 @@ def test_handoff_atomically_abandons_prior_generation_open_working_root(
                 now=46,
                 lease_duration=10,
             )
-        stale = SourceRootBuildCommand(("stale-open",), b"f" * 16)
+        stale = _snapshot_command(("stale-open",), SourceBuildManifestSummary.empty())
         with stale.prepare_root_upload() as stale_root:
             _upload(connector, gate, stale_turn, stale_root, now=47)
             with connector.transaction():
-                SourceBuildRepository.handoff_root(
+                stale_handoff = SourceBuildRepository.handoff_root(
                     VNextUnitOfWork(connector, backend="sqlite"),
                     gate_lease=gate,
                     ingest_turn=stale_turn,
@@ -3282,7 +2920,9 @@ def test_handoff_atomically_abandons_prior_generation_open_working_root(
                 now=56,
                 lease_duration=100,
             )
-        replacement = SourceRootBuildCommand(("replacement",), b"n" * 16)
+        replacement = _snapshot_command(
+            ("replacement",), SourceBuildManifestSummary.empty()
+        )
         with replacement.prepare_root_upload() as replacement_root:
             _upload(connector, gate, replacement_turn, replacement_root, now=57)
             with connector.transaction():
@@ -3296,24 +2936,23 @@ def test_handoff_atomically_abandons_prior_generation_open_working_root(
                 )
 
         assert not recovered.replayed
-        assert recovered.build_id == replacement.build_attempt_id
         assert connector.fetch_one(
             "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
-            (stale.build_attempt_id,),
+            (stale_handoff.build_id,),
         ) == ("ABANDONED",)
         assert connector.fetch_one(
             "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
-        ) == (replacement.build_attempt_id,)
+        ) == (recovered.build_id,)
         assert connector.fetch_one(
             "SELECT build_id FROM operational_source_build_generations "
             "WHERE generation = %s",
             (stale_turn.generation,),
-        ) == (stale.build_attempt_id,)
+        ) == (stale_handoff.build_id,)
         assert connector.fetch_one(
             "SELECT build_id FROM operational_source_build_generations "
             "WHERE generation = %s",
             (replacement_turn.generation,),
-        ) == (replacement.build_attempt_id,)
+        ) == (recovered.build_id,)
     finally:
         connector.close()
 
@@ -3325,12 +2964,13 @@ def test_handoff_does_not_reclaim_open_working_without_prior_generation_authorit
         tmp_path / "handoff-working-foreign-open-fail-closed.sqlite3"
     )
     try:
-        gate, stale_turn, stale = _open_build(connector)
+        gate, stale_turn, _stale = _open_build(connector)
+        stale_build = _working_build_id(connector)
         assert (
             connector.execute_affected(
                 "DELETE FROM operational_source_build_generations "
                 "WHERE generation = %s AND build_id = %s",
-                (stale_turn.generation, stale.build_attempt_id),
+                (stale_turn.generation, stale_build),
             )
             == 1
         )
@@ -3347,7 +2987,9 @@ def test_handoff_does_not_reclaim_open_working_without_prior_generation_authorit
                 now=31,
                 lease_duration=100,
             )
-        replacement = SourceRootBuildCommand(("replacement",), b"n" * 16)
+        replacement = _snapshot_command(
+            ("replacement",), SourceBuildManifestSummary.empty()
+        )
         with replacement.prepare_root_upload() as replacement_root:
             _upload(connector, gate, replacement_turn, replacement_root, now=32)
             before = _reservation_snapshot(connector)
@@ -3369,11 +3011,11 @@ def test_handoff_does_not_reclaim_open_working_without_prior_generation_authorit
         assert _reservation_snapshot(connector) == before
         assert connector.fetch_one(
             "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
-            (stale.build_attempt_id,),
+            (stale_build,),
         ) == ("OPEN",)
         assert connector.fetch_one(
             "SELECT build_id FROM operational_source_working_builds WHERE slot = 1"
-        ) == (stale.build_attempt_id,)
+        ) == (stale_build,)
     finally:
         connector.close()
 
@@ -3418,7 +3060,7 @@ def _finish_discovery(
     while True:
         batch = SourceBuildRepository.prepare_discovery_batch(
             connector,
-            build_id=b"b" * 16,
+            build_id=_working_build_id(connector),
             plan=plan,
         )
         resolved = _resolve_batch(
@@ -3449,11 +3091,12 @@ def test_discovery_replay_rejects_dataclass_forged_sealed_replay_flag(
 ) -> None:
     connector = _generated_database(tmp_path / "discovery-forged-sealed-replay.sqlite3")
     try:
-        gate, turn, command = _open_build(connector)
+        gate, turn, _command = _open_build(connector)
+        build_id = _working_build_id(connector)
         with SourceDiscoveryPlan.from_locators(()) as plan:
             batch = SourceBuildRepository.prepare_discovery_batch(
                 connector,
-                build_id=command.build_attempt_id,
+                build_id=build_id,
                 plan=plan,
             )
             assert batch.terminal and not batch.sealed_replay
@@ -3485,7 +3128,7 @@ def test_discovery_replay_rejects_dataclass_forged_sealed_replay_flag(
             assert _source_build_discovery_snapshot(connector) == before
             assert connector.fetch_one(
                 "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
-                (command.build_attempt_id,),
+                (build_id,),
             ) == ("OPEN",)
     finally:
         connector.close()
@@ -3517,57 +3160,46 @@ def _insert_source_build_discovery(
     completed_at: int,
 ) -> None:
     connector.execute(
-        "INSERT INTO catalog_source_build_discovery_anchors (build_id) VALUES (%s)",
-        (build_id,),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_build_discovery_scan_attempts "
-        "(build_id, scan_attempt) VALUES (%s, %s)",
-        (build_id, scan_attempt),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_build_discovery_gallery_counts "
-        "(build_id, gallery_count) VALUES (%s, %s)",
-        (build_id, gallery_count),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_build_discovery_tree_observation_sha256s "
-        "(build_id, tree_observation_sha256) VALUES (%s, %s)",
-        (build_id, tree_observation_sha256),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_build_discovery_completed_ats "
-        "(build_id, completed_at) VALUES (%s, %s)",
-        (build_id, completed_at),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_build_discovery_seals (build_id) VALUES (%s)",
-        (build_id,),
+        "INSERT INTO catalog_source_build_discoveries "
+        "(build_id, scan_attempt, gallery_count, tree_observation_sha256, "
+        "completed_at) VALUES (%s, %s, %s, %s, %s)",
+        (build_id, scan_attempt, gallery_count, tree_observation_sha256, completed_at),
     )
 
 
 def _source_build_discovery_snapshot(
     connector: SQLiteConnector,
-) -> tuple[list[tuple[Any, ...]], ...]:
-    return tuple(
-        connector.fetch_all(sql)
-        for sql in (
-            "SELECT * FROM catalog_source_build_discovery_anchors",
-            "SELECT * FROM catalog_source_build_discovery_scan_attempts",
-            "SELECT * FROM catalog_source_build_discovery_gallery_counts",
-            "SELECT * FROM catalog_source_build_discovery_tree_observation_sha256s",
-            "SELECT * FROM catalog_source_build_discovery_completed_ats",
-            "SELECT * FROM catalog_source_build_discovery_seals",
-        )
+) -> list[tuple[Any, ...]]:
+    return connector.fetch_all(
+        "SELECT build_id, scan_attempt, gallery_count, tree_observation_sha256, "
+        "completed_at FROM catalog_source_build_discoveries ORDER BY build_id"
     )
 
 
-def test_source_discovery_vertical_replay_seal_visibility_and_corruption(
+def test_source_discovery_atomic_replay_and_collision(
     tmp_path: Path,
 ) -> None:
     connector = _generated_database(tmp_path / "discovery-vertical-replay.sqlite3")
     try:
-        _open_build(connector)
+        root_sha256 = b"r" * 32
+        seed_canonical_value(
+            connector,
+            value_sha256=root_sha256,
+            digest_domain=b"source_root_v1",
+            page_sha256=b"R" * 32,
+            page_bytes=b"root",
+            subtree_item_count=4,
+            allocated_at=1,
+        )
+        scope = seed_source_scope(connector, source_root_sha256=root_sha256)
+        with connector.transaction():
+            source_build_module._insert_or_validate_build(
+                connector,
+                build_id=b"b" * 16,
+                scope=scope.scope_key,
+                manifest_policy_id=1,
+                created_at=10,
+            )
         values = (b"b" * 16, b"d" * 16, 3, b"t" * 32, 40)
         with connector.transaction():
             source_build_module._persist_source_build_discovery(
@@ -3579,7 +3211,7 @@ def test_source_discovery_vertical_replay_seal_visibility_and_corruption(
                 completed_at=values[4],
             )
         committed = _source_build_discovery_snapshot(connector)
-        assert all(rows for rows in committed)
+        assert committed == [values]
         assert (
             connector.fetch_one(
                 "SELECT build_id, scan_attempt, gallery_count, "
@@ -3602,50 +3234,27 @@ def test_source_discovery_vertical_replay_seal_visibility_and_corruption(
         assert _source_build_discovery_snapshot(connector) == committed
 
         connector.execute(
-            "DELETE FROM catalog_source_build_discovery_seals WHERE build_id = %s",
-            (values[0],),
+            "UPDATE catalog_source_build_discoveries SET completed_at = %s "
+            "WHERE build_id = %s",
+            (999, values[0]),
         )
-        assert (
-            connector.fetch_all(
-                "SELECT 1 FROM catalog_source_build_discoveries WHERE build_id = %s",
-                (values[0],),
-            )
-            == []
-        )
+        corrupted = _source_build_discovery_snapshot(connector)
+        with pytest.raises(SourceBuildConflictError, match="source build discovery"):
+            with connector.transaction():
+                source_build_module._persist_source_build_discovery(
+                    connector,
+                    build_id=values[0],
+                    scan_attempt=values[1],
+                    gallery_count=values[2],
+                    tree_observation_sha256=values[3],
+                    completed_at=values[4],
+                )
+        assert _source_build_discovery_snapshot(connector) == corrupted
     finally:
         connector.close()
 
-    corrupt = _generated_database(tmp_path / "discovery-vertical-corrupt.sqlite3")
-    try:
-        _open_build(corrupt)
-        build_id = b"b" * 16
-        corrupt.execute(
-            "INSERT INTO catalog_source_build_discovery_anchors (build_id) VALUES (%s)",
-            (build_id,),
-        )
-        corrupt.execute(
-            "INSERT INTO catalog_source_build_discovery_completed_ats "
-            "(build_id, completed_at) VALUES (%s, 999)",
-            (build_id,),
-        )
-        before = _source_build_discovery_snapshot(corrupt)
-        with pytest.raises(SourceBuildConflictError, match="completed at"):
-            with corrupt.transaction():
-                source_build_module._persist_source_build_discovery(
-                    corrupt,
-                    build_id=build_id,
-                    scan_attempt=b"d" * 16,
-                    gallery_count=3,
-                    tree_observation_sha256=b"t" * 32,
-                    completed_at=40,
-                )
-        assert _source_build_discovery_snapshot(corrupt) == before
-        assert corrupt.fetch_all("SELECT 1 FROM catalog_source_build_discoveries") == []
-    finally:
-        corrupt.close()
 
-
-def test_source_discovery_vertical_mariadb_sql_is_static_and_seal_last() -> None:
+def test_source_discovery_wide_mariadb_sql_is_static() -> None:
     class _MariaDiscoveryRecorder:
         def __init__(self) -> None:
             self.queries: list[tuple[str, tuple[Any, ...]]] = []
@@ -3671,23 +3280,14 @@ def test_source_discovery_vertical_mariadb_sql_is_static_and_seal_last() -> None
         tree_observation_sha256=b"t" * 32,
         completed_at=40,
     )
-    ordered_tables = (
-        "catalog_source_build_discovery_anchors",
-        "catalog_source_build_discovery_scan_attempts",
-        "catalog_source_build_discovery_gallery_counts",
-        "catalog_source_build_discovery_tree_observation_sha256s",
-        "catalog_source_build_discovery_completed_ats",
-        "catalog_source_build_discovery_seals",
-    )
-    assert len(recorder.executions) == len(ordered_tables)
-    for (query, _data), table in zip(recorder.executions, ordered_tables, strict=True):
-        assert query.lstrip().startswith(f"INSERT INTO {table}")
-        assert "%s" in query and "?" not in query
+    assert len(recorder.executions) == 1
     assert (
-        recorder.executions[-1][0]
+        recorder.executions[0][0]
         .lstrip()
-        .startswith("INSERT INTO catalog_source_build_discovery_seals")
+        .startswith("INSERT INTO catalog_source_build_discoveries")
     )
+    assert "%s" in recorder.executions[0][0]
+    assert "?" not in recorder.executions[0][0]
 
 
 def _stage_assembly_inputs(
@@ -3725,7 +3325,7 @@ def _stage_assembly_inputs(
         connector.execute(
             "INSERT INTO catalog_source_build_galleries "
             "(build_id, gallery_id, observation_id) VALUES (%s, %s, %s)",
-            (b"b" * 16, evidence.gallery_id, 1),
+            (evidence.build_id, evidence.gallery_id, 1),
         )
         seed_gallery_manifest(
             connector,
@@ -3748,11 +3348,12 @@ def test_disk_plan_sorts_unsigned_digest_caps_pages_and_rejects_duplicates(
     connector = _generated_database(tmp_path / "plan.sqlite3")
     try:
         _open_build(connector)
+        build_id = _working_build_id(connector)
         locators = tuple((f"gallery-{index:04d}",) for index in reversed(range(257)))
         with SourceDiscoveryPlan.from_locators(locators) as plan:
             first = SourceBuildRepository.prepare_discovery_batch(
                 connector,
-                build_id=b"b" * 16,
+                build_id=build_id,
                 plan=plan,
             )
             assert len(first.locators) == 256
@@ -3795,6 +3396,7 @@ def test_pending_source_gallery_is_bounded_pk_driven_and_decodes_plan_position(
     connector = _generated_database(tmp_path / "pending-source-gallery.sqlite3")
     try:
         gate, turn, _command = _open_build(connector)
+        build_id = _working_build_id(connector)
         with SourceDiscoveryPlan.from_locators((("gallery",),)) as plan:
             resolved = _finish_discovery(
                 connector,
@@ -3805,7 +3407,7 @@ def test_pending_source_gallery_is_bounded_pk_driven_and_decodes_plan_position(
             )
             pending = SourceBuildRepository.get_pending_source_gallery(
                 connector,
-                build_id=b"b" * 16,
+                build_id=build_id,
             )
             assert pending is not None
             assert pending.position == 0
@@ -3818,7 +3420,7 @@ def test_pending_source_gallery_is_bounded_pk_driven_and_decodes_plan_position(
 
         query_plan = connector.fetch_all(
             "EXPLAIN QUERY PLAN " + source_build_module._PENDING_SOURCE_GALLERY_QUERY,
-            (b"b" * 16,),
+            (build_id,),
         )
         assert query_plan
         details = tuple(str(row[3]) for row in query_plan)
@@ -3842,7 +3444,21 @@ def test_discovery_new_generation_assembly_and_response_loss(
 ) -> None:
     connector = _generated_database(tmp_path / "runtime.sqlite3")
     try:
-        gate, turn, root_command = _open_build(connector)
+        locators = (("z-last",), ("nested", "畫廊"), ("a-first",))
+        root_command = _snapshot_command(
+            (),
+            _frozen_fixture_summary(
+                root=(),
+                locators=locators,
+                file_count_for_position=lambda position: position + 1,
+                byte_count_for_position=lambda position: (position + 1) * 100,
+            ),
+        )
+        gate, turn, root_command = _open_build(
+            connector,
+            command=root_command,
+        )
+        build_id = _working_build_id(connector)
         assert connector.fetch_one(
             "SELECT generation, cursor_bytes, processed_count, state "
             "FROM operational_source_build_discovery_checkpoints"
@@ -3864,12 +3480,10 @@ def test_discovery_new_generation_assembly_and_response_loss(
             "OPEN",
         )
 
-        with SourceDiscoveryPlan.from_locators(
-            (("z-last",), ("nested", "畫廊"), ("a-first",))
-        ) as plan:
+        with SourceDiscoveryPlan.from_locators(locators) as plan:
             first = SourceBuildRepository.prepare_discovery_batch(
                 connector,
-                build_id=b"b" * 16,
+                build_id=build_id,
                 plan=plan,
             )
             resolved = _resolve_batch(
@@ -3903,12 +3517,10 @@ def test_discovery_new_generation_assembly_and_response_loss(
 
             # Rebuilding the same complete snapshot produces the same
             # deterministic scan attempt and resumes the exact receipt chain.
-            with SourceDiscoveryPlan.from_locators(
-                (("z-last",), ("nested", "畫廊"), ("a-first",))
-            ) as switched:
+            with SourceDiscoveryPlan.from_locators(locators) as switched:
                 resumed = SourceBuildRepository.prepare_discovery_batch(
                     connector,
-                    build_id=b"b" * 16,
+                    build_id=build_id,
                     plan=switched,
                 )
                 assert resumed.terminal
@@ -3949,7 +3561,7 @@ def test_discovery_new_generation_assembly_and_response_loss(
             assert handoff2.generation == 2
             terminal = SourceBuildRepository.prepare_discovery_batch(
                 connector,
-                build_id=b"b" * 16,
+                build_id=build_id,
                 plan=plan,
             )
             assert terminal.terminal
@@ -3977,14 +3589,15 @@ def test_discovery_new_generation_assembly_and_response_loss(
                 "SELECT scan_attempt, gallery_count, tree_observation_sha256 "
                 "FROM catalog_source_build_discoveries"
             ) == (plan.scan_attempt, 3, plan.tree_observation_sha256)
-            assert _source_build_discovery_snapshot(connector) == (
-                [(b"b" * 16,)],
-                [(b"b" * 16, plan.scan_attempt)],
-                [(b"b" * 16, 3)],
-                [(b"b" * 16, plan.tree_observation_sha256)],
-                [(b"b" * 16, 46)],
-                [(b"b" * 16,)],
-            )
+            assert _source_build_discovery_snapshot(connector) == [
+                (
+                    build_id,
+                    plan.scan_attempt,
+                    3,
+                    plan.tree_observation_sha256,
+                    46,
+                )
+            ]
 
             total_files, total_bytes = _stage_assembly_inputs(connector, resolved)
             attempt = SourceBuildRepository.issue_assembly_batch()
@@ -3993,7 +3606,7 @@ def test_discovery_new_generation_assembly_and_response_loss(
                     VNextUnitOfWork(connector, backend="sqlite"),
                     gate_lease=gate,
                     ingest_turn=turn2,
-                    build_id=b"b" * 16,
+                    build_id=build_id,
                     attempt=attempt,
                     now=50,
                 )
@@ -4005,7 +3618,7 @@ def test_discovery_new_generation_assembly_and_response_loss(
                     VNextUnitOfWork(connector, backend="sqlite"),
                     gate_lease=gate,
                     ingest_turn=turn2,
-                    build_id=b"b" * 16,
+                    build_id=build_id,
                     attempt=attempt,
                     now=51,
                 )
@@ -4020,7 +3633,7 @@ def test_discovery_new_generation_assembly_and_response_loss(
                     VNextUnitOfWork(connector, backend="sqlite"),
                     gate_lease=gate,
                     ingest_turn=turn2,
-                    build_id=b"b" * 16,
+                    build_id=build_id,
                     attempt=terminal_attempt,
                     now=52,
                 )
@@ -4054,7 +3667,7 @@ def test_discovery_new_generation_assembly_and_response_loss(
                     VNextUnitOfWork(connector, backend="sqlite"),
                     gate_lease=gate,
                     ingest_turn=turn2,
-                    build_id=b"b" * 16,
+                    build_id=build_id,
                     attempt=terminal_attempt,
                     now=53,
                 )
@@ -4084,9 +3697,9 @@ def test_discovery_new_generation_assembly_and_response_loss(
             )
 
             connector.execute(
-                "UPDATE catalog_build_manifest_file_counts SET file_count = %s "
+                "UPDATE catalog_build_manifest_core SET file_count = %s "
                 "WHERE build_id = %s",
-                (total_files + 1, b"b" * 16),
+                (total_files + 1, build_id),
             )
             with (
                 patch.object(
@@ -4106,7 +3719,7 @@ def test_discovery_new_generation_assembly_and_response_loss(
                     VNextUnitOfWork(connector, backend="sqlite"),
                     gate_lease=gate,
                     ingest_turn=turn2,
-                    build_id=b"b" * 16,
+                    build_id=build_id,
                     attempt=terminal_attempt,
                     now=59,
                 )
@@ -4117,7 +3730,7 @@ def test_discovery_new_generation_assembly_and_response_loss(
                         VNextUnitOfWork(connector, backend="sqlite"),
                         gate_lease=gate,
                         ingest_turn=turn,
-                        build_id=b"b" * 16,
+                        build_id=build_id,
                         attempt=terminal_attempt,
                         now=54,
                     )
@@ -4130,8 +3743,19 @@ def test_assembly_missing_dependency_and_scope_corruption_are_zero_write(
 ) -> None:
     connector = _generated_database(tmp_path / "corruption.sqlite3")
     try:
-        gate, turn, _command = _open_build(connector)
-        with SourceDiscoveryPlan.from_locators((("gallery",),)) as plan:
+        locators = (("gallery",),)
+        command = _snapshot_command(
+            (),
+            _frozen_fixture_summary(
+                root=(),
+                locators=locators,
+                file_count_for_position=lambda position: position + 1,
+                byte_count_for_position=lambda position: (position + 1) * 100,
+            ),
+        )
+        gate, turn, _command = _open_build(connector, command=command)
+        build_id = _working_build_id(connector)
+        with SourceDiscoveryPlan.from_locators(locators) as plan:
             resolved = _finish_discovery(
                 connector,
                 gate,
@@ -4147,7 +3771,7 @@ def test_assembly_missing_dependency_and_scope_corruption_are_zero_write(
                         VNextUnitOfWork(connector, backend="sqlite"),
                         gate_lease=gate,
                         ingest_turn=turn,
-                        build_id=b"b" * 16,
+                        build_id=build_id,
                         attempt=attempt,
                         now=60,
                     )
@@ -4184,7 +3808,7 @@ def test_assembly_missing_dependency_and_scope_corruption_are_zero_write(
                         VNextUnitOfWork(connector, backend="sqlite"),
                         gate_lease=gate,
                         ingest_turn=turn,
-                        build_id=b"b" * 16,
+                        build_id=build_id,
                         attempt=attempt,
                         now=61,
                     )
@@ -4200,6 +3824,79 @@ def test_assembly_missing_dependency_and_scope_corruption_are_zero_write(
         assert "SUM(" not in source.upper()
         with pytest.raises(TypeError):
             AssemblyBatchAttempt(b"x" * 32, object())
+    finally:
+        connector.close()
+
+
+def test_terminal_assembly_rejects_a_different_frozen_summary_zero_write(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "assembly-frozen-summary.sqlite3")
+    try:
+        gate, turn, _command = _open_build(connector)
+        build_id = _working_build_id(connector)
+        with SourceDiscoveryPlan.from_locators((("unexpected-gallery",),)) as plan:
+            resolved = _finish_discovery(connector, gate, turn, plan, now=30)
+        _stage_assembly_inputs(connector, resolved)
+        with connector.transaction():
+            page = SourceBuildRepository.assemble_batch(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                ingest_turn=turn,
+                build_id=build_id,
+                attempt=SourceBuildRepository.issue_assembly_batch(),
+                now=40,
+            )
+        assert not page.terminal and page.row_count == 1
+        before = (
+            connector.fetch_all(
+                "SELECT * FROM operational_source_build_assembly_batch_receipts"
+            ),
+            connector.fetch_one(
+                "SELECT generation, cursor_bytes, processed_gallery_count, "
+                "processed_file_count, processed_byte_count, "
+                "manifest_chain_sha256, state, updated_at "
+                "FROM operational_source_build_assembly_checkpoints "
+                "WHERE build_id = %s",
+                (build_id,),
+            ),
+        )
+        with (
+            connector.transaction(),
+            pytest.raises(SourceBuildConflictError, match="frozen snapshot"),
+        ):
+            SourceBuildRepository.assemble_batch(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                ingest_turn=turn,
+                build_id=build_id,
+                attempt=SourceBuildRepository.issue_assembly_batch(),
+                now=41,
+            )
+        assert (
+            connector.fetch_all(
+                "SELECT * FROM operational_source_build_assembly_batch_receipts"
+            ),
+            connector.fetch_one(
+                "SELECT generation, cursor_bytes, processed_gallery_count, "
+                "processed_file_count, processed_byte_count, "
+                "manifest_chain_sha256, state, updated_at "
+                "FROM operational_source_build_assembly_checkpoints "
+                "WHERE build_id = %s",
+                (build_id,),
+            ),
+        ) == before
+        assert connector.fetch_one(
+            "SELECT state FROM catalog_source_build_states WHERE build_id = %s",
+            (build_id,),
+        ) == ("OPEN",)
+        assert (
+            connector.fetch_one(
+                "SELECT build_id FROM catalog_build_manifest_core WHERE build_id = %s",
+                (build_id,),
+            )
+            == ()
+        )
     finally:
         connector.close()
 
@@ -4236,11 +3933,22 @@ def test_discovery_and_assembly_major_statement_faults_roll_back(
                 operation()
 
     try:
-        gate, turn, _command = _open_build(connector)
-        with SourceDiscoveryPlan.from_locators((("fault-gallery",),)) as plan:
+        locators = (("fault-gallery",),)
+        command = _snapshot_command(
+            (),
+            _frozen_fixture_summary(
+                root=(),
+                locators=locators,
+                file_count_for_position=lambda position: position + 1,
+                byte_count_for_position=lambda position: (position + 1) * 100,
+            ),
+        )
+        gate, turn, _command = _open_build(connector, command=command)
+        build_id = _working_build_id(connector)
+        with SourceDiscoveryPlan.from_locators(locators) as plan:
             batch = SourceBuildRepository.prepare_discovery_batch(
                 connector,
-                build_id=b"b" * 16,
+                build_id=build_id,
                 plan=plan,
             )
             resolved = _resolve_batch(
@@ -4296,7 +4004,7 @@ def test_discovery_and_assembly_major_statement_faults_roll_back(
 
             terminal = SourceBuildRepository.prepare_discovery_batch(
                 connector,
-                build_id=b"b" * 16,
+                build_id=build_id,
                 plan=plan,
             )
 
@@ -4316,39 +4024,17 @@ def test_discovery_and_assembly_major_statement_faults_roll_back(
                     "execute",
                     "INSERT INTO operational_source_build_discovery_batch_receipts",
                 ),
-                ("execute", "INSERT INTO catalog_source_build_discovery_anchors"),
                 (
                     "execute",
-                    "INSERT INTO catalog_source_build_discovery_scan_attempts",
+                    "INSERT INTO catalog_source_build_discoveries",
                 ),
-                (
-                    "execute",
-                    "INSERT INTO catalog_source_build_discovery_gallery_counts",
-                ),
-                (
-                    "execute",
-                    "INSERT INTO "
-                    "catalog_source_build_discovery_tree_observation_sha256s",
-                ),
-                (
-                    "execute",
-                    "INSERT INTO catalog_source_build_discovery_completed_ats",
-                ),
-                ("execute", "INSERT INTO catalog_source_build_discovery_seals"),
                 (
                     "execute_affected",
                     "UPDATE operational_source_build_discovery_checkpoints",
                 ),
             ):
                 fail_once(method, fragment, commit_terminal_discovery)
-                assert _source_build_discovery_snapshot(connector) == (
-                    [],
-                    [],
-                    [],
-                    [],
-                    [],
-                    [],
-                )
+                assert _source_build_discovery_snapshot(connector) == []
                 assert (
                     connector.fetch_all(
                         "SELECT 1 FROM catalog_source_build_discoveries"
@@ -4374,7 +4060,7 @@ def test_discovery_and_assembly_major_statement_faults_roll_back(
                         VNextUnitOfWork(connector, backend="sqlite"),
                         gate_lease=gate,
                         ingest_turn=turn,
-                        build_id=b"b" * 16,
+                        build_id=build_id,
                         attempt=assembly,
                         now=50,
                     )
@@ -4410,7 +4096,7 @@ def test_discovery_and_assembly_major_statement_faults_roll_back(
                         VNextUnitOfWork(connector, backend="sqlite"),
                         gate_lease=gate,
                         ingest_turn=turn,
-                        build_id=b"b" * 16,
+                        build_id=build_id,
                         attempt=seal,
                         now=60,
                     )
@@ -4420,15 +4106,11 @@ def test_discovery_and_assembly_major_statement_faults_roll_back(
                     "execute",
                     "INSERT INTO operational_source_build_assembly_batch_receipts",
                 ),
-                ("execute", "INSERT INTO catalog_source_build_sealed_ats"),
-                ("execute", "INSERT INTO catalog_build_manifest_anchors"),
                 (
                     "execute",
-                    "INSERT INTO catalog_build_manifest_manifest_sha256s",
+                    "INSERT INTO catalog_build_manifest_core",
                 ),
-                ("execute", "INSERT INTO catalog_build_manifest_file_counts"),
-                ("execute", "INSERT INTO catalog_build_manifest_byte_counts"),
-                ("execute", "INSERT INTO catalog_build_manifest_seals"),
+                ("execute", "INSERT INTO catalog_source_build_sealed_ats"),
                 (
                     "execute_affected",
                     "UPDATE operational_source_build_assembly_checkpoints",
@@ -4466,17 +4148,17 @@ def test_discovery_and_assembly_major_statement_faults_roll_back(
                 for index, sql in enumerate(terminal_trace)
                 if "UPDATE CATALOG_SOURCE_BUILD_STATES" in sql.upper()
             )
-            manifest_anchor = next(
+            manifest_core = next(
                 index
                 for index, sql in enumerate(terminal_trace)
-                if "INSERT INTO CATALOG_BUILD_MANIFEST_ANCHORS" in sql.upper()
+                if "INSERT INTO CATALOG_BUILD_MANIFEST_CORE" in sql.upper()
             )
-            manifest_seal = next(
+            sealed_at = next(
                 index
                 for index, sql in enumerate(terminal_trace)
-                if "INSERT INTO CATALOG_BUILD_MANIFEST_SEALS" in sql.upper()
+                if "INSERT INTO CATALOG_SOURCE_BUILD_SEALED_ATS" in sql.upper()
             )
-            assert checkpoint_cas < state_cas < manifest_anchor < manifest_seal
+            assert manifest_core < sealed_at < checkpoint_cas < state_cas
             assert connector.fetch_one("SELECT state FROM catalog_source_builds") == (
                 "SEALED",
             )
@@ -4490,10 +4172,21 @@ def test_assembly_pages_257_rows_in_bounded_keyset_queries(
 ) -> None:
     connector = _generated_database(tmp_path / "bounded-assembly.sqlite3")
     try:
-        gate, turn, _command = _open_build(connector)
+        locators = tuple((f"bounded-{index:04d}",) for index in range(257))
+        command = _snapshot_command(
+            (),
+            _frozen_fixture_summary(
+                root=(),
+                locators=locators,
+                file_count_for_position=lambda _position: 1,
+                byte_count_for_position=lambda position: position + 1,
+            ),
+        )
+        gate, turn, _command = _open_build(connector, command=command)
+        build_id = _working_build_id(connector)
         scope = connector.fetch_one(
             "SELECT scope_key FROM catalog_source_builds WHERE build_id = %s",
-            (b"b" * 16,),
+            (build_id,),
         )[0]
         prepared: list[tuple[bytes, bytes, bytes, int, bytes]] = []
         for index in range(257):
@@ -4571,12 +4264,12 @@ def test_assembly_pages_257_rows_in_bounded_keyset_queries(
                 connector.execute(
                     "INSERT INTO catalog_source_build_expected_gallery "
                     "(build_id, position, gallery_id) VALUES (%s, %s, %s)",
-                    (b"b" * 16, position, gallery_id),
+                    (build_id, position, gallery_id),
                 )
                 connector.execute(
                     "INSERT INTO catalog_source_build_galleries "
                     "(build_id, gallery_id, observation_id) VALUES (%s, %s, %s)",
-                    (b"b" * 16, gallery_id, 1),
+                    (build_id, gallery_id, 1),
                 )
                 seed_gallery_manifest(
                     connector,
@@ -4588,7 +4281,7 @@ def test_assembly_pages_257_rows_in_bounded_keyset_queries(
                 )
             _insert_source_build_discovery(
                 connector,
-                build_id=b"b" * 16,
+                build_id=build_id,
                 scan_attempt=b"d" * 16,
                 gallery_count=257,
                 tree_observation_sha256=audit.digest(),
@@ -4598,7 +4291,7 @@ def test_assembly_pages_257_rows_in_bounded_keyset_queries(
                 "UPDATE operational_source_build_discovery_checkpoints "
                 "SET generation = %s, cursor_bytes = %s, processed_count = %s, "
                 "state = %s, updated_at = %s WHERE build_id = %s",
-                (2, (256).to_bytes(8, "big"), 257, "COMPLETE", 73, b"b" * 16),
+                (2, (256).to_bytes(8, "big"), 257, "COMPLETE", 73, build_id),
             )
 
         original_fetch_all = connector.fetch_all
@@ -4628,7 +4321,7 @@ def test_assembly_pages_257_rows_in_bounded_keyset_queries(
                             VNextUnitOfWork(connector, backend="sqlite"),
                             gate_lease=gate,
                             ingest_turn=turn,
-                            build_id=b"b" * 16,
+                            build_id=build_id,
                             attempt=SourceBuildRepository.issue_assembly_batch(),
                             now=now,
                         )
@@ -4681,20 +4374,16 @@ def test_mariadb_shape_locks_authorities_and_uses_full_checkpoint_cas(
             if "operational_source_working_builds" in query:
                 return (build_id, 20)
             if query.startswith("WITH family_keys(build_id)") and (
-                "catalog_source_build_anchors" in query
+                "catalog_source_build_descriptor" in query
             ):
                 return (
                     build_id,
                     build_id,
-                    build_id,
                     scope,
-                    build_id,
                     1,
-                    build_id,
-                    "OPEN",
-                    build_id,
                     20,
                     build_id,
+                    "OPEN",
                     None,
                     None,
                 )
@@ -4704,19 +4393,17 @@ def test_mariadb_shape_locks_authorities_and_uses_full_checkpoint_cas(
                 return (1, b"", 0, 0, 0, empty_chain, "OPEN", 20)
             if "operational_source_build_assembly_batch_receipts" in query:
                 return ()
-            if "catalog_source_build_discovery_seals" in query:
+            if "FROM catalog_source_build_discoveries discovery" in query:
                 return (0, b"d" * 32, "COMPLETE")
             if query.startswith("SELECT gallery_count FROM ") and (
-                "catalog_source_build_discovery_gallery_counts" in query
+                "catalog_source_build_discoveries" in query
             ):
                 return (0,)
             if query.startswith("SELECT sealed_at FROM ") and (
                 "catalog_source_build_sealed_ats" in query
             ):
-                return (30_000_000,)
-            if query.startswith("WITH family_keys(build_id)") and (
-                "catalog_build_manifest_anchors" in query
-            ):
+                return ()
+            if query.startswith("SELECT manifest.build_id"):
                 return ()
             if "UTC_TIMESTAMP(6)" in query:
                 return (30_000_000,)
@@ -4748,6 +4435,10 @@ def test_mariadb_shape_locks_authorities_and_uses_full_checkpoint_cas(
         "h2hdb.vnext_source_build_repository._authorize",
         lambda *_args, **_kwargs: 1,
     )
+    monkeypatch.setattr(
+        "h2hdb.vnext_source_build_repository._require_assembled_snapshot_identity",
+        lambda *_args, **_kwargs: None,
+    )
     receipt = SourceBuildRepository.assemble_batch(
         VNextUnitOfWork(recorder, backend="mariadb"),  # type: ignore[arg-type]
         gate_lease=None,  # type: ignore[arg-type]
@@ -4767,20 +4458,12 @@ def test_mariadb_shape_locks_authorities_and_uses_full_checkpoint_cas(
         for query in recorder.execute_queries
         if "catalog_build_manifest_" in query
     ]
-    assert [
-        next(
-            name
-            for name in (
-                "anchors",
-                "manifest_sha256s",
-                "file_counts",
-                "byte_counts",
-                "seals",
-            )
-            if f"catalog_build_manifest_{name}" in query
-        )
-        for query in manifest_writes
-    ] == ["anchors", "manifest_sha256s", "file_counts", "byte_counts", "seals"]
+    assert len(manifest_writes) == 1
+    assert "INSERT INTO catalog_build_manifest_core" in manifest_writes[0]
+    assert any(
+        "INSERT INTO catalog_source_build_sealed_ats" in query
+        for query in recorder.execute_queries
+    )
     assert any(
         "LIMIT %s" in query and data[-1] == 256
         for query, data in recorder.fetch_all_queries
@@ -4829,15 +4512,11 @@ def test_mariadb_abandonment_locks_exact_root_and_keeps_generation_mapping(
                 return (
                     build_id,
                     build_id,
-                    build_id,
                     scope,
-                    build_id,
                     1,
-                    build_id,
-                    "OPEN",
-                    build_id,
                     20,
                     build_id,
+                    "OPEN",
                     None,
                     None,
                 )

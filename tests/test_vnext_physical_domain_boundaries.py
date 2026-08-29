@@ -47,7 +47,9 @@ from h2hdb.vnext_source_build_repository import (
 )
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
-_EXPECTED_CATALOG_PHYSICAL_DOMAIN_RELATIONS = frozenset(
+# Exact pre-recomposition registry retained as negative evidence that the old
+# vertical-table authority surface is not silently reintroduced.
+_LEGACY_CATALOG_PHYSICAL_DOMAIN_RELATIONS = frozenset(
     {
         "canonical_value_allocation_anchor",
         "canonical_value_allocation_digest_domain",
@@ -324,7 +326,7 @@ _EXPECTED_CATALOG_PHYSICAL_DOMAIN_RELATIONS = frozenset(
     }
 )
 
-_EXPECTED_CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS = frozenset(
+_LEGACY_CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS = frozenset(
     {
         "canonical_value_allocation",
         "canonical_value_page",
@@ -408,25 +410,30 @@ def _contract_relations(obligation_id: str) -> frozenset[str]:
 
 
 def test_closed_writer_families_match_the_generated_contract_and_real_symbols() -> None:
-    assert (
-        CATALOG_PHYSICAL_DOMAIN_RELATIONS
-        == _EXPECTED_CATALOG_PHYSICAL_DOMAIN_RELATIONS
-        == _contract_relations("catalog.physical-domains.v1")
+    assert CATALOG_PHYSICAL_DOMAIN_RELATIONS == _contract_relations(
+        "catalog.physical-domains.v1"
     )
     assert OPERATIONAL_PHYSICAL_DOMAIN_RELATIONS == _contract_relations(
         "h2hdb.operational.physical-domains.v1"
     )
     assert (
+        CATALOG_PHYSICAL_DOMAIN_RELATIONS != _LEGACY_CATALOG_PHYSICAL_DOMAIN_RELATIONS
+    )
+    assert (
         CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS
-        == _EXPECTED_CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS
+        != _LEGACY_CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS
     )
     assert CATALOG_PHYSICAL_DOMAIN_MUTATION_RELATIONS == (
-        _EXPECTED_CATALOG_PHYSICAL_DOMAIN_RELATIONS
-        - _EXPECTED_CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS
+        CATALOG_PHYSICAL_DOMAIN_RELATIONS - CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS
     )
-    assert len(CATALOG_PHYSICAL_DOMAIN_RELATIONS) == 272
-    assert len(CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS) == 54
-    assert len(CATALOG_PHYSICAL_DOMAIN_MUTATION_RELATIONS) == 218
+    assert {
+        "analysis_run_anchor",
+        "publication_commit_candidate_id",
+        "source_build_scope_key",
+    }.isdisjoint(CATALOG_PHYSICAL_DOMAIN_RELATIONS)
+    assert len(CATALOG_PHYSICAL_DOMAIN_RELATIONS) == 151
+    assert len(CATALOG_PHYSICAL_DOMAIN_READ_ONLY_RELATIONS) == 37
+    assert len(CATALOG_PHYSICAL_DOMAIN_MUTATION_RELATIONS) == 114
     assert OPERATIONAL_PHYSICAL_DOMAIN_MUTATION_RELATIONS == (
         OPERATIONAL_PHYSICAL_DOMAIN_RELATIONS - {"schema_epoch_control"}
     )

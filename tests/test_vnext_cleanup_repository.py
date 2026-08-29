@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
@@ -29,16 +30,18 @@ from vnext_gallery_page_fixtures import (
     seed_gallery_page_descriptor,
 )
 from vnext_manifest_fixtures import (
-    seed_build_manifest,
     seed_gallery_manifest,
+    seed_sealed_source_build,
     seed_snapshot_manifest,
     seed_source_build,
 )
 from vnext_publication_fixtures import (
     seed_publication_candidate,
     seed_publication_commit,
+    seed_publication_finalization,
 )
 
+import h2hdb.operational_refinement as operational_refinement_module
 import h2hdb.vnext_cleanup_repository as cleanup_module
 from h2hdb import vnext_identity as identity
 from h2hdb._generated_vnext_schema import ARTIFACT
@@ -170,6 +173,460 @@ def _fixture_rows(
         connector.execute("PRAGMA foreign_keys = ON")
 
 
+def _seed_terminal_retirement_authority(
+    connector: SQLiteConnector,
+    *,
+    staging_id: bytes,
+    build_id: bytes,
+    gallery_id: int,
+    provisional_observation_id: int,
+    final_observation_id: int,
+    file_count: int,
+    byte_count: int,
+) -> bytes:
+    """Seed the exact durable facts generic staging cleanup must revalidate."""
+
+    seed_manifest_policy(connector)
+    if not connector.fetch_one(
+        "SELECT 1 FROM catalog_source_build_descriptor WHERE build_id = %s",
+        (build_id,),
+    ):
+        _fixture_rows(
+            connector,
+            [
+                (
+                    "INSERT INTO catalog_source_build_descriptor "
+                    "(build_id, scope_key, manifest_policy_id, created_at) "
+                    "VALUES (%s, %s, 1, 0)",
+                    (build_id, sha256(b"scope:" + build_id).digest()),
+                ),
+                (
+                    "INSERT INTO catalog_source_build_states (build_id, state) "
+                    "VALUES (%s, 'OPEN')",
+                    (build_id,),
+                ),
+            ],
+        )
+
+    missing_allocations = [
+        observation_id
+        for observation_id in dict.fromkeys(
+            (provisional_observation_id, final_observation_id)
+        )
+        if not connector.fetch_one(
+            "SELECT 1 FROM catalog_gallery_observation_allocations "
+            "WHERE gallery_id = %s AND observation_id = %s",
+            (gallery_id, observation_id),
+        )
+    ]
+    if missing_allocations:
+        _fixture_rows(
+            connector,
+            [
+                (
+                    "INSERT INTO catalog_gallery_observation_allocations "
+                    "(gallery_id, observation_id, allocated_at) VALUES (%s, %s, 0)",
+                    (gallery_id, observation_id),
+                )
+                for observation_id in missing_allocations
+            ],
+        )
+
+    roots: dict[bytes, tuple[bytes, int]] = {}
+    for component, count in (
+        (b"METADATA", 0),
+        (b"FILE", file_count),
+        (b"TAG", 0),
+        (b"DIRECTORY", file_count),
+    ):
+        page_bytes = b"cleanup-terminal-root:" + staging_id + b":" + component
+        page_sha256 = sha256(page_bytes).digest()
+        seed_gallery_page_descriptor(
+            connector,
+            page_sha256=page_sha256,
+            page_bytes=page_bytes,
+            component=component,
+            level=0,
+            subtree_item_count=count,
+        )
+        connector.execute(
+            "INSERT INTO catalog_gallery_observation_tree_roots "
+            "(gallery_id, observation_id, root_page_sha256) VALUES (%s, %s, %s)",
+            (gallery_id, provisional_observation_id, page_sha256),
+        )
+        roots[component] = (page_sha256, count)
+
+    descriptor = identity.GalleryObservationDescriptor(
+        roots[b"METADATA"][0],
+        roots[b"METADATA"][1],
+        roots[b"FILE"][0],
+        roots[b"FILE"][1],
+        roots[b"TAG"][0],
+        roots[b"TAG"][1],
+        roots[b"DIRECTORY"][0],
+        roots[b"DIRECTORY"][1],
+    )
+    observation_identity = identity.gallery_observation_descriptor_digest(descriptor)
+    descriptor_bytes = identity.encode_gallery_observation_descriptor(descriptor)
+    canonical_tree = identity.build_canonical_value_tree(
+        observation_identity,
+        len(descriptor_bytes),
+        (descriptor_bytes,),
+    )
+    assert len(canonical_tree.pages) == 1
+    canonical_page = canonical_tree.pages[0]
+    seed_canonical_value(
+        connector,
+        value_sha256=observation_identity,
+        digest_domain=b"gallery_observation_v1",
+        page_sha256=canonical_page.page_sha256,
+        page_bytes=canonical_page.page_bytes,
+        subtree_item_count=len(descriptor_bytes),
+        allocated_at=0,
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observations "
+        "(gallery_id, observation_id, observation_identity_sha256) "
+        "VALUES (%s, %s, %s)",
+        (gallery_id, final_observation_id, observation_identity),
+    )
+    connector.execute(
+        "INSERT INTO catalog_gallery_observation_stat "
+        "(gallery_id, observation_id, file_count, byte_count) "
+        "VALUES (%s, %s, %s, %s)",
+        (gallery_id, final_observation_id, file_count, byte_count),
+    )
+    seed_gallery_manifest(
+        connector,
+        gallery_id=gallery_id,
+        observation_id=final_observation_id,
+        manifest_policy_id=1,
+        manifest_sha256=identity.artifact_source_manifest_digest(
+            observation_identity,
+            1,
+            1,
+        ),
+        computed_at=1,
+    )
+    link = connector.fetch_one(
+        "SELECT observation_id FROM catalog_source_build_galleries "
+        "WHERE build_id = %s AND gallery_id = %s",
+        (build_id, gallery_id),
+    )
+    if not link:
+        connector.execute(
+            "INSERT INTO catalog_source_build_galleries "
+            "(build_id, gallery_id, observation_id) VALUES (%s, %s, %s)",
+            (build_id, gallery_id, final_observation_id),
+        )
+    elif link != (final_observation_id,):
+        raise AssertionError("terminal retirement fixture link differs")
+    request_count = connector.fetch_one(
+        "SELECT COUNT(*) FROM operational_gallery_observation_staging_requests "
+        "WHERE staging_id = %s",
+        (staging_id,),
+    )[0]
+    assert isinstance(request_count, int)
+    if request_count:
+        connector.execute(
+            "UPDATE operational_gallery_observation_staging_request_budgets "
+            "SET retained_request_count = retained_request_count + %s "
+            "WHERE singleton_id = 1",
+            (request_count,),
+        )
+    return observation_identity
+
+
+def _seed_publication_commit_cleanup_history(
+    connector: SQLiteConnector,
+    *,
+    finalize_replacement: bool = True,
+    additional_old_receipt: bytes | None = None,
+) -> tuple[bytes, bytes]:
+    old_receipt = bytes.fromhex("21" * 16)
+    replacement_receipt = bytes.fromhex("22" * 16)
+    history = (
+        ((1, old_receipt), (2, replacement_receipt))
+        if additional_old_receipt is None
+        else ((1, old_receipt), (2, additional_old_receipt), (3, replacement_receipt))
+    )
+    statements: list[tuple[str, tuple[object, ...]]] = []
+    for revision, receipt_id in history:
+        candidate_id = bytes((40 + revision,)) * 16
+        preparation_id = bytes((50 + revision,)) * 16
+        event_id = bytes((60 + revision,)) * 16
+        statements.extend(
+            (
+                (
+                    "INSERT INTO catalog_revision_descriptors "
+                    "(revision, publication_count) VALUES (%s, 0)",
+                    (revision,),
+                ),
+                (
+                    "INSERT INTO catalog_source_revision_descriptors "
+                    "(source_revision, channel, snapshot_manifest_sha256) "
+                    "VALUES (%s, %s, %s)",
+                    (revision, b"default", bytes((revision,)) * 32),
+                ),
+                (
+                    "INSERT INTO catalog_publication_generation_nodes "
+                    "(generation) VALUES (%s)",
+                    (revision,),
+                ),
+                (
+                    "INSERT INTO catalog_publication_commit_anchors "
+                    "(receipt_id) VALUES (%s)",
+                    (receipt_id,),
+                ),
+                (
+                    "INSERT INTO catalog_publication_finalization_checkpoints "
+                    "(receipt_id, generation, `cursor`, processed_count, state, "
+                    "updated_at) VALUES (%s, 2, %s, 0, 'COMPLETE', %s)",
+                    (receipt_id, b"", 10 + revision),
+                ),
+                (
+                    "INSERT INTO catalog_publication_finalization_batch_stored "
+                    "(receipt_id, start_generation, batch_key, start_cursor, "
+                    "start_processed_count, next_cursor, row_count, committed_at) "
+                    "VALUES (%s, 1, %s, %s, 0, %s, 0, %s)",
+                    (receipt_id, bytes((revision,)), b"", b"", 10 + revision),
+                ),
+                (
+                    "INSERT INTO operational_operational_event_streams "
+                    "(preparation_id, created_at) VALUES (%s, %s)",
+                    (preparation_id, 5 + revision),
+                ),
+                (
+                    "INSERT INTO operational_operational_preparations "
+                    "(preparation_id, build_id, deletion_request_generation, "
+                    "operational_policy_id, state, prepared_at, completed_at) "
+                    "VALUES (%s, %s, 1, 1, 'COMPLETE', %s, %s)",
+                    (
+                        preparation_id,
+                        bytes((70 + revision,)) * 16,
+                        6 + revision,
+                        7 + revision,
+                    ),
+                ),
+                (
+                    "INSERT INTO operational_operational_preparation_checkpoints "
+                    "(preparation_id, phase, generation, cursor_bytes, "
+                    "processed_count, chain_sha256, state, updated_at) "
+                    "VALUES (%s, 'REMOVED_GID', 2, %s, 1, %s, 'COMPLETE', %s)",
+                    (preparation_id, b"", bytes((80 + revision,)) * 32, 8 + revision),
+                ),
+                (
+                    "INSERT INTO operational_operational_preparation_batch_receipts "
+                    "(preparation_id, phase, batch_key, start_cursor, next_cursor, "
+                    "input_sha256, output_sha256, row_count, committed_generation, "
+                    "committed_at) VALUES (%s, 'REMOVED_GID', %s, %s, %s, %s, "
+                    "%s, 0, 2, %s)",
+                    (
+                        preparation_id,
+                        bytes((90 + revision,)) * 32,
+                        b"",
+                        b"",
+                        bytes((100 + revision,)) * 32,
+                        bytes((110 + revision,)) * 32,
+                        9 + revision,
+                    ),
+                ),
+                (
+                    "INSERT INTO operational_operational_preparation_effect_seals "
+                    "(preparation_id, event_count, final_chain_sha256, sealed_at) "
+                    "VALUES (%s, 1, %s, %s)",
+                    (preparation_id, bytes((120 + revision,)) * 32, 10 + revision),
+                ),
+                (
+                    "INSERT INTO operational_publication_candidate_preparations "
+                    "(candidate_id, preparation_id, bound_at) VALUES (%s, %s, %s)",
+                    (candidate_id, preparation_id, 10 + revision),
+                ),
+                (
+                    "INSERT INTO operational_operational_events "
+                    "(event_id, preparation_id, sequence_no, event_type, "
+                    "event_sha256, created_at) "
+                    "VALUES (%s, %s, 0, 'REMOVED_GID', %s, %s)",
+                    (
+                        event_id,
+                        preparation_id,
+                        bytes((130 + revision,)) * 32,
+                        10 + revision,
+                    ),
+                ),
+                (
+                    "INSERT INTO operational_operational_removed_gid_events "
+                    "(event_id, gid, request_token) VALUES (%s, %s, %s)",
+                    (event_id, revision, bytes((140 + revision,)) * 16),
+                ),
+                (
+                    "INSERT INTO catalog_publication_commits "
+                    "(receipt_id, candidate_id, revision, source_revision, "
+                    "generation, preparation_id, operational_policy_id, "
+                    "artifact_policy_id, display_title_policy_id, new_galleries, "
+                    "changed_galleries, removed_galleries, duplicate_losers, "
+                    "committed_at) VALUES (%s, %s, %s, %s, %s, %s, 1, 1, 1, "
+                    "0, 0, 0, 0, %s)",
+                    (
+                        receipt_id,
+                        candidate_id,
+                        revision,
+                        revision,
+                        revision,
+                        preparation_id,
+                        10 + revision,
+                    ),
+                ),
+            )
+        )
+        if receipt_id != replacement_receipt or finalize_replacement:
+            statements.append(
+                (
+                    "INSERT INTO catalog_publication_commit_finalizations "
+                    "(receipt_id) VALUES (%s)",
+                    (receipt_id,),
+                )
+            )
+    statements.extend(
+        (
+            "INSERT INTO catalog_publication_generation_successors "
+            "(successor_generation, predecessor_generation) VALUES (%s, %s)",
+            (successor, successor - 1),
+        )
+        for successor in range(2, len(history) + 1)
+    )
+    statements.append(
+        (
+            "INSERT INTO catalog_publication_commit_head_receipts "
+            "(channel, receipt_id) VALUES (%s, %s)",
+            (b"default", replacement_receipt),
+        )
+    )
+    _fixture_rows(connector, statements)
+    return old_receipt, replacement_receipt
+
+
+def _seed_finalized_cleanup_publication_commit(
+    connector: SQLiteConnector,
+    *,
+    receipt_id: bytes,
+    candidate_id: bytes,
+    source_revision: int = 1,
+) -> None:
+    connector.execute("PRAGMA foreign_keys = OFF")
+    try:
+        seed_publication_commit(
+            connector,
+            receipt_id=receipt_id,
+            candidate_id=candidate_id,
+            revision=source_revision,
+            source_revision=source_revision,
+            generation=source_revision,
+            preparation_id=b"p" * 16,
+            operational_policy_id=1,
+            artifact_policy_id=1,
+            display_title_policy_id=1,
+            new_galleries=0,
+            changed_galleries=0,
+            removed_galleries=0,
+            duplicate_losers=0,
+            committed_at=1,
+        )
+        connector.execute(
+            "INSERT INTO catalog_publication_commit_finalizations "
+            "(receipt_id) VALUES (%s)",
+            (receipt_id,),
+        )
+    finally:
+        connector.execute("PRAGMA foreign_keys = ON")
+
+
+def _seed_publication_commit_source_build_base(
+    connector: SQLiteConnector,
+    *,
+    base_receipt: bytes,
+    handoff_receipt: bytes,
+    discriminator: int = 70,
+    build_state: str | None = "SEALED",
+    analysis_states: tuple[str | None, ...] = ("COMPLETE",),
+    published_analysis_index: int | None = 0,
+    working: bool = False,
+) -> tuple[bytes, tuple[bytes, ...]]:
+    handoff = connector.fetch_one(
+        "SELECT source_revision FROM catalog_publication_commits WHERE receipt_id = %s",
+        (handoff_receipt,),
+    )
+    assert len(handoff) == 1 and isinstance(handoff[0], int)
+    handoff_source_revision = handoff[0]
+    build_id = bytes((discriminator,)) * 16
+    analysis_ids = tuple(
+        bytes((discriminator + index + 1,)) * 16
+        for index in range(len(analysis_states))
+    )
+    statements: list[tuple[str, tuple[object, ...]]] = [
+        (
+            "INSERT INTO catalog_source_build_descriptor "
+            "(build_id, scope_key, manifest_policy_id, created_at) "
+            "VALUES (%s, %s, 1, 1)",
+            (build_id, bytes((discriminator,)) * 32),
+        ),
+        (
+            "INSERT INTO catalog_source_build_base_publication_commits "
+            "(build_id, base_receipt_id) VALUES (%s, %s)",
+            (build_id, base_receipt),
+        ),
+    ]
+    if build_state is not None:
+        statements.append(
+            (
+                "INSERT INTO catalog_source_build_states (build_id, state) "
+                "VALUES (%s, %s)",
+                (build_id, build_state),
+            )
+        )
+    for index, (analysis_id, analysis_state) in enumerate(
+        zip(analysis_ids, analysis_states, strict=True),
+        start=1,
+    ):
+        statements.append(
+            (
+                "INSERT INTO catalog_analysis_run_descriptor "
+                "(analysis_id, build_id, policy_id, input_manifest_sha256, "
+                "started_at) VALUES (%s, %s, %s, %s, 1)",
+                (analysis_id, build_id, index, bytes((discriminator + index,)) * 32),
+            )
+        )
+        if analysis_state is not None:
+            statements.append(
+                (
+                    "INSERT INTO catalog_analysis_run_states "
+                    "(analysis_id, state) VALUES (%s, %s)",
+                    (analysis_id, analysis_state),
+                )
+            )
+    if published_analysis_index is not None:
+        statements.append(
+            (
+                "INSERT INTO catalog_source_revision_provenance "
+                "(source_revision, analysis_id) VALUES (%s, %s)",
+                (
+                    handoff_source_revision,
+                    analysis_ids[published_analysis_index],
+                ),
+            )
+        )
+    if working:
+        statements.append(
+            (
+                "INSERT INTO operational_source_working_builds "
+                "(slot, build_id, assigned_at) VALUES (1, %s, 1)",
+                (build_id,),
+            )
+        )
+    _fixture_rows(connector, statements)
+    return build_id, analysis_ids
+
+
 _GALLERY_PAGE_DELETE_GROUPS = {
     "catalog_gallery_observation_page_children": (
         "catalog_gallery_observation_page_children",
@@ -254,77 +711,12 @@ def _finalize_publication_receipt(
     processed_count: int,
     finalized_at: int,
 ) -> None:
-    batch_key = (receipt_id, 1)
-    connector.execute(
-        "INSERT INTO catalog_publication_finalization_batch_anchors "
-        "(receipt_id, start_generation) VALUES (%s, %s)",
-        batch_key,
-    )
-    connector.execute(
-        "INSERT INTO catalog_publication_finalization_batch_coordinates "
-        "(receipt_id, batch_key, start_generation) VALUES (%s, %s, %s)",
-        (receipt_id, b"terminal", 1),
-    )
-    for table, column, value in (
-        (
-            "catalog_publication_finalization_batch_start_cursors",
-            "start_cursor",
-            cursor,
-        ),
-        (
-            "catalog_publication_finalization_batch_start_counts",
-            "start_processed_count",
-            processed_count,
-        ),
-        (
-            "catalog_publication_finalization_batch_next_cursors",
-            "next_cursor",
-            cursor,
-        ),
-        ("catalog_publication_finalization_batch_row_counts", "row_count", 0),
-        (
-            "catalog_publication_finalization_batch_committed_ats",
-            "committed_at",
-            finalized_at,
-        ),
-    ):
-        connector.execute(
-            f"INSERT INTO {table} "
-            f"(receipt_id, start_generation, {column}) VALUES (%s, %s, %s)",
-            (*batch_key, value),
-        )
-    connector.execute(
-        "INSERT INTO catalog_publication_finalization_batch_seals "
-        "(receipt_id, start_generation) VALUES (%s, %s)",
-        batch_key,
-    )
-    for checkpoint_table, checkpoint_column, checkpoint_value in (
-        ("catalog_publication_finalization_checkpoint_generations", "generation", 2),
-        ("catalog_publication_finalization_checkpoint_cursors", "cursor", cursor),
-        (
-            "catalog_publication_finalization_checkpoint_counts",
-            "processed_count",
-            processed_count,
-        ),
-        ("catalog_publication_finalization_checkpoint_states", "state", "COMPLETE"),
-        (
-            "catalog_publication_finalization_checkpoint_updated_ats",
-            "updated_at",
-            finalized_at,
-        ),
-    ):
-        quoted = (
-            f"`{checkpoint_column}`"
-            if checkpoint_column == "cursor"
-            else checkpoint_column
-        )
-        connector.execute(
-            f"UPDATE {checkpoint_table} SET {quoted} = %s WHERE receipt_id = %s",
-            (checkpoint_value, receipt_id),
-        )
-    connector.execute(
-        "INSERT INTO catalog_publication_commit_finalizations (receipt_id) VALUES (%s)",
-        (receipt_id,),
+    seed_publication_finalization(
+        connector,
+        receipt_id=receipt_id,
+        cursor=cursor,
+        processed_count=processed_count,
+        finalized_at=finalized_at,
     )
 
 
@@ -370,38 +762,15 @@ def _seed_catalog_publication_cleanup_fixture(
         statements.extend(
             (
                 (
-                    "INSERT INTO catalog_revision_anchors (revision) VALUES (%s)",
-                    (revision,),
-                ),
-                (
-                    "INSERT INTO catalog_revision_publication_counts "
+                    "INSERT INTO catalog_revision_descriptors "
                     "(revision, publication_count) VALUES (%s, 1)",
                     (revision,),
                 ),
                 (
-                    "INSERT INTO catalog_revision_descriptor_seals "
-                    "(revision) VALUES (%s)",
-                    (revision,),
-                ),
-                (
-                    "INSERT INTO catalog_source_revision_anchors "
-                    "(source_revision) VALUES (%s)",
-                    (revision,),
-                ),
-                (
-                    "INSERT INTO catalog_source_revision_channels "
-                    "(source_revision, channel) VALUES (%s, %s)",
-                    (revision, b"default"),
-                ),
-                (
-                    "INSERT INTO catalog_source_revision_snapshot_manifests "
-                    "(source_revision, snapshot_manifest_sha256) VALUES (%s, %s)",
-                    (revision, bytes((revision,)) * 32),
-                ),
-                (
-                    "INSERT INTO catalog_source_revision_descriptor_seals "
-                    "(source_revision) VALUES (%s)",
-                    (revision,),
+                    "INSERT INTO catalog_source_revision_descriptors "
+                    "(source_revision, channel, snapshot_manifest_sha256) "
+                    "VALUES (%s, %s, %s)",
+                    (revision, b"default", bytes((revision,)) * 32),
                 ),
                 (
                     "INSERT INTO catalog_publication_generation_nodes "
@@ -764,6 +1133,35 @@ def _seed_source_build_scope(
     ).scope_key
 
 
+def _seed_cleanup_sealed_source_build(
+    connector: SQLiteConnector,
+    *,
+    build_id: bytes,
+    scope_key: bytes,
+    manifest_sha256: bytes | None = None,
+    gallery_count: int = 0,
+    file_count: int = 0,
+    byte_count: int = 0,
+    manifest_policy_id: int = 1,
+    created_at: int = 0,
+    sealed_at: int = 0,
+) -> None:
+    seed_sealed_source_build(
+        connector,
+        build_id=build_id,
+        scope_key=scope_key,
+        manifest_sha256=(
+            build_id + build_id if manifest_sha256 is None else manifest_sha256
+        ),
+        gallery_count=gallery_count,
+        file_count=file_count,
+        byte_count=byte_count,
+        manifest_policy_id=manifest_policy_id,
+        created_at=created_at,
+        sealed_at=sealed_at,
+    )
+
+
 def _seed_abandoned_analysis_for_cleanup(
     connector: SQLiteConnector,
     *,
@@ -776,12 +1174,11 @@ def _seed_abandoned_analysis_for_cleanup(
         discriminator=discriminator,
     )
     seed_analysis_policy(connector)
-    seed_source_build(
+    _seed_cleanup_sealed_source_build(
         connector,
         build_id=build_id,
         scope_key=scope_key,
         manifest_policy_id=1,
-        state="SEALED",
         created_at=0,
         sealed_at=0,
     )
@@ -805,7 +1202,7 @@ def _position_analysis_cleanup_at_overlay(
     now: int,
 ) -> None:
     result: CleanupBatchResult | None = None
-    for phase_index in range(6):
+    for phase_index in range(2):
         result = _advance(
             connector,
             gate,
@@ -832,41 +1229,20 @@ def _cleanup_protocol_snapshot(
 def _source_scope_family_rows(
     connector: SQLiteConnector,
 ) -> tuple[list[tuple[Any, ...]], ...]:
-    return tuple(
-        connector.fetch_all(query)
-        for query in (
-            "SELECT * FROM catalog_source_scope_seals",
-            "SELECT * FROM catalog_source_scope_identities",
-            "SELECT * FROM catalog_source_scope_identity_policy_versions",
-            "SELECT * FROM catalog_source_scope_source_root_sha256s",
-            "SELECT * FROM catalog_source_scope_source_providers",
-            "SELECT * FROM catalog_source_scope_anchors",
-        )
-    )
+    return (connector.fetch_all("SELECT * FROM catalog_source_scopes"),)
 
 
 def _artifact_policy_semantics_family_rows(
     connector: SQLiteConnector,
 ) -> tuple[list[tuple[Any, ...]], ...]:
-    return tuple(
-        connector.fetch_all(query)
-        for query in (
-            "SELECT * FROM catalog_artifact_policy_semantics_seals",
-            "SELECT * FROM catalog_artifact_policy_semantics_identities",
-            "SELECT * FROM "
-            "catalog_artifact_policy_semantics_producer_fingerprint_sha256s",
-            "SELECT * FROM catalog_artifact_policy_semantics_max_image_short_sides",
-            "SELECT * FROM "
-            "catalog_artifact_policy_semantics_artifact_algorithm_versions",
-            "SELECT * FROM catalog_artifact_policy_semantics_anchors",
-        )
-    )
+    return (connector.fetch_all("SELECT * FROM catalog_artifact_policy_semantics"),)
 
 
 def _seed_cleanup_candidate(
     connector: SQLiteConnector,
     *,
     candidate_id: bytes,
+    reserved_revision: int = 1,
 ) -> None:
     connector.execute("PRAGMA foreign_keys = OFF")
     try:
@@ -874,7 +1250,7 @@ def _seed_cleanup_candidate(
             connector,
             candidate_id=candidate_id,
             analysis_id=b"a" * 16,
-            reserved_revision=1,
+            reserved_revision=reserved_revision,
             artifact_policy_id=1,
             display_title_policy_id=1,
             artifacts_required=False,
@@ -884,16 +1260,7 @@ def _seed_cleanup_candidate(
         connector.execute("PRAGMA foreign_keys = ON")
 
 
-_CANDIDATE_DEFINITION_DELETE_ORDER = (
-    "catalog_publication_candidate_definition_seals",
-    "catalog_publication_candidate_created_ats",
-    "catalog_publication_candidate_artifacts_required",
-    "catalog_publication_candidate_display_title_policy_ids",
-    "catalog_publication_candidate_artifact_policy_ids",
-    "catalog_publication_candidate_reserved_revisions",
-    "catalog_publication_candidate_analysis_ids",
-    "catalog_publication_candidate_anchors",
-)
+_CANDIDATE_DEFINITION_DELETE_ORDER = ("catalog_publication_candidates",)
 
 
 def _candidate_definition_rows(
@@ -1009,17 +1376,7 @@ def _artifact_semantic_input_family_rows(
 def _source_build_discovery_rows(
     connector: SQLiteConnector,
 ) -> tuple[list[tuple[object, ...]], ...]:
-    return tuple(
-        connector.fetch_all(query)
-        for query in (
-            "SELECT * FROM catalog_source_build_discovery_anchors",
-            "SELECT * FROM catalog_source_build_discovery_scan_attempts",
-            "SELECT * FROM catalog_source_build_discovery_gallery_counts",
-            "SELECT * FROM catalog_source_build_discovery_tree_observation_sha256s",
-            "SELECT * FROM catalog_source_build_discovery_completed_ats",
-            "SELECT * FROM catalog_source_build_discovery_seals",
-        )
-    )
+    return (connector.fetch_all("SELECT * FROM catalog_source_build_discoveries"),)
 
 
 def _analysis_run_family_rows(
@@ -1033,14 +1390,8 @@ def _analysis_run_family_rows(
         )
         for table in (
             "catalog_analysis_run_completed_ats",
-            "catalog_analysis_run_descriptor_seals",
-            "catalog_analysis_run_identities",
-            "catalog_analysis_run_started_ats",
-            "catalog_analysis_run_input_manifest_sha256s",
-            "catalog_analysis_run_policy_ids",
-            "catalog_analysis_run_build_ids",
             "catalog_analysis_run_states",
-            "catalog_analysis_run_anchors",
+            "catalog_analysis_run_descriptor",
         )
     )
 
@@ -1064,12 +1415,11 @@ def test_analysis_cleanup_retains_only_latest_abandoned_recovery_proof(
             (latest_build, latest_scope, 2),
             (successor_build, successor_scope, 3),
         ):
-            seed_source_build(
+            _seed_cleanup_sealed_source_build(
                 connector,
                 build_id=build_id,
                 scope_key=scope_key,
                 manifest_policy_id=1,
-                state="SEALED",
                 created_at=created_at,
                 sealed_at=created_at,
             )
@@ -1154,119 +1504,30 @@ def test_analysis_cleanup_retains_only_latest_abandoned_recovery_proof(
         connector.close()
 
 
-@pytest.mark.parametrize("sibling_state", ("COMPLETE", "ABANDONED"))
-def test_analysis_cleanup_never_launders_abandoned_multi_policy_history(
-    tmp_path: Path,
-    sibling_state: str,
-) -> None:
-    connector = _database(
-        tmp_path / f"analysis-abandoned-sibling-{sibling_state.lower()}.sqlite3"
+def test_cleanup_predicates_fail_closed_for_sibling_analysis_corruption() -> None:
+    """Retain defense for audit-bypassing corruption unreachable in epoch 2."""
+
+    assert (
+        cleanup_module._SOURCE_BUILD_REACHABILITY_ELIGIBILITY.count(
+            "catalog_analysis_run_descriptor sibling"
+        )
+        == 1
     )
-    try:
-        scope_key = _seed_source_build_scope(connector, discriminator=102)
-        seed_analysis_policy(connector)
-        seed_analysis_policy(connector, policy_id=2, algorithm_version=2)
-        build_id = b"M" * 16
-        abandoned = bytes((102,)) + b"a" * 15
-        sibling = bytes((102,)) + b"s" * 15
-        seed_source_build(
-            connector,
-            build_id=build_id,
-            scope_key=scope_key,
-            manifest_policy_id=1,
-            state="SEALED",
-            created_at=1,
-            sealed_at=1,
+    assert (
+        cleanup_module._ANALYSIS_RUN_REACHABILITY_ELIGIBILITY.count(
+            "catalog_analysis_run_descriptor sibling"
         )
-        seed_analysis_run(
-            connector,
-            analysis_id=abandoned,
-            build_id=build_id,
-            policy_id=1,
-            input_manifest_sha256=b"a" * 32,
-            started_at=1,
-            state="ABANDONED",
-        )
-        seed_analysis_run(
-            connector,
-            analysis_id=sibling,
-            build_id=build_id,
-            policy_id=2,
-            input_manifest_sha256=b"s" * 32,
-            started_at=2,
-            state=sibling_state,
-            completed_at=3 if sibling_state == "COMPLETE" else None,
-        )
-        newer_scope = _seed_source_build_scope(connector, discriminator=108)
-        newer_build = bytes((108,)) + b"n" * 15
-        seed_source_build(
-            connector,
-            build_id=newer_build,
-            scope_key=newer_scope,
-            manifest_policy_id=1,
-            state="ABANDONED",
-            created_at=4,
-        )
-        _fixture_rows(
-            connector,
-            [
-                (
-                    "INSERT INTO operational_ingest_generations "
-                    "(generation, started_at, completed_at) VALUES (%s, %s, %s)",
-                    (1, 1, 1),
-                ),
-                (
-                    "INSERT INTO operational_ingest_generations "
-                    "(generation, started_at, completed_at) VALUES (%s, %s, %s)",
-                    (2, 2, 2),
-                ),
-                (
-                    "INSERT INTO operational_source_build_generations "
-                    "(build_id, generation) VALUES (%s, %s)",
-                    (build_id, 1),
-                ),
-                (
-                    "INSERT INTO operational_source_build_generations "
-                    "(build_id, generation) VALUES (%s, %s)",
-                    (newer_build, 2),
-                ),
-            ],
-        )
-        before = {
-            abandoned: _analysis_run_family_rows(connector, abandoned),
-            sibling: _analysis_run_family_rows(connector, sibling),
-        }
-
-        gate = _exclusive(connector)
-        cycle = _begin(
-            connector,
-            gate,
-            CleanupTargetKind.ANALYSIS_RUN,
-            abandoned[0],
-            max_rows=32,
-        )
-        _drain(connector, gate, cycle)
-        assert _analysis_run_family_rows(connector, abandoned) == before[abandoned]
-        assert _analysis_run_family_rows(connector, sibling) == before[sibling]
-
-        source_cycle = _begin(
-            connector,
-            gate,
-            CleanupTargetKind.SOURCE_BUILD,
-            newer_build[0],
-            max_rows=32,
-            now=100,
-        )
-        _drain(connector, gate, source_cycle, now=101)
-        assert (
-            connector.fetch_one(
-                "SELECT build_id FROM catalog_source_build_anchors WHERE build_id = %s",
-                (newer_build,),
-            )
-            == ()
-        )
-    finally:
-        connector.close()
+        == 2
+    )
+    for predicate in (
+        cleanup_module._SOURCE_BUILD_REACHABILITY_ELIGIBILITY,
+        cleanup_module._ANALYSIS_RUN_REACHABILITY_ELIGIBILITY,
+    ):
+        assert "sibling.analysis_id <> retired.analysis_id" in predicate
+    safe_release = cleanup_module._PUBLICATION_COMMIT_SAFE_BUILD_BASE_RELEASE
+    assert "FROM catalog_analysis_run_descriptor analysis" in safe_release
+    assert "provenance.analysis_id = analysis.analysis_id" in safe_release
+    assert "analysis_state.state NOT IN ('COMPLETE', 'ABANDONED')" in safe_release
 
 
 def test_candidate_cleanup_retains_historical_source_build_base_lineage(
@@ -1278,19 +1539,14 @@ def test_candidate_cleanup_retains_historical_source_build_base_lineage(
         receipt_id = b"R" * 16
         base_build = b"B" * 16
         _seed_cleanup_candidate(connector, candidate_id=candidate_id)
+        _seed_finalized_cleanup_publication_commit(
+            connector,
+            receipt_id=receipt_id,
+            candidate_id=candidate_id,
+        )
         _fixture_rows(
             connector,
             [
-                (
-                    "INSERT INTO catalog_publication_commit_candidates "
-                    "(receipt_id, candidate_id) VALUES (%s, %s)",
-                    (receipt_id, candidate_id),
-                ),
-                (
-                    "INSERT INTO catalog_publication_commit_finalizations "
-                    "(receipt_id) VALUES (%s)",
-                    (receipt_id,),
-                ),
                 (
                     "INSERT INTO catalog_source_build_base_publication_commits "
                     "(build_id, base_receipt_id) VALUES (%s, %s)",
@@ -1335,7 +1591,7 @@ def test_candidate_cleanup_retains_historical_source_build_base_lineage(
         connector.close()
 
 
-def test_current_only_priority_rewinds_after_source_build_releases_candidate(
+def test_current_only_source_build_waits_for_publication_base_release_then_rewinds(
     tmp_path: Path,
 ) -> None:
     connector = _database(tmp_path / "current-only-priority-rewind.sqlite3")
@@ -1344,29 +1600,23 @@ def test_current_only_priority_rewinds_after_source_build_releases_candidate(
         build_id = bytes((106,)) + b"b" * 15
         receipt_id = b"R" * 16
         scope_key = _seed_source_build_scope(connector, discriminator=106)
-        seed_source_build(
+        _seed_cleanup_sealed_source_build(
             connector,
             build_id=build_id,
             scope_key=scope_key,
             manifest_policy_id=1,
-            state="SEALED",
             created_at=1,
             sealed_at=1,
         )
         _seed_cleanup_candidate(connector, candidate_id=candidate_id)
+        _seed_finalized_cleanup_publication_commit(
+            connector,
+            receipt_id=receipt_id,
+            candidate_id=candidate_id,
+        )
         _fixture_rows(
             connector,
             [
-                (
-                    "INSERT INTO catalog_publication_commit_candidates "
-                    "(receipt_id, candidate_id) VALUES (%s, %s)",
-                    (receipt_id, candidate_id),
-                ),
-                (
-                    "INSERT INTO catalog_publication_commit_finalizations "
-                    "(receipt_id) VALUES (%s)",
-                    (receipt_id,),
-                ),
                 (
                     "INSERT INTO catalog_source_build_base_publication_commits "
                     "(build_id, base_receipt_id) VALUES (%s, %s)",
@@ -1383,22 +1633,22 @@ def test_current_only_priority_rewinds_after_source_build_releases_candidate(
                 cycle_cutoff_at=100,
                 now=2,
             )
-        assert first is not None
-        assert first.target_kind is CleanupTargetKind.SOURCE_BUILD
-        _drain(connector, gate, first, now=3)
-        assert (
-            connector.fetch_one(
-                "SELECT 1 FROM catalog_source_build_anchors WHERE build_id = %s",
-                (build_id,),
-            )
-            == ()
-        )
+        assert first is None
         assert connector.fetch_one(
-            "SELECT candidate_id FROM catalog_publication_candidate_anchors "
+            "SELECT 1 FROM catalog_source_build_descriptor WHERE build_id = %s",
+            (build_id,),
+        ) == (1,)
+        assert connector.fetch_one(
+            "SELECT candidate_id FROM catalog_publication_candidates "
             "WHERE candidate_id = %s",
             (candidate_id,),
         ) == (candidate_id,)
 
+        connector.execute(
+            "DELETE FROM catalog_source_build_base_publication_commits "
+            "WHERE build_id = %s",
+            (build_id,),
+        )
         with connector.transaction():
             second = VNextCleanupRepository.next_current_only_cycle(
                 VNextUnitOfWork(connector, backend="sqlite"),
@@ -1410,6 +1660,24 @@ def test_current_only_priority_rewinds_after_source_build_releases_candidate(
         assert second.target_kind is CleanupTargetKind.PUBLICATION_CANDIDATE
         _drain(connector, gate, second, now=101)
         assert not any(_candidate_definition_rows(connector, candidate_id=candidate_id))
+
+        with connector.transaction():
+            third = VNextCleanupRepository.next_current_only_cycle(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                cycle_cutoff_at=100,
+                now=200,
+            )
+        assert third is not None
+        assert third.target_kind is CleanupTargetKind.SOURCE_BUILD
+        _drain(connector, gate, third, now=201)
+        assert (
+            connector.fetch_one(
+                "SELECT 1 FROM catalog_source_build_descriptor WHERE build_id = %s",
+                (build_id,),
+            )
+            == ()
+        )
     finally:
         connector.close()
 
@@ -1425,12 +1693,11 @@ def test_analysis_cleanup_retains_historical_source_build_base_provenance(
         analysis_build = b"A" * 16
         base_build = b"B" * 16
         receipt_id = b"R" * 16
-        seed_source_build(
+        _seed_cleanup_sealed_source_build(
             connector,
             build_id=analysis_build,
             scope_key=scope_key,
             manifest_policy_id=1,
-            state="SEALED",
             created_at=1,
             sealed_at=1,
         )
@@ -1444,14 +1711,14 @@ def test_analysis_cleanup_retains_historical_source_build_base_provenance(
             state="COMPLETE",
             completed_at=2,
         )
+        _seed_finalized_cleanup_publication_commit(
+            connector,
+            receipt_id=receipt_id,
+            candidate_id=b"c" * 16,
+        )
         _fixture_rows(
             connector,
             [
-                (
-                    "INSERT INTO catalog_publication_commit_source_revisions "
-                    "(receipt_id, source_revision) VALUES (%s, %s)",
-                    (receipt_id, 1),
-                ),
                 (
                     "INSERT INTO catalog_source_revision_provenance "
                     "(source_revision, analysis_id) VALUES (%s, %s)",
@@ -1510,15 +1777,24 @@ def test_source_cleanup_preserves_newer_mapping_until_older_retirement_is_gone(
             (older_build, older_scope, 1, "SEALED"),
             (newer_build, newer_scope, 2, "ABANDONED"),
         ):
-            seed_source_build(
-                connector,
-                build_id=build_id,
-                scope_key=scope_key,
-                manifest_policy_id=1,
-                state=state,
-                created_at=created_at,
-                sealed_at=created_at if state == "SEALED" else None,
-            )
+            if state == "SEALED":
+                _seed_cleanup_sealed_source_build(
+                    connector,
+                    build_id=build_id,
+                    scope_key=scope_key,
+                    manifest_policy_id=1,
+                    created_at=created_at,
+                    sealed_at=created_at,
+                )
+            else:
+                seed_source_build(
+                    connector,
+                    build_id=build_id,
+                    scope_key=scope_key,
+                    manifest_policy_id=1,
+                    state=state,
+                    created_at=created_at,
+                )
         seed_analysis_policy(connector)
         seed_analysis_run(
             connector,
@@ -1600,7 +1876,8 @@ def test_source_cleanup_preserves_newer_mapping_until_older_retirement_is_gone(
         )
         assert (
             connector.fetch_one(
-                "SELECT build_id FROM catalog_source_build_anchors WHERE build_id = %s",
+                "SELECT build_id FROM catalog_source_build_descriptor "
+                "WHERE build_id = %s",
                 (newer_build,),
             )
             == ()
@@ -1611,9 +1888,15 @@ def test_source_cleanup_preserves_newer_mapping_until_older_retirement_is_gone(
 
 def _observation_vertical_rows(
     connector: SQLiteConnector,
+    *,
+    gallery_id: int,
+    observation_id: int,
 ) -> tuple[list[tuple[object, ...]], ...]:
     return tuple(
-        connector.fetch_all(query)
+        connector.fetch_all(
+            query + " WHERE gallery_id = %s AND observation_id = %s",
+            (gallery_id, observation_id),
+        )
         for query in (
             "SELECT * FROM catalog_gallery_observation_directories",
             "SELECT * FROM catalog_gallery_observation_stat",
@@ -1934,27 +2217,22 @@ def test_cleanup_fails_closed_for_shared_gate_and_registry_drift(
         connector.close()
 
 
-def test_all_eighteen_strategies_match_the_closed_phase_registry(
+def test_all_twenty_two_strategies_match_the_closed_phase_registry(
     tmp_path: Path,
 ) -> None:
     expected = {
         CleanupTargetKind.SOURCE_BUILD: (
             "SB_CANONICAL_UPLOAD",
             "SB_GALLERY",
-            "SB_DISCOVERY_SEAL",
-            "SB_DISCOVERY_VALUES",
-            "SB_DISCOVERY_ANCHOR",
+            "SB_DISCOVERY",
             "SB_SATELLITES",
             "SB_GENERATION",
+            "SB_STATE",
             "SB_ROOT",
         ),
         CleanupTargetKind.ANALYSIS_RUN: (
-            "AR_BATCH_SEAL",
-            "AR_BATCH_VALUES",
-            "AR_BATCH_ANCHOR",
-            "AR_COMPONENT_SEAL",
-            "AR_COMPONENT_VALUES",
-            "AR_COMPONENT_ANCHOR",
+            "AR_BATCH",
+            "AR_COMPONENT",
             "AR_OVERLAY",
             "AR_FILE_HASH_VALUES",
             "AR_IMPACT_PROVENANCE",
@@ -1962,14 +2240,12 @@ def test_all_eighteen_strategies_match_the_closed_phase_registry(
             "AR_EVIDENCE",
             "AR_EXCLUSION_VALUES",
             "AR_EXCLUSION_ANCHOR",
-            "AR_CHECKPOINT_SEAL",
-            "AR_CHECKPOINT_VALUES",
-            "AR_CHECKPOINT_ANCHOR",
+            "AR_CHECKPOINT",
             "AR_ANCESTRY",
             "AR_BASELINE",
             "AR_BINDINGS",
-            "AR_DESCRIPTOR",
-            "AR_RUN_VALUES",
+            "AR_COMPLETION",
+            "AR_STATE",
             "AR_ROOT",
         ),
         CleanupTargetKind.CATALOG_PUBLICATION: (
@@ -1985,16 +2261,32 @@ def test_all_eighteen_strategies_match_the_closed_phase_registry(
             "CP_ARTIFACT",
             "CP_ROOT",
         ),
+        CleanupTargetKind.PUBLICATION_COMMIT: (
+            "PCOM_RELEASE_BUILD_BASE",
+            "PCOM_PREPARATION_BINDING",
+            "PCOM_PREPARATION_BATCH",
+            "PCOM_PREPARATION_CHECKPOINT",
+            "PCOM_PREPARATION",
+            "PCOM_EVENT",
+            "PCOM_FINALIZATION_MARKER",
+            "PCOM_FINALIZATION_BATCH",
+            "PCOM_COMMIT_EFFECT_ROOT",
+            "PCOM_FINALIZATION_CHECKPOINT",
+            "PCOM_ANCHOR",
+        ),
+        CleanupTargetKind.CATALOG_REVISION_DESCRIPTOR: ("CRD_ROOT",),
+        CleanupTargetKind.SOURCE_REVISION_DESCRIPTOR: ("SRD_ROOT",),
+        CleanupTargetKind.PUBLICATION_GENERATION: ("PG_EDGE", "PG_ROOT"),
         CleanupTargetKind.PUBLICATION_CANDIDATE: (
             "PC_SEALS",
             "PC_PREPARED",
             "PC_INPUT",
-            "PC_BATCH_VALUES",
-            "PC_BATCH_ANCHOR",
-            "PC_CHECKPOINT_SEAL",
+            "PC_CONTRIBUTOR_NAME",
+            "PC_CONTRIBUTOR_ROLE",
+            "PC_CHECKPOINT",
             "PC_SELECTION_STORAGE",
-            "PC_CHECKPOINT_VALUES",
-            "PC_CHECKPOINT_ANCHOR",
+            "PC_CONTENT",
+            "PC_SUBJECT",
             "PC_BASES",
             "PC_SELECTION_IDENTITY",
             "PC_ROOT",
@@ -2078,6 +2370,2087 @@ def test_all_eighteen_strategies_match_the_closed_phase_registry(
         connector.close()
 
 
+def test_frozen_root_set_corruption_and_serialized_open_cycle_fail_closed(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "cleanup-frozen-root-corruption.sqlite3")
+    source = bytes((37,)) + b"s" * 31
+    fingerprint = b"f" * 32
+    try:
+        _fixture_rows(
+            connector,
+            [
+                (
+                    "INSERT INTO operational_hash_cache_observations "
+                    "(source_identity_sha256, fingerprint_sha256, observed_at) "
+                    "VALUES (%s, %s, 10)",
+                    (source, fingerprint),
+                ),
+                (
+                    "INSERT INTO operational_file_hash_caches "
+                    "(source_identity_sha256, fingerprint_sha256, file_sha256, "
+                    "cached_at) VALUES (%s, %s, %s, 10)",
+                    (source, fingerprint, b"z" * 32),
+                ),
+            ],
+        )
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.HASH_CACHE_OBSERVATION,
+            37,
+            max_rows=8,
+        )
+        frame_row = connector.fetch_one(
+            "SELECT frozen_root_key FROM operational_cleanup_cycle_roots "
+            "WHERE cleanup_id = %s",
+            (cycle.cleanup_id,),
+        )
+        assert frame_row is not None
+        frame = cast(bytes, frame_row[0])
+        assert len(frame) == 72
+        assert connector.fetch_one(
+            "SELECT frozen_root_count FROM operational_cleanup_jobs "
+            "WHERE cleanup_id = %s",
+            (cycle.cleanup_id,),
+        ) == (1,)
+
+        with pytest.raises(
+            CleanupUnavailableError,
+            match="another serialized cleanup cycle",
+        ):
+            _begin(
+                connector,
+                gate,
+                CleanupTargetKind.CONTENT_BLOB,
+                0,
+            )
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM operational_cleanup_jobs WHERE state = 'OPEN'"
+        ) == (1,)
+
+        with connector.transaction():
+            connector.execute(
+                "UPDATE operational_cleanup_cycle_roots "
+                "SET frozen_root_key = %s WHERE cleanup_id = %s",
+                (b"\x02" + frame[1:], cycle.cleanup_id),
+            )
+        with pytest.raises(CleanupCorruptionError, match="codec|digest"):
+            _advance(connector, gate, cycle, 1, b"i" * 32, now=3)
+        assert connector.fetch_one(
+            "SELECT file_sha256 FROM operational_file_hash_caches "
+            "WHERE source_identity_sha256 = %s AND fingerprint_sha256 = %s",
+            (source, fingerprint),
+        ) == (b"z" * 32,)
+
+        duplicate_digest = cleanup_module._frozen_root_set_sha256(
+            cycle.cleanup_id,
+            (frame, frame),
+        )
+        with connector.transaction():
+            connector.execute(
+                "UPDATE operational_cleanup_cycle_roots "
+                "SET frozen_root_key = %s WHERE cleanup_id = %s",
+                (frame, cycle.cleanup_id),
+            )
+            connector.execute(
+                "UPDATE operational_cleanup_jobs "
+                "SET frozen_root_count = 2, frozen_root_set_sha256 = %s "
+                "WHERE cleanup_id = %s",
+                (duplicate_digest, cycle.cleanup_id),
+            )
+        original_fetch_all = connector.fetch_all
+
+        def duplicate_membership(
+            sql: str,
+            parameters: tuple[object, ...] = (),
+        ) -> list[tuple[Any, ...]]:
+            if "SELECT frozen_root_key FROM operational_cleanup_cycle_roots" in sql:
+                return [(frame,), (frame,)]
+            return original_fetch_all(sql, parameters)
+
+        with (
+            patch.object(connector, "fetch_all", side_effect=duplicate_membership),
+            pytest.raises(CleanupCorruptionError, match="duplicated"),
+        ):
+            _advance(connector, gate, cycle, 1, b"d" * 32, now=4)
+    finally:
+        connector.close()
+
+
+def test_frozen_root_source_gallery_name_has_exact_260_byte_boundary() -> None:
+    plan = cleanup_module._STATIC_PLANS[CleanupTargetKind.SOURCE_GALLERY_NAME_GID]
+    maximum_name = b"x" * 255
+    cleanup_module._validate_frozen_root_values(plan, (maximum_name,))
+    encoded = cleanup_module._encode_frozen_root_key((maximum_name,))
+    assert len(encoded) == 260
+    assert cleanup_module._decode_frozen_root_key(
+        encoded,
+        root_arity=1,
+    ) == (maximum_name,)
+
+    with pytest.raises(ValueError, match=r"source_gallery_name.*1\.\.255"):
+        cleanup_module._validate_frozen_root_values(plan, (b"x" * 256,))
+
+
+def test_frozen_root_set_accepts_exact_256_root_boundary(tmp_path: Path) -> None:
+    connector = _database(tmp_path / "cleanup-frozen-root-256.sqlite3")
+    fingerprint = b"f" * 32
+    roots = [
+        (bytes((37,)) + index.to_bytes(31, "big"), fingerprint) for index in range(256)
+    ]
+    try:
+        connector.execute("PRAGMA foreign_keys = OFF")
+        try:
+            connector.execute_many(
+                "INSERT INTO operational_hash_cache_observations "
+                "(source_identity_sha256, fingerprint_sha256, observed_at) "
+                "VALUES (%s, %s, 10)",
+                roots,
+            )
+        finally:
+            connector.execute("PRAGMA foreign_keys = ON")
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.HASH_CACHE_OBSERVATION,
+            37,
+            max_rows=256,
+        )
+        assert connector.fetch_one(
+            "SELECT frozen_root_count FROM operational_cleanup_jobs "
+            "WHERE cleanup_id = %s",
+            (cycle.cleanup_id,),
+        ) == (256,)
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM operational_cleanup_cycle_roots "
+            "WHERE cleanup_id = %s",
+            (cycle.cleanup_id,),
+        ) == (256,)
+
+        file_terminal = _advance(connector, gate, cycle, 1, b"f" * 32, now=3)
+        assert file_terminal.phase == "HC_ROOT" and file_terminal.generation == 1
+        deleted = _advance(connector, gate, cycle, 1, b"r" * 32, now=4)
+        assert deleted.row_count == 256 and deleted.generation == 2
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM operational_hash_cache_observations"
+        ) == (0,)
+
+        assert cleanup_module._require_frozen_root_count(256) == 256
+        with pytest.raises(CleanupCorruptionError, match="hard cap"):
+            cleanup_module._require_frozen_root_count(257)
+    finally:
+        connector.close()
+
+
+def test_frozen_root_terminal_completion_rolls_back_atomically(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "cleanup-frozen-root-rollback.sqlite3")
+    source = bytes((38,)) + b"s" * 31
+    fingerprint = b"f" * 32
+    try:
+        _fixture_rows(
+            connector,
+            [
+                (
+                    "INSERT INTO operational_hash_cache_observations "
+                    "(source_identity_sha256, fingerprint_sha256, observed_at) "
+                    "VALUES (%s, %s, 10)",
+                    (source, fingerprint),
+                ),
+                (
+                    "INSERT INTO operational_file_hash_caches "
+                    "(source_identity_sha256, fingerprint_sha256, file_sha256, "
+                    "cached_at) VALUES (%s, %s, %s, 10)",
+                    (source, fingerprint, b"z" * 32),
+                ),
+            ],
+        )
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.HASH_CACHE_OBSERVATION,
+            38,
+            max_rows=1,
+        )
+        first = _advance(connector, gate, cycle, 1, b"1" * 32, now=3)
+        assert first.generation == 2 and first.phase == "HC_FILE"
+        second = _advance(connector, gate, cycle, 2, b"2" * 32, now=4)
+        assert second.generation == 1 and second.phase == "HC_ROOT"
+        third = _advance(connector, gate, cycle, 1, b"3" * 32, now=5)
+        assert third.generation == 2 and third.phase == "HC_ROOT"
+
+        command = CleanupBatchCommand(b"4" * 32, 2)
+        with pytest.raises(RuntimeError, match="abort frozen completion"):
+            with connector.transaction():
+                result = VNextCleanupRepository.advance(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    cycle=cycle,
+                    command=command,
+                    now=6,
+                )
+                assert result.cycle_complete
+                raise RuntimeError("abort frozen completion")
+
+        assert connector.fetch_one(
+            "SELECT state FROM operational_cleanup_jobs WHERE cleanup_id = %s",
+            (cycle.cleanup_id,),
+        ) == ("OPEN",)
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM operational_cleanup_cycle_roots "
+            "WHERE cleanup_id = %s",
+            (cycle.cleanup_id,),
+        ) == (1,)
+        assert (
+            connector.fetch_one(
+                "SELECT target_key FROM operational_cleanup_completions "
+                "WHERE target_key = %s",
+                (cycle.target_key,),
+            )
+            == ()
+        )
+
+        committed = _advance(connector, gate, cycle, 2, b"4" * 32, now=7)
+        assert committed.cycle_complete and not committed.replayed
+        replay = _advance(connector, gate, cycle, 2, b"4" * 32, now=8)
+        assert replay.cycle_complete and replay.replayed
+        assert (
+            connector.fetch_one(
+                "SELECT 1 FROM operational_cleanup_cycle_roots WHERE cleanup_id = %s",
+                (cycle.cleanup_id,),
+            )
+            == ()
+        )
+    finally:
+        connector.close()
+
+
+def test_current_only_pipeline_resumes_an_open_hash_cache_cycle(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "cleanup-hash-handoff.sqlite3")
+    source = bytes((39,)) + b"s" * 31
+    fingerprint = b"f" * 32
+    try:
+        _fixture_rows(
+            connector,
+            [
+                (
+                    "INSERT INTO operational_hash_cache_observations "
+                    "(source_identity_sha256, fingerprint_sha256, observed_at) "
+                    "VALUES (%s, %s, 10)",
+                    (source, fingerprint),
+                ),
+            ],
+        )
+        gate = _exclusive(connector)
+        opened = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.HASH_CACHE_OBSERVATION,
+            39,
+            max_rows=1,
+        )
+        with connector.transaction():
+            work = VNextUnitOfWork(connector, backend="sqlite")
+            assert (
+                VNextCleanupRepository.current_only_maintenance_state(
+                    work,
+                    cycle_cutoff_at=100,
+                    gate_lease=gate,
+                    now=3,
+                )
+                is CatalogPublicationMaintenanceState.ACTIONABLE
+            )
+            resumed = VNextCleanupRepository.next_current_only_cycle(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                cycle_cutoff_at=100,
+                now=3,
+            )
+        assert resumed == opened
+        assert resumed is not None
+        _drain(connector, gate, resumed, now=4)
+    finally:
+        connector.close()
+
+
+def test_publication_commit_cleanup_is_child_first_replayable_and_fenced(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "publication-commit-cleanup.sqlite3")
+    try:
+        gate = _exclusive(connector)
+        old_receipt, replacement_receipt = _seed_publication_commit_cleanup_history(
+            connector
+        )
+        build_id, _analysis_ids = _seed_publication_commit_source_build_base(
+            connector,
+            base_receipt=old_receipt,
+            handoff_receipt=replacement_receipt,
+        )
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_COMMIT,
+            old_receipt[0],
+            max_rows=1,
+        )
+
+        first = _advance(connector, gate, cycle, 1, b"a" * 32, now=3)
+        assert first.phase == "PCOM_RELEASE_BUILD_BASE"
+        assert first.row_count == 1
+        replay = _advance(connector, gate, cycle, 1, b"a" * 32, now=4)
+        assert replay.replayed and replay == first.__class__(
+            cycle=first.cycle,
+            phase=first.phase,
+            generation=first.generation,
+            cursor=first.cursor,
+            deleted_count=first.deleted_count,
+            row_count=first.row_count,
+            phase_complete=first.phase_complete,
+            cycle_complete=first.cycle_complete,
+            replayed=True,
+        )
+        with pytest.raises(CleanupUnavailableError, match="generation is stale"):
+            _advance(connector, gate, cycle, 1, b"b" * 32, now=5)
+        assert (
+            connector.fetch_one(
+                "SELECT 1 FROM catalog_source_build_base_publication_commits "
+                "WHERE build_id = %s",
+                (build_id,),
+            )
+            == ()
+        )
+        for retained_parent in (
+            "catalog_publication_commit_finalizations",
+            "catalog_publication_commits",
+        ):
+            assert connector.fetch_one(
+                f"SELECT 1 FROM {retained_parent} WHERE receipt_id = %s",
+                (old_receipt,),
+            ) == (1,)
+
+        assert first.generation is not None
+        generation = first.generation
+        results = [first]
+        for attempt in range(1, 32):
+            result = _advance(
+                connector,
+                gate,
+                cycle,
+                generation,
+                (100 + attempt).to_bytes(32, "big"),
+                now=5 + attempt,
+            )
+            results.append(result)
+            if result.cycle_complete:
+                break
+            assert result.generation is not None
+            generation = result.generation
+        else:
+            raise AssertionError("publication-commit cleanup did not terminate")
+
+        nonempty_phases = tuple(
+            result.phase for result in results if result.row_count > 0
+        )
+        assert nonempty_phases == (
+            "PCOM_RELEASE_BUILD_BASE",
+            "PCOM_PREPARATION_BINDING",
+            "PCOM_PREPARATION_BATCH",
+            "PCOM_PREPARATION_CHECKPOINT",
+            "PCOM_PREPARATION",
+            "PCOM_EVENT",
+            "PCOM_FINALIZATION_MARKER",
+            "PCOM_FINALIZATION_BATCH",
+            "PCOM_COMMIT_EFFECT_ROOT",
+            "PCOM_FINALIZATION_CHECKPOINT",
+            "PCOM_ANCHOR",
+        )
+        for table in (
+            "catalog_publication_commit_finalizations",
+            "catalog_publication_finalization_batch_stored",
+            "catalog_publication_commits",
+            "catalog_publication_finalization_checkpoints",
+            "catalog_publication_commit_anchors",
+        ):
+            assert connector.fetch_one(
+                f"SELECT COUNT(*) FROM {table} WHERE receipt_id = %s",
+                (old_receipt,),
+            ) == (0,)
+            assert connector.fetch_one(
+                f"SELECT COUNT(*) FROM {table} WHERE receipt_id = %s",
+                (replacement_receipt,),
+            ) == (1,)
+        old_preparation = bytes((51,)) * 16
+        replacement_preparation = bytes((52,)) * 16
+        for table in (
+            "operational_operational_event_streams",
+            "operational_operational_preparations",
+            "operational_operational_preparation_checkpoints",
+            "operational_operational_preparation_batch_receipts",
+            "operational_operational_preparation_effect_seals",
+            "operational_operational_events",
+        ):
+            assert connector.fetch_one(
+                f"SELECT COUNT(*) FROM {table} WHERE preparation_id = %s",
+                (old_preparation,),
+            ) == (0,)
+            assert connector.fetch_one(
+                f"SELECT COUNT(*) FROM {table} WHERE preparation_id = %s",
+                (replacement_preparation,),
+            ) == (1,)
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM operational_operational_removed_gid_events "
+            "WHERE event_id = %s",
+            (bytes((61,)) * 16,),
+        ) == (0,)
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM operational_operational_removed_gid_events "
+            "WHERE event_id = %s",
+            (bytes((62,)) * 16,),
+        ) == (1,)
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM operational_publication_candidate_preparations "
+            "WHERE preparation_id = %s",
+            (old_preparation,),
+        ) == (0,)
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM operational_publication_candidate_preparations "
+            "WHERE preparation_id = %s",
+            (replacement_preparation,),
+        ) == (1,)
+        assert (
+            connector.fetch_one(
+                "SELECT 1 FROM catalog_source_build_base_publication_commits "
+                "WHERE build_id = %s",
+                (build_id,),
+            )
+            == ()
+        )
+
+        with connector.transaction():
+            completed = VNextCleanupRepository.resume_cycle(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                cycle=cycle,
+                now=50,
+            )
+        assert completed.cycle_complete and completed.replayed
+    finally:
+        connector.close()
+
+
+def test_publication_commit_frozen_root_binds_exact_preparation_authority(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "publication-frozen-preparation.sqlite3")
+    try:
+        gate = _exclusive(connector)
+        old_receipt, _replacement = _seed_publication_commit_cleanup_history(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_COMMIT,
+            old_receipt[0],
+            max_rows=8,
+        )
+        wrong_preparation = b"z" * 16
+        wrong_frame = cleanup_module._encode_frozen_root_key(
+            (old_receipt, wrong_preparation)
+        )
+        wrong_digest = cleanup_module._frozen_root_set_sha256(
+            cycle.cleanup_id,
+            (wrong_frame,),
+        )
+        connector.execute(
+            "UPDATE operational_cleanup_cycle_roots SET frozen_root_key = %s "
+            "WHERE cleanup_id = %s",
+            (wrong_frame, cycle.cleanup_id),
+        )
+        connector.execute(
+            "UPDATE operational_cleanup_jobs SET frozen_root_set_sha256 = %s "
+            "WHERE cleanup_id = %s",
+            (wrong_digest, cycle.cleanup_id),
+        )
+
+        with pytest.raises(
+            CleanupCorruptionError,
+            match="differs from its frozen authority",
+        ):
+            _advance(connector, gate, cycle, 1, b"v" * 32, now=3)
+        with pytest.raises(
+            operational_refinement_module.OperationalSemanticValidationError,
+            match="differs from frozen authority",
+        ):
+            operational_refinement_module._validate_open_pcom_event_transition(
+                connector,
+                "sqlite",
+            )
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ("missing_subtype", "wrong_subtype", "both_subtypes", "missing_base"),
+)
+def test_publication_commit_event_phase_rejects_partial_or_mismatched_coordinates(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    connector = _database(tmp_path / f"publication-event-{corruption}.sqlite3")
+    try:
+        gate = _exclusive(connector)
+        old_receipt, _replacement = _seed_publication_commit_cleanup_history(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_COMMIT,
+            old_receipt[0],
+            max_rows=8,
+        )
+        _advance_to_cleanup_phase(connector, gate, cycle, "PCOM_EVENT")
+        event_id = bytes((61,)) * 16
+        statements: list[tuple[str, tuple[object, ...]]] = []
+        if corruption in {"missing_subtype", "wrong_subtype", "missing_base"}:
+            statements.append(
+                (
+                    "DELETE FROM operational_operational_removed_gid_events "
+                    "WHERE event_id = %s",
+                    (event_id,),
+                )
+            )
+        if corruption in {"wrong_subtype", "both_subtypes"}:
+            statements.append(
+                (
+                    "INSERT INTO operational_operational_deletion_consumption_events "
+                    "(event_id, gid, deletion_request_token) VALUES (%s, 1, %s)",
+                    (event_id, b"w" * 16),
+                )
+            )
+        if corruption == "missing_base":
+            statements.append(
+                (
+                    "DELETE FROM operational_operational_events WHERE event_id = %s",
+                    (event_id,),
+                )
+            )
+        _fixture_rows(connector, statements)
+        before = tuple(
+            connector.fetch_all(f"SELECT * FROM {table}")
+            for table in (
+                "operational_operational_events",
+                "operational_operational_removed_gid_events",
+                "operational_operational_deletion_consumption_events",
+            )
+        )
+
+        with pytest.raises(CleanupCorruptionError, match="PCOM EVENT"):
+            _advance(connector, gate, cycle, 1, b"e" * 32, now=80)
+
+        after = tuple(
+            connector.fetch_all(f"SELECT * FROM {table}")
+            for table in (
+                "operational_operational_events",
+                "operational_operational_removed_gid_events",
+                "operational_operational_deletion_consumption_events",
+            )
+        )
+        assert after == before
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize("failing_delete", ("subtype", "event"))
+def test_publication_commit_event_compound_delete_fault_rolls_back(
+    tmp_path: Path,
+    failing_delete: str,
+) -> None:
+    connector = _database(
+        tmp_path / f"publication-event-fault-{failing_delete}.sqlite3"
+    )
+    try:
+        gate = _exclusive(connector)
+        old_receipt, _replacement = _seed_publication_commit_cleanup_history(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_COMMIT,
+            old_receipt[0],
+            max_rows=8,
+        )
+        _advance_to_cleanup_phase(connector, gate, cycle, "PCOM_EVENT")
+        event_id = bytes((61,)) * 16
+        original = connector.execute_affected
+
+        def fail_delete(sql: str, data: tuple[object, ...] = ()) -> int:
+            is_subtype = sql.startswith(
+                "DELETE FROM operational_operational_removed_gid_events"
+            )
+            is_event = sql.startswith("DELETE FROM operational_operational_events")
+            if (failing_delete == "subtype" and is_subtype) or (
+                failing_delete == "event" and is_event
+            ):
+                raise RuntimeError(f"injected {failing_delete} delete fault")
+            return original(sql, data)
+
+        with (
+            patch.object(connector, "execute_affected", side_effect=fail_delete),
+            pytest.raises(RuntimeError, match=f"{failing_delete} delete fault"),
+        ):
+            _advance(connector, gate, cycle, 1, b"f" * 32, now=80)
+
+        assert connector.fetch_one(
+            "SELECT 1 FROM operational_operational_events WHERE event_id = %s",
+            (event_id,),
+        ) == (1,)
+        assert connector.fetch_one(
+            "SELECT 1 FROM operational_operational_removed_gid_events "
+            "WHERE event_id = %s",
+            (event_id,),
+        ) == (1,)
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize("failing_delete", ("commit", "seal", "stream"))
+def test_publication_commit_effect_root_fault_rolls_back_all_three_rows(
+    tmp_path: Path,
+    failing_delete: str,
+) -> None:
+    connector = _database(tmp_path / f"publication-root-fault-{failing_delete}.sqlite3")
+    try:
+        gate = _exclusive(connector)
+        old_receipt, _replacement = _seed_publication_commit_cleanup_history(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_COMMIT,
+            old_receipt[0],
+            max_rows=8,
+        )
+        _advance_to_cleanup_phase(
+            connector,
+            gate,
+            cycle,
+            "PCOM_COMMIT_EFFECT_ROOT",
+        )
+        preparation_id = bytes((51,)) * 16
+        original = connector.execute_affected
+
+        def fail_delete(sql: str, data: tuple[object, ...] = ()) -> int:
+            if failing_delete == "commit" and sql.startswith(
+                "DELETE FROM catalog_publication_commits"
+            ):
+                return 0
+            if failing_delete == "seal" and sql.startswith(
+                "DELETE FROM operational_operational_preparation_effect_seals"
+            ):
+                return 0
+            if failing_delete == "stream" and sql.startswith(
+                "DELETE FROM operational_operational_event_streams"
+            ):
+                return 0
+            return original(sql, data)
+
+        with (
+            patch.object(connector, "execute_affected", side_effect=fail_delete),
+            pytest.raises(CleanupUnavailableError, match="compound root changed"),
+        ):
+            _advance(connector, gate, cycle, 1, b"g" * 32, now=90)
+
+        assert connector.fetch_one(
+            "SELECT 1 FROM catalog_publication_commits WHERE receipt_id = %s",
+            (old_receipt,),
+        ) == (1,)
+        assert connector.fetch_one(
+            "SELECT 1 FROM operational_operational_preparation_effect_seals "
+            "WHERE preparation_id = %s",
+            (preparation_id,),
+        ) == (1,)
+        assert connector.fetch_one(
+            "SELECT 1 FROM operational_operational_event_streams "
+            "WHERE preparation_id = %s",
+            (preparation_id,),
+        ) == (1,)
+    finally:
+        connector.close()
+
+
+def test_publication_commit_effect_root_rejects_missing_uncovered_triple(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "publication-root-missing.sqlite3")
+    try:
+        gate = _exclusive(connector)
+        old_receipt, _replacement = _seed_publication_commit_cleanup_history(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_COMMIT,
+            old_receipt[0],
+            max_rows=8,
+        )
+        _advance_to_cleanup_phase(
+            connector,
+            gate,
+            cycle,
+            "PCOM_COMMIT_EFFECT_ROOT",
+        )
+        preparation_id = bytes((51,)) * 16
+        _fixture_rows(
+            connector,
+            [
+                (
+                    "DELETE FROM operational_operational_preparation_effect_seals "
+                    "WHERE preparation_id = %s",
+                    (preparation_id,),
+                )
+            ],
+        )
+
+        with pytest.raises(
+            CleanupCorruptionError,
+            match="missing or only partially present",
+        ):
+            _advance(connector, gate, cycle, 1, b"r" * 32, now=90)
+
+        assert connector.fetch_one(
+            "SELECT 1 FROM catalog_publication_commits WHERE receipt_id = %s",
+            (old_receipt,),
+        ) == (1,)
+        assert connector.fetch_one(
+            "SELECT 1 FROM operational_operational_event_streams "
+            "WHERE preparation_id = %s",
+            (preparation_id,),
+        ) == (1,)
+    finally:
+        connector.close()
+
+
+def test_publication_commit_event_cursor_rejects_covered_reappearance(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "publication-event-reappearance.sqlite3")
+    try:
+        gate = _exclusive(connector)
+        old_receipt, _replacement = _seed_publication_commit_cleanup_history(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_COMMIT,
+            old_receipt[0],
+            max_rows=8,
+        )
+        _advance_to_cleanup_phase(connector, gate, cycle, "PCOM_EVENT")
+        deleted = _advance(connector, gate, cycle, 1, b"h" * 32, now=80)
+        assert deleted.phase == "PCOM_EVENT" and deleted.row_count == 1
+        _fixture_rows(
+            connector,
+            [
+                (
+                    "INSERT INTO operational_operational_events "
+                    "(event_id, preparation_id, sequence_no, event_type, "
+                    "event_sha256, created_at) "
+                    "VALUES (%s, %s, 0, 'REMOVED_GID', %s, 10)",
+                    (bytes((61,)) * 16, bytes((51,)) * 16, bytes((131,)) * 32),
+                ),
+                (
+                    "INSERT INTO operational_operational_removed_gid_events "
+                    "(event_id, gid, request_token) VALUES (%s, 1, %s)",
+                    (bytes((61,)) * 16, bytes((141,)) * 16),
+                ),
+            ],
+        )
+        assert deleted.generation is not None
+        with pytest.raises(CleanupCorruptionError, match="covered coordinate"):
+            _advance(
+                connector,
+                gate,
+                cycle,
+                deleted.generation,
+                b"i" * 32,
+                now=81,
+            )
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    (
+        "output",
+        "over_budget",
+        "deleted_underflow",
+        "stationary_nonterminal",
+        "moving_forgery",
+    ),
+)
+def test_publication_commit_event_receipt_corruption_fails_full_check(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    connector = _database(tmp_path / f"publication-event-receipt-{corruption}.sqlite3")
+    try:
+        gate = _exclusive(connector)
+        old_receipt, _replacement = _seed_publication_commit_cleanup_history(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_COMMIT,
+            old_receipt[0],
+            max_rows=8,
+        )
+        _advance_to_cleanup_phase(connector, gate, cycle, "PCOM_EVENT")
+        event_batch = _advance(connector, gate, cycle, 1, b"s" * 32, now=80)
+        assert event_batch.row_count == 1 and event_batch.generation == 2
+        if corruption == "output":
+            statement = (
+                "UPDATE operational_cleanup_batch_receipts SET output_sha256 = %s "
+                "WHERE cleanup_id = %s AND phase = 'PCOM_EVENT'"
+            )
+            parameters: tuple[object, ...] = (b"x" * 32, cycle.cleanup_id)
+        elif corruption == "over_budget":
+            statement = (
+                "UPDATE operational_cleanup_batch_receipts SET row_count = 9 "
+                "WHERE cleanup_id = %s AND phase = 'PCOM_EVENT'"
+            )
+            parameters = (cycle.cleanup_id,)
+        elif corruption == "deleted_underflow":
+            statement = (
+                "UPDATE operational_cleanup_batch_receipts SET row_count = 2 "
+                "WHERE cleanup_id = %s AND phase = 'PCOM_EVENT'"
+            )
+            parameters = (cycle.cleanup_id,)
+        elif corruption == "stationary_nonterminal":
+            statement = (
+                "UPDATE operational_cleanup_batch_receipts "
+                "SET start_cursor = next_cursor "
+                "WHERE cleanup_id = %s AND phase = 'PCOM_EVENT'"
+            )
+            parameters = (cycle.cleanup_id,)
+        else:
+            statement = (
+                "UPDATE operational_cleanup_batch_receipts "
+                "SET start_cursor = %s, input_sha256 = %s "
+                "WHERE cleanup_id = %s AND phase = 'PCOM_EVENT'"
+            )
+            parameters = (b"forged-but-moving", b"q" * 32, cycle.cleanup_id)
+        connector.execute(statement, parameters)
+
+        with pytest.raises(
+            operational_refinement_module.OperationalSemanticValidationError,
+            match="cleanup receipt",
+        ):
+            operational_refinement_module._validate_fixed_cleanup_state(
+                connector,
+                "sqlite",
+            )
+        with pytest.raises(CleanupCorruptionError, match="cleanup latest receipt"):
+            _advance(
+                connector,
+                gate,
+                cycle,
+                event_batch.generation,
+                b"z" * 32,
+                now=81,
+            )
+    finally:
+        connector.close()
+
+
+def test_publication_commit_open_transition_full_check_accepts_exact_receipt_proof(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "publication-transition-check.sqlite3")
+    try:
+        gate = _exclusive(connector)
+        old_receipt, _replacement = _seed_publication_commit_cleanup_history(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_COMMIT,
+            old_receipt[0],
+            max_rows=8,
+        )
+        _advance_to_cleanup_phase(connector, gate, cycle, "PCOM_EVENT")
+        event_batch = _advance(connector, gate, cycle, 1, b"j" * 32, now=80)
+        assert event_batch.row_count == 1 and event_batch.generation == 2
+        operational_refinement_module._validate_open_pcom_event_transition(
+            connector,
+            "sqlite",
+        )
+
+        event_terminal = _advance(
+            connector,
+            gate,
+            cycle,
+            event_batch.generation,
+            b"k" * 32,
+            now=81,
+        )
+        assert event_terminal.phase == "PCOM_FINALIZATION_MARKER"
+        _advance_to_cleanup_phase(
+            connector,
+            gate,
+            cycle,
+            "PCOM_COMMIT_EFFECT_ROOT",
+        )
+        root_batch = _advance(connector, gate, cycle, 1, b"l" * 32, now=90)
+        assert root_batch.row_count == 1 and root_batch.generation == 2
+        operational_refinement_module._validate_open_pcom_event_transition(
+            connector,
+            "sqlite",
+        )
+
+        later = _advance(
+            connector,
+            gate,
+            cycle,
+            root_batch.generation,
+            b"m" * 32,
+            now=91,
+        )
+        assert later.phase == "PCOM_FINALIZATION_CHECKPOINT"
+        operational_refinement_module._validate_open_pcom_event_transition(
+            connector,
+            "sqlite",
+        )
+    finally:
+        connector.close()
+
+
+def test_empty_publication_commit_cycle_is_full_check_valid_in_every_phase(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "publication-empty-cycle.sqlite3")
+    try:
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_COMMIT,
+            250,
+            max_rows=8,
+        )
+        expected_phases = (
+            "PCOM_RELEASE_BUILD_BASE",
+            "PCOM_PREPARATION_BINDING",
+            "PCOM_PREPARATION_BATCH",
+            "PCOM_PREPARATION_CHECKPOINT",
+            "PCOM_PREPARATION",
+            "PCOM_EVENT",
+            "PCOM_FINALIZATION_MARKER",
+            "PCOM_FINALIZATION_BATCH",
+            "PCOM_COMMIT_EFFECT_ROOT",
+            "PCOM_FINALIZATION_CHECKPOINT",
+            "PCOM_ANCHOR",
+        )
+        for attempt, expected_phase in enumerate(expected_phases, start=1):
+            assert connector.fetch_one(
+                "SELECT phase FROM operational_cleanup_checkpoints "
+                "WHERE cleanup_id = %s AND state = 'OPEN'",
+                (cycle.cleanup_id,),
+            ) == (expected_phase,)
+            operational_refinement_module._validate_fixed_cleanup_state(
+                connector,
+                "sqlite",
+            )
+            operational_refinement_module._validate_open_pcom_event_transition(
+                connector,
+                "sqlite",
+            )
+            result = _advance(
+                connector,
+                gate,
+                cycle,
+                1,
+                attempt.to_bytes(32, "big"),
+                now=80 + attempt,
+            )
+        assert result.cycle_complete
+        operational_refinement_module._validate_fixed_cleanup_state(
+            connector,
+            "sqlite",
+        )
+        operational_refinement_module._validate_open_pcom_event_transition(
+            connector,
+            "sqlite",
+        )
+    finally:
+        connector.close()
+
+
+def test_publication_commit_multi_root_and_zero_event_retirement(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "publication-multi-root.sqlite3")
+    second_old = bytes.fromhex("21" + "23" * 15)
+    try:
+        gate = _exclusive(connector)
+        old_receipt, replacement = _seed_publication_commit_cleanup_history(
+            connector,
+            additional_old_receipt=second_old,
+        )
+        _fixture_rows(
+            connector,
+            [
+                (
+                    "DELETE FROM operational_operational_removed_gid_events "
+                    "WHERE event_id = %s",
+                    (bytes((62,)) * 16,),
+                ),
+                (
+                    "DELETE FROM operational_operational_events WHERE event_id = %s",
+                    (bytes((62,)) * 16,),
+                ),
+                (
+                    "UPDATE operational_operational_preparation_effect_seals "
+                    "SET event_count = 0 WHERE preparation_id = %s",
+                    (bytes((52,)) * 16,),
+                ),
+            ],
+        )
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_COMMIT,
+            old_receipt[0],
+            max_rows=8,
+        )
+        results = _drain(connector, gate, cycle)
+        assert any(
+            result.phase == "PCOM_COMMIT_EFFECT_ROOT" and result.row_count == 2
+            for result in results
+        )
+        assert connector.fetch_all(
+            "SELECT receipt_id FROM catalog_publication_commits ORDER BY receipt_id"
+        ) == [(replacement,)]
+    finally:
+        connector.close()
+
+
+def test_publication_commit_compound_proof_rejects_each_reappearing_frozen_pair(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "publication-multi-root-reappearance.sqlite3")
+    first_receipt = bytes.fromhex("21" * 16)
+    second_receipt = bytes.fromhex("21" + "23" * 15)
+    first_preparation = bytes((51,)) * 16
+    try:
+        gate = _exclusive(connector)
+        old_receipt, _replacement = _seed_publication_commit_cleanup_history(
+            connector,
+            additional_old_receipt=second_receipt,
+        )
+        assert old_receipt == first_receipt
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_COMMIT,
+            old_receipt[0],
+            max_rows=8,
+        )
+        _advance_to_cleanup_phase(
+            connector,
+            gate,
+            cycle,
+            "PCOM_COMMIT_EFFECT_ROOT",
+        )
+        deleted = _advance(connector, gate, cycle, 1, b"t" * 32, now=90)
+        assert deleted.row_count == 2 and deleted.generation == 2
+        _fixture_rows(
+            connector,
+            [
+                (
+                    "INSERT INTO operational_operational_event_streams "
+                    "(preparation_id, created_at) VALUES (%s, 6)",
+                    (first_preparation,),
+                ),
+                (
+                    "INSERT INTO operational_operational_preparation_effect_seals "
+                    "(preparation_id, event_count, final_chain_sha256, sealed_at) "
+                    "VALUES (%s, 1, %s, 11)",
+                    (first_preparation, bytes((121,)) * 32),
+                ),
+                (
+                    "INSERT INTO catalog_publication_commits "
+                    "(receipt_id, candidate_id, revision, source_revision, "
+                    "generation, preparation_id, operational_policy_id, "
+                    "artifact_policy_id, display_title_policy_id, new_galleries, "
+                    "changed_galleries, removed_galleries, duplicate_losers, "
+                    "committed_at) VALUES (%s, %s, 1, 1, 1, %s, 1, 1, 1, "
+                    "0, 0, 0, 0, 11)",
+                    (first_receipt, bytes((41,)) * 16, first_preparation),
+                ),
+            ],
+        )
+
+        with pytest.raises(
+            operational_refinement_module.OperationalSemanticValidationError,
+            match="commit reappeared",
+        ):
+            operational_refinement_module._validate_open_pcom_event_transition(
+                connector,
+                "sqlite",
+            )
+        with pytest.raises(CleanupCorruptionError, match="commit reappeared"):
+            _advance(
+                connector,
+                gate,
+                cycle,
+                deleted.generation,
+                b"u" * 32,
+                now=91,
+            )
+    finally:
+        connector.close()
+
+
+def test_publication_commit_compound_proof_rejects_recreated_preparation_chain(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "publication-recreated-preparation.sqlite3")
+    preparation_id = bytes((51,)) * 16
+    event_id = bytes((61,)) * 16
+    try:
+        gate = _exclusive(connector)
+        old_receipt, _replacement = _seed_publication_commit_cleanup_history(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_COMMIT,
+            old_receipt[0],
+            max_rows=8,
+        )
+        _advance_to_cleanup_phase(
+            connector,
+            gate,
+            cycle,
+            "PCOM_COMMIT_EFFECT_ROOT",
+        )
+        deleted = _advance(connector, gate, cycle, 1, b"w" * 32, now=90)
+        assert deleted.row_count == 1 and deleted.generation == 2
+        _fixture_rows(
+            connector,
+            [
+                (
+                    "INSERT INTO operational_operational_event_streams "
+                    "(preparation_id, created_at) VALUES (%s, 6)",
+                    (preparation_id,),
+                ),
+                (
+                    "INSERT INTO operational_operational_preparations "
+                    "(preparation_id, build_id, deletion_request_generation, "
+                    "operational_policy_id, state, prepared_at, completed_at) "
+                    "VALUES (%s, %s, 1, 1, 'COMPLETE', 7, 8)",
+                    (preparation_id, bytes((71,)) * 16),
+                ),
+                (
+                    "INSERT INTO operational_operational_preparation_effect_seals "
+                    "(preparation_id, event_count, final_chain_sha256, sealed_at) "
+                    "VALUES (%s, 1, %s, 11)",
+                    (preparation_id, bytes((121,)) * 32),
+                ),
+                (
+                    "INSERT INTO operational_operational_events "
+                    "(event_id, preparation_id, sequence_no, event_type, "
+                    "event_sha256, created_at) "
+                    "VALUES (%s, %s, 0, 'REMOVED_GID', %s, 11)",
+                    (event_id, preparation_id, bytes((131,)) * 32),
+                ),
+                (
+                    "INSERT INTO operational_operational_removed_gid_events "
+                    "(event_id, gid, request_token) VALUES (%s, 1, %s)",
+                    (event_id, bytes((141,)) * 16),
+                ),
+            ],
+        )
+
+        with pytest.raises(
+            operational_refinement_module.OperationalSemanticValidationError,
+            match="compound-covered authority reappeared",
+        ):
+            operational_refinement_module._validate_open_pcom_event_transition(
+                connector,
+                "sqlite",
+            )
+        with pytest.raises(CleanupCorruptionError, match="authority reappeared"):
+            _advance(
+                connector,
+                gate,
+                cycle,
+                deleted.generation,
+                b"x" * 32,
+                now=91,
+            )
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize(
+    "reappearing_family",
+    (
+        "source_base",
+        "preparation_binding",
+        "preparation_batch",
+        "preparation_checkpoint",
+        "preparation",
+        "event",
+        "seal",
+        "stream",
+        "finalization_marker",
+        "finalization_batch",
+        "finalization_checkpoint",
+        "anchor",
+    ),
+)
+def test_publication_commit_post_compound_phase_rejects_every_reappearing_family(
+    tmp_path: Path,
+    reappearing_family: str,
+) -> None:
+    connector = _database(
+        tmp_path / f"publication-post-compound-{reappearing_family}.sqlite3"
+    )
+    receipt_id = bytes.fromhex("21" * 16)
+    candidate_id = bytes((41,)) * 16
+    preparation_id = bytes((51,)) * 16
+    event_id = bytes((61,)) * 16
+    try:
+        gate = _exclusive(connector)
+        old_receipt, _replacement = _seed_publication_commit_cleanup_history(connector)
+        assert old_receipt == receipt_id
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_COMMIT,
+            receipt_id[0],
+            max_rows=8,
+        )
+        _advance_to_cleanup_phase(
+            connector,
+            gate,
+            cycle,
+            "PCOM_COMMIT_EFFECT_ROOT",
+        )
+        compound = _advance(connector, gate, cycle, 1, b"v" * 32, now=90)
+        assert compound.row_count == 1 and compound.generation == 2
+        checkpoint = _advance(
+            connector,
+            gate,
+            cycle,
+            compound.generation,
+            b"w" * 32,
+            now=91,
+        )
+        assert checkpoint.phase == "PCOM_FINALIZATION_CHECKPOINT"
+        assert checkpoint.generation == 1
+
+        if reappearing_family == "finalization_checkpoint":
+            checkpoint = _advance(
+                connector,
+                gate,
+                cycle,
+                checkpoint.generation,
+                b"x" * 32,
+                now=92,
+            )
+            assert checkpoint.phase == "PCOM_FINALIZATION_CHECKPOINT"
+            assert checkpoint.row_count == 1 and checkpoint.generation == 2
+        elif reappearing_family == "anchor":
+            assert checkpoint.generation is not None
+            deleted_checkpoint = _advance(
+                connector,
+                gate,
+                cycle,
+                checkpoint.generation,
+                b"x" * 32,
+                now=92,
+            )
+            assert deleted_checkpoint.generation == 2
+            assert deleted_checkpoint.generation is not None
+            checkpoint = _advance(
+                connector,
+                gate,
+                cycle,
+                deleted_checkpoint.generation,
+                b"y" * 32,
+                now=93,
+            )
+            assert checkpoint.phase == "PCOM_ANCHOR" and checkpoint.generation == 1
+            checkpoint = _advance(
+                connector,
+                gate,
+                cycle,
+                checkpoint.generation,
+                b"z" * 32,
+                now=94,
+            )
+            assert checkpoint.phase == "PCOM_ANCHOR"
+            assert checkpoint.row_count == 1 and checkpoint.generation == 2
+
+        statements_by_family: dict[str, list[tuple[str, tuple[object, ...]]]] = {
+            "source_base": [
+                (
+                    "INSERT INTO catalog_source_build_base_publication_commits "
+                    "(build_id, base_receipt_id) VALUES (%s, %s)",
+                    (bytes((71,)) * 16, receipt_id),
+                )
+            ],
+            "preparation_binding": [
+                (
+                    "INSERT INTO operational_publication_candidate_preparations "
+                    "(candidate_id, preparation_id, bound_at) VALUES (%s, %s, 11)",
+                    (candidate_id, preparation_id),
+                )
+            ],
+            "preparation_batch": [
+                (
+                    "INSERT INTO operational_operational_preparation_batch_receipts "
+                    "(preparation_id, phase, batch_key, start_cursor, next_cursor, "
+                    "input_sha256, output_sha256, row_count, committed_generation, "
+                    "committed_at) VALUES (%s, 'REMOVED_GID', %s, %s, %s, %s, "
+                    "%s, 0, 2, 11)",
+                    (
+                        preparation_id,
+                        bytes((91,)) * 32,
+                        b"",
+                        b"",
+                        bytes((101,)) * 32,
+                        bytes((111,)) * 32,
+                    ),
+                )
+            ],
+            "preparation_checkpoint": [
+                (
+                    "INSERT INTO operational_operational_preparation_checkpoints "
+                    "(preparation_id, phase, generation, cursor_bytes, "
+                    "processed_count, chain_sha256, state, updated_at) "
+                    "VALUES (%s, 'REMOVED_GID', 2, %s, 1, %s, 'COMPLETE', 11)",
+                    (preparation_id, b"", bytes((81,)) * 32),
+                )
+            ],
+            "preparation": [
+                (
+                    "INSERT INTO operational_operational_preparations "
+                    "(preparation_id, build_id, deletion_request_generation, "
+                    "operational_policy_id, state, prepared_at, completed_at) "
+                    "VALUES (%s, %s, 1, 1, 'COMPLETE', 7, 8)",
+                    (preparation_id, bytes((71,)) * 16),
+                )
+            ],
+            "event": [
+                (
+                    "INSERT INTO operational_operational_events "
+                    "(event_id, preparation_id, sequence_no, event_type, "
+                    "event_sha256, created_at) "
+                    "VALUES (%s, %s, 0, 'REMOVED_GID', %s, 11)",
+                    (event_id, preparation_id, bytes((131,)) * 32),
+                ),
+                (
+                    "INSERT INTO operational_operational_removed_gid_events "
+                    "(event_id, gid, request_token) VALUES (%s, 1, %s)",
+                    (event_id, bytes((141,)) * 16),
+                ),
+            ],
+            "seal": [
+                (
+                    "INSERT INTO operational_operational_preparation_effect_seals "
+                    "(preparation_id, event_count, final_chain_sha256, sealed_at) "
+                    "VALUES (%s, 1, %s, 11)",
+                    (preparation_id, bytes((121,)) * 32),
+                )
+            ],
+            "stream": [
+                (
+                    "INSERT INTO operational_operational_event_streams "
+                    "(preparation_id, created_at) VALUES (%s, 6)",
+                    (preparation_id,),
+                )
+            ],
+            "finalization_marker": [
+                (
+                    "INSERT INTO catalog_publication_commit_finalizations "
+                    "(receipt_id) VALUES (%s)",
+                    (receipt_id,),
+                )
+            ],
+            "finalization_batch": [
+                (
+                    "INSERT INTO catalog_publication_finalization_batch_stored "
+                    "(receipt_id, start_generation, batch_key, start_cursor, "
+                    "start_processed_count, next_cursor, row_count, committed_at) "
+                    "VALUES (%s, 1, %s, %s, 0, %s, 0, 11)",
+                    (receipt_id, b"\x01", b"", b""),
+                )
+            ],
+            "finalization_checkpoint": [
+                (
+                    "INSERT INTO catalog_publication_finalization_checkpoints "
+                    "(receipt_id, generation, `cursor`, processed_count, state, "
+                    "updated_at) VALUES (%s, 2, %s, 0, 'COMPLETE', 11)",
+                    (receipt_id, b""),
+                )
+            ],
+            "anchor": [
+                (
+                    "INSERT INTO catalog_publication_commit_anchors "
+                    "(receipt_id) VALUES (%s)",
+                    (receipt_id,),
+                )
+            ],
+        }
+        _fixture_rows(connector, statements_by_family[reappearing_family])
+        assert checkpoint.generation is not None
+        before = connector.fetch_one(
+            "SELECT phase, generation, cursor_bytes, deleted_count, state "
+            "FROM operational_cleanup_checkpoints "
+            "WHERE cleanup_id = %s AND state = 'OPEN'",
+            (cycle.cleanup_id,),
+        )
+        with pytest.raises(CleanupCorruptionError, match="PCOM"):
+            _advance(
+                connector,
+                gate,
+                cycle,
+                checkpoint.generation,
+                b"q" * 32,
+                now=95,
+            )
+        assert (
+            connector.fetch_one(
+                "SELECT phase, generation, cursor_bytes, deleted_count, state "
+                "FROM operational_cleanup_checkpoints "
+                "WHERE cleanup_id = %s AND state = 'OPEN'",
+                (cycle.cleanup_id,),
+            )
+            == before
+        )
+    finally:
+        connector.close()
+
+
+def test_publication_commit_cleanup_waits_for_finalized_replacement(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "publication-commit-finalization.sqlite3")
+    try:
+        gate = _exclusive(connector)
+        old_receipt, replacement_receipt = _seed_publication_commit_cleanup_history(
+            connector,
+            finalize_replacement=False,
+        )
+        blocked = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_COMMIT,
+            old_receipt[0],
+            max_rows=8,
+        )
+        assert _drain(connector, gate, blocked)[-1].deleted_count == 0
+
+        connector.execute(
+            "INSERT INTO catalog_publication_commit_finalizations "
+            "(receipt_id) VALUES (%s)",
+            (replacement_receipt,),
+        )
+        actionable = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_COMMIT,
+            old_receipt[0],
+            max_rows=8,
+            now=20,
+        )
+        assert _drain(connector, gate, actionable, now=21)[-1].deleted_count == 10
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize(
+    ("blocker_insert", "blocker_delete"),
+    [
+        (
+            "INSERT INTO catalog_source_build_base_publication_commits "
+            "(build_id, base_receipt_id) VALUES (%s, %s)",
+            "DELETE FROM catalog_source_build_base_publication_commits",
+        ),
+        (
+            "INSERT INTO catalog_publication_candidate_base_publication_commits "
+            "(candidate_id, base_receipt_id) VALUES (%s, %s)",
+            "DELETE FROM catalog_publication_candidate_base_publication_commits",
+        ),
+        (
+            "INSERT INTO operational_gallery_redownload_states "
+            "(gallery_id, redownload_at, through_source_revision, updated_at) "
+            "VALUES (1, 1, %s, 1)",
+            "DELETE FROM operational_gallery_redownload_states",
+        ),
+    ],
+)
+def test_publication_commit_cleanup_honors_every_exact_dynamic_pin(
+    tmp_path: Path,
+    blocker_insert: str,
+    blocker_delete: str,
+) -> None:
+    connector = _database(tmp_path / "publication-commit-blocker.sqlite3")
+    try:
+        gate = _exclusive(connector)
+        old_receipt, _replacement = _seed_publication_commit_cleanup_history(connector)
+        if "source_build_base" in blocker_insert:
+            parameters: tuple[object, ...] = (b"b" * 16, old_receipt)
+        elif "candidate_base" in blocker_insert:
+            parameters = (b"c" * 16, old_receipt)
+        elif "redownload" in blocker_insert:
+            parameters = (1,)
+        else:
+            raise AssertionError("unexpected publication-commit blocker fixture")
+        _fixture_rows(connector, [(blocker_insert, parameters)])
+
+        blocked = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_COMMIT,
+            old_receipt[0],
+            max_rows=8,
+        )
+        assert _drain(connector, gate, blocked)[-1].deleted_count == 0
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM catalog_publication_commits WHERE receipt_id = %s",
+            (old_receipt,),
+        ) == (1,)
+
+        connector.execute(blocker_delete)
+        actionable = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_COMMIT,
+            old_receipt[0],
+            max_rows=8,
+            now=30,
+        )
+        assert _drain(connector, gate, actionable, now=31)[-1].deleted_count == 10
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize(
+    (
+        "build_state",
+        "analysis_states",
+        "published_analysis_index",
+        "working",
+        "handoff_is_current",
+    ),
+    [
+        pytest.param("OPEN", ("COMPLETE",), 0, False, True, id="open-build"),
+        pytest.param("SEALED", ("COMPLETE",), 0, True, True, id="active-retry"),
+        pytest.param(None, ("COMPLETE",), 0, False, True, id="missing-build-state"),
+        pytest.param("SEALED", (None,), None, False, True, id="missing-analysis-state"),
+        pytest.param("SEALED", ("OPEN",), None, False, True, id="open-analysis"),
+        pytest.param(
+            "SEALED",
+            ("COMPLETE",),
+            None,
+            False,
+            True,
+            id="unpublished-analysis",
+        ),
+        pytest.param(
+            "SEALED",
+            ("COMPLETE",),
+            0,
+            False,
+            False,
+            id="noncurrent-handoff",
+        ),
+        pytest.param(
+            "SEALED",
+            ("ABANDONED",),
+            None,
+            False,
+            True,
+            id="no-durable-handoff",
+        ),
+    ],
+)
+def test_publication_commit_build_base_release_fails_closed_without_safe_handoff(
+    tmp_path: Path,
+    build_state: str | None,
+    analysis_states: tuple[str | None, ...],
+    published_analysis_index: int | None,
+    working: bool,
+    handoff_is_current: bool,
+) -> None:
+    connector = _database(tmp_path / "publication-commit-unsafe-build-base.sqlite3")
+    try:
+        gate = _exclusive(connector)
+        old_receipt, replacement_receipt = _seed_publication_commit_cleanup_history(
+            connector
+        )
+        build_id, _analysis_ids = _seed_publication_commit_source_build_base(
+            connector,
+            base_receipt=old_receipt,
+            handoff_receipt=(
+                replacement_receipt if handoff_is_current else old_receipt
+            ),
+            build_state=build_state,
+            analysis_states=analysis_states,
+            published_analysis_index=published_analysis_index,
+            working=working,
+        )
+
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_COMMIT,
+            old_receipt[0],
+            max_rows=8,
+        )
+        assert _drain(connector, gate, cycle)[-1].deleted_count == 0
+        assert connector.fetch_one(
+            "SELECT base_receipt_id "
+            "FROM catalog_source_build_base_publication_commits "
+            "WHERE build_id = %s",
+            (build_id,),
+        ) == (old_receipt,)
+        assert connector.fetch_one(
+            "SELECT receipt_id FROM catalog_publication_commits WHERE receipt_id = %s",
+            (old_receipt,),
+        ) == (old_receipt,)
+    finally:
+        connector.close()
+
+
+def test_publication_commit_build_base_release_rolls_back_resumes_and_replays(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "publication-commit-base-fault.sqlite3")
+    try:
+        gate = _exclusive(connector)
+        old_receipt, replacement_receipt = _seed_publication_commit_cleanup_history(
+            connector
+        )
+        build_id, _analysis_ids = _seed_publication_commit_source_build_base(
+            connector,
+            base_receipt=old_receipt,
+            handoff_receipt=replacement_receipt,
+        )
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_COMMIT,
+            old_receipt[0],
+            max_rows=1,
+        )
+        original_execute_affected = connector.execute_affected
+
+        def fail_after_base_delete(
+            sql: str, parameters: tuple[object, ...] = ()
+        ) -> int:
+            affected = original_execute_affected(sql, parameters)
+            if sql.startswith(
+                "DELETE FROM catalog_source_build_base_publication_commits"
+            ):
+                assert affected == 1
+                raise RuntimeError("injected build-base release fault")
+            return affected
+
+        with (
+            patch.object(
+                connector,
+                "execute_affected",
+                side_effect=fail_after_base_delete,
+            ),
+            pytest.raises(RuntimeError, match="build-base release fault"),
+        ):
+            _advance(connector, gate, cycle, 1, b"f" * 32, now=3)
+        assert connector.fetch_one(
+            "SELECT base_receipt_id "
+            "FROM catalog_source_build_base_publication_commits "
+            "WHERE build_id = %s",
+            (build_id,),
+        ) == (old_receipt,)
+
+        resumed = _advance(connector, gate, cycle, 1, b"r" * 32, now=4)
+        assert resumed.phase == "PCOM_RELEASE_BUILD_BASE"
+        assert resumed.row_count == 1
+        replayed = _advance(connector, gate, cycle, 1, b"r" * 32, now=5)
+        assert replayed.replayed
+        assert replayed.row_count == resumed.row_count
+        assert replayed.cursor == resumed.cursor
+        assert (
+            connector.fetch_one(
+                "SELECT 1 FROM catalog_source_build_base_publication_commits "
+                "WHERE build_id = %s",
+                (build_id,),
+            )
+            == ()
+        )
+        assert resumed.generation is not None
+        generation = resumed.generation
+        for attempt in range(32):
+            completed = _advance(
+                connector,
+                gate,
+                cycle,
+                generation,
+                (attempt + 100).to_bytes(32, "big"),
+                now=6 + attempt,
+            )
+            if completed.cycle_complete:
+                break
+            assert completed.generation is not None
+            generation = completed.generation
+        else:
+            raise AssertionError("resumed publication-commit cleanup did not finish")
+        assert (
+            connector.fetch_one(
+                "SELECT 1 FROM catalog_publication_commits WHERE receipt_id = %s",
+                (old_receipt,),
+            )
+            == ()
+        )
+    finally:
+        connector.close()
+
+
+def test_publication_commit_dynamic_pin_blocks_terminal_and_same_phase_resumes(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "publication-commit-dynamic-pin.sqlite3")
+    try:
+        gate = _exclusive(connector)
+        old_receipt, replacement_receipt = _seed_publication_commit_cleanup_history(
+            connector
+        )
+        build_id, _analysis_ids = _seed_publication_commit_source_build_base(
+            connector,
+            base_receipt=old_receipt,
+            handoff_receipt=replacement_receipt,
+        )
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_COMMIT,
+            old_receipt[0],
+            max_rows=1,
+        )
+        _fixture_rows(
+            connector,
+            [
+                (
+                    "INSERT INTO operational_gallery_redownload_states "
+                    "(gallery_id, redownload_at, through_source_revision, updated_at) "
+                    "VALUES (1, 1, 1, 1)",
+                    (),
+                )
+            ],
+        )
+
+        before = connector.fetch_one(
+            "SELECT phase, generation, cursor_bytes, deleted_count, state "
+            "FROM operational_cleanup_checkpoints "
+            "WHERE cleanup_id = %s AND state = 'OPEN'",
+            (cycle.cleanup_id,),
+        )
+        assert before == ("PCOM_RELEASE_BUILD_BASE", 1, b"", 0, "OPEN")
+        with pytest.raises(CleanupRetentionBlockedError, match="still owns rows"):
+            _advance(connector, gate, cycle, 1, b"p" * 32, now=3)
+        assert (
+            connector.fetch_one(
+                "SELECT phase, generation, cursor_bytes, deleted_count, state "
+                "FROM operational_cleanup_checkpoints "
+                "WHERE cleanup_id = %s AND state = 'OPEN'",
+                (cycle.cleanup_id,),
+            )
+            == before
+        )
+        assert connector.fetch_one(
+            "SELECT base_receipt_id "
+            "FROM catalog_source_build_base_publication_commits "
+            "WHERE build_id = %s",
+            (build_id,),
+        ) == (old_receipt,)
+
+        connector.execute("DELETE FROM operational_gallery_redownload_states")
+        resumed = _advance(connector, gate, cycle, 1, b"r" * 32, now=4)
+        assert resumed.phase == "PCOM_RELEASE_BUILD_BASE"
+        assert resumed.row_count == 1 and resumed.generation == 2
+        assert (
+            connector.fetch_one(
+                "SELECT 1 FROM catalog_source_build_base_publication_commits "
+                "WHERE build_id = %s",
+                (build_id,),
+            )
+            == ()
+        )
+    finally:
+        connector.close()
+
+
+def test_publication_commit_build_base_release_exactly_rechecks_active_retry(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "publication-commit-base-race.sqlite3")
+    try:
+        gate = _exclusive(connector)
+        old_receipt, replacement_receipt = _seed_publication_commit_cleanup_history(
+            connector
+        )
+        build_id, _analysis_ids = _seed_publication_commit_source_build_base(
+            connector,
+            base_receipt=old_receipt,
+            handoff_receipt=replacement_receipt,
+        )
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_COMMIT,
+            old_receipt[0],
+            max_rows=1,
+        )
+        original_fetch_all = connector.fetch_all
+        injected = False
+
+        def inject_active_retry(
+            sql: str, parameters: tuple[object, ...] = ()
+        ) -> list[tuple[Any, ...]]:
+            nonlocal injected
+            rows = original_fetch_all(sql, parameters)
+            if (
+                not injected
+                and "FROM catalog_source_build_base_publication_commits AS c" in sql
+                and "ORDER BY r.receipt_id, c.build_id" in sql
+                and rows
+            ):
+                injected = True
+                connector.execute(
+                    "INSERT INTO operational_source_working_builds "
+                    "(slot, build_id, assigned_at) VALUES (1, %s, 1)",
+                    (build_id,),
+                )
+            return rows
+
+        with (
+            patch.object(connector, "fetch_all", side_effect=inject_active_retry),
+            pytest.raises(CleanupRetentionBlockedError, match="retention root"),
+        ):
+            _advance(connector, gate, cycle, 1, b"x" * 32, now=3)
+        assert injected
+        assert connector.fetch_one(
+            "SELECT base_receipt_id "
+            "FROM catalog_source_build_base_publication_commits "
+            "WHERE build_id = %s",
+            (build_id,),
+        ) == (old_receipt,)
+        assert (
+            connector.fetch_one(
+                "SELECT 1 FROM operational_source_working_builds WHERE build_id = %s",
+                (build_id,),
+            )
+            == ()
+        )
+    finally:
+        connector.close()
+
+
+def test_state_parent_cleanup_is_sharded_and_generation_preserves_compacted_floor(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "state-parent-cleanup.sqlite3")
+    try:
+        gate = _exclusive(connector)
+        _fixture_rows(
+            connector,
+            [
+                (
+                    "INSERT INTO catalog_revision_descriptors "
+                    "(revision, publication_count) VALUES (%s, 0)",
+                    (revision,),
+                )
+                for revision in (10, 11)
+            ]
+            + [
+                (
+                    "INSERT INTO catalog_source_revision_descriptors "
+                    "(source_revision, channel, snapshot_manifest_sha256) "
+                    "VALUES (%s, %s, %s)",
+                    (revision, b"default", bytes((revision,)) * 32),
+                )
+                for revision in (10, 11)
+            ]
+            + [
+                (
+                    "INSERT INTO catalog_publication_generation_nodes "
+                    "(generation) VALUES (%s)",
+                    (generation,),
+                )
+                for generation in (1, 2, 258, 300)
+            ]
+            + [
+                (
+                    "INSERT INTO catalog_publication_generation_successors "
+                    "(successor_generation, predecessor_generation) VALUES (%s, %s)",
+                    edge,
+                )
+                for edge in ((2, 1), (258, 2), (300, 258))
+            ]
+            + [
+                (
+                    "INSERT INTO catalog_publication_commits "
+                    "(receipt_id, candidate_id, revision, source_revision, "
+                    "generation, preparation_id, operational_policy_id, "
+                    "artifact_policy_id, display_title_policy_id, new_galleries, "
+                    "changed_galleries, removed_galleries, duplicate_losers, "
+                    "committed_at) VALUES (%s, %s, 11, 11, 300, %s, 1, 1, 1, "
+                    "0, 0, 0, 0, 1)",
+                    (b"r" * 16, b"c" * 16, b"p" * 16),
+                ),
+            ],
+        )
+
+        catalog_cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.CATALOG_REVISION_DESCRIPTOR,
+            10,
+            max_rows=1,
+        )
+        assert _drain(connector, gate, catalog_cycle)[-1].deleted_count == 1
+        source_cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.SOURCE_REVISION_DESCRIPTOR,
+            10,
+            max_rows=1,
+            now=20,
+        )
+        assert _drain(connector, gate, source_cycle, now=21)[-1].deleted_count == 1
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM catalog_revision_descriptors WHERE revision = 11"
+        ) == (1,)
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM catalog_source_revision_descriptors "
+            "WHERE source_revision = 11"
+        ) == (1,)
+
+        generation_results: list[CleanupBatchResult] = []
+        generation_cycle_index = 0
+        while connector.fetch_one(
+            "SELECT COUNT(*) FROM catalog_publication_generation_nodes "
+            "WHERE generation IN (2, 258)"
+        ) != (0,):
+            generation_cycle = _begin(
+                connector,
+                gate,
+                CleanupTargetKind.PUBLICATION_GENERATION,
+                2,
+                max_rows=1,
+                now=40 + generation_cycle_index * 20,
+            )
+            generation_results.extend(
+                _drain(
+                    connector,
+                    gate,
+                    generation_cycle,
+                    now=41 + generation_cycle_index * 20,
+                )
+            )
+            generation_cycle_index += 1
+            assert generation_cycle_index <= 2
+        assert all(result.row_count <= 1 for result in generation_results)
+        assert generation_cycle_index == 2
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM catalog_publication_generation_nodes "
+            "WHERE generation = 2"
+        ) == (0,)
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM catalog_publication_generation_nodes "
+            "WHERE generation = 258"
+        ) == (0,)
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM catalog_publication_generation_successors "
+            "WHERE successor_generation IN (2, 258, 300)"
+        ) == (0,)
+
+        retained_floor = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_GENERATION,
+            44,
+            max_rows=8,
+            now=100,
+        )
+        assert _drain(connector, gate, retained_floor, now=101)[-1].deleted_count == 0
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM catalog_publication_generation_nodes "
+            "WHERE generation = 300"
+        ) == (1,)
+    finally:
+        connector.close()
+
+
+def test_publication_generation_keeps_genesis_until_generation_one_is_compacted(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "generation-one-floor.sqlite3")
+    try:
+        gate = _exclusive(connector)
+        _fixture_rows(
+            connector,
+            [
+                (
+                    "INSERT INTO catalog_publication_generation_nodes "
+                    "(generation) VALUES (%s)",
+                    (generation,),
+                )
+                for generation in (1,)
+            ]
+            + [
+                (
+                    "INSERT INTO catalog_publication_generation_successors "
+                    "(successor_generation, predecessor_generation) VALUES (1, 0)",
+                    (),
+                ),
+                (
+                    "INSERT INTO catalog_publication_commits "
+                    "(receipt_id, candidate_id, revision, source_revision, "
+                    "generation, preparation_id, operational_policy_id, "
+                    "artifact_policy_id, display_title_policy_id, new_galleries, "
+                    "changed_galleries, removed_galleries, duplicate_losers, "
+                    "committed_at) VALUES (%s, %s, 1, 1, 1, %s, 1, 1, 1, "
+                    "0, 0, 0, 0, 1)",
+                    (b"r" * 16, b"c" * 16, b"p" * 16),
+                ),
+            ],
+        )
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.PUBLICATION_GENERATION,
+            0,
+            max_rows=8,
+        )
+        assert _drain(connector, gate, cycle)[-1].deleted_count == 0
+        assert connector.fetch_all(
+            "SELECT generation FROM catalog_publication_generation_nodes "
+            "ORDER BY generation"
+        ) == [(0,), (1,)]
+        assert connector.fetch_all(
+            "SELECT successor_generation, predecessor_generation "
+            "FROM catalog_publication_generation_successors"
+        ) == [(1, 0)]
+    finally:
+        connector.close()
+
+
 def test_catalog_publication_cleanup_removes_only_historical_payload(
     tmp_path: Path,
 ) -> None:
@@ -2119,12 +4492,11 @@ def test_catalog_publication_cleanup_removes_only_historical_payload(
                 (2,),
             ) == (1,)
         assert connector.fetch_one(
-            "SELECT publication_count FROM catalog_revision_publication_counts "
+            "SELECT publication_count FROM catalog_revision_descriptors "
             "WHERE revision = 1"
         ) == (1,)
         assert connector.fetch_one(
-            "SELECT revision FROM catalog_publication_commit_catalog_revisions "
-            "WHERE receipt_id = %s",
+            "SELECT revision FROM catalog_publication_commits WHERE receipt_id = %s",
             (old_receipt,),
         ) == (1,)
     finally:
@@ -2190,7 +4562,7 @@ def test_catalog_publication_cleanup_requires_fully_finalized_old_and_current_re
             old_receipt if damaged_revision == "historical" else current_receipt
         )
         connector.execute(
-            "DELETE FROM catalog_publication_finalization_batch_seals "
+            "DELETE FROM catalog_publication_finalization_batch_stored "
             "WHERE receipt_id = %s",
             (damaged_receipt,),
         )
@@ -2276,7 +4648,7 @@ def test_catalog_publication_cleanup_waits_for_db_committed_current_receipt(
             )
         )
         assert connector.fetch_one(
-            "SELECT candidate_id FROM catalog_publication_candidate_anchors "
+            "SELECT candidate_id FROM catalog_publication_candidates "
             "WHERE candidate_id = %s",
             (committed_candidate,),
         ) == (committed_candidate,)
@@ -2398,37 +4770,30 @@ def test_catalog_publication_cleanup_preserves_live_predecessor_base(
 
 def test_first_vertical_batch_cleanup_is_exactly_child_first() -> None:
     source = cleanup_module._STATIC_PLANS[CleanupTargetKind.SOURCE_BUILD].phases
-    assert tuple(spec.table for spec in source["SB_GALLERY"])[2:] == (
-        "catalog_build_manifest_seals",
-        "catalog_build_manifest_manifest_sha256s",
-        "catalog_build_manifest_file_counts",
-        "catalog_build_manifest_byte_counts",
-        "catalog_build_manifest_anchors",
+    assert tuple(spec.table for spec in source["SB_GALLERY"]) == (
+        "catalog_source_build_sealed_ats",
+        "operational_source_build_discovery_checkpoints",
+        "operational_source_build_assembly_checkpoints",
+        "catalog_build_manifest_core",
         "catalog_source_build_galleries",
     )
-    assert tuple(spec.table for spec in source["SB_DISCOVERY_SEAL"]) == (
-        "catalog_source_build_discovery_seals",
+    assert tuple(spec.table for spec in source["SB_DISCOVERY"]) == (
+        "catalog_source_build_discoveries",
     )
-    assert tuple(spec.table for spec in source["SB_DISCOVERY_VALUES"]) == (
-        "catalog_source_build_discovery_scan_attempts",
-        "catalog_source_build_discovery_gallery_counts",
-        "catalog_source_build_discovery_tree_observation_sha256s",
-        "catalog_source_build_discovery_completed_ats",
+    assert tuple(spec.table for spec in source["SB_STATE"]) == (
+        "catalog_source_build_states",
     )
-    assert tuple(spec.table for spec in source["SB_DISCOVERY_ANCHOR"]) == (
-        "catalog_source_build_discovery_anchors",
-    )
-    assert source["SB_ROOT"][0].delete_sql == (
-        "DELETE FROM catalog_source_build_sealed_ats WHERE build_id = %s",
-        "DELETE FROM catalog_source_build_descriptor_seals WHERE build_id = %s",
-        "DELETE FROM catalog_source_build_states WHERE build_id = %s",
-        "DELETE FROM catalog_source_build_created_ats WHERE build_id = %s",
-        "DELETE FROM catalog_source_build_manifest_policy_ids WHERE build_id = %s",
-        "DELETE FROM catalog_source_build_scope_keys WHERE build_id = %s",
-        "DELETE FROM catalog_source_build_anchors WHERE build_id = %s",
+    assert tuple(spec.table for spec in source["SB_ROOT"]) == (
+        "catalog_source_build_descriptor",
     )
 
     analysis = cleanup_module._STATIC_PLANS[CleanupTargetKind.ANALYSIS_RUN].phases
+    assert tuple(spec.table for spec in analysis["AR_BATCH"]) == (
+        "catalog_analysis_batch_receipt_stored",
+    )
+    assert tuple(spec.table for spec in analysis["AR_COMPONENT"]) == (
+        "catalog_analysis_state_component_seals",
+    )
     assert tuple(spec.table for spec in analysis["AR_OVERLAY"]) == (
         _ANALYSIS_OVERLAY_TABLES
     )
@@ -2446,27 +4811,18 @@ def test_first_vertical_batch_cleanup_is_exactly_child_first() -> None:
     assert tuple(spec.table for spec in canonical["CV_DICTIONARY"]) == (
         "catalog_display_title_choices",
         "catalog_title_sorts",
-        "catalog_source_scope_anchors",
+        "catalog_source_scopes",
         "catalog_source_locator_identity",
         "catalog_tag_term_anchors",
-        "catalog_source_snapshot_manifest_identity_anchors",
+        "catalog_source_snapshot_manifest_identity",
         "catalog_artifact_policies",
         "catalog_artifact_semantic_inputs",
     )
     source_scope = canonical["CV_DICTIONARY"][2]
     assert source_scope.primary_key == ("scope_key",)
-    assert (
-        "JOIN catalog_source_scope_source_root_sha256s AS scope_root"
-        in source_scope.source
-    )
+    assert "catalog_source_scopes AS c" in source_scope.source
     assert source_scope.delete_sql == (
-        "DELETE FROM catalog_source_scope_seals WHERE scope_key = %s",
-        "DELETE FROM catalog_source_scope_identities WHERE scope_key = %s",
-        "DELETE FROM catalog_source_scope_identity_policy_versions "
-        "WHERE scope_key = %s",
-        "DELETE FROM catalog_source_scope_source_providers WHERE scope_key = %s",
-        "DELETE FROM catalog_source_scope_source_root_sha256s WHERE scope_key = %s",
-        "DELETE FROM catalog_source_scope_anchors WHERE scope_key = %s",
+        "DELETE FROM catalog_source_scopes WHERE scope_key = %s",
     )
     tag_term = canonical["CV_DICTIONARY"][4]
     assert tag_term.delete_sql == (
@@ -2475,12 +4831,7 @@ def test_first_vertical_batch_cleanup_is_exactly_child_first() -> None:
         "DELETE FROM catalog_tag_term_anchors WHERE tag_id = %s",
     )
     assert tuple(spec.table for spec in canonical["CV_SEMANTIC_LINK"]) == (
-        "catalog_artifact_policy_semantics_seals",
-        "catalog_artifact_policy_semantics_identities",
-        "catalog_artifact_policy_semantics_producer_fingerprint_sha256s",
-        "catalog_artifact_policy_semantics_max_image_short_sides",
-        "catalog_artifact_policy_semantics_artifact_algorithm_versions",
-        "catalog_artifact_policy_semantics_anchors",
+        "catalog_artifact_policy_semantics",
     )
     assert canonical["CV_DICTIONARY"][-1].delete_sql == (
         "DELETE FROM catalog_artifact_semantic_inputs "
@@ -2541,34 +4892,11 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
                     (build_id, 1),
                 ),
                 (
-                    "INSERT INTO catalog_source_build_discovery_anchors "
-                    "(build_id) VALUES (%s)",
-                    (build_id,),
-                ),
-                (
-                    "INSERT INTO catalog_source_build_discovery_scan_attempts "
-                    "(build_id, scan_attempt) VALUES (%s, %s)",
-                    (build_id, b"d" * 16),
-                ),
-                (
-                    "INSERT INTO catalog_source_build_discovery_gallery_counts "
-                    "(build_id, gallery_count) VALUES (%s, 1)",
-                    (build_id,),
-                ),
-                (
-                    "INSERT INTO catalog_source_build_discovery_tree_observation_sha256s "
-                    "(build_id, tree_observation_sha256) VALUES (%s, %s)",
-                    (build_id, b"t" * 32),
-                ),
-                (
-                    "INSERT INTO catalog_source_build_discovery_completed_ats "
-                    "(build_id, completed_at) VALUES (%s, 1)",
-                    (build_id,),
-                ),
-                (
-                    "INSERT INTO catalog_source_build_discovery_seals "
-                    "(build_id) VALUES (%s)",
-                    (build_id,),
+                    "INSERT INTO catalog_source_build_discoveries "
+                    "(build_id, scan_attempt, gallery_count, "
+                    "tree_observation_sha256, completed_at) "
+                    "VALUES (%s, %s, 1, %s, 1)",
+                    (build_id, b"d" * 16, b"t" * 32),
                 ),
                 (
                     "INSERT INTO operational_canonical_value_uploads "
@@ -2591,7 +4919,7 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
             connector, gate, CleanupTargetKind.SOURCE_BUILD, 17, max_rows=1
         )
         source_results = _drain(connector, gate, source_cycle)
-        assert source_results[-1].deleted_count == 11
+        assert source_results[-1].deleted_count == 7
         assert (
             connector.fetch_one(
                 "SELECT 1 FROM catalog_source_builds WHERE build_id = %s", (build_id,)
@@ -2606,16 +4934,15 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
             )
             == ()
         )
-        assert _source_build_discovery_rows(connector) == ([], [], [], [], [], [])
+        assert _source_build_discovery_rows(connector) == ([],)
 
         analysis_id = bytes((18,)) + b"a" * 15
         seed_analysis_policy(connector)
-        seed_source_build(
+        _seed_cleanup_sealed_source_build(
             connector,
             build_id=b"z" * 16,
             scope_key=scope_key,
             manifest_policy_id=1,
-            state="SEALED",
             created_at=0,
             sealed_at=0,
         )
@@ -2652,39 +4979,10 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
                     (analysis_id, 7),
                 ),
                 (
-                    "INSERT INTO catalog_analysis_checkpoint_anchors "
-                    "(analysis_id, stage) VALUES (%s, %s)",
-                    (analysis_id, b"changed_gallery"),
-                ),
-                (
-                    "INSERT INTO catalog_analysis_checkpoint_generations "
-                    "(analysis_id, stage, generation) VALUES (%s, %s, %s)",
-                    (analysis_id, b"changed_gallery", 1),
-                ),
-                (
-                    "INSERT INTO catalog_analysis_checkpoint_cursors "
-                    "(analysis_id, stage, cursor) VALUES (%s, %s, %s)",
+                    "INSERT INTO catalog_analysis_checkpoints "
+                    "(analysis_id, stage, generation, `cursor`, processed_count, "
+                    "state, updated_at) VALUES (%s, %s, 1, %s, 0, 'OPEN', 0)",
                     (analysis_id, b"changed_gallery", b""),
-                ),
-                (
-                    "INSERT INTO catalog_analysis_checkpoint_processed_counts "
-                    "(analysis_id, stage, processed_count) VALUES (%s, %s, %s)",
-                    (analysis_id, b"changed_gallery", 0),
-                ),
-                (
-                    "INSERT INTO catalog_analysis_checkpoint_states "
-                    "(analysis_id, stage, state) VALUES (%s, %s, 'OPEN')",
-                    (analysis_id, b"changed_gallery"),
-                ),
-                (
-                    "INSERT INTO catalog_analysis_checkpoint_updated_ats "
-                    "(analysis_id, stage, updated_at) VALUES (%s, %s, %s)",
-                    (analysis_id, b"changed_gallery", 0),
-                ),
-                (
-                    "INSERT INTO catalog_analysis_checkpoint_seals "
-                    "(analysis_id, stage) VALUES (%s, %s)",
-                    (analysis_id, b"changed_gallery"),
                 ),
                 (
                     "INSERT INTO catalog_analysis_state_ancestry "
@@ -2698,7 +4996,7 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
             connector, gate, CleanupTargetKind.ANALYSIS_RUN, 18, max_rows=2
         )
         analysis_results = _drain(connector, gate, analysis_cycle, now=50)
-        assert analysis_results[-1].deleted_count == 13
+        assert analysis_results[-1].deleted_count == 8
         assert (
             connector.fetch_one(
                 "SELECT 1 FROM catalog_analysis_runs WHERE analysis_id = %s",
@@ -2708,14 +5006,8 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
         )
         for table in (
             "catalog_analysis_run_completed_ats",
-            "catalog_analysis_run_descriptor_seals",
-            "catalog_analysis_run_identities",
-            "catalog_analysis_run_started_ats",
-            "catalog_analysis_run_input_manifest_sha256s",
-            "catalog_analysis_run_policy_ids",
-            "catalog_analysis_run_build_ids",
             "catalog_analysis_run_states",
-            "catalog_analysis_run_anchors",
+            "catalog_analysis_run_descriptor",
         ):
             assert (
                 connector.fetch_one(
@@ -2793,7 +5085,7 @@ def test_source_analysis_and_candidate_strategies_delete_child_first(
             max_rows=1,
         )
         candidate_results = _drain(connector, gate, candidate_cycle, now=100)
-        assert candidate_results[-1].deleted_count == 12
+        assert candidate_results[-1].deleted_count == 5
         assert (
             connector.fetch_one(
                 "SELECT 1 FROM catalog_publication_selection_storage "
@@ -2941,7 +5233,7 @@ def test_candidate_cleanup_deletes_committed_prepared_family_child_first(
         with patch.object(connector, "execute_affected", side_effect=record_delete):
             results = _drain(connector, gate, cycle)
         assert family_deletes == ["catalog_prepared_artifacts"]
-        assert results[-1].deleted_count == 9
+        assert results[-1].deleted_count == 2
         assert _prepared_artifact_family_rows(
             connector,
             candidate_id=candidate_id,
@@ -2962,16 +5254,10 @@ def test_candidate_cleanup_removes_uncommitted_reserved_catalog_projection(
         occurrence = identity.catalog_publication_occurrence_sha256(
             revision, publication_key
         )
-        _seed_cleanup_candidate(connector, candidate_id=candidate_id)
-        _fixture_rows(
+        _seed_cleanup_candidate(
             connector,
-            [
-                (
-                    "UPDATE catalog_publication_candidate_reserved_revisions "
-                    "SET reserved_revision = %s WHERE candidate_id = %s",
-                    (revision, candidate_id),
-                )
-            ],
+            candidate_id=candidate_id,
+            reserved_revision=revision,
         )
         _fixture_rows(
             connector,
@@ -3084,7 +5370,7 @@ def test_candidate_cleanup_has_no_partial_prepared_row_surface(
             max_rows=32,
         )
         results = _drain(connector, gate, cycle)
-        assert results[-1].deleted_count == 8
+        assert results[-1].deleted_count == 1
     finally:
         connector.close()
 
@@ -3162,7 +5448,7 @@ def test_candidate_prepared_row_delete_fault_rolls_back_atomically(
         connector.close()
 
 
-def test_candidate_definition_cleanup_is_seal_last_reversed_and_atomic(
+def test_candidate_wide_root_cleanup_rolls_back_and_retries_atomically(
     tmp_path: Path,
 ) -> None:
     connector = _database(tmp_path / "candidate-definition-delete-faults.sqlite3")
@@ -3217,13 +5503,14 @@ def test_candidate_definition_cleanup_is_seal_last_reversed_and_atomic(
 
         def record_delete(sql: str, data: tuple[Any, ...] = ()) -> int:
             statement = sql.lstrip()
-            if statement.startswith("DELETE FROM catalog_publication_candidate_"):
-                deleted.append(statement.split()[2])
+            table = statement.split()[2] if statement.startswith("DELETE FROM ") else ""
+            if table in _CANDIDATE_DEFINITION_DELETE_ORDER:
+                deleted.append(table)
             return original_execute_affected(sql, data)
 
         with patch.object(connector, "execute_affected", side_effect=record_delete):
             result = _advance(connector, gate, cycle, 1, b"g" * 32, now=101)
-        assert result.phase == "PC_ROOT" and result.row_count == 8
+        assert result.phase == "PC_ROOT" and result.row_count == 1
         assert tuple(deleted) == _CANDIDATE_DEFINITION_DELETE_ORDER
         assert _candidate_definition_rows(
             connector,
@@ -3263,7 +5550,7 @@ def test_source_build_cleanup_explicitly_rejects_open_family(
             (build_id,),
         ) == ("OPEN",)
         assert connector.fetch_one(
-            "SELECT build_id FROM catalog_source_build_anchors WHERE build_id = %s",
+            "SELECT build_id FROM catalog_source_build_descriptor WHERE build_id = %s",
             (build_id,),
         ) == (build_id,)
     finally:
@@ -3278,22 +5565,16 @@ def test_source_build_cleanup_deletes_sealed_build_manifest_child_first(
         gate = _exclusive(connector)
         build_id = bytes((52,)) + b"s" * 15
         scope_key = _seed_source_build_scope(connector, discriminator=52)
-        seed_source_build(
+        _seed_cleanup_sealed_source_build(
             connector,
             build_id=build_id,
             scope_key=scope_key,
-            state="SEALED",
             created_at=1,
             sealed_at=2,
-        )
-        seed_build_manifest(
-            connector,
-            build_id=build_id,
             manifest_sha256=b"m" * 32,
             gallery_count=0,
             file_count=0,
             byte_count=0,
-            computed_at=2,
         )
         cycle = _begin(
             connector,
@@ -3305,12 +5586,11 @@ def test_source_build_cleanup_deletes_sealed_build_manifest_child_first(
         results = _drain(connector, gate, cycle)
         assert results[-1].cycle_complete
         for table in (
-            "catalog_build_manifest_seals",
-            "catalog_build_manifest_manifest_sha256s",
-            "catalog_build_manifest_file_counts",
-            "catalog_build_manifest_byte_counts",
-            "catalog_build_manifest_anchors",
-            "catalog_source_build_anchors",
+            "catalog_source_build_discoveries",
+            "catalog_source_build_sealed_ats",
+            "catalog_build_manifest_core",
+            "catalog_source_build_states",
+            "catalog_source_build_descriptor",
         ):
             assert (
                 connector.fetch_all(
@@ -3354,23 +5634,7 @@ def test_canonical_cleanup_deletes_snapshot_manifest_family_before_identity(
         assert results[-1].cycle_complete
         for table, key_column in (
             (
-                "catalog_source_snapshot_manifest_identity_seals",
-                "snapshot_manifest_sha256",
-            ),
-            (
-                "catalog_source_snapshot_manifest_identity_gallery_counts",
-                "snapshot_manifest_sha256",
-            ),
-            (
-                "catalog_source_snapshot_manifest_identity_file_counts",
-                "snapshot_manifest_sha256",
-            ),
-            (
-                "catalog_source_snapshot_manifest_identity_byte_counts",
-                "snapshot_manifest_sha256",
-            ),
-            (
-                "catalog_source_snapshot_manifest_identity_anchors",
+                "catalog_source_snapshot_manifest_identity",
                 "snapshot_manifest_sha256",
             ),
             ("catalog_canonical_value_allocation_anchors", "value_sha256"),
@@ -3386,7 +5650,7 @@ def test_canonical_cleanup_deletes_snapshot_manifest_family_before_identity(
         connector.close()
 
 
-def test_operational_preparation_cleanup_preserves_activated_effects(
+def test_operational_preparation_cleanup_preserves_every_complete_preparation(
     tmp_path: Path,
 ) -> None:
     connector = _database(tmp_path / "preparation-cleanup.sqlite3")
@@ -3466,9 +5730,14 @@ def test_operational_preparation_cleanup_preserves_activated_effects(
                     )
                 ],
                 (
-                    "INSERT INTO catalog_publication_commit_operational_preparations "
-                    "(receipt_id, preparation_id) VALUES (%s, %s)",
-                    (b"r" * 16, activated),
+                    "INSERT INTO catalog_publication_commits "
+                    "(receipt_id, candidate_id, revision, source_revision, "
+                    "generation, preparation_id, operational_policy_id, "
+                    "artifact_policy_id, display_title_policy_id, new_galleries, "
+                    "changed_galleries, removed_galleries, duplicate_losers, "
+                    "committed_at) VALUES (%s, %s, 1, 1, 1, %s, 1, 1, 1, "
+                    "0, 0, 0, 0, 1)",
+                    (b"r" * 16, b"c" * 16, activated),
                 ),
                 (
                     "INSERT INTO operational_operational_preparation_checkpoints "
@@ -3492,7 +5761,7 @@ def test_operational_preparation_cleanup_preserves_activated_effects(
         assert connector.fetch_all(
             "SELECT preparation_id FROM operational_operational_preparations "
             "ORDER BY preparation_id"
-        ) == [(unactivated,)]
+        ) == [(activated,), (unactivated,)]
         assert connector.fetch_one(
             "SELECT 1 FROM operational_operational_event_streams "
             "WHERE preparation_id = %s",
@@ -3546,7 +5815,8 @@ def test_staging_compaction_and_observation_orphan_cleanup_are_separate(
                 (
                     "INSERT INTO operational_gallery_observation_stagings "
                     "(staging_id, build_id, gallery_id, observation_id, state, "
-                    "created_at, sealed_at) VALUES (%s, %s, 21, 1, 'SEALED', 0, 1)",
+                    "created_at, sealed_at, terminal_byte_count) "
+                    "VALUES (%s, %s, 21, 1, 'SEALED', 0, 1, 0)",
                     (staging_id, build_id),
                 ),
                 (
@@ -3556,11 +5826,6 @@ def test_staging_compaction_and_observation_orphan_cleanup_are_separate(
                 ),
                 (
                     "INSERT INTO operational_gallery_observation_staging_requests "
-                    "(request_sha256) VALUES (%s)",
-                    (request,),
-                ),
-                (
-                    "INSERT INTO operational_gallery_observation_staging_request_owners "
                     "(request_sha256, staging_id) VALUES (%s, %s)",
                     (request, staging_id),
                 ),
@@ -3576,6 +5841,16 @@ def test_staging_compaction_and_observation_orphan_cleanup_are_separate(
                     (staging_id,),
                 ),
             ],
+        )
+        _seed_terminal_retirement_authority(
+            connector,
+            staging_id=staging_id,
+            build_id=build_id,
+            gallery_id=21,
+            provisional_observation_id=1,
+            final_observation_id=1,
+            file_count=0,
+            byte_count=0,
         )
         staging_cycle = _begin(
             connector,
@@ -3616,7 +5891,8 @@ def test_staging_compaction_and_observation_orphan_cleanup_are_separate(
                 (
                     "INSERT INTO operational_gallery_observation_stagings "
                     "(staging_id, build_id, gallery_id, observation_id, state, "
-                    "created_at, sealed_at) VALUES (%s, %s, 24, 2, 'REUSED', 0, 1)",
+                    "created_at, sealed_at, terminal_byte_count) "
+                    "VALUES (%s, %s, 24, 2, 'REUSED', 0, 1, 7)",
                     (reused_staging, reused_build),
                 ),
                 (
@@ -3726,6 +6002,16 @@ def test_staging_compaction_and_observation_orphan_cleanup_are_separate(
             manifest_sha256=b"m" * 32,
             computed_at=1,
         )
+        _seed_terminal_retirement_authority(
+            connector,
+            staging_id=reused_staging,
+            build_id=reused_build,
+            gallery_id=24,
+            provisional_observation_id=2,
+            final_observation_id=1,
+            file_count=1,
+            byte_count=7,
+        )
         observation_cycle = _begin(
             connector,
             gate,
@@ -3746,7 +6032,11 @@ def test_staging_compaction_and_observation_orphan_cleanup_are_separate(
             "WHERE build_id = %s AND gallery_id = 24",
             (reused_build,),
         ) == (1,)
-        vertical_rows = _observation_vertical_rows(connector)
+        vertical_rows = _observation_vertical_rows(
+            connector,
+            gallery_id=24,
+            observation_id=2,
+        )
         assert len(vertical_rows) == 9
         assert all(rows == [] for rows in vertical_rows)
         for table in ("catalog_gallery_manifests",):
@@ -4186,13 +6476,15 @@ def test_foreign_owner_predecessor_blocks_staging_compaction(
                 (
                     "INSERT INTO operational_gallery_observation_stagings "
                     "(staging_id, build_id, gallery_id, observation_id, state, "
-                    "created_at, sealed_at) VALUES (%s, %s, 22, 1, 'SEALED', 0, 1)",
+                    "created_at, sealed_at, terminal_byte_count) "
+                    "VALUES (%s, %s, 22, 1, 'SEALED', 0, 1, 0)",
                     (selected, build),
                 ),
                 (
                     "INSERT INTO operational_gallery_observation_stagings "
                     "(staging_id, build_id, gallery_id, observation_id, state, "
-                    "created_at, sealed_at) VALUES (%s, %s, 23, 1, 'OPEN', 0, NULL)",
+                    "created_at, sealed_at, terminal_byte_count) "
+                    "VALUES (%s, %s, 23, 1, 'OPEN', 0, NULL, NULL)",
                     (foreign, b"e" * 16),
                 ),
                 (
@@ -4200,21 +6492,13 @@ def test_foreign_owner_predecessor_blocks_staging_compaction(
                     "(build_id, gallery_id, observation_id) VALUES (%s, 22, 1)",
                     (build,),
                 ),
-                *[
-                    (
-                        "INSERT INTO operational_gallery_observation_staging_requests "
-                        "(request_sha256) VALUES (%s)",
-                        (request,),
-                    )
-                    for request in (prior_request, next_request)
-                ],
                 (
-                    "INSERT INTO operational_gallery_observation_staging_request_owners "
+                    "INSERT INTO operational_gallery_observation_staging_requests "
                     "(request_sha256, staging_id) VALUES (%s, %s)",
                     (prior_request, selected),
                 ),
                 (
-                    "INSERT INTO operational_gallery_observation_staging_request_owners "
+                    "INSERT INTO operational_gallery_observation_staging_requests "
                     "(request_sha256, staging_id) VALUES (%s, %s)",
                     (next_request, foreign),
                 ),
@@ -4315,13 +6599,10 @@ def test_canonical_source_root_cleanup_waits_for_every_scope_consumer_then_delet
             ),
             _source_scope_family_rows(connector),
         )
-        assert "catalog_source_scope_source_root_sha256s" in (
+        assert "FROM catalog_source_scopes scope_root" in (
             cleanup_module._CANONICAL_VALUE_ELIGIBILITY
         )
-        assert "catalog_source_scopes" not in (
-            cleanup_module._CANONICAL_VALUE_ELIGIBILITY
-        )
-        assert "JOIN catalog_source_build_scope_keys build" in (
+        assert "JOIN catalog_source_build_descriptor build" in (
             cleanup_module._CANONICAL_VALUE_ELIGIBILITY
         )
         assert "JOIN catalog_gallery_identities gallery" in (
@@ -4358,12 +6639,8 @@ def test_canonical_source_root_cleanup_waits_for_every_scope_consumer_then_delet
         ) == before
 
         for table in (
-            "catalog_source_build_descriptor_seals",
             "catalog_source_build_states",
-            "catalog_source_build_created_ats",
-            "catalog_source_build_manifest_policy_ids",
-            "catalog_source_build_scope_keys",
-            "catalog_source_build_anchors",
+            "catalog_source_build_descriptor",
         ):
             connector.execute(f"DELETE FROM {table} WHERE build_id = %s", (build_id,))
         gallery_active_cycle = _begin(
@@ -4396,7 +6673,7 @@ def test_canonical_source_root_cleanup_waits_for_every_scope_consumer_then_delet
         # Two source-scope family candidates plus eight narrow canonical
         # identity/page/allocation candidates are removed child-first.
         assert results[-1].deleted_count == 10
-        assert _source_scope_family_rows(connector) == ([], [], [], [], [], [])
+        assert _source_scope_family_rows(connector) == ([],)
         assert (
             connector.fetch_one(
                 "SELECT 1 FROM catalog_canonical_value_allocations "
@@ -4420,14 +6697,7 @@ def test_canonical_source_root_cleanup_waits_for_every_scope_consumer_then_delet
             )
             == ()
         )
-        scope_delete_tables = (
-            "catalog_source_scope_seals",
-            "catalog_source_scope_identities",
-            "catalog_source_scope_identity_policy_versions",
-            "catalog_source_scope_source_providers",
-            "catalog_source_scope_source_root_sha256s",
-            "catalog_source_scope_anchors",
-        )
+        scope_delete_tables = ("catalog_source_scopes",)
         observed_scope_deletes = tuple(
             table
             for statement in traced
@@ -4439,64 +6709,44 @@ def test_canonical_source_root_cleanup_waits_for_every_scope_consumer_then_delet
         connector.close()
 
 
-def test_canonical_cleanup_removes_partial_policy_family_child_first(
+def test_canonical_cleanup_removes_wide_policy_semantics_atomically(
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "canonical-partial-policy.sqlite3")
+    connector = _database(tmp_path / "canonical-wide-policy.sqlite3")
     try:
-        policy = bytes((72,)) + b"p" * 31
+        producer = seed_artifact_producer_fingerprint(connector)
+        policy = identity.artifact_policy_digest(
+            1,
+            2048,
+            producer.producer_fingerprint_sha256,
+        )
         _seed_minimal_canonical_value(
             connector,
             value_sha256=policy,
             page_sha256=b"P" * 32,
             digest_domain=b"artifact_policy_v2",
         )
-        connector.execute(
-            "INSERT INTO catalog_artifact_policy_semantics_anchors "
-            "(policy_component_sha256) VALUES (%s)",
-            (policy,),
-        )
-        connector.execute(
-            "INSERT INTO "
-            "catalog_artifact_policy_semantics_artifact_algorithm_versions "
-            "(policy_component_sha256, artifact_algorithm_version) "
-            "VALUES (%s, 1)",
-            (policy,),
-        )
-        connector.execute(
-            "INSERT INTO catalog_artifact_policy_semantics_max_image_short_sides "
-            "(policy_component_sha256, max_image_short_side) VALUES (%s, 2048)",
-            (policy,),
+        seed_artifact_policy_semantics(
+            connector,
+            artifact_algorithm_version=1,
+            max_image_short_side=2048,
+            producer_fingerprint_sha256=producer.producer_fingerprint_sha256,
         )
         assert tuple(
             bool(rows) for rows in _artifact_policy_semantics_family_rows(connector)
-        ) == (
-            False,
-            False,
-            False,
-            True,
-            True,
-            True,
-        )
+        ) == (True,)
 
         gate = _exclusive(connector)
         cycle = _begin(
             connector,
             gate,
             CleanupTargetKind.CANONICAL_VALUE,
-            policy[0],
+            int(policy[0]),
             max_rows=32,
         )
         results = _drain(connector, gate, cycle)
         assert results[-1].cycle_complete
-        assert _artifact_policy_semantics_family_rows(connector) == (
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
-        )
+        assert _artifact_policy_semantics_family_rows(connector) == ([],)
         assert (
             connector.fetch_one(
                 "SELECT 1 FROM catalog_canonical_value_allocations "
@@ -4550,34 +6800,57 @@ def test_canonical_cleanup_deduplicates_orphan_title_cache_multi_root_join(
         )
 
         gate = _exclusive(connector)
-        cycle = _begin(
-            connector,
-            gate,
-            CleanupTargetKind.CANONICAL_VALUE,
-            74,
-            max_rows=max_rows,
-        )
-        batch_key = b"r" * 32
-        first = _advance(connector, gate, cycle, 1, batch_key, now=3)
-        replay = _advance(connector, gate, cycle, 1, batch_key, now=4)
-        assert replay.replayed
-        assert replay.row_count == first.row_count
-        assert replay.cursor == first.cursor
-        assert replay.generation == first.generation
-        result = first
-        for attempt in range(128):
-            if result.cycle_complete:
-                break
-            assert result.generation is not None
-            result = _advance(
+        all_results: list[CleanupBatchResult] = []
+        cycle_index = 0
+        while connector.fetch_one(
+            "SELECT COUNT(*) FROM catalog_canonical_value_allocation_anchors "
+            "WHERE value_sha256 IN (%s, %s, %s)",
+            (source_title, display_title, sort_title),
+        ) != (0,):
+            cycle = _begin(
                 connector,
                 gate,
-                cycle,
-                result.generation,
-                (attempt + 1).to_bytes(32, "big"),
-                now=5 + attempt,
+                CleanupTargetKind.CANONICAL_VALUE,
+                74,
+                max_rows=max_rows,
+                now=2 + cycle_index * 200,
             )
-        assert result.cycle_complete
+            if cycle_index == 0:
+                batch_key = b"r" * 32
+                first = _advance(connector, gate, cycle, 1, batch_key, now=3)
+                replay = _advance(connector, gate, cycle, 1, batch_key, now=4)
+                assert replay.replayed
+                assert replay.row_count == first.row_count
+                assert replay.cursor == first.cursor
+                assert replay.generation == first.generation
+                cycle_results = [first]
+                result = first
+                for attempt in range(128):
+                    if result.cycle_complete:
+                        break
+                    assert result.generation is not None
+                    result = _advance(
+                        connector,
+                        gate,
+                        cycle,
+                        result.generation,
+                        (attempt + 1).to_bytes(32, "big"),
+                        now=5 + attempt,
+                    )
+                    cycle_results.append(result)
+                assert result.cycle_complete
+            else:
+                cycle_results = _drain(
+                    connector,
+                    gate,
+                    cycle,
+                    now=3 + cycle_index * 200,
+                )
+            all_results.extend(cycle_results)
+            cycle_index += 1
+            assert cycle_index <= 3
+        assert all(result.row_count <= max_rows for result in all_results)
+        assert cycle_index == (3 if max_rows == 1 else 1)
         assert connector.fetch_all("SELECT * FROM catalog_display_title_choices") == []
         assert connector.fetch_all("SELECT * FROM catalog_title_sorts") == []
         for value in (source_title, display_title, sort_title):
@@ -4658,7 +6931,7 @@ def test_canonical_source_scope_delete_faults_roll_back_every_child_boundary(
 
         committed = _advance(connector, gate, cycle, 1, b"d" * 32, now=21)
         assert committed.row_count == 1
-        assert _source_scope_family_rows(connector) == ([], [], [], [], [], [])
+        assert _source_scope_family_rows(connector) == ([],)
     finally:
         connector.close()
 
@@ -4805,6 +7078,109 @@ def test_analysis_overlay_cleanup_observes_exact_child_first_order(
         )
     finally:
         connector.connection.set_trace_callback(None)
+        connector.close()
+
+
+def test_static_terminal_rejects_earlier_spec_reappearance_after_later_cursor(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "analysis-overlay-earlier-reappearance.sqlite3")
+    file_sha256 = b"f" * 32
+    try:
+        analysis_id = _seed_abandoned_analysis_for_cleanup(
+            connector,
+            discriminator=95,
+        )
+        _seed_analysis_overlay_rows(connector, analysis_id)
+        gate = _exclusive(connector)
+        cycle = _begin(
+            connector,
+            gate,
+            CleanupTargetKind.ANALYSIS_RUN,
+            analysis_id[0],
+            max_rows=1,
+        )
+        _position_analysis_cleanup_at_overlay(
+            connector,
+            gate,
+            cycle,
+            now=10,
+        )
+
+        first = _advance(connector, gate, cycle, 1, b"1" * 32, now=20)
+        assert first.phase == "AR_OVERLAY" and first.row_count == 1
+        assert first.generation is not None
+        second = _advance(
+            connector,
+            gate,
+            cycle,
+            first.generation,
+            b"2" * 32,
+            now=21,
+        )
+        assert second.phase == "AR_OVERLAY" and second.row_count == 1
+        plan = cleanup_module._STATIC_PLANS[CleanupTargetKind.ANALYSIS_RUN]
+        relation_index, _cursor_values = cleanup_module._decode_static_cursor(
+            second.cursor,
+            plan.phases["AR_OVERLAY"],
+            len(plan.root_key),
+        )
+        assert relation_index > 0
+
+        connector.execute(
+            "INSERT INTO catalog_a_file_decision_shadow_seals "
+            "(analysis_id, file_sha256) VALUES (%s, %s)",
+            (analysis_id, file_sha256),
+        )
+        assert second.generation is not None
+        later = _advance(
+            connector,
+            gate,
+            cycle,
+            second.generation,
+            b"3" * 32,
+            now=22,
+        )
+        assert later.phase == "AR_OVERLAY" and later.row_count == 1
+
+        for attempt in range(32):
+            attempt_generation = later.generation
+            assert attempt_generation is not None
+            protocol_before = _cleanup_protocol_snapshot(connector)
+            try:
+                later = _advance(
+                    connector,
+                    gate,
+                    cycle,
+                    attempt_generation,
+                    (attempt + 4).to_bytes(32, "big"),
+                    now=23 + attempt,
+                )
+            except CleanupRetentionBlockedError as error:
+                assert "still owns rows" in str(error)
+                assert _cleanup_protocol_snapshot(connector) == protocol_before
+                blocked_generation = attempt_generation
+                break
+            assert later.phase == "AR_OVERLAY"
+        else:
+            raise AssertionError("earlier overlay reappearance did not block terminal")
+
+        connector.execute(
+            "DELETE FROM catalog_a_file_decision_shadow_seals "
+            "WHERE analysis_id = %s AND file_sha256 = %s",
+            (analysis_id, file_sha256),
+        )
+        resumed = _advance(
+            connector,
+            gate,
+            cycle,
+            blocked_generation,
+            b"r" * 32,
+            now=60,
+        )
+        assert resumed.phase == "AR_FILE_HASH_VALUES"
+        assert resumed.row_count == 0 and resumed.generation == 1
+    finally:
         connector.close()
 
 
@@ -5074,7 +7450,7 @@ def test_analysis_overlay_cleanup_removes_atomic_and_orphan_rows_by_phase(
         connector.close()
 
 
-def test_analysis_root_compound_delete_faults_roll_back_every_member_boundary(
+def test_analysis_wide_root_delete_fault_rolls_back_and_retries(
     tmp_path: Path,
 ) -> None:
     connector = _database(tmp_path / "analysis-root-family-faults.sqlite3")
@@ -5083,12 +7459,11 @@ def test_analysis_root_compound_delete_faults_roll_back_every_member_boundary(
         build_id = b"R" * 16
         scope_key = _seed_source_build_scope(connector, discriminator=91)
         seed_analysis_policy(connector)
-        seed_source_build(
+        _seed_cleanup_sealed_source_build(
             connector,
             build_id=build_id,
             scope_key=scope_key,
             manifest_policy_id=1,
-            state="SEALED",
             created_at=0,
             sealed_at=0,
         )
@@ -5110,7 +7485,10 @@ def test_analysis_root_compound_delete_faults_roll_back_every_member_boundary(
             max_rows=32,
         )
         generation = 1
-        for attempt in range(21):
+        phase_count = len(
+            cleanup_module._STATIC_PLANS[CleanupTargetKind.ANALYSIS_RUN].phases
+        )
+        for attempt in range(phase_count):
             result = _advance(
                 connector,
                 gate,
@@ -5120,7 +7498,7 @@ def test_analysis_root_compound_delete_faults_roll_back_every_member_boundary(
                 now=3 + attempt,
             )
             assert not result.cycle_complete
-            if attempt < 20:
+            if attempt < phase_count - 1:
                 assert result.phase != "AR_ROOT"
             assert result.generation is not None
             generation = result.generation
@@ -5132,7 +7510,7 @@ def test_analysis_root_compound_delete_faults_roll_back_every_member_boundary(
             "AR_ROOT"
         ][0]
         tables = tuple(statement.split()[2] for statement in root_spec.delete_sql)
-        assert len(tables) == 9
+        assert tables == ("catalog_analysis_run_descriptor",)
         original_execute_affected = connector.execute_affected
         for failed_table in tables:
             triggered = False
@@ -5178,9 +7556,7 @@ def test_analysis_root_compound_delete_faults_roll_back_every_member_boundary(
             now=31,
         )
         assert committed.phase == "AR_ROOT" and committed.row_count == 1
-        assert _analysis_run_family_rows(connector, analysis_id) == tuple(
-            [] for _table in tables
-        )
+        assert not any(_analysis_run_family_rows(connector, analysis_id))
     finally:
         connector.close()
 
@@ -5257,15 +7633,8 @@ def test_canonical_policy_delete_faults_roll_back_every_child_boundary(
             assert _cleanup_protocol_snapshot(connector) == protocol_before
 
         committed = _advance(connector, gate, cycle, 1, b"s" * 32, now=22)
-        assert committed.row_count == 6
-        assert _artifact_policy_semantics_family_rows(connector) == (
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
-        )
+        assert committed.row_count == 1
+        assert _artifact_policy_semantics_family_rows(connector) == ([],)
     finally:
         connector.close()
 
@@ -5468,33 +7837,10 @@ def test_canonical_page_identity_upload_artifact_and_hash_cache_strategies(
                     (value, parent_page),
                 ),
                 (
-                    "INSERT INTO catalog_source_scope_anchors (scope_key) VALUES (%s)",
-                    (value,),
-                ),
-                (
-                    "INSERT INTO catalog_source_scope_source_providers "
-                    "(scope_key, source_provider) VALUES (%s, %s)",
-                    (value, source_provider),
-                ),
-                (
-                    "INSERT INTO catalog_source_scope_source_root_sha256s "
-                    "(scope_key, source_root_sha256) VALUES (%s, %s)",
-                    (value, source_root),
-                ),
-                (
-                    "INSERT INTO catalog_source_scope_identity_policy_versions "
-                    "(scope_key, identity_policy_version) VALUES (%s, 1)",
-                    (value,),
-                ),
-                (
-                    "INSERT INTO catalog_source_scope_identities "
-                    "(source_provider, source_root_sha256, identity_policy_version, "
-                    "scope_key) VALUES (%s, %s, 1, %s)",
-                    (source_provider, source_root, value),
-                ),
-                (
-                    "INSERT INTO catalog_source_scope_seals (scope_key) VALUES (%s)",
-                    (value,),
+                    "INSERT INTO catalog_source_scopes "
+                    "(scope_key, source_provider, source_root_sha256, "
+                    "identity_policy_version) VALUES (%s, %s, %s, 1)",
+                    (value, source_provider, source_root),
                 ),
             ],
         )
@@ -6218,7 +8564,7 @@ def test_batch_rechecks_retention_roots_and_live_exclusive_gate(
         connector.close()
 
 
-def test_paired_staging_identity_delete_rolls_back_on_second_write_fault(
+def test_staging_identity_delete_rolls_back_on_write_fault(
     tmp_path: Path,
 ) -> None:
     connector = _database(tmp_path / "paired-delete-fault.sqlite3")
@@ -6233,7 +8579,8 @@ def test_paired_staging_identity_delete_rolls_back_on_second_write_fault(
                 (
                     "INSERT INTO operational_gallery_observation_stagings "
                     "(staging_id, build_id, gallery_id, observation_id, state, "
-                    "created_at, sealed_at) VALUES (%s, %s, 46, 1, 'SEALED', 0, 1)",
+                    "created_at, sealed_at, terminal_byte_count) "
+                    "VALUES (%s, %s, 46, 1, 'SEALED', 0, 1, 0)",
                     (staging, build),
                 ),
                 (
@@ -6243,11 +8590,6 @@ def test_paired_staging_identity_delete_rolls_back_on_second_write_fault(
                 ),
                 (
                     "INSERT INTO operational_gallery_observation_staging_requests "
-                    "(request_sha256) VALUES (%s)",
-                    (request,),
-                ),
-                (
-                    "INSERT INTO operational_gallery_observation_staging_request_owners "
                     "(request_sha256, staging_id) VALUES (%s, %s)",
                     (request, staging),
                 ),
@@ -6258,6 +8600,16 @@ def test_paired_staging_identity_delete_rolls_back_on_second_write_fault(
                     (staging,),
                 ),
             ],
+        )
+        _seed_terminal_retirement_authority(
+            connector,
+            staging_id=staging,
+            build_id=build,
+            gallery_id=46,
+            provisional_observation_id=1,
+            final_observation_id=1,
+            file_count=0,
+            byte_count=0,
         )
         cycle = _begin(
             connector,
@@ -6287,7 +8639,7 @@ def test_paired_staging_identity_delete_rolls_back_on_second_write_fault(
 
         original = connector.execute_affected
 
-        def fail_second_delete(sql: str, parameters: tuple[object, ...] = ()) -> int:
+        def fail_identity_delete(sql: str, parameters: tuple[object, ...] = ()) -> int:
             if sql.startswith(
                 "DELETE FROM operational_gallery_observation_staging_requests"
             ):
@@ -6295,15 +8647,12 @@ def test_paired_staging_identity_delete_rolls_back_on_second_write_fault(
             return original(sql, parameters)
 
         with (
-            patch.object(connector, "execute_affected", side_effect=fail_second_delete),
+            patch.object(
+                connector, "execute_affected", side_effect=fail_identity_delete
+            ),
             pytest.raises(RuntimeError, match="injected"),
         ):
             _advance(connector, gate, cycle, 1, b"4" * 32, now=6)
-        assert connector.fetch_one(
-            "SELECT 1 FROM operational_gallery_observation_staging_request_owners "
-            "WHERE request_sha256 = %s",
-            (request,),
-        ) == (1,)
         assert connector.fetch_one(
             "SELECT 1 FROM operational_gallery_observation_staging_requests "
             "WHERE request_sha256 = %s",
@@ -6328,7 +8677,7 @@ def test_cleanup_sql_is_bounded_static_and_has_portable_mariadb_lock_shape(
     tmp_path: Path,
 ) -> None:
     source = Path(cleanup_module.__file__).read_text(encoding="utf-8").upper()
-    assert "COUNT(" not in source
+    assert "SELECT COUNT(" not in source
     assert "SUM(" not in source
     assert "SELECT RELATION" not in source
     assert "SELECT PREDICATE" not in source
@@ -6346,7 +8695,11 @@ def test_cleanup_sql_is_bounded_static_and_has_portable_mariadb_lock_shape(
         target = cleanup_module._STATIC_PLANS[CleanupTargetKind.ANALYSIS_RUN]
         spec = target.phases["AR_ROOT"][0]
         sql = cleanup_module._static_select_sql(
-            target, spec, exact=False, has_after=False
+            target,
+            spec,
+            exact=False,
+            frozen_root_predicate="1 = 1",
+            has_after=False,
         )
         parameters = cleanup_module._static_shard_parameters(
             target,

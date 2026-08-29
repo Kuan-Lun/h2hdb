@@ -84,12 +84,8 @@ def _snapshot(connector: SQLiteConnector) -> tuple[object, ...]:
             "FROM operational_download_coordination_heads"
         ),
         connector.fetch_all(
-            "SELECT generation, owner_token, claimed_at "
+            "SELECT generation, owner_token, claimed_at, lease_expires_at "
             "FROM operational_download_generation_owners ORDER BY generation"
-        ),
-        connector.fetch_all(
-            "SELECT generation, lease_expires_at "
-            "FROM operational_download_generation_leases ORDER BY generation"
         ),
         connector.fetch_all(
             "SELECT download_generation, owner_token, handoff_kind, requested_at "
@@ -114,12 +110,8 @@ def _snapshot(connector: SQLiteConnector) -> tuple[object, ...]:
             "FROM operational_ingest_coordination_heads"
         ),
         connector.fetch_all(
-            "SELECT generation, owner_token, claimed_at "
+            "SELECT generation, owner_token, claimed_at, lease_expires_at "
             "FROM operational_ingest_generation_owners ORDER BY generation"
-        ),
-        connector.fetch_all(
-            "SELECT generation, lease_expires_at "
-            "FROM operational_ingest_generation_leases ORDER BY generation"
         ),
     )
 
@@ -158,12 +150,6 @@ def test_live_download_handoff_moves_capability_and_exact_replay_is_zero_write(
         assert (
             connector.fetch_all(
                 "SELECT generation FROM operational_download_generation_owners"
-            )
-            == []
-        )
-        assert (
-            connector.fetch_all(
-                "SELECT generation FROM operational_download_generation_leases"
             )
             == []
         )
@@ -482,9 +468,6 @@ def test_expired_download_takeover_is_fail_closed_and_preserves_exact_kind(
         assert not connector.fetch_all(
             "SELECT generation FROM operational_download_generation_owners"
         )
-        assert not connector.fetch_all(
-            "SELECT generation FROM operational_download_generation_leases"
-        )
 
         before = _snapshot(connector)
         with pytest.raises(DownloadIngestReplayMismatchError, match="replay tuple"):
@@ -706,7 +689,7 @@ def test_owner_transfer_and_head_cas_faults_roll_back_every_prior_write(
         connector.close()
 
 
-def test_capability_collisions_and_corrupt_satellites_are_zero_write(
+def test_capability_collisions_and_missing_authority_are_zero_write(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     connector = _generated_database(tmp_path / "corruption.sqlite3")
@@ -715,11 +698,11 @@ def test_capability_collisions_and_corrupt_satellites_are_zero_write(
             connector, monkeypatch, b"d" * 16, now=10, duration=100
         )
         connector.execute(
-            "DELETE FROM operational_download_generation_leases WHERE generation = %s",
+            "DELETE FROM operational_download_generation_owners WHERE generation = %s",
             (download.generation,),
         )
         before = _snapshot(connector)
-        with pytest.raises(DownloadIngestCorruptionError, match="owner and lease"):
+        with pytest.raises(DownloadIngestCorruptionError, match="exactly one owner"):
             with connector.transaction():
                 DownloadIngestRepository.claim_ingest(
                     VNextUnitOfWork(connector, backend="sqlite"),
@@ -729,9 +712,15 @@ def test_capability_collisions_and_corrupt_satellites_are_zero_write(
         assert _snapshot(connector) == before
 
         connector.execute(
-            "INSERT INTO operational_download_generation_leases "
-            "(generation, lease_expires_at) VALUES (%s, %s)",
-            (download.generation, download.lease_expires_at),
+            "INSERT INTO operational_download_generation_owners "
+            "(generation, owner_token, claimed_at, lease_expires_at) "
+            "VALUES (%s, %s, %s, %s)",
+            (
+                download.generation,
+                download.owner_token,
+                10,
+                download.lease_expires_at,
+            ),
         )
         with connector.transaction():
             DownloadIngestRepository.handoff_download(
@@ -775,9 +764,7 @@ def test_mariadb_resume_uses_server_placeholders_and_row_locks() -> None:
             if "operational_download_generations" in query:
                 return (1, None)
             if "operational_download_generation_owners" in query:
-                return (token, 1)
-            if "operational_download_generation_leases" in query:
-                return (100,)
+                return (token, 1, 100)
             if "operational_download_ingest_handoffs" in query:
                 return ()
             if "operational_download_ingest_consumptions" in query:
@@ -792,7 +779,7 @@ def test_mariadb_resume_uses_server_placeholders_and_row_locks() -> None:
         )
         == turn
     )
-    assert len(connector.queries) == 6
+    assert len(connector.queries) == 5
     assert all(query.endswith(" FOR UPDATE") for query in connector.queries)
     assert all("?" not in query for query in connector.queries)
     assert all(

@@ -1,9 +1,10 @@
 """Exact physical protocols for publication-owned immutable facts.
 
-Candidate and contributor relations retain their sealed-family protocols.
-Each catalog occurrence is split losslessly into a collision-checked
-revision/publication identity and one complete gallery/scalar/title payload.
-The historical publication and title row shapes are read-only projections.
+Publication candidates are stored as one atomic BCNF row.  Contributor
+relations retain their sealed-family protocol.  Each catalog occurrence is
+split losslessly into a collision-checked revision/publication identity and
+one complete gallery/scalar/title payload.  The historical publication and
+title row shapes are read-only projections.
 """
 
 from __future__ import annotations
@@ -44,14 +45,7 @@ from .vnext_domains import (
     require_uuid16,
 )
 
-_CANDIDATE_ANCHOR = "catalog_publication_candidate_anchors"
-_CANDIDATE_ANALYSIS = "catalog_publication_candidate_analysis_ids"
-_CANDIDATE_REVISION = "catalog_publication_candidate_reserved_revisions"
-_CANDIDATE_ARTIFACT_POLICY = "catalog_publication_candidate_artifact_policy_ids"
-_CANDIDATE_DISPLAY_POLICY = "catalog_publication_candidate_display_title_policy_ids"
-_CANDIDATE_ARTIFACTS_REQUIRED = "catalog_publication_candidate_artifacts_required"
-_CANDIDATE_CREATED_AT = "catalog_publication_candidate_created_ats"
-_CANDIDATE_SEAL = "catalog_publication_candidate_definition_seals"
+_CANDIDATE = "catalog_publication_candidates"
 
 _PUBLICATION_IDENTITY = "catalog_publication_identities"
 
@@ -263,41 +257,12 @@ def _candidate_family_row(
     backend: str,
     locking: bool,
 ) -> tuple[Any, ...]:
-    members = (
-        _CANDIDATE_ANCHOR,
-        _CANDIDATE_ANALYSIS,
-        _CANDIDATE_REVISION,
-        _CANDIDATE_ARTIFACT_POLICY,
-        _CANDIDATE_DISPLAY_POLICY,
-        _CANDIDATE_ARTIFACTS_REQUIRED,
-        _CANDIDATE_CREATED_AT,
-        _CANDIDATE_SEAL,
-    )
-    key_union = " UNION ".join(
-        f"SELECT candidate_id FROM {table} WHERE candidate_id = %s" for table in members
-    )
     row = connector.fetch_one(
-        "WITH family_keys(candidate_id) AS ("
-        + key_union
-        + ") SELECT anchor.candidate_id, analysis.candidate_id, "
-        "analysis.analysis_id, revision.candidate_id, revision.reserved_revision, "
-        "artifact_policy.candidate_id, artifact_policy.artifact_policy_id, "
-        "display_policy.candidate_id, display_policy.display_title_policy_id, "
-        "required.candidate_id, required.artifacts_required, created.candidate_id, "
-        "created.created_at, seal.candidate_id FROM family_keys AS family_key "
-        f"LEFT JOIN {_CANDIDATE_ANCHOR} AS anchor USING (candidate_id) "
-        f"LEFT JOIN {_CANDIDATE_ANALYSIS} AS analysis USING (candidate_id) "
-        f"LEFT JOIN {_CANDIDATE_REVISION} AS revision USING (candidate_id) "
-        f"LEFT JOIN {_CANDIDATE_ARTIFACT_POLICY} AS artifact_policy "
-        "USING (candidate_id) "
-        f"LEFT JOIN {_CANDIDATE_DISPLAY_POLICY} AS display_policy "
-        "USING (candidate_id) "
-        f"LEFT JOIN {_CANDIDATE_ARTIFACTS_REQUIRED} AS required "
-        "USING (candidate_id) "
-        f"LEFT JOIN {_CANDIDATE_CREATED_AT} AS created USING (candidate_id) "
-        f"LEFT JOIN {_CANDIDATE_SEAL} AS seal USING (candidate_id)"
+        "SELECT candidate_id, analysis_id, reserved_revision, artifact_policy_id, "
+        "display_title_policy_id, artifacts_required, created_at "
+        f"FROM {_CANDIDATE} WHERE candidate_id = %s"
         + _locking_suffix(backend=backend, locking=locking),
-        (candidate_id,) * len(members),
+        (candidate_id,),
     )
     return tuple(row)
 
@@ -318,22 +283,21 @@ def load_publication_candidate_family(
     )
     if not row:
         return None
-    key_indexes = (0, 1, 3, 5, 7, 9, 11, 13)
-    if len(row) != 14 or any(row[index] != candidate for index in key_indexes):
-        raise PublicationFamilyPartialError("publication candidate family is partial")
-    if row[10] not in {0, 1}:
+    if len(row) != 7 or row[0] != candidate:
+        raise PublicationFamilyPartialError("publication candidate row is malformed")
+    if row[5] not in {0, 1}:
         raise PublicationFamilyCollisionError(
             "publication candidate artifacts_required is not boolean"
         )
     try:
         return PublicationCandidateFamily(
             candidate,
+            row[1],
             row[2],
+            row[3],
             row[4],
+            bool(row[5]),
             row[6],
-            row[8],
-            bool(row[10]),
-            row[12],
         )
     except (TypeError, ValueError) as error:
         raise PublicationFamilyCollisionError(
@@ -364,36 +328,19 @@ def ensure_publication_candidate_family(
     candidate = family.candidate_id
     try:
         connector.execute(
-            f"INSERT INTO {_CANDIDATE_ANCHOR} (candidate_id) VALUES (%s)",
-            (candidate,),
-        )
-        for table, column, value in (
-            (_CANDIDATE_ANALYSIS, "analysis_id", family.analysis_id),
-            (_CANDIDATE_REVISION, "reserved_revision", family.reserved_revision),
+            f"INSERT INTO {_CANDIDATE} "
+            "(candidate_id, analysis_id, reserved_revision, artifact_policy_id, "
+            "display_title_policy_id, artifacts_required, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
             (
-                _CANDIDATE_ARTIFACT_POLICY,
-                "artifact_policy_id",
+                candidate,
+                family.analysis_id,
+                family.reserved_revision,
                 family.artifact_policy_id,
-            ),
-            (
-                _CANDIDATE_DISPLAY_POLICY,
-                "display_title_policy_id",
                 family.display_title_policy_id,
-            ),
-            (
-                _CANDIDATE_ARTIFACTS_REQUIRED,
-                "artifacts_required",
                 int(family.artifacts_required),
+                family.created_at,
             ),
-            (_CANDIDATE_CREATED_AT, "created_at", family.created_at),
-        ):
-            connector.execute(
-                f"INSERT INTO {table} (candidate_id, {column}) VALUES (%s, %s)",
-                (candidate, value),
-            )
-        connector.execute(
-            f"INSERT INTO {_CANDIDATE_SEAL} (candidate_id) VALUES (%s)",
-            (candidate,),
         )
     except DatabaseDuplicateKeyError as error:
         try:

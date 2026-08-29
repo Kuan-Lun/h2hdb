@@ -445,20 +445,17 @@ _RELEASE_SELECT = (
     "prepared.artifact_sha256, prepared.storage_codec_version, "
     "prepared.storage_generation, prepared.protection_token, prepared.state, "
     "blob_row.size_bytes, blob_row.artifact_locator_sha256, "
-    "codec_seal.storage_codec_version, "
-    "adapter_row.storage_codec_version, adapter_row.adapter_id "
+    "codec.storage_codec_version, codec.adapter_id "
 )
 
 _RELEASE_JOINS = (
     "FROM catalog_prepared_artifacts AS prepared "
-    "JOIN catalog_publication_candidate_definition_seals AS candidate_row "
+    "JOIN catalog_publication_candidates AS candidate_row "
     "ON candidate_row.candidate_id = prepared.candidate_id "
     "LEFT JOIN catalog_artifact_blobs AS blob_row "
     "ON blob_row.artifact_sha256 = prepared.artifact_sha256 "
-    "LEFT JOIN catalog_artifact_storage_codec_seals AS codec_seal "
-    "ON codec_seal.storage_codec_version = prepared.storage_codec_version "
-    "LEFT JOIN catalog_artifact_storage_codec_adapter_ids AS adapter_row "
-    "ON adapter_row.storage_codec_version = prepared.storage_codec_version "
+    "LEFT JOIN catalog_artifact_storage_codecs AS codec "
+    "ON codec.storage_codec_version = prepared.storage_codec_version "
 )
 
 _CANDIDATE_ELIGIBILITY = (
@@ -466,16 +463,16 @@ _CANDIDATE_ELIGIBILITY = (
     "SELECT 1 FROM operational_catalog_working_candidates AS working_row "
     "WHERE working_row.candidate_id = prepared.candidate_id) "
     "AND NOT EXISTS ("
-    "SELECT 1 FROM catalog_publication_commit_candidates AS commit_row "
+    "SELECT 1 FROM catalog_publication_commits AS commit_row "
     "WHERE commit_row.candidate_id = prepared.candidate_id) "
 )
 
 
 def _item_from_row(row: tuple[object, ...]) -> ArtifactReleaseItem:
-    if len(row) != 12:
+    if len(row) != 11:
         raise ValueError("artifact release family row has an invalid shape")
     codec = require_positive_int63(row[3], field="artifact release codec")
-    if row[9] != codec or row[10] != codec:
+    if row[9] != codec:
         raise ValueError("artifact release storage codec family is partial")
     artifact = require_digest32(row[2], field="artifact release artifact_sha256")
     components = identity.artifact_locator_components(artifact)
@@ -504,7 +501,7 @@ def _item_from_row(row: tuple[object, ...]) -> ArtifactReleaseItem:
             maximum=184,
         ),
         adapter_id=require_ascii_bytes(
-            row[11],
+            row[10],
             field="artifact release adapter_id",
             minimum=1,
             maximum=64,
@@ -564,13 +561,13 @@ def _candidate_is_eligible(connector: SQLConnector, candidate_id: bytes) -> bool
     candidate = require_uuid16(candidate_id, field="artifact release candidate_id")
     row = connector.fetch_one(
         "SELECT candidate_row.candidate_id "
-        "FROM catalog_publication_candidate_definition_seals AS candidate_row "
+        "FROM catalog_publication_candidates AS candidate_row "
         "WHERE candidate_row.candidate_id = %s "
         "AND NOT EXISTS ("
         "SELECT 1 FROM operational_catalog_working_candidates AS working_row "
         "WHERE working_row.candidate_id = candidate_row.candidate_id) "
         "AND NOT EXISTS ("
-        "SELECT 1 FROM catalog_publication_commit_candidates AS commit_row "
+        "SELECT 1 FROM catalog_publication_commits AS commit_row "
         "WHERE commit_row.candidate_id = candidate_row.candidate_id)",
         (candidate,),
     )

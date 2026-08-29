@@ -34,6 +34,8 @@ __all__ = [
     "EnsureDownloadRequestReceipt",
     "FileContentReceipt",
     "FileObservation",
+    "GalleryStagingCapacityError",
+    "GalleryStagingRetiredError",
     "GalleryObservationDirectoryFileType",
     "GalleryObservationMetadata",
     "HandoffKind",
@@ -159,6 +161,8 @@ from .vnext_identity import (
 from .vnext_ingest_facade import (
     CurrentProjectionCheckpoint,
     CurrentProjectionStatus,
+    GalleryStagingCapacityError,
+    GalleryStagingRetiredError,
     VNextAnalysisAdvanceResult,
     VNextCurrentOnlyMaintenanceOutcome,
     VNextCurrentProjectionAdapter,

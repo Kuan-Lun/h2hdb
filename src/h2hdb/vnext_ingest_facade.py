@@ -5,6 +5,8 @@ from __future__ import annotations
 __all__ = [
     "CurrentProjectionCheckpoint",
     "CurrentProjectionStatus",
+    "GalleryStagingCapacityError",
+    "GalleryStagingRetiredError",
     "VNextAnalysisAdvanceResult",
     "VNextCurrentProjectionAdapter",
     "VNextCurrentProjectionContinuationError",
@@ -82,9 +84,13 @@ from .vnext_gallery_staging_repository import (
     DirectoryBatchCommand,
     FileBatchCommand,
     GalleryObservationStagingRepository,
+    GalleryStagingCapacityError,
     GalleryStagingHandle,
+    GalleryStagingPendingRetirement,
     GalleryStagingProgress,
     GalleryStagingReceipt,
+    GalleryStagingRetiredError,
+    GalleryStagingRetirement,
     GalleryStagingSeal,
     MatchBatchCommand,
     MatchBatchReceipt,
@@ -94,7 +100,6 @@ from .vnext_gallery_staging_repository import (
 from .vnext_identity import (
     GalleryObservationComponent,
     encode_source_relative_locator,
-    source_root_digest,
 )
 from .vnext_ingest_analysis import (
     VNextAnalysisAdvanceResult,
@@ -130,9 +135,9 @@ from .vnext_source_build_repository import (
     SourceBuildHandoff,
     SourceBuildManifestSummary,
     SourceBuildRepository,
+    SourceBuildSnapshotMismatchError,
     SourceDiscoveryPlan,
     SourceRootBuildCommand,
-    source_build_snapshot_attempt_id,
 )
 from .vnext_source_observation_spool import (
     FrozenGalleryObservation,
@@ -203,12 +208,14 @@ class _SourceAction(StrEnum):
     STAGING_SELECT = "STAGING_SELECT"
     STAGING_COMPLETE = "STAGING_COMPLETE"
     STAGING_BEGIN = "STAGING_BEGIN"
+    STAGING_RECOVER = "STAGING_RECOVER"
     FILE_PAGE = "FILE_PAGE"
     DIRECTORY_PAGE = "DIRECTORY_PAGE"
     TAG_PAGE = "TAG_PAGE"
     METADATA_PAGE = "METADATA_PAGE"
     MATCH = "MATCH"
     STAGING_SEAL = "STAGING_SEAL"
+    STAGING_RETIRE = "STAGING_RETIRE"
     ASSEMBLY = "ASSEMBLY"
     COMPLETE = "COMPLETE"
 
@@ -234,6 +241,7 @@ class _SourceMachine:
     locator_components: tuple[str, ...] | None = None
     observation: FrozenGalleryObservation | None = None
     staging_handle: GalleryStagingHandle | None = None
+    staging_seal: GalleryStagingSeal | None = None
     file_after: bytes | None = None
     directory_after: bytes | None = None
     tag_after: int | None = None
@@ -449,7 +457,29 @@ class VNextIngestFacade:
         action = machine.action
 
         def issue(work: VNextUnitOfWork) -> object:
-            _resume_authority(work, session, self.__clock())
+            now = self.__clock()
+            if action is _SourceAction.STAGING_FIND:
+                # The staging repository owns this operation's outer gate/fence
+                # authorization, so delegate before acquiring any facade locks.
+                if machine.build_id is None:
+                    raise RuntimeError("source build is not initialized")
+                gate, turn = _repository_authority(session)
+                retirement = (
+                    GalleryObservationStagingRepository.find_pending_retirement(
+                        work,
+                        gate_lease=gate,
+                        ingest_turn=turn.ingest_turn,
+                        build_id=machine.build_id,
+                        now=now,
+                    )
+                )
+                if retirement is not None:
+                    return retirement
+                return SourceBuildRepository.get_pending_source_gallery(
+                    work.connector,
+                    build_id=machine.build_id,
+                )
+            _resume_authority(work, session, now)
             if action is _SourceAction.DISCOVERY_BATCH:
                 if machine.build_id is None:
                     raise RuntimeError("source build is not initialized")
@@ -457,13 +487,6 @@ class VNextIngestFacade:
                     work.connector,
                     build_id=machine.build_id,
                     plan=source._plan,
-                )
-            if action is _SourceAction.STAGING_FIND:
-                if machine.build_id is None:
-                    raise RuntimeError("source build is not initialized")
-                return SourceBuildRepository.get_pending_source_gallery(
-                    work.connector,
-                    build_id=machine.build_id,
                 )
             if action is _SourceAction.COMPLETE:
                 raise ValueError("prepared source is already complete")
@@ -505,12 +528,11 @@ class VNextIngestFacade:
             policy = machine.policy
             if policy is None:
                 raise RuntimeError("source policy binding is absent")
-            build_id = _source_build_attempt_id(source)
             command = SourceRootBuildCommand(
                 source._source_root_components,
-                build_id,
                 source._manifest_summary,
             )
+            build_id = command.build_attempt_id
             upload = command.prepare_root_upload()
             payload = (build_id, command, upload, upload.iter_pages())
         elif action is _SourceAction.ROOT_PAGE:
@@ -538,7 +560,14 @@ class VNextIngestFacade:
                 local_action = _SourceAction.LOCATOR_SEAL
         elif action is _SourceAction.STAGING_FIND:
             pending = issued._payload
-            if pending is None:
+            if isinstance(pending, GalleryStagingPendingRetirement):
+                payload = pending.seal
+                local_action = (
+                    _SourceAction.STAGING_RETIRE
+                    if pending.acknowledged
+                    else _SourceAction.STAGING_RECOVER
+                )
+            elif pending is None:
                 payload = None
                 local_action = _SourceAction.STAGING_COMPLETE
             else:
@@ -555,6 +584,10 @@ class VNextIngestFacade:
                 )
                 payload = (pending, decoded_locator, observation)
                 local_action = _SourceAction.STAGING_SELECT
+        elif action is _SourceAction.STAGING_RETIRE:
+            if machine.staging_seal is None:
+                raise RuntimeError("terminal gallery staging seal is absent")
+            payload = machine.staging_seal
         elif action in {
             _SourceAction.FILE_PAGE,
             _SourceAction.DIRECTORY_PAGE,
@@ -708,6 +741,7 @@ class VNextIngestFacade:
             if action in {
                 _SourceAction.STAGING_SELECT,
                 _SourceAction.STAGING_COMPLETE,
+                _SourceAction.STAGING_RECOVER,
             }:
                 return _resume_authority(work, session, now)
             if action is _SourceAction.STAGING_BEGIN:
@@ -792,6 +826,17 @@ class VNextIngestFacade:
                     handle=_require_staging_handle(machine),
                     now=now,
                 )
+            if action is _SourceAction.STAGING_RETIRE:
+                seal = prepared_step._payload
+                if not isinstance(seal, GalleryStagingSeal):
+                    raise TypeError("STAGING_RETIRE source step has an invalid seal")
+                return GalleryObservationStagingRepository.retire_sealed(
+                    work,
+                    gate_lease=gate,
+                    ingest_turn=turn.ingest_turn,
+                    seal=seal,
+                    now=now,
+                )
             if action is _SourceAction.ASSEMBLY:
                 attempt = prepared_step._payload
                 if not isinstance(attempt, AssemblyBatchAttempt):
@@ -816,7 +861,10 @@ class VNextIngestFacade:
 
         try:
             outcome = self.__write(commit)
-        except VNextSourceManifestMismatchError:
+        except (
+            SourceBuildSnapshotMismatchError,
+            VNextSourceManifestMismatchError,
+        ) as mismatch:
             build_id = machine.build_id
             if build_id is None:
                 raise RuntimeError(
@@ -836,6 +884,11 @@ class VNextIngestFacade:
                 )
             )
             source.close()
+            if isinstance(mismatch, SourceBuildSnapshotMismatchError):
+                raise VNextSourceManifestMismatchError(
+                    "durable source build manifest differs from its frozen "
+                    "preflight snapshot"
+                ) from mismatch
             raise
         processed_rows, replayed = _apply_source_outcome(
             source,
@@ -1088,7 +1141,7 @@ class VNextIngestFacade:
         should retry promptly; ``BLOCKED`` and ``CONTENDED`` should use the
         ordinary poll cadence.  Callers retain no capability, and interrupted
         shard jobs resume before new work.  Every completed cycle restarts the
-        17-target dependency-priority scan from its head.
+        21-target dependency-priority scan from its head.
 
         File-derived hash-cache expiration is intentionally separate from this
         gallery/CBZ fixed point.  It requires an explicit nonzero age policy;
@@ -1608,15 +1661,6 @@ def _resume_authority(
     return _public_session(resumed_gate, resumed_turn)
 
 
-def _source_build_attempt_id(
-    source: VNextPreparedSource,
-) -> bytes:
-    return source_build_snapshot_attempt_id(
-        source_root_digest(source._source_root_components),
-        source._manifest_summary,
-    )
-
-
 def _require_root_upload(machine: _SourceMachine) -> CanonicalValueUploadPlan:
     if machine.root_upload is None:
         raise RuntimeError("source-root upload plan is absent")
@@ -2048,6 +2092,13 @@ def _apply_source_outcome(
         if not isinstance(outcome, GalleryStagingProgress):
             raise RuntimeError("gallery staging begin returned invalid progress")
         _resume_staging_machine(source, outcome)
+    elif action is _SourceAction.STAGING_RECOVER:
+        seal = step._payload
+        if not isinstance(seal, GalleryStagingSeal):
+            raise RuntimeError("recovered gallery staging seal is invalid")
+        machine.staging_seal = seal
+        replayed = True
+        machine.action = _SourceAction.STAGING_RETIRE
     elif action in {
         _SourceAction.FILE_PAGE,
         _SourceAction.DIRECTORY_PAGE,
@@ -2134,6 +2185,21 @@ def _apply_source_outcome(
         machine.staged_galleries = pending.position + 1
         replayed = outcome.replayed
         processed_rows = 1
+        machine.staging_seal = outcome
+        machine.action = _SourceAction.STAGING_RETIRE
+    elif action is _SourceAction.STAGING_RETIRE:
+        seal = step._payload
+        if not isinstance(seal, GalleryStagingSeal) or not isinstance(
+            outcome,
+            GalleryStagingRetirement,
+        ):
+            raise RuntimeError("gallery staging retirement returned an invalid receipt")
+        machine.staging_seal = seal
+        processed_rows = outcome.deleted_count
+        replayed = outcome.replayed
+        if not outcome.complete:
+            machine.action = _SourceAction.STAGING_RETIRE
+            return processed_rows, replayed
         machine.pending_gallery = None
         machine.locator_components = None
         machine.observation = None
@@ -2143,6 +2209,7 @@ def _apply_source_outcome(
         machine.tag_after = None
         machine.previous_operation_id = None
         machine.match_previous_operation_id = None
+        machine.staging_seal = None
         machine.action = _SourceAction.STAGING_FIND
     elif action is _SourceAction.ASSEMBLY:
         if not isinstance(outcome, AssemblyBatchReceipt):

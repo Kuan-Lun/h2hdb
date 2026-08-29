@@ -31,7 +31,7 @@ import os
 import sqlite3
 import stat
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
@@ -69,6 +69,20 @@ from .vnext_canonical_value_repository import (
     CanonicalValueNotReadyError,
     CanonicalValueRepository,
     CanonicalValueUploadPlan,
+)
+from .vnext_capacity import RECOMPOSED_REGISTRY_MAXIMUM_ROWS
+from .vnext_catalog_registry_repository import (
+    ArtifactPolicySemanticsRecord,
+    ArtifactProducerFingerprintRecord,
+    CatalogRegistryError,
+    CatalogRegistryNotReadyError,
+    load_analysis_policy,
+    load_artifact_policy_semantics,
+    load_artifact_producer_fingerprint,
+    load_artifact_storage_codec,
+    load_artifact_zip_writer_policy,
+    load_manifest_policy,
+    load_source_scope,
 )
 from .vnext_domains import (
     INT63_MAX,
@@ -117,12 +131,7 @@ _INPUT_AUTHORITY_TOKEN = object()
 _INPUT_PLAN_TOKEN = object()
 _INPUT_VALIDATION_PLAN_TOKEN = object()
 
-_CHECKPOINT_GENERATION_TABLE = "catalog_publication_checkpoint_generations"
-_CHECKPOINT_CURSOR_TABLE = "catalog_publication_checkpoint_cursors"
-_CHECKPOINT_COUNT_TABLE = "catalog_publication_checkpoint_processed_counts"
-_CHECKPOINT_STATE_TABLE = "catalog_publication_checkpoint_states"
-_CHECKPOINT_UPDATED_AT_TABLE = "catalog_publication_checkpoint_updated_ats"
-_CHECKPOINT_SEAL_TABLE = "catalog_publication_checkpoint_seals"
+_CHECKPOINT_TABLE = "catalog_publication_checkpoints"
 
 _SOURCE_FILE_FAMILY_SQL = (
     "FROM (SELECT file_no.gallery_id, file_no.observation_id, file_no.file_key, "
@@ -162,9 +171,18 @@ class ArtifactPreparationContractUnavailableError(ArtifactPreparationRepositoryE
     """The selected adapter cannot execute the registered artifact contract."""
 
 
+def _registry_record[T](label: str, loader: Callable[[], T]) -> T:
+    try:
+        return loader()
+    except CatalogRegistryNotReadyError as error:
+        raise ArtifactPreparationNotReadyError(f"{label} is missing") from error
+    except CatalogRegistryError as error:
+        raise ArtifactPreparationConflictError(f"{label} is invalid") from error
+
+
 @dataclass(frozen=True, slots=True)
 class ArtifactProducerRegistration:
-    """One exact sealed artifact byte-producer identity."""
+    """One exact immutable artifact byte-producer identity."""
 
     producer_fingerprint_sha256: bytes
     artifact_algorithm_version: int
@@ -841,12 +859,12 @@ class ArtifactPreparationRepository:
         libjpeg_build: bytes,
         zlib_build: bytes,
     ) -> ArtifactProducerRegistration:
-        """Derive, collision-check, and seal one byte-producer registration.
+        """Derive, collision-check, and insert one byte-producer registration.
 
         The caller owns the write transaction.  The digest is never accepted
         from the caller: it is derived from the exact five-field producer
-        frame, checked through both candidate keys, and made visible through
-        the sealed read view only by the final seal insert.
+        frame, checked through all candidate keys, and inserted as one atomic
+        authoritative row.
         """
 
         algorithm_version = require_uint32(
@@ -883,7 +901,7 @@ class ArtifactPreparationRepository:
         )
         if work.connector.fetch_one(
             "SELECT artifact_algorithm_version "
-            "FROM catalog_artifact_zip_writer_policy_seals "
+            "FROM catalog_artifact_zip_writer_policies "
             "WHERE artifact_algorithm_version = %s",
             (algorithm_version,),
         ) != (algorithm_version,):
@@ -894,32 +912,24 @@ class ArtifactPreparationRepository:
         # The maintenance gate and ingest fence above are the mutable
         # serialization authorities.  Immutable registry rows are plain reads.
         digest_row = work.connector.fetch_one(
-            "SELECT anchor.producer_fingerprint_sha256, "
-            "algorithm.artifact_algorithm_version, "
-            "equivalence.producer_equivalence_class, identity.writer_id, "
-            "identity.python_abi, identity.pillow_build, identity.libjpeg_build, "
-            "identity.zlib_build, seal.producer_fingerprint_sha256 "
-            "FROM catalog_artifact_producer_fingerprint_anchors AS anchor "
-            "LEFT JOIN catalog_artifact_producer_fingerprint_algorithm_versions "
-            "AS algorithm ON algorithm.producer_fingerprint_sha256 = "
-            "anchor.producer_fingerprint_sha256 "
-            "LEFT JOIN catalog_artifact_producer_fingerprint_equivalence_classes "
-            "AS equivalence ON equivalence.producer_fingerprint_sha256 = "
-            "anchor.producer_fingerprint_sha256 "
-            "LEFT JOIN catalog_artifact_producer_fingerprint_identities AS identity "
-            "ON identity.producer_fingerprint_sha256 = "
-            "anchor.producer_fingerprint_sha256 "
-            "LEFT JOIN catalog_artifact_producer_fingerprint_seals AS seal "
-            "ON seal.producer_fingerprint_sha256 = anchor.producer_fingerprint_sha256 "
-            "WHERE anchor.producer_fingerprint_sha256 = %s",
+            "SELECT producer_fingerprint_sha256, artifact_algorithm_version, "
+            "producer_equivalence_class, writer_id, python_abi, pillow_build, "
+            "libjpeg_build, zlib_build FROM catalog_artifact_producer_fingerprints "
+            "WHERE producer_fingerprint_sha256 = %s",
             (fingerprint,),
         )
         natural_row = work.connector.fetch_one(
             "SELECT producer_fingerprint_sha256 "
-            "FROM catalog_artifact_producer_fingerprint_identities "
+            "FROM catalog_artifact_producer_fingerprints "
             "WHERE writer_id = %s AND python_abi = %s AND pillow_build = %s "
             "AND libjpeg_build = %s AND zlib_build = %s",
             producer_fields,
+        )
+        equivalence_row = work.connector.fetch_one(
+            "SELECT producer_fingerprint_sha256 "
+            "FROM catalog_artifact_producer_fingerprints "
+            "WHERE producer_equivalence_class = %s",
+            (equivalence_class,),
         )
 
         expected = (
@@ -927,10 +937,13 @@ class ArtifactPreparationRepository:
             algorithm_version,
             equivalence_class,
             *producer_fields,
-            fingerprint,
         )
         if digest_row:
-            if digest_row != expected or natural_row != (fingerprint,):
+            if (
+                digest_row != expected
+                or natural_row != (fingerprint,)
+                or equivalence_row != (fingerprint,)
+            ):
                 raise ArtifactPreparationConflictError(
                     "artifact producer digest collides with another exact registration"
                 )
@@ -941,39 +954,36 @@ class ArtifactPreparationRepository:
                 *producer_fields,
                 True,
             )
-        if natural_row:
+        if natural_row or equivalence_row:
             raise ArtifactPreparationConflictError(
-                "artifact producer natural identity is already registered differently"
+                "artifact producer candidate key is already registered differently"
             )
 
-        connector = work.connector
-        connector.execute(
-            "INSERT INTO catalog_artifact_producer_fingerprint_anchors "
-            "(producer_fingerprint_sha256) VALUES (%s)",
-            (fingerprint,),
+        count_row = work.connector.fetch_one(
+            "SELECT COUNT(*) FROM catalog_artifact_producer_fingerprints"
         )
-        connector.execute(
-            "INSERT INTO catalog_artifact_producer_fingerprint_algorithm_versions "
-            "(producer_fingerprint_sha256, artifact_algorithm_version) "
-            "VALUES (%s, %s)",
-            (fingerprint, algorithm_version),
+        if len(count_row) != 1:
+            raise ArtifactPreparationConflictError(
+                "artifact producer registry count has an invalid shape"
+            )
+        producer_count = require_int63(
+            count_row[0], field="artifact producer registry row count"
         )
-        connector.execute(
-            "INSERT INTO catalog_artifact_producer_fingerprint_equivalence_classes "
-            "(producer_fingerprint_sha256, producer_equivalence_class) "
-            "VALUES (%s, %s)",
-            (fingerprint, equivalence_class),
-        )
-        connector.execute(
-            "INSERT INTO catalog_artifact_producer_fingerprint_identities "
-            "(writer_id, python_abi, pillow_build, libjpeg_build, zlib_build, "
-            "producer_fingerprint_sha256) VALUES (%s, %s, %s, %s, %s, %s)",
-            (*producer_fields, fingerprint),
-        )
-        connector.execute(
-            "INSERT INTO catalog_artifact_producer_fingerprint_seals "
-            "(producer_fingerprint_sha256) VALUES (%s)",
-            (fingerprint,),
+        if producer_count < 0:
+            raise ArtifactPreparationConflictError(
+                "artifact producer registry row count is negative"
+            )
+        if producer_count >= RECOMPOSED_REGISTRY_MAXIMUM_ROWS:
+            raise ArtifactPreparationNotReadyError(
+                "artifact producer registry reached its recomposition capacity"
+            )
+
+        work.connector.execute(
+            "INSERT INTO catalog_artifact_producer_fingerprints "
+            "(producer_fingerprint_sha256, artifact_algorithm_version, "
+            "producer_equivalence_class, writer_id, python_abi, pillow_build, "
+            "libjpeg_build, zlib_build) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            expected,
         )
         return ArtifactProducerRegistration(
             fingerprint,
@@ -2608,34 +2618,11 @@ def _load_manifest_policy(
         manifest_policy_id,
         field="artifact manifest_policy_id",
     )
-    row = work.connector.fetch_one(
-        "SELECT algorithm.manifest_algorithm_version, ordering.file_order_version "
-        "FROM catalog_manifest_policy_seals AS seal "
-        "JOIN catalog_manifest_policy_manifest_algorithm_versions AS algorithm "
-        "ON algorithm.manifest_policy_id = seal.manifest_policy_id "
-        "JOIN catalog_manifest_policy_file_order_versions AS ordering "
-        "ON ordering.manifest_policy_id = seal.manifest_policy_id "
-        "JOIN catalog_manifest_policy_identities AS policy_identity "
-        "ON policy_identity.manifest_policy_id = seal.manifest_policy_id "
-        "AND policy_identity.manifest_algorithm_version = "
-        "algorithm.manifest_algorithm_version "
-        "AND policy_identity.file_order_version = ordering.file_order_version "
-        "WHERE seal.manifest_policy_id = %s",
-        (policy_id,),
+    record = _registry_record(
+        "artifact manifest policy",
+        lambda: load_manifest_policy(work.connector, policy_id),
     )
-    if len(row) != 2:
-        raise ArtifactPreparationNotReadyError(
-            "artifact manifest policy is missing or incomplete"
-        )
-    algorithm_version = require_uint32(
-        row[0], field="artifact manifest_algorithm_version"
-    )
-    file_order_version = require_uint32(row[1], field="artifact file_order_version")
-    if algorithm_version == 0 or file_order_version == 0:
-        raise ArtifactPreparationConflictError(
-            "artifact manifest policy has a zero codec version"
-        )
-    return algorithm_version, file_order_version
+    return record.manifest_algorithm_version, record.file_order_version
 
 
 def _load_analysis_policy(
@@ -2646,56 +2633,16 @@ def _load_analysis_policy(
         policy_id,
         field="artifact analysis policy_id",
     )
-    row = work.connector.fetch_one(
-        "SELECT algorithm.algorithm_version, artist.spam_artist_threshold, "
-        "occurrence.spam_occurrence_threshold, "
-        "owner.content_owner_rule_version, winner.gid_winner_rule_version "
-        "FROM catalog_analysis_policy_seals AS seal "
-        "JOIN catalog_analysis_policy_algorithm_versions AS algorithm "
-        "ON algorithm.policy_id = seal.policy_id "
-        "JOIN catalog_analysis_policy_spam_artist_thresholds AS artist "
-        "ON artist.policy_id = seal.policy_id "
-        "JOIN catalog_analysis_policy_spam_occurrence_thresholds AS occurrence "
-        "ON occurrence.policy_id = seal.policy_id "
-        "JOIN catalog_analysis_policy_content_owner_rule_versions AS owner "
-        "ON owner.policy_id = seal.policy_id "
-        "JOIN catalog_analysis_policy_gid_winner_rule_versions AS winner "
-        "ON winner.policy_id = seal.policy_id "
-        "JOIN catalog_analysis_policy_identities AS policy_identity "
-        "ON policy_identity.policy_id = seal.policy_id "
-        "AND policy_identity.algorithm_version = algorithm.algorithm_version "
-        "AND policy_identity.spam_artist_threshold = artist.spam_artist_threshold "
-        "AND policy_identity.spam_occurrence_threshold = "
-        "occurrence.spam_occurrence_threshold "
-        "AND policy_identity.content_owner_rule_version = "
-        "owner.content_owner_rule_version "
-        "AND policy_identity.gid_winner_rule_version = winner.gid_winner_rule_version "
-        "WHERE seal.policy_id = %s",
-        (analysis_policy_id,),
+    record = _registry_record(
+        "artifact analysis policy",
+        lambda: load_analysis_policy(work.connector, analysis_policy_id),
     )
-    if len(row) != 5:
-        raise ArtifactPreparationNotReadyError(
-            "artifact analysis policy is missing or incomplete"
-        )
-    algorithm_version = require_uint32(
-        row[0], field="artifact analysis algorithm_version"
-    )
-    content_owner_version = require_uint32(
-        row[3], field="artifact content_owner_rule_version"
-    )
-    gid_winner_version = require_uint32(
-        row[4], field="artifact gid_winner_rule_version"
-    )
-    if algorithm_version == 0 or content_owner_version == 0 or gid_winner_version == 0:
-        raise ArtifactPreparationConflictError(
-            "artifact analysis policy has a zero algorithm version"
-        )
     return (
-        algorithm_version,
-        require_int63(row[1], field="artifact spam_artist_threshold"),
-        require_int63(row[2], field="artifact spam_occurrence_threshold"),
-        content_owner_version,
-        gid_winner_version,
+        record.algorithm_version,
+        record.spam_artist_threshold,
+        record.spam_occurrence_threshold,
+        record.content_owner_rule_version,
+        record.gid_winner_rule_version,
     )
 
 
@@ -2704,52 +2651,15 @@ def _load_source_scope(
     scope_key: bytes,
 ) -> tuple[bytes, bytes, int]:
     scope = require_digest32(scope_key, field="artifact scope_key")
-    row = work.connector.fetch_one(
-        "SELECT provider.source_provider, root.source_root_sha256, "
-        "version.identity_policy_version "
-        "FROM catalog_source_scope_seals AS seal "
-        "JOIN catalog_source_scope_source_providers AS provider "
-        "ON provider.scope_key = seal.scope_key "
-        "JOIN catalog_source_scope_source_root_sha256s AS root "
-        "ON root.scope_key = seal.scope_key "
-        "JOIN catalog_source_scope_identity_policy_versions AS version "
-        "ON version.scope_key = seal.scope_key "
-        "JOIN catalog_source_scope_identities AS scope_identity "
-        "ON scope_identity.scope_key = seal.scope_key "
-        "AND scope_identity.source_provider = provider.source_provider "
-        "AND scope_identity.source_root_sha256 = root.source_root_sha256 "
-        "AND scope_identity.identity_policy_version = version.identity_policy_version "
-        "WHERE seal.scope_key = %s",
-        (scope,),
+    record = _registry_record(
+        "artifact source scope",
+        lambda: load_source_scope(work.connector, scope),
     )
-    if len(row) != 3:
-        raise ArtifactPreparationNotReadyError(
-            "artifact source scope is missing or incomplete"
-        )
-    provider = require_bounded_bytes(
-        row[0], field="artifact source_provider", minimum=1, maximum=64
+    return (
+        record.source_provider,
+        record.source_root_sha256,
+        record.identity_policy_version,
     )
-    root_sha256 = require_digest32(row[1], field="artifact source_root_sha256")
-    policy_version = require_uint32(row[2], field="artifact identity_policy_version")
-    if policy_version == 0:
-        raise ArtifactPreparationConflictError(
-            "artifact source scope has a zero identity-policy version"
-        )
-    try:
-        expected_scope = identity.source_scope_key(
-            provider.decode("ascii", errors="strict"),
-            root_sha256,
-            policy_version,
-        )
-    except (UnicodeError, identity.VNextIdentityError) as error:
-        raise ArtifactPreparationConflictError(
-            "artifact source scope has a malformed natural identity"
-        ) from error
-    if expected_scope != scope:
-        raise ArtifactPreparationConflictError(
-            "artifact source scope digest differs from its natural identity"
-        )
-    return provider, root_sha256, policy_version
 
 
 def _load_artifact_policy_semantics(
@@ -2760,53 +2670,15 @@ def _load_artifact_policy_semantics(
         policy_component_sha256,
         field="artifact policy_component_sha256",
     )
-    row = work.connector.fetch_one(
-        "SELECT algorithm.artifact_algorithm_version, "
-        "side.max_image_short_side, producer.producer_fingerprint_sha256 "
-        "FROM catalog_artifact_policy_semantics_seals AS seal "
-        "JOIN catalog_artifact_policy_semantics_artifact_algorithm_versions "
-        "AS algorithm ON algorithm.policy_component_sha256 = "
-        "seal.policy_component_sha256 "
-        "JOIN catalog_artifact_policy_semantics_max_image_short_sides AS side "
-        "ON side.policy_component_sha256 = seal.policy_component_sha256 "
-        "JOIN catalog_artifact_policy_semantics_producer_fingerprint_sha256s "
-        "AS producer ON producer.policy_component_sha256 = "
-        "seal.policy_component_sha256 "
-        "JOIN catalog_artifact_policy_semantics_identities AS policy_identity "
-        "ON policy_identity.policy_component_sha256 = seal.policy_component_sha256 "
-        "AND policy_identity.artifact_algorithm_version = "
-        "algorithm.artifact_algorithm_version "
-        "AND policy_identity.max_image_short_side = side.max_image_short_side "
-        "AND policy_identity.producer_fingerprint_sha256 = "
-        "producer.producer_fingerprint_sha256 "
-        "WHERE seal.policy_component_sha256 = %s",
-        (policy,),
+    record = _registry_record(
+        "artifact policy semantics",
+        lambda: load_artifact_policy_semantics(work.connector, policy),
     )
-    if len(row) != 3:
-        raise ArtifactPreparationNotReadyError(
-            "artifact policy semantics are missing or incomplete"
-        )
-    algorithm_version = require_uint32(row[0], field="artifact algorithm_version")
-    if algorithm_version == 0:
-        raise ArtifactPreparationConflictError(
-            "artifact policy semantics have a zero algorithm version"
-        )
-    max_short_side = require_positive_int63(
-        row[1], field="artifact max_image_short_side"
+    return (
+        record.artifact_algorithm_version,
+        record.max_image_short_side,
+        record.producer_fingerprint_sha256,
     )
-    producer = require_digest32(row[2], field="artifact producer_fingerprint_sha256")
-    if (
-        identity.artifact_policy_digest(
-            algorithm_version,
-            max_short_side,
-            producer,
-        )
-        != policy
-    ):
-        raise ArtifactPreparationConflictError(
-            "artifact policy digest differs from its registered semantics"
-        )
-    return algorithm_version, max_short_side, producer
 
 
 def _load_zip_writer_policy(
@@ -2819,64 +2691,21 @@ def _load_zip_writer_policy(
     )
     if algorithm_version == 0:
         raise ArtifactPreparationConflictError("artifact ZIP algorithm version is zero")
-    row = work.connector.fetch_one(
-        "SELECT zip.zip_codec_version, method.compression_method, "
-        "level.compression_level, date.dos_date, time.dos_time, mode.unix_mode, "
-        "flags.general_purpose_flags, creation_system.create_system, "
-        "archive.archive_name_codec_version, "
-        "artifact.artifact_name_codec_version "
-        "FROM catalog_artifact_zip_writer_policy_seals AS seal "
-        "JOIN catalog_artifact_zip_writer_policy_zip_codec_versions AS zip "
-        "ON zip.artifact_algorithm_version = seal.artifact_algorithm_version "
-        "JOIN catalog_artifact_zip_writer_policy_compression_methods AS method "
-        "ON method.artifact_algorithm_version = seal.artifact_algorithm_version "
-        "JOIN catalog_artifact_zip_writer_policy_compression_levels AS level "
-        "ON level.artifact_algorithm_version = seal.artifact_algorithm_version "
-        "JOIN catalog_artifact_zip_writer_policy_dos_dates AS date "
-        "ON date.artifact_algorithm_version = seal.artifact_algorithm_version "
-        "JOIN catalog_artifact_zip_writer_policy_dos_times AS time "
-        "ON time.artifact_algorithm_version = seal.artifact_algorithm_version "
-        "JOIN catalog_artifact_zip_writer_policy_unix_modes AS mode "
-        "ON mode.artifact_algorithm_version = seal.artifact_algorithm_version "
-        "JOIN catalog_artifact_zip_writer_policy_general_purpose_flags AS flags "
-        "ON flags.artifact_algorithm_version = seal.artifact_algorithm_version "
-        "JOIN catalog_artifact_zip_writer_policy_create_systems AS creation_system "
-        "ON creation_system.artifact_algorithm_version = "
-        "seal.artifact_algorithm_version "
-        "JOIN catalog_artifact_zip_writer_policy_archive_name_codec_versions "
-        "AS archive ON archive.artifact_algorithm_version = "
-        "seal.artifact_algorithm_version "
-        "JOIN catalog_artifact_zip_writer_policy_artifact_name_codec_versions "
-        "AS artifact ON artifact.artifact_algorithm_version = "
-        "seal.artifact_algorithm_version "
-        "JOIN catalog_artifact_zip_writer_policy_identities AS policy_identity "
-        "ON policy_identity.artifact_algorithm_version = "
-        "seal.artifact_algorithm_version "
-        "AND policy_identity.zip_codec_version = zip.zip_codec_version "
-        "AND policy_identity.compression_method = method.compression_method "
-        "AND policy_identity.compression_level = level.compression_level "
-        "AND policy_identity.dos_date = date.dos_date "
-        "AND policy_identity.dos_time = time.dos_time "
-        "AND policy_identity.unix_mode = mode.unix_mode "
-        "AND policy_identity.general_purpose_flags = flags.general_purpose_flags "
-        "AND policy_identity.create_system = creation_system.create_system "
-        "AND policy_identity.archive_name_codec_version = "
-        "archive.archive_name_codec_version "
-        "AND policy_identity.artifact_name_codec_version = "
-        "artifact.artifact_name_codec_version "
-        "WHERE seal.artifact_algorithm_version = %s",
-        (algorithm_version,),
+    record = _registry_record(
+        "artifact ZIP writer policy",
+        lambda: load_artifact_zip_writer_policy(work.connector, algorithm_version),
     )
-    if len(row) != 10:
-        raise ArtifactPreparationNotReadyError(
-            "artifact ZIP writer policy is missing or incomplete"
-        )
-    return cast(
-        tuple[int, int, int, int, int, int, int, int, int, int],
-        tuple(
-            require_int63(value, field=f"artifact ZIP writer fact {index}")
-            for index, value in enumerate(row)
-        ),
+    return (
+        record.zip_codec_version,
+        record.compression_method,
+        record.compression_level,
+        record.dos_date,
+        record.dos_time,
+        record.unix_mode,
+        record.general_purpose_flags,
+        record.create_system,
+        record.archive_name_codec_version,
+        record.artifact_name_codec_version,
     )
 
 
@@ -2888,30 +2717,15 @@ def _load_storage_codec(
         storage_codec_version,
         field="artifact storage_codec_version",
     )
-    row = work.connector.fetch_one(
-        "SELECT adapter.adapter_id, locator.locator_codec_version, "
-        "token.protection_token_codec_version "
-        "FROM catalog_artifact_storage_codec_seals AS seal "
-        "JOIN catalog_artifact_storage_codec_adapter_ids AS adapter "
-        "ON adapter.storage_codec_version = seal.storage_codec_version "
-        "JOIN catalog_artifact_storage_codec_locator_codec_versions AS locator "
-        "ON locator.storage_codec_version = seal.storage_codec_version "
-        "JOIN catalog_artifact_storage_codec_protection_token_codec_versions "
-        "AS token ON token.storage_codec_version = seal.storage_codec_version "
-        "WHERE seal.storage_codec_version = %s",
-        (version,),
+    record = _registry_record(
+        "artifact storage codec",
+        lambda: load_artifact_storage_codec(work.connector, version),
     )
-    if len(row) != 3:
-        raise ArtifactPreparationNotReadyError(
-            "artifact storage codec is missing or incomplete"
-        )
     return (
-        version,
-        require_bounded_bytes(
-            row[0], field="artifact storage adapter_id", minimum=1, maximum=64
-        ),
-        require_positive_int63(row[1], field="artifact locator_codec_version"),
-        require_positive_int63(row[2], field="artifact protection_token_codec_version"),
+        record.storage_codec_version,
+        record.adapter_id,
+        record.locator_codec_version,
+        record.protection_token_codec_version,
     )
 
 
@@ -2923,59 +2737,100 @@ def _load_producer_fingerprint(
         producer_fingerprint_sha256,
         field="artifact producer_fingerprint_sha256",
     )
-    row = work.connector.fetch_one(
-        "SELECT producer_identity.writer_id, producer_identity.python_abi, "
-        "producer_identity.pillow_build, producer_identity.libjpeg_build, "
-        "producer_identity.zlib_build, "
-        "algorithm.artifact_algorithm_version, "
-        "equivalence.producer_equivalence_class "
-        "FROM catalog_artifact_producer_fingerprint_seals AS seal "
-        "JOIN catalog_artifact_producer_fingerprint_identities AS producer_identity "
-        "ON producer_identity.producer_fingerprint_sha256 = "
-        "seal.producer_fingerprint_sha256 "
-        "JOIN catalog_artifact_producer_fingerprint_algorithm_versions "
-        "AS algorithm ON algorithm.producer_fingerprint_sha256 = "
-        "seal.producer_fingerprint_sha256 "
-        "JOIN catalog_artifact_producer_fingerprint_equivalence_classes "
-        "AS equivalence ON equivalence.producer_fingerprint_sha256 = "
-        "seal.producer_fingerprint_sha256 "
-        "WHERE seal.producer_fingerprint_sha256 = %s",
-        (fingerprint,),
+    record = _registry_record(
+        "artifact producer fingerprint",
+        lambda: load_artifact_producer_fingerprint(work.connector, fingerprint),
     )
-    if len(row) != 7:
+    fields = (
+        record.writer_id,
+        record.python_abi,
+        record.pillow_build,
+        record.libjpeg_build,
+        record.zlib_build,
+    )
+    return fields, record.artifact_algorithm_version, record.producer_equivalence_class
+
+
+def _load_artifact_policy_contract(
+    work: VNextUnitOfWork,
+    policy_component_sha256: bytes,
+) -> tuple[
+    tuple[int, int, bytes],
+    tuple[tuple[bytes, bytes, bytes, bytes, bytes], int, bytes],
+]:
+    """Load and cross-check one BCNF policy/producer registry join exactly once."""
+
+    policy = require_digest32(
+        policy_component_sha256,
+        field="artifact policy_component_sha256",
+    )
+    row = work.connector.fetch_one(
+        "SELECT semantics.policy_component_sha256, "
+        "producer.artifact_algorithm_version, "
+        "semantics.max_image_short_side, "
+        "semantics.producer_fingerprint_sha256, "
+        "producer.producer_equivalence_class, producer.writer_id, "
+        "producer.python_abi, producer.pillow_build, producer.libjpeg_build, "
+        "producer.zlib_build "
+        "FROM catalog_artifact_policy_semantics AS semantics "
+        "JOIN catalog_artifact_producer_fingerprints AS producer "
+        "ON producer.producer_fingerprint_sha256 = "
+        "semantics.producer_fingerprint_sha256 "
+        "WHERE semantics.policy_component_sha256 = %s",
+        (policy,),
+    )
+    if not row:
         raise ArtifactPreparationNotReadyError(
-            "artifact producer fingerprint is missing or incomplete"
+            "artifact policy/producer contract is missing"
         )
-    fields = cast(
-        tuple[bytes, bytes, bytes, bytes, bytes],
-        tuple(
-            require_bounded_bytes(
-                value,
-                field=f"artifact producer field {index}",
-                minimum=1,
-                maximum=128,
-            )
-            for index, value in enumerate(row[:5])
+    if len(row) != 10:
+        raise ArtifactPreparationConflictError(
+            "artifact policy/producer contract has an invalid row shape"
+        )
+    try:
+        semantics = ArtifactPolicySemanticsRecord(
+            row[0],
+            row[1],
+            row[2],
+            row[3],
+        )
+        producer = ArtifactProducerFingerprintRecord(
+            row[3],
+            row[1],
+            row[4],
+            row[5],
+            row[6],
+            row[7],
+            row[8],
+            row[9],
+        )
+    except (TypeError, ValueError, identity.VNextIdentityError) as error:
+        raise ArtifactPreparationConflictError(
+            "artifact policy/producer contract is invalid"
+        ) from error
+    if semantics.policy_component_sha256 != policy:
+        raise ArtifactPreparationConflictError(
+            "artifact policy/producer contract returned the wrong policy"
+        )
+    producer_fields = (
+        producer.writer_id,
+        producer.python_abi,
+        producer.pillow_build,
+        producer.libjpeg_build,
+        producer.zlib_build,
+    )
+    return (
+        (
+            semantics.artifact_algorithm_version,
+            semantics.max_image_short_side,
+            semantics.producer_fingerprint_sha256,
+        ),
+        (
+            producer_fields,
+            producer.artifact_algorithm_version,
+            producer.producer_equivalence_class,
         ),
     )
-    algorithm_version = require_uint32(
-        row[5], field="artifact producer algorithm_version"
-    )
-    equivalence = require_bounded_bytes(
-        row[6],
-        field="artifact producer equivalence class",
-        minimum=1,
-        maximum=128,
-    )
-    if (
-        algorithm_version == 0
-        or identity.artifact_producer_fingerprint_sha256(*fields) != fingerprint
-        or identity.artifact_producer_equivalence_class(fingerprint) != equivalence
-    ):
-        raise ArtifactPreparationConflictError(
-            "artifact producer registry is not exactly derived"
-        )
-    return fields, algorithm_version, equivalence
 
 
 def _load_projection_contract(
@@ -2996,20 +2851,16 @@ def _load_projection_contract(
             "artifact projection analysis is missing, incomplete, or mismatched"
         )
     root = work.connector.fetch_one(
-        "SELECT build_scope.scope_key, build_policy.manifest_policy_id, "
+        "SELECT build.scope_key, build.manifest_policy_id, "
         "policy.policy_component_sha256 "
-        "FROM catalog_source_build_descriptor_seals AS build_seal "
-        "JOIN catalog_source_build_scope_keys AS build_scope "
-        "ON build_scope.build_id = build_seal.build_id "
-        "JOIN catalog_source_build_manifest_policy_ids AS build_policy "
-        "ON build_policy.build_id = build_seal.build_id "
+        "FROM catalog_source_build_descriptor AS build "
         "JOIN catalog_source_build_states AS build_state "
-        "ON build_state.build_id = build_seal.build_id AND build_state.state = 'SEALED' "
+        "ON build_state.build_id = build.build_id AND build_state.state = 'SEALED' "
         "JOIN catalog_source_build_sealed_ats AS build_completed "
-        "ON build_completed.build_id = build_seal.build_id "
+        "ON build_completed.build_id = build.build_id "
         "JOIN catalog_artifact_policies AS policy "
         "ON policy.artifact_policy_id = %s "
-        "WHERE build_seal.build_id = %s",
+        "WHERE build.build_id = %s",
         (
             projection.artifact_policy_id,
             projection.build_id,
@@ -3032,11 +2883,11 @@ def _load_projection_contract(
     policy_component = require_digest32(
         root[2], field="artifact policy_component_sha256"
     )
-    semantics = _load_artifact_policy_semantics(work, policy_component)
-    producer_fields, producer_algorithm, _equivalence = _load_producer_fingerprint(
+    semantics, producer_contract = _load_artifact_policy_contract(
         work,
-        semantics[2],
+        policy_component,
     )
+    producer_fields, producer_algorithm, _equivalence = producer_contract
     if producer_algorithm != semantics[0]:
         raise ArtifactPreparationConflictError(
             "artifact producer algorithm differs from policy semantics"
@@ -4197,7 +4048,7 @@ WHERE current_item.revision = %s
            current_title.source_title_sha256
        AND current_choice.source_gallery_name =
            current_title.source_gallery_name
-      JOIN catalog_display_title_policy_title_sort_policy_ids AS current_policy_sort
+      JOIN catalog_display_title_policies AS current_policy_sort
         ON current_policy_sort.display_title_policy_id =
            current_policy.display_title_policy_id
       JOIN catalog_title_sorts AS current_sort
@@ -4209,20 +4060,16 @@ WHERE current_item.revision = %s
         AND NOT EXISTS (
           SELECT 1
           FROM catalog_publication_titles AS old_title
-          JOIN catalog_publication_commit_catalog_revisions AS old_commit_revision
-            ON old_commit_revision.revision = old_title.revision
-          JOIN catalog_publication_commit_seals AS old_commit_seal
-            ON old_commit_seal.receipt_id = old_commit_revision.receipt_id
-          JOIN catalog_publication_commit_display_title_policies AS old_commit_policy
-            ON old_commit_policy.receipt_id = old_commit_seal.receipt_id
+          JOIN catalog_publication_commits AS old_commit
+            ON old_commit.revision = old_title.revision
           JOIN catalog_display_title_choices AS old_choice
             ON old_choice.display_title_policy_id =
-               old_commit_policy.display_title_policy_id
+               old_commit.display_title_policy_id
            AND old_choice.source_title_sha256 = old_title.source_title_sha256
            AND old_choice.source_gallery_name = old_title.source_gallery_name
-          JOIN catalog_display_title_policy_title_sort_policy_ids AS old_policy_sort
+          JOIN catalog_display_title_policies AS old_policy_sort
             ON old_policy_sort.display_title_policy_id =
-               old_commit_policy.display_title_policy_id
+               old_commit.display_title_policy_id
           JOIN catalog_title_sorts AS old_sort
             ON old_sort.title_sort_policy_id = old_policy_sort.title_sort_policy_id
            AND old_sort.title_sha256 = old_choice.title_sha256
@@ -4239,20 +4086,16 @@ WHERE current_item.revision = %s
     OR EXISTS (
       SELECT 1
       FROM catalog_publication_titles AS old_title
-      JOIN catalog_publication_commit_catalog_revisions AS old_commit_revision
-        ON old_commit_revision.revision = old_title.revision
-      JOIN catalog_publication_commit_seals AS old_commit_seal
-        ON old_commit_seal.receipt_id = old_commit_revision.receipt_id
-      JOIN catalog_publication_commit_display_title_policies AS old_commit_policy
-        ON old_commit_policy.receipt_id = old_commit_seal.receipt_id
+      JOIN catalog_publication_commits AS old_commit
+        ON old_commit.revision = old_title.revision
       JOIN catalog_display_title_choices AS old_choice
         ON old_choice.display_title_policy_id =
-           old_commit_policy.display_title_policy_id
+           old_commit.display_title_policy_id
        AND old_choice.source_title_sha256 = old_title.source_title_sha256
        AND old_choice.source_gallery_name = old_title.source_gallery_name
-      JOIN catalog_display_title_policy_title_sort_policy_ids AS old_policy_sort
+      JOIN catalog_display_title_policies AS old_policy_sort
         ON old_policy_sort.display_title_policy_id =
-           old_commit_policy.display_title_policy_id
+           old_commit.display_title_policy_id
       JOIN catalog_title_sorts AS old_sort
         ON old_sort.title_sort_policy_id = old_policy_sort.title_sort_policy_id
        AND old_sort.title_sha256 = old_choice.title_sha256
@@ -4269,7 +4112,7 @@ WHERE current_item.revision = %s
                current_title.source_title_sha256
            AND current_choice.source_gallery_name =
                current_title.source_gallery_name
-          JOIN catalog_display_title_policy_title_sort_policy_ids AS current_policy_sort
+          JOIN catalog_display_title_policies AS current_policy_sort
             ON current_policy_sort.display_title_policy_id =
                current_policy.display_title_policy_id
           JOIN catalog_title_sorts AS current_sort
@@ -4625,10 +4468,10 @@ def _seal_projection(
 ) -> None:
     timestamp = require_int63(now, field="projection certification now")
     candidate = mutation.candidate.candidate_id
-    # ``_prepare_candidate_batch`` already locked this exact definition seal
-    # before any checkpoint lock; re-read it here without violating lock order.
+    # ``_prepare_candidate_batch`` already locked this complete immutable
+    # candidate before any checkpoint lock; re-read it without changing order.
     definition = work.connector.fetch_one(
-        "SELECT candidate_id FROM catalog_publication_candidate_definition_seals "
+        "SELECT candidate_id FROM catalog_publication_candidates "
         "WHERE candidate_id = %s",
         (candidate,),
     )
@@ -4662,10 +4505,8 @@ def _seal_projection(
             "artifact input count differs from byte-producing plus unchanged"
         )
     revision = work.connector.fetch_one(
-        "SELECT count.publication_count "
-        "FROM catalog_revision_descriptor_seals AS seal "
-        "JOIN catalog_revision_publication_counts AS count "
-        "ON count.revision = seal.revision WHERE seal.revision = %s",
+        "SELECT publication_count FROM catalog_revision_descriptors "
+        "WHERE revision = %s",
         (mutation.candidate.reserved_revision,),
     )
     if revision != (publication_count,):
@@ -5620,11 +5461,7 @@ def _load_validation_checkpoint(
     now: int | None,
 ) -> tuple[int, bytes, int, str, int]:
     predecessor = work.connector.fetch_one(
-        "SELECT state.state "
-        f"FROM {_CHECKPOINT_STATE_TABLE} AS state "
-        f"JOIN {_CHECKPOINT_SEAL_TABLE} AS seal "
-        "ON seal.candidate_id = state.candidate_id AND seal.stage = state.stage "
-        "WHERE state.candidate_id = %s AND state.stage = %s",
+        f"SELECT state FROM {_CHECKPOINT_TABLE} WHERE candidate_id = %s AND stage = %s",
         (candidate_id, b"BUILD_ARTIFACT_DELTA_OPERATION"),
     )
     if predecessor != ("COMPLETE",):
@@ -5718,23 +5555,8 @@ def _load_checkpoint_row(
     stage: bytes,
 ) -> tuple[Any, ...]:
     return work.connector.fetch_one(
-        "SELECT generation.generation, checkpoint_cursor.`cursor`, "
-        "count.processed_count, "
-        "state.state, updated.updated_at "
-        f"FROM {_CHECKPOINT_SEAL_TABLE} AS seal "
-        f"JOIN {_CHECKPOINT_GENERATION_TABLE} AS generation "
-        "ON generation.candidate_id = seal.candidate_id "
-        "AND generation.stage = seal.stage "
-        f"JOIN {_CHECKPOINT_CURSOR_TABLE} AS checkpoint_cursor "
-        "ON checkpoint_cursor.candidate_id = seal.candidate_id "
-        "AND checkpoint_cursor.stage = seal.stage "
-        f"JOIN {_CHECKPOINT_COUNT_TABLE} AS count "
-        "ON count.candidate_id = seal.candidate_id AND count.stage = seal.stage "
-        f"JOIN {_CHECKPOINT_STATE_TABLE} AS state "
-        "ON state.candidate_id = seal.candidate_id AND state.stage = seal.stage "
-        f"JOIN {_CHECKPOINT_UPDATED_AT_TABLE} AS updated "
-        "ON updated.candidate_id = seal.candidate_id AND updated.stage = seal.stage "
-        "WHERE seal.candidate_id = %s AND seal.stage = %s",
+        "SELECT generation, `cursor`, processed_count, state, updated_at "
+        f"FROM {_CHECKPOINT_TABLE} WHERE candidate_id = %s AND stage = %s",
         (candidate_id, stage),
     )
 

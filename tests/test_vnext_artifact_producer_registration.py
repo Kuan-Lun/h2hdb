@@ -97,7 +97,7 @@ def _register(
         )
 
 
-def test_registration_derives_digest_seals_last_and_replays_without_writes(
+def test_registration_derives_digest_inserts_one_row_and_replays_without_writes(
     tmp_path: Path,
 ) -> None:
     connector = _database(tmp_path / "producer.sqlite3")
@@ -118,9 +118,8 @@ def test_registration_derives_digest_seals_last_and_replays_without_writes(
         )
         assert registered.producer_fingerprint_sha256 == expected_digest
         assert not registered.replayed
-        assert len(mutations) == 5
-        assert "catalog_artifact_producer_fingerprint_anchors" in mutations[0]
-        assert "catalog_artifact_producer_fingerprint_seals" in mutations[-1]
+        assert len(mutations) == 1
+        assert "catalog_artifact_producer_fingerprints" in mutations[0]
         assert connector.fetch_one(
             "SELECT producer_fingerprint_sha256, artifact_algorithm_version, "
             "producer_equivalence_class, writer_id, python_abi, pillow_build, "
@@ -137,17 +136,38 @@ def test_registration_derives_digest_seals_last_and_replays_without_writes(
         connector.close()
 
 
-@pytest.mark.parametrize("failure_at", range(1, 6))
-def test_each_registration_mutation_fault_rolls_back_the_vertical_family(
+def test_registration_rejects_a_fresh_row_at_the_capacity_ceiling(
     tmp_path: Path,
-    failure_at: int,
 ) -> None:
+    connector = _database(tmp_path / "producer-capacity.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        with (
+            patch(
+                "h2hdb.vnext_artifact_preparation_repository."
+                "RECOMPOSED_REGISTRY_MAXIMUM_ROWS",
+                0,
+            ),
+            pytest.raises(
+                ArtifactPreparationNotReadyError,
+                match="recomposition capacity",
+            ),
+        ):
+            _register(connector, gate, turn)
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM catalog_artifact_producer_fingerprints"
+        ) == (0,)
+    finally:
+        connector.close()
+
+
+def test_registration_mutation_fault_rolls_back_the_wide_row(tmp_path: Path) -> None:
     base_path = tmp_path / "producer-fault-base.sqlite3"
     if not base_path.exists():
         base = _database(base_path)
         _authorities(base)
         base.close()
-    path = tmp_path / f"producer-fault-{failure_at}.sqlite3"
+    path = tmp_path / "producer-fault.sqlite3"
     copyfile(base_path, path)
     connector = SQLiteConnector(str(path))
     connector.connect()
@@ -164,20 +184,17 @@ def test_each_registration_mutation_fault_rolls_back_the_vertical_family(
     def failing_execute(query: str, data: tuple[Any, ...] = ()) -> None:
         nonlocal mutation
         mutation += 1
-        if mutation == failure_at:
-            raise RuntimeError(f"producer mutation {failure_at}")
+        if mutation == 1:
+            raise RuntimeError("producer mutation")
         original_execute(query, data)
 
     try:
         with (
             patch.object(connector, "execute", side_effect=failing_execute),
-            pytest.raises(RuntimeError, match=f"producer mutation {failure_at}"),
+            pytest.raises(RuntimeError, match="producer mutation"),
         ):
             _register(connector, gate, turn)
-        assert mutation == failure_at
-        assert not connector.fetch_one(
-            "SELECT 1 FROM catalog_artifact_producer_fingerprint_anchors"
-        )
+        assert mutation == 1
         assert not connector.fetch_one(
             "SELECT 1 FROM catalog_artifact_producer_fingerprints"
         )
@@ -185,7 +202,7 @@ def test_each_registration_mutation_fault_rolls_back_the_vertical_family(
         connector.close()
 
 
-def test_registration_rejects_digest_collision_and_incomplete_sealed_family(
+def test_registration_rejects_digest_collision_and_mismatched_wide_row(
     tmp_path: Path,
 ) -> None:
     connector = _database(tmp_path / "producer-collision.sqlite3")
@@ -206,9 +223,9 @@ def test_registration_rejects_digest_collision_and_incomplete_sealed_family(
         execute.assert_not_called()
 
         connector.execute(
-            "DELETE FROM catalog_artifact_producer_fingerprint_seals "
+            "UPDATE catalog_artifact_producer_fingerprints SET writer_id = %s "
             "WHERE producer_fingerprint_sha256 = %s",
-            (registered.producer_fingerprint_sha256,),
+            (b"tampered-writer", registered.producer_fingerprint_sha256),
         )
         with pytest.raises(ArtifactPreparationConflictError, match="collides"):
             _register(connector, gate, turn)
@@ -233,7 +250,7 @@ def test_registration_rejects_natural_key_collision_with_different_digest_zero_w
                 return_value=forged_digest,
             ),
             patch.object(connector, "execute", wraps=connector.execute) as execute,
-            pytest.raises(ArtifactPreparationConflictError, match="natural identity"),
+            pytest.raises(ArtifactPreparationConflictError, match="candidate key"),
         ):
             _register(connector, gate, turn)
         execute.assert_not_called()
@@ -277,14 +294,14 @@ def test_registration_reauthorizes_replay_and_rejects_stale_authority_zero_write
         connector.close()
 
 
-def test_registration_requires_the_zip_policy_seal_before_any_producer_write(
+def test_registration_requires_the_zip_policy_before_any_producer_write(
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "producer-missing-zip-seal.sqlite3")
+    connector = _database(tmp_path / "producer-missing-zip-policy.sqlite3")
     try:
         gate, turn = _authorities(connector)
         connector.execute(
-            "DELETE FROM catalog_artifact_zip_writer_policy_seals "
+            "DELETE FROM catalog_artifact_zip_writer_policies "
             "WHERE artifact_algorithm_version = %s",
             (1,),
         )
@@ -341,7 +358,7 @@ def test_registration_rejects_malformed_command_before_any_sql(
         connector.close()
 
 
-def test_mariadb_registration_uses_plain_immutable_reads_and_seal_last() -> None:
+def test_mariadb_registration_uses_plain_immutable_reads_and_one_insert() -> None:
     class Recorder:
         def __init__(self) -> None:
             self.selects: list[str] = []
@@ -353,8 +370,10 @@ def test_mariadb_registration_uses_plain_immutable_reads_and_seal_last() -> None
             data: tuple[Any, ...] = (),
         ) -> tuple[Any, ...]:
             self.selects.append(query)
-            if "catalog_artifact_zip_writer_policy_seals" in query:
+            if "catalog_artifact_zip_writer_policies" in query:
                 return (data[0],)
+            if query == ("SELECT COUNT(*) FROM catalog_artifact_producer_fingerprints"):
+                return (0,)
             return ()
 
         def execute(self, query: str, data: tuple[Any, ...] = ()) -> None:
@@ -382,14 +401,10 @@ def test_mariadb_registration_uses_plain_immutable_reads_and_seal_last() -> None
     locks = [query for query in recorder.selects if query.endswith(" FOR UPDATE")]
     assert not locks
     assert any(
-        "FROM catalog_artifact_zip_writer_policy_seals" in query
-        for query in recorder.selects
-    )
-    assert all(
-        "catalog_artifact_zip_writer_policies" not in query
+        "FROM catalog_artifact_zip_writer_policies" in query
         for query in recorder.selects
     )
     assert all("?" not in query for query in recorder.selects)
     assert all("%s" in query and "?" not in query for query in recorder.mutations)
-    assert "catalog_artifact_producer_fingerprint_anchors" in recorder.mutations[0]
-    assert "catalog_artifact_producer_fingerprint_seals" in recorder.mutations[-1]
+    assert len(recorder.mutations) == 1
+    assert "catalog_artifact_producer_fingerprints" in recorder.mutations[0]

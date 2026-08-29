@@ -144,7 +144,6 @@ def _snapshot_build_id(
         ),
         scope=scope,
         manifest_policy_id=1,
-        base_receipt_id=None,
     )
 
 
@@ -231,7 +230,7 @@ def test_empty_build_runs_all_stages_and_snapshot_end_to_end(tmp_path: Path) -> 
             (analysis_id,),
         ) == ("COMPLETE",)
         assert connector.fetch_one(
-            "SELECT COUNT(*) FROM catalog_analysis_checkpoint_states "
+            "SELECT COUNT(*) FROM catalog_analysis_checkpoints "
             "WHERE analysis_id = %s AND state = 'COMPLETE'",
             (analysis_id,),
         ) == (15,)

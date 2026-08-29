@@ -201,30 +201,18 @@ class VNextCatalogReaderRepository:
             else require_positive_int63(revision, field="catalog revision")
         )
         row = connector.fetch_one(
-            "SELECT catalog.revision, count.publication_count, "
-            "committed.committed_at, generation.generation "
+            "SELECT committed.revision, descriptor.publication_count, "
+            "committed.committed_at, committed.generation "
             "FROM catalog_channel_registry AS registry "
             "JOIN catalog_publication_commit_head_receipts AS head "
             "ON head.channel = registry.channel "
-            "JOIN catalog_publication_commit_seals AS commit_seal "
-            "ON commit_seal.receipt_id = head.receipt_id "
-            "JOIN catalog_publication_commit_catalog_revisions AS catalog "
-            "ON catalog.receipt_id = head.receipt_id "
-            "JOIN catalog_publication_commit_source_revisions AS source "
-            "ON source.receipt_id = head.receipt_id "
-            "JOIN catalog_source_revision_descriptor_seals AS source_seal "
-            "ON source_seal.source_revision = source.source_revision "
-            "JOIN catalog_source_revision_channels AS source_channel "
-            "ON source_channel.source_revision = source.source_revision "
-            "AND source_channel.channel = registry.channel "
-            "JOIN catalog_publication_commit_generations AS generation "
-            "ON generation.receipt_id = head.receipt_id "
-            "JOIN catalog_publication_commit_committed_ats AS committed "
+            "JOIN catalog_publication_commits AS committed "
             "ON committed.receipt_id = head.receipt_id "
-            "JOIN catalog_revision_descriptor_seals AS descriptor_seal "
-            "ON descriptor_seal.revision = catalog.revision "
-            "JOIN catalog_revision_publication_counts AS count "
-            "ON count.revision = descriptor_seal.revision "
+            "JOIN catalog_source_revision_descriptors AS source "
+            "ON source.source_revision = committed.source_revision "
+            "AND source.channel = registry.channel "
+            "JOIN catalog_revision_descriptors AS descriptor "
+            "ON descriptor.revision = committed.revision "
             "WHERE registry.channel = %s",
             (exact_channel,),
         )
@@ -559,9 +547,9 @@ class VNextCatalogReaderRepository:
             "publication.modified_at, identity.gid, upload.upload_time, "
             "title.publication_key, title.source_title_sha256, "
             "title.source_gallery_name, "
-            "committed_revision.receipt_id, commit_seal.receipt_id, "
-            "commit_policy.display_title_policy_id, policy_seal.display_title_policy_id, "
-            "choice.title_sha256, policy_sort.title_sort_policy_id, "
+            "committed.receipt_id, committed.display_title_policy_id, "
+            "policy.display_title_policy_id, choice.title_sha256, "
+            "policy.title_sort_policy_id, "
             "title_sort.sort_title_sha256, content.content_sha256 "
             "FROM family_keys AS family "
             "LEFT JOIN catalog_publication_order AS ordering "
@@ -575,24 +563,16 @@ class VNextCatalogReaderRepository:
             "LEFT JOIN catalog_publication_titles AS title "
             "ON title.revision = publication.revision "
             "AND title.publication_key = publication.publication_key "
-            "LEFT JOIN catalog_publication_commit_catalog_revisions AS committed_revision "
-            "ON committed_revision.revision = publication.revision "
-            "LEFT JOIN catalog_publication_commit_seals AS commit_seal "
-            "ON commit_seal.receipt_id = committed_revision.receipt_id "
-            "LEFT JOIN catalog_publication_commit_display_title_policies AS commit_policy "
-            "ON commit_policy.receipt_id = commit_seal.receipt_id "
-            "LEFT JOIN catalog_display_title_policy_seals AS policy_seal "
-            "ON policy_seal.display_title_policy_id = "
-            "commit_policy.display_title_policy_id "
+            "LEFT JOIN catalog_publication_commits AS committed "
+            "ON committed.revision = publication.revision "
+            "LEFT JOIN catalog_display_title_policies AS policy "
+            "ON policy.display_title_policy_id = committed.display_title_policy_id "
             "LEFT JOIN catalog_display_title_choices AS choice "
-            "ON choice.display_title_policy_id = policy_seal.display_title_policy_id "
+            "ON choice.display_title_policy_id = policy.display_title_policy_id "
             "AND choice.source_title_sha256 = title.source_title_sha256 "
             "AND choice.source_gallery_name = title.source_gallery_name "
-            "LEFT JOIN catalog_display_title_policy_title_sort_policy_ids AS policy_sort "
-            "ON policy_sort.display_title_policy_id = "
-            "policy_seal.display_title_policy_id "
             "LEFT JOIN catalog_title_sorts AS title_sort "
-            "ON title_sort.title_sort_policy_id = policy_sort.title_sort_policy_id "
+            "ON title_sort.title_sort_policy_id = policy.title_sort_policy_id "
             "AND title_sort.title_sha256 = choice.title_sha256 "
             "LEFT JOIN catalog_publication_contents AS content "
             "ON content.revision = publication.revision "
@@ -603,7 +583,7 @@ class VNextCatalogReaderRepository:
         expected = set(selected)
         scalar_by_key: dict[bytes, tuple[object, ...]] = {}
         for row in rows:
-            if len(row) != 20:
+            if len(row) != 19:
                 raise VNextCatalogReadError(
                     "published item scalar query returned an invalid shape"
                 )
@@ -612,13 +592,17 @@ class VNextCatalogReaderRepository:
                 raise VNextCatalogReadError(
                     "published item scalar query is not one-to-one"
                 )
-            if any(value is None for value in row[1:19]):
+            if any(value is None for value in row[1:18]):
                 raise VNextCatalogReadError(
                     "published item scalar/title row is missing or noncongruent"
                 )
             if row[1] != key or row[2] != key or row[9] != key:
                 raise VNextCatalogReadError(
                     "published item scalar/title keys are noncongruent"
+                )
+            if row[13] != row[14]:
+                raise VNextCatalogReadError(
+                    "publication display-title policy is noncongruent"
                 )
             scalar_by_key[key] = (
                 key,
@@ -629,9 +613,9 @@ class VNextCatalogReaderRepository:
                 row[6],
                 row[10],
                 row[11],
-                row[16],
+                row[15],
+                row[17],
                 row[18],
-                row[19],
             )
         if require_all and set(scalar_by_key) != expected:
             raise VNextCatalogReadError(

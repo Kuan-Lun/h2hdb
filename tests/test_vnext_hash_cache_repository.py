@@ -24,6 +24,7 @@ from h2hdb.vnext_maintenance_gate_repository import (
     MaintenanceGateRepository,
 )
 from h2hdb.vnext_source_build_repository import (
+    SourceBuildManifestSummary,
     SourceBuildRepository,
     SourceRootBuildCommand,
 )
@@ -108,7 +109,10 @@ def _ready_build(
     gate: GateLease,
     turn: IngestTurn,
 ) -> None:
-    command = SourceRootBuildCommand(("source",), b"b" * 16)
+    command = SourceRootBuildCommand(
+        ("source",),
+        SourceBuildManifestSummary.empty(),
+    )
     root = command.prepare_root_upload()
     try:
         _put(connector, gate, turn, root, start=20)

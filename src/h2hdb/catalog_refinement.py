@@ -23,8 +23,9 @@ __all__ = [
     "check_incremental_impact_v1",
     "check_overlay_resolution_seal_v1",
     "check_physical_domains_v1",
+    "check_published_baseline_prune_v1",
     "check_publication_atomicity_v1",
-    "check_retention_contract_v1",
+    "check_retention_contract_v2",
     "check_role_derivation_v1",
     "check_source_baseline_channel_v1",
     "check_state_machines_v1",
@@ -82,6 +83,11 @@ _SPECS = (
         "catalog_refinement.check_overlay_resolution_seal_v1",
     ),
     (
+        "catalog.published-baseline-prune.v1",
+        "ready_and_runtime",
+        "catalog_refinement.check_published_baseline_prune_v1",
+    ),
+    (
         "catalog.artifact-semantics.v1",
         "ready_and_runtime",
         "catalog_refinement.check_artifact_semantics_v1",
@@ -108,9 +114,9 @@ _SPECS = (
     ),
     ("catalog.bootstrap.v1", "building_only", "catalog_refinement.check_bootstrap_v1"),
     (
-        "catalog.retention.v1",
+        "catalog.retention.v2",
         "ready_and_runtime",
-        "catalog_refinement.check_retention_contract_v1",
+        "catalog_refinement.check_retention_contract_v2",
     ),
     (
         "h2hdb.operational.physical-domains.v1",
@@ -173,6 +179,11 @@ _SPECS = (
         "operational_refinement.check_cleanup_reachability_v1",
     ),
     (
+        "h2hdb.operational.cleanup-frozen-root-set.v1",
+        "ready_and_runtime",
+        "operational_refinement.check_cleanup_frozen_root_set_v1",
+    ),
+    (
         "h2hdb.operational.revision-allocation.v1",
         "ready_and_runtime",
         "operational_refinement.check_revision_allocator_contract_v1",
@@ -181,6 +192,11 @@ _SPECS = (
         "h2hdb.operational.gallery-staging.v1",
         "ready_and_runtime",
         "operational_refinement.check_gallery_staging_contract_v1",
+    ),
+    (
+        "h2hdb.operational.gallery-staging-request-budget.v1",
+        "ready_and_runtime",
+        "operational_refinement.check_gallery_staging_request_budget_v1",
     ),
     (
         "h2hdb.operational.bootstrap-genesis.v1",
@@ -509,18 +525,7 @@ _SUPPORTED_DISPLAY_TITLE_POLICY_ALGORITHMS = frozenset(
     {(1, 1, _RUNTIME_UNICODE_DATA_VERSION)}
 )
 
-_VERTICAL_POLICY_FAMILIES = (
-    "manifest_policy",
-    "analysis_policy",
-    "artifact_zip_writer_policy",
-    "artifact_storage_codec",
-    "artifact_policy_semantics",
-    "title_sort_policy",
-    "display_title_policy",
-    "source_scope",
-)
-
-_VERTICAL_POLICY_BOOTSTRAP_VALUES: Mapping[
+_WIDE_POLICY_BOOTSTRAP_VALUES: Mapping[
     str, tuple[str, tuple[tuple[str, str, str, int | str], ...]]
 ] = MappingProxyType(
     {
@@ -552,185 +557,154 @@ _VERTICAL_POLICY_BOOTSTRAP_VALUES: Mapping[
     }
 )
 
-
-def _expected_vertical_policy_bootstrap() -> Mapping[
-    str, tuple[tuple[str, str, tuple[tuple[str, str, str, int | str], ...]], ...]
-]:
-    """Return the exact physical seed fanout for the closed policy registries."""
-
-    result: dict[
-        str, list[tuple[str, str, tuple[tuple[str, str, str, int | str], ...]]]
-    ] = {family: [] for family in _VERTICAL_POLICY_FAMILIES}
-    for family, (seed_id, values) in _VERTICAL_POLICY_BOOTSTRAP_VALUES.items():
-        key = values[0]
-        facts = values[1:]
-
-        def add(
-            component: str, cells: tuple[tuple[str, str, str, int | str], ...]
-        ) -> None:
-            relation = f"{family}_{component}"
-            result[family].append((f"{seed_id}.{relation}", relation, cells))
-
-        add("anchor", (key,))
-        for fact in facts:
-            add(fact[0], (key, fact))
-        if family != "artifact_storage_codec":
-            add("identity", (*facts, key))
-        add("seal", (key,))
-    return MappingProxyType(
-        {family: tuple(records) for family, records in result.items()}
-    )
-
-
-_EXPECTED_VERTICAL_POLICY_BOOTSTRAP = _expected_vertical_policy_bootstrap()
-
-# family -> (legacy view table, semantic key, (fact relation, fact attribute),
-#            natural-identity relation or None).  Referential unique keys on
-# facts exist only to support the identity-to-fact congruence FKs; they are not
-# semantic candidate keys.
-_VERTICAL_POLICY_SHAPES: Mapping[
+_WIDE_POLICY_SHAPES: Mapping[
     str,
     tuple[
         str,
-        str,
-        tuple[tuple[str, str], ...],
-        str | None,
+        tuple[str, ...],
+        tuple[str, ...],
+        tuple[tuple[str, ...], ...],
+        tuple[tuple[str, ...], ...],
     ],
 ] = MappingProxyType(
     {
         "manifest_policy": (
             "catalog_manifest_policies",
-            "manifest_policy_id",
+            ("manifest_policy_id", "manifest_algorithm_version", "file_order_version"),
+            ("manifest_policy_id",),
+            (("manifest_algorithm_version", "file_order_version"),),
             (
-                (
-                    "manifest_policy_manifest_algorithm_version",
-                    "manifest_algorithm_version",
-                ),
-                ("manifest_policy_file_order_version", "file_order_version"),
+                ("manifest_policy_id", "manifest_algorithm_version"),
+                ("manifest_policy_id", "file_order_version"),
             ),
-            "manifest_policy_identity",
         ),
         "analysis_policy": (
             "catalog_analysis_policies",
-            "policy_id",
             (
-                ("analysis_policy_algorithm_version", "algorithm_version"),
+                "policy_id",
+                "algorithm_version",
+                "spam_artist_threshold",
+                "spam_occurrence_threshold",
+                "content_owner_rule_version",
+                "gid_winner_rule_version",
+            ),
+            ("policy_id",),
+            (
                 (
-                    "analysis_policy_spam_artist_threshold",
+                    "algorithm_version",
                     "spam_artist_threshold",
-                ),
-                (
-                    "analysis_policy_spam_occurrence_threshold",
                     "spam_occurrence_threshold",
-                ),
-                (
-                    "analysis_policy_content_owner_rule_version",
                     "content_owner_rule_version",
-                ),
-                (
-                    "analysis_policy_gid_winner_rule_version",
                     "gid_winner_rule_version",
                 ),
             ),
-            "analysis_policy_identity",
+            tuple(
+                ("policy_id", attribute)
+                for attribute in (
+                    "algorithm_version",
+                    "spam_artist_threshold",
+                    "spam_occurrence_threshold",
+                    "content_owner_rule_version",
+                    "gid_winner_rule_version",
+                )
+            ),
         ),
         "artifact_zip_writer_policy": (
             "catalog_artifact_zip_writer_policies",
-            "artifact_algorithm_version",
             tuple(
-                (f"artifact_zip_writer_policy_{attribute}", attribute)
-                for attribute in (
-                    "zip_codec_version",
-                    "compression_method",
-                    "compression_level",
-                    "dos_date",
-                    "dos_time",
-                    "unix_mode",
-                    "general_purpose_flags",
-                    "create_system",
-                    "archive_name_codec_version",
-                    "artifact_name_codec_version",
-                )
+                value[0]
+                for value in _WIDE_POLICY_BOOTSTRAP_VALUES[
+                    "artifact_zip_writer_policy"
+                ][1]
             ),
-            "artifact_zip_writer_policy_identity",
+            ("artifact_algorithm_version",),
+            (
+                tuple(
+                    value[0]
+                    for value in _WIDE_POLICY_BOOTSTRAP_VALUES[
+                        "artifact_zip_writer_policy"
+                    ][1][1:]
+                ),
+            ),
+            tuple(
+                ("artifact_algorithm_version", value[0])
+                for value in _WIDE_POLICY_BOOTSTRAP_VALUES[
+                    "artifact_zip_writer_policy"
+                ][1][1:]
+            ),
         ),
         "artifact_storage_codec": (
             "catalog_artifact_storage_codecs",
-            "storage_codec_version",
-            (
-                ("artifact_storage_codec_adapter_id", "adapter_id"),
-                (
-                    "artifact_storage_codec_locator_codec_version",
-                    "locator_codec_version",
-                ),
-                (
-                    "artifact_storage_codec_protection_token_codec_version",
-                    "protection_token_codec_version",
-                ),
+            tuple(
+                value[0]
+                for value in _WIDE_POLICY_BOOTSTRAP_VALUES["artifact_storage_codec"][1]
             ),
-            None,
+            ("storage_codec_version",),
+            (("adapter_id",),),
+            (),
         ),
         "artifact_policy_semantics": (
             "catalog_artifact_policy_semantics",
-            "policy_component_sha256",
+            (
+                "policy_component_sha256",
+                "max_image_short_side",
+                "producer_fingerprint_sha256",
+            ),
+            ("policy_component_sha256",),
             (
                 (
-                    "artifact_policy_semantics_artifact_algorithm_version",
-                    "artifact_algorithm_version",
-                ),
-                (
-                    "artifact_policy_semantics_max_image_short_side",
                     "max_image_short_side",
-                ),
-                (
-                    "artifact_policy_semantics_producer_fingerprint_sha256",
                     "producer_fingerprint_sha256",
                 ),
             ),
-            "artifact_policy_semantics_identity",
+            (
+                ("policy_component_sha256", "max_image_short_side"),
+                ("policy_component_sha256", "producer_fingerprint_sha256"),
+            ),
         ),
         "title_sort_policy": (
             "catalog_title_sort_policy",
-            "title_sort_policy_id",
             (
-                (
-                    "title_sort_policy_algorithm_version",
-                    "title_sort_algorithm_version",
-                ),
-                (
-                    "title_sort_policy_unicode_data_version",
-                    "unicode_data_version",
-                ),
+                "title_sort_policy_id",
+                "title_sort_algorithm_version",
+                "unicode_data_version",
             ),
-            "title_sort_policy_identity",
+            ("title_sort_policy_id",),
+            (("title_sort_algorithm_version", "unicode_data_version"),),
+            (
+                ("title_sort_policy_id", "title_sort_algorithm_version"),
+                ("title_sort_policy_id", "unicode_data_version"),
+            ),
         ),
         "display_title_policy": (
             "catalog_display_title_policies",
-            "display_title_policy_id",
             (
-                (
-                    "display_title_policy_algorithm_version",
-                    "display_title_algorithm_version",
-                ),
-                (
-                    "display_title_policy_title_sort_policy_id",
-                    "title_sort_policy_id",
-                ),
+                "display_title_policy_id",
+                "display_title_algorithm_version",
+                "title_sort_policy_id",
             ),
-            "display_title_policy_identity",
+            ("display_title_policy_id",),
+            (("display_title_algorithm_version", "title_sort_policy_id"),),
+            (
+                ("display_title_policy_id", "display_title_algorithm_version"),
+                ("display_title_policy_id", "title_sort_policy_id"),
+            ),
         ),
         "source_scope": (
             "catalog_source_scopes",
-            "scope_key",
             (
-                ("source_scope_source_provider", "source_provider"),
-                ("source_scope_source_root_sha256", "source_root_sha256"),
-                (
-                    "source_scope_identity_policy_version",
-                    "identity_policy_version",
-                ),
+                "scope_key",
+                "source_provider",
+                "source_root_sha256",
+                "identity_policy_version",
             ),
-            "source_scope_identity",
+            ("scope_key",),
+            (("source_provider", "source_root_sha256", "identity_policy_version"),),
+            (
+                ("scope_key", "source_provider"),
+                ("scope_key", "source_root_sha256"),
+                ("scope_key", "identity_policy_version"),
+            ),
         ),
     }
 )
@@ -800,14 +774,6 @@ def validate_builtin_semantic_manifest() -> None:
         ) from error
 
 
-def _vertical_policy_table(relation: str) -> str:
-    if relation.endswith("_identity"):
-        return f"catalog_{relation[:-1]}ies"
-    if relation.endswith("s"):
-        return f"catalog_{relation}"
-    return f"catalog_{relation}s"
-
-
 def _provider_columns(relation: Mapping[str, object]) -> tuple[str, ...]:
     raw = relation.get("columns")
     if not isinstance(raw, tuple) or not all(
@@ -818,152 +784,30 @@ def _provider_columns(relation: Mapping[str, object]) -> tuple[str, ...]:
     return tuple(column[0] for column in raw)
 
 
-def _provider_fk_edges(
-    relation: Mapping[str, object],
-) -> frozenset[tuple[tuple[str, ...], str, tuple[str, ...]]]:
-    raw = relation.get("foreign_keys")
-    if not isinstance(raw, tuple):
-        return frozenset()
-    result: set[tuple[tuple[str, ...], str, tuple[str, ...]]] = set()
-    for edge in raw:
-        if (
-            not isinstance(edge, tuple)
-            or len(edge) != 4
-            or not isinstance(edge[1], tuple)
-            or not isinstance(edge[2], str)
-            or not isinstance(edge[3], tuple)
-            or not all(isinstance(value, str) for value in (*edge[1], *edge[3]))
-        ):
-            return frozenset()
-        result.add((edge[1], edge[2], edge[3]))
-    return frozenset(result)
-
-
-def _validate_vertical_policy_provider_shapes(
+def _validate_wide_policy_provider_shapes(
     relation_by_name: Mapping[object, object], *, backend: str
 ) -> None:
-    """Pin the eight runtime policy authorities to their narrow base graph."""
+    """Pin runtime policy authorities to their exact atomic BCNF rows."""
 
     for family, (
-        view_table,
-        key,
-        facts,
-        identity_relation,
-    ) in _VERTICAL_POLICY_SHAPES.items():
-        anchor_name = f"{family}_anchor"
-        seal_name = f"{family}_seal"
-        anchor_table = _vertical_policy_table(anchor_name)
-        seal_table = _vertical_policy_table(seal_name)
-        natural_key = tuple(attribute for _relation, attribute in facts)
-
-        anchor = relation_by_name.get(anchor_name)
+        table,
+        columns,
+        primary_key,
+        unique_keys,
+        referential_unique_keys,
+    ) in _WIDE_POLICY_SHAPES.items():
+        relation = relation_by_name.get(family)
         if (
-            not isinstance(anchor, Mapping)
-            or anchor.get("kind") != "table"
-            or anchor.get("table") != anchor_table
-            or _provider_columns(anchor) != (key,)
-            or anchor.get("primary_key") != (key,)
-            or anchor.get("unique_keys") != ()
-            or anchor.get("referential_unique_keys") != ()
+            not isinstance(relation, Mapping)
+            or relation.get("kind") != "table"
+            or relation.get("table") != table
+            or _provider_columns(relation) != columns
+            or relation.get("primary_key") != primary_key
+            or relation.get("unique_keys") != unique_keys
+            or relation.get("referential_unique_keys") != referential_unique_keys
         ):
             raise BuiltinSemanticRegistryError(
-                f"generated {backend} {anchor_name} lacks its exact anchor shape"
-            )
-
-        required_seal_edges: set[tuple[tuple[str, ...], str, tuple[str, ...]]] = {
-            ((key,), anchor_table, (key,))
-        }
-        for fact_relation, fact in facts:
-            fact_table = _vertical_policy_table(fact_relation)
-            fact_shape = relation_by_name.get(fact_relation)
-            expected_semantic_unique = (
-                (("adapter_id",),)
-                if fact_relation == "artifact_storage_codec_adapter_id"
-                else ()
-            )
-            expected_referential_unique = (
-                () if identity_relation is None else ((key, fact),)
-            )
-            if (
-                not isinstance(fact_shape, Mapping)
-                or fact_shape.get("kind") != "table"
-                or fact_shape.get("table") != fact_table
-                or _provider_columns(fact_shape) != (key, fact)
-                or fact_shape.get("primary_key") != (key,)
-                or fact_shape.get("unique_keys") != expected_semantic_unique
-                or fact_shape.get("referential_unique_keys")
-                != expected_referential_unique
-                or ((key,), anchor_table, (key,)) not in _provider_fk_edges(fact_shape)
-            ):
-                raise BuiltinSemanticRegistryError(
-                    f"generated {backend} {fact_relation} lacks its exact fact shape"
-                )
-            required_seal_edges.add(((key,), fact_table, (key,)))
-
-        if identity_relation is not None:
-            identity_table = _vertical_policy_table(identity_relation)
-            identity_shape = relation_by_name.get(identity_relation)
-            if (
-                not isinstance(identity_shape, Mapping)
-                or identity_shape.get("kind") != "table"
-                or identity_shape.get("table") != identity_table
-                or _provider_columns(identity_shape) != (*natural_key, key)
-                or identity_shape.get("primary_key") != natural_key
-                or identity_shape.get("unique_keys") != ((key,),)
-                or identity_shape.get("referential_unique_keys") != ()
-            ):
-                raise BuiltinSemanticRegistryError(
-                    f"generated {backend} {identity_relation} lacks its exact identity shape"
-                )
-            identity_edges = _provider_fk_edges(identity_shape)
-            required_identity_edges = {
-                ((key,), anchor_table, (key,)),
-                *(
-                    (
-                        (key, fact),
-                        _vertical_policy_table(fact_relation),
-                        (key, fact),
-                    )
-                    for fact_relation, fact in facts
-                ),
-            }
-            if not required_identity_edges.issubset(identity_edges):
-                raise BuiltinSemanticRegistryError(
-                    f"generated {backend} {identity_relation} lacks congruence FKs"
-                )
-            required_seal_edges.add(((key,), identity_table, (key,)))
-
-        seal = relation_by_name.get(seal_name)
-        if (
-            not isinstance(seal, Mapping)
-            or seal.get("kind") != "table"
-            or seal.get("table") != seal_table
-            or _provider_columns(seal) != (key,)
-            or seal.get("primary_key") != (key,)
-            or seal.get("unique_keys") != ()
-            or seal.get("referential_unique_keys") != ()
-            or _provider_fk_edges(seal) != frozenset(required_seal_edges)
-        ):
-            raise BuiltinSemanticRegistryError(
-                f"generated {backend} {seal_name} lacks total-participation FKs"
-            )
-
-        view = relation_by_name.get(family)
-        expected_view_unique = (
-            (("adapter_id",),) if family == "artifact_storage_codec" else (natural_key,)
-        )
-        if (
-            not isinstance(view, Mapping)
-            or view.get("kind") != "view"
-            or view.get("table") != view_table
-            or _provider_columns(view) != (key, *natural_key)
-            or view.get("primary_key") != (key,)
-            or view.get("unique_keys") != expected_view_unique
-            or view.get("referential_unique_keys") != ()
-            or ((key,), seal_table, (key,)) not in _provider_fk_edges(view)
-        ):
-            raise BuiltinSemanticRegistryError(
-                f"generated {backend} {family} is not the exact sealed read view"
+                f"generated {backend} {family} lacks its exact wide BCNF shape"
             )
 
 
@@ -973,20 +817,13 @@ def _validate_static_catalog_contract() -> None:
     if not isinstance(raw, tuple):
         raise BuiltinSemanticRegistryError("generated bootstrap records are malformed")
     actual: list[tuple[str, str, str, str]] = []
-    actual_stage_registries: dict[str, list[tuple[str, str, tuple[str, ...]]]] = {
+    actual_stage_registries: dict[str, list[tuple[str, tuple[str, ...]]]] = {
         "analysis_stage": [],
         "publication_stage": [],
     }
-    actual_vertical_policy_seeds: dict[
-        str,
-        list[
-            tuple[
-                str,
-                str,
-                tuple[tuple[str, str, str, int | str], ...],
-            ]
-        ],
-    ] = {family: [] for family in _VERTICAL_POLICY_FAMILIES}
+    actual_wide_policy_seeds: list[
+        tuple[str, str, tuple[tuple[str, str, str, int | str], ...]]
+    ] = []
     generation_genesis_seen = False
     for value in raw:
         if not isinstance(value, Mapping) or value.get("source") != "data":
@@ -1002,46 +839,23 @@ def _validate_static_catalog_contract() -> None:
             or not isinstance(cells, tuple)
         ):
             raise BuiltinSemanticRegistryError("generated catalog seed is malformed")
-        stage_family = next(
-            (
-                family
-                for family in actual_stage_registries
-                if relation.startswith(f"{family}_")
-            ),
-            None,
-        )
-        if stage_family is not None:
-            component = relation.removeprefix(f"{stage_family}_")
-            expected_attributes = {
-                "anchor": ("stage",),
-                "order": ("stage", "stage_order"),
-                "cursor_codec": ("stage", "cursor_codec"),
-                "seal": ("stage",),
-            }.get(component)
+        if relation in actual_stage_registries:
             if (
-                expected_attributes is None
-                or len(cells) != len(expected_attributes)
+                len(cells) != 3
                 or any(not isinstance(cell, tuple) or len(cell) != 4 for cell in cells)
-                or tuple(cell[0] for cell in cells) != expected_attributes
+                or tuple(cell[0] for cell in cells)
+                != ("stage", "stage_order", "cursor_codec")
                 or any(cell[1:3] != ("ascii_enum", "utf8") for cell in cells)
                 or any(not isinstance(cell[3], str) for cell in cells)
             ):
                 raise BuiltinSemanticRegistryError(
                     f"generated {relation.replace('_', '-')} seed is malformed"
                 )
-            actual_stage_registries[stage_family].append(
-                (seed_id, component, tuple(cell[3] for cell in cells))
+            actual_stage_registries[relation].append(
+                (seed_id, tuple(cell[3] for cell in cells))
             )
             continue
-        vertical_policy_family = next(
-            (
-                family
-                for family in _VERTICAL_POLICY_FAMILIES
-                if relation.startswith(f"{family}_")
-            ),
-            None,
-        )
-        if vertical_policy_family is not None:
+        if relation in _WIDE_POLICY_BOOTSTRAP_VALUES:
             if not cells or any(
                 not isinstance(cell, tuple)
                 or len(cell) != 4
@@ -1055,9 +869,7 @@ def _validate_static_catalog_contract() -> None:
                 raise BuiltinSemanticRegistryError(
                     f"generated {relation.replace('_', '-')} seed is malformed"
                 )
-            actual_vertical_policy_seeds[vertical_policy_family].append(
-                (seed_id, relation, cells)
-            )
+            actual_wide_policy_seeds.append((seed_id, relation, cells))
             continue
         if relation == "publication_generation_node":
             if generation_genesis_seen or (
@@ -1094,12 +906,13 @@ def _validate_static_catalog_contract() -> None:
         raise BuiltinSemanticRegistryError(
             "generated publication-generation genesis seed is missing"
         )
-    if {
-        family: tuple(records)
-        for family, records in actual_vertical_policy_seeds.items()
-    } != _EXPECTED_VERTICAL_POLICY_BOOTSTRAP:
+    expected_wide_policy_seeds = tuple(
+        (seed_id, family, cells)
+        for family, (seed_id, cells) in _WIDE_POLICY_BOOTSTRAP_VALUES.items()
+    )
+    if tuple(actual_wide_policy_seeds) != expected_wide_policy_seeds:
         raise BuiltinSemanticRegistryError(
-            "generated vertical policy seed fanout differs from executable constants"
+            "generated wide policy seeds differ from executable constants"
         )
     analysis_stage_values = (
         ("changed_gallery", 1, "analysis_gallery_v1"),
@@ -1119,30 +932,11 @@ def _validate_static_catalog_contract() -> None:
         ("validate_gid_winner", 15, "analysis_gid_live_v1"),
     )
     expected_analysis_stages = tuple(
-        record
-        for name, order, cursor_codec in analysis_stage_values
-        for record in (
-            (
-                f"catalog.analysis-stage.{name.replace('_', '-')}.v1.analysis_stage_anchor",
-                "anchor",
-                (name,),
-            ),
-            (
-                f"catalog.analysis-stage.{name.replace('_', '-')}.v1.analysis_stage_order",
-                "order",
-                (name, f"{order:02d}"),
-            ),
-            (
-                f"catalog.analysis-stage.{name.replace('_', '-')}.v1.analysis_stage_cursor_codec",
-                "cursor_codec",
-                (name, cursor_codec),
-            ),
-            (
-                f"catalog.analysis-stage.{name.replace('_', '-')}.v1.analysis_stage_seal",
-                "seal",
-                (name,),
-            ),
+        (
+            f"catalog.analysis-stage.{name.replace('_', '-')}.v1",
+            (name, f"{order:02d}", cursor_codec),
         )
+        for name, order, cursor_codec in analysis_stage_values
     )
     if tuple(actual_stage_registries["analysis_stage"]) != expected_analysis_stages:
         raise BuiltinSemanticRegistryError(
@@ -1176,30 +970,11 @@ def _validate_static_catalog_contract() -> None:
         ("FINALIZE_ARTIFACTS", 17, "publication_key_v1"),
     )
     expected_publication_stages = tuple(
-        record
-        for name, order, cursor_codec in publication_stage_values
-        for record in (
-            (
-                f"catalog.publication-stage.{name.lower().replace('_', '-')}.v1.publication_stage_anchor",
-                "anchor",
-                (name,),
-            ),
-            (
-                f"catalog.publication-stage.{name.lower().replace('_', '-')}.v1.publication_stage_order",
-                "order",
-                (name, f"{order:02d}"),
-            ),
-            (
-                f"catalog.publication-stage.{name.lower().replace('_', '-')}.v1.publication_stage_cursor_codec",
-                "cursor_codec",
-                (name, cursor_codec),
-            ),
-            (
-                f"catalog.publication-stage.{name.lower().replace('_', '-')}.v1.publication_stage_seal",
-                "seal",
-                (name,),
-            ),
+        (
+            f"catalog.publication-stage.{name.lower().replace('_', '-')}.v1",
+            (name, f"{order:02d}", cursor_codec),
         )
+        for name, order, cursor_codec in publication_stage_values
     )
     if (
         tuple(actual_stage_registries["publication_stage"])
@@ -1285,7 +1060,7 @@ def _validate_static_catalog_contract() -> None:
             for value in relations
             if isinstance(value, Mapping) and value.get("plane") == "data"
         }
-        _validate_vertical_policy_provider_shapes(relation_by_name, backend=backend)
+        _validate_wide_policy_provider_shapes(relation_by_name, backend=backend)
         expected_shapes = {
             "artifact_producer_fingerprint": (
                 "catalog_artifact_producer_fingerprints",
@@ -1581,64 +1356,25 @@ def _validate_exact_registries(connector: SQLConnector) -> None:
             "source_provider_registry is not the exact singleton {filesystem}"
         )
     zip_policies = connector.fetch_all(
-        "SELECT seal.artifact_algorithm_version, zip.zip_codec_version, "
-        "method.compression_method, level.compression_level, dos_date_fact.dos_date, "
-        "dos_time_fact.dos_time, mode.unix_mode, flags.general_purpose_flags, "
-        "create_system_fact.create_system, archive.archive_name_codec_version, "
-        "artifact.artifact_name_codec_version, identity.zip_codec_version, "
-        "identity.compression_method, identity.compression_level, "
-        "identity.dos_date, identity.dos_time, identity.unix_mode, "
-        "identity.general_purpose_flags, identity.create_system, "
-        "identity.archive_name_codec_version, "
-        "identity.artifact_name_codec_version "
-        "FROM catalog_artifact_zip_writer_policy_seals AS seal "
-        "JOIN catalog_artifact_zip_writer_policy_zip_codec_versions AS zip "
-        "ON zip.artifact_algorithm_version = seal.artifact_algorithm_version "
-        "JOIN catalog_artifact_zip_writer_policy_compression_methods AS method "
-        "ON method.artifact_algorithm_version = seal.artifact_algorithm_version "
-        "JOIN catalog_artifact_zip_writer_policy_compression_levels AS level "
-        "ON level.artifact_algorithm_version = seal.artifact_algorithm_version "
-        "JOIN catalog_artifact_zip_writer_policy_dos_dates AS dos_date_fact "
-        "ON dos_date_fact.artifact_algorithm_version = seal.artifact_algorithm_version "
-        "JOIN catalog_artifact_zip_writer_policy_dos_times AS dos_time_fact "
-        "ON dos_time_fact.artifact_algorithm_version = seal.artifact_algorithm_version "
-        "JOIN catalog_artifact_zip_writer_policy_unix_modes AS mode "
-        "ON mode.artifact_algorithm_version = seal.artifact_algorithm_version "
-        "JOIN catalog_artifact_zip_writer_policy_general_purpose_flags AS flags "
-        "ON flags.artifact_algorithm_version = seal.artifact_algorithm_version "
-        "JOIN catalog_artifact_zip_writer_policy_create_systems AS create_system_fact "
-        "ON create_system_fact.artifact_algorithm_version = "
-        "seal.artifact_algorithm_version "
-        "JOIN catalog_artifact_zip_writer_policy_archive_name_codec_versions "
-        "AS archive ON archive.artifact_algorithm_version = "
-        "seal.artifact_algorithm_version "
-        "JOIN catalog_artifact_zip_writer_policy_artifact_name_codec_versions "
-        "AS artifact ON artifact.artifact_algorithm_version = "
-        "seal.artifact_algorithm_version "
-        "JOIN catalog_artifact_zip_writer_policy_identities AS identity "
-        "ON identity.artifact_algorithm_version = seal.artifact_algorithm_version "
-        "ORDER BY seal.artifact_algorithm_version LIMIT 2"
+        "SELECT artifact_algorithm_version, zip_codec_version, compression_method, "
+        "compression_level, dos_date, dos_time, unix_mode, general_purpose_flags, "
+        "create_system, archive_name_codec_version, artifact_name_codec_version "
+        "FROM catalog_artifact_zip_writer_policies "
+        "ORDER BY artifact_algorithm_version LIMIT 2"
     )
     normalized_zip_policies = tuple(
         tuple(_as_int(cell, field="artifact ZIP policy") for cell in row)
         for row in zip_policies
     )
     expected_zip_policy = (1, 1, 8, 9, 33, 0, 33188, 2048, 3, 1, 1)
-    if normalized_zip_policies != (expected_zip_policy + expected_zip_policy[1:],):
+    if normalized_zip_policies != (expected_zip_policy,):
         raise CatalogSemanticValidationError(
             "artifact_zip_writer_policy is not the exact v1 singleton"
         )
     storage_codecs = connector.fetch_all(
-        "SELECT seal.storage_codec_version, adapter.adapter_id, "
-        "locator.locator_codec_version, token.protection_token_codec_version "
-        "FROM catalog_artifact_storage_codec_seals AS seal "
-        "JOIN catalog_artifact_storage_codec_adapter_ids AS adapter "
-        "ON adapter.storage_codec_version = seal.storage_codec_version "
-        "JOIN catalog_artifact_storage_codec_locator_codec_versions AS locator "
-        "ON locator.storage_codec_version = seal.storage_codec_version "
-        "JOIN catalog_artifact_storage_codec_protection_token_codec_versions "
-        "AS token ON token.storage_codec_version = seal.storage_codec_version "
-        "ORDER BY seal.storage_codec_version LIMIT 2"
+        "SELECT storage_codec_version, adapter_id, locator_codec_version, "
+        "protection_token_codec_version FROM catalog_artifact_storage_codecs "
+        "ORDER BY storage_codec_version LIMIT 2"
     )
     if len(storage_codecs) != 1 or (
         _as_int(storage_codecs[0][0], field="storage codec version"),
@@ -1787,16 +1523,16 @@ def _validate_live_snapshot_manifest_pins(connector: SQLConnector) -> None:
         FROM (
             SELECT binding.snapshot_manifest_sha256
             FROM catalog_analysis_snapshot_manifest AS binding
-            JOIN catalog_analysis_run_build_ids AS run_build
+            JOIN catalog_analysis_run_descriptor AS run_build
               ON run_build.analysis_id = binding.analysis_id
             JOIN operational_source_working_builds AS working_build
               ON working_build.build_id = run_build.build_id
             UNION
             SELECT binding.snapshot_manifest_sha256
-            FROM catalog_publication_candidate_analysis_ids AS candidate
+            FROM catalog_publication_candidates AS candidate
             JOIN catalog_analysis_snapshot_manifest AS binding
               ON binding.analysis_id = candidate.analysis_id
-            LEFT JOIN catalog_publication_commit_candidates AS committed
+            LEFT JOIN catalog_publication_commits AS committed
               ON committed.candidate_id = candidate.candidate_id
             LEFT JOIN operational_catalog_working_candidates AS working_candidate
               ON working_candidate.candidate_id = candidate.candidate_id
@@ -1826,6 +1562,76 @@ def _validate_live_snapshot_manifest_pins(connector: SQLConnector) -> None:
         )
 
 
+def _require_compacted_current_source_handoff(
+    connector: SQLConnector,
+    *,
+    channel: bytes,
+    revision: int,
+    generation: int,
+    analysis_id: bytes,
+    build_id: bytes,
+) -> None:
+    """Prove that a missing predecessor pin was safely handed to current state."""
+
+    row = _one(
+        connector,
+        """
+        SELECT committed.receipt_id, committed.source_revision,
+               committed.generation, receipt.state, receipt.finalized_at,
+               provenance.analysis_id, provenance_analysis.build_id,
+               provenance_analysis.state, descriptor.channel
+        FROM catalog_publication_commit_head_receipts AS head
+        JOIN catalog_publication_commits AS committed
+          ON committed.receipt_id = head.receipt_id
+        JOIN catalog_publication_receipts AS receipt
+          ON receipt.receipt_id = committed.receipt_id
+        JOIN catalog_source_revision_provenance AS provenance
+          ON provenance.source_revision = committed.source_revision
+        JOIN catalog_analysis_runs AS provenance_analysis
+          ON provenance_analysis.analysis_id = provenance.analysis_id
+        JOIN catalog_source_revision_descriptors AS descriptor
+          ON descriptor.source_revision = committed.source_revision
+        WHERE head.channel = %s
+        LIMIT 2
+        """,
+        (channel,),
+        detail="compacted current source handoff",
+    )
+    assert row is not None
+    receipt_id = _as_bytes(row[0], field="compacted source receipt_id")
+    if len(receipt_id) != 16:
+        raise CatalogSemanticValidationError(
+            "compacted current source receipt_id is not 16 bytes"
+        )
+    _as_int(row[4], field="compacted source finalized_at")
+    provenance_analysis = _as_bytes(
+        row[5],
+        field="compacted source provenance analysis_id",
+    )
+    provenance_build = _as_bytes(
+        row[6],
+        field="compacted source provenance build_id",
+    )
+    descriptor_channel = _as_bytes(
+        row[8],
+        field="compacted source descriptor channel",
+    )
+    if (
+        _as_int(row[1], field="compacted source revision", positive=True) != revision
+        or _as_int(row[2], field="compacted source generation", positive=True)
+        != generation
+        or row[3] != "PROJECTION_FINALIZED"
+        or provenance_analysis != analysis_id
+        or provenance_build != build_id
+        or row[7] != "COMPLETE"
+        or descriptor_channel != channel
+    ):
+        raise CatalogSemanticValidationError(
+            "compacted current source handoff differs from its exact "
+            "build, analysis, or provenance authority"
+        )
+
+
 def _active_source_contexts(connector: SQLConnector) -> tuple[_SourceContext, ...]:
     rows = connector.fetch_all("""
         SELECT registry.channel, head.source_revision, mapping.generation,
@@ -1845,9 +1651,7 @@ def _active_source_contexts(connector: SQLConnector) -> tuple[_SourceContext, ..
     if all(value is None for value in rows[0][1:]):
         return ()
     if any(value is None for value in rows[0][1:]):
-        raise CatalogSemanticValidationError(
-            "source_head vertical family is incomplete"
-        )
+        raise CatalogSemanticValidationError("source_head projection is incomplete")
     contexts: list[_SourceContext] = []
     for head_row in rows:
         channel = _as_bytes(head_row[0], field="source_head.channel")
@@ -1913,25 +1717,8 @@ def _active_source_contexts(connector: SQLConnector) -> tuple[_SourceContext, ..
             """,
             (revision,),
             detail="active source revision provenance",
-            optional=True,
         )
-        if provenance_row is None:
-            # Publication commits and source descriptors are permanent; their
-            # transient provenance/analysis/build graph may be removed by the
-            # verified cleanup protocol.  Absence is therefore not corruption.
-            contexts.append(
-                _SourceContext(
-                    channel,
-                    revision,
-                    generation,
-                    snapshot_digest,
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-            )
-            continue
+        assert provenance_row is not None
         analysis_id = _as_bytes(provenance_row[0], field="provenance.analysis_id")
         analysis_row = _one(
             connector,
@@ -2024,20 +1811,9 @@ def _active_source_contexts(connector: SQLConnector) -> tuple[_SourceContext, ..
         scope_row = _one(
             connector,
             """
-            SELECT provider.source_provider, root.source_root_sha256,
-                   policy.identity_policy_version,
-                   identity.source_provider, identity.source_root_sha256,
-                   identity.identity_policy_version
-            FROM catalog_source_scope_seals AS seal
-            JOIN catalog_source_scope_source_providers AS provider
-              ON provider.scope_key = seal.scope_key
-            JOIN catalog_source_scope_source_root_sha256s AS root
-              ON root.scope_key = seal.scope_key
-            JOIN catalog_source_scope_identity_policy_versions AS policy
-              ON policy.scope_key = seal.scope_key
-            JOIN catalog_source_scope_identities AS identity
-              ON identity.scope_key = seal.scope_key
-            WHERE seal.scope_key = %s
+            SELECT source_provider, source_root_sha256, identity_policy_version
+            FROM catalog_source_scopes
+            WHERE scope_key = %s
             LIMIT 2
             """,
             (scope_key,),
@@ -2049,19 +1825,6 @@ def _active_source_contexts(connector: SQLConnector) -> tuple[_SourceContext, ..
         identity_policy_version = _as_int(
             scope_row[2], field="source_scope.identity_policy_version", positive=True
         )
-        identity_tuple = (
-            _as_bytes(scope_row[3], field="source_scope_identity.source_provider"),
-            _as_bytes(scope_row[4], field="source_scope_identity.source_root_sha256"),
-            _as_int(
-                scope_row[5],
-                field="source_scope_identity.identity_policy_version",
-                positive=True,
-            ),
-        )
-        if identity_tuple != (provider, source_root, identity_policy_version):
-            raise CatalogSemanticValidationError(
-                "active source scope facts disagree with its natural identity"
-            )
         if provider != b"filesystem":
             raise CatalogSemanticValidationError(
                 "active source scope uses an unknown source provider"
@@ -2085,20 +1848,14 @@ def _active_source_contexts(connector: SQLConnector) -> tuple[_SourceContext, ..
         base_row = _one(
             connector,
             """
-            SELECT base.base_receipt_id, catalog.revision,
-                   source.source_revision, generation.generation,
-                   source_channel.channel
+            SELECT base.base_receipt_id, commit_row.revision,
+                   commit_row.source_revision, commit_row.generation,
+                   source_revision.channel
             FROM catalog_source_build_base_publication_commits AS base
-            JOIN catalog_publication_commit_seals AS seal
-              ON seal.receipt_id = base.base_receipt_id
-            JOIN catalog_publication_commit_catalog_revisions AS catalog
-              ON catalog.receipt_id = base.base_receipt_id
-            JOIN catalog_publication_commit_source_revisions AS source
-              ON source.receipt_id = base.base_receipt_id
-            JOIN catalog_publication_commit_generations AS generation
-              ON generation.receipt_id = base.base_receipt_id
-            JOIN catalog_source_revision_channels AS source_channel
-              ON source_channel.source_revision = source.source_revision
+            JOIN catalog_publication_commits AS commit_row
+              ON commit_row.receipt_id = base.base_receipt_id
+            JOIN catalog_source_revisions AS source_revision
+              ON source_revision.source_revision = commit_row.source_revision
             WHERE base.build_id = %s
             LIMIT 2
             """,
@@ -2108,8 +1865,13 @@ def _active_source_contexts(connector: SQLConnector) -> tuple[_SourceContext, ..
         )
         if base_row is None:
             if generation != 1:
-                raise CatalogSemanticValidationError(
-                    "non-genesis source_head lacks its build baseline"
+                _require_compacted_current_source_handoff(
+                    connector,
+                    channel=channel,
+                    revision=revision,
+                    generation=generation,
+                    analysis_id=analysis_id,
+                    build_id=build_id,
                 )
         else:
             base_commit = _base_commit_tuple(
@@ -2669,20 +2431,14 @@ def _validate_publication_candidate_source(
         _one(
             connector,
             """
-            SELECT base.base_receipt_id, catalog.revision,
-                   source.source_revision, generation.generation,
-                   source_channel.channel
+            SELECT base.base_receipt_id, commit_row.revision,
+                   commit_row.source_revision, commit_row.generation,
+                   source_revision.channel
             FROM catalog_publication_candidate_base_publication_commits AS base
-            JOIN catalog_publication_commit_seals AS seal
-              ON seal.receipt_id = base.base_receipt_id
-            JOIN catalog_publication_commit_catalog_revisions AS catalog
-              ON catalog.receipt_id = base.base_receipt_id
-            JOIN catalog_publication_commit_source_revisions AS source
-              ON source.receipt_id = base.base_receipt_id
-            JOIN catalog_publication_commit_generations AS generation
-              ON generation.receipt_id = base.base_receipt_id
-            JOIN catalog_source_revision_channels AS source_channel
-              ON source_channel.source_revision = source.source_revision
+            JOIN catalog_publication_commits AS commit_row
+              ON commit_row.receipt_id = base.base_receipt_id
+            JOIN catalog_source_revisions AS source_revision
+              ON source_revision.source_revision = commit_row.source_revision
             WHERE base.candidate_id = %s
             LIMIT 2
             """,
@@ -2696,20 +2452,14 @@ def _validate_publication_candidate_source(
         _one(
             connector,
             """
-            SELECT base.base_receipt_id, catalog.revision,
-                   source.source_revision, generation.generation,
-                   source_channel.channel
+            SELECT base.base_receipt_id, commit_row.revision,
+                   commit_row.source_revision, commit_row.generation,
+                   source_revision.channel
             FROM catalog_source_build_base_publication_commits AS base
-            JOIN catalog_publication_commit_seals AS seal
-              ON seal.receipt_id = base.base_receipt_id
-            JOIN catalog_publication_commit_catalog_revisions AS catalog
-              ON catalog.receipt_id = base.base_receipt_id
-            JOIN catalog_publication_commit_source_revisions AS source
-              ON source.receipt_id = base.base_receipt_id
-            JOIN catalog_publication_commit_generations AS generation
-              ON generation.receipt_id = base.base_receipt_id
-            JOIN catalog_source_revision_channels AS source_channel
-              ON source_channel.source_revision = source.source_revision
+            JOIN catalog_publication_commits AS commit_row
+              ON commit_row.receipt_id = base.base_receipt_id
+            JOIN catalog_source_revisions AS source_revision
+              ON source_revision.source_revision = commit_row.source_revision
             WHERE base.build_id = %s
             LIMIT 2
             """,
@@ -2758,7 +2508,7 @@ def _validate_publication_candidate_source(
     assert source_head_row is not None
     if source_head_row[1] is None or source_head_row[2] is None:
         raise CatalogSemanticValidationError(
-            "publication source_head vertical family is incomplete"
+            "publication source_head projection is incomplete"
         )
     head_source_revision = _as_int(
         source_head_row[0],
@@ -2788,33 +2538,19 @@ def _validate_active_publication_policies(
         connector,
         """
         SELECT policy.policy_component_sha256,
-               algorithm.artifact_algorithm_version,
-               side.max_image_short_side,
-               fingerprint.producer_fingerprint_sha256,
+               producer.artifact_algorithm_version,
+               semantics.max_image_short_side,
+               semantics.producer_fingerprint_sha256,
                producer.producer_equivalence_class,
                producer.writer_id, producer.python_abi,
                producer.pillow_build, producer.libjpeg_build,
-               producer.zlib_build,
-               identity.artifact_algorithm_version,
-               identity.max_image_short_side,
-               identity.producer_fingerprint_sha256
+               producer.zlib_build
         FROM catalog_artifact_policies AS policy
-        JOIN catalog_artifact_policy_semantics_seals AS seal
-          ON seal.policy_component_sha256 = policy.policy_component_sha256
-        JOIN catalog_artifact_policy_semantics_artifact_algorithm_versions AS algorithm
-          ON algorithm.policy_component_sha256 = seal.policy_component_sha256
-        JOIN catalog_artifact_policy_semantics_max_image_short_sides AS side
-          ON side.policy_component_sha256 = seal.policy_component_sha256
-        JOIN catalog_artifact_policy_semantics_producer_fingerprint_sha256s
-             AS fingerprint
-          ON fingerprint.policy_component_sha256 = seal.policy_component_sha256
-        JOIN catalog_artifact_policy_semantics_identities AS identity
-          ON identity.policy_component_sha256 = seal.policy_component_sha256
+        JOIN catalog_artifact_policy_semantics AS semantics
+          ON semantics.policy_component_sha256 = policy.policy_component_sha256
         JOIN catalog_artifact_producer_fingerprints AS producer
           ON producer.producer_fingerprint_sha256 =
-             fingerprint.producer_fingerprint_sha256
-         AND producer.artifact_algorithm_version =
-             algorithm.artifact_algorithm_version
+             semantics.producer_fingerprint_sha256
         WHERE policy.artifact_policy_id = %s
         LIMIT 2
         """,
@@ -2838,30 +2574,6 @@ def _validate_active_publication_policies(
         _as_bytes(value, field="artifact producer build field")
         for value in artifact_policy_row[5:10]
     )
-    semantics_identity = (
-        _as_int(
-            artifact_policy_row[10],
-            field="artifact semantics identity algorithm version",
-            positive=True,
-        ),
-        _as_int(
-            artifact_policy_row[11],
-            field="artifact semantics identity max short side",
-            positive=True,
-        ),
-        _as_bytes(
-            artifact_policy_row[12],
-            field="artifact semantics identity producer fingerprint",
-        ),
-    )
-    if semantics_identity != (
-        algorithm_version,
-        max_short_side,
-        producer_fingerprint,
-    ):
-        raise CatalogSemanticValidationError(
-            "active artifact policy facts disagree with its natural identity"
-        )
     if algorithm_version not in _SUPPORTED_ARTIFACT_ALGORITHM_VERSIONS:
         raise CatalogSemanticValidationError(
             "active artifact policy uses an unregistered runtime algorithm version"
@@ -2906,33 +2618,14 @@ def _validate_active_publication_policies(
     display_policy_row = _one(
         connector,
         """
-        SELECT display_algorithm.display_title_algorithm_version,
-               display_sort.title_sort_policy_id,
-               sort_algorithm.title_sort_algorithm_version,
-               sort_unicode.unicode_data_version,
-               display_identity.display_title_algorithm_version,
-               display_identity.title_sort_policy_id,
-               sort_identity.title_sort_algorithm_version,
-               sort_identity.unicode_data_version
-        FROM catalog_display_title_policy_seals AS display_seal
-        JOIN catalog_display_title_policy_algorithm_versions AS display_algorithm
-          ON display_algorithm.display_title_policy_id =
-             display_seal.display_title_policy_id
-        JOIN catalog_display_title_policy_title_sort_policy_ids AS display_sort
-          ON display_sort.display_title_policy_id =
-             display_seal.display_title_policy_id
-        JOIN catalog_display_title_policy_identities AS display_identity
-          ON display_identity.display_title_policy_id =
-             display_seal.display_title_policy_id
-        JOIN catalog_title_sort_policy_seals AS sort_seal
-          ON sort_seal.title_sort_policy_id = display_sort.title_sort_policy_id
-        JOIN catalog_title_sort_policy_algorithm_versions AS sort_algorithm
-          ON sort_algorithm.title_sort_policy_id = sort_seal.title_sort_policy_id
-        JOIN catalog_title_sort_policy_unicode_data_versions AS sort_unicode
-          ON sort_unicode.title_sort_policy_id = sort_seal.title_sort_policy_id
-        JOIN catalog_title_sort_policy_identities AS sort_identity
-          ON sort_identity.title_sort_policy_id = sort_seal.title_sort_policy_id
-        WHERE display_seal.display_title_policy_id = %s
+        SELECT display.display_title_algorithm_version,
+               display.title_sort_policy_id,
+               sort_policy.title_sort_algorithm_version,
+               sort_policy.unicode_data_version
+        FROM catalog_display_title_policies AS display
+        JOIN catalog_title_sort_policy AS sort_policy
+          ON sort_policy.title_sort_policy_id = display.title_sort_policy_id
+        WHERE display.display_title_policy_id = %s
         LIMIT 2
         """,
         (display_title_policy_id,),
@@ -2952,7 +2645,7 @@ def _validate_active_publication_policies(
         ),
         display_policy_row[3],
     )
-    title_sort_policy_id = _as_int(
+    _as_int(
         display_policy_row[1],
         field="display title sort policy",
         positive=True,
@@ -2960,36 +2653,6 @@ def _validate_active_publication_policies(
     if not isinstance(policy_tuple[2], bytes):
         raise CatalogSemanticValidationError(
             "active Unicode data version is not strict bytes"
-        )
-    display_identity = (
-        _as_int(
-            display_policy_row[4],
-            field="display title identity algorithm version",
-            positive=True,
-        ),
-        _as_int(
-            display_policy_row[5],
-            field="display title identity sort policy",
-            positive=True,
-        ),
-    )
-    sort_identity = (
-        _as_int(
-            display_policy_row[6],
-            field="title sort identity algorithm version",
-            positive=True,
-        ),
-        display_policy_row[7],
-    )
-    if not isinstance(sort_identity[1], bytes):
-        raise CatalogSemanticValidationError(
-            "active Unicode identity version is not strict bytes"
-        )
-    if display_identity != (policy_tuple[0], title_sort_policy_id) or (
-        sort_identity != policy_tuple[1:]
-    ):
-        raise CatalogSemanticValidationError(
-            "active display/title-sort facts disagree with natural identities"
         )
     if policy_tuple not in _SUPPORTED_DISPLAY_TITLE_POLICY_ALGORITHMS:
         raise CatalogSemanticValidationError(
@@ -3127,7 +2790,7 @@ def _active_publication_contexts(
         return ()
     if any(value is None for value in rows[0][1:]):
         raise CatalogSemanticValidationError(
-            "publication_head vertical family is incomplete"
+            "publication_head projection is incomplete"
         )
     contexts: list[_PublicationContext] = []
     for head_row in rows:
@@ -3433,20 +3096,14 @@ def _active_publication_contexts(
             _one(
                 connector,
                 """
-            SELECT base.base_receipt_id, catalog.revision,
-                   source.source_revision, generation.generation,
-                   source_channel.channel
+            SELECT base.base_receipt_id, commit_row.revision,
+                   commit_row.source_revision, commit_row.generation,
+                   source_revision.channel
             FROM catalog_publication_candidate_base_publication_commits AS base
-            JOIN catalog_publication_commit_seals AS seal
-              ON seal.receipt_id = base.base_receipt_id
-            JOIN catalog_publication_commit_catalog_revisions AS catalog
-              ON catalog.receipt_id = base.base_receipt_id
-            JOIN catalog_publication_commit_source_revisions AS source
-              ON source.receipt_id = base.base_receipt_id
-            JOIN catalog_publication_commit_generations AS generation
-              ON generation.receipt_id = base.base_receipt_id
-            JOIN catalog_source_revision_channels AS source_channel
-              ON source_channel.source_revision = source.source_revision
+            JOIN catalog_publication_commits AS commit_row
+              ON commit_row.receipt_id = base.base_receipt_id
+            JOIN catalog_source_revisions AS source_revision
+              ON source_revision.source_revision = commit_row.source_revision
             WHERE base.candidate_id = %s
             LIMIT 2
             """,
@@ -3478,228 +3135,11 @@ def _active_publication_contexts(
                     "publication_head does not advance its exact candidate baseline"
                 )
 
-        artifact_policy_row = _one(
+        _validate_active_publication_policies(
             connector,
-            """
-            SELECT policy.policy_component_sha256,
-                   algorithm.artifact_algorithm_version,
-                   side.max_image_short_side,
-                   fingerprint.producer_fingerprint_sha256,
-                   producer.producer_equivalence_class,
-                   producer.writer_id, producer.python_abi,
-                   producer.pillow_build, producer.libjpeg_build,
-                   producer.zlib_build,
-                   identity.artifact_algorithm_version,
-                   identity.max_image_short_side,
-                   identity.producer_fingerprint_sha256
-            FROM catalog_artifact_policies AS policy
-            JOIN catalog_artifact_policy_semantics_seals AS seal
-              ON seal.policy_component_sha256 = policy.policy_component_sha256
-            JOIN catalog_artifact_policy_semantics_artifact_algorithm_versions
-                 AS algorithm
-              ON algorithm.policy_component_sha256 = seal.policy_component_sha256
-            JOIN catalog_artifact_policy_semantics_max_image_short_sides AS side
-              ON side.policy_component_sha256 = seal.policy_component_sha256
-            JOIN catalog_artifact_policy_semantics_producer_fingerprint_sha256s
-                 AS fingerprint
-              ON fingerprint.policy_component_sha256 = seal.policy_component_sha256
-            JOIN catalog_artifact_policy_semantics_identities AS identity
-              ON identity.policy_component_sha256 = seal.policy_component_sha256
-            JOIN catalog_artifact_producer_fingerprints AS producer
-              ON producer.producer_fingerprint_sha256 =
-                 fingerprint.producer_fingerprint_sha256
-             AND producer.artifact_algorithm_version =
-                 algorithm.artifact_algorithm_version
-            WHERE policy.artifact_policy_id = %s
-            LIMIT 2
-            """,
-            (artifact_policy_id,),
-            detail="active artifact policy",
+            artifact_policy_id=artifact_policy_id,
+            display_title_policy_id=display_title_policy_id,
         )
-        assert artifact_policy_row is not None
-        policy_component = _as_bytes(
-            artifact_policy_row[0], field="artifact policy component"
-        )
-        algorithm_version = _as_int(
-            artifact_policy_row[1], field="artifact algorithm version", positive=True
-        )
-        max_short_side = _as_int(
-            artifact_policy_row[2], field="artifact max short side", positive=True
-        )
-        producer_fingerprint = _as_bytes(
-            artifact_policy_row[3], field="artifact producer fingerprint"
-        )
-        producer_fields = tuple(
-            _as_bytes(value, field="artifact producer build field")
-            for value in artifact_policy_row[5:10]
-        )
-        semantics_identity = (
-            _as_int(
-                artifact_policy_row[10],
-                field="artifact semantics identity algorithm version",
-                positive=True,
-            ),
-            _as_int(
-                artifact_policy_row[11],
-                field="artifact semantics identity max short side",
-                positive=True,
-            ),
-            _as_bytes(
-                artifact_policy_row[12],
-                field="artifact semantics identity producer fingerprint",
-            ),
-        )
-        if semantics_identity != (
-            algorithm_version,
-            max_short_side,
-            producer_fingerprint,
-        ):
-            raise CatalogSemanticValidationError(
-                "active artifact policy facts disagree with its natural identity"
-            )
-        if algorithm_version not in _SUPPORTED_ARTIFACT_ALGORITHM_VERSIONS:
-            raise CatalogSemanticValidationError(
-                "active artifact policy uses an unregistered runtime algorithm version"
-            )
-        if max_short_side > (1 << 32) - 1:
-            raise CatalogSemanticValidationError(
-                "active artifact policy resize bound exceeds uint32"
-            )
-        if (
-            identity.artifact_producer_fingerprint_sha256(*producer_fields)
-            != producer_fingerprint
-        ):
-            raise CatalogSemanticValidationError(
-                "active artifact producer fingerprint does not match its exact build tuple"
-            )
-        producer_equivalence_class = _as_bytes(
-            artifact_policy_row[4], field="artifact producer equivalence class"
-        )
-        if producer_equivalence_class != identity.artifact_producer_equivalence_class(
-            producer_fingerprint
-        ):
-            raise CatalogSemanticValidationError(
-                "active artifact producer equivalence class is not repository-certified"
-            )
-        if (
-            identity.artifact_policy_digest(
-                algorithm_version,
-                max_short_side,
-                producer_fingerprint,
-            )
-            != policy_component
-        ):
-            raise CatalogSemanticValidationError(
-                "active artifact policy component does not match its exact tuple"
-            )
-        _require_canonical_domain(
-            connector,
-            policy_component,
-            b"artifact_policy_v2",
-            detail="active artifact policy component",
-        )
-        display_policy_row = _one(
-            connector,
-            """
-            SELECT display_algorithm.display_title_algorithm_version,
-                   display_sort.title_sort_policy_id,
-                   sort_algorithm.title_sort_algorithm_version,
-                   sort_unicode.unicode_data_version,
-                   display_identity.display_title_algorithm_version,
-                   display_identity.title_sort_policy_id,
-                   sort_identity.title_sort_algorithm_version,
-                   sort_identity.unicode_data_version
-            FROM catalog_display_title_policy_seals AS display_seal
-            JOIN catalog_display_title_policy_algorithm_versions
-                 AS display_algorithm
-              ON display_algorithm.display_title_policy_id =
-                 display_seal.display_title_policy_id
-            JOIN catalog_display_title_policy_title_sort_policy_ids
-                 AS display_sort
-              ON display_sort.display_title_policy_id =
-                 display_seal.display_title_policy_id
-            JOIN catalog_display_title_policy_identities AS display_identity
-              ON display_identity.display_title_policy_id =
-                 display_seal.display_title_policy_id
-            JOIN catalog_title_sort_policy_seals AS sort_seal
-              ON sort_seal.title_sort_policy_id = display_sort.title_sort_policy_id
-            JOIN catalog_title_sort_policy_algorithm_versions AS sort_algorithm
-              ON sort_algorithm.title_sort_policy_id = sort_seal.title_sort_policy_id
-            JOIN catalog_title_sort_policy_unicode_data_versions AS sort_unicode
-              ON sort_unicode.title_sort_policy_id = sort_seal.title_sort_policy_id
-            JOIN catalog_title_sort_policy_identities AS sort_identity
-              ON sort_identity.title_sort_policy_id = sort_seal.title_sort_policy_id
-            WHERE display_seal.display_title_policy_id = %s
-            LIMIT 2
-            """,
-            (display_title_policy_id,),
-            detail="active display/title-sort policy",
-        )
-        assert display_policy_row is not None
-        display_algorithm_version = _as_int(
-            display_policy_row[0],
-            field="display title algorithm version",
-            positive=True,
-        )
-        title_sort_algorithm_version = _as_int(
-            display_policy_row[2],
-            field="title sort algorithm version",
-            positive=True,
-        )
-        unicode_data_version_raw = display_policy_row[3]
-        if not isinstance(unicode_data_version_raw, bytes):
-            raise CatalogSemanticValidationError(
-                "active Unicode data version is not strict bytes"
-            )
-        unicode_data_version = unicode_data_version_raw
-        display_identity = (
-            _as_int(
-                display_policy_row[4],
-                field="display title identity algorithm version",
-                positive=True,
-            ),
-            _as_int(
-                display_policy_row[5],
-                field="display title identity sort policy",
-                positive=True,
-            ),
-        )
-        sort_identity = (
-            _as_int(
-                display_policy_row[6],
-                field="title sort identity algorithm version",
-                positive=True,
-            ),
-            display_policy_row[7],
-        )
-        title_sort_policy_id = _as_int(
-            display_policy_row[1],
-            field="display title sort policy",
-            positive=True,
-        )
-        if not isinstance(sort_identity[1], bytes):
-            raise CatalogSemanticValidationError(
-                "active Unicode identity version is not strict bytes"
-            )
-        if display_identity != (
-            display_algorithm_version,
-            title_sort_policy_id,
-        ) or sort_identity != (
-            title_sort_algorithm_version,
-            unicode_data_version,
-        ):
-            raise CatalogSemanticValidationError(
-                "active display/title-sort facts disagree with natural identities"
-            )
-        if (
-            display_algorithm_version,
-            title_sort_algorithm_version,
-            unicode_data_version,
-        ) not in _SUPPORTED_DISPLAY_TITLE_POLICY_ALGORITHMS:
-            raise CatalogSemanticValidationError(
-                "active display/title-sort policy uses an unsupported runtime "
-                "algorithm/Unicode tuple"
-            )
 
         contexts.append(
             _PublicationContext(
@@ -3718,135 +3158,106 @@ def _active_publication_contexts(
 
 
 def _validate_publication_generation_history(connector: SQLConnector) -> None:
-    unsealed = connector.fetch_all("""
-        SELECT anchor.receipt_id
-        FROM catalog_publication_commit_anchors AS anchor
-        LEFT JOIN catalog_publication_commit_seals AS seal
-          ON seal.receipt_id = anchor.receipt_id
-        WHERE seal.receipt_id IS NULL
-        ORDER BY anchor.receipt_id
-        LIMIT 2
-        """)
-    if unsealed:
-        raise CatalogSemanticValidationError(
-            "publication history contains an unsealed commit anchor"
-        )
+    """Validate the compactable, no-fork retained publication window."""
 
-    commits = connector.fetch_all("""
-        SELECT receipt_id, candidate_id, revision, source_revision, generation,
-               committed_at
-        FROM catalog_publication_commits
-        ORDER BY generation
-        """)
-    sealed = connector.fetch_all("""
-        SELECT receipt_id
-        FROM catalog_publication_commit_seals
-        ORDER BY receipt_id
-        """)
-    commit_receipts = {
-        _as_bytes(row[0], field="publication chain receipt_id") for row in commits
-    }
-    sealed_receipts = {
-        _as_bytes(row[0], field="publication seal receipt_id") for row in sealed
-    }
-    if commit_receipts != sealed_receipts or len(commit_receipts) != len(commits):
-        raise CatalogSemanticValidationError(
-            "publication seal set differs from complete common commits"
+    anchors = {
+        _as_bytes(row[0], field="publication anchor receipt_id")
+        for row in connector.fetch_all(
+            "SELECT receipt_id FROM catalog_publication_commit_anchors "
+            "ORDER BY receipt_id"
         )
-
-    expected_generations = tuple(range(1, len(commits) + 1))
-    actual_generations: list[int] = []
+    }
+    commits = connector.fetch_all(
+        "SELECT receipt_id, candidate_id, revision, source_revision, generation, "
+        "committed_at FROM catalog_publication_commits ORDER BY generation"
+    )
+    commit_receipts: set[bytes] = set()
+    generations: list[int] = []
     for row in commits:
-        if len(row) != 6:
-            raise CatalogSemanticValidationError(
-                "publication commit history row is malformed"
-            )
         receipt_id = _as_bytes(row[0], field="publication chain receipt_id")
         candidate_id = _as_bytes(row[1], field="publication chain candidate_id")
         if len(receipt_id) != 16 or len(candidate_id) != 16:
             raise CatalogSemanticValidationError(
                 "publication chain UUID identity is not 16 bytes"
             )
+        if receipt_id in commit_receipts:
+            raise CatalogSemanticValidationError(
+                "publication retained window repeats a receipt identity"
+            )
+        commit_receipts.add(receipt_id)
         _as_int(row[2], field="publication chain revision", positive=True)
         _as_int(row[3], field="publication chain source revision", positive=True)
-        actual_generations.append(
+        generations.append(
             _as_int(row[4], field="publication chain generation", positive=True)
         )
         _as_int(row[5], field="publication chain committed_at")
-    if tuple(actual_generations) != expected_generations:
+    if anchors != commit_receipts:
         raise CatalogSemanticValidationError(
-            "sealed publication commit generations are not contiguous from one"
+            "publication anchors differ from complete retained common commits"
         )
+
+    if generations:
+        floor = generations[0]
+        tip = generations[-1]
+        if tuple(generations) != tuple(range(floor, tip + 1)):
+            raise CatalogSemanticValidationError(
+                "retained publication commit generations are not contiguous"
+            )
+        expected_nodes = (
+            tuple(range(0, tip + 1)) if floor == 1 else tuple(range(floor, tip + 1))
+        )
+        edge_floor = 1 if floor == 1 else floor + 1
+        expected_edges = tuple(
+            (generation, generation - 1) for generation in range(edge_floor, tip + 1)
+        )
+    else:
+        expected_nodes = (0,)
+        expected_edges = ()
 
     nodes = tuple(
         _as_int(row[0], field="publication generation node")
-        for row in connector.fetch_all("""
-            SELECT generation
-            FROM catalog_publication_generation_nodes
-            ORDER BY generation
-            """)
+        for row in connector.fetch_all(
+            "SELECT generation FROM catalog_publication_generation_nodes "
+            "ORDER BY generation"
+        )
     )
-    if nodes != tuple(range(0, len(commits) + 1)):
+    if nodes != expected_nodes:
         raise CatalogSemanticValidationError(
-            "publication generation nodes differ from genesis plus sealed commits"
+            "publication generation nodes differ from the retained compacted window"
         )
     edges = tuple(
         (
             _as_int(row[0], field="publication successor generation", positive=True),
             _as_int(row[1], field="publication predecessor generation"),
         )
-        for row in connector.fetch_all("""
-            SELECT successor_generation, predecessor_generation
-            FROM catalog_publication_generation_successors
-            ORDER BY successor_generation
-            """)
+        for row in connector.fetch_all(
+            "SELECT successor_generation, predecessor_generation "
+            "FROM catalog_publication_generation_successors "
+            "ORDER BY successor_generation"
+        )
     )
-    if edges != tuple(
-        (generation, generation - 1) for generation in expected_generations
-    ):
+    if edges != expected_edges:
         raise CatalogSemanticValidationError(
-            "publication generation successor chain is gapped or forked"
+            "publication generation successor chain is gapped, forked, or "
+            "crosses the compacted floor"
         )
 
-    orphan_source_descriptors = connector.fetch_all("""
-        SELECT descriptor.source_revision
-        FROM catalog_source_revision_descriptor_seals AS descriptor
-        LEFT JOIN catalog_publication_commit_source_revisions AS member
-          ON member.source_revision = descriptor.source_revision
-        LEFT JOIN catalog_publication_commit_seals AS seal
-          ON seal.receipt_id = member.receipt_id
-        WHERE seal.receipt_id IS NULL
-        ORDER BY descriptor.source_revision
-        LIMIT 2
-        """)
-    if orphan_source_descriptors:
-        raise CatalogSemanticValidationError(
-            "sealed source descriptor lacks its sealed publication commit"
-        )
-
-    finalization_rows = connector.fetch_all("""
-        SELECT committed.receipt_id, committed.committed_at,
-               checkpoint.generation, checkpoint.`cursor`,
-               checkpoint.processed_count, checkpoint.state,
-               checkpoint.updated_at, marker.receipt_id
-        FROM catalog_publication_commit_seals AS commit_seal
-        JOIN catalog_publication_commit_committed_ats AS committed
-          ON committed.receipt_id = commit_seal.receipt_id
-        JOIN catalog_publication_finalization_checkpoints AS checkpoint
-          ON checkpoint.receipt_id = commit_seal.receipt_id
-        LEFT JOIN catalog_publication_commit_finalizations AS marker
-          ON marker.receipt_id = commit_seal.receipt_id
-        ORDER BY committed.receipt_id
-        """)
+    finalization_rows = connector.fetch_all(
+        "SELECT commit_row.receipt_id, commit_row.committed_at, "
+        "checkpoint.generation, checkpoint.`cursor`, checkpoint.processed_count, "
+        "checkpoint.state, checkpoint.updated_at, marker.receipt_id "
+        "FROM catalog_publication_commits AS commit_row "
+        "JOIN catalog_publication_finalization_checkpoints AS checkpoint "
+        "ON checkpoint.receipt_id = commit_row.receipt_id "
+        "LEFT JOIN catalog_publication_commit_finalizations AS marker "
+        "ON marker.receipt_id = commit_row.receipt_id "
+        "ORDER BY commit_row.receipt_id"
+    )
     if len(finalization_rows) != len(commits):
         raise CatalogSemanticValidationError(
-            "sealed publication commits and permanent finalization checkpoints differ"
+            "retained publication commits and permanent finalization checkpoints differ"
         )
     for row in finalization_rows:
-        if len(row) != 8:
-            raise CatalogSemanticValidationError(
-                "permanent finalization checkpoint row is malformed"
-            )
         receipt_id = _as_bytes(row[0], field="finalization receipt_id")
         commit_time = _as_int(row[1], field="publication commit time")
         generation = _as_int(
@@ -3931,21 +3342,18 @@ def _validate_publication_generation_history(connector: SQLConnector) -> None:
                 "COMPLETE finalization checkpoint lacks its exact terminal marker/receipt"
             )
 
-    heads = connector.fetch_all("""
-        SELECT registry.channel, head.receipt_id, generation.generation,
-               source_channel.channel
-        FROM catalog_channel_registry AS registry
-        LEFT JOIN catalog_publication_commit_head_receipts AS head
-          ON head.channel = registry.channel
-        LEFT JOIN catalog_publication_commit_generations AS generation
-          ON generation.receipt_id = head.receipt_id
-        LEFT JOIN catalog_publication_commit_source_revisions AS source
-          ON source.receipt_id = head.receipt_id
-        LEFT JOIN catalog_source_revision_channels AS source_channel
-          ON source_channel.source_revision = source.source_revision
-        ORDER BY registry.channel
-        LIMIT 2
-        """)
+    heads = connector.fetch_all(
+        "SELECT registry.channel, head.receipt_id, commit_row.generation, "
+        "source_revision.channel "
+        "FROM catalog_channel_registry AS registry "
+        "LEFT JOIN catalog_publication_commit_head_receipts AS head "
+        "ON head.channel = registry.channel "
+        "LEFT JOIN catalog_publication_commits AS commit_row "
+        "ON commit_row.receipt_id = head.receipt_id "
+        "LEFT JOIN catalog_source_revisions AS source_revision "
+        "ON source_revision.source_revision = commit_row.source_revision "
+        "ORDER BY registry.channel LIMIT 2"
+    )
     if len(heads) != 1 or _as_bytes(heads[0][0], field="head channel") != b"default":
         raise CatalogSemanticValidationError(
             "common publication head exceeds the channel registry"
@@ -3965,11 +3373,11 @@ def _validate_publication_generation_history(connector: SQLConnector) -> None:
     head_source_channel = _as_bytes(heads[0][3], field="head source channel")
     if (
         head_receipt != _as_bytes(commits[-1][0], field="tip receipt_id")
-        or head_generation != len(commits)
+        or head_generation != generations[-1]
         or head_source_channel != b"default"
     ):
         raise CatalogSemanticValidationError(
-            "common publication head does not name the unique maximum chain tip"
+            "common publication head does not name the unique retained chain tip"
         )
 
 
@@ -4133,6 +3541,81 @@ def check_overlay_resolution_seal_v1(connector: SQLConnector) -> None:
     """Validate the bounded active ancestry and exact five-component seal set."""
 
     check_incremental_impact_v1(connector)
+
+
+def check_published_baseline_prune_v1(connector: SQLConnector) -> None:
+    """Require safe-ACK pruning without weakening live ancestry authority."""
+
+    _validate_exact_registries(connector)
+    retained_depth_zero = connector.fetch_all(
+        """
+        SELECT committed.receipt_id
+        FROM catalog_publication_commit_finalizations AS finalized
+        JOIN catalog_publication_commits AS committed
+          ON committed.receipt_id = finalized.receipt_id
+        JOIN catalog_source_revision_provenance AS provenance
+          ON provenance.source_revision = committed.source_revision
+        JOIN catalog_analysis_state_anchors AS anchor
+          ON anchor.analysis_id = provenance.analysis_id
+        JOIN catalog_analysis_baselines AS baseline
+          ON baseline.analysis_id = provenance.analysis_id
+        WHERE anchor.overlay_depth = 0
+        LIMIT 1
+        """
+    )
+    if retained_depth_zero:
+        raise CatalogSemanticValidationError(
+            "projection-finalized depth-zero analysis retained its working baseline"
+        )
+
+    missing_published_parent = connector.fetch_all(
+        """
+        SELECT committed.receipt_id
+        FROM catalog_publication_commit_finalizations AS finalized
+        JOIN catalog_publication_commits AS committed
+          ON committed.receipt_id = finalized.receipt_id
+        JOIN catalog_source_revision_provenance AS provenance
+          ON provenance.source_revision = committed.source_revision
+        JOIN catalog_analysis_state_anchors AS anchor
+          ON anchor.analysis_id = provenance.analysis_id
+        LEFT JOIN catalog_analysis_baselines AS baseline
+          ON baseline.analysis_id = provenance.analysis_id
+        WHERE anchor.overlay_depth > 0
+          AND baseline.analysis_id IS NULL
+        LIMIT 1
+        """
+    )
+    if missing_published_parent:
+        raise CatalogSemanticValidationError(
+            "positive-depth published analysis lost its ancestry baseline"
+        )
+
+    missing_working_parent = connector.fetch_all(
+        """
+        SELECT run.analysis_id
+        FROM operational_source_working_builds AS working
+        JOIN catalog_analysis_run_descriptor AS run
+          ON run.build_id = working.build_id
+        JOIN catalog_source_build_base_publication_commits AS source_base
+          ON source_base.build_id = run.build_id
+        LEFT JOIN catalog_analysis_baselines AS baseline
+          ON baseline.analysis_id = run.analysis_id
+        WHERE baseline.analysis_id IS NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM catalog_source_revision_provenance AS provenance
+            JOIN catalog_publication_commits AS committed
+              ON committed.source_revision = provenance.source_revision
+            JOIN catalog_publication_commit_finalizations AS finalized
+              ON finalized.receipt_id = committed.receipt_id
+            WHERE provenance.analysis_id = run.analysis_id)
+        LIMIT 1
+        """
+    )
+    if missing_working_parent:
+        raise CatalogSemanticValidationError(
+            "non-genesis working analysis lacks its exact baseline authority"
+        )
 
 
 def check_artifact_semantics_v1(connector: SQLConnector) -> None:
@@ -4320,10 +3803,11 @@ def check_bootstrap_v1(connector: SQLConnector) -> None:
             )
 
 
-def check_retention_contract_v1(connector: SQLConnector) -> None:
+def check_retention_contract_v2(connector: SQLConnector) -> None:
     """Validate bounded active-head retention blockers and seal reachability."""
 
     _validate_exact_registries(connector)
+    _validate_publication_generation_history(connector)
     source_contexts = _active_source_contexts(connector)
     _validate_live_snapshot_manifest_pins(connector)
     for context in source_contexts:
@@ -4360,12 +3844,13 @@ def builtin_semantic_validators() -> Mapping[str, SemanticValidator]:
             "catalog.source-baseline-channel.v1": check_source_baseline_channel_v1,
             "catalog.incremental-impact.v1": check_incremental_impact_v1,
             "catalog.overlay-resolution-seal.v1": check_overlay_resolution_seal_v1,
+            "catalog.published-baseline-prune.v1": check_published_baseline_prune_v1,
             "catalog.artifact-semantics.v1": check_artifact_semantics_v1,
             "catalog.publication-atomicity.v1": check_publication_atomicity_v1,
             "catalog.state-machines.v1": check_state_machines_v1,
             "catalog.role-derivation.v1": check_role_derivation_v1,
             "catalog.physical-domains.v1": check_physical_domains_v1,
-            "catalog.retention.v1": check_retention_contract_v1,
+            "catalog.retention.v2": check_retention_contract_v2,
         }
     )
     expected = tuple(

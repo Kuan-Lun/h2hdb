@@ -78,21 +78,19 @@ def _seed_candidate(
     reserved_revision: int,
     state: str = "ABANDONED",
 ) -> None:
-    # Candidate lifecycle is graph-derived.  Orphan eligibility needs only the
-    # immutable definition seal; working-root and commit rows are the blockers.
-    del reserved_revision, state
+    # Candidate lifecycle is graph-derived. Orphan eligibility needs the one
+    # complete immutable candidate; working-root and commit rows are blockers.
+    del state
     _fixture_rows(
         connector,
         [
             (
-                "INSERT INTO catalog_publication_candidate_anchors "
-                "(candidate_id) VALUES (%s)",
-                (candidate_id,),
-            ),
-            (
-                "INSERT INTO catalog_publication_candidate_definition_seals "
-                "(candidate_id) VALUES (%s)",
-                (candidate_id,),
+                "INSERT INTO catalog_publication_candidates "
+                "(candidate_id, analysis_id, reserved_revision, "
+                "artifact_policy_id, display_title_policy_id, "
+                "artifacts_required, created_at) "
+                "VALUES (%s, %s, %s, 1, 1, 1, 1)",
+                (candidate_id, candidate_id, reserved_revision),
             ),
         ],
     )
@@ -426,9 +424,14 @@ def test_active_or_published_candidate_blocks_every_external_call(
                     (active_candidate,),
                 ),
                 (
-                    "INSERT INTO catalog_publication_commit_candidates "
-                    "(receipt_id, candidate_id) VALUES (%s, %s)",
-                    (b"r" * 16, published_candidate),
+                    "INSERT INTO catalog_publication_commits "
+                    "(receipt_id, candidate_id, revision, source_revision, "
+                    "generation, preparation_id, operational_policy_id, "
+                    "artifact_policy_id, display_title_policy_id, new_galleries, "
+                    "changed_galleries, removed_galleries, duplicate_losers, "
+                    "committed_at) VALUES (%s, %s, 1, 1, 1, %s, 1, 1, 1, "
+                    "0, 0, 0, 0, 1)",
+                    (b"r" * 16, published_candidate, b"p" * 16),
                 ),
             ],
         )
@@ -675,5 +678,5 @@ def test_mariadb_page_shape_uses_portable_placeholders_and_keyset_predicate() ->
     assert "LIMIT %s" in recorder.query
     assert "prepared.candidate_id > %s" in recorder.query
     assert "operational_catalog_working_candidates" in recorder.query
-    assert "catalog_publication_commit_candidates" in recorder.query
+    assert "catalog_publication_commits" in recorder.query
     assert recorder.parameters == (b"c" * 16, b"c" * 16, b"p" * 32, 8)

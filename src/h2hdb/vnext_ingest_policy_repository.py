@@ -16,16 +16,20 @@ from .vnext_allocator_repository import (
 )
 from .vnext_artifact_preparation_repository import ArtifactPreparationRepository
 from .vnext_canonical_value_family import persist_in_memory_canonical_value
+from .vnext_capacity import RECOMPOSED_REGISTRY_MAXIMUM_ROWS
 from .vnext_catalog_registry_repository import (
     AnalysisPolicyRecord,
     ArtifactPolicySemanticsRecord,
     ArtifactStorageCodecRecord,
     ArtifactZipWriterPolicyRecord,
+    CatalogRegistryConflictError,
+    CatalogRegistryNotReadyError,
     DisplayTitlePolicyRecord,
     ManifestPolicyRecord,
     TitleSortPolicyRecord,
     load_analysis_policy,
     load_artifact_policy_semantics,
+    load_artifact_producer_fingerprint,
     load_artifact_storage_codec,
     load_artifact_zip_writer_policy,
     load_display_title_policy,
@@ -54,7 +58,7 @@ class VNextIngestPolicyNotReadyError(RuntimeError):
 
 
 class VNextIngestPolicyRepository:
-    """Resolve or seal every policy family needed by one ingest run."""
+    """Resolve or insert every immutable policy row needed by one ingest run."""
 
     @staticmethod
     def ensure(
@@ -238,31 +242,79 @@ def _ensure_artifact_policy(
     now: int,
 ) -> bool:
     digest = policy.artifact_policy_sha256
+    try:
+        registered_producer = load_artifact_producer_fingerprint(
+            work.connector,
+            policy.producer_fingerprint_sha256,
+        )
+    except CatalogRegistryNotReadyError as error:
+        raise VNextIngestPolicyNotReadyError(
+            "artifact policy producer registration is unavailable"
+        ) from error
+    except CatalogRegistryConflictError as error:
+        raise VNextIngestPolicyConflictError(
+            "artifact policy producer registration is corrupt"
+        ) from error
+    if registered_producer.artifact_algorithm_version != (
+        policy.artifact_algorithm_version
+    ):
+        raise VNextIngestPolicyConflictError(
+            "artifact policy algorithm differs from its registered producer"
+        )
     expected = ArtifactPolicySemanticsRecord(
         digest,
         policy.artifact_algorithm_version,
         policy.max_image_short_side,
         policy.producer_fingerprint_sha256,
     )
-    if work.connector.fetch_one(
-        "SELECT policy_component_sha256 "
-        "FROM catalog_artifact_policy_semantics_seals "
-        "WHERE policy_component_sha256 = %s",
+    expected_joined_row = (
+        digest,
+        policy.artifact_algorithm_version,
+        policy.max_image_short_side,
+        policy.producer_fingerprint_sha256,
+    )
+    expected_stored_row = (
+        digest,
+        policy.max_image_short_side,
+        policy.producer_fingerprint_sha256,
+    )
+    by_digest = work.connector.fetch_one(
+        "SELECT semantics.policy_component_sha256, "
+        "producer.artifact_algorithm_version, "
+        "semantics.max_image_short_side, "
+        "semantics.producer_fingerprint_sha256 "
+        "FROM catalog_artifact_policy_semantics AS semantics "
+        "JOIN catalog_artifact_producer_fingerprints AS producer "
+        "ON producer.producer_fingerprint_sha256 = "
+        "semantics.producer_fingerprint_sha256 "
+        "WHERE semantics.policy_component_sha256 = %s",
         (digest,),
-    ):
-        if load_artifact_policy_semantics(work.connector, digest) != expected:
+    )
+    by_natural = work.connector.fetch_one(
+        "SELECT policy_component_sha256 FROM catalog_artifact_policy_semantics "
+        "WHERE max_image_short_side = %s AND producer_fingerprint_sha256 = %s",
+        expected_stored_row[1:],
+    )
+    if by_digest:
+        if (
+            by_digest != expected_joined_row
+            or by_natural != (digest,)
+            or load_artifact_policy_semantics(work.connector, digest) != expected
+        ):
             raise VNextIngestPolicyConflictError(
                 "artifact policy digest collides with different facts"
             )
         return False
-    if work.connector.fetch_one(
-        "SELECT policy_component_sha256 "
-        "FROM catalog_artifact_policy_semantics_anchors "
-        "WHERE policy_component_sha256 = %s",
-        (digest,),
-    ):
-        raise VNextIngestPolicyConflictError("artifact policy family is not sealed")
+    if by_natural:
+        raise VNextIngestPolicyConflictError(
+            "artifact policy natural identity maps to another digest"
+        )
 
+    _require_recomposed_registry_slot(
+        work,
+        count_sql="SELECT COUNT(*) FROM catalog_artifact_policy_semantics",
+        registry="artifact policy semantics",
+    )
     canonical = persist_in_memory_canonical_value(
         work,
         generation=ingest_turn.generation,
@@ -279,44 +331,11 @@ def _ensure_artifact_policy(
         raise VNextIngestPolicyConflictError(
             "canonical artifact policy digest differs from natural facts"
         )
-    connector = work.connector
-    connector.execute(
-        "INSERT INTO catalog_artifact_policy_semantics_anchors "
-        "(policy_component_sha256) VALUES (%s)",
-        (digest,),
-    )
-    connector.execute(
-        "INSERT INTO catalog_artifact_policy_semantics_artifact_algorithm_versions "
-        "(policy_component_sha256, artifact_algorithm_version) VALUES (%s, %s)",
-        (digest, policy.artifact_algorithm_version),
-    )
-    connector.execute(
-        "INSERT INTO catalog_artifact_policy_semantics_max_image_short_sides "
-        "(policy_component_sha256, max_image_short_side) VALUES (%s, %s)",
-        (digest, policy.max_image_short_side),
-    )
-    connector.execute(
-        "INSERT INTO "
-        "catalog_artifact_policy_semantics_producer_fingerprint_sha256s "
-        "(policy_component_sha256, producer_fingerprint_sha256) VALUES (%s, %s)",
-        (digest, policy.producer_fingerprint_sha256),
-    )
-    connector.execute(
-        "INSERT INTO catalog_artifact_policy_semantics_identities "
-        "(artifact_algorithm_version, max_image_short_side, "
-        "producer_fingerprint_sha256, policy_component_sha256) "
-        "VALUES (%s, %s, %s, %s)",
-        (
-            policy.artifact_algorithm_version,
-            policy.max_image_short_side,
-            policy.producer_fingerprint_sha256,
-            digest,
-        ),
-    )
-    connector.execute(
-        "INSERT INTO catalog_artifact_policy_semantics_seals "
-        "(policy_component_sha256) VALUES (%s)",
-        (digest,),
+    work.connector.execute(
+        "INSERT INTO catalog_artifact_policy_semantics "
+        "(policy_component_sha256, max_image_short_side, "
+        "producer_fingerprint_sha256) VALUES (%s, %s, %s)",
+        expected_stored_row,
     )
     return True
 
@@ -379,12 +398,8 @@ def _manifest_by_natural(
 ) -> int | None:
     row = _natural_row(
         work,
-        "SELECT identity.manifest_policy_id "
-        "FROM catalog_manifest_policy_identities AS identity "
-        "JOIN catalog_manifest_policy_seals AS seal "
-        "ON seal.manifest_policy_id = identity.manifest_policy_id "
-        "WHERE identity.manifest_algorithm_version = %s "
-        "AND identity.file_order_version = %s",
+        "SELECT manifest_policy_id FROM catalog_manifest_policies "
+        "WHERE manifest_algorithm_version = %s AND file_order_version = %s",
         (policy.manifest_algorithm_version, policy.file_order_version),
         lock=lock,
     )
@@ -399,14 +414,10 @@ def _analysis_by_natural(
 ) -> int | None:
     row = _natural_row(
         work,
-        "SELECT identity.policy_id FROM catalog_analysis_policy_identities AS identity "
-        "JOIN catalog_analysis_policy_seals AS seal "
-        "ON seal.policy_id = identity.policy_id "
-        "WHERE identity.algorithm_version = %s "
-        "AND identity.spam_artist_threshold = %s "
-        "AND identity.spam_occurrence_threshold = %s "
-        "AND identity.content_owner_rule_version = %s "
-        "AND identity.gid_winner_rule_version = %s",
+        "SELECT policy_id FROM catalog_analysis_policies "
+        "WHERE algorithm_version = %s AND spam_artist_threshold = %s "
+        "AND spam_occurrence_threshold = %s "
+        "AND content_owner_rule_version = %s AND gid_winner_rule_version = %s",
         (
             policy.analysis_algorithm_version,
             policy.spam_artist_threshold,
@@ -427,12 +438,8 @@ def _title_sort_by_natural(
 ) -> int | None:
     row = _natural_row(
         work,
-        "SELECT identity.title_sort_policy_id "
-        "FROM catalog_title_sort_policy_identities AS identity "
-        "JOIN catalog_title_sort_policy_seals AS seal "
-        "ON seal.title_sort_policy_id = identity.title_sort_policy_id "
-        "WHERE identity.title_sort_algorithm_version = %s "
-        "AND identity.unicode_data_version = %s",
+        "SELECT title_sort_policy_id FROM catalog_title_sort_policy "
+        "WHERE title_sort_algorithm_version = %s AND unicode_data_version = %s",
         (policy.title_sort_algorithm_version, policy.unicode_data_version),
         lock=lock,
     )
@@ -448,12 +455,8 @@ def _display_by_natural(
 ) -> int | None:
     row = _natural_row(
         work,
-        "SELECT identity.display_title_policy_id "
-        "FROM catalog_display_title_policy_identities AS identity "
-        "JOIN catalog_display_title_policy_seals AS seal "
-        "ON seal.display_title_policy_id = identity.display_title_policy_id "
-        "WHERE identity.display_title_algorithm_version = %s "
-        "AND identity.title_sort_policy_id = %s",
+        "SELECT display_title_policy_id FROM catalog_display_title_policies "
+        "WHERE display_title_algorithm_version = %s AND title_sort_policy_id = %s",
         (policy.display_title_algorithm_version, title_sort_policy_id),
         lock=lock,
     )
@@ -485,6 +488,28 @@ def _proposed(value: int | None, *, field: str) -> int:
     if value is None:
         raise AssertionError(f"missing allocated {field}")
     return require_int63(value, field=field)
+
+
+def _require_recomposed_registry_slot(
+    work: VNextUnitOfWork,
+    *,
+    count_sql: str,
+    registry: str,
+) -> None:
+    row = work.connector.fetch_one(count_sql)
+    if len(row) != 1:
+        raise VNextIngestPolicyConflictError(
+            f"{registry} registry count has an invalid shape"
+        )
+    count = require_int63(row[0], field=f"{registry} registry row count")
+    if count < 0:
+        raise VNextIngestPolicyConflictError(
+            f"{registry} registry row count is negative"
+        )
+    if count >= RECOMPOSED_REGISTRY_MAXIMUM_ROWS:
+        raise VNextIngestPolicyNotReadyError(
+            f"{registry} registry reached its recomposition capacity"
+        )
 
 
 def _ensure_artifact_registry(
@@ -548,34 +573,32 @@ def _ensure_manifest(
             raise VNextIngestPolicyConflictError("manifest policy replay differs")
         return policy_id, False
     policy_id = _proposed(proposed_id, field="allocated manifest policy_id")
-    connector = work.connector
-    connector.execute(
-        "INSERT INTO catalog_manifest_policy_anchors (manifest_policy_id) VALUES (%s)",
+    expected_row = (
+        policy_id,
+        policy.manifest_algorithm_version,
+        policy.file_order_version,
+    )
+    collision = work.connector.fetch_one(
+        "SELECT manifest_policy_id, manifest_algorithm_version, file_order_version "
+        "FROM catalog_manifest_policies WHERE manifest_policy_id = %s",
         (policy_id,),
     )
-    connector.execute(
-        "INSERT INTO catalog_manifest_policy_manifest_algorithm_versions "
-        "(manifest_policy_id, manifest_algorithm_version) VALUES (%s, %s)",
-        (policy_id, policy.manifest_algorithm_version),
+    if collision:
+        if collision == expected_row:
+            return policy_id, False
+        raise VNextIngestPolicyConflictError(
+            "allocated manifest policy_id collides with different facts"
+        )
+    _require_recomposed_registry_slot(
+        work,
+        count_sql="SELECT COUNT(*) FROM catalog_manifest_policies",
+        registry="manifest policy",
     )
-    connector.execute(
-        "INSERT INTO catalog_manifest_policy_file_order_versions "
-        "(manifest_policy_id, file_order_version) VALUES (%s, %s)",
-        (policy_id, policy.file_order_version),
-    )
-    connector.execute(
-        "INSERT INTO catalog_manifest_policy_identities "
-        "(manifest_algorithm_version, file_order_version, manifest_policy_id) "
+    work.connector.execute(
+        "INSERT INTO catalog_manifest_policies "
+        "(manifest_policy_id, manifest_algorithm_version, file_order_version) "
         "VALUES (%s, %s, %s)",
-        (
-            policy.manifest_algorithm_version,
-            policy.file_order_version,
-            policy_id,
-        ),
-    )
-    connector.execute(
-        "INSERT INTO catalog_manifest_policy_seals (manifest_policy_id) VALUES (%s)",
-        (policy_id,),
+        expected_row,
     )
     return policy_id, True
 
@@ -601,60 +624,38 @@ def _ensure_analysis(
             raise VNextIngestPolicyConflictError("analysis policy replay differs")
         return policy_id, False
     policy_id = _proposed(proposed_id, field="allocated analysis policy_id")
-    connector = work.connector
-    connector.execute(
-        "INSERT INTO catalog_analysis_policy_anchors (policy_id) VALUES (%s)",
+    expected_row = (
+        policy_id,
+        policy.analysis_algorithm_version,
+        policy.spam_artist_threshold,
+        policy.spam_occurrence_threshold,
+        policy.content_owner_rule_version,
+        policy.gid_winner_rule_version,
+    )
+    collision = work.connector.fetch_one(
+        "SELECT policy_id, algorithm_version, spam_artist_threshold, "
+        "spam_occurrence_threshold, content_owner_rule_version, "
+        "gid_winner_rule_version FROM catalog_analysis_policies "
+        "WHERE policy_id = %s",
         (policy_id,),
     )
-    facts = (
-        (
-            "catalog_analysis_policy_algorithm_versions",
-            "algorithm_version",
-            policy.analysis_algorithm_version,
-        ),
-        (
-            "catalog_analysis_policy_spam_artist_thresholds",
-            "spam_artist_threshold",
-            policy.spam_artist_threshold,
-        ),
-        (
-            "catalog_analysis_policy_spam_occurrence_thresholds",
-            "spam_occurrence_threshold",
-            policy.spam_occurrence_threshold,
-        ),
-        (
-            "catalog_analysis_policy_content_owner_rule_versions",
-            "content_owner_rule_version",
-            policy.content_owner_rule_version,
-        ),
-        (
-            "catalog_analysis_policy_gid_winner_rule_versions",
-            "gid_winner_rule_version",
-            policy.gid_winner_rule_version,
-        ),
-    )
-    for table, column, value in facts:
-        connector.execute(
-            f"INSERT INTO {table} (policy_id, {column}) VALUES (%s, %s)",
-            (policy_id, value),
+    if collision:
+        if collision == expected_row:
+            return policy_id, False
+        raise VNextIngestPolicyConflictError(
+            "allocated analysis policy_id collides with different facts"
         )
-    connector.execute(
-        "INSERT INTO catalog_analysis_policy_identities "
-        "(algorithm_version, spam_artist_threshold, spam_occurrence_threshold, "
-        "content_owner_rule_version, gid_winner_rule_version, policy_id) "
-        "VALUES (%s, %s, %s, %s, %s, %s)",
-        (
-            policy.analysis_algorithm_version,
-            policy.spam_artist_threshold,
-            policy.spam_occurrence_threshold,
-            policy.content_owner_rule_version,
-            policy.gid_winner_rule_version,
-            policy_id,
-        ),
+    _require_recomposed_registry_slot(
+        work,
+        count_sql="SELECT COUNT(*) FROM catalog_analysis_policies",
+        registry="analysis policy",
     )
-    connector.execute(
-        "INSERT INTO catalog_analysis_policy_seals (policy_id) VALUES (%s)",
-        (policy_id,),
+    work.connector.execute(
+        "INSERT INTO catalog_analysis_policies "
+        "(policy_id, algorithm_version, spam_artist_threshold, "
+        "spam_occurrence_threshold, content_owner_rule_version, "
+        "gid_winner_rule_version) VALUES (%s, %s, %s, %s, %s, %s)",
+        expected_row,
     )
     return policy_id, True
 
@@ -680,36 +681,33 @@ def _ensure_title_sort(
         _proposed(proposed_id, field="allocated title-sort policy_id"),
         field="allocated title-sort policy_id",
     )
-    connector = work.connector
-    connector.execute(
-        "INSERT INTO catalog_title_sort_policy_anchors (title_sort_policy_id) "
-        "VALUES (%s)",
+    expected_row = (
+        policy_id,
+        policy.title_sort_algorithm_version,
+        policy.unicode_data_version,
+    )
+    collision = work.connector.fetch_one(
+        "SELECT title_sort_policy_id, title_sort_algorithm_version, "
+        "unicode_data_version FROM catalog_title_sort_policy "
+        "WHERE title_sort_policy_id = %s",
         (policy_id,),
     )
-    connector.execute(
-        "INSERT INTO catalog_title_sort_policy_algorithm_versions "
-        "(title_sort_policy_id, title_sort_algorithm_version) VALUES (%s, %s)",
-        (policy_id, policy.title_sort_algorithm_version),
+    if collision:
+        if collision == expected_row:
+            return policy_id, False
+        raise VNextIngestPolicyConflictError(
+            "allocated title-sort policy_id collides with different facts"
+        )
+    _require_recomposed_registry_slot(
+        work,
+        count_sql="SELECT COUNT(*) FROM catalog_title_sort_policy",
+        registry="title-sort policy",
     )
-    connector.execute(
-        "INSERT INTO catalog_title_sort_policy_unicode_data_versions "
-        "(title_sort_policy_id, unicode_data_version) VALUES (%s, %s)",
-        (policy_id, policy.unicode_data_version),
-    )
-    connector.execute(
-        "INSERT INTO catalog_title_sort_policy_identities "
-        "(title_sort_algorithm_version, unicode_data_version, "
-        "title_sort_policy_id) VALUES (%s, %s, %s)",
-        (
-            policy.title_sort_algorithm_version,
-            policy.unicode_data_version,
-            policy_id,
-        ),
-    )
-    connector.execute(
-        "INSERT INTO catalog_title_sort_policy_seals (title_sort_policy_id) "
-        "VALUES (%s)",
-        (policy_id,),
+    work.connector.execute(
+        "INSERT INTO catalog_title_sort_policy "
+        "(title_sort_policy_id, title_sort_algorithm_version, "
+        "unicode_data_version) VALUES (%s, %s, %s)",
+        expected_row,
     )
     return policy_id, True
 
@@ -738,37 +736,33 @@ def _ensure_display(
             raise VNextIngestPolicyConflictError("display-title policy replay differs")
         return policy_id, False
     policy_id = _proposed(proposed_id, field="allocated display policy_id")
-    connector = work.connector
-    connector.execute(
-        "INSERT INTO catalog_display_title_policy_anchors "
-        "(display_title_policy_id) VALUES (%s)",
+    expected_row = (
+        policy_id,
+        policy.display_title_algorithm_version,
+        title_sort_policy_id,
+    )
+    collision = work.connector.fetch_one(
+        "SELECT display_title_policy_id, display_title_algorithm_version, "
+        "title_sort_policy_id FROM catalog_display_title_policies "
+        "WHERE display_title_policy_id = %s",
         (policy_id,),
     )
-    connector.execute(
-        "INSERT INTO catalog_display_title_policy_algorithm_versions "
-        "(display_title_policy_id, display_title_algorithm_version) "
-        "VALUES (%s, %s)",
-        (policy_id, policy.display_title_algorithm_version),
+    if collision:
+        if collision == expected_row:
+            return policy_id, False
+        raise VNextIngestPolicyConflictError(
+            "allocated display policy_id collides with different facts"
+        )
+    _require_recomposed_registry_slot(
+        work,
+        count_sql="SELECT COUNT(*) FROM catalog_display_title_policies",
+        registry="display-title policy",
     )
-    connector.execute(
-        "INSERT INTO catalog_display_title_policy_title_sort_policy_ids "
-        "(display_title_policy_id, title_sort_policy_id) VALUES (%s, %s)",
-        (policy_id, title_sort_policy_id),
-    )
-    connector.execute(
-        "INSERT INTO catalog_display_title_policy_identities "
-        "(display_title_algorithm_version, title_sort_policy_id, "
-        "display_title_policy_id) VALUES (%s, %s, %s)",
-        (
-            policy.display_title_algorithm_version,
-            title_sort_policy_id,
-            policy_id,
-        ),
-    )
-    connector.execute(
-        "INSERT INTO catalog_display_title_policy_seals "
-        "(display_title_policy_id) VALUES (%s)",
-        (policy_id,),
+    work.connector.execute(
+        "INSERT INTO catalog_display_title_policies "
+        "(display_title_policy_id, display_title_algorithm_version, "
+        "title_sort_policy_id) VALUES (%s, %s, %s)",
+        expected_row,
     )
     return policy_id, True
 

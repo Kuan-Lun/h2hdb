@@ -277,8 +277,8 @@ def test_packaged_source_never_mutates_a_manifest_view() -> None:
     gate.assert_no_view_mutations(gate.source_mutations())
 
 
-def test_catalog_hot_paths_do_not_read_b1_wide_views() -> None:
-    wide_views = {
+def test_recomposed_b1_relations_are_atomic_base_tables() -> None:
+    recomposed_tables = {
         "catalog_manifest_policies",
         "catalog_analysis_policies",
         "catalog_artifact_zip_writer_policies",
@@ -288,25 +288,11 @@ def test_catalog_hot_paths_do_not_read_b1_wide_views() -> None:
         "catalog_display_title_policies",
         "catalog_source_scopes",
     }
-    hot_modules = (
-        "vnext_source_build_repository.py",
-        "vnext_analysis_repository.py",
-        "vnext_artifact_preparation_repository.py",
-        "vnext_publication_candidate_repository.py",
-        "vnext_publication_repository.py",
-        "vnext_catalog_reader_repository.py",
-    )
 
-    references = {
-        reference.relation
-        for module_name in hot_modules
-        for reference in gate.references_in_python(
-            (ROOT / "src" / "h2hdb" / module_name).read_text(encoding="utf-8"),
-            source=module_name,
-        )
+    kinds = gate.relation_kinds()
+    assert {relation: kinds[relation] for relation in recomposed_tables} == {
+        relation: "table" for relation in recomposed_tables
     }
-
-    assert references.isdisjoint(wide_views)
 
 
 def test_catalog_hot_paths_do_not_read_b2_wide_views() -> None:
@@ -378,7 +364,6 @@ def test_catalog_hot_paths_do_not_read_b3b_wide_views() -> None:
     wide_views = {
         "catalog_source_builds",
         "catalog_build_manifests",
-        "catalog_source_snapshot_manifest_identity",
     }
     hot_modules = (
         "vnext_manifest_family.py",

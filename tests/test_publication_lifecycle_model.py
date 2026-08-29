@@ -23,6 +23,7 @@ def test_publication_lifecycle_model_names_the_atomic_safety_contract() -> None:
         "ReleaseFinalization",
         "CommitFinalization",
         "ReplayFinalization",
+        "RejectStaleFinalizationRetry",
         "CleanupCandidate",
     }
     required_invariants = {
@@ -44,9 +45,14 @@ def test_publication_lifecycle_model_names_the_atomic_safety_contract() -> None:
         "StatementPrefixCrashRollsBack",
         "FinalizationBatchEquations",
         "ExternalReleasePrecedesCommittedRow",
+        "CurrentFinalizationReceiptIsUnique",
+        "SuccessorCASAndPredecessorDeleteAreAtomic",
+        "FinalizationMarkerAndCurrentReceiptAgree",
         "FinalizationCoherence",
-        "FinalizationReplaySurvivesCandidateCleanup",
-        "ResponseLossHasPermanentReplayAuthority",
+        "TerminalCurrentReceiptReplaySurvivesCandidateCleanup",
+        "ResponseLossHasCurrentReplayAuthority",
+        "StalePredecessorRetryHasZeroDurableWrites",
+        "TerminalCurrentReceiptIsFinalizedAtAuthority",
     }
 
     for action in required_actions:
@@ -68,6 +74,11 @@ def test_publication_lifecycle_model_names_the_atomic_safety_contract() -> None:
     assert "candidatePhase" not in model
     assert "receiptFinalizedAt" not in model
     assert "FINALIZE_EXTERNAL_RELEASE" in model
+    assert "STALE_FINALIZATION_RETRY" in model
+    assert "(finalizationBatchReceipts \\ FinalizationBatchesFor(c))" in model
+    assert "Cardinality(FinalizationBatchesFor(c)) <= 1" in model
+    assert "ResponseLossHasPermanentReplayAuthority" not in model
+    assert "FinalizationIsAppendOnlyAndDerived" not in model
     assert "A prefix crash" in model
     assert "not an unbounded proof" in model
     assert "does not establish liveness" in model
@@ -81,6 +92,11 @@ def test_publication_lifecycle_profiles_are_explicitly_bounded_safety() -> None:
         assert "SPECIFICATION Spec" in profile
         assert "VIEW SafetyView" in profile
         assert "INVARIANTS" in profile
+        assert "CurrentFinalizationReceiptIsUnique" in profile
+        assert "SuccessorCASAndPredecessorDeleteAreAtomic" in profile
+        assert "ResponseLossHasCurrentReplayAuthority" in profile
+        assert "StalePredecessorRetryHasZeroDurableWrites" in profile
+        assert "TerminalCurrentReceiptIsFinalizedAtAuthority" in profile
         assert "not an unbounded proof" in profile
         assert "liveness" in profile
         assert "PROPERTY" not in profile

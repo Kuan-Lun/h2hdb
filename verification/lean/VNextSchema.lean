@@ -1174,7 +1174,7 @@ end H2HDB.Verification.VNextSchema
 namespace H2HDB.Verification.VNextSchema
 
 /- BEGIN GENERATED CATALOG CONTRACTS -/
-def catalogManifestSha256 : String := "c53e9557a2833d8cb605bc886d53a5be3ad5751243b2a8451c7dcb06bbf9eec0"
+def catalogManifestSha256 : String := "563302bc64443fe8165fb4ec9c17ea984237279d3c20a2fea0ecfce03bd6db70"
 
 /-! This section is mechanically generated from catalog.toml. -/
 
@@ -1894,235 +1894,6 @@ theorem canonical_value_identity_bcnf_check :
 theorem canonical_value_identity_bcnf : BCNF canonical_value_identity_contract :=
   bcnfCheck_sound canonical_value_identity_contract canonical_value_identity_bcnf_check
 
-def manifest_policy_anchor_contract : RelationContract where
-  name := "manifest_policy_anchor"
-  attributes := ["manifest_policy_id"]
-  declaredKeys := [["manifest_policy_id"]]
-  declaredFDs := [
-  ]
-
-theorem manifest_policy_anchor_schema_well_formed :
-    schemaWellFormedCheck manifest_policy_anchor_contract = true := by
-  native_decide
-
-theorem manifest_policy_anchor_candidate_keys_check :
-    keysDetermineAllCheck manifest_policy_anchor_contract = true := by
-  native_decide
-
-theorem manifest_policy_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes manifest_policy_anchor_contract :=
-  keysDetermineAllCheck_sound manifest_policy_anchor_contract
-    manifest_policy_anchor_candidate_keys_check
-
-theorem manifest_policy_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck manifest_policy_anchor_contract = true := by
-  native_decide
-
-theorem manifest_policy_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal manifest_policy_anchor_contract :=
-  declaredKeysMinimalCheck_sound manifest_policy_anchor_contract
-    manifest_policy_anchor_candidate_keys_minimal_check
-
-theorem manifest_policy_anchor_closure_fixed_check :
-    closureFixedPointCheck manifest_policy_anchor_contract = true := by
-  native_decide
-
-theorem manifest_policy_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint manifest_policy_anchor_contract :=
-  closureFixedPointCheck_sound manifest_policy_anchor_contract
-    manifest_policy_anchor_closure_fixed_check
-
-theorem manifest_policy_anchor_bcnf_check :
-    bcnfCheck manifest_policy_anchor_contract = true := by
-  native_decide
-
-theorem manifest_policy_anchor_bcnf : BCNF manifest_policy_anchor_contract :=
-  bcnfCheck_sound manifest_policy_anchor_contract manifest_policy_anchor_bcnf_check
-
-def manifest_policy_manifest_algorithm_version_contract : RelationContract where
-  name := "manifest_policy_manifest_algorithm_version"
-  attributes := ["manifest_policy_id", "manifest_algorithm_version"]
-  declaredKeys := [["manifest_policy_id"]]
-  declaredFDs := [
-    { determinant := ["manifest_policy_id"], dependent := ["manifest_algorithm_version"] }
-  ]
-
-theorem manifest_policy_manifest_algorithm_version_schema_well_formed :
-    schemaWellFormedCheck manifest_policy_manifest_algorithm_version_contract = true := by
-  native_decide
-
-theorem manifest_policy_manifest_algorithm_version_candidate_keys_check :
-    keysDetermineAllCheck manifest_policy_manifest_algorithm_version_contract = true := by
-  native_decide
-
-theorem manifest_policy_manifest_algorithm_version_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes manifest_policy_manifest_algorithm_version_contract :=
-  keysDetermineAllCheck_sound manifest_policy_manifest_algorithm_version_contract
-    manifest_policy_manifest_algorithm_version_candidate_keys_check
-
-theorem manifest_policy_manifest_algorithm_version_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck manifest_policy_manifest_algorithm_version_contract = true := by
-  native_decide
-
-theorem manifest_policy_manifest_algorithm_version_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal manifest_policy_manifest_algorithm_version_contract :=
-  declaredKeysMinimalCheck_sound manifest_policy_manifest_algorithm_version_contract
-    manifest_policy_manifest_algorithm_version_candidate_keys_minimal_check
-
-theorem manifest_policy_manifest_algorithm_version_closure_fixed_check :
-    closureFixedPointCheck manifest_policy_manifest_algorithm_version_contract = true := by
-  native_decide
-
-theorem manifest_policy_manifest_algorithm_version_closure_reached_fixed_point :
-    ClosureReachedFixedPoint manifest_policy_manifest_algorithm_version_contract :=
-  closureFixedPointCheck_sound manifest_policy_manifest_algorithm_version_contract
-    manifest_policy_manifest_algorithm_version_closure_fixed_check
-
-theorem manifest_policy_manifest_algorithm_version_bcnf_check :
-    bcnfCheck manifest_policy_manifest_algorithm_version_contract = true := by
-  native_decide
-
-theorem manifest_policy_manifest_algorithm_version_bcnf : BCNF manifest_policy_manifest_algorithm_version_contract :=
-  bcnfCheck_sound manifest_policy_manifest_algorithm_version_contract manifest_policy_manifest_algorithm_version_bcnf_check
-
-def manifest_policy_file_order_version_contract : RelationContract where
-  name := "manifest_policy_file_order_version"
-  attributes := ["manifest_policy_id", "file_order_version"]
-  declaredKeys := [["manifest_policy_id"]]
-  declaredFDs := [
-    { determinant := ["manifest_policy_id"], dependent := ["file_order_version"] }
-  ]
-
-theorem manifest_policy_file_order_version_schema_well_formed :
-    schemaWellFormedCheck manifest_policy_file_order_version_contract = true := by
-  native_decide
-
-theorem manifest_policy_file_order_version_candidate_keys_check :
-    keysDetermineAllCheck manifest_policy_file_order_version_contract = true := by
-  native_decide
-
-theorem manifest_policy_file_order_version_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes manifest_policy_file_order_version_contract :=
-  keysDetermineAllCheck_sound manifest_policy_file_order_version_contract
-    manifest_policy_file_order_version_candidate_keys_check
-
-theorem manifest_policy_file_order_version_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck manifest_policy_file_order_version_contract = true := by
-  native_decide
-
-theorem manifest_policy_file_order_version_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal manifest_policy_file_order_version_contract :=
-  declaredKeysMinimalCheck_sound manifest_policy_file_order_version_contract
-    manifest_policy_file_order_version_candidate_keys_minimal_check
-
-theorem manifest_policy_file_order_version_closure_fixed_check :
-    closureFixedPointCheck manifest_policy_file_order_version_contract = true := by
-  native_decide
-
-theorem manifest_policy_file_order_version_closure_reached_fixed_point :
-    ClosureReachedFixedPoint manifest_policy_file_order_version_contract :=
-  closureFixedPointCheck_sound manifest_policy_file_order_version_contract
-    manifest_policy_file_order_version_closure_fixed_check
-
-theorem manifest_policy_file_order_version_bcnf_check :
-    bcnfCheck manifest_policy_file_order_version_contract = true := by
-  native_decide
-
-theorem manifest_policy_file_order_version_bcnf : BCNF manifest_policy_file_order_version_contract :=
-  bcnfCheck_sound manifest_policy_file_order_version_contract manifest_policy_file_order_version_bcnf_check
-
-def manifest_policy_identity_contract : RelationContract where
-  name := "manifest_policy_identity"
-  attributes := ["manifest_algorithm_version", "file_order_version", "manifest_policy_id"]
-  declaredKeys := [["manifest_algorithm_version", "file_order_version"], ["manifest_policy_id"]]
-  declaredFDs := [
-    { determinant := ["manifest_algorithm_version", "file_order_version"], dependent := ["manifest_policy_id"] },
-    { determinant := ["manifest_policy_id"], dependent := ["manifest_algorithm_version", "file_order_version"] }
-  ]
-
-theorem manifest_policy_identity_schema_well_formed :
-    schemaWellFormedCheck manifest_policy_identity_contract = true := by
-  native_decide
-
-theorem manifest_policy_identity_candidate_keys_check :
-    keysDetermineAllCheck manifest_policy_identity_contract = true := by
-  native_decide
-
-theorem manifest_policy_identity_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes manifest_policy_identity_contract :=
-  keysDetermineAllCheck_sound manifest_policy_identity_contract
-    manifest_policy_identity_candidate_keys_check
-
-theorem manifest_policy_identity_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck manifest_policy_identity_contract = true := by
-  native_decide
-
-theorem manifest_policy_identity_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal manifest_policy_identity_contract :=
-  declaredKeysMinimalCheck_sound manifest_policy_identity_contract
-    manifest_policy_identity_candidate_keys_minimal_check
-
-theorem manifest_policy_identity_closure_fixed_check :
-    closureFixedPointCheck manifest_policy_identity_contract = true := by
-  native_decide
-
-theorem manifest_policy_identity_closure_reached_fixed_point :
-    ClosureReachedFixedPoint manifest_policy_identity_contract :=
-  closureFixedPointCheck_sound manifest_policy_identity_contract
-    manifest_policy_identity_closure_fixed_check
-
-theorem manifest_policy_identity_bcnf_check :
-    bcnfCheck manifest_policy_identity_contract = true := by
-  native_decide
-
-theorem manifest_policy_identity_bcnf : BCNF manifest_policy_identity_contract :=
-  bcnfCheck_sound manifest_policy_identity_contract manifest_policy_identity_bcnf_check
-
-def manifest_policy_seal_contract : RelationContract where
-  name := "manifest_policy_seal"
-  attributes := ["manifest_policy_id"]
-  declaredKeys := [["manifest_policy_id"]]
-  declaredFDs := [
-  ]
-
-theorem manifest_policy_seal_schema_well_formed :
-    schemaWellFormedCheck manifest_policy_seal_contract = true := by
-  native_decide
-
-theorem manifest_policy_seal_candidate_keys_check :
-    keysDetermineAllCheck manifest_policy_seal_contract = true := by
-  native_decide
-
-theorem manifest_policy_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes manifest_policy_seal_contract :=
-  keysDetermineAllCheck_sound manifest_policy_seal_contract
-    manifest_policy_seal_candidate_keys_check
-
-theorem manifest_policy_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck manifest_policy_seal_contract = true := by
-  native_decide
-
-theorem manifest_policy_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal manifest_policy_seal_contract :=
-  declaredKeysMinimalCheck_sound manifest_policy_seal_contract
-    manifest_policy_seal_candidate_keys_minimal_check
-
-theorem manifest_policy_seal_closure_fixed_check :
-    closureFixedPointCheck manifest_policy_seal_contract = true := by
-  native_decide
-
-theorem manifest_policy_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint manifest_policy_seal_contract :=
-  closureFixedPointCheck_sound manifest_policy_seal_contract
-    manifest_policy_seal_closure_fixed_check
-
-theorem manifest_policy_seal_bcnf_check :
-    bcnfCheck manifest_policy_seal_contract = true := by
-  native_decide
-
-theorem manifest_policy_seal_bcnf : BCNF manifest_policy_seal_contract :=
-  bcnfCheck_sound manifest_policy_seal_contract manifest_policy_seal_bcnf_check
-
 def manifest_policy_contract : RelationContract where
   name := "manifest_policy"
   attributes := ["manifest_policy_id", "manifest_algorithm_version", "file_order_version"]
@@ -2163,142 +1934,12 @@ theorem manifest_policy_closure_reached_fixed_point :
   closureFixedPointCheck_sound manifest_policy_contract
     manifest_policy_closure_fixed_check
 
-def source_build_anchor_contract : RelationContract where
-  name := "source_build_anchor"
-  attributes := ["build_id"]
-  declaredKeys := [["build_id"]]
-  declaredFDs := [
-  ]
-
-theorem source_build_anchor_schema_well_formed :
-    schemaWellFormedCheck source_build_anchor_contract = true := by
+theorem manifest_policy_bcnf_check :
+    bcnfCheck manifest_policy_contract = true := by
   native_decide
 
-theorem source_build_anchor_candidate_keys_check :
-    keysDetermineAllCheck source_build_anchor_contract = true := by
-  native_decide
-
-theorem source_build_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_build_anchor_contract :=
-  keysDetermineAllCheck_sound source_build_anchor_contract
-    source_build_anchor_candidate_keys_check
-
-theorem source_build_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_build_anchor_contract = true := by
-  native_decide
-
-theorem source_build_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_build_anchor_contract :=
-  declaredKeysMinimalCheck_sound source_build_anchor_contract
-    source_build_anchor_candidate_keys_minimal_check
-
-theorem source_build_anchor_closure_fixed_check :
-    closureFixedPointCheck source_build_anchor_contract = true := by
-  native_decide
-
-theorem source_build_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_build_anchor_contract :=
-  closureFixedPointCheck_sound source_build_anchor_contract
-    source_build_anchor_closure_fixed_check
-
-theorem source_build_anchor_bcnf_check :
-    bcnfCheck source_build_anchor_contract = true := by
-  native_decide
-
-theorem source_build_anchor_bcnf : BCNF source_build_anchor_contract :=
-  bcnfCheck_sound source_build_anchor_contract source_build_anchor_bcnf_check
-
-def source_build_scope_key_contract : RelationContract where
-  name := "source_build_scope_key"
-  attributes := ["build_id", "scope_key"]
-  declaredKeys := [["build_id"]]
-  declaredFDs := [
-    { determinant := ["build_id"], dependent := ["scope_key"] }
-  ]
-
-theorem source_build_scope_key_schema_well_formed :
-    schemaWellFormedCheck source_build_scope_key_contract = true := by
-  native_decide
-
-theorem source_build_scope_key_candidate_keys_check :
-    keysDetermineAllCheck source_build_scope_key_contract = true := by
-  native_decide
-
-theorem source_build_scope_key_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_build_scope_key_contract :=
-  keysDetermineAllCheck_sound source_build_scope_key_contract
-    source_build_scope_key_candidate_keys_check
-
-theorem source_build_scope_key_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_build_scope_key_contract = true := by
-  native_decide
-
-theorem source_build_scope_key_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_build_scope_key_contract :=
-  declaredKeysMinimalCheck_sound source_build_scope_key_contract
-    source_build_scope_key_candidate_keys_minimal_check
-
-theorem source_build_scope_key_closure_fixed_check :
-    closureFixedPointCheck source_build_scope_key_contract = true := by
-  native_decide
-
-theorem source_build_scope_key_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_build_scope_key_contract :=
-  closureFixedPointCheck_sound source_build_scope_key_contract
-    source_build_scope_key_closure_fixed_check
-
-theorem source_build_scope_key_bcnf_check :
-    bcnfCheck source_build_scope_key_contract = true := by
-  native_decide
-
-theorem source_build_scope_key_bcnf : BCNF source_build_scope_key_contract :=
-  bcnfCheck_sound source_build_scope_key_contract source_build_scope_key_bcnf_check
-
-def source_build_manifest_policy_id_contract : RelationContract where
-  name := "source_build_manifest_policy_id"
-  attributes := ["build_id", "manifest_policy_id"]
-  declaredKeys := [["build_id"]]
-  declaredFDs := [
-    { determinant := ["build_id"], dependent := ["manifest_policy_id"] }
-  ]
-
-theorem source_build_manifest_policy_id_schema_well_formed :
-    schemaWellFormedCheck source_build_manifest_policy_id_contract = true := by
-  native_decide
-
-theorem source_build_manifest_policy_id_candidate_keys_check :
-    keysDetermineAllCheck source_build_manifest_policy_id_contract = true := by
-  native_decide
-
-theorem source_build_manifest_policy_id_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_build_manifest_policy_id_contract :=
-  keysDetermineAllCheck_sound source_build_manifest_policy_id_contract
-    source_build_manifest_policy_id_candidate_keys_check
-
-theorem source_build_manifest_policy_id_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_build_manifest_policy_id_contract = true := by
-  native_decide
-
-theorem source_build_manifest_policy_id_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_build_manifest_policy_id_contract :=
-  declaredKeysMinimalCheck_sound source_build_manifest_policy_id_contract
-    source_build_manifest_policy_id_candidate_keys_minimal_check
-
-theorem source_build_manifest_policy_id_closure_fixed_check :
-    closureFixedPointCheck source_build_manifest_policy_id_contract = true := by
-  native_decide
-
-theorem source_build_manifest_policy_id_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_build_manifest_policy_id_contract :=
-  closureFixedPointCheck_sound source_build_manifest_policy_id_contract
-    source_build_manifest_policy_id_closure_fixed_check
-
-theorem source_build_manifest_policy_id_bcnf_check :
-    bcnfCheck source_build_manifest_policy_id_contract = true := by
-  native_decide
-
-theorem source_build_manifest_policy_id_bcnf : BCNF source_build_manifest_policy_id_contract :=
-  bcnfCheck_sound source_build_manifest_policy_id_contract source_build_manifest_policy_id_bcnf_check
+theorem manifest_policy_bcnf : BCNF manifest_policy_contract :=
+  bcnfCheck_sound manifest_policy_contract manifest_policy_bcnf_check
 
 def source_build_state_contract : RelationContract where
   name := "source_build_state"
@@ -2346,97 +1987,6 @@ theorem source_build_state_bcnf_check :
 theorem source_build_state_bcnf : BCNF source_build_state_contract :=
   bcnfCheck_sound source_build_state_contract source_build_state_bcnf_check
 
-def source_build_created_at_contract : RelationContract where
-  name := "source_build_created_at"
-  attributes := ["build_id", "created_at"]
-  declaredKeys := [["build_id"]]
-  declaredFDs := [
-    { determinant := ["build_id"], dependent := ["created_at"] }
-  ]
-
-theorem source_build_created_at_schema_well_formed :
-    schemaWellFormedCheck source_build_created_at_contract = true := by
-  native_decide
-
-theorem source_build_created_at_candidate_keys_check :
-    keysDetermineAllCheck source_build_created_at_contract = true := by
-  native_decide
-
-theorem source_build_created_at_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_build_created_at_contract :=
-  keysDetermineAllCheck_sound source_build_created_at_contract
-    source_build_created_at_candidate_keys_check
-
-theorem source_build_created_at_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_build_created_at_contract = true := by
-  native_decide
-
-theorem source_build_created_at_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_build_created_at_contract :=
-  declaredKeysMinimalCheck_sound source_build_created_at_contract
-    source_build_created_at_candidate_keys_minimal_check
-
-theorem source_build_created_at_closure_fixed_check :
-    closureFixedPointCheck source_build_created_at_contract = true := by
-  native_decide
-
-theorem source_build_created_at_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_build_created_at_contract :=
-  closureFixedPointCheck_sound source_build_created_at_contract
-    source_build_created_at_closure_fixed_check
-
-theorem source_build_created_at_bcnf_check :
-    bcnfCheck source_build_created_at_contract = true := by
-  native_decide
-
-theorem source_build_created_at_bcnf : BCNF source_build_created_at_contract :=
-  bcnfCheck_sound source_build_created_at_contract source_build_created_at_bcnf_check
-
-def source_build_descriptor_seal_contract : RelationContract where
-  name := "source_build_descriptor_seal"
-  attributes := ["build_id"]
-  declaredKeys := [["build_id"]]
-  declaredFDs := [
-  ]
-
-theorem source_build_descriptor_seal_schema_well_formed :
-    schemaWellFormedCheck source_build_descriptor_seal_contract = true := by
-  native_decide
-
-theorem source_build_descriptor_seal_candidate_keys_check :
-    keysDetermineAllCheck source_build_descriptor_seal_contract = true := by
-  native_decide
-
-theorem source_build_descriptor_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_build_descriptor_seal_contract :=
-  keysDetermineAllCheck_sound source_build_descriptor_seal_contract
-    source_build_descriptor_seal_candidate_keys_check
-
-theorem source_build_descriptor_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_build_descriptor_seal_contract = true := by
-  native_decide
-
-theorem source_build_descriptor_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_build_descriptor_seal_contract :=
-  declaredKeysMinimalCheck_sound source_build_descriptor_seal_contract
-    source_build_descriptor_seal_candidate_keys_minimal_check
-
-theorem source_build_descriptor_seal_closure_fixed_check :
-    closureFixedPointCheck source_build_descriptor_seal_contract = true := by
-  native_decide
-
-theorem source_build_descriptor_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_build_descriptor_seal_contract :=
-  closureFixedPointCheck_sound source_build_descriptor_seal_contract
-    source_build_descriptor_seal_closure_fixed_check
-
-theorem source_build_descriptor_seal_bcnf_check :
-    bcnfCheck source_build_descriptor_seal_contract = true := by
-  native_decide
-
-theorem source_build_descriptor_seal_bcnf : BCNF source_build_descriptor_seal_contract :=
-  bcnfCheck_sound source_build_descriptor_seal_contract source_build_descriptor_seal_bcnf_check
-
 def source_build_sealed_at_contract : RelationContract where
   name := "source_build_sealed_at"
   attributes := ["build_id", "sealed_at"]
@@ -2482,6 +2032,52 @@ theorem source_build_sealed_at_bcnf_check :
 
 theorem source_build_sealed_at_bcnf : BCNF source_build_sealed_at_contract :=
   bcnfCheck_sound source_build_sealed_at_contract source_build_sealed_at_bcnf_check
+
+def source_build_descriptor_contract : RelationContract where
+  name := "source_build_descriptor"
+  attributes := ["build_id", "scope_key", "manifest_policy_id", "created_at"]
+  declaredKeys := [["build_id"]]
+  declaredFDs := [
+    { determinant := ["build_id"], dependent := ["scope_key", "manifest_policy_id", "created_at"] }
+  ]
+
+theorem source_build_descriptor_schema_well_formed :
+    schemaWellFormedCheck source_build_descriptor_contract = true := by
+  native_decide
+
+theorem source_build_descriptor_candidate_keys_check :
+    keysDetermineAllCheck source_build_descriptor_contract = true := by
+  native_decide
+
+theorem source_build_descriptor_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes source_build_descriptor_contract :=
+  keysDetermineAllCheck_sound source_build_descriptor_contract
+    source_build_descriptor_candidate_keys_check
+
+theorem source_build_descriptor_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck source_build_descriptor_contract = true := by
+  native_decide
+
+theorem source_build_descriptor_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal source_build_descriptor_contract :=
+  declaredKeysMinimalCheck_sound source_build_descriptor_contract
+    source_build_descriptor_candidate_keys_minimal_check
+
+theorem source_build_descriptor_closure_fixed_check :
+    closureFixedPointCheck source_build_descriptor_contract = true := by
+  native_decide
+
+theorem source_build_descriptor_closure_reached_fixed_point :
+    ClosureReachedFixedPoint source_build_descriptor_contract :=
+  closureFixedPointCheck_sound source_build_descriptor_contract
+    source_build_descriptor_closure_fixed_check
+
+theorem source_build_descriptor_bcnf_check :
+    bcnfCheck source_build_descriptor_contract = true := by
+  native_decide
+
+theorem source_build_descriptor_bcnf : BCNF source_build_descriptor_contract :=
+  bcnfCheck_sound source_build_descriptor_contract source_build_descriptor_bcnf_check
 
 def source_build_contract : RelationContract where
   name := "source_build"
@@ -2745,281 +2341,6 @@ theorem source_build_channel_bcnf_check :
 theorem source_build_channel_bcnf : BCNF source_build_channel_contract :=
   bcnfCheck_sound source_build_channel_contract source_build_channel_bcnf_check
 
-def source_scope_anchor_contract : RelationContract where
-  name := "source_scope_anchor"
-  attributes := ["scope_key"]
-  declaredKeys := [["scope_key"]]
-  declaredFDs := [
-  ]
-
-theorem source_scope_anchor_schema_well_formed :
-    schemaWellFormedCheck source_scope_anchor_contract = true := by
-  native_decide
-
-theorem source_scope_anchor_candidate_keys_check :
-    keysDetermineAllCheck source_scope_anchor_contract = true := by
-  native_decide
-
-theorem source_scope_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_scope_anchor_contract :=
-  keysDetermineAllCheck_sound source_scope_anchor_contract
-    source_scope_anchor_candidate_keys_check
-
-theorem source_scope_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_scope_anchor_contract = true := by
-  native_decide
-
-theorem source_scope_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_scope_anchor_contract :=
-  declaredKeysMinimalCheck_sound source_scope_anchor_contract
-    source_scope_anchor_candidate_keys_minimal_check
-
-theorem source_scope_anchor_closure_fixed_check :
-    closureFixedPointCheck source_scope_anchor_contract = true := by
-  native_decide
-
-theorem source_scope_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_scope_anchor_contract :=
-  closureFixedPointCheck_sound source_scope_anchor_contract
-    source_scope_anchor_closure_fixed_check
-
-theorem source_scope_anchor_bcnf_check :
-    bcnfCheck source_scope_anchor_contract = true := by
-  native_decide
-
-theorem source_scope_anchor_bcnf : BCNF source_scope_anchor_contract :=
-  bcnfCheck_sound source_scope_anchor_contract source_scope_anchor_bcnf_check
-
-def source_scope_source_provider_contract : RelationContract where
-  name := "source_scope_source_provider"
-  attributes := ["scope_key", "source_provider"]
-  declaredKeys := [["scope_key"]]
-  declaredFDs := [
-    { determinant := ["scope_key"], dependent := ["source_provider"] }
-  ]
-
-theorem source_scope_source_provider_schema_well_formed :
-    schemaWellFormedCheck source_scope_source_provider_contract = true := by
-  native_decide
-
-theorem source_scope_source_provider_candidate_keys_check :
-    keysDetermineAllCheck source_scope_source_provider_contract = true := by
-  native_decide
-
-theorem source_scope_source_provider_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_scope_source_provider_contract :=
-  keysDetermineAllCheck_sound source_scope_source_provider_contract
-    source_scope_source_provider_candidate_keys_check
-
-theorem source_scope_source_provider_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_scope_source_provider_contract = true := by
-  native_decide
-
-theorem source_scope_source_provider_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_scope_source_provider_contract :=
-  declaredKeysMinimalCheck_sound source_scope_source_provider_contract
-    source_scope_source_provider_candidate_keys_minimal_check
-
-theorem source_scope_source_provider_closure_fixed_check :
-    closureFixedPointCheck source_scope_source_provider_contract = true := by
-  native_decide
-
-theorem source_scope_source_provider_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_scope_source_provider_contract :=
-  closureFixedPointCheck_sound source_scope_source_provider_contract
-    source_scope_source_provider_closure_fixed_check
-
-theorem source_scope_source_provider_bcnf_check :
-    bcnfCheck source_scope_source_provider_contract = true := by
-  native_decide
-
-theorem source_scope_source_provider_bcnf : BCNF source_scope_source_provider_contract :=
-  bcnfCheck_sound source_scope_source_provider_contract source_scope_source_provider_bcnf_check
-
-def source_scope_source_root_sha256_contract : RelationContract where
-  name := "source_scope_source_root_sha256"
-  attributes := ["scope_key", "source_root_sha256"]
-  declaredKeys := [["scope_key"]]
-  declaredFDs := [
-    { determinant := ["scope_key"], dependent := ["source_root_sha256"] }
-  ]
-
-theorem source_scope_source_root_sha256_schema_well_formed :
-    schemaWellFormedCheck source_scope_source_root_sha256_contract = true := by
-  native_decide
-
-theorem source_scope_source_root_sha256_candidate_keys_check :
-    keysDetermineAllCheck source_scope_source_root_sha256_contract = true := by
-  native_decide
-
-theorem source_scope_source_root_sha256_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_scope_source_root_sha256_contract :=
-  keysDetermineAllCheck_sound source_scope_source_root_sha256_contract
-    source_scope_source_root_sha256_candidate_keys_check
-
-theorem source_scope_source_root_sha256_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_scope_source_root_sha256_contract = true := by
-  native_decide
-
-theorem source_scope_source_root_sha256_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_scope_source_root_sha256_contract :=
-  declaredKeysMinimalCheck_sound source_scope_source_root_sha256_contract
-    source_scope_source_root_sha256_candidate_keys_minimal_check
-
-theorem source_scope_source_root_sha256_closure_fixed_check :
-    closureFixedPointCheck source_scope_source_root_sha256_contract = true := by
-  native_decide
-
-theorem source_scope_source_root_sha256_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_scope_source_root_sha256_contract :=
-  closureFixedPointCheck_sound source_scope_source_root_sha256_contract
-    source_scope_source_root_sha256_closure_fixed_check
-
-theorem source_scope_source_root_sha256_bcnf_check :
-    bcnfCheck source_scope_source_root_sha256_contract = true := by
-  native_decide
-
-theorem source_scope_source_root_sha256_bcnf : BCNF source_scope_source_root_sha256_contract :=
-  bcnfCheck_sound source_scope_source_root_sha256_contract source_scope_source_root_sha256_bcnf_check
-
-def source_scope_identity_policy_version_contract : RelationContract where
-  name := "source_scope_identity_policy_version"
-  attributes := ["scope_key", "identity_policy_version"]
-  declaredKeys := [["scope_key"]]
-  declaredFDs := [
-    { determinant := ["scope_key"], dependent := ["identity_policy_version"] }
-  ]
-
-theorem source_scope_identity_policy_version_schema_well_formed :
-    schemaWellFormedCheck source_scope_identity_policy_version_contract = true := by
-  native_decide
-
-theorem source_scope_identity_policy_version_candidate_keys_check :
-    keysDetermineAllCheck source_scope_identity_policy_version_contract = true := by
-  native_decide
-
-theorem source_scope_identity_policy_version_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_scope_identity_policy_version_contract :=
-  keysDetermineAllCheck_sound source_scope_identity_policy_version_contract
-    source_scope_identity_policy_version_candidate_keys_check
-
-theorem source_scope_identity_policy_version_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_scope_identity_policy_version_contract = true := by
-  native_decide
-
-theorem source_scope_identity_policy_version_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_scope_identity_policy_version_contract :=
-  declaredKeysMinimalCheck_sound source_scope_identity_policy_version_contract
-    source_scope_identity_policy_version_candidate_keys_minimal_check
-
-theorem source_scope_identity_policy_version_closure_fixed_check :
-    closureFixedPointCheck source_scope_identity_policy_version_contract = true := by
-  native_decide
-
-theorem source_scope_identity_policy_version_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_scope_identity_policy_version_contract :=
-  closureFixedPointCheck_sound source_scope_identity_policy_version_contract
-    source_scope_identity_policy_version_closure_fixed_check
-
-theorem source_scope_identity_policy_version_bcnf_check :
-    bcnfCheck source_scope_identity_policy_version_contract = true := by
-  native_decide
-
-theorem source_scope_identity_policy_version_bcnf : BCNF source_scope_identity_policy_version_contract :=
-  bcnfCheck_sound source_scope_identity_policy_version_contract source_scope_identity_policy_version_bcnf_check
-
-def source_scope_identity_contract : RelationContract where
-  name := "source_scope_identity"
-  attributes := ["source_provider", "source_root_sha256", "identity_policy_version", "scope_key"]
-  declaredKeys := [["source_provider", "source_root_sha256", "identity_policy_version"], ["scope_key"]]
-  declaredFDs := [
-    { determinant := ["source_provider", "source_root_sha256", "identity_policy_version"], dependent := ["scope_key"] },
-    { determinant := ["scope_key"], dependent := ["source_provider", "source_root_sha256", "identity_policy_version"] }
-  ]
-
-theorem source_scope_identity_schema_well_formed :
-    schemaWellFormedCheck source_scope_identity_contract = true := by
-  native_decide
-
-theorem source_scope_identity_candidate_keys_check :
-    keysDetermineAllCheck source_scope_identity_contract = true := by
-  native_decide
-
-theorem source_scope_identity_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_scope_identity_contract :=
-  keysDetermineAllCheck_sound source_scope_identity_contract
-    source_scope_identity_candidate_keys_check
-
-theorem source_scope_identity_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_scope_identity_contract = true := by
-  native_decide
-
-theorem source_scope_identity_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_scope_identity_contract :=
-  declaredKeysMinimalCheck_sound source_scope_identity_contract
-    source_scope_identity_candidate_keys_minimal_check
-
-theorem source_scope_identity_closure_fixed_check :
-    closureFixedPointCheck source_scope_identity_contract = true := by
-  native_decide
-
-theorem source_scope_identity_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_scope_identity_contract :=
-  closureFixedPointCheck_sound source_scope_identity_contract
-    source_scope_identity_closure_fixed_check
-
-theorem source_scope_identity_bcnf_check :
-    bcnfCheck source_scope_identity_contract = true := by
-  native_decide
-
-theorem source_scope_identity_bcnf : BCNF source_scope_identity_contract :=
-  bcnfCheck_sound source_scope_identity_contract source_scope_identity_bcnf_check
-
-def source_scope_seal_contract : RelationContract where
-  name := "source_scope_seal"
-  attributes := ["scope_key"]
-  declaredKeys := [["scope_key"]]
-  declaredFDs := [
-  ]
-
-theorem source_scope_seal_schema_well_formed :
-    schemaWellFormedCheck source_scope_seal_contract = true := by
-  native_decide
-
-theorem source_scope_seal_candidate_keys_check :
-    keysDetermineAllCheck source_scope_seal_contract = true := by
-  native_decide
-
-theorem source_scope_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_scope_seal_contract :=
-  keysDetermineAllCheck_sound source_scope_seal_contract
-    source_scope_seal_candidate_keys_check
-
-theorem source_scope_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_scope_seal_contract = true := by
-  native_decide
-
-theorem source_scope_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_scope_seal_contract :=
-  declaredKeysMinimalCheck_sound source_scope_seal_contract
-    source_scope_seal_candidate_keys_minimal_check
-
-theorem source_scope_seal_closure_fixed_check :
-    closureFixedPointCheck source_scope_seal_contract = true := by
-  native_decide
-
-theorem source_scope_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_scope_seal_contract :=
-  closureFixedPointCheck_sound source_scope_seal_contract
-    source_scope_seal_closure_fixed_check
-
-theorem source_scope_seal_bcnf_check :
-    bcnfCheck source_scope_seal_contract = true := by
-  native_decide
-
-theorem source_scope_seal_bcnf : BCNF source_scope_seal_contract :=
-  bcnfCheck_sound source_scope_seal_contract source_scope_seal_bcnf_check
-
 def source_scope_contract : RelationContract where
   name := "source_scope"
   attributes := ["scope_key", "source_provider", "source_root_sha256", "identity_policy_version"]
@@ -3060,279 +2381,12 @@ theorem source_scope_closure_reached_fixed_point :
   closureFixedPointCheck_sound source_scope_contract
     source_scope_closure_fixed_check
 
-def source_build_discovery_anchor_contract : RelationContract where
-  name := "source_build_discovery_anchor"
-  attributes := ["build_id"]
-  declaredKeys := [["build_id"]]
-  declaredFDs := [
-  ]
-
-theorem source_build_discovery_anchor_schema_well_formed :
-    schemaWellFormedCheck source_build_discovery_anchor_contract = true := by
+theorem source_scope_bcnf_check :
+    bcnfCheck source_scope_contract = true := by
   native_decide
 
-theorem source_build_discovery_anchor_candidate_keys_check :
-    keysDetermineAllCheck source_build_discovery_anchor_contract = true := by
-  native_decide
-
-theorem source_build_discovery_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_build_discovery_anchor_contract :=
-  keysDetermineAllCheck_sound source_build_discovery_anchor_contract
-    source_build_discovery_anchor_candidate_keys_check
-
-theorem source_build_discovery_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_build_discovery_anchor_contract = true := by
-  native_decide
-
-theorem source_build_discovery_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_build_discovery_anchor_contract :=
-  declaredKeysMinimalCheck_sound source_build_discovery_anchor_contract
-    source_build_discovery_anchor_candidate_keys_minimal_check
-
-theorem source_build_discovery_anchor_closure_fixed_check :
-    closureFixedPointCheck source_build_discovery_anchor_contract = true := by
-  native_decide
-
-theorem source_build_discovery_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_build_discovery_anchor_contract :=
-  closureFixedPointCheck_sound source_build_discovery_anchor_contract
-    source_build_discovery_anchor_closure_fixed_check
-
-theorem source_build_discovery_anchor_bcnf_check :
-    bcnfCheck source_build_discovery_anchor_contract = true := by
-  native_decide
-
-theorem source_build_discovery_anchor_bcnf : BCNF source_build_discovery_anchor_contract :=
-  bcnfCheck_sound source_build_discovery_anchor_contract source_build_discovery_anchor_bcnf_check
-
-def source_build_discovery_scan_attempt_contract : RelationContract where
-  name := "source_build_discovery_scan_attempt"
-  attributes := ["build_id", "scan_attempt"]
-  declaredKeys := [["build_id"]]
-  declaredFDs := [
-    { determinant := ["build_id"], dependent := ["scan_attempt"] }
-  ]
-
-theorem source_build_discovery_scan_attempt_schema_well_formed :
-    schemaWellFormedCheck source_build_discovery_scan_attempt_contract = true := by
-  native_decide
-
-theorem source_build_discovery_scan_attempt_candidate_keys_check :
-    keysDetermineAllCheck source_build_discovery_scan_attempt_contract = true := by
-  native_decide
-
-theorem source_build_discovery_scan_attempt_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_build_discovery_scan_attempt_contract :=
-  keysDetermineAllCheck_sound source_build_discovery_scan_attempt_contract
-    source_build_discovery_scan_attempt_candidate_keys_check
-
-theorem source_build_discovery_scan_attempt_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_build_discovery_scan_attempt_contract = true := by
-  native_decide
-
-theorem source_build_discovery_scan_attempt_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_build_discovery_scan_attempt_contract :=
-  declaredKeysMinimalCheck_sound source_build_discovery_scan_attempt_contract
-    source_build_discovery_scan_attempt_candidate_keys_minimal_check
-
-theorem source_build_discovery_scan_attempt_closure_fixed_check :
-    closureFixedPointCheck source_build_discovery_scan_attempt_contract = true := by
-  native_decide
-
-theorem source_build_discovery_scan_attempt_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_build_discovery_scan_attempt_contract :=
-  closureFixedPointCheck_sound source_build_discovery_scan_attempt_contract
-    source_build_discovery_scan_attempt_closure_fixed_check
-
-theorem source_build_discovery_scan_attempt_bcnf_check :
-    bcnfCheck source_build_discovery_scan_attempt_contract = true := by
-  native_decide
-
-theorem source_build_discovery_scan_attempt_bcnf : BCNF source_build_discovery_scan_attempt_contract :=
-  bcnfCheck_sound source_build_discovery_scan_attempt_contract source_build_discovery_scan_attempt_bcnf_check
-
-def source_build_discovery_gallery_count_contract : RelationContract where
-  name := "source_build_discovery_gallery_count"
-  attributes := ["build_id", "gallery_count"]
-  declaredKeys := [["build_id"]]
-  declaredFDs := [
-    { determinant := ["build_id"], dependent := ["gallery_count"] }
-  ]
-
-theorem source_build_discovery_gallery_count_schema_well_formed :
-    schemaWellFormedCheck source_build_discovery_gallery_count_contract = true := by
-  native_decide
-
-theorem source_build_discovery_gallery_count_candidate_keys_check :
-    keysDetermineAllCheck source_build_discovery_gallery_count_contract = true := by
-  native_decide
-
-theorem source_build_discovery_gallery_count_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_build_discovery_gallery_count_contract :=
-  keysDetermineAllCheck_sound source_build_discovery_gallery_count_contract
-    source_build_discovery_gallery_count_candidate_keys_check
-
-theorem source_build_discovery_gallery_count_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_build_discovery_gallery_count_contract = true := by
-  native_decide
-
-theorem source_build_discovery_gallery_count_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_build_discovery_gallery_count_contract :=
-  declaredKeysMinimalCheck_sound source_build_discovery_gallery_count_contract
-    source_build_discovery_gallery_count_candidate_keys_minimal_check
-
-theorem source_build_discovery_gallery_count_closure_fixed_check :
-    closureFixedPointCheck source_build_discovery_gallery_count_contract = true := by
-  native_decide
-
-theorem source_build_discovery_gallery_count_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_build_discovery_gallery_count_contract :=
-  closureFixedPointCheck_sound source_build_discovery_gallery_count_contract
-    source_build_discovery_gallery_count_closure_fixed_check
-
-theorem source_build_discovery_gallery_count_bcnf_check :
-    bcnfCheck source_build_discovery_gallery_count_contract = true := by
-  native_decide
-
-theorem source_build_discovery_gallery_count_bcnf : BCNF source_build_discovery_gallery_count_contract :=
-  bcnfCheck_sound source_build_discovery_gallery_count_contract source_build_discovery_gallery_count_bcnf_check
-
-def source_build_discovery_tree_observation_sha256_contract : RelationContract where
-  name := "source_build_discovery_tree_observation_sha256"
-  attributes := ["build_id", "tree_observation_sha256"]
-  declaredKeys := [["build_id"]]
-  declaredFDs := [
-    { determinant := ["build_id"], dependent := ["tree_observation_sha256"] }
-  ]
-
-theorem source_build_discovery_tree_observation_sha256_schema_well_formed :
-    schemaWellFormedCheck source_build_discovery_tree_observation_sha256_contract = true := by
-  native_decide
-
-theorem source_build_discovery_tree_observation_sha256_candidate_keys_check :
-    keysDetermineAllCheck source_build_discovery_tree_observation_sha256_contract = true := by
-  native_decide
-
-theorem source_build_discovery_tree_observation_sha256_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_build_discovery_tree_observation_sha256_contract :=
-  keysDetermineAllCheck_sound source_build_discovery_tree_observation_sha256_contract
-    source_build_discovery_tree_observation_sha256_candidate_keys_check
-
-theorem source_build_discovery_tree_observation_sha256_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_build_discovery_tree_observation_sha256_contract = true := by
-  native_decide
-
-theorem source_build_discovery_tree_observation_sha256_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_build_discovery_tree_observation_sha256_contract :=
-  declaredKeysMinimalCheck_sound source_build_discovery_tree_observation_sha256_contract
-    source_build_discovery_tree_observation_sha256_candidate_keys_minimal_check
-
-theorem source_build_discovery_tree_observation_sha256_closure_fixed_check :
-    closureFixedPointCheck source_build_discovery_tree_observation_sha256_contract = true := by
-  native_decide
-
-theorem source_build_discovery_tree_observation_sha256_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_build_discovery_tree_observation_sha256_contract :=
-  closureFixedPointCheck_sound source_build_discovery_tree_observation_sha256_contract
-    source_build_discovery_tree_observation_sha256_closure_fixed_check
-
-theorem source_build_discovery_tree_observation_sha256_bcnf_check :
-    bcnfCheck source_build_discovery_tree_observation_sha256_contract = true := by
-  native_decide
-
-theorem source_build_discovery_tree_observation_sha256_bcnf : BCNF source_build_discovery_tree_observation_sha256_contract :=
-  bcnfCheck_sound source_build_discovery_tree_observation_sha256_contract source_build_discovery_tree_observation_sha256_bcnf_check
-
-def source_build_discovery_completed_at_contract : RelationContract where
-  name := "source_build_discovery_completed_at"
-  attributes := ["build_id", "completed_at"]
-  declaredKeys := [["build_id"]]
-  declaredFDs := [
-    { determinant := ["build_id"], dependent := ["completed_at"] }
-  ]
-
-theorem source_build_discovery_completed_at_schema_well_formed :
-    schemaWellFormedCheck source_build_discovery_completed_at_contract = true := by
-  native_decide
-
-theorem source_build_discovery_completed_at_candidate_keys_check :
-    keysDetermineAllCheck source_build_discovery_completed_at_contract = true := by
-  native_decide
-
-theorem source_build_discovery_completed_at_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_build_discovery_completed_at_contract :=
-  keysDetermineAllCheck_sound source_build_discovery_completed_at_contract
-    source_build_discovery_completed_at_candidate_keys_check
-
-theorem source_build_discovery_completed_at_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_build_discovery_completed_at_contract = true := by
-  native_decide
-
-theorem source_build_discovery_completed_at_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_build_discovery_completed_at_contract :=
-  declaredKeysMinimalCheck_sound source_build_discovery_completed_at_contract
-    source_build_discovery_completed_at_candidate_keys_minimal_check
-
-theorem source_build_discovery_completed_at_closure_fixed_check :
-    closureFixedPointCheck source_build_discovery_completed_at_contract = true := by
-  native_decide
-
-theorem source_build_discovery_completed_at_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_build_discovery_completed_at_contract :=
-  closureFixedPointCheck_sound source_build_discovery_completed_at_contract
-    source_build_discovery_completed_at_closure_fixed_check
-
-theorem source_build_discovery_completed_at_bcnf_check :
-    bcnfCheck source_build_discovery_completed_at_contract = true := by
-  native_decide
-
-theorem source_build_discovery_completed_at_bcnf : BCNF source_build_discovery_completed_at_contract :=
-  bcnfCheck_sound source_build_discovery_completed_at_contract source_build_discovery_completed_at_bcnf_check
-
-def source_build_discovery_seal_contract : RelationContract where
-  name := "source_build_discovery_seal"
-  attributes := ["build_id"]
-  declaredKeys := [["build_id"]]
-  declaredFDs := [
-  ]
-
-theorem source_build_discovery_seal_schema_well_formed :
-    schemaWellFormedCheck source_build_discovery_seal_contract = true := by
-  native_decide
-
-theorem source_build_discovery_seal_candidate_keys_check :
-    keysDetermineAllCheck source_build_discovery_seal_contract = true := by
-  native_decide
-
-theorem source_build_discovery_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_build_discovery_seal_contract :=
-  keysDetermineAllCheck_sound source_build_discovery_seal_contract
-    source_build_discovery_seal_candidate_keys_check
-
-theorem source_build_discovery_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_build_discovery_seal_contract = true := by
-  native_decide
-
-theorem source_build_discovery_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_build_discovery_seal_contract :=
-  declaredKeysMinimalCheck_sound source_build_discovery_seal_contract
-    source_build_discovery_seal_candidate_keys_minimal_check
-
-theorem source_build_discovery_seal_closure_fixed_check :
-    closureFixedPointCheck source_build_discovery_seal_contract = true := by
-  native_decide
-
-theorem source_build_discovery_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_build_discovery_seal_contract :=
-  closureFixedPointCheck_sound source_build_discovery_seal_contract
-    source_build_discovery_seal_closure_fixed_check
-
-theorem source_build_discovery_seal_bcnf_check :
-    bcnfCheck source_build_discovery_seal_contract = true := by
-  native_decide
-
-theorem source_build_discovery_seal_bcnf : BCNF source_build_discovery_seal_contract :=
-  bcnfCheck_sound source_build_discovery_seal_contract source_build_discovery_seal_bcnf_check
+theorem source_scope_bcnf : BCNF source_scope_contract :=
+  bcnfCheck_sound source_scope_contract source_scope_bcnf_check
 
 def source_build_discovery_contract : RelationContract where
   name := "source_build_discovery"
@@ -3372,6 +2426,13 @@ theorem source_build_discovery_closure_reached_fixed_point :
     ClosureReachedFixedPoint source_build_discovery_contract :=
   closureFixedPointCheck_sound source_build_discovery_contract
     source_build_discovery_closure_fixed_check
+
+theorem source_build_discovery_bcnf_check :
+    bcnfCheck source_build_discovery_contract = true := by
+  native_decide
+
+theorem source_build_discovery_bcnf : BCNF source_build_discovery_contract :=
+  bcnfCheck_sound source_build_discovery_contract source_build_discovery_bcnf_check
 
 def source_build_expected_gallery_contract : RelationContract where
   name := "source_build_expected_gallery"
@@ -5901,233 +4962,51 @@ theorem gallery_observation_tag_bcnf_check :
 theorem gallery_observation_tag_bcnf : BCNF gallery_observation_tag_contract :=
   bcnfCheck_sound gallery_observation_tag_contract gallery_observation_tag_bcnf_check
 
-def build_manifest_anchor_contract : RelationContract where
-  name := "build_manifest_anchor"
-  attributes := ["build_id"]
+def build_manifest_core_contract : RelationContract where
+  name := "build_manifest_core"
+  attributes := ["build_id", "manifest_sha256", "file_count", "byte_count"]
   declaredKeys := [["build_id"]]
   declaredFDs := [
+    { determinant := ["build_id"], dependent := ["manifest_sha256", "file_count", "byte_count"] }
   ]
 
-theorem build_manifest_anchor_schema_well_formed :
-    schemaWellFormedCheck build_manifest_anchor_contract = true := by
+theorem build_manifest_core_schema_well_formed :
+    schemaWellFormedCheck build_manifest_core_contract = true := by
   native_decide
 
-theorem build_manifest_anchor_candidate_keys_check :
-    keysDetermineAllCheck build_manifest_anchor_contract = true := by
+theorem build_manifest_core_candidate_keys_check :
+    keysDetermineAllCheck build_manifest_core_contract = true := by
   native_decide
 
-theorem build_manifest_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes build_manifest_anchor_contract :=
-  keysDetermineAllCheck_sound build_manifest_anchor_contract
-    build_manifest_anchor_candidate_keys_check
+theorem build_manifest_core_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes build_manifest_core_contract :=
+  keysDetermineAllCheck_sound build_manifest_core_contract
+    build_manifest_core_candidate_keys_check
 
-theorem build_manifest_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck build_manifest_anchor_contract = true := by
+theorem build_manifest_core_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck build_manifest_core_contract = true := by
   native_decide
 
-theorem build_manifest_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal build_manifest_anchor_contract :=
-  declaredKeysMinimalCheck_sound build_manifest_anchor_contract
-    build_manifest_anchor_candidate_keys_minimal_check
+theorem build_manifest_core_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal build_manifest_core_contract :=
+  declaredKeysMinimalCheck_sound build_manifest_core_contract
+    build_manifest_core_candidate_keys_minimal_check
 
-theorem build_manifest_anchor_closure_fixed_check :
-    closureFixedPointCheck build_manifest_anchor_contract = true := by
+theorem build_manifest_core_closure_fixed_check :
+    closureFixedPointCheck build_manifest_core_contract = true := by
   native_decide
 
-theorem build_manifest_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint build_manifest_anchor_contract :=
-  closureFixedPointCheck_sound build_manifest_anchor_contract
-    build_manifest_anchor_closure_fixed_check
+theorem build_manifest_core_closure_reached_fixed_point :
+    ClosureReachedFixedPoint build_manifest_core_contract :=
+  closureFixedPointCheck_sound build_manifest_core_contract
+    build_manifest_core_closure_fixed_check
 
-theorem build_manifest_anchor_bcnf_check :
-    bcnfCheck build_manifest_anchor_contract = true := by
+theorem build_manifest_core_bcnf_check :
+    bcnfCheck build_manifest_core_contract = true := by
   native_decide
 
-theorem build_manifest_anchor_bcnf : BCNF build_manifest_anchor_contract :=
-  bcnfCheck_sound build_manifest_anchor_contract build_manifest_anchor_bcnf_check
-
-def build_manifest_manifest_sha256_contract : RelationContract where
-  name := "build_manifest_manifest_sha256"
-  attributes := ["build_id", "manifest_sha256"]
-  declaredKeys := [["build_id"]]
-  declaredFDs := [
-    { determinant := ["build_id"], dependent := ["manifest_sha256"] }
-  ]
-
-theorem build_manifest_manifest_sha256_schema_well_formed :
-    schemaWellFormedCheck build_manifest_manifest_sha256_contract = true := by
-  native_decide
-
-theorem build_manifest_manifest_sha256_candidate_keys_check :
-    keysDetermineAllCheck build_manifest_manifest_sha256_contract = true := by
-  native_decide
-
-theorem build_manifest_manifest_sha256_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes build_manifest_manifest_sha256_contract :=
-  keysDetermineAllCheck_sound build_manifest_manifest_sha256_contract
-    build_manifest_manifest_sha256_candidate_keys_check
-
-theorem build_manifest_manifest_sha256_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck build_manifest_manifest_sha256_contract = true := by
-  native_decide
-
-theorem build_manifest_manifest_sha256_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal build_manifest_manifest_sha256_contract :=
-  declaredKeysMinimalCheck_sound build_manifest_manifest_sha256_contract
-    build_manifest_manifest_sha256_candidate_keys_minimal_check
-
-theorem build_manifest_manifest_sha256_closure_fixed_check :
-    closureFixedPointCheck build_manifest_manifest_sha256_contract = true := by
-  native_decide
-
-theorem build_manifest_manifest_sha256_closure_reached_fixed_point :
-    ClosureReachedFixedPoint build_manifest_manifest_sha256_contract :=
-  closureFixedPointCheck_sound build_manifest_manifest_sha256_contract
-    build_manifest_manifest_sha256_closure_fixed_check
-
-theorem build_manifest_manifest_sha256_bcnf_check :
-    bcnfCheck build_manifest_manifest_sha256_contract = true := by
-  native_decide
-
-theorem build_manifest_manifest_sha256_bcnf : BCNF build_manifest_manifest_sha256_contract :=
-  bcnfCheck_sound build_manifest_manifest_sha256_contract build_manifest_manifest_sha256_bcnf_check
-
-def build_manifest_file_count_contract : RelationContract where
-  name := "build_manifest_file_count"
-  attributes := ["build_id", "file_count"]
-  declaredKeys := [["build_id"]]
-  declaredFDs := [
-    { determinant := ["build_id"], dependent := ["file_count"] }
-  ]
-
-theorem build_manifest_file_count_schema_well_formed :
-    schemaWellFormedCheck build_manifest_file_count_contract = true := by
-  native_decide
-
-theorem build_manifest_file_count_candidate_keys_check :
-    keysDetermineAllCheck build_manifest_file_count_contract = true := by
-  native_decide
-
-theorem build_manifest_file_count_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes build_manifest_file_count_contract :=
-  keysDetermineAllCheck_sound build_manifest_file_count_contract
-    build_manifest_file_count_candidate_keys_check
-
-theorem build_manifest_file_count_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck build_manifest_file_count_contract = true := by
-  native_decide
-
-theorem build_manifest_file_count_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal build_manifest_file_count_contract :=
-  declaredKeysMinimalCheck_sound build_manifest_file_count_contract
-    build_manifest_file_count_candidate_keys_minimal_check
-
-theorem build_manifest_file_count_closure_fixed_check :
-    closureFixedPointCheck build_manifest_file_count_contract = true := by
-  native_decide
-
-theorem build_manifest_file_count_closure_reached_fixed_point :
-    ClosureReachedFixedPoint build_manifest_file_count_contract :=
-  closureFixedPointCheck_sound build_manifest_file_count_contract
-    build_manifest_file_count_closure_fixed_check
-
-theorem build_manifest_file_count_bcnf_check :
-    bcnfCheck build_manifest_file_count_contract = true := by
-  native_decide
-
-theorem build_manifest_file_count_bcnf : BCNF build_manifest_file_count_contract :=
-  bcnfCheck_sound build_manifest_file_count_contract build_manifest_file_count_bcnf_check
-
-def build_manifest_byte_count_contract : RelationContract where
-  name := "build_manifest_byte_count"
-  attributes := ["build_id", "byte_count"]
-  declaredKeys := [["build_id"]]
-  declaredFDs := [
-    { determinant := ["build_id"], dependent := ["byte_count"] }
-  ]
-
-theorem build_manifest_byte_count_schema_well_formed :
-    schemaWellFormedCheck build_manifest_byte_count_contract = true := by
-  native_decide
-
-theorem build_manifest_byte_count_candidate_keys_check :
-    keysDetermineAllCheck build_manifest_byte_count_contract = true := by
-  native_decide
-
-theorem build_manifest_byte_count_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes build_manifest_byte_count_contract :=
-  keysDetermineAllCheck_sound build_manifest_byte_count_contract
-    build_manifest_byte_count_candidate_keys_check
-
-theorem build_manifest_byte_count_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck build_manifest_byte_count_contract = true := by
-  native_decide
-
-theorem build_manifest_byte_count_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal build_manifest_byte_count_contract :=
-  declaredKeysMinimalCheck_sound build_manifest_byte_count_contract
-    build_manifest_byte_count_candidate_keys_minimal_check
-
-theorem build_manifest_byte_count_closure_fixed_check :
-    closureFixedPointCheck build_manifest_byte_count_contract = true := by
-  native_decide
-
-theorem build_manifest_byte_count_closure_reached_fixed_point :
-    ClosureReachedFixedPoint build_manifest_byte_count_contract :=
-  closureFixedPointCheck_sound build_manifest_byte_count_contract
-    build_manifest_byte_count_closure_fixed_check
-
-theorem build_manifest_byte_count_bcnf_check :
-    bcnfCheck build_manifest_byte_count_contract = true := by
-  native_decide
-
-theorem build_manifest_byte_count_bcnf : BCNF build_manifest_byte_count_contract :=
-  bcnfCheck_sound build_manifest_byte_count_contract build_manifest_byte_count_bcnf_check
-
-def build_manifest_seal_contract : RelationContract where
-  name := "build_manifest_seal"
-  attributes := ["build_id"]
-  declaredKeys := [["build_id"]]
-  declaredFDs := [
-  ]
-
-theorem build_manifest_seal_schema_well_formed :
-    schemaWellFormedCheck build_manifest_seal_contract = true := by
-  native_decide
-
-theorem build_manifest_seal_candidate_keys_check :
-    keysDetermineAllCheck build_manifest_seal_contract = true := by
-  native_decide
-
-theorem build_manifest_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes build_manifest_seal_contract :=
-  keysDetermineAllCheck_sound build_manifest_seal_contract
-    build_manifest_seal_candidate_keys_check
-
-theorem build_manifest_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck build_manifest_seal_contract = true := by
-  native_decide
-
-theorem build_manifest_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal build_manifest_seal_contract :=
-  declaredKeysMinimalCheck_sound build_manifest_seal_contract
-    build_manifest_seal_candidate_keys_minimal_check
-
-theorem build_manifest_seal_closure_fixed_check :
-    closureFixedPointCheck build_manifest_seal_contract = true := by
-  native_decide
-
-theorem build_manifest_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint build_manifest_seal_contract :=
-  closureFixedPointCheck_sound build_manifest_seal_contract
-    build_manifest_seal_closure_fixed_check
-
-theorem build_manifest_seal_bcnf_check :
-    bcnfCheck build_manifest_seal_contract = true := by
-  native_decide
-
-theorem build_manifest_seal_bcnf : BCNF build_manifest_seal_contract :=
-  bcnfCheck_sound build_manifest_seal_contract build_manifest_seal_bcnf_check
+theorem build_manifest_core_bcnf : BCNF build_manifest_core_contract :=
+  bcnfCheck_sound build_manifest_core_contract build_manifest_core_bcnf_check
 
 def build_manifest_contract : RelationContract where
   name := "build_manifest"
@@ -6214,373 +5093,6 @@ theorem gallery_manifest_bcnf_check :
 theorem gallery_manifest_bcnf : BCNF gallery_manifest_contract :=
   bcnfCheck_sound gallery_manifest_contract gallery_manifest_bcnf_check
 
-def analysis_policy_anchor_contract : RelationContract where
-  name := "analysis_policy_anchor"
-  attributes := ["policy_id"]
-  declaredKeys := [["policy_id"]]
-  declaredFDs := [
-  ]
-
-theorem analysis_policy_anchor_schema_well_formed :
-    schemaWellFormedCheck analysis_policy_anchor_contract = true := by
-  native_decide
-
-theorem analysis_policy_anchor_candidate_keys_check :
-    keysDetermineAllCheck analysis_policy_anchor_contract = true := by
-  native_decide
-
-theorem analysis_policy_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_policy_anchor_contract :=
-  keysDetermineAllCheck_sound analysis_policy_anchor_contract
-    analysis_policy_anchor_candidate_keys_check
-
-theorem analysis_policy_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_policy_anchor_contract = true := by
-  native_decide
-
-theorem analysis_policy_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_policy_anchor_contract :=
-  declaredKeysMinimalCheck_sound analysis_policy_anchor_contract
-    analysis_policy_anchor_candidate_keys_minimal_check
-
-theorem analysis_policy_anchor_closure_fixed_check :
-    closureFixedPointCheck analysis_policy_anchor_contract = true := by
-  native_decide
-
-theorem analysis_policy_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_policy_anchor_contract :=
-  closureFixedPointCheck_sound analysis_policy_anchor_contract
-    analysis_policy_anchor_closure_fixed_check
-
-theorem analysis_policy_anchor_bcnf_check :
-    bcnfCheck analysis_policy_anchor_contract = true := by
-  native_decide
-
-theorem analysis_policy_anchor_bcnf : BCNF analysis_policy_anchor_contract :=
-  bcnfCheck_sound analysis_policy_anchor_contract analysis_policy_anchor_bcnf_check
-
-def analysis_policy_algorithm_version_contract : RelationContract where
-  name := "analysis_policy_algorithm_version"
-  attributes := ["policy_id", "algorithm_version"]
-  declaredKeys := [["policy_id"]]
-  declaredFDs := [
-    { determinant := ["policy_id"], dependent := ["algorithm_version"] }
-  ]
-
-theorem analysis_policy_algorithm_version_schema_well_formed :
-    schemaWellFormedCheck analysis_policy_algorithm_version_contract = true := by
-  native_decide
-
-theorem analysis_policy_algorithm_version_candidate_keys_check :
-    keysDetermineAllCheck analysis_policy_algorithm_version_contract = true := by
-  native_decide
-
-theorem analysis_policy_algorithm_version_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_policy_algorithm_version_contract :=
-  keysDetermineAllCheck_sound analysis_policy_algorithm_version_contract
-    analysis_policy_algorithm_version_candidate_keys_check
-
-theorem analysis_policy_algorithm_version_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_policy_algorithm_version_contract = true := by
-  native_decide
-
-theorem analysis_policy_algorithm_version_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_policy_algorithm_version_contract :=
-  declaredKeysMinimalCheck_sound analysis_policy_algorithm_version_contract
-    analysis_policy_algorithm_version_candidate_keys_minimal_check
-
-theorem analysis_policy_algorithm_version_closure_fixed_check :
-    closureFixedPointCheck analysis_policy_algorithm_version_contract = true := by
-  native_decide
-
-theorem analysis_policy_algorithm_version_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_policy_algorithm_version_contract :=
-  closureFixedPointCheck_sound analysis_policy_algorithm_version_contract
-    analysis_policy_algorithm_version_closure_fixed_check
-
-theorem analysis_policy_algorithm_version_bcnf_check :
-    bcnfCheck analysis_policy_algorithm_version_contract = true := by
-  native_decide
-
-theorem analysis_policy_algorithm_version_bcnf : BCNF analysis_policy_algorithm_version_contract :=
-  bcnfCheck_sound analysis_policy_algorithm_version_contract analysis_policy_algorithm_version_bcnf_check
-
-def analysis_policy_spam_artist_threshold_contract : RelationContract where
-  name := "analysis_policy_spam_artist_threshold"
-  attributes := ["policy_id", "spam_artist_threshold"]
-  declaredKeys := [["policy_id"]]
-  declaredFDs := [
-    { determinant := ["policy_id"], dependent := ["spam_artist_threshold"] }
-  ]
-
-theorem analysis_policy_spam_artist_threshold_schema_well_formed :
-    schemaWellFormedCheck analysis_policy_spam_artist_threshold_contract = true := by
-  native_decide
-
-theorem analysis_policy_spam_artist_threshold_candidate_keys_check :
-    keysDetermineAllCheck analysis_policy_spam_artist_threshold_contract = true := by
-  native_decide
-
-theorem analysis_policy_spam_artist_threshold_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_policy_spam_artist_threshold_contract :=
-  keysDetermineAllCheck_sound analysis_policy_spam_artist_threshold_contract
-    analysis_policy_spam_artist_threshold_candidate_keys_check
-
-theorem analysis_policy_spam_artist_threshold_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_policy_spam_artist_threshold_contract = true := by
-  native_decide
-
-theorem analysis_policy_spam_artist_threshold_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_policy_spam_artist_threshold_contract :=
-  declaredKeysMinimalCheck_sound analysis_policy_spam_artist_threshold_contract
-    analysis_policy_spam_artist_threshold_candidate_keys_minimal_check
-
-theorem analysis_policy_spam_artist_threshold_closure_fixed_check :
-    closureFixedPointCheck analysis_policy_spam_artist_threshold_contract = true := by
-  native_decide
-
-theorem analysis_policy_spam_artist_threshold_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_policy_spam_artist_threshold_contract :=
-  closureFixedPointCheck_sound analysis_policy_spam_artist_threshold_contract
-    analysis_policy_spam_artist_threshold_closure_fixed_check
-
-theorem analysis_policy_spam_artist_threshold_bcnf_check :
-    bcnfCheck analysis_policy_spam_artist_threshold_contract = true := by
-  native_decide
-
-theorem analysis_policy_spam_artist_threshold_bcnf : BCNF analysis_policy_spam_artist_threshold_contract :=
-  bcnfCheck_sound analysis_policy_spam_artist_threshold_contract analysis_policy_spam_artist_threshold_bcnf_check
-
-def analysis_policy_spam_occurrence_threshold_contract : RelationContract where
-  name := "analysis_policy_spam_occurrence_threshold"
-  attributes := ["policy_id", "spam_occurrence_threshold"]
-  declaredKeys := [["policy_id"]]
-  declaredFDs := [
-    { determinant := ["policy_id"], dependent := ["spam_occurrence_threshold"] }
-  ]
-
-theorem analysis_policy_spam_occurrence_threshold_schema_well_formed :
-    schemaWellFormedCheck analysis_policy_spam_occurrence_threshold_contract = true := by
-  native_decide
-
-theorem analysis_policy_spam_occurrence_threshold_candidate_keys_check :
-    keysDetermineAllCheck analysis_policy_spam_occurrence_threshold_contract = true := by
-  native_decide
-
-theorem analysis_policy_spam_occurrence_threshold_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_policy_spam_occurrence_threshold_contract :=
-  keysDetermineAllCheck_sound analysis_policy_spam_occurrence_threshold_contract
-    analysis_policy_spam_occurrence_threshold_candidate_keys_check
-
-theorem analysis_policy_spam_occurrence_threshold_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_policy_spam_occurrence_threshold_contract = true := by
-  native_decide
-
-theorem analysis_policy_spam_occurrence_threshold_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_policy_spam_occurrence_threshold_contract :=
-  declaredKeysMinimalCheck_sound analysis_policy_spam_occurrence_threshold_contract
-    analysis_policy_spam_occurrence_threshold_candidate_keys_minimal_check
-
-theorem analysis_policy_spam_occurrence_threshold_closure_fixed_check :
-    closureFixedPointCheck analysis_policy_spam_occurrence_threshold_contract = true := by
-  native_decide
-
-theorem analysis_policy_spam_occurrence_threshold_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_policy_spam_occurrence_threshold_contract :=
-  closureFixedPointCheck_sound analysis_policy_spam_occurrence_threshold_contract
-    analysis_policy_spam_occurrence_threshold_closure_fixed_check
-
-theorem analysis_policy_spam_occurrence_threshold_bcnf_check :
-    bcnfCheck analysis_policy_spam_occurrence_threshold_contract = true := by
-  native_decide
-
-theorem analysis_policy_spam_occurrence_threshold_bcnf : BCNF analysis_policy_spam_occurrence_threshold_contract :=
-  bcnfCheck_sound analysis_policy_spam_occurrence_threshold_contract analysis_policy_spam_occurrence_threshold_bcnf_check
-
-def analysis_policy_content_owner_rule_version_contract : RelationContract where
-  name := "analysis_policy_content_owner_rule_version"
-  attributes := ["policy_id", "content_owner_rule_version"]
-  declaredKeys := [["policy_id"]]
-  declaredFDs := [
-    { determinant := ["policy_id"], dependent := ["content_owner_rule_version"] }
-  ]
-
-theorem analysis_policy_content_owner_rule_version_schema_well_formed :
-    schemaWellFormedCheck analysis_policy_content_owner_rule_version_contract = true := by
-  native_decide
-
-theorem analysis_policy_content_owner_rule_version_candidate_keys_check :
-    keysDetermineAllCheck analysis_policy_content_owner_rule_version_contract = true := by
-  native_decide
-
-theorem analysis_policy_content_owner_rule_version_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_policy_content_owner_rule_version_contract :=
-  keysDetermineAllCheck_sound analysis_policy_content_owner_rule_version_contract
-    analysis_policy_content_owner_rule_version_candidate_keys_check
-
-theorem analysis_policy_content_owner_rule_version_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_policy_content_owner_rule_version_contract = true := by
-  native_decide
-
-theorem analysis_policy_content_owner_rule_version_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_policy_content_owner_rule_version_contract :=
-  declaredKeysMinimalCheck_sound analysis_policy_content_owner_rule_version_contract
-    analysis_policy_content_owner_rule_version_candidate_keys_minimal_check
-
-theorem analysis_policy_content_owner_rule_version_closure_fixed_check :
-    closureFixedPointCheck analysis_policy_content_owner_rule_version_contract = true := by
-  native_decide
-
-theorem analysis_policy_content_owner_rule_version_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_policy_content_owner_rule_version_contract :=
-  closureFixedPointCheck_sound analysis_policy_content_owner_rule_version_contract
-    analysis_policy_content_owner_rule_version_closure_fixed_check
-
-theorem analysis_policy_content_owner_rule_version_bcnf_check :
-    bcnfCheck analysis_policy_content_owner_rule_version_contract = true := by
-  native_decide
-
-theorem analysis_policy_content_owner_rule_version_bcnf : BCNF analysis_policy_content_owner_rule_version_contract :=
-  bcnfCheck_sound analysis_policy_content_owner_rule_version_contract analysis_policy_content_owner_rule_version_bcnf_check
-
-def analysis_policy_gid_winner_rule_version_contract : RelationContract where
-  name := "analysis_policy_gid_winner_rule_version"
-  attributes := ["policy_id", "gid_winner_rule_version"]
-  declaredKeys := [["policy_id"]]
-  declaredFDs := [
-    { determinant := ["policy_id"], dependent := ["gid_winner_rule_version"] }
-  ]
-
-theorem analysis_policy_gid_winner_rule_version_schema_well_formed :
-    schemaWellFormedCheck analysis_policy_gid_winner_rule_version_contract = true := by
-  native_decide
-
-theorem analysis_policy_gid_winner_rule_version_candidate_keys_check :
-    keysDetermineAllCheck analysis_policy_gid_winner_rule_version_contract = true := by
-  native_decide
-
-theorem analysis_policy_gid_winner_rule_version_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_policy_gid_winner_rule_version_contract :=
-  keysDetermineAllCheck_sound analysis_policy_gid_winner_rule_version_contract
-    analysis_policy_gid_winner_rule_version_candidate_keys_check
-
-theorem analysis_policy_gid_winner_rule_version_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_policy_gid_winner_rule_version_contract = true := by
-  native_decide
-
-theorem analysis_policy_gid_winner_rule_version_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_policy_gid_winner_rule_version_contract :=
-  declaredKeysMinimalCheck_sound analysis_policy_gid_winner_rule_version_contract
-    analysis_policy_gid_winner_rule_version_candidate_keys_minimal_check
-
-theorem analysis_policy_gid_winner_rule_version_closure_fixed_check :
-    closureFixedPointCheck analysis_policy_gid_winner_rule_version_contract = true := by
-  native_decide
-
-theorem analysis_policy_gid_winner_rule_version_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_policy_gid_winner_rule_version_contract :=
-  closureFixedPointCheck_sound analysis_policy_gid_winner_rule_version_contract
-    analysis_policy_gid_winner_rule_version_closure_fixed_check
-
-theorem analysis_policy_gid_winner_rule_version_bcnf_check :
-    bcnfCheck analysis_policy_gid_winner_rule_version_contract = true := by
-  native_decide
-
-theorem analysis_policy_gid_winner_rule_version_bcnf : BCNF analysis_policy_gid_winner_rule_version_contract :=
-  bcnfCheck_sound analysis_policy_gid_winner_rule_version_contract analysis_policy_gid_winner_rule_version_bcnf_check
-
-def analysis_policy_identity_contract : RelationContract where
-  name := "analysis_policy_identity"
-  attributes := ["algorithm_version", "spam_artist_threshold", "spam_occurrence_threshold", "content_owner_rule_version", "gid_winner_rule_version", "policy_id"]
-  declaredKeys := [["algorithm_version", "spam_artist_threshold", "spam_occurrence_threshold", "content_owner_rule_version", "gid_winner_rule_version"], ["policy_id"]]
-  declaredFDs := [
-    { determinant := ["algorithm_version", "spam_artist_threshold", "spam_occurrence_threshold", "content_owner_rule_version", "gid_winner_rule_version"], dependent := ["policy_id"] },
-    { determinant := ["policy_id"], dependent := ["algorithm_version", "spam_artist_threshold", "spam_occurrence_threshold", "content_owner_rule_version", "gid_winner_rule_version"] }
-  ]
-
-theorem analysis_policy_identity_schema_well_formed :
-    schemaWellFormedCheck analysis_policy_identity_contract = true := by
-  native_decide
-
-theorem analysis_policy_identity_candidate_keys_check :
-    keysDetermineAllCheck analysis_policy_identity_contract = true := by
-  native_decide
-
-theorem analysis_policy_identity_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_policy_identity_contract :=
-  keysDetermineAllCheck_sound analysis_policy_identity_contract
-    analysis_policy_identity_candidate_keys_check
-
-theorem analysis_policy_identity_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_policy_identity_contract = true := by
-  native_decide
-
-theorem analysis_policy_identity_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_policy_identity_contract :=
-  declaredKeysMinimalCheck_sound analysis_policy_identity_contract
-    analysis_policy_identity_candidate_keys_minimal_check
-
-theorem analysis_policy_identity_closure_fixed_check :
-    closureFixedPointCheck analysis_policy_identity_contract = true := by
-  native_decide
-
-theorem analysis_policy_identity_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_policy_identity_contract :=
-  closureFixedPointCheck_sound analysis_policy_identity_contract
-    analysis_policy_identity_closure_fixed_check
-
-theorem analysis_policy_identity_bcnf_check :
-    bcnfCheck analysis_policy_identity_contract = true := by
-  native_decide
-
-theorem analysis_policy_identity_bcnf : BCNF analysis_policy_identity_contract :=
-  bcnfCheck_sound analysis_policy_identity_contract analysis_policy_identity_bcnf_check
-
-def analysis_policy_seal_contract : RelationContract where
-  name := "analysis_policy_seal"
-  attributes := ["policy_id"]
-  declaredKeys := [["policy_id"]]
-  declaredFDs := [
-  ]
-
-theorem analysis_policy_seal_schema_well_formed :
-    schemaWellFormedCheck analysis_policy_seal_contract = true := by
-  native_decide
-
-theorem analysis_policy_seal_candidate_keys_check :
-    keysDetermineAllCheck analysis_policy_seal_contract = true := by
-  native_decide
-
-theorem analysis_policy_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_policy_seal_contract :=
-  keysDetermineAllCheck_sound analysis_policy_seal_contract
-    analysis_policy_seal_candidate_keys_check
-
-theorem analysis_policy_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_policy_seal_contract = true := by
-  native_decide
-
-theorem analysis_policy_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_policy_seal_contract :=
-  declaredKeysMinimalCheck_sound analysis_policy_seal_contract
-    analysis_policy_seal_candidate_keys_minimal_check
-
-theorem analysis_policy_seal_closure_fixed_check :
-    closureFixedPointCheck analysis_policy_seal_contract = true := by
-  native_decide
-
-theorem analysis_policy_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_policy_seal_contract :=
-  closureFixedPointCheck_sound analysis_policy_seal_contract
-    analysis_policy_seal_closure_fixed_check
-
-theorem analysis_policy_seal_bcnf_check :
-    bcnfCheck analysis_policy_seal_contract = true := by
-  native_decide
-
-theorem analysis_policy_seal_bcnf : BCNF analysis_policy_seal_contract :=
-  bcnfCheck_sound analysis_policy_seal_contract analysis_policy_seal_bcnf_check
-
 def analysis_policy_contract : RelationContract where
   name := "analysis_policy"
   attributes := ["policy_id", "algorithm_version", "spam_artist_threshold", "spam_occurrence_threshold", "content_owner_rule_version", "gid_winner_rule_version"]
@@ -6621,281 +5133,12 @@ theorem analysis_policy_closure_reached_fixed_point :
   closureFixedPointCheck_sound analysis_policy_contract
     analysis_policy_closure_fixed_check
 
-def analysis_run_anchor_contract : RelationContract where
-  name := "analysis_run_anchor"
-  attributes := ["analysis_id"]
-  declaredKeys := [["analysis_id"]]
-  declaredFDs := [
-  ]
-
-theorem analysis_run_anchor_schema_well_formed :
-    schemaWellFormedCheck analysis_run_anchor_contract = true := by
+theorem analysis_policy_bcnf_check :
+    bcnfCheck analysis_policy_contract = true := by
   native_decide
 
-theorem analysis_run_anchor_candidate_keys_check :
-    keysDetermineAllCheck analysis_run_anchor_contract = true := by
-  native_decide
-
-theorem analysis_run_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_run_anchor_contract :=
-  keysDetermineAllCheck_sound analysis_run_anchor_contract
-    analysis_run_anchor_candidate_keys_check
-
-theorem analysis_run_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_run_anchor_contract = true := by
-  native_decide
-
-theorem analysis_run_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_run_anchor_contract :=
-  declaredKeysMinimalCheck_sound analysis_run_anchor_contract
-    analysis_run_anchor_candidate_keys_minimal_check
-
-theorem analysis_run_anchor_closure_fixed_check :
-    closureFixedPointCheck analysis_run_anchor_contract = true := by
-  native_decide
-
-theorem analysis_run_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_run_anchor_contract :=
-  closureFixedPointCheck_sound analysis_run_anchor_contract
-    analysis_run_anchor_closure_fixed_check
-
-theorem analysis_run_anchor_bcnf_check :
-    bcnfCheck analysis_run_anchor_contract = true := by
-  native_decide
-
-theorem analysis_run_anchor_bcnf : BCNF analysis_run_anchor_contract :=
-  bcnfCheck_sound analysis_run_anchor_contract analysis_run_anchor_bcnf_check
-
-def analysis_run_build_id_contract : RelationContract where
-  name := "analysis_run_build_id"
-  attributes := ["analysis_id", "build_id"]
-  declaredKeys := [["analysis_id"]]
-  declaredFDs := [
-    { determinant := ["analysis_id"], dependent := ["build_id"] }
-  ]
-
-theorem analysis_run_build_id_schema_well_formed :
-    schemaWellFormedCheck analysis_run_build_id_contract = true := by
-  native_decide
-
-theorem analysis_run_build_id_candidate_keys_check :
-    keysDetermineAllCheck analysis_run_build_id_contract = true := by
-  native_decide
-
-theorem analysis_run_build_id_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_run_build_id_contract :=
-  keysDetermineAllCheck_sound analysis_run_build_id_contract
-    analysis_run_build_id_candidate_keys_check
-
-theorem analysis_run_build_id_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_run_build_id_contract = true := by
-  native_decide
-
-theorem analysis_run_build_id_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_run_build_id_contract :=
-  declaredKeysMinimalCheck_sound analysis_run_build_id_contract
-    analysis_run_build_id_candidate_keys_minimal_check
-
-theorem analysis_run_build_id_closure_fixed_check :
-    closureFixedPointCheck analysis_run_build_id_contract = true := by
-  native_decide
-
-theorem analysis_run_build_id_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_run_build_id_contract :=
-  closureFixedPointCheck_sound analysis_run_build_id_contract
-    analysis_run_build_id_closure_fixed_check
-
-theorem analysis_run_build_id_bcnf_check :
-    bcnfCheck analysis_run_build_id_contract = true := by
-  native_decide
-
-theorem analysis_run_build_id_bcnf : BCNF analysis_run_build_id_contract :=
-  bcnfCheck_sound analysis_run_build_id_contract analysis_run_build_id_bcnf_check
-
-def analysis_run_policy_id_contract : RelationContract where
-  name := "analysis_run_policy_id"
-  attributes := ["analysis_id", "policy_id"]
-  declaredKeys := [["analysis_id"]]
-  declaredFDs := [
-    { determinant := ["analysis_id"], dependent := ["policy_id"] }
-  ]
-
-theorem analysis_run_policy_id_schema_well_formed :
-    schemaWellFormedCheck analysis_run_policy_id_contract = true := by
-  native_decide
-
-theorem analysis_run_policy_id_candidate_keys_check :
-    keysDetermineAllCheck analysis_run_policy_id_contract = true := by
-  native_decide
-
-theorem analysis_run_policy_id_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_run_policy_id_contract :=
-  keysDetermineAllCheck_sound analysis_run_policy_id_contract
-    analysis_run_policy_id_candidate_keys_check
-
-theorem analysis_run_policy_id_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_run_policy_id_contract = true := by
-  native_decide
-
-theorem analysis_run_policy_id_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_run_policy_id_contract :=
-  declaredKeysMinimalCheck_sound analysis_run_policy_id_contract
-    analysis_run_policy_id_candidate_keys_minimal_check
-
-theorem analysis_run_policy_id_closure_fixed_check :
-    closureFixedPointCheck analysis_run_policy_id_contract = true := by
-  native_decide
-
-theorem analysis_run_policy_id_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_run_policy_id_contract :=
-  closureFixedPointCheck_sound analysis_run_policy_id_contract
-    analysis_run_policy_id_closure_fixed_check
-
-theorem analysis_run_policy_id_bcnf_check :
-    bcnfCheck analysis_run_policy_id_contract = true := by
-  native_decide
-
-theorem analysis_run_policy_id_bcnf : BCNF analysis_run_policy_id_contract :=
-  bcnfCheck_sound analysis_run_policy_id_contract analysis_run_policy_id_bcnf_check
-
-def analysis_run_input_manifest_sha256_contract : RelationContract where
-  name := "analysis_run_input_manifest_sha256"
-  attributes := ["analysis_id", "input_manifest_sha256"]
-  declaredKeys := [["analysis_id"]]
-  declaredFDs := [
-    { determinant := ["analysis_id"], dependent := ["input_manifest_sha256"] }
-  ]
-
-theorem analysis_run_input_manifest_sha256_schema_well_formed :
-    schemaWellFormedCheck analysis_run_input_manifest_sha256_contract = true := by
-  native_decide
-
-theorem analysis_run_input_manifest_sha256_candidate_keys_check :
-    keysDetermineAllCheck analysis_run_input_manifest_sha256_contract = true := by
-  native_decide
-
-theorem analysis_run_input_manifest_sha256_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_run_input_manifest_sha256_contract :=
-  keysDetermineAllCheck_sound analysis_run_input_manifest_sha256_contract
-    analysis_run_input_manifest_sha256_candidate_keys_check
-
-theorem analysis_run_input_manifest_sha256_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_run_input_manifest_sha256_contract = true := by
-  native_decide
-
-theorem analysis_run_input_manifest_sha256_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_run_input_manifest_sha256_contract :=
-  declaredKeysMinimalCheck_sound analysis_run_input_manifest_sha256_contract
-    analysis_run_input_manifest_sha256_candidate_keys_minimal_check
-
-theorem analysis_run_input_manifest_sha256_closure_fixed_check :
-    closureFixedPointCheck analysis_run_input_manifest_sha256_contract = true := by
-  native_decide
-
-theorem analysis_run_input_manifest_sha256_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_run_input_manifest_sha256_contract :=
-  closureFixedPointCheck_sound analysis_run_input_manifest_sha256_contract
-    analysis_run_input_manifest_sha256_closure_fixed_check
-
-theorem analysis_run_input_manifest_sha256_bcnf_check :
-    bcnfCheck analysis_run_input_manifest_sha256_contract = true := by
-  native_decide
-
-theorem analysis_run_input_manifest_sha256_bcnf : BCNF analysis_run_input_manifest_sha256_contract :=
-  bcnfCheck_sound analysis_run_input_manifest_sha256_contract analysis_run_input_manifest_sha256_bcnf_check
-
-def analysis_run_identity_contract : RelationContract where
-  name := "analysis_run_identity"
-  attributes := ["build_id", "policy_id", "analysis_id"]
-  declaredKeys := [["build_id", "policy_id"], ["analysis_id"]]
-  declaredFDs := [
-    { determinant := ["build_id", "policy_id"], dependent := ["analysis_id"] },
-    { determinant := ["analysis_id"], dependent := ["build_id", "policy_id"] }
-  ]
-
-theorem analysis_run_identity_schema_well_formed :
-    schemaWellFormedCheck analysis_run_identity_contract = true := by
-  native_decide
-
-theorem analysis_run_identity_candidate_keys_check :
-    keysDetermineAllCheck analysis_run_identity_contract = true := by
-  native_decide
-
-theorem analysis_run_identity_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_run_identity_contract :=
-  keysDetermineAllCheck_sound analysis_run_identity_contract
-    analysis_run_identity_candidate_keys_check
-
-theorem analysis_run_identity_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_run_identity_contract = true := by
-  native_decide
-
-theorem analysis_run_identity_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_run_identity_contract :=
-  declaredKeysMinimalCheck_sound analysis_run_identity_contract
-    analysis_run_identity_candidate_keys_minimal_check
-
-theorem analysis_run_identity_closure_fixed_check :
-    closureFixedPointCheck analysis_run_identity_contract = true := by
-  native_decide
-
-theorem analysis_run_identity_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_run_identity_contract :=
-  closureFixedPointCheck_sound analysis_run_identity_contract
-    analysis_run_identity_closure_fixed_check
-
-theorem analysis_run_identity_bcnf_check :
-    bcnfCheck analysis_run_identity_contract = true := by
-  native_decide
-
-theorem analysis_run_identity_bcnf : BCNF analysis_run_identity_contract :=
-  bcnfCheck_sound analysis_run_identity_contract analysis_run_identity_bcnf_check
-
-def analysis_run_started_at_contract : RelationContract where
-  name := "analysis_run_started_at"
-  attributes := ["analysis_id", "started_at"]
-  declaredKeys := [["analysis_id"]]
-  declaredFDs := [
-    { determinant := ["analysis_id"], dependent := ["started_at"] }
-  ]
-
-theorem analysis_run_started_at_schema_well_formed :
-    schemaWellFormedCheck analysis_run_started_at_contract = true := by
-  native_decide
-
-theorem analysis_run_started_at_candidate_keys_check :
-    keysDetermineAllCheck analysis_run_started_at_contract = true := by
-  native_decide
-
-theorem analysis_run_started_at_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_run_started_at_contract :=
-  keysDetermineAllCheck_sound analysis_run_started_at_contract
-    analysis_run_started_at_candidate_keys_check
-
-theorem analysis_run_started_at_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_run_started_at_contract = true := by
-  native_decide
-
-theorem analysis_run_started_at_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_run_started_at_contract :=
-  declaredKeysMinimalCheck_sound analysis_run_started_at_contract
-    analysis_run_started_at_candidate_keys_minimal_check
-
-theorem analysis_run_started_at_closure_fixed_check :
-    closureFixedPointCheck analysis_run_started_at_contract = true := by
-  native_decide
-
-theorem analysis_run_started_at_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_run_started_at_contract :=
-  closureFixedPointCheck_sound analysis_run_started_at_contract
-    analysis_run_started_at_closure_fixed_check
-
-theorem analysis_run_started_at_bcnf_check :
-    bcnfCheck analysis_run_started_at_contract = true := by
-  native_decide
-
-theorem analysis_run_started_at_bcnf : BCNF analysis_run_started_at_contract :=
-  bcnfCheck_sound analysis_run_started_at_contract analysis_run_started_at_bcnf_check
+theorem analysis_policy_bcnf : BCNF analysis_policy_contract :=
+  bcnfCheck_sound analysis_policy_contract analysis_policy_bcnf_check
 
 def analysis_run_state_contract : RelationContract where
   name := "analysis_run_state"
@@ -6943,51 +5186,6 @@ theorem analysis_run_state_bcnf_check :
 theorem analysis_run_state_bcnf : BCNF analysis_run_state_contract :=
   bcnfCheck_sound analysis_run_state_contract analysis_run_state_bcnf_check
 
-def analysis_run_descriptor_seal_contract : RelationContract where
-  name := "analysis_run_descriptor_seal"
-  attributes := ["analysis_id"]
-  declaredKeys := [["analysis_id"]]
-  declaredFDs := [
-  ]
-
-theorem analysis_run_descriptor_seal_schema_well_formed :
-    schemaWellFormedCheck analysis_run_descriptor_seal_contract = true := by
-  native_decide
-
-theorem analysis_run_descriptor_seal_candidate_keys_check :
-    keysDetermineAllCheck analysis_run_descriptor_seal_contract = true := by
-  native_decide
-
-theorem analysis_run_descriptor_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_run_descriptor_seal_contract :=
-  keysDetermineAllCheck_sound analysis_run_descriptor_seal_contract
-    analysis_run_descriptor_seal_candidate_keys_check
-
-theorem analysis_run_descriptor_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_run_descriptor_seal_contract = true := by
-  native_decide
-
-theorem analysis_run_descriptor_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_run_descriptor_seal_contract :=
-  declaredKeysMinimalCheck_sound analysis_run_descriptor_seal_contract
-    analysis_run_descriptor_seal_candidate_keys_minimal_check
-
-theorem analysis_run_descriptor_seal_closure_fixed_check :
-    closureFixedPointCheck analysis_run_descriptor_seal_contract = true := by
-  native_decide
-
-theorem analysis_run_descriptor_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_run_descriptor_seal_contract :=
-  closureFixedPointCheck_sound analysis_run_descriptor_seal_contract
-    analysis_run_descriptor_seal_closure_fixed_check
-
-theorem analysis_run_descriptor_seal_bcnf_check :
-    bcnfCheck analysis_run_descriptor_seal_contract = true := by
-  native_decide
-
-theorem analysis_run_descriptor_seal_bcnf : BCNF analysis_run_descriptor_seal_contract :=
-  bcnfCheck_sound analysis_run_descriptor_seal_contract analysis_run_descriptor_seal_bcnf_check
-
 def analysis_run_completed_at_contract : RelationContract where
   name := "analysis_run_completed_at"
   attributes := ["analysis_id", "completed_at"]
@@ -7034,13 +5232,60 @@ theorem analysis_run_completed_at_bcnf_check :
 theorem analysis_run_completed_at_bcnf : BCNF analysis_run_completed_at_contract :=
   bcnfCheck_sound analysis_run_completed_at_contract analysis_run_completed_at_bcnf_check
 
+def analysis_run_descriptor_contract : RelationContract where
+  name := "analysis_run_descriptor"
+  attributes := ["analysis_id", "build_id", "policy_id", "input_manifest_sha256", "started_at"]
+  declaredKeys := [["analysis_id"], ["build_id"]]
+  declaredFDs := [
+    { determinant := ["analysis_id"], dependent := ["build_id", "policy_id", "input_manifest_sha256", "started_at"] },
+    { determinant := ["build_id"], dependent := ["analysis_id", "policy_id", "input_manifest_sha256", "started_at"] }
+  ]
+
+theorem analysis_run_descriptor_schema_well_formed :
+    schemaWellFormedCheck analysis_run_descriptor_contract = true := by
+  native_decide
+
+theorem analysis_run_descriptor_candidate_keys_check :
+    keysDetermineAllCheck analysis_run_descriptor_contract = true := by
+  native_decide
+
+theorem analysis_run_descriptor_candidate_keys_determine_all_attributes :
+    KeysDetermineAllAttributes analysis_run_descriptor_contract :=
+  keysDetermineAllCheck_sound analysis_run_descriptor_contract
+    analysis_run_descriptor_candidate_keys_check
+
+theorem analysis_run_descriptor_candidate_keys_minimal_check :
+    declaredKeysMinimalCheck analysis_run_descriptor_contract = true := by
+  native_decide
+
+theorem analysis_run_descriptor_declared_keys_are_candidate_keys :
+    DeclaredKeysAreMinimal analysis_run_descriptor_contract :=
+  declaredKeysMinimalCheck_sound analysis_run_descriptor_contract
+    analysis_run_descriptor_candidate_keys_minimal_check
+
+theorem analysis_run_descriptor_closure_fixed_check :
+    closureFixedPointCheck analysis_run_descriptor_contract = true := by
+  native_decide
+
+theorem analysis_run_descriptor_closure_reached_fixed_point :
+    ClosureReachedFixedPoint analysis_run_descriptor_contract :=
+  closureFixedPointCheck_sound analysis_run_descriptor_contract
+    analysis_run_descriptor_closure_fixed_check
+
+theorem analysis_run_descriptor_bcnf_check :
+    bcnfCheck analysis_run_descriptor_contract = true := by
+  native_decide
+
+theorem analysis_run_descriptor_bcnf : BCNF analysis_run_descriptor_contract :=
+  bcnfCheck_sound analysis_run_descriptor_contract analysis_run_descriptor_bcnf_check
+
 def analysis_run_contract : RelationContract where
   name := "analysis_run"
   attributes := ["analysis_id", "build_id", "policy_id", "input_manifest_sha256", "state", "started_at", "completed_at"]
-  declaredKeys := [["analysis_id"], ["build_id", "policy_id"]]
+  declaredKeys := [["analysis_id"], ["build_id"]]
   declaredFDs := [
     { determinant := ["analysis_id"], dependent := ["build_id", "policy_id", "input_manifest_sha256", "state", "started_at", "completed_at"] },
-    { determinant := ["build_id", "policy_id"], dependent := ["analysis_id", "input_manifest_sha256", "state", "started_at", "completed_at"] }
+    { determinant := ["build_id"], dependent := ["analysis_id", "policy_id", "input_manifest_sha256", "state", "started_at", "completed_at"] }
   ]
 
 theorem analysis_run_schema_well_formed :
@@ -7206,234 +5451,6 @@ theorem analysis_state_ancestry_bcnf_check :
 theorem analysis_state_ancestry_bcnf : BCNF analysis_state_ancestry_contract :=
   bcnfCheck_sound analysis_state_ancestry_contract analysis_state_ancestry_bcnf_check
 
-def source_snapshot_manifest_identity_anchor_contract : RelationContract where
-  name := "source_snapshot_manifest_identity_anchor"
-  attributes := ["snapshot_manifest_sha256"]
-  declaredKeys := [["snapshot_manifest_sha256"]]
-  declaredFDs := [
-  ]
-
-theorem source_snapshot_manifest_identity_anchor_schema_well_formed :
-    schemaWellFormedCheck source_snapshot_manifest_identity_anchor_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_anchor_candidate_keys_check :
-    keysDetermineAllCheck source_snapshot_manifest_identity_anchor_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_snapshot_manifest_identity_anchor_contract :=
-  keysDetermineAllCheck_sound source_snapshot_manifest_identity_anchor_contract
-    source_snapshot_manifest_identity_anchor_candidate_keys_check
-
-theorem source_snapshot_manifest_identity_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_snapshot_manifest_identity_anchor_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_snapshot_manifest_identity_anchor_contract :=
-  declaredKeysMinimalCheck_sound source_snapshot_manifest_identity_anchor_contract
-    source_snapshot_manifest_identity_anchor_candidate_keys_minimal_check
-
-theorem source_snapshot_manifest_identity_anchor_closure_fixed_check :
-    closureFixedPointCheck source_snapshot_manifest_identity_anchor_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_snapshot_manifest_identity_anchor_contract :=
-  closureFixedPointCheck_sound source_snapshot_manifest_identity_anchor_contract
-    source_snapshot_manifest_identity_anchor_closure_fixed_check
-
-theorem source_snapshot_manifest_identity_anchor_bcnf_check :
-    bcnfCheck source_snapshot_manifest_identity_anchor_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_anchor_bcnf : BCNF source_snapshot_manifest_identity_anchor_contract :=
-  bcnfCheck_sound source_snapshot_manifest_identity_anchor_contract source_snapshot_manifest_identity_anchor_bcnf_check
-
-def source_snapshot_manifest_identity_gallery_count_contract : RelationContract where
-  name := "source_snapshot_manifest_identity_gallery_count"
-  attributes := ["snapshot_manifest_sha256", "gallery_count"]
-  declaredKeys := [["snapshot_manifest_sha256"]]
-  declaredFDs := [
-    { determinant := ["snapshot_manifest_sha256"], dependent := ["gallery_count"] }
-  ]
-
-theorem source_snapshot_manifest_identity_gallery_count_schema_well_formed :
-    schemaWellFormedCheck source_snapshot_manifest_identity_gallery_count_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_gallery_count_candidate_keys_check :
-    keysDetermineAllCheck source_snapshot_manifest_identity_gallery_count_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_gallery_count_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_snapshot_manifest_identity_gallery_count_contract :=
-  keysDetermineAllCheck_sound source_snapshot_manifest_identity_gallery_count_contract
-    source_snapshot_manifest_identity_gallery_count_candidate_keys_check
-
-theorem source_snapshot_manifest_identity_gallery_count_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_snapshot_manifest_identity_gallery_count_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_gallery_count_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_snapshot_manifest_identity_gallery_count_contract :=
-  declaredKeysMinimalCheck_sound source_snapshot_manifest_identity_gallery_count_contract
-    source_snapshot_manifest_identity_gallery_count_candidate_keys_minimal_check
-
-theorem source_snapshot_manifest_identity_gallery_count_closure_fixed_check :
-    closureFixedPointCheck source_snapshot_manifest_identity_gallery_count_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_gallery_count_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_snapshot_manifest_identity_gallery_count_contract :=
-  closureFixedPointCheck_sound source_snapshot_manifest_identity_gallery_count_contract
-    source_snapshot_manifest_identity_gallery_count_closure_fixed_check
-
-theorem source_snapshot_manifest_identity_gallery_count_bcnf_check :
-    bcnfCheck source_snapshot_manifest_identity_gallery_count_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_gallery_count_bcnf : BCNF source_snapshot_manifest_identity_gallery_count_contract :=
-  bcnfCheck_sound source_snapshot_manifest_identity_gallery_count_contract source_snapshot_manifest_identity_gallery_count_bcnf_check
-
-def source_snapshot_manifest_identity_file_count_contract : RelationContract where
-  name := "source_snapshot_manifest_identity_file_count"
-  attributes := ["snapshot_manifest_sha256", "file_count"]
-  declaredKeys := [["snapshot_manifest_sha256"]]
-  declaredFDs := [
-    { determinant := ["snapshot_manifest_sha256"], dependent := ["file_count"] }
-  ]
-
-theorem source_snapshot_manifest_identity_file_count_schema_well_formed :
-    schemaWellFormedCheck source_snapshot_manifest_identity_file_count_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_file_count_candidate_keys_check :
-    keysDetermineAllCheck source_snapshot_manifest_identity_file_count_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_file_count_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_snapshot_manifest_identity_file_count_contract :=
-  keysDetermineAllCheck_sound source_snapshot_manifest_identity_file_count_contract
-    source_snapshot_manifest_identity_file_count_candidate_keys_check
-
-theorem source_snapshot_manifest_identity_file_count_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_snapshot_manifest_identity_file_count_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_file_count_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_snapshot_manifest_identity_file_count_contract :=
-  declaredKeysMinimalCheck_sound source_snapshot_manifest_identity_file_count_contract
-    source_snapshot_manifest_identity_file_count_candidate_keys_minimal_check
-
-theorem source_snapshot_manifest_identity_file_count_closure_fixed_check :
-    closureFixedPointCheck source_snapshot_manifest_identity_file_count_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_file_count_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_snapshot_manifest_identity_file_count_contract :=
-  closureFixedPointCheck_sound source_snapshot_manifest_identity_file_count_contract
-    source_snapshot_manifest_identity_file_count_closure_fixed_check
-
-theorem source_snapshot_manifest_identity_file_count_bcnf_check :
-    bcnfCheck source_snapshot_manifest_identity_file_count_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_file_count_bcnf : BCNF source_snapshot_manifest_identity_file_count_contract :=
-  bcnfCheck_sound source_snapshot_manifest_identity_file_count_contract source_snapshot_manifest_identity_file_count_bcnf_check
-
-def source_snapshot_manifest_identity_byte_count_contract : RelationContract where
-  name := "source_snapshot_manifest_identity_byte_count"
-  attributes := ["snapshot_manifest_sha256", "byte_count"]
-  declaredKeys := [["snapshot_manifest_sha256"]]
-  declaredFDs := [
-    { determinant := ["snapshot_manifest_sha256"], dependent := ["byte_count"] }
-  ]
-
-theorem source_snapshot_manifest_identity_byte_count_schema_well_formed :
-    schemaWellFormedCheck source_snapshot_manifest_identity_byte_count_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_byte_count_candidate_keys_check :
-    keysDetermineAllCheck source_snapshot_manifest_identity_byte_count_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_byte_count_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_snapshot_manifest_identity_byte_count_contract :=
-  keysDetermineAllCheck_sound source_snapshot_manifest_identity_byte_count_contract
-    source_snapshot_manifest_identity_byte_count_candidate_keys_check
-
-theorem source_snapshot_manifest_identity_byte_count_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_snapshot_manifest_identity_byte_count_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_byte_count_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_snapshot_manifest_identity_byte_count_contract :=
-  declaredKeysMinimalCheck_sound source_snapshot_manifest_identity_byte_count_contract
-    source_snapshot_manifest_identity_byte_count_candidate_keys_minimal_check
-
-theorem source_snapshot_manifest_identity_byte_count_closure_fixed_check :
-    closureFixedPointCheck source_snapshot_manifest_identity_byte_count_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_byte_count_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_snapshot_manifest_identity_byte_count_contract :=
-  closureFixedPointCheck_sound source_snapshot_manifest_identity_byte_count_contract
-    source_snapshot_manifest_identity_byte_count_closure_fixed_check
-
-theorem source_snapshot_manifest_identity_byte_count_bcnf_check :
-    bcnfCheck source_snapshot_manifest_identity_byte_count_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_byte_count_bcnf : BCNF source_snapshot_manifest_identity_byte_count_contract :=
-  bcnfCheck_sound source_snapshot_manifest_identity_byte_count_contract source_snapshot_manifest_identity_byte_count_bcnf_check
-
-def source_snapshot_manifest_identity_seal_contract : RelationContract where
-  name := "source_snapshot_manifest_identity_seal"
-  attributes := ["snapshot_manifest_sha256"]
-  declaredKeys := [["snapshot_manifest_sha256"]]
-  declaredFDs := [
-  ]
-
-theorem source_snapshot_manifest_identity_seal_schema_well_formed :
-    schemaWellFormedCheck source_snapshot_manifest_identity_seal_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_seal_candidate_keys_check :
-    keysDetermineAllCheck source_snapshot_manifest_identity_seal_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_snapshot_manifest_identity_seal_contract :=
-  keysDetermineAllCheck_sound source_snapshot_manifest_identity_seal_contract
-    source_snapshot_manifest_identity_seal_candidate_keys_check
-
-theorem source_snapshot_manifest_identity_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_snapshot_manifest_identity_seal_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_snapshot_manifest_identity_seal_contract :=
-  declaredKeysMinimalCheck_sound source_snapshot_manifest_identity_seal_contract
-    source_snapshot_manifest_identity_seal_candidate_keys_minimal_check
-
-theorem source_snapshot_manifest_identity_seal_closure_fixed_check :
-    closureFixedPointCheck source_snapshot_manifest_identity_seal_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_snapshot_manifest_identity_seal_contract :=
-  closureFixedPointCheck_sound source_snapshot_manifest_identity_seal_contract
-    source_snapshot_manifest_identity_seal_closure_fixed_check
-
-theorem source_snapshot_manifest_identity_seal_bcnf_check :
-    bcnfCheck source_snapshot_manifest_identity_seal_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_seal_bcnf : BCNF source_snapshot_manifest_identity_seal_contract :=
-  bcnfCheck_sound source_snapshot_manifest_identity_seal_contract source_snapshot_manifest_identity_seal_bcnf_check
-
 def source_snapshot_manifest_identity_contract : RelationContract where
   name := "source_snapshot_manifest_identity"
   attributes := ["snapshot_manifest_sha256", "gallery_count", "file_count", "byte_count"]
@@ -7472,6 +5489,13 @@ theorem source_snapshot_manifest_identity_closure_reached_fixed_point :
     ClosureReachedFixedPoint source_snapshot_manifest_identity_contract :=
   closureFixedPointCheck_sound source_snapshot_manifest_identity_contract
     source_snapshot_manifest_identity_closure_fixed_check
+
+theorem source_snapshot_manifest_identity_bcnf_check :
+    bcnfCheck source_snapshot_manifest_identity_contract = true := by
+  native_decide
+
+theorem source_snapshot_manifest_identity_bcnf : BCNF source_snapshot_manifest_identity_contract :=
+  bcnfCheck_sound source_snapshot_manifest_identity_contract source_snapshot_manifest_identity_bcnf_check
 
 def analysis_snapshot_manifest_contract : RelationContract where
   name := "analysis_snapshot_manifest"
@@ -7519,188 +5543,6 @@ theorem analysis_snapshot_manifest_bcnf_check :
 theorem analysis_snapshot_manifest_bcnf : BCNF analysis_snapshot_manifest_contract :=
   bcnfCheck_sound analysis_snapshot_manifest_contract analysis_snapshot_manifest_bcnf_check
 
-def source_revision_anchor_contract : RelationContract where
-  name := "source_revision_anchor"
-  attributes := ["source_revision"]
-  declaredKeys := [["source_revision"]]
-  declaredFDs := [
-  ]
-
-theorem source_revision_anchor_schema_well_formed :
-    schemaWellFormedCheck source_revision_anchor_contract = true := by
-  native_decide
-
-theorem source_revision_anchor_candidate_keys_check :
-    keysDetermineAllCheck source_revision_anchor_contract = true := by
-  native_decide
-
-theorem source_revision_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_revision_anchor_contract :=
-  keysDetermineAllCheck_sound source_revision_anchor_contract
-    source_revision_anchor_candidate_keys_check
-
-theorem source_revision_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_revision_anchor_contract = true := by
-  native_decide
-
-theorem source_revision_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_revision_anchor_contract :=
-  declaredKeysMinimalCheck_sound source_revision_anchor_contract
-    source_revision_anchor_candidate_keys_minimal_check
-
-theorem source_revision_anchor_closure_fixed_check :
-    closureFixedPointCheck source_revision_anchor_contract = true := by
-  native_decide
-
-theorem source_revision_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_revision_anchor_contract :=
-  closureFixedPointCheck_sound source_revision_anchor_contract
-    source_revision_anchor_closure_fixed_check
-
-theorem source_revision_anchor_bcnf_check :
-    bcnfCheck source_revision_anchor_contract = true := by
-  native_decide
-
-theorem source_revision_anchor_bcnf : BCNF source_revision_anchor_contract :=
-  bcnfCheck_sound source_revision_anchor_contract source_revision_anchor_bcnf_check
-
-def source_revision_channel_contract : RelationContract where
-  name := "source_revision_channel"
-  attributes := ["source_revision", "channel"]
-  declaredKeys := [["source_revision"]]
-  declaredFDs := [
-    { determinant := ["source_revision"], dependent := ["channel"] }
-  ]
-
-theorem source_revision_channel_schema_well_formed :
-    schemaWellFormedCheck source_revision_channel_contract = true := by
-  native_decide
-
-theorem source_revision_channel_candidate_keys_check :
-    keysDetermineAllCheck source_revision_channel_contract = true := by
-  native_decide
-
-theorem source_revision_channel_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_revision_channel_contract :=
-  keysDetermineAllCheck_sound source_revision_channel_contract
-    source_revision_channel_candidate_keys_check
-
-theorem source_revision_channel_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_revision_channel_contract = true := by
-  native_decide
-
-theorem source_revision_channel_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_revision_channel_contract :=
-  declaredKeysMinimalCheck_sound source_revision_channel_contract
-    source_revision_channel_candidate_keys_minimal_check
-
-theorem source_revision_channel_closure_fixed_check :
-    closureFixedPointCheck source_revision_channel_contract = true := by
-  native_decide
-
-theorem source_revision_channel_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_revision_channel_contract :=
-  closureFixedPointCheck_sound source_revision_channel_contract
-    source_revision_channel_closure_fixed_check
-
-theorem source_revision_channel_bcnf_check :
-    bcnfCheck source_revision_channel_contract = true := by
-  native_decide
-
-theorem source_revision_channel_bcnf : BCNF source_revision_channel_contract :=
-  bcnfCheck_sound source_revision_channel_contract source_revision_channel_bcnf_check
-
-def source_revision_snapshot_manifest_contract : RelationContract where
-  name := "source_revision_snapshot_manifest"
-  attributes := ["source_revision", "snapshot_manifest_sha256"]
-  declaredKeys := [["source_revision"]]
-  declaredFDs := [
-    { determinant := ["source_revision"], dependent := ["snapshot_manifest_sha256"] }
-  ]
-
-theorem source_revision_snapshot_manifest_schema_well_formed :
-    schemaWellFormedCheck source_revision_snapshot_manifest_contract = true := by
-  native_decide
-
-theorem source_revision_snapshot_manifest_candidate_keys_check :
-    keysDetermineAllCheck source_revision_snapshot_manifest_contract = true := by
-  native_decide
-
-theorem source_revision_snapshot_manifest_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_revision_snapshot_manifest_contract :=
-  keysDetermineAllCheck_sound source_revision_snapshot_manifest_contract
-    source_revision_snapshot_manifest_candidate_keys_check
-
-theorem source_revision_snapshot_manifest_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_revision_snapshot_manifest_contract = true := by
-  native_decide
-
-theorem source_revision_snapshot_manifest_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_revision_snapshot_manifest_contract :=
-  declaredKeysMinimalCheck_sound source_revision_snapshot_manifest_contract
-    source_revision_snapshot_manifest_candidate_keys_minimal_check
-
-theorem source_revision_snapshot_manifest_closure_fixed_check :
-    closureFixedPointCheck source_revision_snapshot_manifest_contract = true := by
-  native_decide
-
-theorem source_revision_snapshot_manifest_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_revision_snapshot_manifest_contract :=
-  closureFixedPointCheck_sound source_revision_snapshot_manifest_contract
-    source_revision_snapshot_manifest_closure_fixed_check
-
-theorem source_revision_snapshot_manifest_bcnf_check :
-    bcnfCheck source_revision_snapshot_manifest_contract = true := by
-  native_decide
-
-theorem source_revision_snapshot_manifest_bcnf : BCNF source_revision_snapshot_manifest_contract :=
-  bcnfCheck_sound source_revision_snapshot_manifest_contract source_revision_snapshot_manifest_bcnf_check
-
-def source_revision_descriptor_seal_contract : RelationContract where
-  name := "source_revision_descriptor_seal"
-  attributes := ["source_revision"]
-  declaredKeys := [["source_revision"]]
-  declaredFDs := [
-  ]
-
-theorem source_revision_descriptor_seal_schema_well_formed :
-    schemaWellFormedCheck source_revision_descriptor_seal_contract = true := by
-  native_decide
-
-theorem source_revision_descriptor_seal_candidate_keys_check :
-    keysDetermineAllCheck source_revision_descriptor_seal_contract = true := by
-  native_decide
-
-theorem source_revision_descriptor_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes source_revision_descriptor_seal_contract :=
-  keysDetermineAllCheck_sound source_revision_descriptor_seal_contract
-    source_revision_descriptor_seal_candidate_keys_check
-
-theorem source_revision_descriptor_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck source_revision_descriptor_seal_contract = true := by
-  native_decide
-
-theorem source_revision_descriptor_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal source_revision_descriptor_seal_contract :=
-  declaredKeysMinimalCheck_sound source_revision_descriptor_seal_contract
-    source_revision_descriptor_seal_candidate_keys_minimal_check
-
-theorem source_revision_descriptor_seal_closure_fixed_check :
-    closureFixedPointCheck source_revision_descriptor_seal_contract = true := by
-  native_decide
-
-theorem source_revision_descriptor_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint source_revision_descriptor_seal_contract :=
-  closureFixedPointCheck_sound source_revision_descriptor_seal_contract
-    source_revision_descriptor_seal_closure_fixed_check
-
-theorem source_revision_descriptor_seal_bcnf_check :
-    bcnfCheck source_revision_descriptor_seal_contract = true := by
-  native_decide
-
-theorem source_revision_descriptor_seal_bcnf : BCNF source_revision_descriptor_seal_contract :=
-  bcnfCheck_sound source_revision_descriptor_seal_contract source_revision_descriptor_seal_bcnf_check
-
 def source_revision_descriptor_contract : RelationContract where
   name := "source_revision_descriptor"
   attributes := ["source_revision", "channel", "snapshot_manifest_sha256"]
@@ -7739,6 +5581,13 @@ theorem source_revision_descriptor_closure_reached_fixed_point :
     ClosureReachedFixedPoint source_revision_descriptor_contract :=
   closureFixedPointCheck_sound source_revision_descriptor_contract
     source_revision_descriptor_closure_fixed_check
+
+theorem source_revision_descriptor_bcnf_check :
+    bcnfCheck source_revision_descriptor_contract = true := by
+  native_decide
+
+theorem source_revision_descriptor_bcnf : BCNF source_revision_descriptor_contract :=
+  bcnfCheck_sound source_revision_descriptor_contract source_revision_descriptor_bcnf_check
 
 def source_revision_contract : RelationContract where
   name := "source_revision"
@@ -9652,188 +7501,6 @@ theorem analysis_gid_winner_resolved_closure_reached_fixed_point :
   closureFixedPointCheck_sound analysis_gid_winner_resolved_contract
     analysis_gid_winner_resolved_closure_fixed_check
 
-def analysis_state_component_anchor_contract : RelationContract where
-  name := "analysis_state_component_anchor"
-  attributes := ["analysis_id", "state_component"]
-  declaredKeys := [["analysis_id", "state_component"]]
-  declaredFDs := [
-  ]
-
-theorem analysis_state_component_anchor_schema_well_formed :
-    schemaWellFormedCheck analysis_state_component_anchor_contract = true := by
-  native_decide
-
-theorem analysis_state_component_anchor_candidate_keys_check :
-    keysDetermineAllCheck analysis_state_component_anchor_contract = true := by
-  native_decide
-
-theorem analysis_state_component_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_state_component_anchor_contract :=
-  keysDetermineAllCheck_sound analysis_state_component_anchor_contract
-    analysis_state_component_anchor_candidate_keys_check
-
-theorem analysis_state_component_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_state_component_anchor_contract = true := by
-  native_decide
-
-theorem analysis_state_component_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_state_component_anchor_contract :=
-  declaredKeysMinimalCheck_sound analysis_state_component_anchor_contract
-    analysis_state_component_anchor_candidate_keys_minimal_check
-
-theorem analysis_state_component_anchor_closure_fixed_check :
-    closureFixedPointCheck analysis_state_component_anchor_contract = true := by
-  native_decide
-
-theorem analysis_state_component_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_state_component_anchor_contract :=
-  closureFixedPointCheck_sound analysis_state_component_anchor_contract
-    analysis_state_component_anchor_closure_fixed_check
-
-theorem analysis_state_component_anchor_bcnf_check :
-    bcnfCheck analysis_state_component_anchor_contract = true := by
-  native_decide
-
-theorem analysis_state_component_anchor_bcnf : BCNF analysis_state_component_anchor_contract :=
-  bcnfCheck_sound analysis_state_component_anchor_contract analysis_state_component_anchor_bcnf_check
-
-def analysis_state_component_row_count_contract : RelationContract where
-  name := "analysis_state_component_row_count"
-  attributes := ["analysis_id", "state_component", "row_count"]
-  declaredKeys := [["analysis_id", "state_component"]]
-  declaredFDs := [
-    { determinant := ["analysis_id", "state_component"], dependent := ["row_count"] }
-  ]
-
-theorem analysis_state_component_row_count_schema_well_formed :
-    schemaWellFormedCheck analysis_state_component_row_count_contract = true := by
-  native_decide
-
-theorem analysis_state_component_row_count_candidate_keys_check :
-    keysDetermineAllCheck analysis_state_component_row_count_contract = true := by
-  native_decide
-
-theorem analysis_state_component_row_count_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_state_component_row_count_contract :=
-  keysDetermineAllCheck_sound analysis_state_component_row_count_contract
-    analysis_state_component_row_count_candidate_keys_check
-
-theorem analysis_state_component_row_count_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_state_component_row_count_contract = true := by
-  native_decide
-
-theorem analysis_state_component_row_count_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_state_component_row_count_contract :=
-  declaredKeysMinimalCheck_sound analysis_state_component_row_count_contract
-    analysis_state_component_row_count_candidate_keys_minimal_check
-
-theorem analysis_state_component_row_count_closure_fixed_check :
-    closureFixedPointCheck analysis_state_component_row_count_contract = true := by
-  native_decide
-
-theorem analysis_state_component_row_count_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_state_component_row_count_contract :=
-  closureFixedPointCheck_sound analysis_state_component_row_count_contract
-    analysis_state_component_row_count_closure_fixed_check
-
-theorem analysis_state_component_row_count_bcnf_check :
-    bcnfCheck analysis_state_component_row_count_contract = true := by
-  native_decide
-
-theorem analysis_state_component_row_count_bcnf : BCNF analysis_state_component_row_count_contract :=
-  bcnfCheck_sound analysis_state_component_row_count_contract analysis_state_component_row_count_bcnf_check
-
-def analysis_state_component_sealed_at_contract : RelationContract where
-  name := "analysis_state_component_sealed_at"
-  attributes := ["analysis_id", "state_component", "sealed_at"]
-  declaredKeys := [["analysis_id", "state_component"]]
-  declaredFDs := [
-    { determinant := ["analysis_id", "state_component"], dependent := ["sealed_at"] }
-  ]
-
-theorem analysis_state_component_sealed_at_schema_well_formed :
-    schemaWellFormedCheck analysis_state_component_sealed_at_contract = true := by
-  native_decide
-
-theorem analysis_state_component_sealed_at_candidate_keys_check :
-    keysDetermineAllCheck analysis_state_component_sealed_at_contract = true := by
-  native_decide
-
-theorem analysis_state_component_sealed_at_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_state_component_sealed_at_contract :=
-  keysDetermineAllCheck_sound analysis_state_component_sealed_at_contract
-    analysis_state_component_sealed_at_candidate_keys_check
-
-theorem analysis_state_component_sealed_at_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_state_component_sealed_at_contract = true := by
-  native_decide
-
-theorem analysis_state_component_sealed_at_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_state_component_sealed_at_contract :=
-  declaredKeysMinimalCheck_sound analysis_state_component_sealed_at_contract
-    analysis_state_component_sealed_at_candidate_keys_minimal_check
-
-theorem analysis_state_component_sealed_at_closure_fixed_check :
-    closureFixedPointCheck analysis_state_component_sealed_at_contract = true := by
-  native_decide
-
-theorem analysis_state_component_sealed_at_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_state_component_sealed_at_contract :=
-  closureFixedPointCheck_sound analysis_state_component_sealed_at_contract
-    analysis_state_component_sealed_at_closure_fixed_check
-
-theorem analysis_state_component_sealed_at_bcnf_check :
-    bcnfCheck analysis_state_component_sealed_at_contract = true := by
-  native_decide
-
-theorem analysis_state_component_sealed_at_bcnf : BCNF analysis_state_component_sealed_at_contract :=
-  bcnfCheck_sound analysis_state_component_sealed_at_contract analysis_state_component_sealed_at_bcnf_check
-
-def analysis_state_component_completion_seal_contract : RelationContract where
-  name := "analysis_state_component_completion_seal"
-  attributes := ["analysis_id", "state_component"]
-  declaredKeys := [["analysis_id", "state_component"]]
-  declaredFDs := [
-  ]
-
-theorem analysis_state_component_completion_seal_schema_well_formed :
-    schemaWellFormedCheck analysis_state_component_completion_seal_contract = true := by
-  native_decide
-
-theorem analysis_state_component_completion_seal_candidate_keys_check :
-    keysDetermineAllCheck analysis_state_component_completion_seal_contract = true := by
-  native_decide
-
-theorem analysis_state_component_completion_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_state_component_completion_seal_contract :=
-  keysDetermineAllCheck_sound analysis_state_component_completion_seal_contract
-    analysis_state_component_completion_seal_candidate_keys_check
-
-theorem analysis_state_component_completion_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_state_component_completion_seal_contract = true := by
-  native_decide
-
-theorem analysis_state_component_completion_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_state_component_completion_seal_contract :=
-  declaredKeysMinimalCheck_sound analysis_state_component_completion_seal_contract
-    analysis_state_component_completion_seal_candidate_keys_minimal_check
-
-theorem analysis_state_component_completion_seal_closure_fixed_check :
-    closureFixedPointCheck analysis_state_component_completion_seal_contract = true := by
-  native_decide
-
-theorem analysis_state_component_completion_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_state_component_completion_seal_contract :=
-  closureFixedPointCheck_sound analysis_state_component_completion_seal_contract
-    analysis_state_component_completion_seal_closure_fixed_check
-
-theorem analysis_state_component_completion_seal_bcnf_check :
-    bcnfCheck analysis_state_component_completion_seal_contract = true := by
-  native_decide
-
-theorem analysis_state_component_completion_seal_bcnf : BCNF analysis_state_component_completion_seal_contract :=
-  bcnfCheck_sound analysis_state_component_completion_seal_contract analysis_state_component_completion_seal_bcnf_check
-
 def analysis_state_component_seal_contract : RelationContract where
   name := "analysis_state_component_seal"
   attributes := ["analysis_id", "state_component", "row_count", "sealed_at"]
@@ -9873,188 +7540,12 @@ theorem analysis_state_component_seal_closure_reached_fixed_point :
   closureFixedPointCheck_sound analysis_state_component_seal_contract
     analysis_state_component_seal_closure_fixed_check
 
-def analysis_stage_anchor_contract : RelationContract where
-  name := "analysis_stage_anchor"
-  attributes := ["stage"]
-  declaredKeys := [["stage"]]
-  declaredFDs := [
-  ]
-
-theorem analysis_stage_anchor_schema_well_formed :
-    schemaWellFormedCheck analysis_stage_anchor_contract = true := by
+theorem analysis_state_component_seal_bcnf_check :
+    bcnfCheck analysis_state_component_seal_contract = true := by
   native_decide
 
-theorem analysis_stage_anchor_candidate_keys_check :
-    keysDetermineAllCheck analysis_stage_anchor_contract = true := by
-  native_decide
-
-theorem analysis_stage_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_stage_anchor_contract :=
-  keysDetermineAllCheck_sound analysis_stage_anchor_contract
-    analysis_stage_anchor_candidate_keys_check
-
-theorem analysis_stage_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_stage_anchor_contract = true := by
-  native_decide
-
-theorem analysis_stage_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_stage_anchor_contract :=
-  declaredKeysMinimalCheck_sound analysis_stage_anchor_contract
-    analysis_stage_anchor_candidate_keys_minimal_check
-
-theorem analysis_stage_anchor_closure_fixed_check :
-    closureFixedPointCheck analysis_stage_anchor_contract = true := by
-  native_decide
-
-theorem analysis_stage_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_stage_anchor_contract :=
-  closureFixedPointCheck_sound analysis_stage_anchor_contract
-    analysis_stage_anchor_closure_fixed_check
-
-theorem analysis_stage_anchor_bcnf_check :
-    bcnfCheck analysis_stage_anchor_contract = true := by
-  native_decide
-
-theorem analysis_stage_anchor_bcnf : BCNF analysis_stage_anchor_contract :=
-  bcnfCheck_sound analysis_stage_anchor_contract analysis_stage_anchor_bcnf_check
-
-def analysis_stage_order_contract : RelationContract where
-  name := "analysis_stage_order"
-  attributes := ["stage", "stage_order"]
-  declaredKeys := [["stage"], ["stage_order"]]
-  declaredFDs := [
-    { determinant := ["stage"], dependent := ["stage_order"] },
-    { determinant := ["stage_order"], dependent := ["stage"] }
-  ]
-
-theorem analysis_stage_order_schema_well_formed :
-    schemaWellFormedCheck analysis_stage_order_contract = true := by
-  native_decide
-
-theorem analysis_stage_order_candidate_keys_check :
-    keysDetermineAllCheck analysis_stage_order_contract = true := by
-  native_decide
-
-theorem analysis_stage_order_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_stage_order_contract :=
-  keysDetermineAllCheck_sound analysis_stage_order_contract
-    analysis_stage_order_candidate_keys_check
-
-theorem analysis_stage_order_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_stage_order_contract = true := by
-  native_decide
-
-theorem analysis_stage_order_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_stage_order_contract :=
-  declaredKeysMinimalCheck_sound analysis_stage_order_contract
-    analysis_stage_order_candidate_keys_minimal_check
-
-theorem analysis_stage_order_closure_fixed_check :
-    closureFixedPointCheck analysis_stage_order_contract = true := by
-  native_decide
-
-theorem analysis_stage_order_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_stage_order_contract :=
-  closureFixedPointCheck_sound analysis_stage_order_contract
-    analysis_stage_order_closure_fixed_check
-
-theorem analysis_stage_order_bcnf_check :
-    bcnfCheck analysis_stage_order_contract = true := by
-  native_decide
-
-theorem analysis_stage_order_bcnf : BCNF analysis_stage_order_contract :=
-  bcnfCheck_sound analysis_stage_order_contract analysis_stage_order_bcnf_check
-
-def analysis_stage_cursor_codec_contract : RelationContract where
-  name := "analysis_stage_cursor_codec"
-  attributes := ["stage", "cursor_codec"]
-  declaredKeys := [["stage"]]
-  declaredFDs := [
-    { determinant := ["stage"], dependent := ["cursor_codec"] }
-  ]
-
-theorem analysis_stage_cursor_codec_schema_well_formed :
-    schemaWellFormedCheck analysis_stage_cursor_codec_contract = true := by
-  native_decide
-
-theorem analysis_stage_cursor_codec_candidate_keys_check :
-    keysDetermineAllCheck analysis_stage_cursor_codec_contract = true := by
-  native_decide
-
-theorem analysis_stage_cursor_codec_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_stage_cursor_codec_contract :=
-  keysDetermineAllCheck_sound analysis_stage_cursor_codec_contract
-    analysis_stage_cursor_codec_candidate_keys_check
-
-theorem analysis_stage_cursor_codec_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_stage_cursor_codec_contract = true := by
-  native_decide
-
-theorem analysis_stage_cursor_codec_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_stage_cursor_codec_contract :=
-  declaredKeysMinimalCheck_sound analysis_stage_cursor_codec_contract
-    analysis_stage_cursor_codec_candidate_keys_minimal_check
-
-theorem analysis_stage_cursor_codec_closure_fixed_check :
-    closureFixedPointCheck analysis_stage_cursor_codec_contract = true := by
-  native_decide
-
-theorem analysis_stage_cursor_codec_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_stage_cursor_codec_contract :=
-  closureFixedPointCheck_sound analysis_stage_cursor_codec_contract
-    analysis_stage_cursor_codec_closure_fixed_check
-
-theorem analysis_stage_cursor_codec_bcnf_check :
-    bcnfCheck analysis_stage_cursor_codec_contract = true := by
-  native_decide
-
-theorem analysis_stage_cursor_codec_bcnf : BCNF analysis_stage_cursor_codec_contract :=
-  bcnfCheck_sound analysis_stage_cursor_codec_contract analysis_stage_cursor_codec_bcnf_check
-
-def analysis_stage_seal_contract : RelationContract where
-  name := "analysis_stage_seal"
-  attributes := ["stage"]
-  declaredKeys := [["stage"]]
-  declaredFDs := [
-  ]
-
-theorem analysis_stage_seal_schema_well_formed :
-    schemaWellFormedCheck analysis_stage_seal_contract = true := by
-  native_decide
-
-theorem analysis_stage_seal_candidate_keys_check :
-    keysDetermineAllCheck analysis_stage_seal_contract = true := by
-  native_decide
-
-theorem analysis_stage_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_stage_seal_contract :=
-  keysDetermineAllCheck_sound analysis_stage_seal_contract
-    analysis_stage_seal_candidate_keys_check
-
-theorem analysis_stage_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_stage_seal_contract = true := by
-  native_decide
-
-theorem analysis_stage_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_stage_seal_contract :=
-  declaredKeysMinimalCheck_sound analysis_stage_seal_contract
-    analysis_stage_seal_candidate_keys_minimal_check
-
-theorem analysis_stage_seal_closure_fixed_check :
-    closureFixedPointCheck analysis_stage_seal_contract = true := by
-  native_decide
-
-theorem analysis_stage_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_stage_seal_contract :=
-  closureFixedPointCheck_sound analysis_stage_seal_contract
-    analysis_stage_seal_closure_fixed_check
-
-theorem analysis_stage_seal_bcnf_check :
-    bcnfCheck analysis_stage_seal_contract = true := by
-  native_decide
-
-theorem analysis_stage_seal_bcnf : BCNF analysis_stage_seal_contract :=
-  bcnfCheck_sound analysis_stage_seal_contract analysis_stage_seal_bcnf_check
+theorem analysis_state_component_seal_bcnf : BCNF analysis_state_component_seal_contract :=
+  bcnfCheck_sound analysis_state_component_seal_contract analysis_state_component_seal_bcnf_check
 
 def analysis_stage_contract : RelationContract where
   name := "analysis_stage"
@@ -10096,325 +7587,12 @@ theorem analysis_stage_closure_reached_fixed_point :
   closureFixedPointCheck_sound analysis_stage_contract
     analysis_stage_closure_fixed_check
 
-def analysis_checkpoint_anchor_contract : RelationContract where
-  name := "analysis_checkpoint_anchor"
-  attributes := ["analysis_id", "stage"]
-  declaredKeys := [["analysis_id", "stage"]]
-  declaredFDs := [
-  ]
-
-theorem analysis_checkpoint_anchor_schema_well_formed :
-    schemaWellFormedCheck analysis_checkpoint_anchor_contract = true := by
+theorem analysis_stage_bcnf_check :
+    bcnfCheck analysis_stage_contract = true := by
   native_decide
 
-theorem analysis_checkpoint_anchor_candidate_keys_check :
-    keysDetermineAllCheck analysis_checkpoint_anchor_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_checkpoint_anchor_contract :=
-  keysDetermineAllCheck_sound analysis_checkpoint_anchor_contract
-    analysis_checkpoint_anchor_candidate_keys_check
-
-theorem analysis_checkpoint_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_checkpoint_anchor_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_checkpoint_anchor_contract :=
-  declaredKeysMinimalCheck_sound analysis_checkpoint_anchor_contract
-    analysis_checkpoint_anchor_candidate_keys_minimal_check
-
-theorem analysis_checkpoint_anchor_closure_fixed_check :
-    closureFixedPointCheck analysis_checkpoint_anchor_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_checkpoint_anchor_contract :=
-  closureFixedPointCheck_sound analysis_checkpoint_anchor_contract
-    analysis_checkpoint_anchor_closure_fixed_check
-
-theorem analysis_checkpoint_anchor_bcnf_check :
-    bcnfCheck analysis_checkpoint_anchor_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_anchor_bcnf : BCNF analysis_checkpoint_anchor_contract :=
-  bcnfCheck_sound analysis_checkpoint_anchor_contract analysis_checkpoint_anchor_bcnf_check
-
-def analysis_checkpoint_generation_contract : RelationContract where
-  name := "analysis_checkpoint_generation"
-  attributes := ["analysis_id", "stage", "generation"]
-  declaredKeys := [["analysis_id", "stage"]]
-  declaredFDs := [
-    { determinant := ["analysis_id", "stage"], dependent := ["generation"] }
-  ]
-
-theorem analysis_checkpoint_generation_schema_well_formed :
-    schemaWellFormedCheck analysis_checkpoint_generation_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_generation_candidate_keys_check :
-    keysDetermineAllCheck analysis_checkpoint_generation_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_generation_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_checkpoint_generation_contract :=
-  keysDetermineAllCheck_sound analysis_checkpoint_generation_contract
-    analysis_checkpoint_generation_candidate_keys_check
-
-theorem analysis_checkpoint_generation_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_checkpoint_generation_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_generation_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_checkpoint_generation_contract :=
-  declaredKeysMinimalCheck_sound analysis_checkpoint_generation_contract
-    analysis_checkpoint_generation_candidate_keys_minimal_check
-
-theorem analysis_checkpoint_generation_closure_fixed_check :
-    closureFixedPointCheck analysis_checkpoint_generation_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_generation_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_checkpoint_generation_contract :=
-  closureFixedPointCheck_sound analysis_checkpoint_generation_contract
-    analysis_checkpoint_generation_closure_fixed_check
-
-theorem analysis_checkpoint_generation_bcnf_check :
-    bcnfCheck analysis_checkpoint_generation_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_generation_bcnf : BCNF analysis_checkpoint_generation_contract :=
-  bcnfCheck_sound analysis_checkpoint_generation_contract analysis_checkpoint_generation_bcnf_check
-
-def analysis_checkpoint_cursor_contract : RelationContract where
-  name := "analysis_checkpoint_cursor"
-  attributes := ["analysis_id", "stage", "cursor"]
-  declaredKeys := [["analysis_id", "stage"]]
-  declaredFDs := [
-    { determinant := ["analysis_id", "stage"], dependent := ["cursor"] }
-  ]
-
-theorem analysis_checkpoint_cursor_schema_well_formed :
-    schemaWellFormedCheck analysis_checkpoint_cursor_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_cursor_candidate_keys_check :
-    keysDetermineAllCheck analysis_checkpoint_cursor_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_cursor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_checkpoint_cursor_contract :=
-  keysDetermineAllCheck_sound analysis_checkpoint_cursor_contract
-    analysis_checkpoint_cursor_candidate_keys_check
-
-theorem analysis_checkpoint_cursor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_checkpoint_cursor_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_cursor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_checkpoint_cursor_contract :=
-  declaredKeysMinimalCheck_sound analysis_checkpoint_cursor_contract
-    analysis_checkpoint_cursor_candidate_keys_minimal_check
-
-theorem analysis_checkpoint_cursor_closure_fixed_check :
-    closureFixedPointCheck analysis_checkpoint_cursor_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_cursor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_checkpoint_cursor_contract :=
-  closureFixedPointCheck_sound analysis_checkpoint_cursor_contract
-    analysis_checkpoint_cursor_closure_fixed_check
-
-theorem analysis_checkpoint_cursor_bcnf_check :
-    bcnfCheck analysis_checkpoint_cursor_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_cursor_bcnf : BCNF analysis_checkpoint_cursor_contract :=
-  bcnfCheck_sound analysis_checkpoint_cursor_contract analysis_checkpoint_cursor_bcnf_check
-
-def analysis_checkpoint_processed_count_contract : RelationContract where
-  name := "analysis_checkpoint_processed_count"
-  attributes := ["analysis_id", "stage", "processed_count"]
-  declaredKeys := [["analysis_id", "stage"]]
-  declaredFDs := [
-    { determinant := ["analysis_id", "stage"], dependent := ["processed_count"] }
-  ]
-
-theorem analysis_checkpoint_processed_count_schema_well_formed :
-    schemaWellFormedCheck analysis_checkpoint_processed_count_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_processed_count_candidate_keys_check :
-    keysDetermineAllCheck analysis_checkpoint_processed_count_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_processed_count_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_checkpoint_processed_count_contract :=
-  keysDetermineAllCheck_sound analysis_checkpoint_processed_count_contract
-    analysis_checkpoint_processed_count_candidate_keys_check
-
-theorem analysis_checkpoint_processed_count_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_checkpoint_processed_count_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_processed_count_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_checkpoint_processed_count_contract :=
-  declaredKeysMinimalCheck_sound analysis_checkpoint_processed_count_contract
-    analysis_checkpoint_processed_count_candidate_keys_minimal_check
-
-theorem analysis_checkpoint_processed_count_closure_fixed_check :
-    closureFixedPointCheck analysis_checkpoint_processed_count_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_processed_count_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_checkpoint_processed_count_contract :=
-  closureFixedPointCheck_sound analysis_checkpoint_processed_count_contract
-    analysis_checkpoint_processed_count_closure_fixed_check
-
-theorem analysis_checkpoint_processed_count_bcnf_check :
-    bcnfCheck analysis_checkpoint_processed_count_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_processed_count_bcnf : BCNF analysis_checkpoint_processed_count_contract :=
-  bcnfCheck_sound analysis_checkpoint_processed_count_contract analysis_checkpoint_processed_count_bcnf_check
-
-def analysis_checkpoint_state_contract : RelationContract where
-  name := "analysis_checkpoint_state"
-  attributes := ["analysis_id", "stage", "state"]
-  declaredKeys := [["analysis_id", "stage"]]
-  declaredFDs := [
-    { determinant := ["analysis_id", "stage"], dependent := ["state"] }
-  ]
-
-theorem analysis_checkpoint_state_schema_well_formed :
-    schemaWellFormedCheck analysis_checkpoint_state_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_state_candidate_keys_check :
-    keysDetermineAllCheck analysis_checkpoint_state_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_state_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_checkpoint_state_contract :=
-  keysDetermineAllCheck_sound analysis_checkpoint_state_contract
-    analysis_checkpoint_state_candidate_keys_check
-
-theorem analysis_checkpoint_state_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_checkpoint_state_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_state_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_checkpoint_state_contract :=
-  declaredKeysMinimalCheck_sound analysis_checkpoint_state_contract
-    analysis_checkpoint_state_candidate_keys_minimal_check
-
-theorem analysis_checkpoint_state_closure_fixed_check :
-    closureFixedPointCheck analysis_checkpoint_state_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_state_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_checkpoint_state_contract :=
-  closureFixedPointCheck_sound analysis_checkpoint_state_contract
-    analysis_checkpoint_state_closure_fixed_check
-
-theorem analysis_checkpoint_state_bcnf_check :
-    bcnfCheck analysis_checkpoint_state_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_state_bcnf : BCNF analysis_checkpoint_state_contract :=
-  bcnfCheck_sound analysis_checkpoint_state_contract analysis_checkpoint_state_bcnf_check
-
-def analysis_checkpoint_updated_at_contract : RelationContract where
-  name := "analysis_checkpoint_updated_at"
-  attributes := ["analysis_id", "stage", "updated_at"]
-  declaredKeys := [["analysis_id", "stage"]]
-  declaredFDs := [
-    { determinant := ["analysis_id", "stage"], dependent := ["updated_at"] }
-  ]
-
-theorem analysis_checkpoint_updated_at_schema_well_formed :
-    schemaWellFormedCheck analysis_checkpoint_updated_at_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_updated_at_candidate_keys_check :
-    keysDetermineAllCheck analysis_checkpoint_updated_at_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_updated_at_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_checkpoint_updated_at_contract :=
-  keysDetermineAllCheck_sound analysis_checkpoint_updated_at_contract
-    analysis_checkpoint_updated_at_candidate_keys_check
-
-theorem analysis_checkpoint_updated_at_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_checkpoint_updated_at_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_updated_at_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_checkpoint_updated_at_contract :=
-  declaredKeysMinimalCheck_sound analysis_checkpoint_updated_at_contract
-    analysis_checkpoint_updated_at_candidate_keys_minimal_check
-
-theorem analysis_checkpoint_updated_at_closure_fixed_check :
-    closureFixedPointCheck analysis_checkpoint_updated_at_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_updated_at_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_checkpoint_updated_at_contract :=
-  closureFixedPointCheck_sound analysis_checkpoint_updated_at_contract
-    analysis_checkpoint_updated_at_closure_fixed_check
-
-theorem analysis_checkpoint_updated_at_bcnf_check :
-    bcnfCheck analysis_checkpoint_updated_at_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_updated_at_bcnf : BCNF analysis_checkpoint_updated_at_contract :=
-  bcnfCheck_sound analysis_checkpoint_updated_at_contract analysis_checkpoint_updated_at_bcnf_check
-
-def analysis_checkpoint_seal_contract : RelationContract where
-  name := "analysis_checkpoint_seal"
-  attributes := ["analysis_id", "stage"]
-  declaredKeys := [["analysis_id", "stage"]]
-  declaredFDs := [
-  ]
-
-theorem analysis_checkpoint_seal_schema_well_formed :
-    schemaWellFormedCheck analysis_checkpoint_seal_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_seal_candidate_keys_check :
-    keysDetermineAllCheck analysis_checkpoint_seal_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_checkpoint_seal_contract :=
-  keysDetermineAllCheck_sound analysis_checkpoint_seal_contract
-    analysis_checkpoint_seal_candidate_keys_check
-
-theorem analysis_checkpoint_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_checkpoint_seal_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_checkpoint_seal_contract :=
-  declaredKeysMinimalCheck_sound analysis_checkpoint_seal_contract
-    analysis_checkpoint_seal_candidate_keys_minimal_check
-
-theorem analysis_checkpoint_seal_closure_fixed_check :
-    closureFixedPointCheck analysis_checkpoint_seal_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_checkpoint_seal_contract :=
-  closureFixedPointCheck_sound analysis_checkpoint_seal_contract
-    analysis_checkpoint_seal_closure_fixed_check
-
-theorem analysis_checkpoint_seal_bcnf_check :
-    bcnfCheck analysis_checkpoint_seal_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_seal_bcnf : BCNF analysis_checkpoint_seal_contract :=
-  bcnfCheck_sound analysis_checkpoint_seal_contract analysis_checkpoint_seal_bcnf_check
+theorem analysis_stage_bcnf : BCNF analysis_stage_contract :=
+  bcnfCheck_sound analysis_stage_contract analysis_stage_bcnf_check
 
 def analysis_checkpoint_contract : RelationContract where
   name := "analysis_checkpoint"
@@ -10455,418 +7633,12 @@ theorem analysis_checkpoint_closure_reached_fixed_point :
   closureFixedPointCheck_sound analysis_checkpoint_contract
     analysis_checkpoint_closure_fixed_check
 
-def analysis_batch_receipt_anchor_contract : RelationContract where
-  name := "analysis_batch_receipt_anchor"
-  attributes := ["analysis_id", "stage", "start_generation"]
-  declaredKeys := [["analysis_id", "stage", "start_generation"]]
-  declaredFDs := [
-  ]
-
-theorem analysis_batch_receipt_anchor_schema_well_formed :
-    schemaWellFormedCheck analysis_batch_receipt_anchor_contract = true := by
+theorem analysis_checkpoint_bcnf_check :
+    bcnfCheck analysis_checkpoint_contract = true := by
   native_decide
 
-theorem analysis_batch_receipt_anchor_candidate_keys_check :
-    keysDetermineAllCheck analysis_batch_receipt_anchor_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_batch_receipt_anchor_contract :=
-  keysDetermineAllCheck_sound analysis_batch_receipt_anchor_contract
-    analysis_batch_receipt_anchor_candidate_keys_check
-
-theorem analysis_batch_receipt_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_batch_receipt_anchor_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_batch_receipt_anchor_contract :=
-  declaredKeysMinimalCheck_sound analysis_batch_receipt_anchor_contract
-    analysis_batch_receipt_anchor_candidate_keys_minimal_check
-
-theorem analysis_batch_receipt_anchor_closure_fixed_check :
-    closureFixedPointCheck analysis_batch_receipt_anchor_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_batch_receipt_anchor_contract :=
-  closureFixedPointCheck_sound analysis_batch_receipt_anchor_contract
-    analysis_batch_receipt_anchor_closure_fixed_check
-
-theorem analysis_batch_receipt_anchor_bcnf_check :
-    bcnfCheck analysis_batch_receipt_anchor_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_anchor_bcnf : BCNF analysis_batch_receipt_anchor_contract :=
-  bcnfCheck_sound analysis_batch_receipt_anchor_contract analysis_batch_receipt_anchor_bcnf_check
-
-def analysis_batch_receipt_coordinate_contract : RelationContract where
-  name := "analysis_batch_receipt_coordinate"
-  attributes := ["analysis_id", "stage", "batch_key", "start_generation"]
-  declaredKeys := [["analysis_id", "stage", "batch_key"], ["analysis_id", "stage", "start_generation"]]
-  declaredFDs := [
-    { determinant := ["analysis_id", "stage", "batch_key"], dependent := ["start_generation"] },
-    { determinant := ["analysis_id", "stage", "start_generation"], dependent := ["batch_key"] }
-  ]
-
-theorem analysis_batch_receipt_coordinate_schema_well_formed :
-    schemaWellFormedCheck analysis_batch_receipt_coordinate_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_coordinate_candidate_keys_check :
-    keysDetermineAllCheck analysis_batch_receipt_coordinate_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_coordinate_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_batch_receipt_coordinate_contract :=
-  keysDetermineAllCheck_sound analysis_batch_receipt_coordinate_contract
-    analysis_batch_receipt_coordinate_candidate_keys_check
-
-theorem analysis_batch_receipt_coordinate_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_batch_receipt_coordinate_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_coordinate_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_batch_receipt_coordinate_contract :=
-  declaredKeysMinimalCheck_sound analysis_batch_receipt_coordinate_contract
-    analysis_batch_receipt_coordinate_candidate_keys_minimal_check
-
-theorem analysis_batch_receipt_coordinate_closure_fixed_check :
-    closureFixedPointCheck analysis_batch_receipt_coordinate_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_coordinate_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_batch_receipt_coordinate_contract :=
-  closureFixedPointCheck_sound analysis_batch_receipt_coordinate_contract
-    analysis_batch_receipt_coordinate_closure_fixed_check
-
-theorem analysis_batch_receipt_coordinate_bcnf_check :
-    bcnfCheck analysis_batch_receipt_coordinate_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_coordinate_bcnf : BCNF analysis_batch_receipt_coordinate_contract :=
-  bcnfCheck_sound analysis_batch_receipt_coordinate_contract analysis_batch_receipt_coordinate_bcnf_check
-
-def analysis_batch_receipt_start_cursor_contract : RelationContract where
-  name := "analysis_batch_receipt_start_cursor"
-  attributes := ["analysis_id", "stage", "start_generation", "start_cursor"]
-  declaredKeys := [["analysis_id", "stage", "start_generation"]]
-  declaredFDs := [
-    { determinant := ["analysis_id", "stage", "start_generation"], dependent := ["start_cursor"] }
-  ]
-
-theorem analysis_batch_receipt_start_cursor_schema_well_formed :
-    schemaWellFormedCheck analysis_batch_receipt_start_cursor_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_start_cursor_candidate_keys_check :
-    keysDetermineAllCheck analysis_batch_receipt_start_cursor_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_start_cursor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_batch_receipt_start_cursor_contract :=
-  keysDetermineAllCheck_sound analysis_batch_receipt_start_cursor_contract
-    analysis_batch_receipt_start_cursor_candidate_keys_check
-
-theorem analysis_batch_receipt_start_cursor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_batch_receipt_start_cursor_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_start_cursor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_batch_receipt_start_cursor_contract :=
-  declaredKeysMinimalCheck_sound analysis_batch_receipt_start_cursor_contract
-    analysis_batch_receipt_start_cursor_candidate_keys_minimal_check
-
-theorem analysis_batch_receipt_start_cursor_closure_fixed_check :
-    closureFixedPointCheck analysis_batch_receipt_start_cursor_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_start_cursor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_batch_receipt_start_cursor_contract :=
-  closureFixedPointCheck_sound analysis_batch_receipt_start_cursor_contract
-    analysis_batch_receipt_start_cursor_closure_fixed_check
-
-theorem analysis_batch_receipt_start_cursor_bcnf_check :
-    bcnfCheck analysis_batch_receipt_start_cursor_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_start_cursor_bcnf : BCNF analysis_batch_receipt_start_cursor_contract :=
-  bcnfCheck_sound analysis_batch_receipt_start_cursor_contract analysis_batch_receipt_start_cursor_bcnf_check
-
-def analysis_batch_receipt_start_processed_count_contract : RelationContract where
-  name := "analysis_batch_receipt_start_processed_count"
-  attributes := ["analysis_id", "stage", "start_generation", "start_processed_count"]
-  declaredKeys := [["analysis_id", "stage", "start_generation"]]
-  declaredFDs := [
-    { determinant := ["analysis_id", "stage", "start_generation"], dependent := ["start_processed_count"] }
-  ]
-
-theorem analysis_batch_receipt_start_processed_count_schema_well_formed :
-    schemaWellFormedCheck analysis_batch_receipt_start_processed_count_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_start_processed_count_candidate_keys_check :
-    keysDetermineAllCheck analysis_batch_receipt_start_processed_count_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_start_processed_count_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_batch_receipt_start_processed_count_contract :=
-  keysDetermineAllCheck_sound analysis_batch_receipt_start_processed_count_contract
-    analysis_batch_receipt_start_processed_count_candidate_keys_check
-
-theorem analysis_batch_receipt_start_processed_count_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_batch_receipt_start_processed_count_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_start_processed_count_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_batch_receipt_start_processed_count_contract :=
-  declaredKeysMinimalCheck_sound analysis_batch_receipt_start_processed_count_contract
-    analysis_batch_receipt_start_processed_count_candidate_keys_minimal_check
-
-theorem analysis_batch_receipt_start_processed_count_closure_fixed_check :
-    closureFixedPointCheck analysis_batch_receipt_start_processed_count_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_start_processed_count_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_batch_receipt_start_processed_count_contract :=
-  closureFixedPointCheck_sound analysis_batch_receipt_start_processed_count_contract
-    analysis_batch_receipt_start_processed_count_closure_fixed_check
-
-theorem analysis_batch_receipt_start_processed_count_bcnf_check :
-    bcnfCheck analysis_batch_receipt_start_processed_count_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_start_processed_count_bcnf : BCNF analysis_batch_receipt_start_processed_count_contract :=
-  bcnfCheck_sound analysis_batch_receipt_start_processed_count_contract analysis_batch_receipt_start_processed_count_bcnf_check
-
-def analysis_batch_receipt_page_limit_contract : RelationContract where
-  name := "analysis_batch_receipt_page_limit"
-  attributes := ["analysis_id", "stage", "start_generation", "page_limit"]
-  declaredKeys := [["analysis_id", "stage", "start_generation"]]
-  declaredFDs := [
-    { determinant := ["analysis_id", "stage", "start_generation"], dependent := ["page_limit"] }
-  ]
-
-theorem analysis_batch_receipt_page_limit_schema_well_formed :
-    schemaWellFormedCheck analysis_batch_receipt_page_limit_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_page_limit_candidate_keys_check :
-    keysDetermineAllCheck analysis_batch_receipt_page_limit_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_page_limit_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_batch_receipt_page_limit_contract :=
-  keysDetermineAllCheck_sound analysis_batch_receipt_page_limit_contract
-    analysis_batch_receipt_page_limit_candidate_keys_check
-
-theorem analysis_batch_receipt_page_limit_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_batch_receipt_page_limit_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_page_limit_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_batch_receipt_page_limit_contract :=
-  declaredKeysMinimalCheck_sound analysis_batch_receipt_page_limit_contract
-    analysis_batch_receipt_page_limit_candidate_keys_minimal_check
-
-theorem analysis_batch_receipt_page_limit_closure_fixed_check :
-    closureFixedPointCheck analysis_batch_receipt_page_limit_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_page_limit_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_batch_receipt_page_limit_contract :=
-  closureFixedPointCheck_sound analysis_batch_receipt_page_limit_contract
-    analysis_batch_receipt_page_limit_closure_fixed_check
-
-theorem analysis_batch_receipt_page_limit_bcnf_check :
-    bcnfCheck analysis_batch_receipt_page_limit_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_page_limit_bcnf : BCNF analysis_batch_receipt_page_limit_contract :=
-  bcnfCheck_sound analysis_batch_receipt_page_limit_contract analysis_batch_receipt_page_limit_bcnf_check
-
-def analysis_batch_receipt_next_cursor_contract : RelationContract where
-  name := "analysis_batch_receipt_next_cursor"
-  attributes := ["analysis_id", "stage", "start_generation", "next_cursor"]
-  declaredKeys := [["analysis_id", "stage", "start_generation"]]
-  declaredFDs := [
-    { determinant := ["analysis_id", "stage", "start_generation"], dependent := ["next_cursor"] }
-  ]
-
-theorem analysis_batch_receipt_next_cursor_schema_well_formed :
-    schemaWellFormedCheck analysis_batch_receipt_next_cursor_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_next_cursor_candidate_keys_check :
-    keysDetermineAllCheck analysis_batch_receipt_next_cursor_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_next_cursor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_batch_receipt_next_cursor_contract :=
-  keysDetermineAllCheck_sound analysis_batch_receipt_next_cursor_contract
-    analysis_batch_receipt_next_cursor_candidate_keys_check
-
-theorem analysis_batch_receipt_next_cursor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_batch_receipt_next_cursor_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_next_cursor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_batch_receipt_next_cursor_contract :=
-  declaredKeysMinimalCheck_sound analysis_batch_receipt_next_cursor_contract
-    analysis_batch_receipt_next_cursor_candidate_keys_minimal_check
-
-theorem analysis_batch_receipt_next_cursor_closure_fixed_check :
-    closureFixedPointCheck analysis_batch_receipt_next_cursor_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_next_cursor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_batch_receipt_next_cursor_contract :=
-  closureFixedPointCheck_sound analysis_batch_receipt_next_cursor_contract
-    analysis_batch_receipt_next_cursor_closure_fixed_check
-
-theorem analysis_batch_receipt_next_cursor_bcnf_check :
-    bcnfCheck analysis_batch_receipt_next_cursor_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_next_cursor_bcnf : BCNF analysis_batch_receipt_next_cursor_contract :=
-  bcnfCheck_sound analysis_batch_receipt_next_cursor_contract analysis_batch_receipt_next_cursor_bcnf_check
-
-def analysis_batch_receipt_row_count_contract : RelationContract where
-  name := "analysis_batch_receipt_row_count"
-  attributes := ["analysis_id", "stage", "start_generation", "row_count"]
-  declaredKeys := [["analysis_id", "stage", "start_generation"]]
-  declaredFDs := [
-    { determinant := ["analysis_id", "stage", "start_generation"], dependent := ["row_count"] }
-  ]
-
-theorem analysis_batch_receipt_row_count_schema_well_formed :
-    schemaWellFormedCheck analysis_batch_receipt_row_count_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_row_count_candidate_keys_check :
-    keysDetermineAllCheck analysis_batch_receipt_row_count_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_row_count_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_batch_receipt_row_count_contract :=
-  keysDetermineAllCheck_sound analysis_batch_receipt_row_count_contract
-    analysis_batch_receipt_row_count_candidate_keys_check
-
-theorem analysis_batch_receipt_row_count_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_batch_receipt_row_count_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_row_count_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_batch_receipt_row_count_contract :=
-  declaredKeysMinimalCheck_sound analysis_batch_receipt_row_count_contract
-    analysis_batch_receipt_row_count_candidate_keys_minimal_check
-
-theorem analysis_batch_receipt_row_count_closure_fixed_check :
-    closureFixedPointCheck analysis_batch_receipt_row_count_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_row_count_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_batch_receipt_row_count_contract :=
-  closureFixedPointCheck_sound analysis_batch_receipt_row_count_contract
-    analysis_batch_receipt_row_count_closure_fixed_check
-
-theorem analysis_batch_receipt_row_count_bcnf_check :
-    bcnfCheck analysis_batch_receipt_row_count_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_row_count_bcnf : BCNF analysis_batch_receipt_row_count_contract :=
-  bcnfCheck_sound analysis_batch_receipt_row_count_contract analysis_batch_receipt_row_count_bcnf_check
-
-def analysis_batch_receipt_committed_at_contract : RelationContract where
-  name := "analysis_batch_receipt_committed_at"
-  attributes := ["analysis_id", "stage", "start_generation", "committed_at"]
-  declaredKeys := [["analysis_id", "stage", "start_generation"]]
-  declaredFDs := [
-    { determinant := ["analysis_id", "stage", "start_generation"], dependent := ["committed_at"] }
-  ]
-
-theorem analysis_batch_receipt_committed_at_schema_well_formed :
-    schemaWellFormedCheck analysis_batch_receipt_committed_at_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_committed_at_candidate_keys_check :
-    keysDetermineAllCheck analysis_batch_receipt_committed_at_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_committed_at_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_batch_receipt_committed_at_contract :=
-  keysDetermineAllCheck_sound analysis_batch_receipt_committed_at_contract
-    analysis_batch_receipt_committed_at_candidate_keys_check
-
-theorem analysis_batch_receipt_committed_at_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_batch_receipt_committed_at_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_committed_at_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_batch_receipt_committed_at_contract :=
-  declaredKeysMinimalCheck_sound analysis_batch_receipt_committed_at_contract
-    analysis_batch_receipt_committed_at_candidate_keys_minimal_check
-
-theorem analysis_batch_receipt_committed_at_closure_fixed_check :
-    closureFixedPointCheck analysis_batch_receipt_committed_at_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_committed_at_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_batch_receipt_committed_at_contract :=
-  closureFixedPointCheck_sound analysis_batch_receipt_committed_at_contract
-    analysis_batch_receipt_committed_at_closure_fixed_check
-
-theorem analysis_batch_receipt_committed_at_bcnf_check :
-    bcnfCheck analysis_batch_receipt_committed_at_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_committed_at_bcnf : BCNF analysis_batch_receipt_committed_at_contract :=
-  bcnfCheck_sound analysis_batch_receipt_committed_at_contract analysis_batch_receipt_committed_at_bcnf_check
-
-def analysis_batch_receipt_seal_contract : RelationContract where
-  name := "analysis_batch_receipt_seal"
-  attributes := ["analysis_id", "stage", "start_generation"]
-  declaredKeys := [["analysis_id", "stage", "start_generation"]]
-  declaredFDs := [
-  ]
-
-theorem analysis_batch_receipt_seal_schema_well_formed :
-    schemaWellFormedCheck analysis_batch_receipt_seal_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_seal_candidate_keys_check :
-    keysDetermineAllCheck analysis_batch_receipt_seal_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes analysis_batch_receipt_seal_contract :=
-  keysDetermineAllCheck_sound analysis_batch_receipt_seal_contract
-    analysis_batch_receipt_seal_candidate_keys_check
-
-theorem analysis_batch_receipt_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck analysis_batch_receipt_seal_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal analysis_batch_receipt_seal_contract :=
-  declaredKeysMinimalCheck_sound analysis_batch_receipt_seal_contract
-    analysis_batch_receipt_seal_candidate_keys_minimal_check
-
-theorem analysis_batch_receipt_seal_closure_fixed_check :
-    closureFixedPointCheck analysis_batch_receipt_seal_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint analysis_batch_receipt_seal_contract :=
-  closureFixedPointCheck_sound analysis_batch_receipt_seal_contract
-    analysis_batch_receipt_seal_closure_fixed_check
-
-theorem analysis_batch_receipt_seal_bcnf_check :
-    bcnfCheck analysis_batch_receipt_seal_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_seal_bcnf : BCNF analysis_batch_receipt_seal_contract :=
-  bcnfCheck_sound analysis_batch_receipt_seal_contract analysis_batch_receipt_seal_bcnf_check
+theorem analysis_checkpoint_bcnf : BCNF analysis_checkpoint_contract :=
+  bcnfCheck_sound analysis_checkpoint_contract analysis_checkpoint_bcnf_check
 
 def analysis_batch_receipt_stored_contract : RelationContract where
   name := "analysis_batch_receipt_stored"
@@ -10907,6 +7679,13 @@ theorem analysis_batch_receipt_stored_closure_reached_fixed_point :
     ClosureReachedFixedPoint analysis_batch_receipt_stored_contract :=
   closureFixedPointCheck_sound analysis_batch_receipt_stored_contract
     analysis_batch_receipt_stored_closure_fixed_check
+
+theorem analysis_batch_receipt_stored_bcnf_check :
+    bcnfCheck analysis_batch_receipt_stored_contract = true := by
+  native_decide
+
+theorem analysis_batch_receipt_stored_bcnf : BCNF analysis_batch_receipt_stored_contract :=
+  bcnfCheck_sound analysis_batch_receipt_stored_contract analysis_batch_receipt_stored_bcnf_check
 
 def analysis_batch_receipt_contract : RelationContract where
   name := "analysis_batch_receipt"
@@ -10956,373 +7735,6 @@ theorem analysis_batch_receipt_closure_reached_fixed_point :
   closureFixedPointCheck_sound analysis_batch_receipt_contract
     analysis_batch_receipt_closure_fixed_check
 
-def publication_candidate_anchor_contract : RelationContract where
-  name := "publication_candidate_anchor"
-  attributes := ["candidate_id"]
-  declaredKeys := [["candidate_id"]]
-  declaredFDs := [
-  ]
-
-theorem publication_candidate_anchor_schema_well_formed :
-    schemaWellFormedCheck publication_candidate_anchor_contract = true := by
-  native_decide
-
-theorem publication_candidate_anchor_candidate_keys_check :
-    keysDetermineAllCheck publication_candidate_anchor_contract = true := by
-  native_decide
-
-theorem publication_candidate_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_candidate_anchor_contract :=
-  keysDetermineAllCheck_sound publication_candidate_anchor_contract
-    publication_candidate_anchor_candidate_keys_check
-
-theorem publication_candidate_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_candidate_anchor_contract = true := by
-  native_decide
-
-theorem publication_candidate_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_candidate_anchor_contract :=
-  declaredKeysMinimalCheck_sound publication_candidate_anchor_contract
-    publication_candidate_anchor_candidate_keys_minimal_check
-
-theorem publication_candidate_anchor_closure_fixed_check :
-    closureFixedPointCheck publication_candidate_anchor_contract = true := by
-  native_decide
-
-theorem publication_candidate_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_candidate_anchor_contract :=
-  closureFixedPointCheck_sound publication_candidate_anchor_contract
-    publication_candidate_anchor_closure_fixed_check
-
-theorem publication_candidate_anchor_bcnf_check :
-    bcnfCheck publication_candidate_anchor_contract = true := by
-  native_decide
-
-theorem publication_candidate_anchor_bcnf : BCNF publication_candidate_anchor_contract :=
-  bcnfCheck_sound publication_candidate_anchor_contract publication_candidate_anchor_bcnf_check
-
-def publication_candidate_analysis_id_contract : RelationContract where
-  name := "publication_candidate_analysis_id"
-  attributes := ["candidate_id", "analysis_id"]
-  declaredKeys := [["candidate_id"]]
-  declaredFDs := [
-    { determinant := ["candidate_id"], dependent := ["analysis_id"] }
-  ]
-
-theorem publication_candidate_analysis_id_schema_well_formed :
-    schemaWellFormedCheck publication_candidate_analysis_id_contract = true := by
-  native_decide
-
-theorem publication_candidate_analysis_id_candidate_keys_check :
-    keysDetermineAllCheck publication_candidate_analysis_id_contract = true := by
-  native_decide
-
-theorem publication_candidate_analysis_id_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_candidate_analysis_id_contract :=
-  keysDetermineAllCheck_sound publication_candidate_analysis_id_contract
-    publication_candidate_analysis_id_candidate_keys_check
-
-theorem publication_candidate_analysis_id_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_candidate_analysis_id_contract = true := by
-  native_decide
-
-theorem publication_candidate_analysis_id_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_candidate_analysis_id_contract :=
-  declaredKeysMinimalCheck_sound publication_candidate_analysis_id_contract
-    publication_candidate_analysis_id_candidate_keys_minimal_check
-
-theorem publication_candidate_analysis_id_closure_fixed_check :
-    closureFixedPointCheck publication_candidate_analysis_id_contract = true := by
-  native_decide
-
-theorem publication_candidate_analysis_id_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_candidate_analysis_id_contract :=
-  closureFixedPointCheck_sound publication_candidate_analysis_id_contract
-    publication_candidate_analysis_id_closure_fixed_check
-
-theorem publication_candidate_analysis_id_bcnf_check :
-    bcnfCheck publication_candidate_analysis_id_contract = true := by
-  native_decide
-
-theorem publication_candidate_analysis_id_bcnf : BCNF publication_candidate_analysis_id_contract :=
-  bcnfCheck_sound publication_candidate_analysis_id_contract publication_candidate_analysis_id_bcnf_check
-
-def publication_candidate_reserved_revision_contract : RelationContract where
-  name := "publication_candidate_reserved_revision"
-  attributes := ["candidate_id", "reserved_revision"]
-  declaredKeys := [["candidate_id"], ["reserved_revision"]]
-  declaredFDs := [
-    { determinant := ["candidate_id"], dependent := ["reserved_revision"] },
-    { determinant := ["reserved_revision"], dependent := ["candidate_id"] }
-  ]
-
-theorem publication_candidate_reserved_revision_schema_well_formed :
-    schemaWellFormedCheck publication_candidate_reserved_revision_contract = true := by
-  native_decide
-
-theorem publication_candidate_reserved_revision_candidate_keys_check :
-    keysDetermineAllCheck publication_candidate_reserved_revision_contract = true := by
-  native_decide
-
-theorem publication_candidate_reserved_revision_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_candidate_reserved_revision_contract :=
-  keysDetermineAllCheck_sound publication_candidate_reserved_revision_contract
-    publication_candidate_reserved_revision_candidate_keys_check
-
-theorem publication_candidate_reserved_revision_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_candidate_reserved_revision_contract = true := by
-  native_decide
-
-theorem publication_candidate_reserved_revision_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_candidate_reserved_revision_contract :=
-  declaredKeysMinimalCheck_sound publication_candidate_reserved_revision_contract
-    publication_candidate_reserved_revision_candidate_keys_minimal_check
-
-theorem publication_candidate_reserved_revision_closure_fixed_check :
-    closureFixedPointCheck publication_candidate_reserved_revision_contract = true := by
-  native_decide
-
-theorem publication_candidate_reserved_revision_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_candidate_reserved_revision_contract :=
-  closureFixedPointCheck_sound publication_candidate_reserved_revision_contract
-    publication_candidate_reserved_revision_closure_fixed_check
-
-theorem publication_candidate_reserved_revision_bcnf_check :
-    bcnfCheck publication_candidate_reserved_revision_contract = true := by
-  native_decide
-
-theorem publication_candidate_reserved_revision_bcnf : BCNF publication_candidate_reserved_revision_contract :=
-  bcnfCheck_sound publication_candidate_reserved_revision_contract publication_candidate_reserved_revision_bcnf_check
-
-def publication_candidate_artifact_policy_id_contract : RelationContract where
-  name := "publication_candidate_artifact_policy_id"
-  attributes := ["candidate_id", "artifact_policy_id"]
-  declaredKeys := [["candidate_id"]]
-  declaredFDs := [
-    { determinant := ["candidate_id"], dependent := ["artifact_policy_id"] }
-  ]
-
-theorem publication_candidate_artifact_policy_id_schema_well_formed :
-    schemaWellFormedCheck publication_candidate_artifact_policy_id_contract = true := by
-  native_decide
-
-theorem publication_candidate_artifact_policy_id_candidate_keys_check :
-    keysDetermineAllCheck publication_candidate_artifact_policy_id_contract = true := by
-  native_decide
-
-theorem publication_candidate_artifact_policy_id_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_candidate_artifact_policy_id_contract :=
-  keysDetermineAllCheck_sound publication_candidate_artifact_policy_id_contract
-    publication_candidate_artifact_policy_id_candidate_keys_check
-
-theorem publication_candidate_artifact_policy_id_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_candidate_artifact_policy_id_contract = true := by
-  native_decide
-
-theorem publication_candidate_artifact_policy_id_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_candidate_artifact_policy_id_contract :=
-  declaredKeysMinimalCheck_sound publication_candidate_artifact_policy_id_contract
-    publication_candidate_artifact_policy_id_candidate_keys_minimal_check
-
-theorem publication_candidate_artifact_policy_id_closure_fixed_check :
-    closureFixedPointCheck publication_candidate_artifact_policy_id_contract = true := by
-  native_decide
-
-theorem publication_candidate_artifact_policy_id_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_candidate_artifact_policy_id_contract :=
-  closureFixedPointCheck_sound publication_candidate_artifact_policy_id_contract
-    publication_candidate_artifact_policy_id_closure_fixed_check
-
-theorem publication_candidate_artifact_policy_id_bcnf_check :
-    bcnfCheck publication_candidate_artifact_policy_id_contract = true := by
-  native_decide
-
-theorem publication_candidate_artifact_policy_id_bcnf : BCNF publication_candidate_artifact_policy_id_contract :=
-  bcnfCheck_sound publication_candidate_artifact_policy_id_contract publication_candidate_artifact_policy_id_bcnf_check
-
-def publication_candidate_display_title_policy_id_contract : RelationContract where
-  name := "publication_candidate_display_title_policy_id"
-  attributes := ["candidate_id", "display_title_policy_id"]
-  declaredKeys := [["candidate_id"]]
-  declaredFDs := [
-    { determinant := ["candidate_id"], dependent := ["display_title_policy_id"] }
-  ]
-
-theorem publication_candidate_display_title_policy_id_schema_well_formed :
-    schemaWellFormedCheck publication_candidate_display_title_policy_id_contract = true := by
-  native_decide
-
-theorem publication_candidate_display_title_policy_id_candidate_keys_check :
-    keysDetermineAllCheck publication_candidate_display_title_policy_id_contract = true := by
-  native_decide
-
-theorem publication_candidate_display_title_policy_id_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_candidate_display_title_policy_id_contract :=
-  keysDetermineAllCheck_sound publication_candidate_display_title_policy_id_contract
-    publication_candidate_display_title_policy_id_candidate_keys_check
-
-theorem publication_candidate_display_title_policy_id_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_candidate_display_title_policy_id_contract = true := by
-  native_decide
-
-theorem publication_candidate_display_title_policy_id_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_candidate_display_title_policy_id_contract :=
-  declaredKeysMinimalCheck_sound publication_candidate_display_title_policy_id_contract
-    publication_candidate_display_title_policy_id_candidate_keys_minimal_check
-
-theorem publication_candidate_display_title_policy_id_closure_fixed_check :
-    closureFixedPointCheck publication_candidate_display_title_policy_id_contract = true := by
-  native_decide
-
-theorem publication_candidate_display_title_policy_id_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_candidate_display_title_policy_id_contract :=
-  closureFixedPointCheck_sound publication_candidate_display_title_policy_id_contract
-    publication_candidate_display_title_policy_id_closure_fixed_check
-
-theorem publication_candidate_display_title_policy_id_bcnf_check :
-    bcnfCheck publication_candidate_display_title_policy_id_contract = true := by
-  native_decide
-
-theorem publication_candidate_display_title_policy_id_bcnf : BCNF publication_candidate_display_title_policy_id_contract :=
-  bcnfCheck_sound publication_candidate_display_title_policy_id_contract publication_candidate_display_title_policy_id_bcnf_check
-
-def publication_candidate_artifacts_required_contract : RelationContract where
-  name := "publication_candidate_artifacts_required"
-  attributes := ["candidate_id", "artifacts_required"]
-  declaredKeys := [["candidate_id"]]
-  declaredFDs := [
-    { determinant := ["candidate_id"], dependent := ["artifacts_required"] }
-  ]
-
-theorem publication_candidate_artifacts_required_schema_well_formed :
-    schemaWellFormedCheck publication_candidate_artifacts_required_contract = true := by
-  native_decide
-
-theorem publication_candidate_artifacts_required_candidate_keys_check :
-    keysDetermineAllCheck publication_candidate_artifacts_required_contract = true := by
-  native_decide
-
-theorem publication_candidate_artifacts_required_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_candidate_artifacts_required_contract :=
-  keysDetermineAllCheck_sound publication_candidate_artifacts_required_contract
-    publication_candidate_artifacts_required_candidate_keys_check
-
-theorem publication_candidate_artifacts_required_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_candidate_artifacts_required_contract = true := by
-  native_decide
-
-theorem publication_candidate_artifacts_required_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_candidate_artifacts_required_contract :=
-  declaredKeysMinimalCheck_sound publication_candidate_artifacts_required_contract
-    publication_candidate_artifacts_required_candidate_keys_minimal_check
-
-theorem publication_candidate_artifacts_required_closure_fixed_check :
-    closureFixedPointCheck publication_candidate_artifacts_required_contract = true := by
-  native_decide
-
-theorem publication_candidate_artifacts_required_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_candidate_artifacts_required_contract :=
-  closureFixedPointCheck_sound publication_candidate_artifacts_required_contract
-    publication_candidate_artifacts_required_closure_fixed_check
-
-theorem publication_candidate_artifacts_required_bcnf_check :
-    bcnfCheck publication_candidate_artifacts_required_contract = true := by
-  native_decide
-
-theorem publication_candidate_artifacts_required_bcnf : BCNF publication_candidate_artifacts_required_contract :=
-  bcnfCheck_sound publication_candidate_artifacts_required_contract publication_candidate_artifacts_required_bcnf_check
-
-def publication_candidate_created_at_contract : RelationContract where
-  name := "publication_candidate_created_at"
-  attributes := ["candidate_id", "created_at"]
-  declaredKeys := [["candidate_id"]]
-  declaredFDs := [
-    { determinant := ["candidate_id"], dependent := ["created_at"] }
-  ]
-
-theorem publication_candidate_created_at_schema_well_formed :
-    schemaWellFormedCheck publication_candidate_created_at_contract = true := by
-  native_decide
-
-theorem publication_candidate_created_at_candidate_keys_check :
-    keysDetermineAllCheck publication_candidate_created_at_contract = true := by
-  native_decide
-
-theorem publication_candidate_created_at_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_candidate_created_at_contract :=
-  keysDetermineAllCheck_sound publication_candidate_created_at_contract
-    publication_candidate_created_at_candidate_keys_check
-
-theorem publication_candidate_created_at_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_candidate_created_at_contract = true := by
-  native_decide
-
-theorem publication_candidate_created_at_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_candidate_created_at_contract :=
-  declaredKeysMinimalCheck_sound publication_candidate_created_at_contract
-    publication_candidate_created_at_candidate_keys_minimal_check
-
-theorem publication_candidate_created_at_closure_fixed_check :
-    closureFixedPointCheck publication_candidate_created_at_contract = true := by
-  native_decide
-
-theorem publication_candidate_created_at_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_candidate_created_at_contract :=
-  closureFixedPointCheck_sound publication_candidate_created_at_contract
-    publication_candidate_created_at_closure_fixed_check
-
-theorem publication_candidate_created_at_bcnf_check :
-    bcnfCheck publication_candidate_created_at_contract = true := by
-  native_decide
-
-theorem publication_candidate_created_at_bcnf : BCNF publication_candidate_created_at_contract :=
-  bcnfCheck_sound publication_candidate_created_at_contract publication_candidate_created_at_bcnf_check
-
-def publication_candidate_definition_seal_contract : RelationContract where
-  name := "publication_candidate_definition_seal"
-  attributes := ["candidate_id"]
-  declaredKeys := [["candidate_id"]]
-  declaredFDs := [
-  ]
-
-theorem publication_candidate_definition_seal_schema_well_formed :
-    schemaWellFormedCheck publication_candidate_definition_seal_contract = true := by
-  native_decide
-
-theorem publication_candidate_definition_seal_candidate_keys_check :
-    keysDetermineAllCheck publication_candidate_definition_seal_contract = true := by
-  native_decide
-
-theorem publication_candidate_definition_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_candidate_definition_seal_contract :=
-  keysDetermineAllCheck_sound publication_candidate_definition_seal_contract
-    publication_candidate_definition_seal_candidate_keys_check
-
-theorem publication_candidate_definition_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_candidate_definition_seal_contract = true := by
-  native_decide
-
-theorem publication_candidate_definition_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_candidate_definition_seal_contract :=
-  declaredKeysMinimalCheck_sound publication_candidate_definition_seal_contract
-    publication_candidate_definition_seal_candidate_keys_minimal_check
-
-theorem publication_candidate_definition_seal_closure_fixed_check :
-    closureFixedPointCheck publication_candidate_definition_seal_contract = true := by
-  native_decide
-
-theorem publication_candidate_definition_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_candidate_definition_seal_contract :=
-  closureFixedPointCheck_sound publication_candidate_definition_seal_contract
-    publication_candidate_definition_seal_closure_fixed_check
-
-theorem publication_candidate_definition_seal_bcnf_check :
-    bcnfCheck publication_candidate_definition_seal_contract = true := by
-  native_decide
-
-theorem publication_candidate_definition_seal_bcnf : BCNF publication_candidate_definition_seal_contract :=
-  bcnfCheck_sound publication_candidate_definition_seal_contract publication_candidate_definition_seal_bcnf_check
-
 def publication_candidate_contract : RelationContract where
   name := "publication_candidate"
   attributes := ["candidate_id", "analysis_id", "reserved_revision", "artifact_policy_id", "display_title_policy_id", "artifacts_required", "created_at"]
@@ -11362,6 +7774,13 @@ theorem publication_candidate_closure_reached_fixed_point :
     ClosureReachedFixedPoint publication_candidate_contract :=
   closureFixedPointCheck_sound publication_candidate_contract
     publication_candidate_closure_fixed_check
+
+theorem publication_candidate_bcnf_check :
+    bcnfCheck publication_candidate_contract = true := by
+  native_decide
+
+theorem publication_candidate_bcnf : BCNF publication_candidate_contract :=
+  bcnfCheck_sound publication_candidate_contract publication_candidate_bcnf_check
 
 def publication_candidate_projection_seal_contract : RelationContract where
   name := "publication_candidate_projection_seal"
@@ -11709,189 +8128,6 @@ theorem publication_selection_closure_reached_fixed_point :
   closureFixedPointCheck_sound publication_selection_contract
     publication_selection_closure_fixed_check
 
-def publication_stage_anchor_contract : RelationContract where
-  name := "publication_stage_anchor"
-  attributes := ["stage"]
-  declaredKeys := [["stage"]]
-  declaredFDs := [
-  ]
-
-theorem publication_stage_anchor_schema_well_formed :
-    schemaWellFormedCheck publication_stage_anchor_contract = true := by
-  native_decide
-
-theorem publication_stage_anchor_candidate_keys_check :
-    keysDetermineAllCheck publication_stage_anchor_contract = true := by
-  native_decide
-
-theorem publication_stage_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_stage_anchor_contract :=
-  keysDetermineAllCheck_sound publication_stage_anchor_contract
-    publication_stage_anchor_candidate_keys_check
-
-theorem publication_stage_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_stage_anchor_contract = true := by
-  native_decide
-
-theorem publication_stage_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_stage_anchor_contract :=
-  declaredKeysMinimalCheck_sound publication_stage_anchor_contract
-    publication_stage_anchor_candidate_keys_minimal_check
-
-theorem publication_stage_anchor_closure_fixed_check :
-    closureFixedPointCheck publication_stage_anchor_contract = true := by
-  native_decide
-
-theorem publication_stage_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_stage_anchor_contract :=
-  closureFixedPointCheck_sound publication_stage_anchor_contract
-    publication_stage_anchor_closure_fixed_check
-
-theorem publication_stage_anchor_bcnf_check :
-    bcnfCheck publication_stage_anchor_contract = true := by
-  native_decide
-
-theorem publication_stage_anchor_bcnf : BCNF publication_stage_anchor_contract :=
-  bcnfCheck_sound publication_stage_anchor_contract publication_stage_anchor_bcnf_check
-
-def publication_stage_order_contract : RelationContract where
-  name := "publication_stage_order"
-  attributes := ["stage", "stage_order"]
-  declaredKeys := [["stage"], ["stage_order"]]
-  declaredFDs := [
-    { determinant := ["stage"], dependent := ["stage_order"] },
-    { determinant := ["stage_order"], dependent := ["stage"] }
-  ]
-
-theorem publication_stage_order_schema_well_formed :
-    schemaWellFormedCheck publication_stage_order_contract = true := by
-  native_decide
-
-theorem publication_stage_order_candidate_keys_check :
-    keysDetermineAllCheck publication_stage_order_contract = true := by
-  native_decide
-
-theorem publication_stage_order_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_stage_order_contract :=
-  keysDetermineAllCheck_sound publication_stage_order_contract
-    publication_stage_order_candidate_keys_check
-
-theorem publication_stage_order_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_stage_order_contract = true := by
-  native_decide
-
-theorem publication_stage_order_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_stage_order_contract :=
-  declaredKeysMinimalCheck_sound publication_stage_order_contract
-    publication_stage_order_candidate_keys_minimal_check
-
-theorem publication_stage_order_closure_fixed_check :
-    closureFixedPointCheck publication_stage_order_contract = true := by
-  native_decide
-
-theorem publication_stage_order_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_stage_order_contract :=
-  closureFixedPointCheck_sound publication_stage_order_contract
-    publication_stage_order_closure_fixed_check
-
-theorem publication_stage_order_bcnf_check :
-    bcnfCheck publication_stage_order_contract = true := by
-  native_decide
-
-theorem publication_stage_order_bcnf : BCNF publication_stage_order_contract :=
-  bcnfCheck_sound publication_stage_order_contract publication_stage_order_bcnf_check
-
-def publication_stage_cursor_codec_contract : RelationContract where
-  name := "publication_stage_cursor_codec"
-  attributes := ["stage", "cursor_codec"]
-  declaredKeys := [["stage"]]
-  declaredFDs := [
-    { determinant := ["stage"], dependent := ["cursor_codec"] }
-  ]
-
-theorem publication_stage_cursor_codec_schema_well_formed :
-    schemaWellFormedCheck publication_stage_cursor_codec_contract = true := by
-  native_decide
-
-theorem publication_stage_cursor_codec_candidate_keys_check :
-    keysDetermineAllCheck publication_stage_cursor_codec_contract = true := by
-  native_decide
-
-theorem publication_stage_cursor_codec_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_stage_cursor_codec_contract :=
-  keysDetermineAllCheck_sound publication_stage_cursor_codec_contract
-    publication_stage_cursor_codec_candidate_keys_check
-
-theorem publication_stage_cursor_codec_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_stage_cursor_codec_contract = true := by
-  native_decide
-
-theorem publication_stage_cursor_codec_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_stage_cursor_codec_contract :=
-  declaredKeysMinimalCheck_sound publication_stage_cursor_codec_contract
-    publication_stage_cursor_codec_candidate_keys_minimal_check
-
-theorem publication_stage_cursor_codec_closure_fixed_check :
-    closureFixedPointCheck publication_stage_cursor_codec_contract = true := by
-  native_decide
-
-theorem publication_stage_cursor_codec_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_stage_cursor_codec_contract :=
-  closureFixedPointCheck_sound publication_stage_cursor_codec_contract
-    publication_stage_cursor_codec_closure_fixed_check
-
-theorem publication_stage_cursor_codec_bcnf_check :
-    bcnfCheck publication_stage_cursor_codec_contract = true := by
-  native_decide
-
-theorem publication_stage_cursor_codec_bcnf : BCNF publication_stage_cursor_codec_contract :=
-  bcnfCheck_sound publication_stage_cursor_codec_contract publication_stage_cursor_codec_bcnf_check
-
-def publication_stage_seal_contract : RelationContract where
-  name := "publication_stage_seal"
-  attributes := ["stage"]
-  declaredKeys := [["stage"]]
-  declaredFDs := [
-  ]
-
-theorem publication_stage_seal_schema_well_formed :
-    schemaWellFormedCheck publication_stage_seal_contract = true := by
-  native_decide
-
-theorem publication_stage_seal_candidate_keys_check :
-    keysDetermineAllCheck publication_stage_seal_contract = true := by
-  native_decide
-
-theorem publication_stage_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_stage_seal_contract :=
-  keysDetermineAllCheck_sound publication_stage_seal_contract
-    publication_stage_seal_candidate_keys_check
-
-theorem publication_stage_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_stage_seal_contract = true := by
-  native_decide
-
-theorem publication_stage_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_stage_seal_contract :=
-  declaredKeysMinimalCheck_sound publication_stage_seal_contract
-    publication_stage_seal_candidate_keys_minimal_check
-
-theorem publication_stage_seal_closure_fixed_check :
-    closureFixedPointCheck publication_stage_seal_contract = true := by
-  native_decide
-
-theorem publication_stage_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_stage_seal_contract :=
-  closureFixedPointCheck_sound publication_stage_seal_contract
-    publication_stage_seal_closure_fixed_check
-
-theorem publication_stage_seal_bcnf_check :
-    bcnfCheck publication_stage_seal_contract = true := by
-  native_decide
-
-theorem publication_stage_seal_bcnf : BCNF publication_stage_seal_contract :=
-  bcnfCheck_sound publication_stage_seal_contract publication_stage_seal_bcnf_check
-
 def publication_stage_contract : RelationContract where
   name := "publication_stage"
   attributes := ["stage", "stage_order", "cursor_codec"]
@@ -11932,325 +8168,12 @@ theorem publication_stage_closure_reached_fixed_point :
   closureFixedPointCheck_sound publication_stage_contract
     publication_stage_closure_fixed_check
 
-def publication_checkpoint_anchor_contract : RelationContract where
-  name := "publication_checkpoint_anchor"
-  attributes := ["candidate_id", "stage"]
-  declaredKeys := [["candidate_id", "stage"]]
-  declaredFDs := [
-  ]
-
-theorem publication_checkpoint_anchor_schema_well_formed :
-    schemaWellFormedCheck publication_checkpoint_anchor_contract = true := by
+theorem publication_stage_bcnf_check :
+    bcnfCheck publication_stage_contract = true := by
   native_decide
 
-theorem publication_checkpoint_anchor_candidate_keys_check :
-    keysDetermineAllCheck publication_checkpoint_anchor_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_checkpoint_anchor_contract :=
-  keysDetermineAllCheck_sound publication_checkpoint_anchor_contract
-    publication_checkpoint_anchor_candidate_keys_check
-
-theorem publication_checkpoint_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_checkpoint_anchor_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_checkpoint_anchor_contract :=
-  declaredKeysMinimalCheck_sound publication_checkpoint_anchor_contract
-    publication_checkpoint_anchor_candidate_keys_minimal_check
-
-theorem publication_checkpoint_anchor_closure_fixed_check :
-    closureFixedPointCheck publication_checkpoint_anchor_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_checkpoint_anchor_contract :=
-  closureFixedPointCheck_sound publication_checkpoint_anchor_contract
-    publication_checkpoint_anchor_closure_fixed_check
-
-theorem publication_checkpoint_anchor_bcnf_check :
-    bcnfCheck publication_checkpoint_anchor_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_anchor_bcnf : BCNF publication_checkpoint_anchor_contract :=
-  bcnfCheck_sound publication_checkpoint_anchor_contract publication_checkpoint_anchor_bcnf_check
-
-def publication_checkpoint_generation_contract : RelationContract where
-  name := "publication_checkpoint_generation"
-  attributes := ["candidate_id", "stage", "generation"]
-  declaredKeys := [["candidate_id", "stage"]]
-  declaredFDs := [
-    { determinant := ["candidate_id", "stage"], dependent := ["generation"] }
-  ]
-
-theorem publication_checkpoint_generation_schema_well_formed :
-    schemaWellFormedCheck publication_checkpoint_generation_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_generation_candidate_keys_check :
-    keysDetermineAllCheck publication_checkpoint_generation_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_generation_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_checkpoint_generation_contract :=
-  keysDetermineAllCheck_sound publication_checkpoint_generation_contract
-    publication_checkpoint_generation_candidate_keys_check
-
-theorem publication_checkpoint_generation_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_checkpoint_generation_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_generation_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_checkpoint_generation_contract :=
-  declaredKeysMinimalCheck_sound publication_checkpoint_generation_contract
-    publication_checkpoint_generation_candidate_keys_minimal_check
-
-theorem publication_checkpoint_generation_closure_fixed_check :
-    closureFixedPointCheck publication_checkpoint_generation_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_generation_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_checkpoint_generation_contract :=
-  closureFixedPointCheck_sound publication_checkpoint_generation_contract
-    publication_checkpoint_generation_closure_fixed_check
-
-theorem publication_checkpoint_generation_bcnf_check :
-    bcnfCheck publication_checkpoint_generation_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_generation_bcnf : BCNF publication_checkpoint_generation_contract :=
-  bcnfCheck_sound publication_checkpoint_generation_contract publication_checkpoint_generation_bcnf_check
-
-def publication_checkpoint_cursor_contract : RelationContract where
-  name := "publication_checkpoint_cursor"
-  attributes := ["candidate_id", "stage", "cursor"]
-  declaredKeys := [["candidate_id", "stage"]]
-  declaredFDs := [
-    { determinant := ["candidate_id", "stage"], dependent := ["cursor"] }
-  ]
-
-theorem publication_checkpoint_cursor_schema_well_formed :
-    schemaWellFormedCheck publication_checkpoint_cursor_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_cursor_candidate_keys_check :
-    keysDetermineAllCheck publication_checkpoint_cursor_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_cursor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_checkpoint_cursor_contract :=
-  keysDetermineAllCheck_sound publication_checkpoint_cursor_contract
-    publication_checkpoint_cursor_candidate_keys_check
-
-theorem publication_checkpoint_cursor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_checkpoint_cursor_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_cursor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_checkpoint_cursor_contract :=
-  declaredKeysMinimalCheck_sound publication_checkpoint_cursor_contract
-    publication_checkpoint_cursor_candidate_keys_minimal_check
-
-theorem publication_checkpoint_cursor_closure_fixed_check :
-    closureFixedPointCheck publication_checkpoint_cursor_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_cursor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_checkpoint_cursor_contract :=
-  closureFixedPointCheck_sound publication_checkpoint_cursor_contract
-    publication_checkpoint_cursor_closure_fixed_check
-
-theorem publication_checkpoint_cursor_bcnf_check :
-    bcnfCheck publication_checkpoint_cursor_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_cursor_bcnf : BCNF publication_checkpoint_cursor_contract :=
-  bcnfCheck_sound publication_checkpoint_cursor_contract publication_checkpoint_cursor_bcnf_check
-
-def publication_checkpoint_processed_count_contract : RelationContract where
-  name := "publication_checkpoint_processed_count"
-  attributes := ["candidate_id", "stage", "processed_count"]
-  declaredKeys := [["candidate_id", "stage"]]
-  declaredFDs := [
-    { determinant := ["candidate_id", "stage"], dependent := ["processed_count"] }
-  ]
-
-theorem publication_checkpoint_processed_count_schema_well_formed :
-    schemaWellFormedCheck publication_checkpoint_processed_count_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_processed_count_candidate_keys_check :
-    keysDetermineAllCheck publication_checkpoint_processed_count_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_processed_count_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_checkpoint_processed_count_contract :=
-  keysDetermineAllCheck_sound publication_checkpoint_processed_count_contract
-    publication_checkpoint_processed_count_candidate_keys_check
-
-theorem publication_checkpoint_processed_count_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_checkpoint_processed_count_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_processed_count_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_checkpoint_processed_count_contract :=
-  declaredKeysMinimalCheck_sound publication_checkpoint_processed_count_contract
-    publication_checkpoint_processed_count_candidate_keys_minimal_check
-
-theorem publication_checkpoint_processed_count_closure_fixed_check :
-    closureFixedPointCheck publication_checkpoint_processed_count_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_processed_count_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_checkpoint_processed_count_contract :=
-  closureFixedPointCheck_sound publication_checkpoint_processed_count_contract
-    publication_checkpoint_processed_count_closure_fixed_check
-
-theorem publication_checkpoint_processed_count_bcnf_check :
-    bcnfCheck publication_checkpoint_processed_count_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_processed_count_bcnf : BCNF publication_checkpoint_processed_count_contract :=
-  bcnfCheck_sound publication_checkpoint_processed_count_contract publication_checkpoint_processed_count_bcnf_check
-
-def publication_checkpoint_state_contract : RelationContract where
-  name := "publication_checkpoint_state"
-  attributes := ["candidate_id", "stage", "state"]
-  declaredKeys := [["candidate_id", "stage"]]
-  declaredFDs := [
-    { determinant := ["candidate_id", "stage"], dependent := ["state"] }
-  ]
-
-theorem publication_checkpoint_state_schema_well_formed :
-    schemaWellFormedCheck publication_checkpoint_state_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_state_candidate_keys_check :
-    keysDetermineAllCheck publication_checkpoint_state_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_state_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_checkpoint_state_contract :=
-  keysDetermineAllCheck_sound publication_checkpoint_state_contract
-    publication_checkpoint_state_candidate_keys_check
-
-theorem publication_checkpoint_state_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_checkpoint_state_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_state_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_checkpoint_state_contract :=
-  declaredKeysMinimalCheck_sound publication_checkpoint_state_contract
-    publication_checkpoint_state_candidate_keys_minimal_check
-
-theorem publication_checkpoint_state_closure_fixed_check :
-    closureFixedPointCheck publication_checkpoint_state_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_state_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_checkpoint_state_contract :=
-  closureFixedPointCheck_sound publication_checkpoint_state_contract
-    publication_checkpoint_state_closure_fixed_check
-
-theorem publication_checkpoint_state_bcnf_check :
-    bcnfCheck publication_checkpoint_state_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_state_bcnf : BCNF publication_checkpoint_state_contract :=
-  bcnfCheck_sound publication_checkpoint_state_contract publication_checkpoint_state_bcnf_check
-
-def publication_checkpoint_updated_at_contract : RelationContract where
-  name := "publication_checkpoint_updated_at"
-  attributes := ["candidate_id", "stage", "updated_at"]
-  declaredKeys := [["candidate_id", "stage"]]
-  declaredFDs := [
-    { determinant := ["candidate_id", "stage"], dependent := ["updated_at"] }
-  ]
-
-theorem publication_checkpoint_updated_at_schema_well_formed :
-    schemaWellFormedCheck publication_checkpoint_updated_at_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_updated_at_candidate_keys_check :
-    keysDetermineAllCheck publication_checkpoint_updated_at_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_updated_at_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_checkpoint_updated_at_contract :=
-  keysDetermineAllCheck_sound publication_checkpoint_updated_at_contract
-    publication_checkpoint_updated_at_candidate_keys_check
-
-theorem publication_checkpoint_updated_at_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_checkpoint_updated_at_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_updated_at_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_checkpoint_updated_at_contract :=
-  declaredKeysMinimalCheck_sound publication_checkpoint_updated_at_contract
-    publication_checkpoint_updated_at_candidate_keys_minimal_check
-
-theorem publication_checkpoint_updated_at_closure_fixed_check :
-    closureFixedPointCheck publication_checkpoint_updated_at_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_updated_at_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_checkpoint_updated_at_contract :=
-  closureFixedPointCheck_sound publication_checkpoint_updated_at_contract
-    publication_checkpoint_updated_at_closure_fixed_check
-
-theorem publication_checkpoint_updated_at_bcnf_check :
-    bcnfCheck publication_checkpoint_updated_at_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_updated_at_bcnf : BCNF publication_checkpoint_updated_at_contract :=
-  bcnfCheck_sound publication_checkpoint_updated_at_contract publication_checkpoint_updated_at_bcnf_check
-
-def publication_checkpoint_seal_contract : RelationContract where
-  name := "publication_checkpoint_seal"
-  attributes := ["candidate_id", "stage"]
-  declaredKeys := [["candidate_id", "stage"]]
-  declaredFDs := [
-  ]
-
-theorem publication_checkpoint_seal_schema_well_formed :
-    schemaWellFormedCheck publication_checkpoint_seal_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_seal_candidate_keys_check :
-    keysDetermineAllCheck publication_checkpoint_seal_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_checkpoint_seal_contract :=
-  keysDetermineAllCheck_sound publication_checkpoint_seal_contract
-    publication_checkpoint_seal_candidate_keys_check
-
-theorem publication_checkpoint_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_checkpoint_seal_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_checkpoint_seal_contract :=
-  declaredKeysMinimalCheck_sound publication_checkpoint_seal_contract
-    publication_checkpoint_seal_candidate_keys_minimal_check
-
-theorem publication_checkpoint_seal_closure_fixed_check :
-    closureFixedPointCheck publication_checkpoint_seal_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_checkpoint_seal_contract :=
-  closureFixedPointCheck_sound publication_checkpoint_seal_contract
-    publication_checkpoint_seal_closure_fixed_check
-
-theorem publication_checkpoint_seal_bcnf_check :
-    bcnfCheck publication_checkpoint_seal_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_seal_bcnf : BCNF publication_checkpoint_seal_contract :=
-  bcnfCheck_sound publication_checkpoint_seal_contract publication_checkpoint_seal_bcnf_check
+theorem publication_stage_bcnf : BCNF publication_stage_contract :=
+  bcnfCheck_sound publication_stage_contract publication_stage_bcnf_check
 
 def publication_checkpoint_contract : RelationContract where
   name := "publication_checkpoint"
@@ -12291,372 +8214,12 @@ theorem publication_checkpoint_closure_reached_fixed_point :
   closureFixedPointCheck_sound publication_checkpoint_contract
     publication_checkpoint_closure_fixed_check
 
-def publication_batch_receipt_anchor_contract : RelationContract where
-  name := "publication_batch_receipt_anchor"
-  attributes := ["candidate_id", "stage", "start_generation"]
-  declaredKeys := [["candidate_id", "stage", "start_generation"]]
-  declaredFDs := [
-  ]
-
-theorem publication_batch_receipt_anchor_schema_well_formed :
-    schemaWellFormedCheck publication_batch_receipt_anchor_contract = true := by
+theorem publication_checkpoint_bcnf_check :
+    bcnfCheck publication_checkpoint_contract = true := by
   native_decide
 
-theorem publication_batch_receipt_anchor_candidate_keys_check :
-    keysDetermineAllCheck publication_batch_receipt_anchor_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_batch_receipt_anchor_contract :=
-  keysDetermineAllCheck_sound publication_batch_receipt_anchor_contract
-    publication_batch_receipt_anchor_candidate_keys_check
-
-theorem publication_batch_receipt_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_batch_receipt_anchor_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_batch_receipt_anchor_contract :=
-  declaredKeysMinimalCheck_sound publication_batch_receipt_anchor_contract
-    publication_batch_receipt_anchor_candidate_keys_minimal_check
-
-theorem publication_batch_receipt_anchor_closure_fixed_check :
-    closureFixedPointCheck publication_batch_receipt_anchor_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_batch_receipt_anchor_contract :=
-  closureFixedPointCheck_sound publication_batch_receipt_anchor_contract
-    publication_batch_receipt_anchor_closure_fixed_check
-
-theorem publication_batch_receipt_anchor_bcnf_check :
-    bcnfCheck publication_batch_receipt_anchor_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_anchor_bcnf : BCNF publication_batch_receipt_anchor_contract :=
-  bcnfCheck_sound publication_batch_receipt_anchor_contract publication_batch_receipt_anchor_bcnf_check
-
-def publication_batch_receipt_coordinate_contract : RelationContract where
-  name := "publication_batch_receipt_coordinate"
-  attributes := ["candidate_id", "stage", "batch_key", "start_generation"]
-  declaredKeys := [["candidate_id", "stage", "batch_key"], ["candidate_id", "stage", "start_generation"]]
-  declaredFDs := [
-    { determinant := ["candidate_id", "stage", "batch_key"], dependent := ["start_generation"] },
-    { determinant := ["candidate_id", "stage", "start_generation"], dependent := ["batch_key"] }
-  ]
-
-theorem publication_batch_receipt_coordinate_schema_well_formed :
-    schemaWellFormedCheck publication_batch_receipt_coordinate_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_coordinate_candidate_keys_check :
-    keysDetermineAllCheck publication_batch_receipt_coordinate_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_coordinate_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_batch_receipt_coordinate_contract :=
-  keysDetermineAllCheck_sound publication_batch_receipt_coordinate_contract
-    publication_batch_receipt_coordinate_candidate_keys_check
-
-theorem publication_batch_receipt_coordinate_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_batch_receipt_coordinate_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_coordinate_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_batch_receipt_coordinate_contract :=
-  declaredKeysMinimalCheck_sound publication_batch_receipt_coordinate_contract
-    publication_batch_receipt_coordinate_candidate_keys_minimal_check
-
-theorem publication_batch_receipt_coordinate_closure_fixed_check :
-    closureFixedPointCheck publication_batch_receipt_coordinate_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_coordinate_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_batch_receipt_coordinate_contract :=
-  closureFixedPointCheck_sound publication_batch_receipt_coordinate_contract
-    publication_batch_receipt_coordinate_closure_fixed_check
-
-theorem publication_batch_receipt_coordinate_bcnf_check :
-    bcnfCheck publication_batch_receipt_coordinate_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_coordinate_bcnf : BCNF publication_batch_receipt_coordinate_contract :=
-  bcnfCheck_sound publication_batch_receipt_coordinate_contract publication_batch_receipt_coordinate_bcnf_check
-
-def publication_batch_receipt_start_cursor_contract : RelationContract where
-  name := "publication_batch_receipt_start_cursor"
-  attributes := ["candidate_id", "stage", "start_generation", "start_cursor"]
-  declaredKeys := [["candidate_id", "stage", "start_generation"]]
-  declaredFDs := [
-    { determinant := ["candidate_id", "stage", "start_generation"], dependent := ["start_cursor"] }
-  ]
-
-theorem publication_batch_receipt_start_cursor_schema_well_formed :
-    schemaWellFormedCheck publication_batch_receipt_start_cursor_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_start_cursor_candidate_keys_check :
-    keysDetermineAllCheck publication_batch_receipt_start_cursor_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_start_cursor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_batch_receipt_start_cursor_contract :=
-  keysDetermineAllCheck_sound publication_batch_receipt_start_cursor_contract
-    publication_batch_receipt_start_cursor_candidate_keys_check
-
-theorem publication_batch_receipt_start_cursor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_batch_receipt_start_cursor_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_start_cursor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_batch_receipt_start_cursor_contract :=
-  declaredKeysMinimalCheck_sound publication_batch_receipt_start_cursor_contract
-    publication_batch_receipt_start_cursor_candidate_keys_minimal_check
-
-theorem publication_batch_receipt_start_cursor_closure_fixed_check :
-    closureFixedPointCheck publication_batch_receipt_start_cursor_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_start_cursor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_batch_receipt_start_cursor_contract :=
-  closureFixedPointCheck_sound publication_batch_receipt_start_cursor_contract
-    publication_batch_receipt_start_cursor_closure_fixed_check
-
-theorem publication_batch_receipt_start_cursor_bcnf_check :
-    bcnfCheck publication_batch_receipt_start_cursor_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_start_cursor_bcnf : BCNF publication_batch_receipt_start_cursor_contract :=
-  bcnfCheck_sound publication_batch_receipt_start_cursor_contract publication_batch_receipt_start_cursor_bcnf_check
-
-def publication_batch_receipt_start_processed_count_contract : RelationContract where
-  name := "publication_batch_receipt_start_processed_count"
-  attributes := ["candidate_id", "stage", "start_generation", "start_processed_count"]
-  declaredKeys := [["candidate_id", "stage", "start_generation"]]
-  declaredFDs := [
-    { determinant := ["candidate_id", "stage", "start_generation"], dependent := ["start_processed_count"] }
-  ]
-
-theorem publication_batch_receipt_start_processed_count_schema_well_formed :
-    schemaWellFormedCheck publication_batch_receipt_start_processed_count_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_start_processed_count_candidate_keys_check :
-    keysDetermineAllCheck publication_batch_receipt_start_processed_count_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_start_processed_count_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_batch_receipt_start_processed_count_contract :=
-  keysDetermineAllCheck_sound publication_batch_receipt_start_processed_count_contract
-    publication_batch_receipt_start_processed_count_candidate_keys_check
-
-theorem publication_batch_receipt_start_processed_count_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_batch_receipt_start_processed_count_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_start_processed_count_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_batch_receipt_start_processed_count_contract :=
-  declaredKeysMinimalCheck_sound publication_batch_receipt_start_processed_count_contract
-    publication_batch_receipt_start_processed_count_candidate_keys_minimal_check
-
-theorem publication_batch_receipt_start_processed_count_closure_fixed_check :
-    closureFixedPointCheck publication_batch_receipt_start_processed_count_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_start_processed_count_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_batch_receipt_start_processed_count_contract :=
-  closureFixedPointCheck_sound publication_batch_receipt_start_processed_count_contract
-    publication_batch_receipt_start_processed_count_closure_fixed_check
-
-theorem publication_batch_receipt_start_processed_count_bcnf_check :
-    bcnfCheck publication_batch_receipt_start_processed_count_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_start_processed_count_bcnf : BCNF publication_batch_receipt_start_processed_count_contract :=
-  bcnfCheck_sound publication_batch_receipt_start_processed_count_contract publication_batch_receipt_start_processed_count_bcnf_check
-
-def publication_batch_receipt_next_cursor_contract : RelationContract where
-  name := "publication_batch_receipt_next_cursor"
-  attributes := ["candidate_id", "stage", "start_generation", "next_cursor"]
-  declaredKeys := [["candidate_id", "stage", "start_generation"]]
-  declaredFDs := [
-    { determinant := ["candidate_id", "stage", "start_generation"], dependent := ["next_cursor"] }
-  ]
-
-theorem publication_batch_receipt_next_cursor_schema_well_formed :
-    schemaWellFormedCheck publication_batch_receipt_next_cursor_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_next_cursor_candidate_keys_check :
-    keysDetermineAllCheck publication_batch_receipt_next_cursor_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_next_cursor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_batch_receipt_next_cursor_contract :=
-  keysDetermineAllCheck_sound publication_batch_receipt_next_cursor_contract
-    publication_batch_receipt_next_cursor_candidate_keys_check
-
-theorem publication_batch_receipt_next_cursor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_batch_receipt_next_cursor_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_next_cursor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_batch_receipt_next_cursor_contract :=
-  declaredKeysMinimalCheck_sound publication_batch_receipt_next_cursor_contract
-    publication_batch_receipt_next_cursor_candidate_keys_minimal_check
-
-theorem publication_batch_receipt_next_cursor_closure_fixed_check :
-    closureFixedPointCheck publication_batch_receipt_next_cursor_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_next_cursor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_batch_receipt_next_cursor_contract :=
-  closureFixedPointCheck_sound publication_batch_receipt_next_cursor_contract
-    publication_batch_receipt_next_cursor_closure_fixed_check
-
-theorem publication_batch_receipt_next_cursor_bcnf_check :
-    bcnfCheck publication_batch_receipt_next_cursor_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_next_cursor_bcnf : BCNF publication_batch_receipt_next_cursor_contract :=
-  bcnfCheck_sound publication_batch_receipt_next_cursor_contract publication_batch_receipt_next_cursor_bcnf_check
-
-def publication_batch_receipt_row_count_contract : RelationContract where
-  name := "publication_batch_receipt_row_count"
-  attributes := ["candidate_id", "stage", "start_generation", "row_count"]
-  declaredKeys := [["candidate_id", "stage", "start_generation"]]
-  declaredFDs := [
-    { determinant := ["candidate_id", "stage", "start_generation"], dependent := ["row_count"] }
-  ]
-
-theorem publication_batch_receipt_row_count_schema_well_formed :
-    schemaWellFormedCheck publication_batch_receipt_row_count_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_row_count_candidate_keys_check :
-    keysDetermineAllCheck publication_batch_receipt_row_count_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_row_count_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_batch_receipt_row_count_contract :=
-  keysDetermineAllCheck_sound publication_batch_receipt_row_count_contract
-    publication_batch_receipt_row_count_candidate_keys_check
-
-theorem publication_batch_receipt_row_count_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_batch_receipt_row_count_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_row_count_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_batch_receipt_row_count_contract :=
-  declaredKeysMinimalCheck_sound publication_batch_receipt_row_count_contract
-    publication_batch_receipt_row_count_candidate_keys_minimal_check
-
-theorem publication_batch_receipt_row_count_closure_fixed_check :
-    closureFixedPointCheck publication_batch_receipt_row_count_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_row_count_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_batch_receipt_row_count_contract :=
-  closureFixedPointCheck_sound publication_batch_receipt_row_count_contract
-    publication_batch_receipt_row_count_closure_fixed_check
-
-theorem publication_batch_receipt_row_count_bcnf_check :
-    bcnfCheck publication_batch_receipt_row_count_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_row_count_bcnf : BCNF publication_batch_receipt_row_count_contract :=
-  bcnfCheck_sound publication_batch_receipt_row_count_contract publication_batch_receipt_row_count_bcnf_check
-
-def publication_batch_receipt_committed_at_contract : RelationContract where
-  name := "publication_batch_receipt_committed_at"
-  attributes := ["candidate_id", "stage", "start_generation", "committed_at"]
-  declaredKeys := [["candidate_id", "stage", "start_generation"]]
-  declaredFDs := [
-    { determinant := ["candidate_id", "stage", "start_generation"], dependent := ["committed_at"] }
-  ]
-
-theorem publication_batch_receipt_committed_at_schema_well_formed :
-    schemaWellFormedCheck publication_batch_receipt_committed_at_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_committed_at_candidate_keys_check :
-    keysDetermineAllCheck publication_batch_receipt_committed_at_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_committed_at_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_batch_receipt_committed_at_contract :=
-  keysDetermineAllCheck_sound publication_batch_receipt_committed_at_contract
-    publication_batch_receipt_committed_at_candidate_keys_check
-
-theorem publication_batch_receipt_committed_at_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_batch_receipt_committed_at_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_committed_at_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_batch_receipt_committed_at_contract :=
-  declaredKeysMinimalCheck_sound publication_batch_receipt_committed_at_contract
-    publication_batch_receipt_committed_at_candidate_keys_minimal_check
-
-theorem publication_batch_receipt_committed_at_closure_fixed_check :
-    closureFixedPointCheck publication_batch_receipt_committed_at_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_committed_at_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_batch_receipt_committed_at_contract :=
-  closureFixedPointCheck_sound publication_batch_receipt_committed_at_contract
-    publication_batch_receipt_committed_at_closure_fixed_check
-
-theorem publication_batch_receipt_committed_at_bcnf_check :
-    bcnfCheck publication_batch_receipt_committed_at_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_committed_at_bcnf : BCNF publication_batch_receipt_committed_at_contract :=
-  bcnfCheck_sound publication_batch_receipt_committed_at_contract publication_batch_receipt_committed_at_bcnf_check
-
-def publication_batch_receipt_seal_contract : RelationContract where
-  name := "publication_batch_receipt_seal"
-  attributes := ["candidate_id", "stage", "start_generation"]
-  declaredKeys := [["candidate_id", "stage", "start_generation"]]
-  declaredFDs := [
-  ]
-
-theorem publication_batch_receipt_seal_schema_well_formed :
-    schemaWellFormedCheck publication_batch_receipt_seal_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_seal_candidate_keys_check :
-    keysDetermineAllCheck publication_batch_receipt_seal_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_batch_receipt_seal_contract :=
-  keysDetermineAllCheck_sound publication_batch_receipt_seal_contract
-    publication_batch_receipt_seal_candidate_keys_check
-
-theorem publication_batch_receipt_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_batch_receipt_seal_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_batch_receipt_seal_contract :=
-  declaredKeysMinimalCheck_sound publication_batch_receipt_seal_contract
-    publication_batch_receipt_seal_candidate_keys_minimal_check
-
-theorem publication_batch_receipt_seal_closure_fixed_check :
-    closureFixedPointCheck publication_batch_receipt_seal_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_batch_receipt_seal_contract :=
-  closureFixedPointCheck_sound publication_batch_receipt_seal_contract
-    publication_batch_receipt_seal_closure_fixed_check
-
-theorem publication_batch_receipt_seal_bcnf_check :
-    bcnfCheck publication_batch_receipt_seal_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_seal_bcnf : BCNF publication_batch_receipt_seal_contract :=
-  bcnfCheck_sound publication_batch_receipt_seal_contract publication_batch_receipt_seal_bcnf_check
+theorem publication_checkpoint_bcnf : BCNF publication_checkpoint_contract :=
+  bcnfCheck_sound publication_checkpoint_contract publication_checkpoint_bcnf_check
 
 def publication_batch_receipt_stored_contract : RelationContract where
   name := "publication_batch_receipt_stored"
@@ -12697,6 +8260,13 @@ theorem publication_batch_receipt_stored_closure_reached_fixed_point :
     ClosureReachedFixedPoint publication_batch_receipt_stored_contract :=
   closureFixedPointCheck_sound publication_batch_receipt_stored_contract
     publication_batch_receipt_stored_closure_fixed_check
+
+theorem publication_batch_receipt_stored_bcnf_check :
+    bcnfCheck publication_batch_receipt_stored_contract = true := by
+  native_decide
+
+theorem publication_batch_receipt_stored_bcnf : BCNF publication_batch_receipt_stored_contract :=
+  bcnfCheck_sound publication_batch_receipt_stored_contract publication_batch_receipt_stored_bcnf_check
 
 def publication_batch_receipt_contract : RelationContract where
   name := "publication_batch_receipt"
@@ -12746,326 +8316,6 @@ theorem publication_batch_receipt_closure_reached_fixed_point :
   closureFixedPointCheck_sound publication_batch_receipt_contract
     publication_batch_receipt_closure_fixed_check
 
-def publication_finalization_checkpoint_anchor_contract : RelationContract where
-  name := "publication_finalization_checkpoint_anchor"
-  attributes := ["receipt_id"]
-  declaredKeys := [["receipt_id"]]
-  declaredFDs := [
-  ]
-
-theorem publication_finalization_checkpoint_anchor_schema_well_formed :
-    schemaWellFormedCheck publication_finalization_checkpoint_anchor_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_anchor_candidate_keys_check :
-    keysDetermineAllCheck publication_finalization_checkpoint_anchor_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_finalization_checkpoint_anchor_contract :=
-  keysDetermineAllCheck_sound publication_finalization_checkpoint_anchor_contract
-    publication_finalization_checkpoint_anchor_candidate_keys_check
-
-theorem publication_finalization_checkpoint_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_finalization_checkpoint_anchor_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_finalization_checkpoint_anchor_contract :=
-  declaredKeysMinimalCheck_sound publication_finalization_checkpoint_anchor_contract
-    publication_finalization_checkpoint_anchor_candidate_keys_minimal_check
-
-theorem publication_finalization_checkpoint_anchor_closure_fixed_check :
-    closureFixedPointCheck publication_finalization_checkpoint_anchor_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_finalization_checkpoint_anchor_contract :=
-  closureFixedPointCheck_sound publication_finalization_checkpoint_anchor_contract
-    publication_finalization_checkpoint_anchor_closure_fixed_check
-
-theorem publication_finalization_checkpoint_anchor_bcnf_check :
-    bcnfCheck publication_finalization_checkpoint_anchor_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_anchor_bcnf : BCNF publication_finalization_checkpoint_anchor_contract :=
-  bcnfCheck_sound publication_finalization_checkpoint_anchor_contract publication_finalization_checkpoint_anchor_bcnf_check
-
-def publication_finalization_checkpoint_generation_contract : RelationContract where
-  name := "publication_finalization_checkpoint_generation"
-  attributes := ["receipt_id", "generation"]
-  declaredKeys := [["receipt_id"]]
-  declaredFDs := [
-    { determinant := ["receipt_id"], dependent := ["generation"] }
-  ]
-
-theorem publication_finalization_checkpoint_generation_schema_well_formed :
-    schemaWellFormedCheck publication_finalization_checkpoint_generation_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_generation_candidate_keys_check :
-    keysDetermineAllCheck publication_finalization_checkpoint_generation_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_generation_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_finalization_checkpoint_generation_contract :=
-  keysDetermineAllCheck_sound publication_finalization_checkpoint_generation_contract
-    publication_finalization_checkpoint_generation_candidate_keys_check
-
-theorem publication_finalization_checkpoint_generation_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_finalization_checkpoint_generation_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_generation_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_finalization_checkpoint_generation_contract :=
-  declaredKeysMinimalCheck_sound publication_finalization_checkpoint_generation_contract
-    publication_finalization_checkpoint_generation_candidate_keys_minimal_check
-
-theorem publication_finalization_checkpoint_generation_closure_fixed_check :
-    closureFixedPointCheck publication_finalization_checkpoint_generation_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_generation_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_finalization_checkpoint_generation_contract :=
-  closureFixedPointCheck_sound publication_finalization_checkpoint_generation_contract
-    publication_finalization_checkpoint_generation_closure_fixed_check
-
-theorem publication_finalization_checkpoint_generation_bcnf_check :
-    bcnfCheck publication_finalization_checkpoint_generation_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_generation_bcnf : BCNF publication_finalization_checkpoint_generation_contract :=
-  bcnfCheck_sound publication_finalization_checkpoint_generation_contract publication_finalization_checkpoint_generation_bcnf_check
-
-def publication_finalization_checkpoint_cursor_contract : RelationContract where
-  name := "publication_finalization_checkpoint_cursor"
-  attributes := ["receipt_id", "cursor"]
-  declaredKeys := [["receipt_id"]]
-  declaredFDs := [
-    { determinant := ["receipt_id"], dependent := ["cursor"] }
-  ]
-
-theorem publication_finalization_checkpoint_cursor_schema_well_formed :
-    schemaWellFormedCheck publication_finalization_checkpoint_cursor_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_cursor_candidate_keys_check :
-    keysDetermineAllCheck publication_finalization_checkpoint_cursor_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_cursor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_finalization_checkpoint_cursor_contract :=
-  keysDetermineAllCheck_sound publication_finalization_checkpoint_cursor_contract
-    publication_finalization_checkpoint_cursor_candidate_keys_check
-
-theorem publication_finalization_checkpoint_cursor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_finalization_checkpoint_cursor_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_cursor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_finalization_checkpoint_cursor_contract :=
-  declaredKeysMinimalCheck_sound publication_finalization_checkpoint_cursor_contract
-    publication_finalization_checkpoint_cursor_candidate_keys_minimal_check
-
-theorem publication_finalization_checkpoint_cursor_closure_fixed_check :
-    closureFixedPointCheck publication_finalization_checkpoint_cursor_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_cursor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_finalization_checkpoint_cursor_contract :=
-  closureFixedPointCheck_sound publication_finalization_checkpoint_cursor_contract
-    publication_finalization_checkpoint_cursor_closure_fixed_check
-
-theorem publication_finalization_checkpoint_cursor_bcnf_check :
-    bcnfCheck publication_finalization_checkpoint_cursor_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_cursor_bcnf : BCNF publication_finalization_checkpoint_cursor_contract :=
-  bcnfCheck_sound publication_finalization_checkpoint_cursor_contract publication_finalization_checkpoint_cursor_bcnf_check
-
-def publication_finalization_checkpoint_processed_count_contract : RelationContract where
-  name := "publication_finalization_checkpoint_processed_count"
-  attributes := ["receipt_id", "processed_count"]
-  declaredKeys := [["receipt_id"]]
-  declaredFDs := [
-    { determinant := ["receipt_id"], dependent := ["processed_count"] }
-  ]
-
-theorem publication_finalization_checkpoint_processed_count_schema_well_formed :
-    schemaWellFormedCheck publication_finalization_checkpoint_processed_count_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_processed_count_candidate_keys_check :
-    keysDetermineAllCheck publication_finalization_checkpoint_processed_count_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_processed_count_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_finalization_checkpoint_processed_count_contract :=
-  keysDetermineAllCheck_sound publication_finalization_checkpoint_processed_count_contract
-    publication_finalization_checkpoint_processed_count_candidate_keys_check
-
-theorem publication_finalization_checkpoint_processed_count_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_finalization_checkpoint_processed_count_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_processed_count_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_finalization_checkpoint_processed_count_contract :=
-  declaredKeysMinimalCheck_sound publication_finalization_checkpoint_processed_count_contract
-    publication_finalization_checkpoint_processed_count_candidate_keys_minimal_check
-
-theorem publication_finalization_checkpoint_processed_count_closure_fixed_check :
-    closureFixedPointCheck publication_finalization_checkpoint_processed_count_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_processed_count_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_finalization_checkpoint_processed_count_contract :=
-  closureFixedPointCheck_sound publication_finalization_checkpoint_processed_count_contract
-    publication_finalization_checkpoint_processed_count_closure_fixed_check
-
-theorem publication_finalization_checkpoint_processed_count_bcnf_check :
-    bcnfCheck publication_finalization_checkpoint_processed_count_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_processed_count_bcnf : BCNF publication_finalization_checkpoint_processed_count_contract :=
-  bcnfCheck_sound publication_finalization_checkpoint_processed_count_contract publication_finalization_checkpoint_processed_count_bcnf_check
-
-def publication_finalization_checkpoint_state_contract : RelationContract where
-  name := "publication_finalization_checkpoint_state"
-  attributes := ["receipt_id", "state"]
-  declaredKeys := [["receipt_id"]]
-  declaredFDs := [
-    { determinant := ["receipt_id"], dependent := ["state"] }
-  ]
-
-theorem publication_finalization_checkpoint_state_schema_well_formed :
-    schemaWellFormedCheck publication_finalization_checkpoint_state_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_state_candidate_keys_check :
-    keysDetermineAllCheck publication_finalization_checkpoint_state_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_state_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_finalization_checkpoint_state_contract :=
-  keysDetermineAllCheck_sound publication_finalization_checkpoint_state_contract
-    publication_finalization_checkpoint_state_candidate_keys_check
-
-theorem publication_finalization_checkpoint_state_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_finalization_checkpoint_state_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_state_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_finalization_checkpoint_state_contract :=
-  declaredKeysMinimalCheck_sound publication_finalization_checkpoint_state_contract
-    publication_finalization_checkpoint_state_candidate_keys_minimal_check
-
-theorem publication_finalization_checkpoint_state_closure_fixed_check :
-    closureFixedPointCheck publication_finalization_checkpoint_state_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_state_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_finalization_checkpoint_state_contract :=
-  closureFixedPointCheck_sound publication_finalization_checkpoint_state_contract
-    publication_finalization_checkpoint_state_closure_fixed_check
-
-theorem publication_finalization_checkpoint_state_bcnf_check :
-    bcnfCheck publication_finalization_checkpoint_state_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_state_bcnf : BCNF publication_finalization_checkpoint_state_contract :=
-  bcnfCheck_sound publication_finalization_checkpoint_state_contract publication_finalization_checkpoint_state_bcnf_check
-
-def publication_finalization_checkpoint_updated_at_contract : RelationContract where
-  name := "publication_finalization_checkpoint_updated_at"
-  attributes := ["receipt_id", "updated_at"]
-  declaredKeys := [["receipt_id"]]
-  declaredFDs := [
-    { determinant := ["receipt_id"], dependent := ["updated_at"] }
-  ]
-
-theorem publication_finalization_checkpoint_updated_at_schema_well_formed :
-    schemaWellFormedCheck publication_finalization_checkpoint_updated_at_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_updated_at_candidate_keys_check :
-    keysDetermineAllCheck publication_finalization_checkpoint_updated_at_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_updated_at_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_finalization_checkpoint_updated_at_contract :=
-  keysDetermineAllCheck_sound publication_finalization_checkpoint_updated_at_contract
-    publication_finalization_checkpoint_updated_at_candidate_keys_check
-
-theorem publication_finalization_checkpoint_updated_at_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_finalization_checkpoint_updated_at_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_updated_at_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_finalization_checkpoint_updated_at_contract :=
-  declaredKeysMinimalCheck_sound publication_finalization_checkpoint_updated_at_contract
-    publication_finalization_checkpoint_updated_at_candidate_keys_minimal_check
-
-theorem publication_finalization_checkpoint_updated_at_closure_fixed_check :
-    closureFixedPointCheck publication_finalization_checkpoint_updated_at_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_updated_at_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_finalization_checkpoint_updated_at_contract :=
-  closureFixedPointCheck_sound publication_finalization_checkpoint_updated_at_contract
-    publication_finalization_checkpoint_updated_at_closure_fixed_check
-
-theorem publication_finalization_checkpoint_updated_at_bcnf_check :
-    bcnfCheck publication_finalization_checkpoint_updated_at_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_updated_at_bcnf : BCNF publication_finalization_checkpoint_updated_at_contract :=
-  bcnfCheck_sound publication_finalization_checkpoint_updated_at_contract publication_finalization_checkpoint_updated_at_bcnf_check
-
-def publication_finalization_checkpoint_seal_contract : RelationContract where
-  name := "publication_finalization_checkpoint_seal"
-  attributes := ["receipt_id"]
-  declaredKeys := [["receipt_id"]]
-  declaredFDs := [
-  ]
-
-theorem publication_finalization_checkpoint_seal_schema_well_formed :
-    schemaWellFormedCheck publication_finalization_checkpoint_seal_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_seal_candidate_keys_check :
-    keysDetermineAllCheck publication_finalization_checkpoint_seal_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_finalization_checkpoint_seal_contract :=
-  keysDetermineAllCheck_sound publication_finalization_checkpoint_seal_contract
-    publication_finalization_checkpoint_seal_candidate_keys_check
-
-theorem publication_finalization_checkpoint_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_finalization_checkpoint_seal_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_finalization_checkpoint_seal_contract :=
-  declaredKeysMinimalCheck_sound publication_finalization_checkpoint_seal_contract
-    publication_finalization_checkpoint_seal_candidate_keys_minimal_check
-
-theorem publication_finalization_checkpoint_seal_closure_fixed_check :
-    closureFixedPointCheck publication_finalization_checkpoint_seal_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_finalization_checkpoint_seal_contract :=
-  closureFixedPointCheck_sound publication_finalization_checkpoint_seal_contract
-    publication_finalization_checkpoint_seal_closure_fixed_check
-
-theorem publication_finalization_checkpoint_seal_bcnf_check :
-    bcnfCheck publication_finalization_checkpoint_seal_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_seal_bcnf : BCNF publication_finalization_checkpoint_seal_contract :=
-  bcnfCheck_sound publication_finalization_checkpoint_seal_contract publication_finalization_checkpoint_seal_bcnf_check
-
 def publication_finalization_checkpoint_contract : RelationContract where
   name := "publication_finalization_checkpoint"
   attributes := ["receipt_id", "generation", "cursor", "processed_count", "state", "updated_at"]
@@ -13105,372 +8355,12 @@ theorem publication_finalization_checkpoint_closure_reached_fixed_point :
   closureFixedPointCheck_sound publication_finalization_checkpoint_contract
     publication_finalization_checkpoint_closure_fixed_check
 
-def publication_finalization_batch_receipt_anchor_contract : RelationContract where
-  name := "publication_finalization_batch_receipt_anchor"
-  attributes := ["receipt_id", "start_generation"]
-  declaredKeys := [["receipt_id", "start_generation"]]
-  declaredFDs := [
-  ]
-
-theorem publication_finalization_batch_receipt_anchor_schema_well_formed :
-    schemaWellFormedCheck publication_finalization_batch_receipt_anchor_contract = true := by
+theorem publication_finalization_checkpoint_bcnf_check :
+    bcnfCheck publication_finalization_checkpoint_contract = true := by
   native_decide
 
-theorem publication_finalization_batch_receipt_anchor_candidate_keys_check :
-    keysDetermineAllCheck publication_finalization_batch_receipt_anchor_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_finalization_batch_receipt_anchor_contract :=
-  keysDetermineAllCheck_sound publication_finalization_batch_receipt_anchor_contract
-    publication_finalization_batch_receipt_anchor_candidate_keys_check
-
-theorem publication_finalization_batch_receipt_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_finalization_batch_receipt_anchor_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_finalization_batch_receipt_anchor_contract :=
-  declaredKeysMinimalCheck_sound publication_finalization_batch_receipt_anchor_contract
-    publication_finalization_batch_receipt_anchor_candidate_keys_minimal_check
-
-theorem publication_finalization_batch_receipt_anchor_closure_fixed_check :
-    closureFixedPointCheck publication_finalization_batch_receipt_anchor_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_finalization_batch_receipt_anchor_contract :=
-  closureFixedPointCheck_sound publication_finalization_batch_receipt_anchor_contract
-    publication_finalization_batch_receipt_anchor_closure_fixed_check
-
-theorem publication_finalization_batch_receipt_anchor_bcnf_check :
-    bcnfCheck publication_finalization_batch_receipt_anchor_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_anchor_bcnf : BCNF publication_finalization_batch_receipt_anchor_contract :=
-  bcnfCheck_sound publication_finalization_batch_receipt_anchor_contract publication_finalization_batch_receipt_anchor_bcnf_check
-
-def publication_finalization_batch_receipt_coordinate_contract : RelationContract where
-  name := "publication_finalization_batch_receipt_coordinate"
-  attributes := ["receipt_id", "batch_key", "start_generation"]
-  declaredKeys := [["receipt_id", "batch_key"], ["receipt_id", "start_generation"]]
-  declaredFDs := [
-    { determinant := ["receipt_id", "batch_key"], dependent := ["start_generation"] },
-    { determinant := ["receipt_id", "start_generation"], dependent := ["batch_key"] }
-  ]
-
-theorem publication_finalization_batch_receipt_coordinate_schema_well_formed :
-    schemaWellFormedCheck publication_finalization_batch_receipt_coordinate_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_coordinate_candidate_keys_check :
-    keysDetermineAllCheck publication_finalization_batch_receipt_coordinate_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_coordinate_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_finalization_batch_receipt_coordinate_contract :=
-  keysDetermineAllCheck_sound publication_finalization_batch_receipt_coordinate_contract
-    publication_finalization_batch_receipt_coordinate_candidate_keys_check
-
-theorem publication_finalization_batch_receipt_coordinate_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_finalization_batch_receipt_coordinate_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_coordinate_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_finalization_batch_receipt_coordinate_contract :=
-  declaredKeysMinimalCheck_sound publication_finalization_batch_receipt_coordinate_contract
-    publication_finalization_batch_receipt_coordinate_candidate_keys_minimal_check
-
-theorem publication_finalization_batch_receipt_coordinate_closure_fixed_check :
-    closureFixedPointCheck publication_finalization_batch_receipt_coordinate_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_coordinate_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_finalization_batch_receipt_coordinate_contract :=
-  closureFixedPointCheck_sound publication_finalization_batch_receipt_coordinate_contract
-    publication_finalization_batch_receipt_coordinate_closure_fixed_check
-
-theorem publication_finalization_batch_receipt_coordinate_bcnf_check :
-    bcnfCheck publication_finalization_batch_receipt_coordinate_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_coordinate_bcnf : BCNF publication_finalization_batch_receipt_coordinate_contract :=
-  bcnfCheck_sound publication_finalization_batch_receipt_coordinate_contract publication_finalization_batch_receipt_coordinate_bcnf_check
-
-def publication_finalization_batch_receipt_start_cursor_contract : RelationContract where
-  name := "publication_finalization_batch_receipt_start_cursor"
-  attributes := ["receipt_id", "start_generation", "start_cursor"]
-  declaredKeys := [["receipt_id", "start_generation"]]
-  declaredFDs := [
-    { determinant := ["receipt_id", "start_generation"], dependent := ["start_cursor"] }
-  ]
-
-theorem publication_finalization_batch_receipt_start_cursor_schema_well_formed :
-    schemaWellFormedCheck publication_finalization_batch_receipt_start_cursor_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_start_cursor_candidate_keys_check :
-    keysDetermineAllCheck publication_finalization_batch_receipt_start_cursor_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_start_cursor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_finalization_batch_receipt_start_cursor_contract :=
-  keysDetermineAllCheck_sound publication_finalization_batch_receipt_start_cursor_contract
-    publication_finalization_batch_receipt_start_cursor_candidate_keys_check
-
-theorem publication_finalization_batch_receipt_start_cursor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_finalization_batch_receipt_start_cursor_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_start_cursor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_finalization_batch_receipt_start_cursor_contract :=
-  declaredKeysMinimalCheck_sound publication_finalization_batch_receipt_start_cursor_contract
-    publication_finalization_batch_receipt_start_cursor_candidate_keys_minimal_check
-
-theorem publication_finalization_batch_receipt_start_cursor_closure_fixed_check :
-    closureFixedPointCheck publication_finalization_batch_receipt_start_cursor_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_start_cursor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_finalization_batch_receipt_start_cursor_contract :=
-  closureFixedPointCheck_sound publication_finalization_batch_receipt_start_cursor_contract
-    publication_finalization_batch_receipt_start_cursor_closure_fixed_check
-
-theorem publication_finalization_batch_receipt_start_cursor_bcnf_check :
-    bcnfCheck publication_finalization_batch_receipt_start_cursor_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_start_cursor_bcnf : BCNF publication_finalization_batch_receipt_start_cursor_contract :=
-  bcnfCheck_sound publication_finalization_batch_receipt_start_cursor_contract publication_finalization_batch_receipt_start_cursor_bcnf_check
-
-def publication_finalization_batch_receipt_start_processed_count_contract : RelationContract where
-  name := "publication_finalization_batch_receipt_start_processed_count"
-  attributes := ["receipt_id", "start_generation", "start_processed_count"]
-  declaredKeys := [["receipt_id", "start_generation"]]
-  declaredFDs := [
-    { determinant := ["receipt_id", "start_generation"], dependent := ["start_processed_count"] }
-  ]
-
-theorem publication_finalization_batch_receipt_start_processed_count_schema_well_formed :
-    schemaWellFormedCheck publication_finalization_batch_receipt_start_processed_count_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_start_processed_count_candidate_keys_check :
-    keysDetermineAllCheck publication_finalization_batch_receipt_start_processed_count_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_start_processed_count_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_finalization_batch_receipt_start_processed_count_contract :=
-  keysDetermineAllCheck_sound publication_finalization_batch_receipt_start_processed_count_contract
-    publication_finalization_batch_receipt_start_processed_count_candidate_keys_check
-
-theorem publication_finalization_batch_receipt_start_processed_count_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_finalization_batch_receipt_start_processed_count_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_start_processed_count_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_finalization_batch_receipt_start_processed_count_contract :=
-  declaredKeysMinimalCheck_sound publication_finalization_batch_receipt_start_processed_count_contract
-    publication_finalization_batch_receipt_start_processed_count_candidate_keys_minimal_check
-
-theorem publication_finalization_batch_receipt_start_processed_count_closure_fixed_check :
-    closureFixedPointCheck publication_finalization_batch_receipt_start_processed_count_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_start_processed_count_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_finalization_batch_receipt_start_processed_count_contract :=
-  closureFixedPointCheck_sound publication_finalization_batch_receipt_start_processed_count_contract
-    publication_finalization_batch_receipt_start_processed_count_closure_fixed_check
-
-theorem publication_finalization_batch_receipt_start_processed_count_bcnf_check :
-    bcnfCheck publication_finalization_batch_receipt_start_processed_count_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_start_processed_count_bcnf : BCNF publication_finalization_batch_receipt_start_processed_count_contract :=
-  bcnfCheck_sound publication_finalization_batch_receipt_start_processed_count_contract publication_finalization_batch_receipt_start_processed_count_bcnf_check
-
-def publication_finalization_batch_receipt_next_cursor_contract : RelationContract where
-  name := "publication_finalization_batch_receipt_next_cursor"
-  attributes := ["receipt_id", "start_generation", "next_cursor"]
-  declaredKeys := [["receipt_id", "start_generation"]]
-  declaredFDs := [
-    { determinant := ["receipt_id", "start_generation"], dependent := ["next_cursor"] }
-  ]
-
-theorem publication_finalization_batch_receipt_next_cursor_schema_well_formed :
-    schemaWellFormedCheck publication_finalization_batch_receipt_next_cursor_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_next_cursor_candidate_keys_check :
-    keysDetermineAllCheck publication_finalization_batch_receipt_next_cursor_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_next_cursor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_finalization_batch_receipt_next_cursor_contract :=
-  keysDetermineAllCheck_sound publication_finalization_batch_receipt_next_cursor_contract
-    publication_finalization_batch_receipt_next_cursor_candidate_keys_check
-
-theorem publication_finalization_batch_receipt_next_cursor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_finalization_batch_receipt_next_cursor_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_next_cursor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_finalization_batch_receipt_next_cursor_contract :=
-  declaredKeysMinimalCheck_sound publication_finalization_batch_receipt_next_cursor_contract
-    publication_finalization_batch_receipt_next_cursor_candidate_keys_minimal_check
-
-theorem publication_finalization_batch_receipt_next_cursor_closure_fixed_check :
-    closureFixedPointCheck publication_finalization_batch_receipt_next_cursor_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_next_cursor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_finalization_batch_receipt_next_cursor_contract :=
-  closureFixedPointCheck_sound publication_finalization_batch_receipt_next_cursor_contract
-    publication_finalization_batch_receipt_next_cursor_closure_fixed_check
-
-theorem publication_finalization_batch_receipt_next_cursor_bcnf_check :
-    bcnfCheck publication_finalization_batch_receipt_next_cursor_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_next_cursor_bcnf : BCNF publication_finalization_batch_receipt_next_cursor_contract :=
-  bcnfCheck_sound publication_finalization_batch_receipt_next_cursor_contract publication_finalization_batch_receipt_next_cursor_bcnf_check
-
-def publication_finalization_batch_receipt_row_count_contract : RelationContract where
-  name := "publication_finalization_batch_receipt_row_count"
-  attributes := ["receipt_id", "start_generation", "row_count"]
-  declaredKeys := [["receipt_id", "start_generation"]]
-  declaredFDs := [
-    { determinant := ["receipt_id", "start_generation"], dependent := ["row_count"] }
-  ]
-
-theorem publication_finalization_batch_receipt_row_count_schema_well_formed :
-    schemaWellFormedCheck publication_finalization_batch_receipt_row_count_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_row_count_candidate_keys_check :
-    keysDetermineAllCheck publication_finalization_batch_receipt_row_count_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_row_count_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_finalization_batch_receipt_row_count_contract :=
-  keysDetermineAllCheck_sound publication_finalization_batch_receipt_row_count_contract
-    publication_finalization_batch_receipt_row_count_candidate_keys_check
-
-theorem publication_finalization_batch_receipt_row_count_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_finalization_batch_receipt_row_count_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_row_count_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_finalization_batch_receipt_row_count_contract :=
-  declaredKeysMinimalCheck_sound publication_finalization_batch_receipt_row_count_contract
-    publication_finalization_batch_receipt_row_count_candidate_keys_minimal_check
-
-theorem publication_finalization_batch_receipt_row_count_closure_fixed_check :
-    closureFixedPointCheck publication_finalization_batch_receipt_row_count_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_row_count_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_finalization_batch_receipt_row_count_contract :=
-  closureFixedPointCheck_sound publication_finalization_batch_receipt_row_count_contract
-    publication_finalization_batch_receipt_row_count_closure_fixed_check
-
-theorem publication_finalization_batch_receipt_row_count_bcnf_check :
-    bcnfCheck publication_finalization_batch_receipt_row_count_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_row_count_bcnf : BCNF publication_finalization_batch_receipt_row_count_contract :=
-  bcnfCheck_sound publication_finalization_batch_receipt_row_count_contract publication_finalization_batch_receipt_row_count_bcnf_check
-
-def publication_finalization_batch_receipt_committed_at_contract : RelationContract where
-  name := "publication_finalization_batch_receipt_committed_at"
-  attributes := ["receipt_id", "start_generation", "committed_at"]
-  declaredKeys := [["receipt_id", "start_generation"]]
-  declaredFDs := [
-    { determinant := ["receipt_id", "start_generation"], dependent := ["committed_at"] }
-  ]
-
-theorem publication_finalization_batch_receipt_committed_at_schema_well_formed :
-    schemaWellFormedCheck publication_finalization_batch_receipt_committed_at_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_committed_at_candidate_keys_check :
-    keysDetermineAllCheck publication_finalization_batch_receipt_committed_at_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_committed_at_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_finalization_batch_receipt_committed_at_contract :=
-  keysDetermineAllCheck_sound publication_finalization_batch_receipt_committed_at_contract
-    publication_finalization_batch_receipt_committed_at_candidate_keys_check
-
-theorem publication_finalization_batch_receipt_committed_at_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_finalization_batch_receipt_committed_at_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_committed_at_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_finalization_batch_receipt_committed_at_contract :=
-  declaredKeysMinimalCheck_sound publication_finalization_batch_receipt_committed_at_contract
-    publication_finalization_batch_receipt_committed_at_candidate_keys_minimal_check
-
-theorem publication_finalization_batch_receipt_committed_at_closure_fixed_check :
-    closureFixedPointCheck publication_finalization_batch_receipt_committed_at_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_committed_at_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_finalization_batch_receipt_committed_at_contract :=
-  closureFixedPointCheck_sound publication_finalization_batch_receipt_committed_at_contract
-    publication_finalization_batch_receipt_committed_at_closure_fixed_check
-
-theorem publication_finalization_batch_receipt_committed_at_bcnf_check :
-    bcnfCheck publication_finalization_batch_receipt_committed_at_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_committed_at_bcnf : BCNF publication_finalization_batch_receipt_committed_at_contract :=
-  bcnfCheck_sound publication_finalization_batch_receipt_committed_at_contract publication_finalization_batch_receipt_committed_at_bcnf_check
-
-def publication_finalization_batch_receipt_seal_contract : RelationContract where
-  name := "publication_finalization_batch_receipt_seal"
-  attributes := ["receipt_id", "start_generation"]
-  declaredKeys := [["receipt_id", "start_generation"]]
-  declaredFDs := [
-  ]
-
-theorem publication_finalization_batch_receipt_seal_schema_well_formed :
-    schemaWellFormedCheck publication_finalization_batch_receipt_seal_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_seal_candidate_keys_check :
-    keysDetermineAllCheck publication_finalization_batch_receipt_seal_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_finalization_batch_receipt_seal_contract :=
-  keysDetermineAllCheck_sound publication_finalization_batch_receipt_seal_contract
-    publication_finalization_batch_receipt_seal_candidate_keys_check
-
-theorem publication_finalization_batch_receipt_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_finalization_batch_receipt_seal_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_finalization_batch_receipt_seal_contract :=
-  declaredKeysMinimalCheck_sound publication_finalization_batch_receipt_seal_contract
-    publication_finalization_batch_receipt_seal_candidate_keys_minimal_check
-
-theorem publication_finalization_batch_receipt_seal_closure_fixed_check :
-    closureFixedPointCheck publication_finalization_batch_receipt_seal_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_finalization_batch_receipt_seal_contract :=
-  closureFixedPointCheck_sound publication_finalization_batch_receipt_seal_contract
-    publication_finalization_batch_receipt_seal_closure_fixed_check
-
-theorem publication_finalization_batch_receipt_seal_bcnf_check :
-    bcnfCheck publication_finalization_batch_receipt_seal_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_seal_bcnf : BCNF publication_finalization_batch_receipt_seal_contract :=
-  bcnfCheck_sound publication_finalization_batch_receipt_seal_contract publication_finalization_batch_receipt_seal_bcnf_check
+theorem publication_finalization_checkpoint_bcnf : BCNF publication_finalization_checkpoint_contract :=
+  bcnfCheck_sound publication_finalization_checkpoint_contract publication_finalization_checkpoint_bcnf_check
 
 def publication_finalization_batch_receipt_stored_contract : RelationContract where
   name := "publication_finalization_batch_receipt_stored"
@@ -13511,6 +8401,13 @@ theorem publication_finalization_batch_receipt_stored_closure_reached_fixed_poin
     ClosureReachedFixedPoint publication_finalization_batch_receipt_stored_contract :=
   closureFixedPointCheck_sound publication_finalization_batch_receipt_stored_contract
     publication_finalization_batch_receipt_stored_closure_fixed_check
+
+theorem publication_finalization_batch_receipt_stored_bcnf_check :
+    bcnfCheck publication_finalization_batch_receipt_stored_contract = true := by
+  native_decide
+
+theorem publication_finalization_batch_receipt_stored_bcnf : BCNF publication_finalization_batch_receipt_stored_contract :=
+  bcnfCheck_sound publication_finalization_batch_receipt_stored_contract publication_finalization_batch_receipt_stored_bcnf_check
 
 def publication_finalization_batch_receipt_contract : RelationContract where
   name := "publication_finalization_batch_receipt"
@@ -13560,603 +8457,6 @@ theorem publication_finalization_batch_receipt_closure_reached_fixed_point :
   closureFixedPointCheck_sound publication_finalization_batch_receipt_contract
     publication_finalization_batch_receipt_closure_fixed_check
 
-def artifact_zip_writer_policy_anchor_contract : RelationContract where
-  name := "artifact_zip_writer_policy_anchor"
-  attributes := ["artifact_algorithm_version"]
-  declaredKeys := [["artifact_algorithm_version"]]
-  declaredFDs := [
-  ]
-
-theorem artifact_zip_writer_policy_anchor_schema_well_formed :
-    schemaWellFormedCheck artifact_zip_writer_policy_anchor_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_anchor_candidate_keys_check :
-    keysDetermineAllCheck artifact_zip_writer_policy_anchor_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_zip_writer_policy_anchor_contract :=
-  keysDetermineAllCheck_sound artifact_zip_writer_policy_anchor_contract
-    artifact_zip_writer_policy_anchor_candidate_keys_check
-
-theorem artifact_zip_writer_policy_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_zip_writer_policy_anchor_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_zip_writer_policy_anchor_contract :=
-  declaredKeysMinimalCheck_sound artifact_zip_writer_policy_anchor_contract
-    artifact_zip_writer_policy_anchor_candidate_keys_minimal_check
-
-theorem artifact_zip_writer_policy_anchor_closure_fixed_check :
-    closureFixedPointCheck artifact_zip_writer_policy_anchor_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_zip_writer_policy_anchor_contract :=
-  closureFixedPointCheck_sound artifact_zip_writer_policy_anchor_contract
-    artifact_zip_writer_policy_anchor_closure_fixed_check
-
-theorem artifact_zip_writer_policy_anchor_bcnf_check :
-    bcnfCheck artifact_zip_writer_policy_anchor_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_anchor_bcnf : BCNF artifact_zip_writer_policy_anchor_contract :=
-  bcnfCheck_sound artifact_zip_writer_policy_anchor_contract artifact_zip_writer_policy_anchor_bcnf_check
-
-def artifact_zip_writer_policy_zip_codec_version_contract : RelationContract where
-  name := "artifact_zip_writer_policy_zip_codec_version"
-  attributes := ["artifact_algorithm_version", "zip_codec_version"]
-  declaredKeys := [["artifact_algorithm_version"]]
-  declaredFDs := [
-    { determinant := ["artifact_algorithm_version"], dependent := ["zip_codec_version"] }
-  ]
-
-theorem artifact_zip_writer_policy_zip_codec_version_schema_well_formed :
-    schemaWellFormedCheck artifact_zip_writer_policy_zip_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_zip_codec_version_candidate_keys_check :
-    keysDetermineAllCheck artifact_zip_writer_policy_zip_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_zip_codec_version_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_zip_writer_policy_zip_codec_version_contract :=
-  keysDetermineAllCheck_sound artifact_zip_writer_policy_zip_codec_version_contract
-    artifact_zip_writer_policy_zip_codec_version_candidate_keys_check
-
-theorem artifact_zip_writer_policy_zip_codec_version_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_zip_writer_policy_zip_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_zip_codec_version_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_zip_writer_policy_zip_codec_version_contract :=
-  declaredKeysMinimalCheck_sound artifact_zip_writer_policy_zip_codec_version_contract
-    artifact_zip_writer_policy_zip_codec_version_candidate_keys_minimal_check
-
-theorem artifact_zip_writer_policy_zip_codec_version_closure_fixed_check :
-    closureFixedPointCheck artifact_zip_writer_policy_zip_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_zip_codec_version_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_zip_writer_policy_zip_codec_version_contract :=
-  closureFixedPointCheck_sound artifact_zip_writer_policy_zip_codec_version_contract
-    artifact_zip_writer_policy_zip_codec_version_closure_fixed_check
-
-theorem artifact_zip_writer_policy_zip_codec_version_bcnf_check :
-    bcnfCheck artifact_zip_writer_policy_zip_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_zip_codec_version_bcnf : BCNF artifact_zip_writer_policy_zip_codec_version_contract :=
-  bcnfCheck_sound artifact_zip_writer_policy_zip_codec_version_contract artifact_zip_writer_policy_zip_codec_version_bcnf_check
-
-def artifact_zip_writer_policy_compression_method_contract : RelationContract where
-  name := "artifact_zip_writer_policy_compression_method"
-  attributes := ["artifact_algorithm_version", "compression_method"]
-  declaredKeys := [["artifact_algorithm_version"]]
-  declaredFDs := [
-    { determinant := ["artifact_algorithm_version"], dependent := ["compression_method"] }
-  ]
-
-theorem artifact_zip_writer_policy_compression_method_schema_well_formed :
-    schemaWellFormedCheck artifact_zip_writer_policy_compression_method_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_compression_method_candidate_keys_check :
-    keysDetermineAllCheck artifact_zip_writer_policy_compression_method_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_compression_method_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_zip_writer_policy_compression_method_contract :=
-  keysDetermineAllCheck_sound artifact_zip_writer_policy_compression_method_contract
-    artifact_zip_writer_policy_compression_method_candidate_keys_check
-
-theorem artifact_zip_writer_policy_compression_method_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_zip_writer_policy_compression_method_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_compression_method_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_zip_writer_policy_compression_method_contract :=
-  declaredKeysMinimalCheck_sound artifact_zip_writer_policy_compression_method_contract
-    artifact_zip_writer_policy_compression_method_candidate_keys_minimal_check
-
-theorem artifact_zip_writer_policy_compression_method_closure_fixed_check :
-    closureFixedPointCheck artifact_zip_writer_policy_compression_method_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_compression_method_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_zip_writer_policy_compression_method_contract :=
-  closureFixedPointCheck_sound artifact_zip_writer_policy_compression_method_contract
-    artifact_zip_writer_policy_compression_method_closure_fixed_check
-
-theorem artifact_zip_writer_policy_compression_method_bcnf_check :
-    bcnfCheck artifact_zip_writer_policy_compression_method_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_compression_method_bcnf : BCNF artifact_zip_writer_policy_compression_method_contract :=
-  bcnfCheck_sound artifact_zip_writer_policy_compression_method_contract artifact_zip_writer_policy_compression_method_bcnf_check
-
-def artifact_zip_writer_policy_compression_level_contract : RelationContract where
-  name := "artifact_zip_writer_policy_compression_level"
-  attributes := ["artifact_algorithm_version", "compression_level"]
-  declaredKeys := [["artifact_algorithm_version"]]
-  declaredFDs := [
-    { determinant := ["artifact_algorithm_version"], dependent := ["compression_level"] }
-  ]
-
-theorem artifact_zip_writer_policy_compression_level_schema_well_formed :
-    schemaWellFormedCheck artifact_zip_writer_policy_compression_level_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_compression_level_candidate_keys_check :
-    keysDetermineAllCheck artifact_zip_writer_policy_compression_level_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_compression_level_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_zip_writer_policy_compression_level_contract :=
-  keysDetermineAllCheck_sound artifact_zip_writer_policy_compression_level_contract
-    artifact_zip_writer_policy_compression_level_candidate_keys_check
-
-theorem artifact_zip_writer_policy_compression_level_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_zip_writer_policy_compression_level_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_compression_level_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_zip_writer_policy_compression_level_contract :=
-  declaredKeysMinimalCheck_sound artifact_zip_writer_policy_compression_level_contract
-    artifact_zip_writer_policy_compression_level_candidate_keys_minimal_check
-
-theorem artifact_zip_writer_policy_compression_level_closure_fixed_check :
-    closureFixedPointCheck artifact_zip_writer_policy_compression_level_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_compression_level_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_zip_writer_policy_compression_level_contract :=
-  closureFixedPointCheck_sound artifact_zip_writer_policy_compression_level_contract
-    artifact_zip_writer_policy_compression_level_closure_fixed_check
-
-theorem artifact_zip_writer_policy_compression_level_bcnf_check :
-    bcnfCheck artifact_zip_writer_policy_compression_level_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_compression_level_bcnf : BCNF artifact_zip_writer_policy_compression_level_contract :=
-  bcnfCheck_sound artifact_zip_writer_policy_compression_level_contract artifact_zip_writer_policy_compression_level_bcnf_check
-
-def artifact_zip_writer_policy_dos_date_contract : RelationContract where
-  name := "artifact_zip_writer_policy_dos_date"
-  attributes := ["artifact_algorithm_version", "dos_date"]
-  declaredKeys := [["artifact_algorithm_version"]]
-  declaredFDs := [
-    { determinant := ["artifact_algorithm_version"], dependent := ["dos_date"] }
-  ]
-
-theorem artifact_zip_writer_policy_dos_date_schema_well_formed :
-    schemaWellFormedCheck artifact_zip_writer_policy_dos_date_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_dos_date_candidate_keys_check :
-    keysDetermineAllCheck artifact_zip_writer_policy_dos_date_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_dos_date_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_zip_writer_policy_dos_date_contract :=
-  keysDetermineAllCheck_sound artifact_zip_writer_policy_dos_date_contract
-    artifact_zip_writer_policy_dos_date_candidate_keys_check
-
-theorem artifact_zip_writer_policy_dos_date_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_zip_writer_policy_dos_date_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_dos_date_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_zip_writer_policy_dos_date_contract :=
-  declaredKeysMinimalCheck_sound artifact_zip_writer_policy_dos_date_contract
-    artifact_zip_writer_policy_dos_date_candidate_keys_minimal_check
-
-theorem artifact_zip_writer_policy_dos_date_closure_fixed_check :
-    closureFixedPointCheck artifact_zip_writer_policy_dos_date_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_dos_date_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_zip_writer_policy_dos_date_contract :=
-  closureFixedPointCheck_sound artifact_zip_writer_policy_dos_date_contract
-    artifact_zip_writer_policy_dos_date_closure_fixed_check
-
-theorem artifact_zip_writer_policy_dos_date_bcnf_check :
-    bcnfCheck artifact_zip_writer_policy_dos_date_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_dos_date_bcnf : BCNF artifact_zip_writer_policy_dos_date_contract :=
-  bcnfCheck_sound artifact_zip_writer_policy_dos_date_contract artifact_zip_writer_policy_dos_date_bcnf_check
-
-def artifact_zip_writer_policy_dos_time_contract : RelationContract where
-  name := "artifact_zip_writer_policy_dos_time"
-  attributes := ["artifact_algorithm_version", "dos_time"]
-  declaredKeys := [["artifact_algorithm_version"]]
-  declaredFDs := [
-    { determinant := ["artifact_algorithm_version"], dependent := ["dos_time"] }
-  ]
-
-theorem artifact_zip_writer_policy_dos_time_schema_well_formed :
-    schemaWellFormedCheck artifact_zip_writer_policy_dos_time_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_dos_time_candidate_keys_check :
-    keysDetermineAllCheck artifact_zip_writer_policy_dos_time_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_dos_time_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_zip_writer_policy_dos_time_contract :=
-  keysDetermineAllCheck_sound artifact_zip_writer_policy_dos_time_contract
-    artifact_zip_writer_policy_dos_time_candidate_keys_check
-
-theorem artifact_zip_writer_policy_dos_time_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_zip_writer_policy_dos_time_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_dos_time_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_zip_writer_policy_dos_time_contract :=
-  declaredKeysMinimalCheck_sound artifact_zip_writer_policy_dos_time_contract
-    artifact_zip_writer_policy_dos_time_candidate_keys_minimal_check
-
-theorem artifact_zip_writer_policy_dos_time_closure_fixed_check :
-    closureFixedPointCheck artifact_zip_writer_policy_dos_time_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_dos_time_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_zip_writer_policy_dos_time_contract :=
-  closureFixedPointCheck_sound artifact_zip_writer_policy_dos_time_contract
-    artifact_zip_writer_policy_dos_time_closure_fixed_check
-
-theorem artifact_zip_writer_policy_dos_time_bcnf_check :
-    bcnfCheck artifact_zip_writer_policy_dos_time_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_dos_time_bcnf : BCNF artifact_zip_writer_policy_dos_time_contract :=
-  bcnfCheck_sound artifact_zip_writer_policy_dos_time_contract artifact_zip_writer_policy_dos_time_bcnf_check
-
-def artifact_zip_writer_policy_unix_mode_contract : RelationContract where
-  name := "artifact_zip_writer_policy_unix_mode"
-  attributes := ["artifact_algorithm_version", "unix_mode"]
-  declaredKeys := [["artifact_algorithm_version"]]
-  declaredFDs := [
-    { determinant := ["artifact_algorithm_version"], dependent := ["unix_mode"] }
-  ]
-
-theorem artifact_zip_writer_policy_unix_mode_schema_well_formed :
-    schemaWellFormedCheck artifact_zip_writer_policy_unix_mode_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_unix_mode_candidate_keys_check :
-    keysDetermineAllCheck artifact_zip_writer_policy_unix_mode_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_unix_mode_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_zip_writer_policy_unix_mode_contract :=
-  keysDetermineAllCheck_sound artifact_zip_writer_policy_unix_mode_contract
-    artifact_zip_writer_policy_unix_mode_candidate_keys_check
-
-theorem artifact_zip_writer_policy_unix_mode_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_zip_writer_policy_unix_mode_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_unix_mode_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_zip_writer_policy_unix_mode_contract :=
-  declaredKeysMinimalCheck_sound artifact_zip_writer_policy_unix_mode_contract
-    artifact_zip_writer_policy_unix_mode_candidate_keys_minimal_check
-
-theorem artifact_zip_writer_policy_unix_mode_closure_fixed_check :
-    closureFixedPointCheck artifact_zip_writer_policy_unix_mode_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_unix_mode_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_zip_writer_policy_unix_mode_contract :=
-  closureFixedPointCheck_sound artifact_zip_writer_policy_unix_mode_contract
-    artifact_zip_writer_policy_unix_mode_closure_fixed_check
-
-theorem artifact_zip_writer_policy_unix_mode_bcnf_check :
-    bcnfCheck artifact_zip_writer_policy_unix_mode_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_unix_mode_bcnf : BCNF artifact_zip_writer_policy_unix_mode_contract :=
-  bcnfCheck_sound artifact_zip_writer_policy_unix_mode_contract artifact_zip_writer_policy_unix_mode_bcnf_check
-
-def artifact_zip_writer_policy_general_purpose_flags_contract : RelationContract where
-  name := "artifact_zip_writer_policy_general_purpose_flags"
-  attributes := ["artifact_algorithm_version", "general_purpose_flags"]
-  declaredKeys := [["artifact_algorithm_version"]]
-  declaredFDs := [
-    { determinant := ["artifact_algorithm_version"], dependent := ["general_purpose_flags"] }
-  ]
-
-theorem artifact_zip_writer_policy_general_purpose_flags_schema_well_formed :
-    schemaWellFormedCheck artifact_zip_writer_policy_general_purpose_flags_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_general_purpose_flags_candidate_keys_check :
-    keysDetermineAllCheck artifact_zip_writer_policy_general_purpose_flags_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_general_purpose_flags_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_zip_writer_policy_general_purpose_flags_contract :=
-  keysDetermineAllCheck_sound artifact_zip_writer_policy_general_purpose_flags_contract
-    artifact_zip_writer_policy_general_purpose_flags_candidate_keys_check
-
-theorem artifact_zip_writer_policy_general_purpose_flags_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_zip_writer_policy_general_purpose_flags_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_general_purpose_flags_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_zip_writer_policy_general_purpose_flags_contract :=
-  declaredKeysMinimalCheck_sound artifact_zip_writer_policy_general_purpose_flags_contract
-    artifact_zip_writer_policy_general_purpose_flags_candidate_keys_minimal_check
-
-theorem artifact_zip_writer_policy_general_purpose_flags_closure_fixed_check :
-    closureFixedPointCheck artifact_zip_writer_policy_general_purpose_flags_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_general_purpose_flags_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_zip_writer_policy_general_purpose_flags_contract :=
-  closureFixedPointCheck_sound artifact_zip_writer_policy_general_purpose_flags_contract
-    artifact_zip_writer_policy_general_purpose_flags_closure_fixed_check
-
-theorem artifact_zip_writer_policy_general_purpose_flags_bcnf_check :
-    bcnfCheck artifact_zip_writer_policy_general_purpose_flags_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_general_purpose_flags_bcnf : BCNF artifact_zip_writer_policy_general_purpose_flags_contract :=
-  bcnfCheck_sound artifact_zip_writer_policy_general_purpose_flags_contract artifact_zip_writer_policy_general_purpose_flags_bcnf_check
-
-def artifact_zip_writer_policy_create_system_contract : RelationContract where
-  name := "artifact_zip_writer_policy_create_system"
-  attributes := ["artifact_algorithm_version", "create_system"]
-  declaredKeys := [["artifact_algorithm_version"]]
-  declaredFDs := [
-    { determinant := ["artifact_algorithm_version"], dependent := ["create_system"] }
-  ]
-
-theorem artifact_zip_writer_policy_create_system_schema_well_formed :
-    schemaWellFormedCheck artifact_zip_writer_policy_create_system_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_create_system_candidate_keys_check :
-    keysDetermineAllCheck artifact_zip_writer_policy_create_system_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_create_system_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_zip_writer_policy_create_system_contract :=
-  keysDetermineAllCheck_sound artifact_zip_writer_policy_create_system_contract
-    artifact_zip_writer_policy_create_system_candidate_keys_check
-
-theorem artifact_zip_writer_policy_create_system_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_zip_writer_policy_create_system_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_create_system_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_zip_writer_policy_create_system_contract :=
-  declaredKeysMinimalCheck_sound artifact_zip_writer_policy_create_system_contract
-    artifact_zip_writer_policy_create_system_candidate_keys_minimal_check
-
-theorem artifact_zip_writer_policy_create_system_closure_fixed_check :
-    closureFixedPointCheck artifact_zip_writer_policy_create_system_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_create_system_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_zip_writer_policy_create_system_contract :=
-  closureFixedPointCheck_sound artifact_zip_writer_policy_create_system_contract
-    artifact_zip_writer_policy_create_system_closure_fixed_check
-
-theorem artifact_zip_writer_policy_create_system_bcnf_check :
-    bcnfCheck artifact_zip_writer_policy_create_system_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_create_system_bcnf : BCNF artifact_zip_writer_policy_create_system_contract :=
-  bcnfCheck_sound artifact_zip_writer_policy_create_system_contract artifact_zip_writer_policy_create_system_bcnf_check
-
-def artifact_zip_writer_policy_archive_name_codec_version_contract : RelationContract where
-  name := "artifact_zip_writer_policy_archive_name_codec_version"
-  attributes := ["artifact_algorithm_version", "archive_name_codec_version"]
-  declaredKeys := [["artifact_algorithm_version"]]
-  declaredFDs := [
-    { determinant := ["artifact_algorithm_version"], dependent := ["archive_name_codec_version"] }
-  ]
-
-theorem artifact_zip_writer_policy_archive_name_codec_version_schema_well_formed :
-    schemaWellFormedCheck artifact_zip_writer_policy_archive_name_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_archive_name_codec_version_candidate_keys_check :
-    keysDetermineAllCheck artifact_zip_writer_policy_archive_name_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_archive_name_codec_version_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_zip_writer_policy_archive_name_codec_version_contract :=
-  keysDetermineAllCheck_sound artifact_zip_writer_policy_archive_name_codec_version_contract
-    artifact_zip_writer_policy_archive_name_codec_version_candidate_keys_check
-
-theorem artifact_zip_writer_policy_archive_name_codec_version_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_zip_writer_policy_archive_name_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_archive_name_codec_version_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_zip_writer_policy_archive_name_codec_version_contract :=
-  declaredKeysMinimalCheck_sound artifact_zip_writer_policy_archive_name_codec_version_contract
-    artifact_zip_writer_policy_archive_name_codec_version_candidate_keys_minimal_check
-
-theorem artifact_zip_writer_policy_archive_name_codec_version_closure_fixed_check :
-    closureFixedPointCheck artifact_zip_writer_policy_archive_name_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_archive_name_codec_version_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_zip_writer_policy_archive_name_codec_version_contract :=
-  closureFixedPointCheck_sound artifact_zip_writer_policy_archive_name_codec_version_contract
-    artifact_zip_writer_policy_archive_name_codec_version_closure_fixed_check
-
-theorem artifact_zip_writer_policy_archive_name_codec_version_bcnf_check :
-    bcnfCheck artifact_zip_writer_policy_archive_name_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_archive_name_codec_version_bcnf : BCNF artifact_zip_writer_policy_archive_name_codec_version_contract :=
-  bcnfCheck_sound artifact_zip_writer_policy_archive_name_codec_version_contract artifact_zip_writer_policy_archive_name_codec_version_bcnf_check
-
-def artifact_zip_writer_policy_artifact_name_codec_version_contract : RelationContract where
-  name := "artifact_zip_writer_policy_artifact_name_codec_version"
-  attributes := ["artifact_algorithm_version", "artifact_name_codec_version"]
-  declaredKeys := [["artifact_algorithm_version"]]
-  declaredFDs := [
-    { determinant := ["artifact_algorithm_version"], dependent := ["artifact_name_codec_version"] }
-  ]
-
-theorem artifact_zip_writer_policy_artifact_name_codec_version_schema_well_formed :
-    schemaWellFormedCheck artifact_zip_writer_policy_artifact_name_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_artifact_name_codec_version_candidate_keys_check :
-    keysDetermineAllCheck artifact_zip_writer_policy_artifact_name_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_artifact_name_codec_version_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_zip_writer_policy_artifact_name_codec_version_contract :=
-  keysDetermineAllCheck_sound artifact_zip_writer_policy_artifact_name_codec_version_contract
-    artifact_zip_writer_policy_artifact_name_codec_version_candidate_keys_check
-
-theorem artifact_zip_writer_policy_artifact_name_codec_version_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_zip_writer_policy_artifact_name_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_artifact_name_codec_version_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_zip_writer_policy_artifact_name_codec_version_contract :=
-  declaredKeysMinimalCheck_sound artifact_zip_writer_policy_artifact_name_codec_version_contract
-    artifact_zip_writer_policy_artifact_name_codec_version_candidate_keys_minimal_check
-
-theorem artifact_zip_writer_policy_artifact_name_codec_version_closure_fixed_check :
-    closureFixedPointCheck artifact_zip_writer_policy_artifact_name_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_artifact_name_codec_version_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_zip_writer_policy_artifact_name_codec_version_contract :=
-  closureFixedPointCheck_sound artifact_zip_writer_policy_artifact_name_codec_version_contract
-    artifact_zip_writer_policy_artifact_name_codec_version_closure_fixed_check
-
-theorem artifact_zip_writer_policy_artifact_name_codec_version_bcnf_check :
-    bcnfCheck artifact_zip_writer_policy_artifact_name_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_artifact_name_codec_version_bcnf : BCNF artifact_zip_writer_policy_artifact_name_codec_version_contract :=
-  bcnfCheck_sound artifact_zip_writer_policy_artifact_name_codec_version_contract artifact_zip_writer_policy_artifact_name_codec_version_bcnf_check
-
-def artifact_zip_writer_policy_identity_contract : RelationContract where
-  name := "artifact_zip_writer_policy_identity"
-  attributes := ["zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version", "artifact_algorithm_version"]
-  declaredKeys := [["zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"], ["artifact_algorithm_version"]]
-  declaredFDs := [
-    { determinant := ["zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"], dependent := ["artifact_algorithm_version"] },
-    { determinant := ["artifact_algorithm_version"], dependent := ["zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"] }
-  ]
-
-theorem artifact_zip_writer_policy_identity_schema_well_formed :
-    schemaWellFormedCheck artifact_zip_writer_policy_identity_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_identity_candidate_keys_check :
-    keysDetermineAllCheck artifact_zip_writer_policy_identity_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_identity_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_zip_writer_policy_identity_contract :=
-  keysDetermineAllCheck_sound artifact_zip_writer_policy_identity_contract
-    artifact_zip_writer_policy_identity_candidate_keys_check
-
-theorem artifact_zip_writer_policy_identity_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_zip_writer_policy_identity_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_identity_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_zip_writer_policy_identity_contract :=
-  declaredKeysMinimalCheck_sound artifact_zip_writer_policy_identity_contract
-    artifact_zip_writer_policy_identity_candidate_keys_minimal_check
-
-theorem artifact_zip_writer_policy_identity_closure_fixed_check :
-    closureFixedPointCheck artifact_zip_writer_policy_identity_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_identity_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_zip_writer_policy_identity_contract :=
-  closureFixedPointCheck_sound artifact_zip_writer_policy_identity_contract
-    artifact_zip_writer_policy_identity_closure_fixed_check
-
-theorem artifact_zip_writer_policy_identity_bcnf_check :
-    bcnfCheck artifact_zip_writer_policy_identity_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_identity_bcnf : BCNF artifact_zip_writer_policy_identity_contract :=
-  bcnfCheck_sound artifact_zip_writer_policy_identity_contract artifact_zip_writer_policy_identity_bcnf_check
-
-def artifact_zip_writer_policy_seal_contract : RelationContract where
-  name := "artifact_zip_writer_policy_seal"
-  attributes := ["artifact_algorithm_version"]
-  declaredKeys := [["artifact_algorithm_version"]]
-  declaredFDs := [
-  ]
-
-theorem artifact_zip_writer_policy_seal_schema_well_formed :
-    schemaWellFormedCheck artifact_zip_writer_policy_seal_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_seal_candidate_keys_check :
-    keysDetermineAllCheck artifact_zip_writer_policy_seal_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_zip_writer_policy_seal_contract :=
-  keysDetermineAllCheck_sound artifact_zip_writer_policy_seal_contract
-    artifact_zip_writer_policy_seal_candidate_keys_check
-
-theorem artifact_zip_writer_policy_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_zip_writer_policy_seal_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_zip_writer_policy_seal_contract :=
-  declaredKeysMinimalCheck_sound artifact_zip_writer_policy_seal_contract
-    artifact_zip_writer_policy_seal_candidate_keys_minimal_check
-
-theorem artifact_zip_writer_policy_seal_closure_fixed_check :
-    closureFixedPointCheck artifact_zip_writer_policy_seal_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_zip_writer_policy_seal_contract :=
-  closureFixedPointCheck_sound artifact_zip_writer_policy_seal_contract
-    artifact_zip_writer_policy_seal_closure_fixed_check
-
-theorem artifact_zip_writer_policy_seal_bcnf_check :
-    bcnfCheck artifact_zip_writer_policy_seal_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_seal_bcnf : BCNF artifact_zip_writer_policy_seal_contract :=
-  bcnfCheck_sound artifact_zip_writer_policy_seal_contract artifact_zip_writer_policy_seal_bcnf_check
-
 def artifact_zip_writer_policy_contract : RelationContract where
   name := "artifact_zip_writer_policy"
   attributes := ["artifact_algorithm_version", "zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"]
@@ -14197,235 +8497,12 @@ theorem artifact_zip_writer_policy_closure_reached_fixed_point :
   closureFixedPointCheck_sound artifact_zip_writer_policy_contract
     artifact_zip_writer_policy_closure_fixed_check
 
-def artifact_producer_fingerprint_anchor_contract : RelationContract where
-  name := "artifact_producer_fingerprint_anchor"
-  attributes := ["producer_fingerprint_sha256"]
-  declaredKeys := [["producer_fingerprint_sha256"]]
-  declaredFDs := [
-  ]
-
-theorem artifact_producer_fingerprint_anchor_schema_well_formed :
-    schemaWellFormedCheck artifact_producer_fingerprint_anchor_contract = true := by
+theorem artifact_zip_writer_policy_bcnf_check :
+    bcnfCheck artifact_zip_writer_policy_contract = true := by
   native_decide
 
-theorem artifact_producer_fingerprint_anchor_candidate_keys_check :
-    keysDetermineAllCheck artifact_producer_fingerprint_anchor_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_producer_fingerprint_anchor_contract :=
-  keysDetermineAllCheck_sound artifact_producer_fingerprint_anchor_contract
-    artifact_producer_fingerprint_anchor_candidate_keys_check
-
-theorem artifact_producer_fingerprint_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_producer_fingerprint_anchor_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_producer_fingerprint_anchor_contract :=
-  declaredKeysMinimalCheck_sound artifact_producer_fingerprint_anchor_contract
-    artifact_producer_fingerprint_anchor_candidate_keys_minimal_check
-
-theorem artifact_producer_fingerprint_anchor_closure_fixed_check :
-    closureFixedPointCheck artifact_producer_fingerprint_anchor_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_producer_fingerprint_anchor_contract :=
-  closureFixedPointCheck_sound artifact_producer_fingerprint_anchor_contract
-    artifact_producer_fingerprint_anchor_closure_fixed_check
-
-theorem artifact_producer_fingerprint_anchor_bcnf_check :
-    bcnfCheck artifact_producer_fingerprint_anchor_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_anchor_bcnf : BCNF artifact_producer_fingerprint_anchor_contract :=
-  bcnfCheck_sound artifact_producer_fingerprint_anchor_contract artifact_producer_fingerprint_anchor_bcnf_check
-
-def artifact_producer_fingerprint_algorithm_version_contract : RelationContract where
-  name := "artifact_producer_fingerprint_algorithm_version"
-  attributes := ["producer_fingerprint_sha256", "artifact_algorithm_version"]
-  declaredKeys := [["producer_fingerprint_sha256"]]
-  declaredFDs := [
-    { determinant := ["producer_fingerprint_sha256"], dependent := ["artifact_algorithm_version"] }
-  ]
-
-theorem artifact_producer_fingerprint_algorithm_version_schema_well_formed :
-    schemaWellFormedCheck artifact_producer_fingerprint_algorithm_version_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_algorithm_version_candidate_keys_check :
-    keysDetermineAllCheck artifact_producer_fingerprint_algorithm_version_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_algorithm_version_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_producer_fingerprint_algorithm_version_contract :=
-  keysDetermineAllCheck_sound artifact_producer_fingerprint_algorithm_version_contract
-    artifact_producer_fingerprint_algorithm_version_candidate_keys_check
-
-theorem artifact_producer_fingerprint_algorithm_version_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_producer_fingerprint_algorithm_version_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_algorithm_version_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_producer_fingerprint_algorithm_version_contract :=
-  declaredKeysMinimalCheck_sound artifact_producer_fingerprint_algorithm_version_contract
-    artifact_producer_fingerprint_algorithm_version_candidate_keys_minimal_check
-
-theorem artifact_producer_fingerprint_algorithm_version_closure_fixed_check :
-    closureFixedPointCheck artifact_producer_fingerprint_algorithm_version_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_algorithm_version_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_producer_fingerprint_algorithm_version_contract :=
-  closureFixedPointCheck_sound artifact_producer_fingerprint_algorithm_version_contract
-    artifact_producer_fingerprint_algorithm_version_closure_fixed_check
-
-theorem artifact_producer_fingerprint_algorithm_version_bcnf_check :
-    bcnfCheck artifact_producer_fingerprint_algorithm_version_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_algorithm_version_bcnf : BCNF artifact_producer_fingerprint_algorithm_version_contract :=
-  bcnfCheck_sound artifact_producer_fingerprint_algorithm_version_contract artifact_producer_fingerprint_algorithm_version_bcnf_check
-
-def artifact_producer_fingerprint_equivalence_class_contract : RelationContract where
-  name := "artifact_producer_fingerprint_equivalence_class"
-  attributes := ["producer_fingerprint_sha256", "producer_equivalence_class"]
-  declaredKeys := [["producer_fingerprint_sha256"], ["producer_equivalence_class"]]
-  declaredFDs := [
-    { determinant := ["producer_fingerprint_sha256"], dependent := ["producer_equivalence_class"] },
-    { determinant := ["producer_equivalence_class"], dependent := ["producer_fingerprint_sha256"] }
-  ]
-
-theorem artifact_producer_fingerprint_equivalence_class_schema_well_formed :
-    schemaWellFormedCheck artifact_producer_fingerprint_equivalence_class_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_equivalence_class_candidate_keys_check :
-    keysDetermineAllCheck artifact_producer_fingerprint_equivalence_class_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_equivalence_class_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_producer_fingerprint_equivalence_class_contract :=
-  keysDetermineAllCheck_sound artifact_producer_fingerprint_equivalence_class_contract
-    artifact_producer_fingerprint_equivalence_class_candidate_keys_check
-
-theorem artifact_producer_fingerprint_equivalence_class_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_producer_fingerprint_equivalence_class_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_equivalence_class_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_producer_fingerprint_equivalence_class_contract :=
-  declaredKeysMinimalCheck_sound artifact_producer_fingerprint_equivalence_class_contract
-    artifact_producer_fingerprint_equivalence_class_candidate_keys_minimal_check
-
-theorem artifact_producer_fingerprint_equivalence_class_closure_fixed_check :
-    closureFixedPointCheck artifact_producer_fingerprint_equivalence_class_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_equivalence_class_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_producer_fingerprint_equivalence_class_contract :=
-  closureFixedPointCheck_sound artifact_producer_fingerprint_equivalence_class_contract
-    artifact_producer_fingerprint_equivalence_class_closure_fixed_check
-
-theorem artifact_producer_fingerprint_equivalence_class_bcnf_check :
-    bcnfCheck artifact_producer_fingerprint_equivalence_class_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_equivalence_class_bcnf : BCNF artifact_producer_fingerprint_equivalence_class_contract :=
-  bcnfCheck_sound artifact_producer_fingerprint_equivalence_class_contract artifact_producer_fingerprint_equivalence_class_bcnf_check
-
-def artifact_producer_fingerprint_identity_contract : RelationContract where
-  name := "artifact_producer_fingerprint_identity"
-  attributes := ["writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build", "producer_fingerprint_sha256"]
-  declaredKeys := [["writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"], ["producer_fingerprint_sha256"]]
-  declaredFDs := [
-    { determinant := ["writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"], dependent := ["producer_fingerprint_sha256"] },
-    { determinant := ["producer_fingerprint_sha256"], dependent := ["writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"] }
-  ]
-
-theorem artifact_producer_fingerprint_identity_schema_well_formed :
-    schemaWellFormedCheck artifact_producer_fingerprint_identity_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_identity_candidate_keys_check :
-    keysDetermineAllCheck artifact_producer_fingerprint_identity_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_identity_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_producer_fingerprint_identity_contract :=
-  keysDetermineAllCheck_sound artifact_producer_fingerprint_identity_contract
-    artifact_producer_fingerprint_identity_candidate_keys_check
-
-theorem artifact_producer_fingerprint_identity_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_producer_fingerprint_identity_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_identity_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_producer_fingerprint_identity_contract :=
-  declaredKeysMinimalCheck_sound artifact_producer_fingerprint_identity_contract
-    artifact_producer_fingerprint_identity_candidate_keys_minimal_check
-
-theorem artifact_producer_fingerprint_identity_closure_fixed_check :
-    closureFixedPointCheck artifact_producer_fingerprint_identity_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_identity_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_producer_fingerprint_identity_contract :=
-  closureFixedPointCheck_sound artifact_producer_fingerprint_identity_contract
-    artifact_producer_fingerprint_identity_closure_fixed_check
-
-theorem artifact_producer_fingerprint_identity_bcnf_check :
-    bcnfCheck artifact_producer_fingerprint_identity_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_identity_bcnf : BCNF artifact_producer_fingerprint_identity_contract :=
-  bcnfCheck_sound artifact_producer_fingerprint_identity_contract artifact_producer_fingerprint_identity_bcnf_check
-
-def artifact_producer_fingerprint_seal_contract : RelationContract where
-  name := "artifact_producer_fingerprint_seal"
-  attributes := ["producer_fingerprint_sha256"]
-  declaredKeys := [["producer_fingerprint_sha256"]]
-  declaredFDs := [
-  ]
-
-theorem artifact_producer_fingerprint_seal_schema_well_formed :
-    schemaWellFormedCheck artifact_producer_fingerprint_seal_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_seal_candidate_keys_check :
-    keysDetermineAllCheck artifact_producer_fingerprint_seal_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_producer_fingerprint_seal_contract :=
-  keysDetermineAllCheck_sound artifact_producer_fingerprint_seal_contract
-    artifact_producer_fingerprint_seal_candidate_keys_check
-
-theorem artifact_producer_fingerprint_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_producer_fingerprint_seal_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_producer_fingerprint_seal_contract :=
-  declaredKeysMinimalCheck_sound artifact_producer_fingerprint_seal_contract
-    artifact_producer_fingerprint_seal_candidate_keys_minimal_check
-
-theorem artifact_producer_fingerprint_seal_closure_fixed_check :
-    closureFixedPointCheck artifact_producer_fingerprint_seal_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_producer_fingerprint_seal_contract :=
-  closureFixedPointCheck_sound artifact_producer_fingerprint_seal_contract
-    artifact_producer_fingerprint_seal_closure_fixed_check
-
-theorem artifact_producer_fingerprint_seal_bcnf_check :
-    bcnfCheck artifact_producer_fingerprint_seal_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_seal_bcnf : BCNF artifact_producer_fingerprint_seal_contract :=
-  bcnfCheck_sound artifact_producer_fingerprint_seal_contract artifact_producer_fingerprint_seal_bcnf_check
+theorem artifact_zip_writer_policy_bcnf : BCNF artifact_zip_writer_policy_contract :=
+  bcnfCheck_sound artifact_zip_writer_policy_contract artifact_zip_writer_policy_bcnf_check
 
 def artifact_producer_fingerprint_contract : RelationContract where
   name := "artifact_producer_fingerprint"
@@ -14468,234 +8545,12 @@ theorem artifact_producer_fingerprint_closure_reached_fixed_point :
   closureFixedPointCheck_sound artifact_producer_fingerprint_contract
     artifact_producer_fingerprint_closure_fixed_check
 
-def artifact_storage_codec_anchor_contract : RelationContract where
-  name := "artifact_storage_codec_anchor"
-  attributes := ["storage_codec_version"]
-  declaredKeys := [["storage_codec_version"]]
-  declaredFDs := [
-  ]
-
-theorem artifact_storage_codec_anchor_schema_well_formed :
-    schemaWellFormedCheck artifact_storage_codec_anchor_contract = true := by
+theorem artifact_producer_fingerprint_bcnf_check :
+    bcnfCheck artifact_producer_fingerprint_contract = true := by
   native_decide
 
-theorem artifact_storage_codec_anchor_candidate_keys_check :
-    keysDetermineAllCheck artifact_storage_codec_anchor_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_storage_codec_anchor_contract :=
-  keysDetermineAllCheck_sound artifact_storage_codec_anchor_contract
-    artifact_storage_codec_anchor_candidate_keys_check
-
-theorem artifact_storage_codec_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_storage_codec_anchor_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_storage_codec_anchor_contract :=
-  declaredKeysMinimalCheck_sound artifact_storage_codec_anchor_contract
-    artifact_storage_codec_anchor_candidate_keys_minimal_check
-
-theorem artifact_storage_codec_anchor_closure_fixed_check :
-    closureFixedPointCheck artifact_storage_codec_anchor_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_storage_codec_anchor_contract :=
-  closureFixedPointCheck_sound artifact_storage_codec_anchor_contract
-    artifact_storage_codec_anchor_closure_fixed_check
-
-theorem artifact_storage_codec_anchor_bcnf_check :
-    bcnfCheck artifact_storage_codec_anchor_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_anchor_bcnf : BCNF artifact_storage_codec_anchor_contract :=
-  bcnfCheck_sound artifact_storage_codec_anchor_contract artifact_storage_codec_anchor_bcnf_check
-
-def artifact_storage_codec_adapter_id_contract : RelationContract where
-  name := "artifact_storage_codec_adapter_id"
-  attributes := ["storage_codec_version", "adapter_id"]
-  declaredKeys := [["storage_codec_version"], ["adapter_id"]]
-  declaredFDs := [
-    { determinant := ["storage_codec_version"], dependent := ["adapter_id"] },
-    { determinant := ["adapter_id"], dependent := ["storage_codec_version"] }
-  ]
-
-theorem artifact_storage_codec_adapter_id_schema_well_formed :
-    schemaWellFormedCheck artifact_storage_codec_adapter_id_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_adapter_id_candidate_keys_check :
-    keysDetermineAllCheck artifact_storage_codec_adapter_id_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_adapter_id_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_storage_codec_adapter_id_contract :=
-  keysDetermineAllCheck_sound artifact_storage_codec_adapter_id_contract
-    artifact_storage_codec_adapter_id_candidate_keys_check
-
-theorem artifact_storage_codec_adapter_id_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_storage_codec_adapter_id_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_adapter_id_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_storage_codec_adapter_id_contract :=
-  declaredKeysMinimalCheck_sound artifact_storage_codec_adapter_id_contract
-    artifact_storage_codec_adapter_id_candidate_keys_minimal_check
-
-theorem artifact_storage_codec_adapter_id_closure_fixed_check :
-    closureFixedPointCheck artifact_storage_codec_adapter_id_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_adapter_id_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_storage_codec_adapter_id_contract :=
-  closureFixedPointCheck_sound artifact_storage_codec_adapter_id_contract
-    artifact_storage_codec_adapter_id_closure_fixed_check
-
-theorem artifact_storage_codec_adapter_id_bcnf_check :
-    bcnfCheck artifact_storage_codec_adapter_id_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_adapter_id_bcnf : BCNF artifact_storage_codec_adapter_id_contract :=
-  bcnfCheck_sound artifact_storage_codec_adapter_id_contract artifact_storage_codec_adapter_id_bcnf_check
-
-def artifact_storage_codec_locator_codec_version_contract : RelationContract where
-  name := "artifact_storage_codec_locator_codec_version"
-  attributes := ["storage_codec_version", "locator_codec_version"]
-  declaredKeys := [["storage_codec_version"]]
-  declaredFDs := [
-    { determinant := ["storage_codec_version"], dependent := ["locator_codec_version"] }
-  ]
-
-theorem artifact_storage_codec_locator_codec_version_schema_well_formed :
-    schemaWellFormedCheck artifact_storage_codec_locator_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_locator_codec_version_candidate_keys_check :
-    keysDetermineAllCheck artifact_storage_codec_locator_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_locator_codec_version_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_storage_codec_locator_codec_version_contract :=
-  keysDetermineAllCheck_sound artifact_storage_codec_locator_codec_version_contract
-    artifact_storage_codec_locator_codec_version_candidate_keys_check
-
-theorem artifact_storage_codec_locator_codec_version_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_storage_codec_locator_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_locator_codec_version_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_storage_codec_locator_codec_version_contract :=
-  declaredKeysMinimalCheck_sound artifact_storage_codec_locator_codec_version_contract
-    artifact_storage_codec_locator_codec_version_candidate_keys_minimal_check
-
-theorem artifact_storage_codec_locator_codec_version_closure_fixed_check :
-    closureFixedPointCheck artifact_storage_codec_locator_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_locator_codec_version_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_storage_codec_locator_codec_version_contract :=
-  closureFixedPointCheck_sound artifact_storage_codec_locator_codec_version_contract
-    artifact_storage_codec_locator_codec_version_closure_fixed_check
-
-theorem artifact_storage_codec_locator_codec_version_bcnf_check :
-    bcnfCheck artifact_storage_codec_locator_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_locator_codec_version_bcnf : BCNF artifact_storage_codec_locator_codec_version_contract :=
-  bcnfCheck_sound artifact_storage_codec_locator_codec_version_contract artifact_storage_codec_locator_codec_version_bcnf_check
-
-def artifact_storage_codec_protection_token_codec_version_contract : RelationContract where
-  name := "artifact_storage_codec_protection_token_codec_version"
-  attributes := ["storage_codec_version", "protection_token_codec_version"]
-  declaredKeys := [["storage_codec_version"]]
-  declaredFDs := [
-    { determinant := ["storage_codec_version"], dependent := ["protection_token_codec_version"] }
-  ]
-
-theorem artifact_storage_codec_protection_token_codec_version_schema_well_formed :
-    schemaWellFormedCheck artifact_storage_codec_protection_token_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_protection_token_codec_version_candidate_keys_check :
-    keysDetermineAllCheck artifact_storage_codec_protection_token_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_protection_token_codec_version_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_storage_codec_protection_token_codec_version_contract :=
-  keysDetermineAllCheck_sound artifact_storage_codec_protection_token_codec_version_contract
-    artifact_storage_codec_protection_token_codec_version_candidate_keys_check
-
-theorem artifact_storage_codec_protection_token_codec_version_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_storage_codec_protection_token_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_protection_token_codec_version_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_storage_codec_protection_token_codec_version_contract :=
-  declaredKeysMinimalCheck_sound artifact_storage_codec_protection_token_codec_version_contract
-    artifact_storage_codec_protection_token_codec_version_candidate_keys_minimal_check
-
-theorem artifact_storage_codec_protection_token_codec_version_closure_fixed_check :
-    closureFixedPointCheck artifact_storage_codec_protection_token_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_protection_token_codec_version_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_storage_codec_protection_token_codec_version_contract :=
-  closureFixedPointCheck_sound artifact_storage_codec_protection_token_codec_version_contract
-    artifact_storage_codec_protection_token_codec_version_closure_fixed_check
-
-theorem artifact_storage_codec_protection_token_codec_version_bcnf_check :
-    bcnfCheck artifact_storage_codec_protection_token_codec_version_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_protection_token_codec_version_bcnf : BCNF artifact_storage_codec_protection_token_codec_version_contract :=
-  bcnfCheck_sound artifact_storage_codec_protection_token_codec_version_contract artifact_storage_codec_protection_token_codec_version_bcnf_check
-
-def artifact_storage_codec_seal_contract : RelationContract where
-  name := "artifact_storage_codec_seal"
-  attributes := ["storage_codec_version"]
-  declaredKeys := [["storage_codec_version"]]
-  declaredFDs := [
-  ]
-
-theorem artifact_storage_codec_seal_schema_well_formed :
-    schemaWellFormedCheck artifact_storage_codec_seal_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_seal_candidate_keys_check :
-    keysDetermineAllCheck artifact_storage_codec_seal_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_storage_codec_seal_contract :=
-  keysDetermineAllCheck_sound artifact_storage_codec_seal_contract
-    artifact_storage_codec_seal_candidate_keys_check
-
-theorem artifact_storage_codec_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_storage_codec_seal_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_storage_codec_seal_contract :=
-  declaredKeysMinimalCheck_sound artifact_storage_codec_seal_contract
-    artifact_storage_codec_seal_candidate_keys_minimal_check
-
-theorem artifact_storage_codec_seal_closure_fixed_check :
-    closureFixedPointCheck artifact_storage_codec_seal_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_storage_codec_seal_contract :=
-  closureFixedPointCheck_sound artifact_storage_codec_seal_contract
-    artifact_storage_codec_seal_closure_fixed_check
-
-theorem artifact_storage_codec_seal_bcnf_check :
-    bcnfCheck artifact_storage_codec_seal_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_seal_bcnf : BCNF artifact_storage_codec_seal_contract :=
-  bcnfCheck_sound artifact_storage_codec_seal_contract artifact_storage_codec_seal_bcnf_check
+theorem artifact_producer_fingerprint_bcnf : BCNF artifact_producer_fingerprint_contract :=
+  bcnfCheck_sound artifact_producer_fingerprint_contract artifact_producer_fingerprint_bcnf_check
 
 def artifact_storage_codec_contract : RelationContract where
   name := "artifact_storage_codec"
@@ -14737,288 +8592,20 @@ theorem artifact_storage_codec_closure_reached_fixed_point :
   closureFixedPointCheck_sound artifact_storage_codec_contract
     artifact_storage_codec_closure_fixed_check
 
-def artifact_policy_semantics_anchor_contract : RelationContract where
-  name := "artifact_policy_semantics_anchor"
-  attributes := ["policy_component_sha256"]
-  declaredKeys := [["policy_component_sha256"]]
-  declaredFDs := [
-  ]
-
-theorem artifact_policy_semantics_anchor_schema_well_formed :
-    schemaWellFormedCheck artifact_policy_semantics_anchor_contract = true := by
+theorem artifact_storage_codec_bcnf_check :
+    bcnfCheck artifact_storage_codec_contract = true := by
   native_decide
 
-theorem artifact_policy_semantics_anchor_candidate_keys_check :
-    keysDetermineAllCheck artifact_policy_semantics_anchor_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_policy_semantics_anchor_contract :=
-  keysDetermineAllCheck_sound artifact_policy_semantics_anchor_contract
-    artifact_policy_semantics_anchor_candidate_keys_check
-
-theorem artifact_policy_semantics_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_policy_semantics_anchor_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_policy_semantics_anchor_contract :=
-  declaredKeysMinimalCheck_sound artifact_policy_semantics_anchor_contract
-    artifact_policy_semantics_anchor_candidate_keys_minimal_check
-
-theorem artifact_policy_semantics_anchor_closure_fixed_check :
-    closureFixedPointCheck artifact_policy_semantics_anchor_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_policy_semantics_anchor_contract :=
-  closureFixedPointCheck_sound artifact_policy_semantics_anchor_contract
-    artifact_policy_semantics_anchor_closure_fixed_check
-
-theorem artifact_policy_semantics_anchor_bcnf_check :
-    bcnfCheck artifact_policy_semantics_anchor_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_anchor_bcnf : BCNF artifact_policy_semantics_anchor_contract :=
-  bcnfCheck_sound artifact_policy_semantics_anchor_contract artifact_policy_semantics_anchor_bcnf_check
-
-def artifact_policy_semantics_artifact_algorithm_version_contract : RelationContract where
-  name := "artifact_policy_semantics_artifact_algorithm_version"
-  attributes := ["policy_component_sha256", "artifact_algorithm_version"]
-  declaredKeys := [["policy_component_sha256"]]
-  declaredFDs := [
-    { determinant := ["policy_component_sha256"], dependent := ["artifact_algorithm_version"] }
-  ]
-
-theorem artifact_policy_semantics_artifact_algorithm_version_schema_well_formed :
-    schemaWellFormedCheck artifact_policy_semantics_artifact_algorithm_version_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_artifact_algorithm_version_candidate_keys_check :
-    keysDetermineAllCheck artifact_policy_semantics_artifact_algorithm_version_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_artifact_algorithm_version_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_policy_semantics_artifact_algorithm_version_contract :=
-  keysDetermineAllCheck_sound artifact_policy_semantics_artifact_algorithm_version_contract
-    artifact_policy_semantics_artifact_algorithm_version_candidate_keys_check
-
-theorem artifact_policy_semantics_artifact_algorithm_version_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_policy_semantics_artifact_algorithm_version_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_artifact_algorithm_version_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_policy_semantics_artifact_algorithm_version_contract :=
-  declaredKeysMinimalCheck_sound artifact_policy_semantics_artifact_algorithm_version_contract
-    artifact_policy_semantics_artifact_algorithm_version_candidate_keys_minimal_check
-
-theorem artifact_policy_semantics_artifact_algorithm_version_closure_fixed_check :
-    closureFixedPointCheck artifact_policy_semantics_artifact_algorithm_version_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_artifact_algorithm_version_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_policy_semantics_artifact_algorithm_version_contract :=
-  closureFixedPointCheck_sound artifact_policy_semantics_artifact_algorithm_version_contract
-    artifact_policy_semantics_artifact_algorithm_version_closure_fixed_check
-
-theorem artifact_policy_semantics_artifact_algorithm_version_bcnf_check :
-    bcnfCheck artifact_policy_semantics_artifact_algorithm_version_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_artifact_algorithm_version_bcnf : BCNF artifact_policy_semantics_artifact_algorithm_version_contract :=
-  bcnfCheck_sound artifact_policy_semantics_artifact_algorithm_version_contract artifact_policy_semantics_artifact_algorithm_version_bcnf_check
-
-def artifact_policy_semantics_max_image_short_side_contract : RelationContract where
-  name := "artifact_policy_semantics_max_image_short_side"
-  attributes := ["policy_component_sha256", "max_image_short_side"]
-  declaredKeys := [["policy_component_sha256"]]
-  declaredFDs := [
-    { determinant := ["policy_component_sha256"], dependent := ["max_image_short_side"] }
-  ]
-
-theorem artifact_policy_semantics_max_image_short_side_schema_well_formed :
-    schemaWellFormedCheck artifact_policy_semantics_max_image_short_side_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_max_image_short_side_candidate_keys_check :
-    keysDetermineAllCheck artifact_policy_semantics_max_image_short_side_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_max_image_short_side_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_policy_semantics_max_image_short_side_contract :=
-  keysDetermineAllCheck_sound artifact_policy_semantics_max_image_short_side_contract
-    artifact_policy_semantics_max_image_short_side_candidate_keys_check
-
-theorem artifact_policy_semantics_max_image_short_side_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_policy_semantics_max_image_short_side_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_max_image_short_side_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_policy_semantics_max_image_short_side_contract :=
-  declaredKeysMinimalCheck_sound artifact_policy_semantics_max_image_short_side_contract
-    artifact_policy_semantics_max_image_short_side_candidate_keys_minimal_check
-
-theorem artifact_policy_semantics_max_image_short_side_closure_fixed_check :
-    closureFixedPointCheck artifact_policy_semantics_max_image_short_side_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_max_image_short_side_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_policy_semantics_max_image_short_side_contract :=
-  closureFixedPointCheck_sound artifact_policy_semantics_max_image_short_side_contract
-    artifact_policy_semantics_max_image_short_side_closure_fixed_check
-
-theorem artifact_policy_semantics_max_image_short_side_bcnf_check :
-    bcnfCheck artifact_policy_semantics_max_image_short_side_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_max_image_short_side_bcnf : BCNF artifact_policy_semantics_max_image_short_side_contract :=
-  bcnfCheck_sound artifact_policy_semantics_max_image_short_side_contract artifact_policy_semantics_max_image_short_side_bcnf_check
-
-def artifact_policy_semantics_producer_fingerprint_sha256_contract : RelationContract where
-  name := "artifact_policy_semantics_producer_fingerprint_sha256"
-  attributes := ["policy_component_sha256", "producer_fingerprint_sha256"]
-  declaredKeys := [["policy_component_sha256"]]
-  declaredFDs := [
-    { determinant := ["policy_component_sha256"], dependent := ["producer_fingerprint_sha256"] }
-  ]
-
-theorem artifact_policy_semantics_producer_fingerprint_sha256_schema_well_formed :
-    schemaWellFormedCheck artifact_policy_semantics_producer_fingerprint_sha256_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_producer_fingerprint_sha256_candidate_keys_check :
-    keysDetermineAllCheck artifact_policy_semantics_producer_fingerprint_sha256_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_producer_fingerprint_sha256_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_policy_semantics_producer_fingerprint_sha256_contract :=
-  keysDetermineAllCheck_sound artifact_policy_semantics_producer_fingerprint_sha256_contract
-    artifact_policy_semantics_producer_fingerprint_sha256_candidate_keys_check
-
-theorem artifact_policy_semantics_producer_fingerprint_sha256_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_policy_semantics_producer_fingerprint_sha256_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_producer_fingerprint_sha256_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_policy_semantics_producer_fingerprint_sha256_contract :=
-  declaredKeysMinimalCheck_sound artifact_policy_semantics_producer_fingerprint_sha256_contract
-    artifact_policy_semantics_producer_fingerprint_sha256_candidate_keys_minimal_check
-
-theorem artifact_policy_semantics_producer_fingerprint_sha256_closure_fixed_check :
-    closureFixedPointCheck artifact_policy_semantics_producer_fingerprint_sha256_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_producer_fingerprint_sha256_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_policy_semantics_producer_fingerprint_sha256_contract :=
-  closureFixedPointCheck_sound artifact_policy_semantics_producer_fingerprint_sha256_contract
-    artifact_policy_semantics_producer_fingerprint_sha256_closure_fixed_check
-
-theorem artifact_policy_semantics_producer_fingerprint_sha256_bcnf_check :
-    bcnfCheck artifact_policy_semantics_producer_fingerprint_sha256_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_producer_fingerprint_sha256_bcnf : BCNF artifact_policy_semantics_producer_fingerprint_sha256_contract :=
-  bcnfCheck_sound artifact_policy_semantics_producer_fingerprint_sha256_contract artifact_policy_semantics_producer_fingerprint_sha256_bcnf_check
-
-def artifact_policy_semantics_identity_contract : RelationContract where
-  name := "artifact_policy_semantics_identity"
-  attributes := ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256", "policy_component_sha256"]
-  declaredKeys := [["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"], ["policy_component_sha256"]]
-  declaredFDs := [
-    { determinant := ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"], dependent := ["policy_component_sha256"] },
-    { determinant := ["policy_component_sha256"], dependent := ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"] }
-  ]
-
-theorem artifact_policy_semantics_identity_schema_well_formed :
-    schemaWellFormedCheck artifact_policy_semantics_identity_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_identity_candidate_keys_check :
-    keysDetermineAllCheck artifact_policy_semantics_identity_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_identity_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_policy_semantics_identity_contract :=
-  keysDetermineAllCheck_sound artifact_policy_semantics_identity_contract
-    artifact_policy_semantics_identity_candidate_keys_check
-
-theorem artifact_policy_semantics_identity_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_policy_semantics_identity_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_identity_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_policy_semantics_identity_contract :=
-  declaredKeysMinimalCheck_sound artifact_policy_semantics_identity_contract
-    artifact_policy_semantics_identity_candidate_keys_minimal_check
-
-theorem artifact_policy_semantics_identity_closure_fixed_check :
-    closureFixedPointCheck artifact_policy_semantics_identity_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_identity_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_policy_semantics_identity_contract :=
-  closureFixedPointCheck_sound artifact_policy_semantics_identity_contract
-    artifact_policy_semantics_identity_closure_fixed_check
-
-theorem artifact_policy_semantics_identity_bcnf_check :
-    bcnfCheck artifact_policy_semantics_identity_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_identity_bcnf : BCNF artifact_policy_semantics_identity_contract :=
-  bcnfCheck_sound artifact_policy_semantics_identity_contract artifact_policy_semantics_identity_bcnf_check
-
-def artifact_policy_semantics_seal_contract : RelationContract where
-  name := "artifact_policy_semantics_seal"
-  attributes := ["policy_component_sha256"]
-  declaredKeys := [["policy_component_sha256"]]
-  declaredFDs := [
-  ]
-
-theorem artifact_policy_semantics_seal_schema_well_formed :
-    schemaWellFormedCheck artifact_policy_semantics_seal_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_seal_candidate_keys_check :
-    keysDetermineAllCheck artifact_policy_semantics_seal_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes artifact_policy_semantics_seal_contract :=
-  keysDetermineAllCheck_sound artifact_policy_semantics_seal_contract
-    artifact_policy_semantics_seal_candidate_keys_check
-
-theorem artifact_policy_semantics_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck artifact_policy_semantics_seal_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal artifact_policy_semantics_seal_contract :=
-  declaredKeysMinimalCheck_sound artifact_policy_semantics_seal_contract
-    artifact_policy_semantics_seal_candidate_keys_minimal_check
-
-theorem artifact_policy_semantics_seal_closure_fixed_check :
-    closureFixedPointCheck artifact_policy_semantics_seal_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint artifact_policy_semantics_seal_contract :=
-  closureFixedPointCheck_sound artifact_policy_semantics_seal_contract
-    artifact_policy_semantics_seal_closure_fixed_check
-
-theorem artifact_policy_semantics_seal_bcnf_check :
-    bcnfCheck artifact_policy_semantics_seal_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_seal_bcnf : BCNF artifact_policy_semantics_seal_contract :=
-  bcnfCheck_sound artifact_policy_semantics_seal_contract artifact_policy_semantics_seal_bcnf_check
+theorem artifact_storage_codec_bcnf : BCNF artifact_storage_codec_contract :=
+  bcnfCheck_sound artifact_storage_codec_contract artifact_storage_codec_bcnf_check
 
 def artifact_policy_semantics_contract : RelationContract where
   name := "artifact_policy_semantics"
-  attributes := ["policy_component_sha256", "artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"]
-  declaredKeys := [["policy_component_sha256"], ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"]]
+  attributes := ["policy_component_sha256", "max_image_short_side", "producer_fingerprint_sha256"]
+  declaredKeys := [["policy_component_sha256"], ["max_image_short_side", "producer_fingerprint_sha256"]]
   declaredFDs := [
-    { determinant := ["policy_component_sha256"], dependent := ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"] },
-    { determinant := ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"], dependent := ["policy_component_sha256"] }
+    { determinant := ["policy_component_sha256"], dependent := ["max_image_short_side", "producer_fingerprint_sha256"] },
+    { determinant := ["max_image_short_side", "producer_fingerprint_sha256"], dependent := ["policy_component_sha256"] }
   ]
 
 theorem artifact_policy_semantics_schema_well_formed :
@@ -15051,6 +8638,13 @@ theorem artifact_policy_semantics_closure_reached_fixed_point :
     ClosureReachedFixedPoint artifact_policy_semantics_contract :=
   closureFixedPointCheck_sound artifact_policy_semantics_contract
     artifact_policy_semantics_closure_fixed_check
+
+theorem artifact_policy_semantics_bcnf_check :
+    bcnfCheck artifact_policy_semantics_contract = true := by
+  native_decide
+
+theorem artifact_policy_semantics_bcnf : BCNF artifact_policy_semantics_contract :=
+  bcnfCheck_sound artifact_policy_semantics_contract artifact_policy_semantics_bcnf_check
 
 def artifact_policy_contract : RelationContract where
   name := "artifact_policy"
@@ -15410,142 +9004,6 @@ theorem prepared_artifact_bcnf_check :
 theorem prepared_artifact_bcnf : BCNF prepared_artifact_contract :=
   bcnfCheck_sound prepared_artifact_contract prepared_artifact_bcnf_check
 
-def catalog_revision_anchor_contract : RelationContract where
-  name := "catalog_revision_anchor"
-  attributes := ["revision"]
-  declaredKeys := [["revision"]]
-  declaredFDs := [
-  ]
-
-theorem catalog_revision_anchor_schema_well_formed :
-    schemaWellFormedCheck catalog_revision_anchor_contract = true := by
-  native_decide
-
-theorem catalog_revision_anchor_candidate_keys_check :
-    keysDetermineAllCheck catalog_revision_anchor_contract = true := by
-  native_decide
-
-theorem catalog_revision_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes catalog_revision_anchor_contract :=
-  keysDetermineAllCheck_sound catalog_revision_anchor_contract
-    catalog_revision_anchor_candidate_keys_check
-
-theorem catalog_revision_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck catalog_revision_anchor_contract = true := by
-  native_decide
-
-theorem catalog_revision_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal catalog_revision_anchor_contract :=
-  declaredKeysMinimalCheck_sound catalog_revision_anchor_contract
-    catalog_revision_anchor_candidate_keys_minimal_check
-
-theorem catalog_revision_anchor_closure_fixed_check :
-    closureFixedPointCheck catalog_revision_anchor_contract = true := by
-  native_decide
-
-theorem catalog_revision_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint catalog_revision_anchor_contract :=
-  closureFixedPointCheck_sound catalog_revision_anchor_contract
-    catalog_revision_anchor_closure_fixed_check
-
-theorem catalog_revision_anchor_bcnf_check :
-    bcnfCheck catalog_revision_anchor_contract = true := by
-  native_decide
-
-theorem catalog_revision_anchor_bcnf : BCNF catalog_revision_anchor_contract :=
-  bcnfCheck_sound catalog_revision_anchor_contract catalog_revision_anchor_bcnf_check
-
-def catalog_revision_publication_count_contract : RelationContract where
-  name := "catalog_revision_publication_count"
-  attributes := ["revision", "publication_count"]
-  declaredKeys := [["revision"]]
-  declaredFDs := [
-    { determinant := ["revision"], dependent := ["publication_count"] }
-  ]
-
-theorem catalog_revision_publication_count_schema_well_formed :
-    schemaWellFormedCheck catalog_revision_publication_count_contract = true := by
-  native_decide
-
-theorem catalog_revision_publication_count_candidate_keys_check :
-    keysDetermineAllCheck catalog_revision_publication_count_contract = true := by
-  native_decide
-
-theorem catalog_revision_publication_count_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes catalog_revision_publication_count_contract :=
-  keysDetermineAllCheck_sound catalog_revision_publication_count_contract
-    catalog_revision_publication_count_candidate_keys_check
-
-theorem catalog_revision_publication_count_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck catalog_revision_publication_count_contract = true := by
-  native_decide
-
-theorem catalog_revision_publication_count_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal catalog_revision_publication_count_contract :=
-  declaredKeysMinimalCheck_sound catalog_revision_publication_count_contract
-    catalog_revision_publication_count_candidate_keys_minimal_check
-
-theorem catalog_revision_publication_count_closure_fixed_check :
-    closureFixedPointCheck catalog_revision_publication_count_contract = true := by
-  native_decide
-
-theorem catalog_revision_publication_count_closure_reached_fixed_point :
-    ClosureReachedFixedPoint catalog_revision_publication_count_contract :=
-  closureFixedPointCheck_sound catalog_revision_publication_count_contract
-    catalog_revision_publication_count_closure_fixed_check
-
-theorem catalog_revision_publication_count_bcnf_check :
-    bcnfCheck catalog_revision_publication_count_contract = true := by
-  native_decide
-
-theorem catalog_revision_publication_count_bcnf : BCNF catalog_revision_publication_count_contract :=
-  bcnfCheck_sound catalog_revision_publication_count_contract catalog_revision_publication_count_bcnf_check
-
-def catalog_revision_descriptor_seal_contract : RelationContract where
-  name := "catalog_revision_descriptor_seal"
-  attributes := ["revision"]
-  declaredKeys := [["revision"]]
-  declaredFDs := [
-  ]
-
-theorem catalog_revision_descriptor_seal_schema_well_formed :
-    schemaWellFormedCheck catalog_revision_descriptor_seal_contract = true := by
-  native_decide
-
-theorem catalog_revision_descriptor_seal_candidate_keys_check :
-    keysDetermineAllCheck catalog_revision_descriptor_seal_contract = true := by
-  native_decide
-
-theorem catalog_revision_descriptor_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes catalog_revision_descriptor_seal_contract :=
-  keysDetermineAllCheck_sound catalog_revision_descriptor_seal_contract
-    catalog_revision_descriptor_seal_candidate_keys_check
-
-theorem catalog_revision_descriptor_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck catalog_revision_descriptor_seal_contract = true := by
-  native_decide
-
-theorem catalog_revision_descriptor_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal catalog_revision_descriptor_seal_contract :=
-  declaredKeysMinimalCheck_sound catalog_revision_descriptor_seal_contract
-    catalog_revision_descriptor_seal_candidate_keys_minimal_check
-
-theorem catalog_revision_descriptor_seal_closure_fixed_check :
-    closureFixedPointCheck catalog_revision_descriptor_seal_contract = true := by
-  native_decide
-
-theorem catalog_revision_descriptor_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint catalog_revision_descriptor_seal_contract :=
-  closureFixedPointCheck_sound catalog_revision_descriptor_seal_contract
-    catalog_revision_descriptor_seal_closure_fixed_check
-
-theorem catalog_revision_descriptor_seal_bcnf_check :
-    bcnfCheck catalog_revision_descriptor_seal_contract = true := by
-  native_decide
-
-theorem catalog_revision_descriptor_seal_bcnf : BCNF catalog_revision_descriptor_seal_contract :=
-  bcnfCheck_sound catalog_revision_descriptor_seal_contract catalog_revision_descriptor_seal_bcnf_check
-
 def catalog_revision_descriptor_contract : RelationContract where
   name := "catalog_revision_descriptor"
   attributes := ["revision", "publication_count"]
@@ -15584,6 +9042,13 @@ theorem catalog_revision_descriptor_closure_reached_fixed_point :
     ClosureReachedFixedPoint catalog_revision_descriptor_contract :=
   closureFixedPointCheck_sound catalog_revision_descriptor_contract
     catalog_revision_descriptor_closure_fixed_check
+
+theorem catalog_revision_descriptor_bcnf_check :
+    bcnfCheck catalog_revision_descriptor_contract = true := by
+  native_decide
+
+theorem catalog_revision_descriptor_bcnf : BCNF catalog_revision_descriptor_contract :=
+  bcnfCheck_sound catalog_revision_descriptor_contract catalog_revision_descriptor_bcnf_check
 
 def catalog_revision_contract : RelationContract where
   name := "catalog_revision"
@@ -15803,235 +9268,6 @@ theorem publication_identity_bcnf_check :
 theorem publication_identity_bcnf : BCNF publication_identity_contract :=
   bcnfCheck_sound publication_identity_contract publication_identity_bcnf_check
 
-def display_title_policy_anchor_contract : RelationContract where
-  name := "display_title_policy_anchor"
-  attributes := ["display_title_policy_id"]
-  declaredKeys := [["display_title_policy_id"]]
-  declaredFDs := [
-  ]
-
-theorem display_title_policy_anchor_schema_well_formed :
-    schemaWellFormedCheck display_title_policy_anchor_contract = true := by
-  native_decide
-
-theorem display_title_policy_anchor_candidate_keys_check :
-    keysDetermineAllCheck display_title_policy_anchor_contract = true := by
-  native_decide
-
-theorem display_title_policy_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes display_title_policy_anchor_contract :=
-  keysDetermineAllCheck_sound display_title_policy_anchor_contract
-    display_title_policy_anchor_candidate_keys_check
-
-theorem display_title_policy_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck display_title_policy_anchor_contract = true := by
-  native_decide
-
-theorem display_title_policy_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal display_title_policy_anchor_contract :=
-  declaredKeysMinimalCheck_sound display_title_policy_anchor_contract
-    display_title_policy_anchor_candidate_keys_minimal_check
-
-theorem display_title_policy_anchor_closure_fixed_check :
-    closureFixedPointCheck display_title_policy_anchor_contract = true := by
-  native_decide
-
-theorem display_title_policy_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint display_title_policy_anchor_contract :=
-  closureFixedPointCheck_sound display_title_policy_anchor_contract
-    display_title_policy_anchor_closure_fixed_check
-
-theorem display_title_policy_anchor_bcnf_check :
-    bcnfCheck display_title_policy_anchor_contract = true := by
-  native_decide
-
-theorem display_title_policy_anchor_bcnf : BCNF display_title_policy_anchor_contract :=
-  bcnfCheck_sound display_title_policy_anchor_contract display_title_policy_anchor_bcnf_check
-
-def display_title_policy_algorithm_version_contract : RelationContract where
-  name := "display_title_policy_algorithm_version"
-  attributes := ["display_title_policy_id", "display_title_algorithm_version"]
-  declaredKeys := [["display_title_policy_id"]]
-  declaredFDs := [
-    { determinant := ["display_title_policy_id"], dependent := ["display_title_algorithm_version"] }
-  ]
-
-theorem display_title_policy_algorithm_version_schema_well_formed :
-    schemaWellFormedCheck display_title_policy_algorithm_version_contract = true := by
-  native_decide
-
-theorem display_title_policy_algorithm_version_candidate_keys_check :
-    keysDetermineAllCheck display_title_policy_algorithm_version_contract = true := by
-  native_decide
-
-theorem display_title_policy_algorithm_version_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes display_title_policy_algorithm_version_contract :=
-  keysDetermineAllCheck_sound display_title_policy_algorithm_version_contract
-    display_title_policy_algorithm_version_candidate_keys_check
-
-theorem display_title_policy_algorithm_version_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck display_title_policy_algorithm_version_contract = true := by
-  native_decide
-
-theorem display_title_policy_algorithm_version_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal display_title_policy_algorithm_version_contract :=
-  declaredKeysMinimalCheck_sound display_title_policy_algorithm_version_contract
-    display_title_policy_algorithm_version_candidate_keys_minimal_check
-
-theorem display_title_policy_algorithm_version_closure_fixed_check :
-    closureFixedPointCheck display_title_policy_algorithm_version_contract = true := by
-  native_decide
-
-theorem display_title_policy_algorithm_version_closure_reached_fixed_point :
-    ClosureReachedFixedPoint display_title_policy_algorithm_version_contract :=
-  closureFixedPointCheck_sound display_title_policy_algorithm_version_contract
-    display_title_policy_algorithm_version_closure_fixed_check
-
-theorem display_title_policy_algorithm_version_bcnf_check :
-    bcnfCheck display_title_policy_algorithm_version_contract = true := by
-  native_decide
-
-theorem display_title_policy_algorithm_version_bcnf : BCNF display_title_policy_algorithm_version_contract :=
-  bcnfCheck_sound display_title_policy_algorithm_version_contract display_title_policy_algorithm_version_bcnf_check
-
-def display_title_policy_title_sort_policy_id_contract : RelationContract where
-  name := "display_title_policy_title_sort_policy_id"
-  attributes := ["display_title_policy_id", "title_sort_policy_id"]
-  declaredKeys := [["display_title_policy_id"]]
-  declaredFDs := [
-    { determinant := ["display_title_policy_id"], dependent := ["title_sort_policy_id"] }
-  ]
-
-theorem display_title_policy_title_sort_policy_id_schema_well_formed :
-    schemaWellFormedCheck display_title_policy_title_sort_policy_id_contract = true := by
-  native_decide
-
-theorem display_title_policy_title_sort_policy_id_candidate_keys_check :
-    keysDetermineAllCheck display_title_policy_title_sort_policy_id_contract = true := by
-  native_decide
-
-theorem display_title_policy_title_sort_policy_id_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes display_title_policy_title_sort_policy_id_contract :=
-  keysDetermineAllCheck_sound display_title_policy_title_sort_policy_id_contract
-    display_title_policy_title_sort_policy_id_candidate_keys_check
-
-theorem display_title_policy_title_sort_policy_id_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck display_title_policy_title_sort_policy_id_contract = true := by
-  native_decide
-
-theorem display_title_policy_title_sort_policy_id_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal display_title_policy_title_sort_policy_id_contract :=
-  declaredKeysMinimalCheck_sound display_title_policy_title_sort_policy_id_contract
-    display_title_policy_title_sort_policy_id_candidate_keys_minimal_check
-
-theorem display_title_policy_title_sort_policy_id_closure_fixed_check :
-    closureFixedPointCheck display_title_policy_title_sort_policy_id_contract = true := by
-  native_decide
-
-theorem display_title_policy_title_sort_policy_id_closure_reached_fixed_point :
-    ClosureReachedFixedPoint display_title_policy_title_sort_policy_id_contract :=
-  closureFixedPointCheck_sound display_title_policy_title_sort_policy_id_contract
-    display_title_policy_title_sort_policy_id_closure_fixed_check
-
-theorem display_title_policy_title_sort_policy_id_bcnf_check :
-    bcnfCheck display_title_policy_title_sort_policy_id_contract = true := by
-  native_decide
-
-theorem display_title_policy_title_sort_policy_id_bcnf : BCNF display_title_policy_title_sort_policy_id_contract :=
-  bcnfCheck_sound display_title_policy_title_sort_policy_id_contract display_title_policy_title_sort_policy_id_bcnf_check
-
-def display_title_policy_identity_contract : RelationContract where
-  name := "display_title_policy_identity"
-  attributes := ["display_title_algorithm_version", "title_sort_policy_id", "display_title_policy_id"]
-  declaredKeys := [["display_title_algorithm_version", "title_sort_policy_id"], ["display_title_policy_id"]]
-  declaredFDs := [
-    { determinant := ["display_title_algorithm_version", "title_sort_policy_id"], dependent := ["display_title_policy_id"] },
-    { determinant := ["display_title_policy_id"], dependent := ["display_title_algorithm_version", "title_sort_policy_id"] }
-  ]
-
-theorem display_title_policy_identity_schema_well_formed :
-    schemaWellFormedCheck display_title_policy_identity_contract = true := by
-  native_decide
-
-theorem display_title_policy_identity_candidate_keys_check :
-    keysDetermineAllCheck display_title_policy_identity_contract = true := by
-  native_decide
-
-theorem display_title_policy_identity_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes display_title_policy_identity_contract :=
-  keysDetermineAllCheck_sound display_title_policy_identity_contract
-    display_title_policy_identity_candidate_keys_check
-
-theorem display_title_policy_identity_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck display_title_policy_identity_contract = true := by
-  native_decide
-
-theorem display_title_policy_identity_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal display_title_policy_identity_contract :=
-  declaredKeysMinimalCheck_sound display_title_policy_identity_contract
-    display_title_policy_identity_candidate_keys_minimal_check
-
-theorem display_title_policy_identity_closure_fixed_check :
-    closureFixedPointCheck display_title_policy_identity_contract = true := by
-  native_decide
-
-theorem display_title_policy_identity_closure_reached_fixed_point :
-    ClosureReachedFixedPoint display_title_policy_identity_contract :=
-  closureFixedPointCheck_sound display_title_policy_identity_contract
-    display_title_policy_identity_closure_fixed_check
-
-theorem display_title_policy_identity_bcnf_check :
-    bcnfCheck display_title_policy_identity_contract = true := by
-  native_decide
-
-theorem display_title_policy_identity_bcnf : BCNF display_title_policy_identity_contract :=
-  bcnfCheck_sound display_title_policy_identity_contract display_title_policy_identity_bcnf_check
-
-def display_title_policy_seal_contract : RelationContract where
-  name := "display_title_policy_seal"
-  attributes := ["display_title_policy_id"]
-  declaredKeys := [["display_title_policy_id"]]
-  declaredFDs := [
-  ]
-
-theorem display_title_policy_seal_schema_well_formed :
-    schemaWellFormedCheck display_title_policy_seal_contract = true := by
-  native_decide
-
-theorem display_title_policy_seal_candidate_keys_check :
-    keysDetermineAllCheck display_title_policy_seal_contract = true := by
-  native_decide
-
-theorem display_title_policy_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes display_title_policy_seal_contract :=
-  keysDetermineAllCheck_sound display_title_policy_seal_contract
-    display_title_policy_seal_candidate_keys_check
-
-theorem display_title_policy_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck display_title_policy_seal_contract = true := by
-  native_decide
-
-theorem display_title_policy_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal display_title_policy_seal_contract :=
-  declaredKeysMinimalCheck_sound display_title_policy_seal_contract
-    display_title_policy_seal_candidate_keys_minimal_check
-
-theorem display_title_policy_seal_closure_fixed_check :
-    closureFixedPointCheck display_title_policy_seal_contract = true := by
-  native_decide
-
-theorem display_title_policy_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint display_title_policy_seal_contract :=
-  closureFixedPointCheck_sound display_title_policy_seal_contract
-    display_title_policy_seal_closure_fixed_check
-
-theorem display_title_policy_seal_bcnf_check :
-    bcnfCheck display_title_policy_seal_contract = true := by
-  native_decide
-
-theorem display_title_policy_seal_bcnf : BCNF display_title_policy_seal_contract :=
-  bcnfCheck_sound display_title_policy_seal_contract display_title_policy_seal_bcnf_check
-
 def display_title_policy_contract : RelationContract where
   name := "display_title_policy"
   attributes := ["display_title_policy_id", "display_title_algorithm_version", "title_sort_policy_id"]
@@ -16072,234 +9308,12 @@ theorem display_title_policy_closure_reached_fixed_point :
   closureFixedPointCheck_sound display_title_policy_contract
     display_title_policy_closure_fixed_check
 
-def title_sort_policy_anchor_contract : RelationContract where
-  name := "title_sort_policy_anchor"
-  attributes := ["title_sort_policy_id"]
-  declaredKeys := [["title_sort_policy_id"]]
-  declaredFDs := [
-  ]
-
-theorem title_sort_policy_anchor_schema_well_formed :
-    schemaWellFormedCheck title_sort_policy_anchor_contract = true := by
+theorem display_title_policy_bcnf_check :
+    bcnfCheck display_title_policy_contract = true := by
   native_decide
 
-theorem title_sort_policy_anchor_candidate_keys_check :
-    keysDetermineAllCheck title_sort_policy_anchor_contract = true := by
-  native_decide
-
-theorem title_sort_policy_anchor_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes title_sort_policy_anchor_contract :=
-  keysDetermineAllCheck_sound title_sort_policy_anchor_contract
-    title_sort_policy_anchor_candidate_keys_check
-
-theorem title_sort_policy_anchor_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck title_sort_policy_anchor_contract = true := by
-  native_decide
-
-theorem title_sort_policy_anchor_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal title_sort_policy_anchor_contract :=
-  declaredKeysMinimalCheck_sound title_sort_policy_anchor_contract
-    title_sort_policy_anchor_candidate_keys_minimal_check
-
-theorem title_sort_policy_anchor_closure_fixed_check :
-    closureFixedPointCheck title_sort_policy_anchor_contract = true := by
-  native_decide
-
-theorem title_sort_policy_anchor_closure_reached_fixed_point :
-    ClosureReachedFixedPoint title_sort_policy_anchor_contract :=
-  closureFixedPointCheck_sound title_sort_policy_anchor_contract
-    title_sort_policy_anchor_closure_fixed_check
-
-theorem title_sort_policy_anchor_bcnf_check :
-    bcnfCheck title_sort_policy_anchor_contract = true := by
-  native_decide
-
-theorem title_sort_policy_anchor_bcnf : BCNF title_sort_policy_anchor_contract :=
-  bcnfCheck_sound title_sort_policy_anchor_contract title_sort_policy_anchor_bcnf_check
-
-def title_sort_policy_algorithm_version_contract : RelationContract where
-  name := "title_sort_policy_algorithm_version"
-  attributes := ["title_sort_policy_id", "title_sort_algorithm_version"]
-  declaredKeys := [["title_sort_policy_id"]]
-  declaredFDs := [
-    { determinant := ["title_sort_policy_id"], dependent := ["title_sort_algorithm_version"] }
-  ]
-
-theorem title_sort_policy_algorithm_version_schema_well_formed :
-    schemaWellFormedCheck title_sort_policy_algorithm_version_contract = true := by
-  native_decide
-
-theorem title_sort_policy_algorithm_version_candidate_keys_check :
-    keysDetermineAllCheck title_sort_policy_algorithm_version_contract = true := by
-  native_decide
-
-theorem title_sort_policy_algorithm_version_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes title_sort_policy_algorithm_version_contract :=
-  keysDetermineAllCheck_sound title_sort_policy_algorithm_version_contract
-    title_sort_policy_algorithm_version_candidate_keys_check
-
-theorem title_sort_policy_algorithm_version_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck title_sort_policy_algorithm_version_contract = true := by
-  native_decide
-
-theorem title_sort_policy_algorithm_version_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal title_sort_policy_algorithm_version_contract :=
-  declaredKeysMinimalCheck_sound title_sort_policy_algorithm_version_contract
-    title_sort_policy_algorithm_version_candidate_keys_minimal_check
-
-theorem title_sort_policy_algorithm_version_closure_fixed_check :
-    closureFixedPointCheck title_sort_policy_algorithm_version_contract = true := by
-  native_decide
-
-theorem title_sort_policy_algorithm_version_closure_reached_fixed_point :
-    ClosureReachedFixedPoint title_sort_policy_algorithm_version_contract :=
-  closureFixedPointCheck_sound title_sort_policy_algorithm_version_contract
-    title_sort_policy_algorithm_version_closure_fixed_check
-
-theorem title_sort_policy_algorithm_version_bcnf_check :
-    bcnfCheck title_sort_policy_algorithm_version_contract = true := by
-  native_decide
-
-theorem title_sort_policy_algorithm_version_bcnf : BCNF title_sort_policy_algorithm_version_contract :=
-  bcnfCheck_sound title_sort_policy_algorithm_version_contract title_sort_policy_algorithm_version_bcnf_check
-
-def title_sort_policy_unicode_data_version_contract : RelationContract where
-  name := "title_sort_policy_unicode_data_version"
-  attributes := ["title_sort_policy_id", "unicode_data_version"]
-  declaredKeys := [["title_sort_policy_id"]]
-  declaredFDs := [
-    { determinant := ["title_sort_policy_id"], dependent := ["unicode_data_version"] }
-  ]
-
-theorem title_sort_policy_unicode_data_version_schema_well_formed :
-    schemaWellFormedCheck title_sort_policy_unicode_data_version_contract = true := by
-  native_decide
-
-theorem title_sort_policy_unicode_data_version_candidate_keys_check :
-    keysDetermineAllCheck title_sort_policy_unicode_data_version_contract = true := by
-  native_decide
-
-theorem title_sort_policy_unicode_data_version_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes title_sort_policy_unicode_data_version_contract :=
-  keysDetermineAllCheck_sound title_sort_policy_unicode_data_version_contract
-    title_sort_policy_unicode_data_version_candidate_keys_check
-
-theorem title_sort_policy_unicode_data_version_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck title_sort_policy_unicode_data_version_contract = true := by
-  native_decide
-
-theorem title_sort_policy_unicode_data_version_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal title_sort_policy_unicode_data_version_contract :=
-  declaredKeysMinimalCheck_sound title_sort_policy_unicode_data_version_contract
-    title_sort_policy_unicode_data_version_candidate_keys_minimal_check
-
-theorem title_sort_policy_unicode_data_version_closure_fixed_check :
-    closureFixedPointCheck title_sort_policy_unicode_data_version_contract = true := by
-  native_decide
-
-theorem title_sort_policy_unicode_data_version_closure_reached_fixed_point :
-    ClosureReachedFixedPoint title_sort_policy_unicode_data_version_contract :=
-  closureFixedPointCheck_sound title_sort_policy_unicode_data_version_contract
-    title_sort_policy_unicode_data_version_closure_fixed_check
-
-theorem title_sort_policy_unicode_data_version_bcnf_check :
-    bcnfCheck title_sort_policy_unicode_data_version_contract = true := by
-  native_decide
-
-theorem title_sort_policy_unicode_data_version_bcnf : BCNF title_sort_policy_unicode_data_version_contract :=
-  bcnfCheck_sound title_sort_policy_unicode_data_version_contract title_sort_policy_unicode_data_version_bcnf_check
-
-def title_sort_policy_identity_contract : RelationContract where
-  name := "title_sort_policy_identity"
-  attributes := ["title_sort_algorithm_version", "unicode_data_version", "title_sort_policy_id"]
-  declaredKeys := [["title_sort_algorithm_version", "unicode_data_version"], ["title_sort_policy_id"]]
-  declaredFDs := [
-    { determinant := ["title_sort_algorithm_version", "unicode_data_version"], dependent := ["title_sort_policy_id"] },
-    { determinant := ["title_sort_policy_id"], dependent := ["title_sort_algorithm_version", "unicode_data_version"] }
-  ]
-
-theorem title_sort_policy_identity_schema_well_formed :
-    schemaWellFormedCheck title_sort_policy_identity_contract = true := by
-  native_decide
-
-theorem title_sort_policy_identity_candidate_keys_check :
-    keysDetermineAllCheck title_sort_policy_identity_contract = true := by
-  native_decide
-
-theorem title_sort_policy_identity_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes title_sort_policy_identity_contract :=
-  keysDetermineAllCheck_sound title_sort_policy_identity_contract
-    title_sort_policy_identity_candidate_keys_check
-
-theorem title_sort_policy_identity_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck title_sort_policy_identity_contract = true := by
-  native_decide
-
-theorem title_sort_policy_identity_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal title_sort_policy_identity_contract :=
-  declaredKeysMinimalCheck_sound title_sort_policy_identity_contract
-    title_sort_policy_identity_candidate_keys_minimal_check
-
-theorem title_sort_policy_identity_closure_fixed_check :
-    closureFixedPointCheck title_sort_policy_identity_contract = true := by
-  native_decide
-
-theorem title_sort_policy_identity_closure_reached_fixed_point :
-    ClosureReachedFixedPoint title_sort_policy_identity_contract :=
-  closureFixedPointCheck_sound title_sort_policy_identity_contract
-    title_sort_policy_identity_closure_fixed_check
-
-theorem title_sort_policy_identity_bcnf_check :
-    bcnfCheck title_sort_policy_identity_contract = true := by
-  native_decide
-
-theorem title_sort_policy_identity_bcnf : BCNF title_sort_policy_identity_contract :=
-  bcnfCheck_sound title_sort_policy_identity_contract title_sort_policy_identity_bcnf_check
-
-def title_sort_policy_seal_contract : RelationContract where
-  name := "title_sort_policy_seal"
-  attributes := ["title_sort_policy_id"]
-  declaredKeys := [["title_sort_policy_id"]]
-  declaredFDs := [
-  ]
-
-theorem title_sort_policy_seal_schema_well_formed :
-    schemaWellFormedCheck title_sort_policy_seal_contract = true := by
-  native_decide
-
-theorem title_sort_policy_seal_candidate_keys_check :
-    keysDetermineAllCheck title_sort_policy_seal_contract = true := by
-  native_decide
-
-theorem title_sort_policy_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes title_sort_policy_seal_contract :=
-  keysDetermineAllCheck_sound title_sort_policy_seal_contract
-    title_sort_policy_seal_candidate_keys_check
-
-theorem title_sort_policy_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck title_sort_policy_seal_contract = true := by
-  native_decide
-
-theorem title_sort_policy_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal title_sort_policy_seal_contract :=
-  declaredKeysMinimalCheck_sound title_sort_policy_seal_contract
-    title_sort_policy_seal_candidate_keys_minimal_check
-
-theorem title_sort_policy_seal_closure_fixed_check :
-    closureFixedPointCheck title_sort_policy_seal_contract = true := by
-  native_decide
-
-theorem title_sort_policy_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint title_sort_policy_seal_contract :=
-  closureFixedPointCheck_sound title_sort_policy_seal_contract
-    title_sort_policy_seal_closure_fixed_check
-
-theorem title_sort_policy_seal_bcnf_check :
-    bcnfCheck title_sort_policy_seal_contract = true := by
-  native_decide
-
-theorem title_sort_policy_seal_bcnf : BCNF title_sort_policy_seal_contract :=
-  bcnfCheck_sound title_sort_policy_seal_contract title_sort_policy_seal_bcnf_check
+theorem display_title_policy_bcnf : BCNF display_title_policy_contract :=
+  bcnfCheck_sound display_title_policy_contract display_title_policy_bcnf_check
 
 def title_sort_policy_contract : RelationContract where
   name := "title_sort_policy"
@@ -16340,6 +9354,13 @@ theorem title_sort_policy_closure_reached_fixed_point :
     ClosureReachedFixedPoint title_sort_policy_contract :=
   closureFixedPointCheck_sound title_sort_policy_contract
     title_sort_policy_closure_fixed_check
+
+theorem title_sort_policy_bcnf_check :
+    bcnfCheck title_sort_policy_contract = true := by
+  native_decide
+
+theorem title_sort_policy_bcnf : BCNF title_sort_policy_contract :=
+  bcnfCheck_sound title_sort_policy_contract title_sort_policy_bcnf_check
 
 def display_title_choice_contract : RelationContract where
   name := "display_title_choice"
@@ -17152,654 +10173,6 @@ theorem publication_commit_anchor_bcnf_check :
 theorem publication_commit_anchor_bcnf : BCNF publication_commit_anchor_contract :=
   bcnfCheck_sound publication_commit_anchor_contract publication_commit_anchor_bcnf_check
 
-def publication_commit_candidate_contract : RelationContract where
-  name := "publication_commit_candidate"
-  attributes := ["receipt_id", "candidate_id"]
-  declaredKeys := [["receipt_id"], ["candidate_id"]]
-  declaredFDs := [
-    { determinant := ["receipt_id"], dependent := ["candidate_id"] },
-    { determinant := ["candidate_id"], dependent := ["receipt_id"] }
-  ]
-
-theorem publication_commit_candidate_schema_well_formed :
-    schemaWellFormedCheck publication_commit_candidate_contract = true := by
-  native_decide
-
-theorem publication_commit_candidate_candidate_keys_check :
-    keysDetermineAllCheck publication_commit_candidate_contract = true := by
-  native_decide
-
-theorem publication_commit_candidate_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_commit_candidate_contract :=
-  keysDetermineAllCheck_sound publication_commit_candidate_contract
-    publication_commit_candidate_candidate_keys_check
-
-theorem publication_commit_candidate_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_commit_candidate_contract = true := by
-  native_decide
-
-theorem publication_commit_candidate_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_commit_candidate_contract :=
-  declaredKeysMinimalCheck_sound publication_commit_candidate_contract
-    publication_commit_candidate_candidate_keys_minimal_check
-
-theorem publication_commit_candidate_closure_fixed_check :
-    closureFixedPointCheck publication_commit_candidate_contract = true := by
-  native_decide
-
-theorem publication_commit_candidate_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_commit_candidate_contract :=
-  closureFixedPointCheck_sound publication_commit_candidate_contract
-    publication_commit_candidate_closure_fixed_check
-
-theorem publication_commit_candidate_bcnf_check :
-    bcnfCheck publication_commit_candidate_contract = true := by
-  native_decide
-
-theorem publication_commit_candidate_bcnf : BCNF publication_commit_candidate_contract :=
-  bcnfCheck_sound publication_commit_candidate_contract publication_commit_candidate_bcnf_check
-
-def publication_commit_catalog_revision_contract : RelationContract where
-  name := "publication_commit_catalog_revision"
-  attributes := ["receipt_id", "revision"]
-  declaredKeys := [["receipt_id"], ["revision"]]
-  declaredFDs := [
-    { determinant := ["receipt_id"], dependent := ["revision"] },
-    { determinant := ["revision"], dependent := ["receipt_id"] }
-  ]
-
-theorem publication_commit_catalog_revision_schema_well_formed :
-    schemaWellFormedCheck publication_commit_catalog_revision_contract = true := by
-  native_decide
-
-theorem publication_commit_catalog_revision_candidate_keys_check :
-    keysDetermineAllCheck publication_commit_catalog_revision_contract = true := by
-  native_decide
-
-theorem publication_commit_catalog_revision_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_commit_catalog_revision_contract :=
-  keysDetermineAllCheck_sound publication_commit_catalog_revision_contract
-    publication_commit_catalog_revision_candidate_keys_check
-
-theorem publication_commit_catalog_revision_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_commit_catalog_revision_contract = true := by
-  native_decide
-
-theorem publication_commit_catalog_revision_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_commit_catalog_revision_contract :=
-  declaredKeysMinimalCheck_sound publication_commit_catalog_revision_contract
-    publication_commit_catalog_revision_candidate_keys_minimal_check
-
-theorem publication_commit_catalog_revision_closure_fixed_check :
-    closureFixedPointCheck publication_commit_catalog_revision_contract = true := by
-  native_decide
-
-theorem publication_commit_catalog_revision_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_commit_catalog_revision_contract :=
-  closureFixedPointCheck_sound publication_commit_catalog_revision_contract
-    publication_commit_catalog_revision_closure_fixed_check
-
-theorem publication_commit_catalog_revision_bcnf_check :
-    bcnfCheck publication_commit_catalog_revision_contract = true := by
-  native_decide
-
-theorem publication_commit_catalog_revision_bcnf : BCNF publication_commit_catalog_revision_contract :=
-  bcnfCheck_sound publication_commit_catalog_revision_contract publication_commit_catalog_revision_bcnf_check
-
-def publication_commit_source_revision_contract : RelationContract where
-  name := "publication_commit_source_revision"
-  attributes := ["receipt_id", "source_revision"]
-  declaredKeys := [["receipt_id"], ["source_revision"]]
-  declaredFDs := [
-    { determinant := ["receipt_id"], dependent := ["source_revision"] },
-    { determinant := ["source_revision"], dependent := ["receipt_id"] }
-  ]
-
-theorem publication_commit_source_revision_schema_well_formed :
-    schemaWellFormedCheck publication_commit_source_revision_contract = true := by
-  native_decide
-
-theorem publication_commit_source_revision_candidate_keys_check :
-    keysDetermineAllCheck publication_commit_source_revision_contract = true := by
-  native_decide
-
-theorem publication_commit_source_revision_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_commit_source_revision_contract :=
-  keysDetermineAllCheck_sound publication_commit_source_revision_contract
-    publication_commit_source_revision_candidate_keys_check
-
-theorem publication_commit_source_revision_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_commit_source_revision_contract = true := by
-  native_decide
-
-theorem publication_commit_source_revision_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_commit_source_revision_contract :=
-  declaredKeysMinimalCheck_sound publication_commit_source_revision_contract
-    publication_commit_source_revision_candidate_keys_minimal_check
-
-theorem publication_commit_source_revision_closure_fixed_check :
-    closureFixedPointCheck publication_commit_source_revision_contract = true := by
-  native_decide
-
-theorem publication_commit_source_revision_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_commit_source_revision_contract :=
-  closureFixedPointCheck_sound publication_commit_source_revision_contract
-    publication_commit_source_revision_closure_fixed_check
-
-theorem publication_commit_source_revision_bcnf_check :
-    bcnfCheck publication_commit_source_revision_contract = true := by
-  native_decide
-
-theorem publication_commit_source_revision_bcnf : BCNF publication_commit_source_revision_contract :=
-  bcnfCheck_sound publication_commit_source_revision_contract publication_commit_source_revision_bcnf_check
-
-def publication_commit_generation_contract : RelationContract where
-  name := "publication_commit_generation"
-  attributes := ["receipt_id", "generation"]
-  declaredKeys := [["receipt_id"], ["generation"]]
-  declaredFDs := [
-    { determinant := ["receipt_id"], dependent := ["generation"] },
-    { determinant := ["generation"], dependent := ["receipt_id"] }
-  ]
-
-theorem publication_commit_generation_schema_well_formed :
-    schemaWellFormedCheck publication_commit_generation_contract = true := by
-  native_decide
-
-theorem publication_commit_generation_candidate_keys_check :
-    keysDetermineAllCheck publication_commit_generation_contract = true := by
-  native_decide
-
-theorem publication_commit_generation_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_commit_generation_contract :=
-  keysDetermineAllCheck_sound publication_commit_generation_contract
-    publication_commit_generation_candidate_keys_check
-
-theorem publication_commit_generation_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_commit_generation_contract = true := by
-  native_decide
-
-theorem publication_commit_generation_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_commit_generation_contract :=
-  declaredKeysMinimalCheck_sound publication_commit_generation_contract
-    publication_commit_generation_candidate_keys_minimal_check
-
-theorem publication_commit_generation_closure_fixed_check :
-    closureFixedPointCheck publication_commit_generation_contract = true := by
-  native_decide
-
-theorem publication_commit_generation_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_commit_generation_contract :=
-  closureFixedPointCheck_sound publication_commit_generation_contract
-    publication_commit_generation_closure_fixed_check
-
-theorem publication_commit_generation_bcnf_check :
-    bcnfCheck publication_commit_generation_contract = true := by
-  native_decide
-
-theorem publication_commit_generation_bcnf : BCNF publication_commit_generation_contract :=
-  bcnfCheck_sound publication_commit_generation_contract publication_commit_generation_bcnf_check
-
-def publication_commit_operational_preparation_contract : RelationContract where
-  name := "publication_commit_operational_preparation"
-  attributes := ["receipt_id", "preparation_id"]
-  declaredKeys := [["receipt_id"], ["preparation_id"]]
-  declaredFDs := [
-    { determinant := ["receipt_id"], dependent := ["preparation_id"] },
-    { determinant := ["preparation_id"], dependent := ["receipt_id"] }
-  ]
-
-theorem publication_commit_operational_preparation_schema_well_formed :
-    schemaWellFormedCheck publication_commit_operational_preparation_contract = true := by
-  native_decide
-
-theorem publication_commit_operational_preparation_candidate_keys_check :
-    keysDetermineAllCheck publication_commit_operational_preparation_contract = true := by
-  native_decide
-
-theorem publication_commit_operational_preparation_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_commit_operational_preparation_contract :=
-  keysDetermineAllCheck_sound publication_commit_operational_preparation_contract
-    publication_commit_operational_preparation_candidate_keys_check
-
-theorem publication_commit_operational_preparation_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_commit_operational_preparation_contract = true := by
-  native_decide
-
-theorem publication_commit_operational_preparation_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_commit_operational_preparation_contract :=
-  declaredKeysMinimalCheck_sound publication_commit_operational_preparation_contract
-    publication_commit_operational_preparation_candidate_keys_minimal_check
-
-theorem publication_commit_operational_preparation_closure_fixed_check :
-    closureFixedPointCheck publication_commit_operational_preparation_contract = true := by
-  native_decide
-
-theorem publication_commit_operational_preparation_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_commit_operational_preparation_contract :=
-  closureFixedPointCheck_sound publication_commit_operational_preparation_contract
-    publication_commit_operational_preparation_closure_fixed_check
-
-theorem publication_commit_operational_preparation_bcnf_check :
-    bcnfCheck publication_commit_operational_preparation_contract = true := by
-  native_decide
-
-theorem publication_commit_operational_preparation_bcnf : BCNF publication_commit_operational_preparation_contract :=
-  bcnfCheck_sound publication_commit_operational_preparation_contract publication_commit_operational_preparation_bcnf_check
-
-def publication_commit_operational_policy_contract : RelationContract where
-  name := "publication_commit_operational_policy"
-  attributes := ["receipt_id", "operational_policy_id"]
-  declaredKeys := [["receipt_id"]]
-  declaredFDs := [
-    { determinant := ["receipt_id"], dependent := ["operational_policy_id"] }
-  ]
-
-theorem publication_commit_operational_policy_schema_well_formed :
-    schemaWellFormedCheck publication_commit_operational_policy_contract = true := by
-  native_decide
-
-theorem publication_commit_operational_policy_candidate_keys_check :
-    keysDetermineAllCheck publication_commit_operational_policy_contract = true := by
-  native_decide
-
-theorem publication_commit_operational_policy_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_commit_operational_policy_contract :=
-  keysDetermineAllCheck_sound publication_commit_operational_policy_contract
-    publication_commit_operational_policy_candidate_keys_check
-
-theorem publication_commit_operational_policy_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_commit_operational_policy_contract = true := by
-  native_decide
-
-theorem publication_commit_operational_policy_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_commit_operational_policy_contract :=
-  declaredKeysMinimalCheck_sound publication_commit_operational_policy_contract
-    publication_commit_operational_policy_candidate_keys_minimal_check
-
-theorem publication_commit_operational_policy_closure_fixed_check :
-    closureFixedPointCheck publication_commit_operational_policy_contract = true := by
-  native_decide
-
-theorem publication_commit_operational_policy_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_commit_operational_policy_contract :=
-  closureFixedPointCheck_sound publication_commit_operational_policy_contract
-    publication_commit_operational_policy_closure_fixed_check
-
-theorem publication_commit_operational_policy_bcnf_check :
-    bcnfCheck publication_commit_operational_policy_contract = true := by
-  native_decide
-
-theorem publication_commit_operational_policy_bcnf : BCNF publication_commit_operational_policy_contract :=
-  bcnfCheck_sound publication_commit_operational_policy_contract publication_commit_operational_policy_bcnf_check
-
-def publication_commit_artifact_policy_contract : RelationContract where
-  name := "publication_commit_artifact_policy"
-  attributes := ["receipt_id", "artifact_policy_id"]
-  declaredKeys := [["receipt_id"]]
-  declaredFDs := [
-    { determinant := ["receipt_id"], dependent := ["artifact_policy_id"] }
-  ]
-
-theorem publication_commit_artifact_policy_schema_well_formed :
-    schemaWellFormedCheck publication_commit_artifact_policy_contract = true := by
-  native_decide
-
-theorem publication_commit_artifact_policy_candidate_keys_check :
-    keysDetermineAllCheck publication_commit_artifact_policy_contract = true := by
-  native_decide
-
-theorem publication_commit_artifact_policy_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_commit_artifact_policy_contract :=
-  keysDetermineAllCheck_sound publication_commit_artifact_policy_contract
-    publication_commit_artifact_policy_candidate_keys_check
-
-theorem publication_commit_artifact_policy_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_commit_artifact_policy_contract = true := by
-  native_decide
-
-theorem publication_commit_artifact_policy_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_commit_artifact_policy_contract :=
-  declaredKeysMinimalCheck_sound publication_commit_artifact_policy_contract
-    publication_commit_artifact_policy_candidate_keys_minimal_check
-
-theorem publication_commit_artifact_policy_closure_fixed_check :
-    closureFixedPointCheck publication_commit_artifact_policy_contract = true := by
-  native_decide
-
-theorem publication_commit_artifact_policy_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_commit_artifact_policy_contract :=
-  closureFixedPointCheck_sound publication_commit_artifact_policy_contract
-    publication_commit_artifact_policy_closure_fixed_check
-
-theorem publication_commit_artifact_policy_bcnf_check :
-    bcnfCheck publication_commit_artifact_policy_contract = true := by
-  native_decide
-
-theorem publication_commit_artifact_policy_bcnf : BCNF publication_commit_artifact_policy_contract :=
-  bcnfCheck_sound publication_commit_artifact_policy_contract publication_commit_artifact_policy_bcnf_check
-
-def publication_commit_display_title_policy_contract : RelationContract where
-  name := "publication_commit_display_title_policy"
-  attributes := ["receipt_id", "display_title_policy_id"]
-  declaredKeys := [["receipt_id"]]
-  declaredFDs := [
-    { determinant := ["receipt_id"], dependent := ["display_title_policy_id"] }
-  ]
-
-theorem publication_commit_display_title_policy_schema_well_formed :
-    schemaWellFormedCheck publication_commit_display_title_policy_contract = true := by
-  native_decide
-
-theorem publication_commit_display_title_policy_candidate_keys_check :
-    keysDetermineAllCheck publication_commit_display_title_policy_contract = true := by
-  native_decide
-
-theorem publication_commit_display_title_policy_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_commit_display_title_policy_contract :=
-  keysDetermineAllCheck_sound publication_commit_display_title_policy_contract
-    publication_commit_display_title_policy_candidate_keys_check
-
-theorem publication_commit_display_title_policy_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_commit_display_title_policy_contract = true := by
-  native_decide
-
-theorem publication_commit_display_title_policy_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_commit_display_title_policy_contract :=
-  declaredKeysMinimalCheck_sound publication_commit_display_title_policy_contract
-    publication_commit_display_title_policy_candidate_keys_minimal_check
-
-theorem publication_commit_display_title_policy_closure_fixed_check :
-    closureFixedPointCheck publication_commit_display_title_policy_contract = true := by
-  native_decide
-
-theorem publication_commit_display_title_policy_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_commit_display_title_policy_contract :=
-  closureFixedPointCheck_sound publication_commit_display_title_policy_contract
-    publication_commit_display_title_policy_closure_fixed_check
-
-theorem publication_commit_display_title_policy_bcnf_check :
-    bcnfCheck publication_commit_display_title_policy_contract = true := by
-  native_decide
-
-theorem publication_commit_display_title_policy_bcnf : BCNF publication_commit_display_title_policy_contract :=
-  bcnfCheck_sound publication_commit_display_title_policy_contract publication_commit_display_title_policy_bcnf_check
-
-def publication_commit_new_galleries_contract : RelationContract where
-  name := "publication_commit_new_galleries"
-  attributes := ["receipt_id", "new_galleries"]
-  declaredKeys := [["receipt_id"]]
-  declaredFDs := [
-    { determinant := ["receipt_id"], dependent := ["new_galleries"] }
-  ]
-
-theorem publication_commit_new_galleries_schema_well_formed :
-    schemaWellFormedCheck publication_commit_new_galleries_contract = true := by
-  native_decide
-
-theorem publication_commit_new_galleries_candidate_keys_check :
-    keysDetermineAllCheck publication_commit_new_galleries_contract = true := by
-  native_decide
-
-theorem publication_commit_new_galleries_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_commit_new_galleries_contract :=
-  keysDetermineAllCheck_sound publication_commit_new_galleries_contract
-    publication_commit_new_galleries_candidate_keys_check
-
-theorem publication_commit_new_galleries_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_commit_new_galleries_contract = true := by
-  native_decide
-
-theorem publication_commit_new_galleries_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_commit_new_galleries_contract :=
-  declaredKeysMinimalCheck_sound publication_commit_new_galleries_contract
-    publication_commit_new_galleries_candidate_keys_minimal_check
-
-theorem publication_commit_new_galleries_closure_fixed_check :
-    closureFixedPointCheck publication_commit_new_galleries_contract = true := by
-  native_decide
-
-theorem publication_commit_new_galleries_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_commit_new_galleries_contract :=
-  closureFixedPointCheck_sound publication_commit_new_galleries_contract
-    publication_commit_new_galleries_closure_fixed_check
-
-theorem publication_commit_new_galleries_bcnf_check :
-    bcnfCheck publication_commit_new_galleries_contract = true := by
-  native_decide
-
-theorem publication_commit_new_galleries_bcnf : BCNF publication_commit_new_galleries_contract :=
-  bcnfCheck_sound publication_commit_new_galleries_contract publication_commit_new_galleries_bcnf_check
-
-def publication_commit_changed_galleries_contract : RelationContract where
-  name := "publication_commit_changed_galleries"
-  attributes := ["receipt_id", "changed_galleries"]
-  declaredKeys := [["receipt_id"]]
-  declaredFDs := [
-    { determinant := ["receipt_id"], dependent := ["changed_galleries"] }
-  ]
-
-theorem publication_commit_changed_galleries_schema_well_formed :
-    schemaWellFormedCheck publication_commit_changed_galleries_contract = true := by
-  native_decide
-
-theorem publication_commit_changed_galleries_candidate_keys_check :
-    keysDetermineAllCheck publication_commit_changed_galleries_contract = true := by
-  native_decide
-
-theorem publication_commit_changed_galleries_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_commit_changed_galleries_contract :=
-  keysDetermineAllCheck_sound publication_commit_changed_galleries_contract
-    publication_commit_changed_galleries_candidate_keys_check
-
-theorem publication_commit_changed_galleries_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_commit_changed_galleries_contract = true := by
-  native_decide
-
-theorem publication_commit_changed_galleries_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_commit_changed_galleries_contract :=
-  declaredKeysMinimalCheck_sound publication_commit_changed_galleries_contract
-    publication_commit_changed_galleries_candidate_keys_minimal_check
-
-theorem publication_commit_changed_galleries_closure_fixed_check :
-    closureFixedPointCheck publication_commit_changed_galleries_contract = true := by
-  native_decide
-
-theorem publication_commit_changed_galleries_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_commit_changed_galleries_contract :=
-  closureFixedPointCheck_sound publication_commit_changed_galleries_contract
-    publication_commit_changed_galleries_closure_fixed_check
-
-theorem publication_commit_changed_galleries_bcnf_check :
-    bcnfCheck publication_commit_changed_galleries_contract = true := by
-  native_decide
-
-theorem publication_commit_changed_galleries_bcnf : BCNF publication_commit_changed_galleries_contract :=
-  bcnfCheck_sound publication_commit_changed_galleries_contract publication_commit_changed_galleries_bcnf_check
-
-def publication_commit_removed_galleries_contract : RelationContract where
-  name := "publication_commit_removed_galleries"
-  attributes := ["receipt_id", "removed_galleries"]
-  declaredKeys := [["receipt_id"]]
-  declaredFDs := [
-    { determinant := ["receipt_id"], dependent := ["removed_galleries"] }
-  ]
-
-theorem publication_commit_removed_galleries_schema_well_formed :
-    schemaWellFormedCheck publication_commit_removed_galleries_contract = true := by
-  native_decide
-
-theorem publication_commit_removed_galleries_candidate_keys_check :
-    keysDetermineAllCheck publication_commit_removed_galleries_contract = true := by
-  native_decide
-
-theorem publication_commit_removed_galleries_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_commit_removed_galleries_contract :=
-  keysDetermineAllCheck_sound publication_commit_removed_galleries_contract
-    publication_commit_removed_galleries_candidate_keys_check
-
-theorem publication_commit_removed_galleries_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_commit_removed_galleries_contract = true := by
-  native_decide
-
-theorem publication_commit_removed_galleries_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_commit_removed_galleries_contract :=
-  declaredKeysMinimalCheck_sound publication_commit_removed_galleries_contract
-    publication_commit_removed_galleries_candidate_keys_minimal_check
-
-theorem publication_commit_removed_galleries_closure_fixed_check :
-    closureFixedPointCheck publication_commit_removed_galleries_contract = true := by
-  native_decide
-
-theorem publication_commit_removed_galleries_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_commit_removed_galleries_contract :=
-  closureFixedPointCheck_sound publication_commit_removed_galleries_contract
-    publication_commit_removed_galleries_closure_fixed_check
-
-theorem publication_commit_removed_galleries_bcnf_check :
-    bcnfCheck publication_commit_removed_galleries_contract = true := by
-  native_decide
-
-theorem publication_commit_removed_galleries_bcnf : BCNF publication_commit_removed_galleries_contract :=
-  bcnfCheck_sound publication_commit_removed_galleries_contract publication_commit_removed_galleries_bcnf_check
-
-def publication_commit_duplicate_losers_contract : RelationContract where
-  name := "publication_commit_duplicate_losers"
-  attributes := ["receipt_id", "duplicate_losers"]
-  declaredKeys := [["receipt_id"]]
-  declaredFDs := [
-    { determinant := ["receipt_id"], dependent := ["duplicate_losers"] }
-  ]
-
-theorem publication_commit_duplicate_losers_schema_well_formed :
-    schemaWellFormedCheck publication_commit_duplicate_losers_contract = true := by
-  native_decide
-
-theorem publication_commit_duplicate_losers_candidate_keys_check :
-    keysDetermineAllCheck publication_commit_duplicate_losers_contract = true := by
-  native_decide
-
-theorem publication_commit_duplicate_losers_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_commit_duplicate_losers_contract :=
-  keysDetermineAllCheck_sound publication_commit_duplicate_losers_contract
-    publication_commit_duplicate_losers_candidate_keys_check
-
-theorem publication_commit_duplicate_losers_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_commit_duplicate_losers_contract = true := by
-  native_decide
-
-theorem publication_commit_duplicate_losers_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_commit_duplicate_losers_contract :=
-  declaredKeysMinimalCheck_sound publication_commit_duplicate_losers_contract
-    publication_commit_duplicate_losers_candidate_keys_minimal_check
-
-theorem publication_commit_duplicate_losers_closure_fixed_check :
-    closureFixedPointCheck publication_commit_duplicate_losers_contract = true := by
-  native_decide
-
-theorem publication_commit_duplicate_losers_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_commit_duplicate_losers_contract :=
-  closureFixedPointCheck_sound publication_commit_duplicate_losers_contract
-    publication_commit_duplicate_losers_closure_fixed_check
-
-theorem publication_commit_duplicate_losers_bcnf_check :
-    bcnfCheck publication_commit_duplicate_losers_contract = true := by
-  native_decide
-
-theorem publication_commit_duplicate_losers_bcnf : BCNF publication_commit_duplicate_losers_contract :=
-  bcnfCheck_sound publication_commit_duplicate_losers_contract publication_commit_duplicate_losers_bcnf_check
-
-def publication_commit_committed_at_contract : RelationContract where
-  name := "publication_commit_committed_at"
-  attributes := ["receipt_id", "committed_at"]
-  declaredKeys := [["receipt_id"]]
-  declaredFDs := [
-    { determinant := ["receipt_id"], dependent := ["committed_at"] }
-  ]
-
-theorem publication_commit_committed_at_schema_well_formed :
-    schemaWellFormedCheck publication_commit_committed_at_contract = true := by
-  native_decide
-
-theorem publication_commit_committed_at_candidate_keys_check :
-    keysDetermineAllCheck publication_commit_committed_at_contract = true := by
-  native_decide
-
-theorem publication_commit_committed_at_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_commit_committed_at_contract :=
-  keysDetermineAllCheck_sound publication_commit_committed_at_contract
-    publication_commit_committed_at_candidate_keys_check
-
-theorem publication_commit_committed_at_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_commit_committed_at_contract = true := by
-  native_decide
-
-theorem publication_commit_committed_at_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_commit_committed_at_contract :=
-  declaredKeysMinimalCheck_sound publication_commit_committed_at_contract
-    publication_commit_committed_at_candidate_keys_minimal_check
-
-theorem publication_commit_committed_at_closure_fixed_check :
-    closureFixedPointCheck publication_commit_committed_at_contract = true := by
-  native_decide
-
-theorem publication_commit_committed_at_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_commit_committed_at_contract :=
-  closureFixedPointCheck_sound publication_commit_committed_at_contract
-    publication_commit_committed_at_closure_fixed_check
-
-theorem publication_commit_committed_at_bcnf_check :
-    bcnfCheck publication_commit_committed_at_contract = true := by
-  native_decide
-
-theorem publication_commit_committed_at_bcnf : BCNF publication_commit_committed_at_contract :=
-  bcnfCheck_sound publication_commit_committed_at_contract publication_commit_committed_at_bcnf_check
-
-def publication_commit_seal_contract : RelationContract where
-  name := "publication_commit_seal"
-  attributes := ["receipt_id"]
-  declaredKeys := [["receipt_id"]]
-  declaredFDs := [
-  ]
-
-theorem publication_commit_seal_schema_well_formed :
-    schemaWellFormedCheck publication_commit_seal_contract = true := by
-  native_decide
-
-theorem publication_commit_seal_candidate_keys_check :
-    keysDetermineAllCheck publication_commit_seal_contract = true := by
-  native_decide
-
-theorem publication_commit_seal_candidate_keys_determine_all_attributes :
-    KeysDetermineAllAttributes publication_commit_seal_contract :=
-  keysDetermineAllCheck_sound publication_commit_seal_contract
-    publication_commit_seal_candidate_keys_check
-
-theorem publication_commit_seal_candidate_keys_minimal_check :
-    declaredKeysMinimalCheck publication_commit_seal_contract = true := by
-  native_decide
-
-theorem publication_commit_seal_declared_keys_are_candidate_keys :
-    DeclaredKeysAreMinimal publication_commit_seal_contract :=
-  declaredKeysMinimalCheck_sound publication_commit_seal_contract
-    publication_commit_seal_candidate_keys_minimal_check
-
-theorem publication_commit_seal_closure_fixed_check :
-    closureFixedPointCheck publication_commit_seal_contract = true := by
-  native_decide
-
-theorem publication_commit_seal_closure_reached_fixed_point :
-    ClosureReachedFixedPoint publication_commit_seal_contract :=
-  closureFixedPointCheck_sound publication_commit_seal_contract
-    publication_commit_seal_closure_fixed_check
-
-theorem publication_commit_seal_bcnf_check :
-    bcnfCheck publication_commit_seal_contract = true := by
-  native_decide
-
-theorem publication_commit_seal_bcnf : BCNF publication_commit_seal_contract :=
-  bcnfCheck_sound publication_commit_seal_contract publication_commit_seal_bcnf_check
-
 def publication_commit_contract : RelationContract where
   name := "publication_commit"
   attributes := ["receipt_id", "candidate_id", "revision", "source_revision", "generation", "preparation_id", "operational_policy_id", "artifact_policy_id", "display_title_policy_id", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "committed_at"]
@@ -17843,6 +10216,13 @@ theorem publication_commit_closure_reached_fixed_point :
     ClosureReachedFixedPoint publication_commit_contract :=
   closureFixedPointCheck_sound publication_commit_contract
     publication_commit_closure_fixed_check
+
+theorem publication_commit_bcnf_check :
+    bcnfCheck publication_commit_contract = true := by
+  native_decide
+
+theorem publication_commit_bcnf : BCNF publication_commit_contract :=
+  bcnfCheck_sound publication_commit_contract publication_commit_bcnf_check
 
 def publication_commit_finalization_contract : RelationContract where
   name := "publication_commit_finalization"
@@ -18170,38 +10550,17 @@ def manifestContracts : List RelationContract := [
   canonical_value_page_descriptor_contract,
   canonical_value_page_parent_contract,
   canonical_value_identity_contract,
-  manifest_policy_anchor_contract,
-  manifest_policy_manifest_algorithm_version_contract,
-  manifest_policy_file_order_version_contract,
-  manifest_policy_identity_contract,
-  manifest_policy_seal_contract,
   manifest_policy_contract,
-  source_build_anchor_contract,
-  source_build_scope_key_contract,
-  source_build_manifest_policy_id_contract,
   source_build_state_contract,
-  source_build_created_at_contract,
-  source_build_descriptor_seal_contract,
   source_build_sealed_at_contract,
+  source_build_descriptor_contract,
   source_build_contract,
   source_build_base_publication_commit_contract,
   source_build_base_source_contract,
   channel_registry_contract,
   source_provider_registry_contract,
   source_build_channel_contract,
-  source_scope_anchor_contract,
-  source_scope_source_provider_contract,
-  source_scope_source_root_sha256_contract,
-  source_scope_identity_policy_version_contract,
-  source_scope_identity_contract,
-  source_scope_seal_contract,
   source_scope_contract,
-  source_build_discovery_anchor_contract,
-  source_build_discovery_scan_attempt_contract,
-  source_build_discovery_gallery_count_contract,
-  source_build_discovery_tree_observation_sha256_contract,
-  source_build_discovery_completed_at_contract,
-  source_build_discovery_seal_contract,
   source_build_discovery_contract,
   source_build_expected_gallery_contract,
   source_locator_identity_contract,
@@ -18259,46 +10618,19 @@ def manifestContracts : List RelationContract := [
   tag_term_seal_contract,
   tag_term_contract,
   gallery_observation_tag_contract,
-  build_manifest_anchor_contract,
-  build_manifest_manifest_sha256_contract,
-  build_manifest_file_count_contract,
-  build_manifest_byte_count_contract,
-  build_manifest_seal_contract,
+  build_manifest_core_contract,
   build_manifest_contract,
   gallery_manifest_contract,
-  analysis_policy_anchor_contract,
-  analysis_policy_algorithm_version_contract,
-  analysis_policy_spam_artist_threshold_contract,
-  analysis_policy_spam_occurrence_threshold_contract,
-  analysis_policy_content_owner_rule_version_contract,
-  analysis_policy_gid_winner_rule_version_contract,
-  analysis_policy_identity_contract,
-  analysis_policy_seal_contract,
   analysis_policy_contract,
-  analysis_run_anchor_contract,
-  analysis_run_build_id_contract,
-  analysis_run_policy_id_contract,
-  analysis_run_input_manifest_sha256_contract,
-  analysis_run_identity_contract,
-  analysis_run_started_at_contract,
   analysis_run_state_contract,
-  analysis_run_descriptor_seal_contract,
   analysis_run_completed_at_contract,
+  analysis_run_descriptor_contract,
   analysis_run_contract,
   analysis_baseline_contract,
   analysis_state_anchor_contract,
   analysis_state_ancestry_contract,
-  source_snapshot_manifest_identity_anchor_contract,
-  source_snapshot_manifest_identity_gallery_count_contract,
-  source_snapshot_manifest_identity_file_count_contract,
-  source_snapshot_manifest_identity_byte_count_contract,
-  source_snapshot_manifest_identity_seal_contract,
   source_snapshot_manifest_identity_contract,
   analysis_snapshot_manifest_contract,
-  source_revision_anchor_contract,
-  source_revision_channel_contract,
-  source_revision_snapshot_manifest_contract,
-  source_revision_descriptor_seal_contract,
   source_revision_descriptor_contract,
   source_revision_contract,
   source_revision_generation_contract,
@@ -18344,43 +10676,11 @@ def manifestContracts : List RelationContract := [
   analysis_gid_winner_shadow_contract,
   analysis_gid_winner_tombstone_contract,
   analysis_gid_winner_resolved_contract,
-  analysis_state_component_anchor_contract,
-  analysis_state_component_row_count_contract,
-  analysis_state_component_sealed_at_contract,
-  analysis_state_component_completion_seal_contract,
   analysis_state_component_seal_contract,
-  analysis_stage_anchor_contract,
-  analysis_stage_order_contract,
-  analysis_stage_cursor_codec_contract,
-  analysis_stage_seal_contract,
   analysis_stage_contract,
-  analysis_checkpoint_anchor_contract,
-  analysis_checkpoint_generation_contract,
-  analysis_checkpoint_cursor_contract,
-  analysis_checkpoint_processed_count_contract,
-  analysis_checkpoint_state_contract,
-  analysis_checkpoint_updated_at_contract,
-  analysis_checkpoint_seal_contract,
   analysis_checkpoint_contract,
-  analysis_batch_receipt_anchor_contract,
-  analysis_batch_receipt_coordinate_contract,
-  analysis_batch_receipt_start_cursor_contract,
-  analysis_batch_receipt_start_processed_count_contract,
-  analysis_batch_receipt_page_limit_contract,
-  analysis_batch_receipt_next_cursor_contract,
-  analysis_batch_receipt_row_count_contract,
-  analysis_batch_receipt_committed_at_contract,
-  analysis_batch_receipt_seal_contract,
   analysis_batch_receipt_stored_contract,
   analysis_batch_receipt_contract,
-  publication_candidate_anchor_contract,
-  publication_candidate_analysis_id_contract,
-  publication_candidate_reserved_revision_contract,
-  publication_candidate_artifact_policy_id_contract,
-  publication_candidate_display_title_policy_id_contract,
-  publication_candidate_artifacts_required_contract,
-  publication_candidate_created_at_contract,
-  publication_candidate_definition_seal_contract,
   publication_candidate_contract,
   publication_candidate_projection_seal_contract,
   publication_candidate_projection_contract,
@@ -18390,79 +10690,16 @@ def manifestContracts : List RelationContract := [
   publication_selection_storage_contract,
   publication_selection_occurrence_identity_contract,
   publication_selection_contract,
-  publication_stage_anchor_contract,
-  publication_stage_order_contract,
-  publication_stage_cursor_codec_contract,
-  publication_stage_seal_contract,
   publication_stage_contract,
-  publication_checkpoint_anchor_contract,
-  publication_checkpoint_generation_contract,
-  publication_checkpoint_cursor_contract,
-  publication_checkpoint_processed_count_contract,
-  publication_checkpoint_state_contract,
-  publication_checkpoint_updated_at_contract,
-  publication_checkpoint_seal_contract,
   publication_checkpoint_contract,
-  publication_batch_receipt_anchor_contract,
-  publication_batch_receipt_coordinate_contract,
-  publication_batch_receipt_start_cursor_contract,
-  publication_batch_receipt_start_processed_count_contract,
-  publication_batch_receipt_next_cursor_contract,
-  publication_batch_receipt_row_count_contract,
-  publication_batch_receipt_committed_at_contract,
-  publication_batch_receipt_seal_contract,
   publication_batch_receipt_stored_contract,
   publication_batch_receipt_contract,
-  publication_finalization_checkpoint_anchor_contract,
-  publication_finalization_checkpoint_generation_contract,
-  publication_finalization_checkpoint_cursor_contract,
-  publication_finalization_checkpoint_processed_count_contract,
-  publication_finalization_checkpoint_state_contract,
-  publication_finalization_checkpoint_updated_at_contract,
-  publication_finalization_checkpoint_seal_contract,
   publication_finalization_checkpoint_contract,
-  publication_finalization_batch_receipt_anchor_contract,
-  publication_finalization_batch_receipt_coordinate_contract,
-  publication_finalization_batch_receipt_start_cursor_contract,
-  publication_finalization_batch_receipt_start_processed_count_contract,
-  publication_finalization_batch_receipt_next_cursor_contract,
-  publication_finalization_batch_receipt_row_count_contract,
-  publication_finalization_batch_receipt_committed_at_contract,
-  publication_finalization_batch_receipt_seal_contract,
   publication_finalization_batch_receipt_stored_contract,
   publication_finalization_batch_receipt_contract,
-  artifact_zip_writer_policy_anchor_contract,
-  artifact_zip_writer_policy_zip_codec_version_contract,
-  artifact_zip_writer_policy_compression_method_contract,
-  artifact_zip_writer_policy_compression_level_contract,
-  artifact_zip_writer_policy_dos_date_contract,
-  artifact_zip_writer_policy_dos_time_contract,
-  artifact_zip_writer_policy_unix_mode_contract,
-  artifact_zip_writer_policy_general_purpose_flags_contract,
-  artifact_zip_writer_policy_create_system_contract,
-  artifact_zip_writer_policy_archive_name_codec_version_contract,
-  artifact_zip_writer_policy_artifact_name_codec_version_contract,
-  artifact_zip_writer_policy_identity_contract,
-  artifact_zip_writer_policy_seal_contract,
   artifact_zip_writer_policy_contract,
-  artifact_producer_fingerprint_anchor_contract,
-  artifact_producer_fingerprint_algorithm_version_contract,
-  artifact_producer_fingerprint_equivalence_class_contract,
-  artifact_producer_fingerprint_identity_contract,
-  artifact_producer_fingerprint_seal_contract,
   artifact_producer_fingerprint_contract,
-  artifact_storage_codec_anchor_contract,
-  artifact_storage_codec_adapter_id_contract,
-  artifact_storage_codec_locator_codec_version_contract,
-  artifact_storage_codec_protection_token_codec_version_contract,
-  artifact_storage_codec_seal_contract,
   artifact_storage_codec_contract,
-  artifact_policy_semantics_anchor_contract,
-  artifact_policy_semantics_artifact_algorithm_version_contract,
-  artifact_policy_semantics_max_image_short_side_contract,
-  artifact_policy_semantics_producer_fingerprint_sha256_contract,
-  artifact_policy_semantics_identity_contract,
-  artifact_policy_semantics_seal_contract,
   artifact_policy_semantics_contract,
   artifact_policy_contract,
   artifact_semantic_input_contract,
@@ -18472,26 +10709,13 @@ def manifestContracts : List RelationContract := [
   artifact_operation_contract,
   artifact_blob_contract,
   prepared_artifact_contract,
-  catalog_revision_anchor_contract,
-  catalog_revision_publication_count_contract,
-  catalog_revision_descriptor_seal_contract,
   catalog_revision_descriptor_contract,
   catalog_revision_contract,
   catalog_revision_generation_contract,
   publication_generation_node_contract,
   publication_generation_successor_contract,
   publication_identity_contract,
-  display_title_policy_anchor_contract,
-  display_title_policy_algorithm_version_contract,
-  display_title_policy_title_sort_policy_id_contract,
-  display_title_policy_identity_contract,
-  display_title_policy_seal_contract,
   display_title_policy_contract,
-  title_sort_policy_anchor_contract,
-  title_sort_policy_algorithm_version_contract,
-  title_sort_policy_unicode_data_version_contract,
-  title_sort_policy_identity_contract,
-  title_sort_policy_seal_contract,
   title_sort_policy_contract,
   display_title_choice_contract,
   title_sort_contract,
@@ -18511,20 +10735,6 @@ def manifestContracts : List RelationContract := [
   catalog_subject_contract,
   catalog_artifact_contract,
   publication_commit_anchor_contract,
-  publication_commit_candidate_contract,
-  publication_commit_catalog_revision_contract,
-  publication_commit_source_revision_contract,
-  publication_commit_generation_contract,
-  publication_commit_operational_preparation_contract,
-  publication_commit_operational_policy_contract,
-  publication_commit_artifact_policy_contract,
-  publication_commit_display_title_policy_contract,
-  publication_commit_new_galleries_contract,
-  publication_commit_changed_galleries_contract,
-  publication_commit_removed_galleries_contract,
-  publication_commit_duplicate_losers_contract,
-  publication_commit_committed_at_contract,
-  publication_commit_seal_contract,
   publication_commit_contract,
   publication_commit_finalization_contract,
   publication_commit_head_receipt_contract,
@@ -18536,7 +10746,7 @@ def manifestContracts : List RelationContract := [
 ]
 
 theorem manifest_relation_count :
-    manifestContracts.length = 379 := by
+    manifestContracts.length = 209 := by
   native_decide
 
 /-! Closed catalog physical-domain authority from the manifest. -/
@@ -18557,20 +10767,12 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   canonical_value_page_descriptor_contract,
   canonical_value_page_parent_contract,
   source_locator_identity_contract,
-  source_build_anchor_contract,
-  source_build_scope_key_contract,
-  source_build_manifest_policy_id_contract,
+  source_build_descriptor_contract,
   source_build_state_contract,
-  source_build_created_at_contract,
-  source_build_descriptor_seal_contract,
   source_build_sealed_at_contract,
   source_build_contract,
-  source_build_discovery_gallery_count_contract,
-  build_manifest_anchor_contract,
-  build_manifest_manifest_sha256_contract,
-  build_manifest_file_count_contract,
-  build_manifest_byte_count_contract,
-  build_manifest_seal_contract,
+  source_build_discovery_contract,
+  build_manifest_core_contract,
   build_manifest_contract,
   gallery_identity_contract,
   file_name_identity_anchor_contract,
@@ -18588,18 +10790,8 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   tag_term_identity_contract,
   tag_term_seal_contract,
   tag_term_contract,
-  source_snapshot_manifest_identity_anchor_contract,
-  source_snapshot_manifest_identity_gallery_count_contract,
-  source_snapshot_manifest_identity_file_count_contract,
-  source_snapshot_manifest_identity_byte_count_contract,
-  source_snapshot_manifest_identity_seal_contract,
   source_snapshot_manifest_identity_contract,
   publication_identity_contract,
-  artifact_producer_fingerprint_anchor_contract,
-  artifact_producer_fingerprint_algorithm_version_contract,
-  artifact_producer_fingerprint_equivalence_class_contract,
-  artifact_producer_fingerprint_identity_contract,
-  artifact_producer_fingerprint_seal_contract,
   artifact_producer_fingerprint_contract,
   artifact_storage_codec_contract,
   artifact_semantic_input_contract,
@@ -18620,21 +10812,11 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   gallery_observation_page_key_bounds_contract,
   gallery_observation_page_child_contract,
   gallery_observation_discovery_fingerprint_contract,
-  analysis_run_anchor_contract,
-  analysis_run_build_id_contract,
-  analysis_run_policy_id_contract,
-  analysis_run_input_manifest_sha256_contract,
-  analysis_run_identity_contract,
-  analysis_run_started_at_contract,
+  analysis_run_descriptor_contract,
   analysis_run_state_contract,
-  analysis_run_descriptor_seal_contract,
   analysis_run_completed_at_contract,
   analysis_run_contract,
   analysis_state_anchor_contract,
-  analysis_state_component_anchor_contract,
-  analysis_state_component_row_count_contract,
-  analysis_state_component_sealed_at_contract,
-  analysis_state_component_completion_seal_contract,
   analysis_state_component_seal_contract,
   analysis_exclusion_delta_anchor_contract,
   analysis_exclusion_delta_old_excluded_contract,
@@ -18663,18 +10845,10 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   analysis_gid_winner_shadow_contract,
   analysis_gid_winner_tombstone_contract,
   analysis_gid_winner_resolved_contract,
-  analysis_batch_receipt_page_limit_contract,
+  analysis_batch_receipt_stored_contract,
   analysis_checkpoint_contract,
   publication_checkpoint_contract,
   publication_batch_receipt_contract,
-  publication_candidate_anchor_contract,
-  publication_candidate_analysis_id_contract,
-  publication_candidate_reserved_revision_contract,
-  publication_candidate_artifact_policy_id_contract,
-  publication_candidate_display_title_policy_id_contract,
-  publication_candidate_artifacts_required_contract,
-  publication_candidate_created_at_contract,
-  publication_candidate_definition_seal_contract,
   publication_candidate_contract,
   publication_candidate_projection_seal_contract,
   publication_candidate_projection_contract,
@@ -18684,70 +10858,12 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   publication_selection_storage_contract,
   publication_selection_occurrence_identity_contract,
   publication_selection_contract,
-  publication_stage_anchor_contract,
-  publication_stage_order_contract,
-  publication_stage_cursor_codec_contract,
-  publication_stage_seal_contract,
   publication_stage_contract,
-  publication_checkpoint_anchor_contract,
-  publication_checkpoint_generation_contract,
-  publication_checkpoint_cursor_contract,
-  publication_checkpoint_processed_count_contract,
-  publication_checkpoint_state_contract,
-  publication_checkpoint_updated_at_contract,
-  publication_checkpoint_seal_contract,
-  publication_batch_receipt_anchor_contract,
-  publication_batch_receipt_coordinate_contract,
-  publication_batch_receipt_start_cursor_contract,
-  publication_batch_receipt_start_processed_count_contract,
-  publication_batch_receipt_next_cursor_contract,
-  publication_batch_receipt_row_count_contract,
-  publication_batch_receipt_committed_at_contract,
-  publication_batch_receipt_seal_contract,
   publication_batch_receipt_stored_contract,
-  publication_finalization_checkpoint_anchor_contract,
-  publication_finalization_checkpoint_generation_contract,
-  publication_finalization_checkpoint_cursor_contract,
-  publication_finalization_checkpoint_processed_count_contract,
-  publication_finalization_checkpoint_state_contract,
-  publication_finalization_checkpoint_updated_at_contract,
-  publication_finalization_checkpoint_seal_contract,
   publication_finalization_checkpoint_contract,
-  publication_finalization_batch_receipt_anchor_contract,
-  publication_finalization_batch_receipt_coordinate_contract,
-  publication_finalization_batch_receipt_start_cursor_contract,
-  publication_finalization_batch_receipt_start_processed_count_contract,
-  publication_finalization_batch_receipt_next_cursor_contract,
-  publication_finalization_batch_receipt_row_count_contract,
-  publication_finalization_batch_receipt_committed_at_contract,
-  publication_finalization_batch_receipt_seal_contract,
   publication_finalization_batch_receipt_stored_contract,
   publication_finalization_batch_receipt_contract,
-  artifact_zip_writer_policy_anchor_contract,
-  artifact_zip_writer_policy_zip_codec_version_contract,
-  artifact_zip_writer_policy_compression_method_contract,
-  artifact_zip_writer_policy_compression_level_contract,
-  artifact_zip_writer_policy_dos_date_contract,
-  artifact_zip_writer_policy_dos_time_contract,
-  artifact_zip_writer_policy_unix_mode_contract,
-  artifact_zip_writer_policy_general_purpose_flags_contract,
-  artifact_zip_writer_policy_create_system_contract,
-  artifact_zip_writer_policy_archive_name_codec_version_contract,
-  artifact_zip_writer_policy_artifact_name_codec_version_contract,
-  artifact_zip_writer_policy_identity_contract,
-  artifact_zip_writer_policy_seal_contract,
   artifact_zip_writer_policy_contract,
-  artifact_storage_codec_anchor_contract,
-  artifact_storage_codec_adapter_id_contract,
-  artifact_storage_codec_locator_codec_version_contract,
-  artifact_storage_codec_protection_token_codec_version_contract,
-  artifact_storage_codec_seal_contract,
-  artifact_policy_semantics_anchor_contract,
-  artifact_policy_semantics_artifact_algorithm_version_contract,
-  artifact_policy_semantics_max_image_short_side_contract,
-  artifact_policy_semantics_producer_fingerprint_sha256_contract,
-  artifact_policy_semantics_identity_contract,
-  artifact_policy_semantics_seal_contract,
   artifact_policy_semantics_contract,
   artifact_policy_contract,
   artifact_input_contract,
@@ -18755,25 +10871,12 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   artifact_delta_new_contract,
   artifact_operation_contract,
   artifact_blob_contract,
-  catalog_revision_anchor_contract,
-  catalog_revision_publication_count_contract,
-  catalog_revision_descriptor_seal_contract,
   catalog_revision_descriptor_contract,
   catalog_revision_contract,
   catalog_revision_generation_contract,
   publication_generation_node_contract,
   publication_generation_successor_contract,
-  display_title_policy_anchor_contract,
-  display_title_policy_algorithm_version_contract,
-  display_title_policy_title_sort_policy_id_contract,
-  display_title_policy_identity_contract,
-  display_title_policy_seal_contract,
   display_title_policy_contract,
-  title_sort_policy_anchor_contract,
-  title_sort_policy_algorithm_version_contract,
-  title_sort_policy_unicode_data_version_contract,
-  title_sort_policy_identity_contract,
-  title_sort_policy_seal_contract,
   title_sort_policy_contract,
   display_title_choice_contract,
   title_sort_contract,
@@ -18792,20 +10895,6 @@ def catalogPhysicalDomainContracts : List RelationContract := [
   catalog_contributor_contract,
   catalog_subject_contract,
   publication_commit_anchor_contract,
-  publication_commit_candidate_contract,
-  publication_commit_catalog_revision_contract,
-  publication_commit_source_revision_contract,
-  publication_commit_generation_contract,
-  publication_commit_operational_preparation_contract,
-  publication_commit_operational_policy_contract,
-  publication_commit_artifact_policy_contract,
-  publication_commit_display_title_policy_contract,
-  publication_commit_new_galleries_contract,
-  publication_commit_changed_galleries_contract,
-  publication_commit_removed_galleries_contract,
-  publication_commit_duplicate_losers_contract,
-  publication_commit_committed_at_contract,
-  publication_commit_seal_contract,
   publication_commit_contract,
   publication_commit_finalization_contract,
   publication_commit_head_receipt_contract,
@@ -18829,19 +10918,11 @@ def catalogPhysicalDomainMutationContracts : List RelationContract := [
   canonical_value_page_seal_contract,
   canonical_value_page_parent_contract,
   source_locator_identity_contract,
-  source_build_anchor_contract,
-  source_build_scope_key_contract,
-  source_build_manifest_policy_id_contract,
+  source_build_descriptor_contract,
   source_build_state_contract,
-  source_build_created_at_contract,
-  source_build_descriptor_seal_contract,
   source_build_sealed_at_contract,
-  source_build_discovery_gallery_count_contract,
-  build_manifest_anchor_contract,
-  build_manifest_manifest_sha256_contract,
-  build_manifest_file_count_contract,
-  build_manifest_byte_count_contract,
-  build_manifest_seal_contract,
+  source_build_discovery_contract,
+  build_manifest_core_contract,
   gallery_identity_contract,
   file_name_identity_anchor_contract,
   file_name_identity_name_bytes_contract,
@@ -18855,17 +10936,10 @@ def catalogPhysicalDomainMutationContracts : List RelationContract := [
   tag_term_anchor_contract,
   tag_term_identity_contract,
   tag_term_seal_contract,
-  source_snapshot_manifest_identity_anchor_contract,
-  source_snapshot_manifest_identity_gallery_count_contract,
-  source_snapshot_manifest_identity_file_count_contract,
-  source_snapshot_manifest_identity_byte_count_contract,
-  source_snapshot_manifest_identity_seal_contract,
+  source_snapshot_manifest_identity_contract,
   publication_identity_contract,
-  artifact_producer_fingerprint_anchor_contract,
-  artifact_producer_fingerprint_algorithm_version_contract,
-  artifact_producer_fingerprint_equivalence_class_contract,
-  artifact_producer_fingerprint_identity_contract,
-  artifact_producer_fingerprint_seal_contract,
+  artifact_producer_fingerprint_contract,
+  artifact_storage_codec_contract,
   artifact_semantic_input_contract,
   prepared_artifact_contract,
   catalog_artifact_contract,
@@ -18882,19 +10956,10 @@ def catalogPhysicalDomainMutationContracts : List RelationContract := [
   gallery_observation_page_key_bounds_seal_contract,
   gallery_observation_page_child_contract,
   gallery_observation_discovery_fingerprint_contract,
-  analysis_run_anchor_contract,
-  analysis_run_build_id_contract,
-  analysis_run_policy_id_contract,
-  analysis_run_input_manifest_sha256_contract,
-  analysis_run_identity_contract,
-  analysis_run_started_at_contract,
+  analysis_run_descriptor_contract,
   analysis_run_state_contract,
-  analysis_run_descriptor_seal_contract,
   analysis_run_completed_at_contract,
-  analysis_state_component_anchor_contract,
-  analysis_state_component_row_count_contract,
-  analysis_state_component_sealed_at_contract,
-  analysis_state_component_completion_seal_contract,
+  analysis_state_component_seal_contract,
   analysis_exclusion_delta_anchor_contract,
   analysis_exclusion_delta_old_excluded_contract,
   analysis_exclusion_delta_new_excluded_contract,
@@ -18915,96 +10980,29 @@ def catalogPhysicalDomainMutationContracts : List RelationContract := [
   analysis_gid_candidate_tombstone_contract,
   analysis_gid_winner_selection_contract,
   analysis_gid_winner_tombstone_contract,
-  analysis_batch_receipt_page_limit_contract,
-  publication_candidate_anchor_contract,
-  publication_candidate_analysis_id_contract,
-  publication_candidate_reserved_revision_contract,
-  publication_candidate_artifact_policy_id_contract,
-  publication_candidate_display_title_policy_id_contract,
-  publication_candidate_artifacts_required_contract,
-  publication_candidate_created_at_contract,
-  publication_candidate_definition_seal_contract,
+  analysis_batch_receipt_stored_contract,
+  analysis_checkpoint_contract,
+  publication_checkpoint_contract,
+  publication_candidate_contract,
   publication_candidate_projection_seal_contract,
   publication_candidate_base_publication_commit_contract,
   publication_selection_storage_contract,
   publication_selection_occurrence_identity_contract,
-  publication_stage_anchor_contract,
-  publication_stage_order_contract,
-  publication_stage_cursor_codec_contract,
-  publication_stage_seal_contract,
-  publication_checkpoint_anchor_contract,
-  publication_checkpoint_generation_contract,
-  publication_checkpoint_cursor_contract,
-  publication_checkpoint_processed_count_contract,
-  publication_checkpoint_state_contract,
-  publication_checkpoint_updated_at_contract,
-  publication_checkpoint_seal_contract,
-  publication_batch_receipt_anchor_contract,
-  publication_batch_receipt_coordinate_contract,
-  publication_batch_receipt_start_cursor_contract,
-  publication_batch_receipt_start_processed_count_contract,
-  publication_batch_receipt_next_cursor_contract,
-  publication_batch_receipt_row_count_contract,
-  publication_batch_receipt_committed_at_contract,
-  publication_batch_receipt_seal_contract,
-  publication_finalization_checkpoint_anchor_contract,
-  publication_finalization_checkpoint_generation_contract,
-  publication_finalization_checkpoint_cursor_contract,
-  publication_finalization_checkpoint_processed_count_contract,
-  publication_finalization_checkpoint_state_contract,
-  publication_finalization_checkpoint_updated_at_contract,
-  publication_finalization_checkpoint_seal_contract,
-  publication_finalization_batch_receipt_anchor_contract,
-  publication_finalization_batch_receipt_coordinate_contract,
-  publication_finalization_batch_receipt_start_cursor_contract,
-  publication_finalization_batch_receipt_start_processed_count_contract,
-  publication_finalization_batch_receipt_next_cursor_contract,
-  publication_finalization_batch_receipt_row_count_contract,
-  publication_finalization_batch_receipt_committed_at_contract,
-  publication_finalization_batch_receipt_seal_contract,
-  artifact_zip_writer_policy_anchor_contract,
-  artifact_zip_writer_policy_zip_codec_version_contract,
-  artifact_zip_writer_policy_compression_method_contract,
-  artifact_zip_writer_policy_compression_level_contract,
-  artifact_zip_writer_policy_dos_date_contract,
-  artifact_zip_writer_policy_dos_time_contract,
-  artifact_zip_writer_policy_unix_mode_contract,
-  artifact_zip_writer_policy_general_purpose_flags_contract,
-  artifact_zip_writer_policy_create_system_contract,
-  artifact_zip_writer_policy_archive_name_codec_version_contract,
-  artifact_zip_writer_policy_artifact_name_codec_version_contract,
-  artifact_zip_writer_policy_identity_contract,
-  artifact_zip_writer_policy_seal_contract,
-  artifact_storage_codec_anchor_contract,
-  artifact_storage_codec_adapter_id_contract,
-  artifact_storage_codec_locator_codec_version_contract,
-  artifact_storage_codec_protection_token_codec_version_contract,
-  artifact_storage_codec_seal_contract,
-  artifact_policy_semantics_anchor_contract,
-  artifact_policy_semantics_artifact_algorithm_version_contract,
-  artifact_policy_semantics_max_image_short_side_contract,
-  artifact_policy_semantics_producer_fingerprint_sha256_contract,
-  artifact_policy_semantics_identity_contract,
-  artifact_policy_semantics_seal_contract,
+  publication_stage_contract,
+  publication_batch_receipt_stored_contract,
+  publication_finalization_checkpoint_contract,
+  publication_finalization_batch_receipt_stored_contract,
+  artifact_zip_writer_policy_contract,
+  artifact_policy_semantics_contract,
   artifact_policy_contract,
   artifact_input_contract,
   artifact_operation_contract,
   artifact_blob_contract,
-  catalog_revision_anchor_contract,
-  catalog_revision_publication_count_contract,
-  catalog_revision_descriptor_seal_contract,
+  catalog_revision_descriptor_contract,
   publication_generation_node_contract,
   publication_generation_successor_contract,
-  display_title_policy_anchor_contract,
-  display_title_policy_algorithm_version_contract,
-  display_title_policy_title_sort_policy_id_contract,
-  display_title_policy_identity_contract,
-  display_title_policy_seal_contract,
-  title_sort_policy_anchor_contract,
-  title_sort_policy_algorithm_version_contract,
-  title_sort_policy_unicode_data_version_contract,
-  title_sort_policy_identity_contract,
-  title_sort_policy_seal_contract,
+  display_title_policy_contract,
+  title_sort_policy_contract,
   display_title_choice_contract,
   title_sort_contract,
   catalog_publication_storage_contract,
@@ -19019,20 +11017,7 @@ def catalogPhysicalDomainMutationContracts : List RelationContract := [
   catalog_contributor_seal_contract,
   catalog_subject_contract,
   publication_commit_anchor_contract,
-  publication_commit_candidate_contract,
-  publication_commit_catalog_revision_contract,
-  publication_commit_source_revision_contract,
-  publication_commit_generation_contract,
-  publication_commit_operational_preparation_contract,
-  publication_commit_operational_policy_contract,
-  publication_commit_artifact_policy_contract,
-  publication_commit_display_title_policy_contract,
-  publication_commit_new_galleries_contract,
-  publication_commit_changed_galleries_contract,
-  publication_commit_removed_galleries_contract,
-  publication_commit_duplicate_losers_contract,
-  publication_commit_committed_at_contract,
-  publication_commit_seal_contract,
+  publication_commit_contract,
   publication_commit_finalization_contract,
   publication_commit_head_receipt_contract
 ]
@@ -19046,14 +11031,10 @@ def catalogPhysicalDomainReadOnlyViewContracts : List RelationContract := [
   file_name_identity_contract,
   gallery_observation_file_contract,
   tag_term_contract,
-  source_snapshot_manifest_identity_contract,
-  artifact_producer_fingerprint_contract,
-  artifact_storage_codec_contract,
   gallery_observation_page_descriptor_contract,
   gallery_observation_page_key_bounds_contract,
   analysis_run_contract,
   analysis_state_anchor_contract,
-  analysis_state_component_seal_contract,
   analysis_exclusion_delta_contract,
   analysis_file_hash_decision_shadow_contract,
   analysis_impacted_gid_provenance_contract,
@@ -19061,32 +11042,19 @@ def catalogPhysicalDomainReadOnlyViewContracts : List RelationContract := [
   analysis_gid_candidate_resolved_contract,
   analysis_gid_winner_shadow_contract,
   analysis_gid_winner_resolved_contract,
-  analysis_checkpoint_contract,
-  publication_checkpoint_contract,
   publication_batch_receipt_contract,
-  publication_candidate_contract,
   publication_candidate_projection_contract,
   publication_candidate_base_catalog_contract,
   publication_candidate_base_source_contract,
   publication_selection_contract,
-  publication_stage_contract,
-  publication_batch_receipt_stored_contract,
-  publication_finalization_checkpoint_contract,
-  publication_finalization_batch_receipt_stored_contract,
   publication_finalization_batch_receipt_contract,
-  artifact_zip_writer_policy_contract,
-  artifact_policy_semantics_contract,
   artifact_delta_old_contract,
   artifact_delta_new_contract,
-  catalog_revision_descriptor_contract,
   catalog_revision_contract,
   catalog_revision_generation_contract,
-  display_title_policy_contract,
-  title_sort_policy_contract,
   catalog_publication_contract,
   catalog_publication_title_contract,
   catalog_contributor_contract,
-  publication_commit_contract,
   publication_commit_head_contract,
   publication_receipt_contract,
   publication_head_revision_contract,
@@ -19095,15 +11063,15 @@ def catalogPhysicalDomainReadOnlyViewContracts : List RelationContract := [
 ]
 
 theorem catalog_physical_domain_relation_count :
-    catalogPhysicalDomainContracts.length = 272 := by
+    catalogPhysicalDomainContracts.length = 151 := by
   native_decide
 
 theorem catalog_physical_domain_mutation_relation_count :
-    catalogPhysicalDomainMutationContracts.length = 218 := by
+    catalogPhysicalDomainMutationContracts.length = 114 := by
   native_decide
 
 theorem catalog_physical_domain_read_only_view_count :
-    catalogPhysicalDomainReadOnlyViewContracts.length = 54 := by
+    catalogPhysicalDomainReadOnlyViewContracts.length = 37 := by
   native_decide
 
 theorem catalog_physical_domain_has_no_duplicates :
@@ -19269,68 +11237,6 @@ theorem analysis_gid_winner_selection_unique_under_stable_identity
   gid_winner_exact_gallery_unique candidates dominates left right
     leftExact rightExact stableIdentity
 
-def source_build_discovery_vertical_contract : VerticalFamilyContract where
-  name := "source_build_discovery_vertical"
-  anchorRelation := "source_build_discovery_anchor"
-  sealRelation := "source_build_discovery_seal"
-  keyAttributes := ["build_id"]
-  anchorAttributes := ["build_id"]
-  sealAttributes := ["build_id"]
-  semanticAttributes := ["build_id", "scan_attempt", "gallery_count", "tree_observation_sha256", "completed_at"]
-  semanticFDs := [
-    { determinant := ["build_id"], dependent := ["scan_attempt", "gallery_count", "tree_observation_sha256", "completed_at"] }
-  ]
-  viewAttributes := ["build_id", "scan_attempt", "gallery_count", "tree_observation_sha256", "completed_at"]
-  viewFDs := [
-    { determinant := ["build_id"], dependent := ["scan_attempt", "gallery_count", "tree_observation_sha256", "completed_at"] }
-  ]
-  members := [
-    { relationName := "source_build_discovery_scan_attempt", keyAttributes := ["build_id"], valueAttribute := "scan_attempt", projectionAttribute := "scan_attempt", attributes := ["build_id", "scan_attempt"], declaredKeys := [["build_id"]], declaredFDs := [{ determinant := ["build_id"], dependent := ["scan_attempt"] }], sourceRelation := "source_build_discovery_seal", sourceRelationAttributes := ["build_id"], sourceAttributes := ["build_id"], memberAttributes := ["build_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "source_build_discovery_gallery_count", keyAttributes := ["build_id"], valueAttribute := "gallery_count", projectionAttribute := "gallery_count", attributes := ["build_id", "gallery_count"], declaredKeys := [["build_id"]], declaredFDs := [{ determinant := ["build_id"], dependent := ["gallery_count"] }], sourceRelation := "source_build_discovery_seal", sourceRelationAttributes := ["build_id"], sourceAttributes := ["build_id"], memberAttributes := ["build_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "source_build_discovery_tree_observation_sha256", keyAttributes := ["build_id"], valueAttribute := "tree_observation_sha256", projectionAttribute := "tree_observation_sha256", attributes := ["build_id", "tree_observation_sha256"], declaredKeys := [["build_id"]], declaredFDs := [{ determinant := ["build_id"], dependent := ["tree_observation_sha256"] }], sourceRelation := "source_build_discovery_seal", sourceRelationAttributes := ["build_id"], sourceAttributes := ["build_id"], memberAttributes := ["build_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "source_build_discovery_completed_at", keyAttributes := ["build_id"], valueAttribute := "completed_at", projectionAttribute := "completed_at", attributes := ["build_id", "completed_at"], declaredKeys := [["build_id"]], declaredFDs := [{ determinant := ["build_id"], dependent := ["completed_at"] }], sourceRelation := "source_build_discovery_seal", sourceRelationAttributes := ["build_id"], sourceAttributes := ["build_id"], memberAttributes := ["build_id"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem source_build_discovery_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck source_build_discovery_vertical_contract = true := by
-  native_decide
-
-theorem source_build_discovery_vertical_view_projection :
-    VerticalFamilyViewProjection source_build_discovery_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound source_build_discovery_vertical_contract
-    source_build_discovery_vertical_view_projection_check
-
-theorem source_build_discovery_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck source_build_discovery_vertical_contract = true := by
-  native_decide
-
-theorem source_build_discovery_vertical_well_formed :
-    VerticalFamilyWellFormed source_build_discovery_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound source_build_discovery_vertical_contract
-    source_build_discovery_vertical_well_formed_check
-
-theorem source_build_discovery_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck source_build_discovery_vertical_contract = true := by
-  native_decide
-
-theorem source_build_discovery_vertical_lossless :
-    VerticalFamilyLossless source_build_discovery_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound source_build_discovery_vertical_contract
-    source_build_discovery_vertical_lossless_join_check
-
-theorem source_build_discovery_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck source_build_discovery_vertical_contract = true := by
-  native_decide
-
-theorem source_build_discovery_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving source_build_discovery_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound source_build_discovery_vertical_contract
-    source_build_discovery_vertical_dependency_preservation_check
-
 def gallery_observation_file_filesystem_vertical_contract : VerticalFamilyContract where
   name := "gallery_observation_file_filesystem_vertical"
   anchorRelation := "gallery_observation_file_filesystem_anchor"
@@ -19393,528 +11299,6 @@ theorem gallery_observation_file_filesystem_vertical_dependency_preserving :
   verticalFamilyDependencyPreservationCheck_sound gallery_observation_file_filesystem_vertical_contract
     gallery_observation_file_filesystem_vertical_dependency_preservation_check
 
-def artifact_producer_fingerprint_vertical_contract : VerticalFamilyContract where
-  name := "artifact_producer_fingerprint_vertical"
-  anchorRelation := "artifact_producer_fingerprint_anchor"
-  sealRelation := "artifact_producer_fingerprint_seal"
-  keyAttributes := ["producer_fingerprint_sha256"]
-  anchorAttributes := ["producer_fingerprint_sha256"]
-  sealAttributes := ["producer_fingerprint_sha256"]
-  semanticAttributes := ["producer_fingerprint_sha256", "artifact_algorithm_version", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"]
-  semanticFDs := [
-    { determinant := ["producer_fingerprint_sha256"], dependent := ["artifact_algorithm_version", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"] },
-    { determinant := ["producer_equivalence_class"], dependent := ["producer_fingerprint_sha256", "artifact_algorithm_version", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"] },
-    { determinant := ["writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"], dependent := ["producer_fingerprint_sha256"] }
-  ]
-  viewAttributes := ["producer_fingerprint_sha256", "artifact_algorithm_version", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"]
-  viewFDs := [
-    { determinant := ["producer_fingerprint_sha256"], dependent := ["artifact_algorithm_version", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"] },
-    { determinant := ["producer_equivalence_class"], dependent := ["producer_fingerprint_sha256", "artifact_algorithm_version", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"] },
-    { determinant := ["writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"], dependent := ["producer_fingerprint_sha256", "artifact_algorithm_version", "producer_equivalence_class"] }
-  ]
-  members := [
-    { relationName := "artifact_producer_fingerprint_algorithm_version", keyAttributes := ["producer_fingerprint_sha256"], valueAttribute := "artifact_algorithm_version", projectionAttribute := "artifact_algorithm_version", attributes := ["producer_fingerprint_sha256", "artifact_algorithm_version"], declaredKeys := [["producer_fingerprint_sha256"]], declaredFDs := [{ determinant := ["producer_fingerprint_sha256"], dependent := ["artifact_algorithm_version"] }], sourceRelation := "artifact_producer_fingerprint_seal", sourceRelationAttributes := ["producer_fingerprint_sha256"], sourceAttributes := ["producer_fingerprint_sha256"], memberAttributes := ["producer_fingerprint_sha256"], congruenceMembers := [], project := true, required := true },
-    { relationName := "artifact_producer_fingerprint_equivalence_class", keyAttributes := ["producer_fingerprint_sha256"], valueAttribute := "producer_equivalence_class", projectionAttribute := "producer_equivalence_class", attributes := ["producer_fingerprint_sha256", "producer_equivalence_class"], declaredKeys := [["producer_fingerprint_sha256"], ["producer_equivalence_class"]], declaredFDs := [{ determinant := ["producer_fingerprint_sha256"], dependent := ["producer_equivalence_class"] }, { determinant := ["producer_equivalence_class"], dependent := ["producer_fingerprint_sha256"] }], sourceRelation := "artifact_producer_fingerprint_seal", sourceRelationAttributes := ["producer_fingerprint_sha256"], sourceAttributes := ["producer_fingerprint_sha256"], memberAttributes := ["producer_fingerprint_sha256"], congruenceMembers := [], project := true, required := true },
-    { relationName := "artifact_producer_fingerprint_identity", keyAttributes := ["writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"], valueAttribute := "producer_fingerprint_sha256", projectionAttribute := "producer_fingerprint_sha256", attributes := ["writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build", "producer_fingerprint_sha256"], declaredKeys := [["writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"], ["producer_fingerprint_sha256"]], declaredFDs := [{ determinant := ["writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"], dependent := ["producer_fingerprint_sha256"] }, { determinant := ["producer_fingerprint_sha256"], dependent := ["writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"] }], sourceRelation := "artifact_producer_fingerprint_seal", sourceRelationAttributes := ["producer_fingerprint_sha256"], sourceAttributes := ["producer_fingerprint_sha256"], memberAttributes := ["producer_fingerprint_sha256"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem artifact_producer_fingerprint_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck artifact_producer_fingerprint_vertical_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_vertical_view_projection :
-    VerticalFamilyViewProjection artifact_producer_fingerprint_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound artifact_producer_fingerprint_vertical_contract
-    artifact_producer_fingerprint_vertical_view_projection_check
-
-theorem artifact_producer_fingerprint_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck artifact_producer_fingerprint_vertical_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_vertical_well_formed :
-    VerticalFamilyWellFormed artifact_producer_fingerprint_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound artifact_producer_fingerprint_vertical_contract
-    artifact_producer_fingerprint_vertical_well_formed_check
-
-theorem artifact_producer_fingerprint_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck artifact_producer_fingerprint_vertical_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_vertical_lossless :
-    VerticalFamilyLossless artifact_producer_fingerprint_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound artifact_producer_fingerprint_vertical_contract
-    artifact_producer_fingerprint_vertical_lossless_join_check
-
-theorem artifact_producer_fingerprint_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck artifact_producer_fingerprint_vertical_contract = true := by
-  native_decide
-
-theorem artifact_producer_fingerprint_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving artifact_producer_fingerprint_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound artifact_producer_fingerprint_vertical_contract
-    artifact_producer_fingerprint_vertical_dependency_preservation_check
-
-def analysis_stage_vertical_contract : VerticalFamilyContract where
-  name := "analysis_stage_vertical"
-  anchorRelation := "analysis_stage_anchor"
-  sealRelation := "analysis_stage_seal"
-  keyAttributes := ["stage"]
-  anchorAttributes := ["stage"]
-  sealAttributes := ["stage"]
-  semanticAttributes := ["stage", "stage_order", "cursor_codec"]
-  semanticFDs := [
-    { determinant := ["stage"], dependent := ["stage_order", "cursor_codec"] },
-    { determinant := ["stage_order"], dependent := ["stage", "cursor_codec"] }
-  ]
-  viewAttributes := ["stage", "stage_order", "cursor_codec"]
-  viewFDs := [
-    { determinant := ["stage"], dependent := ["stage_order", "cursor_codec"] },
-    { determinant := ["stage_order"], dependent := ["stage", "cursor_codec"] }
-  ]
-  members := [
-    { relationName := "analysis_stage_order", keyAttributes := ["stage"], valueAttribute := "stage_order", projectionAttribute := "stage_order", attributes := ["stage", "stage_order"], declaredKeys := [["stage"], ["stage_order"]], declaredFDs := [{ determinant := ["stage"], dependent := ["stage_order"] }, { determinant := ["stage_order"], dependent := ["stage"] }], sourceRelation := "analysis_stage_seal", sourceRelationAttributes := ["stage"], sourceAttributes := ["stage"], memberAttributes := ["stage"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_stage_cursor_codec", keyAttributes := ["stage"], valueAttribute := "cursor_codec", projectionAttribute := "cursor_codec", attributes := ["stage", "cursor_codec"], declaredKeys := [["stage"]], declaredFDs := [{ determinant := ["stage"], dependent := ["cursor_codec"] }], sourceRelation := "analysis_stage_seal", sourceRelationAttributes := ["stage"], sourceAttributes := ["stage"], memberAttributes := ["stage"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem analysis_stage_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck analysis_stage_vertical_contract = true := by
-  native_decide
-
-theorem analysis_stage_vertical_view_projection :
-    VerticalFamilyViewProjection analysis_stage_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound analysis_stage_vertical_contract
-    analysis_stage_vertical_view_projection_check
-
-theorem analysis_stage_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck analysis_stage_vertical_contract = true := by
-  native_decide
-
-theorem analysis_stage_vertical_well_formed :
-    VerticalFamilyWellFormed analysis_stage_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound analysis_stage_vertical_contract
-    analysis_stage_vertical_well_formed_check
-
-theorem analysis_stage_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck analysis_stage_vertical_contract = true := by
-  native_decide
-
-theorem analysis_stage_vertical_lossless :
-    VerticalFamilyLossless analysis_stage_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound analysis_stage_vertical_contract
-    analysis_stage_vertical_lossless_join_check
-
-theorem analysis_stage_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck analysis_stage_vertical_contract = true := by
-  native_decide
-
-theorem analysis_stage_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving analysis_stage_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound analysis_stage_vertical_contract
-    analysis_stage_vertical_dependency_preservation_check
-
-def publication_stage_vertical_contract : VerticalFamilyContract where
-  name := "publication_stage_vertical"
-  anchorRelation := "publication_stage_anchor"
-  sealRelation := "publication_stage_seal"
-  keyAttributes := ["stage"]
-  anchorAttributes := ["stage"]
-  sealAttributes := ["stage"]
-  semanticAttributes := ["stage", "stage_order", "cursor_codec"]
-  semanticFDs := [
-    { determinant := ["stage"], dependent := ["stage_order", "cursor_codec"] },
-    { determinant := ["stage_order"], dependent := ["stage", "cursor_codec"] }
-  ]
-  viewAttributes := ["stage", "stage_order", "cursor_codec"]
-  viewFDs := [
-    { determinant := ["stage"], dependent := ["stage_order", "cursor_codec"] },
-    { determinant := ["stage_order"], dependent := ["stage", "cursor_codec"] }
-  ]
-  members := [
-    { relationName := "publication_stage_order", keyAttributes := ["stage"], valueAttribute := "stage_order", projectionAttribute := "stage_order", attributes := ["stage", "stage_order"], declaredKeys := [["stage"], ["stage_order"]], declaredFDs := [{ determinant := ["stage"], dependent := ["stage_order"] }, { determinant := ["stage_order"], dependent := ["stage"] }], sourceRelation := "publication_stage_seal", sourceRelationAttributes := ["stage"], sourceAttributes := ["stage"], memberAttributes := ["stage"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_stage_cursor_codec", keyAttributes := ["stage"], valueAttribute := "cursor_codec", projectionAttribute := "cursor_codec", attributes := ["stage", "cursor_codec"], declaredKeys := [["stage"]], declaredFDs := [{ determinant := ["stage"], dependent := ["cursor_codec"] }], sourceRelation := "publication_stage_seal", sourceRelationAttributes := ["stage"], sourceAttributes := ["stage"], memberAttributes := ["stage"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem publication_stage_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck publication_stage_vertical_contract = true := by
-  native_decide
-
-theorem publication_stage_vertical_view_projection :
-    VerticalFamilyViewProjection publication_stage_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound publication_stage_vertical_contract
-    publication_stage_vertical_view_projection_check
-
-theorem publication_stage_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck publication_stage_vertical_contract = true := by
-  native_decide
-
-theorem publication_stage_vertical_well_formed :
-    VerticalFamilyWellFormed publication_stage_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound publication_stage_vertical_contract
-    publication_stage_vertical_well_formed_check
-
-theorem publication_stage_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck publication_stage_vertical_contract = true := by
-  native_decide
-
-theorem publication_stage_vertical_lossless :
-    VerticalFamilyLossless publication_stage_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound publication_stage_vertical_contract
-    publication_stage_vertical_lossless_join_check
-
-theorem publication_stage_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck publication_stage_vertical_contract = true := by
-  native_decide
-
-theorem publication_stage_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving publication_stage_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound publication_stage_vertical_contract
-    publication_stage_vertical_dependency_preservation_check
-
-def source_revision_descriptor_vertical_contract : VerticalFamilyContract where
-  name := "source_revision_descriptor_vertical"
-  anchorRelation := "source_revision_anchor"
-  sealRelation := "source_revision_descriptor_seal"
-  keyAttributes := ["source_revision"]
-  anchorAttributes := ["source_revision"]
-  sealAttributes := ["source_revision"]
-  semanticAttributes := ["source_revision", "channel", "snapshot_manifest_sha256"]
-  semanticFDs := [
-    { determinant := ["source_revision"], dependent := ["channel", "snapshot_manifest_sha256"] }
-  ]
-  viewAttributes := ["source_revision", "channel", "snapshot_manifest_sha256"]
-  viewFDs := [
-    { determinant := ["source_revision"], dependent := ["channel", "snapshot_manifest_sha256"] }
-  ]
-  members := [
-    { relationName := "source_revision_channel", keyAttributes := ["source_revision"], valueAttribute := "channel", projectionAttribute := "channel", attributes := ["source_revision", "channel"], declaredKeys := [["source_revision"]], declaredFDs := [{ determinant := ["source_revision"], dependent := ["channel"] }], sourceRelation := "source_revision_descriptor_seal", sourceRelationAttributes := ["source_revision"], sourceAttributes := ["source_revision"], memberAttributes := ["source_revision"], congruenceMembers := [], project := true, required := true },
-    { relationName := "source_revision_snapshot_manifest", keyAttributes := ["source_revision"], valueAttribute := "snapshot_manifest_sha256", projectionAttribute := "snapshot_manifest_sha256", attributes := ["source_revision", "snapshot_manifest_sha256"], declaredKeys := [["source_revision"]], declaredFDs := [{ determinant := ["source_revision"], dependent := ["snapshot_manifest_sha256"] }], sourceRelation := "source_revision_descriptor_seal", sourceRelationAttributes := ["source_revision"], sourceAttributes := ["source_revision"], memberAttributes := ["source_revision"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem source_revision_descriptor_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck source_revision_descriptor_vertical_contract = true := by
-  native_decide
-
-theorem source_revision_descriptor_vertical_view_projection :
-    VerticalFamilyViewProjection source_revision_descriptor_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound source_revision_descriptor_vertical_contract
-    source_revision_descriptor_vertical_view_projection_check
-
-theorem source_revision_descriptor_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck source_revision_descriptor_vertical_contract = true := by
-  native_decide
-
-theorem source_revision_descriptor_vertical_well_formed :
-    VerticalFamilyWellFormed source_revision_descriptor_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound source_revision_descriptor_vertical_contract
-    source_revision_descriptor_vertical_well_formed_check
-
-theorem source_revision_descriptor_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck source_revision_descriptor_vertical_contract = true := by
-  native_decide
-
-theorem source_revision_descriptor_vertical_lossless :
-    VerticalFamilyLossless source_revision_descriptor_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound source_revision_descriptor_vertical_contract
-    source_revision_descriptor_vertical_lossless_join_check
-
-theorem source_revision_descriptor_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck source_revision_descriptor_vertical_contract = true := by
-  native_decide
-
-theorem source_revision_descriptor_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving source_revision_descriptor_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound source_revision_descriptor_vertical_contract
-    source_revision_descriptor_vertical_dependency_preservation_check
-
-def catalog_revision_descriptor_vertical_contract : VerticalFamilyContract where
-  name := "catalog_revision_descriptor_vertical"
-  anchorRelation := "catalog_revision_anchor"
-  sealRelation := "catalog_revision_descriptor_seal"
-  keyAttributes := ["revision"]
-  anchorAttributes := ["revision"]
-  sealAttributes := ["revision"]
-  semanticAttributes := ["revision", "publication_count"]
-  semanticFDs := [
-    { determinant := ["revision"], dependent := ["publication_count"] }
-  ]
-  viewAttributes := ["revision", "publication_count"]
-  viewFDs := [
-    { determinant := ["revision"], dependent := ["publication_count"] }
-  ]
-  members := [
-    { relationName := "catalog_revision_publication_count", keyAttributes := ["revision"], valueAttribute := "publication_count", projectionAttribute := "publication_count", attributes := ["revision", "publication_count"], declaredKeys := [["revision"]], declaredFDs := [{ determinant := ["revision"], dependent := ["publication_count"] }], sourceRelation := "catalog_revision_descriptor_seal", sourceRelationAttributes := ["revision"], sourceAttributes := ["revision"], memberAttributes := ["revision"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem catalog_revision_descriptor_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck catalog_revision_descriptor_vertical_contract = true := by
-  native_decide
-
-theorem catalog_revision_descriptor_vertical_view_projection :
-    VerticalFamilyViewProjection catalog_revision_descriptor_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound catalog_revision_descriptor_vertical_contract
-    catalog_revision_descriptor_vertical_view_projection_check
-
-theorem catalog_revision_descriptor_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck catalog_revision_descriptor_vertical_contract = true := by
-  native_decide
-
-theorem catalog_revision_descriptor_vertical_well_formed :
-    VerticalFamilyWellFormed catalog_revision_descriptor_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound catalog_revision_descriptor_vertical_contract
-    catalog_revision_descriptor_vertical_well_formed_check
-
-theorem catalog_revision_descriptor_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck catalog_revision_descriptor_vertical_contract = true := by
-  native_decide
-
-theorem catalog_revision_descriptor_vertical_lossless :
-    VerticalFamilyLossless catalog_revision_descriptor_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound catalog_revision_descriptor_vertical_contract
-    catalog_revision_descriptor_vertical_lossless_join_check
-
-theorem catalog_revision_descriptor_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck catalog_revision_descriptor_vertical_contract = true := by
-  native_decide
-
-theorem catalog_revision_descriptor_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving catalog_revision_descriptor_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound catalog_revision_descriptor_vertical_contract
-    catalog_revision_descriptor_vertical_dependency_preservation_check
-
-def publication_commit_vertical_contract : VerticalFamilyContract where
-  name := "publication_commit_vertical"
-  anchorRelation := "publication_commit_anchor"
-  sealRelation := "publication_commit_seal"
-  keyAttributes := ["receipt_id"]
-  anchorAttributes := ["receipt_id"]
-  sealAttributes := ["receipt_id"]
-  semanticAttributes := ["receipt_id", "candidate_id", "revision", "source_revision", "generation", "preparation_id", "operational_policy_id", "artifact_policy_id", "display_title_policy_id", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "committed_at"]
-  semanticFDs := [
-    { determinant := ["receipt_id"], dependent := ["candidate_id", "revision", "source_revision", "generation", "preparation_id", "operational_policy_id", "artifact_policy_id", "display_title_policy_id", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "committed_at"] },
-    { determinant := ["candidate_id"], dependent := ["receipt_id", "revision", "source_revision", "generation", "preparation_id", "operational_policy_id", "artifact_policy_id", "display_title_policy_id", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "committed_at"] },
-    { determinant := ["revision"], dependent := ["receipt_id", "candidate_id", "source_revision", "generation", "preparation_id", "operational_policy_id", "artifact_policy_id", "display_title_policy_id", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "committed_at"] },
-    { determinant := ["source_revision"], dependent := ["receipt_id", "candidate_id", "revision", "generation", "preparation_id", "operational_policy_id", "artifact_policy_id", "display_title_policy_id", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "committed_at"] },
-    { determinant := ["generation"], dependent := ["receipt_id", "candidate_id", "revision", "source_revision", "preparation_id", "operational_policy_id", "artifact_policy_id", "display_title_policy_id", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "committed_at"] },
-    { determinant := ["preparation_id"], dependent := ["receipt_id", "candidate_id", "revision", "source_revision", "generation", "operational_policy_id", "artifact_policy_id", "display_title_policy_id", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "committed_at"] }
-  ]
-  viewAttributes := ["receipt_id", "candidate_id", "revision", "source_revision", "generation", "preparation_id", "operational_policy_id", "artifact_policy_id", "display_title_policy_id", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "committed_at"]
-  viewFDs := [
-    { determinant := ["receipt_id"], dependent := ["candidate_id", "revision", "source_revision", "generation", "preparation_id", "operational_policy_id", "artifact_policy_id", "display_title_policy_id", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "committed_at"] },
-    { determinant := ["candidate_id"], dependent := ["receipt_id", "revision", "source_revision", "generation", "preparation_id", "operational_policy_id", "artifact_policy_id", "display_title_policy_id", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "committed_at"] },
-    { determinant := ["revision"], dependent := ["receipt_id", "candidate_id", "source_revision", "generation", "preparation_id", "operational_policy_id", "artifact_policy_id", "display_title_policy_id", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "committed_at"] },
-    { determinant := ["source_revision"], dependent := ["receipt_id", "candidate_id", "revision", "generation", "preparation_id", "operational_policy_id", "artifact_policy_id", "display_title_policy_id", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "committed_at"] },
-    { determinant := ["generation"], dependent := ["receipt_id", "candidate_id", "revision", "source_revision", "preparation_id", "operational_policy_id", "artifact_policy_id", "display_title_policy_id", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "committed_at"] },
-    { determinant := ["preparation_id"], dependent := ["receipt_id", "candidate_id", "revision", "source_revision", "generation", "operational_policy_id", "artifact_policy_id", "display_title_policy_id", "new_galleries", "changed_galleries", "removed_galleries", "duplicate_losers", "committed_at"] }
-  ]
-  members := [
-    { relationName := "publication_commit_candidate", keyAttributes := ["receipt_id"], valueAttribute := "candidate_id", projectionAttribute := "candidate_id", attributes := ["receipt_id", "candidate_id"], declaredKeys := [["receipt_id"], ["candidate_id"]], declaredFDs := [{ determinant := ["receipt_id"], dependent := ["candidate_id"] }, { determinant := ["candidate_id"], dependent := ["receipt_id"] }], sourceRelation := "publication_commit_seal", sourceRelationAttributes := ["receipt_id"], sourceAttributes := ["receipt_id"], memberAttributes := ["receipt_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_commit_catalog_revision", keyAttributes := ["receipt_id"], valueAttribute := "revision", projectionAttribute := "revision", attributes := ["receipt_id", "revision"], declaredKeys := [["receipt_id"], ["revision"]], declaredFDs := [{ determinant := ["receipt_id"], dependent := ["revision"] }, { determinant := ["revision"], dependent := ["receipt_id"] }], sourceRelation := "publication_commit_seal", sourceRelationAttributes := ["receipt_id"], sourceAttributes := ["receipt_id"], memberAttributes := ["receipt_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_commit_source_revision", keyAttributes := ["receipt_id"], valueAttribute := "source_revision", projectionAttribute := "source_revision", attributes := ["receipt_id", "source_revision"], declaredKeys := [["receipt_id"], ["source_revision"]], declaredFDs := [{ determinant := ["receipt_id"], dependent := ["source_revision"] }, { determinant := ["source_revision"], dependent := ["receipt_id"] }], sourceRelation := "publication_commit_seal", sourceRelationAttributes := ["receipt_id"], sourceAttributes := ["receipt_id"], memberAttributes := ["receipt_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_commit_generation", keyAttributes := ["receipt_id"], valueAttribute := "generation", projectionAttribute := "generation", attributes := ["receipt_id", "generation"], declaredKeys := [["receipt_id"], ["generation"]], declaredFDs := [{ determinant := ["receipt_id"], dependent := ["generation"] }, { determinant := ["generation"], dependent := ["receipt_id"] }], sourceRelation := "publication_commit_seal", sourceRelationAttributes := ["receipt_id"], sourceAttributes := ["receipt_id"], memberAttributes := ["receipt_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_commit_operational_preparation", keyAttributes := ["receipt_id"], valueAttribute := "preparation_id", projectionAttribute := "preparation_id", attributes := ["receipt_id", "preparation_id"], declaredKeys := [["receipt_id"], ["preparation_id"]], declaredFDs := [{ determinant := ["receipt_id"], dependent := ["preparation_id"] }, { determinant := ["preparation_id"], dependent := ["receipt_id"] }], sourceRelation := "publication_commit_seal", sourceRelationAttributes := ["receipt_id"], sourceAttributes := ["receipt_id"], memberAttributes := ["receipt_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_commit_operational_policy", keyAttributes := ["receipt_id"], valueAttribute := "operational_policy_id", projectionAttribute := "operational_policy_id", attributes := ["receipt_id", "operational_policy_id"], declaredKeys := [["receipt_id"]], declaredFDs := [{ determinant := ["receipt_id"], dependent := ["operational_policy_id"] }], sourceRelation := "publication_commit_seal", sourceRelationAttributes := ["receipt_id"], sourceAttributes := ["receipt_id"], memberAttributes := ["receipt_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_commit_artifact_policy", keyAttributes := ["receipt_id"], valueAttribute := "artifact_policy_id", projectionAttribute := "artifact_policy_id", attributes := ["receipt_id", "artifact_policy_id"], declaredKeys := [["receipt_id"]], declaredFDs := [{ determinant := ["receipt_id"], dependent := ["artifact_policy_id"] }], sourceRelation := "publication_commit_seal", sourceRelationAttributes := ["receipt_id"], sourceAttributes := ["receipt_id"], memberAttributes := ["receipt_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_commit_display_title_policy", keyAttributes := ["receipt_id"], valueAttribute := "display_title_policy_id", projectionAttribute := "display_title_policy_id", attributes := ["receipt_id", "display_title_policy_id"], declaredKeys := [["receipt_id"]], declaredFDs := [{ determinant := ["receipt_id"], dependent := ["display_title_policy_id"] }], sourceRelation := "publication_commit_seal", sourceRelationAttributes := ["receipt_id"], sourceAttributes := ["receipt_id"], memberAttributes := ["receipt_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_commit_new_galleries", keyAttributes := ["receipt_id"], valueAttribute := "new_galleries", projectionAttribute := "new_galleries", attributes := ["receipt_id", "new_galleries"], declaredKeys := [["receipt_id"]], declaredFDs := [{ determinant := ["receipt_id"], dependent := ["new_galleries"] }], sourceRelation := "publication_commit_seal", sourceRelationAttributes := ["receipt_id"], sourceAttributes := ["receipt_id"], memberAttributes := ["receipt_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_commit_changed_galleries", keyAttributes := ["receipt_id"], valueAttribute := "changed_galleries", projectionAttribute := "changed_galleries", attributes := ["receipt_id", "changed_galleries"], declaredKeys := [["receipt_id"]], declaredFDs := [{ determinant := ["receipt_id"], dependent := ["changed_galleries"] }], sourceRelation := "publication_commit_seal", sourceRelationAttributes := ["receipt_id"], sourceAttributes := ["receipt_id"], memberAttributes := ["receipt_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_commit_removed_galleries", keyAttributes := ["receipt_id"], valueAttribute := "removed_galleries", projectionAttribute := "removed_galleries", attributes := ["receipt_id", "removed_galleries"], declaredKeys := [["receipt_id"]], declaredFDs := [{ determinant := ["receipt_id"], dependent := ["removed_galleries"] }], sourceRelation := "publication_commit_seal", sourceRelationAttributes := ["receipt_id"], sourceAttributes := ["receipt_id"], memberAttributes := ["receipt_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_commit_duplicate_losers", keyAttributes := ["receipt_id"], valueAttribute := "duplicate_losers", projectionAttribute := "duplicate_losers", attributes := ["receipt_id", "duplicate_losers"], declaredKeys := [["receipt_id"]], declaredFDs := [{ determinant := ["receipt_id"], dependent := ["duplicate_losers"] }], sourceRelation := "publication_commit_seal", sourceRelationAttributes := ["receipt_id"], sourceAttributes := ["receipt_id"], memberAttributes := ["receipt_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_commit_committed_at", keyAttributes := ["receipt_id"], valueAttribute := "committed_at", projectionAttribute := "committed_at", attributes := ["receipt_id", "committed_at"], declaredKeys := [["receipt_id"]], declaredFDs := [{ determinant := ["receipt_id"], dependent := ["committed_at"] }], sourceRelation := "publication_commit_seal", sourceRelationAttributes := ["receipt_id"], sourceAttributes := ["receipt_id"], memberAttributes := ["receipt_id"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem publication_commit_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck publication_commit_vertical_contract = true := by
-  native_decide
-
-theorem publication_commit_vertical_view_projection :
-    VerticalFamilyViewProjection publication_commit_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound publication_commit_vertical_contract
-    publication_commit_vertical_view_projection_check
-
-theorem publication_commit_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck publication_commit_vertical_contract = true := by
-  native_decide
-
-theorem publication_commit_vertical_well_formed :
-    VerticalFamilyWellFormed publication_commit_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound publication_commit_vertical_contract
-    publication_commit_vertical_well_formed_check
-
-theorem publication_commit_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck publication_commit_vertical_contract = true := by
-  native_decide
-
-theorem publication_commit_vertical_lossless :
-    VerticalFamilyLossless publication_commit_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound publication_commit_vertical_contract
-    publication_commit_vertical_lossless_join_check
-
-theorem publication_commit_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck publication_commit_vertical_contract = true := by
-  native_decide
-
-theorem publication_commit_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving publication_commit_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound publication_commit_vertical_contract
-    publication_commit_vertical_dependency_preservation_check
-
-def analysis_run_vertical_contract : VerticalFamilyContract where
-  name := "analysis_run_vertical"
-  anchorRelation := "analysis_run_anchor"
-  sealRelation := "analysis_run_descriptor_seal"
-  keyAttributes := ["analysis_id"]
-  anchorAttributes := ["analysis_id"]
-  sealAttributes := ["analysis_id"]
-  semanticAttributes := ["analysis_id", "build_id", "policy_id", "input_manifest_sha256", "started_at", "state", "completed_at"]
-  semanticFDs := [
-    { determinant := ["analysis_id"], dependent := ["build_id", "policy_id", "input_manifest_sha256", "started_at", "state", "completed_at"] },
-    { determinant := ["build_id", "policy_id"], dependent := ["analysis_id", "input_manifest_sha256", "started_at", "state", "completed_at"] }
-  ]
-  viewAttributes := ["analysis_id", "build_id", "policy_id", "input_manifest_sha256", "state", "started_at", "completed_at"]
-  viewFDs := [
-    { determinant := ["analysis_id"], dependent := ["build_id", "policy_id", "input_manifest_sha256", "state", "started_at", "completed_at"] },
-    { determinant := ["build_id", "policy_id"], dependent := ["analysis_id", "input_manifest_sha256", "state", "started_at", "completed_at"] }
-  ]
-  members := [
-    { relationName := "analysis_run_build_id", keyAttributes := ["analysis_id"], valueAttribute := "build_id", projectionAttribute := "build_id", attributes := ["analysis_id", "build_id"], declaredKeys := [["analysis_id"]], declaredFDs := [{ determinant := ["analysis_id"], dependent := ["build_id"] }], sourceRelation := "analysis_run_descriptor_seal", sourceRelationAttributes := ["analysis_id"], sourceAttributes := ["analysis_id"], memberAttributes := ["analysis_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_run_policy_id", keyAttributes := ["analysis_id"], valueAttribute := "policy_id", projectionAttribute := "policy_id", attributes := ["analysis_id", "policy_id"], declaredKeys := [["analysis_id"]], declaredFDs := [{ determinant := ["analysis_id"], dependent := ["policy_id"] }], sourceRelation := "analysis_run_descriptor_seal", sourceRelationAttributes := ["analysis_id"], sourceAttributes := ["analysis_id"], memberAttributes := ["analysis_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_run_input_manifest_sha256", keyAttributes := ["analysis_id"], valueAttribute := "input_manifest_sha256", projectionAttribute := "input_manifest_sha256", attributes := ["analysis_id", "input_manifest_sha256"], declaredKeys := [["analysis_id"]], declaredFDs := [{ determinant := ["analysis_id"], dependent := ["input_manifest_sha256"] }], sourceRelation := "analysis_run_descriptor_seal", sourceRelationAttributes := ["analysis_id"], sourceAttributes := ["analysis_id"], memberAttributes := ["analysis_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_run_identity", keyAttributes := ["build_id", "policy_id"], valueAttribute := "analysis_id", projectionAttribute := "analysis_id", attributes := ["build_id", "policy_id", "analysis_id"], declaredKeys := [["build_id", "policy_id"], ["analysis_id"]], declaredFDs := [{ determinant := ["build_id", "policy_id"], dependent := ["analysis_id"] }, { determinant := ["analysis_id"], dependent := ["build_id", "policy_id"] }], sourceRelation := "analysis_run_descriptor_seal", sourceRelationAttributes := ["analysis_id"], sourceAttributes := ["analysis_id"], memberAttributes := ["analysis_id"], congruenceMembers := ["analysis_run_build_id", "analysis_run_policy_id"], project := false, required := true },
-    { relationName := "analysis_run_started_at", keyAttributes := ["analysis_id"], valueAttribute := "started_at", projectionAttribute := "started_at", attributes := ["analysis_id", "started_at"], declaredKeys := [["analysis_id"]], declaredFDs := [{ determinant := ["analysis_id"], dependent := ["started_at"] }], sourceRelation := "analysis_run_descriptor_seal", sourceRelationAttributes := ["analysis_id"], sourceAttributes := ["analysis_id"], memberAttributes := ["analysis_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_run_state", keyAttributes := ["analysis_id"], valueAttribute := "state", projectionAttribute := "state", attributes := ["analysis_id", "state"], declaredKeys := [["analysis_id"]], declaredFDs := [{ determinant := ["analysis_id"], dependent := ["state"] }], sourceRelation := "analysis_run_descriptor_seal", sourceRelationAttributes := ["analysis_id"], sourceAttributes := ["analysis_id"], memberAttributes := ["analysis_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_run_completed_at", keyAttributes := ["analysis_id"], valueAttribute := "completed_at", projectionAttribute := "completed_at", attributes := ["analysis_id", "completed_at"], declaredKeys := [["analysis_id"]], declaredFDs := [{ determinant := ["analysis_id"], dependent := ["completed_at"] }], sourceRelation := "analysis_run_descriptor_seal", sourceRelationAttributes := ["analysis_id"], sourceAttributes := ["analysis_id"], memberAttributes := ["analysis_id"], congruenceMembers := [], project := true, required := false }
-  ]
-  optionalPresence := some {
-    memberRelation := "analysis_run_completed_at"
-    discriminatorRelation := "analysis_run_state"
-    discriminatorAttribute := "state"
-    presentValue := "COMPLETE"
-    absentValues := ["OPEN", "ABANDONED"]
-  }
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem analysis_run_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck analysis_run_vertical_contract = true := by
-  native_decide
-
-theorem analysis_run_vertical_view_projection :
-    VerticalFamilyViewProjection analysis_run_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound analysis_run_vertical_contract
-    analysis_run_vertical_view_projection_check
-
-theorem analysis_run_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck analysis_run_vertical_contract = true := by
-  native_decide
-
-theorem analysis_run_vertical_well_formed :
-    VerticalFamilyWellFormed analysis_run_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound analysis_run_vertical_contract
-    analysis_run_vertical_well_formed_check
-
-theorem analysis_run_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck analysis_run_vertical_contract = true := by
-  native_decide
-
-theorem analysis_run_vertical_lossless :
-    VerticalFamilyLossless analysis_run_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound analysis_run_vertical_contract
-    analysis_run_vertical_lossless_join_check
-
-theorem analysis_run_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck analysis_run_vertical_contract = true := by
-  native_decide
-
-theorem analysis_run_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving analysis_run_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound analysis_run_vertical_contract
-    analysis_run_vertical_dependency_preservation_check
-
-def analysis_state_component_seal_vertical_contract : VerticalFamilyContract where
-  name := "analysis_state_component_seal_vertical"
-  anchorRelation := "analysis_state_component_anchor"
-  sealRelation := "analysis_state_component_completion_seal"
-  keyAttributes := ["analysis_id", "state_component"]
-  anchorAttributes := ["analysis_id", "state_component"]
-  sealAttributes := ["analysis_id", "state_component"]
-  semanticAttributes := ["analysis_id", "state_component", "row_count", "sealed_at"]
-  semanticFDs := [
-    { determinant := ["analysis_id", "state_component"], dependent := ["row_count", "sealed_at"] }
-  ]
-  viewAttributes := ["analysis_id", "state_component", "row_count", "sealed_at"]
-  viewFDs := [
-    { determinant := ["analysis_id", "state_component"], dependent := ["row_count", "sealed_at"] }
-  ]
-  members := [
-    { relationName := "analysis_state_component_row_count", keyAttributes := ["analysis_id", "state_component"], valueAttribute := "row_count", projectionAttribute := "row_count", attributes := ["analysis_id", "state_component", "row_count"], declaredKeys := [["analysis_id", "state_component"]], declaredFDs := [{ determinant := ["analysis_id", "state_component"], dependent := ["row_count"] }], sourceRelation := "analysis_state_component_completion_seal", sourceRelationAttributes := ["analysis_id", "state_component"], sourceAttributes := ["analysis_id", "state_component"], memberAttributes := ["analysis_id", "state_component"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_state_component_sealed_at", keyAttributes := ["analysis_id", "state_component"], valueAttribute := "sealed_at", projectionAttribute := "sealed_at", attributes := ["analysis_id", "state_component", "sealed_at"], declaredKeys := [["analysis_id", "state_component"]], declaredFDs := [{ determinant := ["analysis_id", "state_component"], dependent := ["sealed_at"] }], sourceRelation := "analysis_state_component_completion_seal", sourceRelationAttributes := ["analysis_id", "state_component"], sourceAttributes := ["analysis_id", "state_component"], memberAttributes := ["analysis_id", "state_component"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem analysis_state_component_seal_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck analysis_state_component_seal_vertical_contract = true := by
-  native_decide
-
-theorem analysis_state_component_seal_vertical_view_projection :
-    VerticalFamilyViewProjection analysis_state_component_seal_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound analysis_state_component_seal_vertical_contract
-    analysis_state_component_seal_vertical_view_projection_check
-
-theorem analysis_state_component_seal_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck analysis_state_component_seal_vertical_contract = true := by
-  native_decide
-
-theorem analysis_state_component_seal_vertical_well_formed :
-    VerticalFamilyWellFormed analysis_state_component_seal_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound analysis_state_component_seal_vertical_contract
-    analysis_state_component_seal_vertical_well_formed_check
-
-theorem analysis_state_component_seal_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck analysis_state_component_seal_vertical_contract = true := by
-  native_decide
-
-theorem analysis_state_component_seal_vertical_lossless :
-    VerticalFamilyLossless analysis_state_component_seal_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound analysis_state_component_seal_vertical_contract
-    analysis_state_component_seal_vertical_lossless_join_check
-
-theorem analysis_state_component_seal_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck analysis_state_component_seal_vertical_contract = true := by
-  native_decide
-
-theorem analysis_state_component_seal_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving analysis_state_component_seal_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound analysis_state_component_seal_vertical_contract
-    analysis_state_component_seal_vertical_dependency_preservation_check
-
 def analysis_exclusion_delta_vertical_contract : VerticalFamilyContract where
   name := "analysis_exclusion_delta_vertical"
   anchorRelation := "analysis_exclusion_delta_anchor"
@@ -19974,265 +11358,6 @@ theorem analysis_exclusion_delta_vertical_dependency_preserving :
     VerticalFamilyDependencyPreserving analysis_exclusion_delta_vertical_contract :=
   verticalFamilyDependencyPreservationCheck_sound analysis_exclusion_delta_vertical_contract
     analysis_exclusion_delta_vertical_dependency_preservation_check
-
-def analysis_checkpoint_vertical_contract : VerticalFamilyContract where
-  name := "analysis_checkpoint_vertical"
-  anchorRelation := "analysis_checkpoint_anchor"
-  sealRelation := "analysis_checkpoint_seal"
-  keyAttributes := ["analysis_id", "stage"]
-  anchorAttributes := ["analysis_id", "stage"]
-  sealAttributes := ["analysis_id", "stage"]
-  semanticAttributes := ["analysis_id", "stage", "generation", "cursor", "processed_count", "state", "updated_at"]
-  semanticFDs := [
-    { determinant := ["analysis_id", "stage"], dependent := ["generation", "cursor", "processed_count", "state", "updated_at"] }
-  ]
-  viewAttributes := ["analysis_id", "stage", "generation", "cursor", "processed_count", "state", "updated_at"]
-  viewFDs := [
-    { determinant := ["analysis_id", "stage"], dependent := ["generation", "cursor", "processed_count", "state", "updated_at"] }
-  ]
-  members := [
-    { relationName := "analysis_checkpoint_generation", keyAttributes := ["analysis_id", "stage"], valueAttribute := "generation", projectionAttribute := "generation", attributes := ["analysis_id", "stage", "generation"], declaredKeys := [["analysis_id", "stage"]], declaredFDs := [{ determinant := ["analysis_id", "stage"], dependent := ["generation"] }], sourceRelation := "analysis_checkpoint_seal", sourceRelationAttributes := ["analysis_id", "stage"], sourceAttributes := ["analysis_id", "stage"], memberAttributes := ["analysis_id", "stage"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_checkpoint_cursor", keyAttributes := ["analysis_id", "stage"], valueAttribute := "cursor", projectionAttribute := "cursor", attributes := ["analysis_id", "stage", "cursor"], declaredKeys := [["analysis_id", "stage"]], declaredFDs := [{ determinant := ["analysis_id", "stage"], dependent := ["cursor"] }], sourceRelation := "analysis_checkpoint_seal", sourceRelationAttributes := ["analysis_id", "stage"], sourceAttributes := ["analysis_id", "stage"], memberAttributes := ["analysis_id", "stage"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_checkpoint_processed_count", keyAttributes := ["analysis_id", "stage"], valueAttribute := "processed_count", projectionAttribute := "processed_count", attributes := ["analysis_id", "stage", "processed_count"], declaredKeys := [["analysis_id", "stage"]], declaredFDs := [{ determinant := ["analysis_id", "stage"], dependent := ["processed_count"] }], sourceRelation := "analysis_checkpoint_seal", sourceRelationAttributes := ["analysis_id", "stage"], sourceAttributes := ["analysis_id", "stage"], memberAttributes := ["analysis_id", "stage"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_checkpoint_state", keyAttributes := ["analysis_id", "stage"], valueAttribute := "state", projectionAttribute := "state", attributes := ["analysis_id", "stage", "state"], declaredKeys := [["analysis_id", "stage"]], declaredFDs := [{ determinant := ["analysis_id", "stage"], dependent := ["state"] }], sourceRelation := "analysis_checkpoint_seal", sourceRelationAttributes := ["analysis_id", "stage"], sourceAttributes := ["analysis_id", "stage"], memberAttributes := ["analysis_id", "stage"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_checkpoint_updated_at", keyAttributes := ["analysis_id", "stage"], valueAttribute := "updated_at", projectionAttribute := "updated_at", attributes := ["analysis_id", "stage", "updated_at"], declaredKeys := [["analysis_id", "stage"]], declaredFDs := [{ determinant := ["analysis_id", "stage"], dependent := ["updated_at"] }], sourceRelation := "analysis_checkpoint_seal", sourceRelationAttributes := ["analysis_id", "stage"], sourceAttributes := ["analysis_id", "stage"], memberAttributes := ["analysis_id", "stage"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem analysis_checkpoint_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck analysis_checkpoint_vertical_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_vertical_view_projection :
-    VerticalFamilyViewProjection analysis_checkpoint_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound analysis_checkpoint_vertical_contract
-    analysis_checkpoint_vertical_view_projection_check
-
-theorem analysis_checkpoint_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck analysis_checkpoint_vertical_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_vertical_well_formed :
-    VerticalFamilyWellFormed analysis_checkpoint_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound analysis_checkpoint_vertical_contract
-    analysis_checkpoint_vertical_well_formed_check
-
-theorem analysis_checkpoint_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck analysis_checkpoint_vertical_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_vertical_lossless :
-    VerticalFamilyLossless analysis_checkpoint_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound analysis_checkpoint_vertical_contract
-    analysis_checkpoint_vertical_lossless_join_check
-
-theorem analysis_checkpoint_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck analysis_checkpoint_vertical_contract = true := by
-  native_decide
-
-theorem analysis_checkpoint_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving analysis_checkpoint_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound analysis_checkpoint_vertical_contract
-    analysis_checkpoint_vertical_dependency_preservation_check
-
-def analysis_batch_receipt_stored_vertical_contract : VerticalFamilyContract where
-  name := "analysis_batch_receipt_stored_vertical"
-  anchorRelation := "analysis_batch_receipt_anchor"
-  sealRelation := "analysis_batch_receipt_seal"
-  keyAttributes := ["analysis_id", "stage", "start_generation"]
-  anchorAttributes := ["analysis_id", "stage", "start_generation"]
-  sealAttributes := ["analysis_id", "stage", "start_generation"]
-  semanticAttributes := ["analysis_id", "stage", "start_generation", "batch_key", "start_cursor", "start_processed_count", "page_limit", "next_cursor", "row_count", "committed_at"]
-  semanticFDs := [
-    { determinant := ["analysis_id", "stage", "batch_key"], dependent := ["start_generation", "start_cursor", "start_processed_count", "page_limit", "next_cursor", "row_count", "committed_at"] },
-    { determinant := ["analysis_id", "stage", "start_generation"], dependent := ["batch_key", "start_cursor", "start_processed_count", "page_limit", "next_cursor", "row_count", "committed_at"] }
-  ]
-  viewAttributes := ["analysis_id", "stage", "start_generation", "batch_key", "start_cursor", "start_processed_count", "page_limit", "next_cursor", "row_count", "committed_at"]
-  viewFDs := [
-    { determinant := ["analysis_id", "stage", "batch_key"], dependent := ["start_generation", "start_cursor", "start_processed_count", "page_limit", "next_cursor", "row_count", "committed_at"] },
-    { determinant := ["analysis_id", "stage", "start_generation"], dependent := ["batch_key", "start_cursor", "start_processed_count", "page_limit", "next_cursor", "row_count", "committed_at"] }
-  ]
-  members := [
-    { relationName := "analysis_batch_receipt_coordinate", keyAttributes := ["analysis_id", "stage", "batch_key"], valueAttribute := "start_generation", projectionAttribute := "start_generation", attributes := ["analysis_id", "stage", "batch_key", "start_generation"], declaredKeys := [["analysis_id", "stage", "batch_key"], ["analysis_id", "stage", "start_generation"]], declaredFDs := [{ determinant := ["analysis_id", "stage", "batch_key"], dependent := ["start_generation"] }, { determinant := ["analysis_id", "stage", "start_generation"], dependent := ["batch_key"] }], sourceRelation := "analysis_batch_receipt_seal", sourceRelationAttributes := ["analysis_id", "stage", "start_generation"], sourceAttributes := ["analysis_id", "stage", "start_generation"], memberAttributes := ["analysis_id", "stage", "start_generation"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_batch_receipt_start_cursor", keyAttributes := ["analysis_id", "stage", "start_generation"], valueAttribute := "start_cursor", projectionAttribute := "start_cursor", attributes := ["analysis_id", "stage", "start_generation", "start_cursor"], declaredKeys := [["analysis_id", "stage", "start_generation"]], declaredFDs := [{ determinant := ["analysis_id", "stage", "start_generation"], dependent := ["start_cursor"] }], sourceRelation := "analysis_batch_receipt_seal", sourceRelationAttributes := ["analysis_id", "stage", "start_generation"], sourceAttributes := ["analysis_id", "stage", "start_generation"], memberAttributes := ["analysis_id", "stage", "start_generation"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_batch_receipt_start_processed_count", keyAttributes := ["analysis_id", "stage", "start_generation"], valueAttribute := "start_processed_count", projectionAttribute := "start_processed_count", attributes := ["analysis_id", "stage", "start_generation", "start_processed_count"], declaredKeys := [["analysis_id", "stage", "start_generation"]], declaredFDs := [{ determinant := ["analysis_id", "stage", "start_generation"], dependent := ["start_processed_count"] }], sourceRelation := "analysis_batch_receipt_seal", sourceRelationAttributes := ["analysis_id", "stage", "start_generation"], sourceAttributes := ["analysis_id", "stage", "start_generation"], memberAttributes := ["analysis_id", "stage", "start_generation"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_batch_receipt_page_limit", keyAttributes := ["analysis_id", "stage", "start_generation"], valueAttribute := "page_limit", projectionAttribute := "page_limit", attributes := ["analysis_id", "stage", "start_generation", "page_limit"], declaredKeys := [["analysis_id", "stage", "start_generation"]], declaredFDs := [{ determinant := ["analysis_id", "stage", "start_generation"], dependent := ["page_limit"] }], sourceRelation := "analysis_batch_receipt_seal", sourceRelationAttributes := ["analysis_id", "stage", "start_generation"], sourceAttributes := ["analysis_id", "stage", "start_generation"], memberAttributes := ["analysis_id", "stage", "start_generation"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_batch_receipt_next_cursor", keyAttributes := ["analysis_id", "stage", "start_generation"], valueAttribute := "next_cursor", projectionAttribute := "next_cursor", attributes := ["analysis_id", "stage", "start_generation", "next_cursor"], declaredKeys := [["analysis_id", "stage", "start_generation"]], declaredFDs := [{ determinant := ["analysis_id", "stage", "start_generation"], dependent := ["next_cursor"] }], sourceRelation := "analysis_batch_receipt_seal", sourceRelationAttributes := ["analysis_id", "stage", "start_generation"], sourceAttributes := ["analysis_id", "stage", "start_generation"], memberAttributes := ["analysis_id", "stage", "start_generation"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_batch_receipt_row_count", keyAttributes := ["analysis_id", "stage", "start_generation"], valueAttribute := "row_count", projectionAttribute := "row_count", attributes := ["analysis_id", "stage", "start_generation", "row_count"], declaredKeys := [["analysis_id", "stage", "start_generation"]], declaredFDs := [{ determinant := ["analysis_id", "stage", "start_generation"], dependent := ["row_count"] }], sourceRelation := "analysis_batch_receipt_seal", sourceRelationAttributes := ["analysis_id", "stage", "start_generation"], sourceAttributes := ["analysis_id", "stage", "start_generation"], memberAttributes := ["analysis_id", "stage", "start_generation"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_batch_receipt_committed_at", keyAttributes := ["analysis_id", "stage", "start_generation"], valueAttribute := "committed_at", projectionAttribute := "committed_at", attributes := ["analysis_id", "stage", "start_generation", "committed_at"], declaredKeys := [["analysis_id", "stage", "start_generation"]], declaredFDs := [{ determinant := ["analysis_id", "stage", "start_generation"], dependent := ["committed_at"] }], sourceRelation := "analysis_batch_receipt_seal", sourceRelationAttributes := ["analysis_id", "stage", "start_generation"], sourceAttributes := ["analysis_id", "stage", "start_generation"], memberAttributes := ["analysis_id", "stage", "start_generation"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem analysis_batch_receipt_stored_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck analysis_batch_receipt_stored_vertical_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_stored_vertical_view_projection :
-    VerticalFamilyViewProjection analysis_batch_receipt_stored_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound analysis_batch_receipt_stored_vertical_contract
-    analysis_batch_receipt_stored_vertical_view_projection_check
-
-theorem analysis_batch_receipt_stored_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck analysis_batch_receipt_stored_vertical_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_stored_vertical_well_formed :
-    VerticalFamilyWellFormed analysis_batch_receipt_stored_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound analysis_batch_receipt_stored_vertical_contract
-    analysis_batch_receipt_stored_vertical_well_formed_check
-
-theorem analysis_batch_receipt_stored_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck analysis_batch_receipt_stored_vertical_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_stored_vertical_lossless :
-    VerticalFamilyLossless analysis_batch_receipt_stored_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound analysis_batch_receipt_stored_vertical_contract
-    analysis_batch_receipt_stored_vertical_lossless_join_check
-
-theorem analysis_batch_receipt_stored_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck analysis_batch_receipt_stored_vertical_contract = true := by
-  native_decide
-
-theorem analysis_batch_receipt_stored_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving analysis_batch_receipt_stored_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound analysis_batch_receipt_stored_vertical_contract
-    analysis_batch_receipt_stored_vertical_dependency_preservation_check
-
-def publication_checkpoint_vertical_contract : VerticalFamilyContract where
-  name := "publication_checkpoint_vertical"
-  anchorRelation := "publication_checkpoint_anchor"
-  sealRelation := "publication_checkpoint_seal"
-  keyAttributes := ["candidate_id", "stage"]
-  anchorAttributes := ["candidate_id", "stage"]
-  sealAttributes := ["candidate_id", "stage"]
-  semanticAttributes := ["candidate_id", "stage", "generation", "cursor", "processed_count", "state", "updated_at"]
-  semanticFDs := [
-    { determinant := ["candidate_id", "stage"], dependent := ["generation", "cursor", "processed_count", "state", "updated_at"] }
-  ]
-  viewAttributes := ["candidate_id", "stage", "generation", "cursor", "processed_count", "state", "updated_at"]
-  viewFDs := [
-    { determinant := ["candidate_id", "stage"], dependent := ["generation", "cursor", "processed_count", "state", "updated_at"] }
-  ]
-  members := [
-    { relationName := "publication_checkpoint_generation", keyAttributes := ["candidate_id", "stage"], valueAttribute := "generation", projectionAttribute := "generation", attributes := ["candidate_id", "stage", "generation"], declaredKeys := [["candidate_id", "stage"]], declaredFDs := [{ determinant := ["candidate_id", "stage"], dependent := ["generation"] }], sourceRelation := "publication_checkpoint_seal", sourceRelationAttributes := ["candidate_id", "stage"], sourceAttributes := ["candidate_id", "stage"], memberAttributes := ["candidate_id", "stage"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_checkpoint_cursor", keyAttributes := ["candidate_id", "stage"], valueAttribute := "cursor", projectionAttribute := "cursor", attributes := ["candidate_id", "stage", "cursor"], declaredKeys := [["candidate_id", "stage"]], declaredFDs := [{ determinant := ["candidate_id", "stage"], dependent := ["cursor"] }], sourceRelation := "publication_checkpoint_seal", sourceRelationAttributes := ["candidate_id", "stage"], sourceAttributes := ["candidate_id", "stage"], memberAttributes := ["candidate_id", "stage"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_checkpoint_processed_count", keyAttributes := ["candidate_id", "stage"], valueAttribute := "processed_count", projectionAttribute := "processed_count", attributes := ["candidate_id", "stage", "processed_count"], declaredKeys := [["candidate_id", "stage"]], declaredFDs := [{ determinant := ["candidate_id", "stage"], dependent := ["processed_count"] }], sourceRelation := "publication_checkpoint_seal", sourceRelationAttributes := ["candidate_id", "stage"], sourceAttributes := ["candidate_id", "stage"], memberAttributes := ["candidate_id", "stage"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_checkpoint_state", keyAttributes := ["candidate_id", "stage"], valueAttribute := "state", projectionAttribute := "state", attributes := ["candidate_id", "stage", "state"], declaredKeys := [["candidate_id", "stage"]], declaredFDs := [{ determinant := ["candidate_id", "stage"], dependent := ["state"] }], sourceRelation := "publication_checkpoint_seal", sourceRelationAttributes := ["candidate_id", "stage"], sourceAttributes := ["candidate_id", "stage"], memberAttributes := ["candidate_id", "stage"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_checkpoint_updated_at", keyAttributes := ["candidate_id", "stage"], valueAttribute := "updated_at", projectionAttribute := "updated_at", attributes := ["candidate_id", "stage", "updated_at"], declaredKeys := [["candidate_id", "stage"]], declaredFDs := [{ determinant := ["candidate_id", "stage"], dependent := ["updated_at"] }], sourceRelation := "publication_checkpoint_seal", sourceRelationAttributes := ["candidate_id", "stage"], sourceAttributes := ["candidate_id", "stage"], memberAttributes := ["candidate_id", "stage"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem publication_checkpoint_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck publication_checkpoint_vertical_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_vertical_view_projection :
-    VerticalFamilyViewProjection publication_checkpoint_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound publication_checkpoint_vertical_contract
-    publication_checkpoint_vertical_view_projection_check
-
-theorem publication_checkpoint_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck publication_checkpoint_vertical_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_vertical_well_formed :
-    VerticalFamilyWellFormed publication_checkpoint_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound publication_checkpoint_vertical_contract
-    publication_checkpoint_vertical_well_formed_check
-
-theorem publication_checkpoint_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck publication_checkpoint_vertical_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_vertical_lossless :
-    VerticalFamilyLossless publication_checkpoint_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound publication_checkpoint_vertical_contract
-    publication_checkpoint_vertical_lossless_join_check
-
-theorem publication_checkpoint_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck publication_checkpoint_vertical_contract = true := by
-  native_decide
-
-theorem publication_checkpoint_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving publication_checkpoint_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound publication_checkpoint_vertical_contract
-    publication_checkpoint_vertical_dependency_preservation_check
-
-def publication_batch_receipt_stored_vertical_contract : VerticalFamilyContract where
-  name := "publication_batch_receipt_stored_vertical"
-  anchorRelation := "publication_batch_receipt_anchor"
-  sealRelation := "publication_batch_receipt_seal"
-  keyAttributes := ["candidate_id", "stage", "start_generation"]
-  anchorAttributes := ["candidate_id", "stage", "start_generation"]
-  sealAttributes := ["candidate_id", "stage", "start_generation"]
-  semanticAttributes := ["candidate_id", "stage", "start_generation", "batch_key", "start_cursor", "start_processed_count", "next_cursor", "row_count", "committed_at"]
-  semanticFDs := [
-    { determinant := ["candidate_id", "stage", "batch_key"], dependent := ["start_generation", "start_cursor", "start_processed_count", "next_cursor", "row_count", "committed_at"] },
-    { determinant := ["candidate_id", "stage", "start_generation"], dependent := ["batch_key", "start_cursor", "start_processed_count", "next_cursor", "row_count", "committed_at"] }
-  ]
-  viewAttributes := ["candidate_id", "stage", "start_generation", "batch_key", "start_cursor", "start_processed_count", "next_cursor", "row_count", "committed_at"]
-  viewFDs := [
-    { determinant := ["candidate_id", "stage", "batch_key"], dependent := ["start_generation", "start_cursor", "start_processed_count", "next_cursor", "row_count", "committed_at"] },
-    { determinant := ["candidate_id", "stage", "start_generation"], dependent := ["batch_key", "start_cursor", "start_processed_count", "next_cursor", "row_count", "committed_at"] }
-  ]
-  members := [
-    { relationName := "publication_batch_receipt_coordinate", keyAttributes := ["candidate_id", "stage", "batch_key"], valueAttribute := "start_generation", projectionAttribute := "start_generation", attributes := ["candidate_id", "stage", "batch_key", "start_generation"], declaredKeys := [["candidate_id", "stage", "batch_key"], ["candidate_id", "stage", "start_generation"]], declaredFDs := [{ determinant := ["candidate_id", "stage", "batch_key"], dependent := ["start_generation"] }, { determinant := ["candidate_id", "stage", "start_generation"], dependent := ["batch_key"] }], sourceRelation := "publication_batch_receipt_seal", sourceRelationAttributes := ["candidate_id", "stage", "start_generation"], sourceAttributes := ["candidate_id", "stage", "start_generation"], memberAttributes := ["candidate_id", "stage", "start_generation"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_batch_receipt_start_cursor", keyAttributes := ["candidate_id", "stage", "start_generation"], valueAttribute := "start_cursor", projectionAttribute := "start_cursor", attributes := ["candidate_id", "stage", "start_generation", "start_cursor"], declaredKeys := [["candidate_id", "stage", "start_generation"]], declaredFDs := [{ determinant := ["candidate_id", "stage", "start_generation"], dependent := ["start_cursor"] }], sourceRelation := "publication_batch_receipt_seal", sourceRelationAttributes := ["candidate_id", "stage", "start_generation"], sourceAttributes := ["candidate_id", "stage", "start_generation"], memberAttributes := ["candidate_id", "stage", "start_generation"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_batch_receipt_start_processed_count", keyAttributes := ["candidate_id", "stage", "start_generation"], valueAttribute := "start_processed_count", projectionAttribute := "start_processed_count", attributes := ["candidate_id", "stage", "start_generation", "start_processed_count"], declaredKeys := [["candidate_id", "stage", "start_generation"]], declaredFDs := [{ determinant := ["candidate_id", "stage", "start_generation"], dependent := ["start_processed_count"] }], sourceRelation := "publication_batch_receipt_seal", sourceRelationAttributes := ["candidate_id", "stage", "start_generation"], sourceAttributes := ["candidate_id", "stage", "start_generation"], memberAttributes := ["candidate_id", "stage", "start_generation"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_batch_receipt_next_cursor", keyAttributes := ["candidate_id", "stage", "start_generation"], valueAttribute := "next_cursor", projectionAttribute := "next_cursor", attributes := ["candidate_id", "stage", "start_generation", "next_cursor"], declaredKeys := [["candidate_id", "stage", "start_generation"]], declaredFDs := [{ determinant := ["candidate_id", "stage", "start_generation"], dependent := ["next_cursor"] }], sourceRelation := "publication_batch_receipt_seal", sourceRelationAttributes := ["candidate_id", "stage", "start_generation"], sourceAttributes := ["candidate_id", "stage", "start_generation"], memberAttributes := ["candidate_id", "stage", "start_generation"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_batch_receipt_row_count", keyAttributes := ["candidate_id", "stage", "start_generation"], valueAttribute := "row_count", projectionAttribute := "row_count", attributes := ["candidate_id", "stage", "start_generation", "row_count"], declaredKeys := [["candidate_id", "stage", "start_generation"]], declaredFDs := [{ determinant := ["candidate_id", "stage", "start_generation"], dependent := ["row_count"] }], sourceRelation := "publication_batch_receipt_seal", sourceRelationAttributes := ["candidate_id", "stage", "start_generation"], sourceAttributes := ["candidate_id", "stage", "start_generation"], memberAttributes := ["candidate_id", "stage", "start_generation"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_batch_receipt_committed_at", keyAttributes := ["candidate_id", "stage", "start_generation"], valueAttribute := "committed_at", projectionAttribute := "committed_at", attributes := ["candidate_id", "stage", "start_generation", "committed_at"], declaredKeys := [["candidate_id", "stage", "start_generation"]], declaredFDs := [{ determinant := ["candidate_id", "stage", "start_generation"], dependent := ["committed_at"] }], sourceRelation := "publication_batch_receipt_seal", sourceRelationAttributes := ["candidate_id", "stage", "start_generation"], sourceAttributes := ["candidate_id", "stage", "start_generation"], memberAttributes := ["candidate_id", "stage", "start_generation"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem publication_batch_receipt_stored_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck publication_batch_receipt_stored_vertical_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_stored_vertical_view_projection :
-    VerticalFamilyViewProjection publication_batch_receipt_stored_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound publication_batch_receipt_stored_vertical_contract
-    publication_batch_receipt_stored_vertical_view_projection_check
-
-theorem publication_batch_receipt_stored_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck publication_batch_receipt_stored_vertical_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_stored_vertical_well_formed :
-    VerticalFamilyWellFormed publication_batch_receipt_stored_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound publication_batch_receipt_stored_vertical_contract
-    publication_batch_receipt_stored_vertical_well_formed_check
-
-theorem publication_batch_receipt_stored_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck publication_batch_receipt_stored_vertical_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_stored_vertical_lossless :
-    VerticalFamilyLossless publication_batch_receipt_stored_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound publication_batch_receipt_stored_vertical_contract
-    publication_batch_receipt_stored_vertical_lossless_join_check
-
-theorem publication_batch_receipt_stored_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck publication_batch_receipt_stored_vertical_contract = true := by
-  native_decide
-
-theorem publication_batch_receipt_stored_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving publication_batch_receipt_stored_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound publication_batch_receipt_stored_vertical_contract
-    publication_batch_receipt_stored_vertical_dependency_preservation_check
 
 def canonical_value_allocation_vertical_contract : VerticalFamilyContract where
   name := "canonical_value_allocation_vertical"
@@ -20667,656 +11792,6 @@ theorem tag_term_vertical_dependency_preserving :
   verticalFamilyDependencyPreservationCheck_sound tag_term_vertical_contract
     tag_term_vertical_dependency_preservation_check
 
-def source_build_vertical_contract : VerticalFamilyContract where
-  name := "source_build_vertical"
-  anchorRelation := "source_build_anchor"
-  sealRelation := "source_build_descriptor_seal"
-  keyAttributes := ["build_id"]
-  anchorAttributes := ["build_id"]
-  sealAttributes := ["build_id"]
-  semanticAttributes := ["build_id", "scope_key", "manifest_policy_id", "state", "created_at", "sealed_at"]
-  semanticFDs := [
-    { determinant := ["build_id"], dependent := ["scope_key", "manifest_policy_id", "state", "created_at", "sealed_at"] }
-  ]
-  viewAttributes := ["build_id", "scope_key", "manifest_policy_id", "state", "created_at", "sealed_at"]
-  viewFDs := [
-    { determinant := ["build_id"], dependent := ["scope_key", "manifest_policy_id", "state", "created_at", "sealed_at"] }
-  ]
-  members := [
-    { relationName := "source_build_scope_key", keyAttributes := ["build_id"], valueAttribute := "scope_key", projectionAttribute := "scope_key", attributes := ["build_id", "scope_key"], declaredKeys := [["build_id"]], declaredFDs := [{ determinant := ["build_id"], dependent := ["scope_key"] }], sourceRelation := "source_build_descriptor_seal", sourceRelationAttributes := ["build_id"], sourceAttributes := ["build_id"], memberAttributes := ["build_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "source_build_manifest_policy_id", keyAttributes := ["build_id"], valueAttribute := "manifest_policy_id", projectionAttribute := "manifest_policy_id", attributes := ["build_id", "manifest_policy_id"], declaredKeys := [["build_id"]], declaredFDs := [{ determinant := ["build_id"], dependent := ["manifest_policy_id"] }], sourceRelation := "source_build_descriptor_seal", sourceRelationAttributes := ["build_id"], sourceAttributes := ["build_id"], memberAttributes := ["build_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "source_build_state", keyAttributes := ["build_id"], valueAttribute := "state", projectionAttribute := "state", attributes := ["build_id", "state"], declaredKeys := [["build_id"]], declaredFDs := [{ determinant := ["build_id"], dependent := ["state"] }], sourceRelation := "source_build_descriptor_seal", sourceRelationAttributes := ["build_id"], sourceAttributes := ["build_id"], memberAttributes := ["build_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "source_build_created_at", keyAttributes := ["build_id"], valueAttribute := "created_at", projectionAttribute := "created_at", attributes := ["build_id", "created_at"], declaredKeys := [["build_id"]], declaredFDs := [{ determinant := ["build_id"], dependent := ["created_at"] }], sourceRelation := "source_build_descriptor_seal", sourceRelationAttributes := ["build_id"], sourceAttributes := ["build_id"], memberAttributes := ["build_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "source_build_sealed_at", keyAttributes := ["build_id"], valueAttribute := "sealed_at", projectionAttribute := "sealed_at", attributes := ["build_id", "sealed_at"], declaredKeys := [["build_id"]], declaredFDs := [{ determinant := ["build_id"], dependent := ["sealed_at"] }], sourceRelation := "source_build_descriptor_seal", sourceRelationAttributes := ["build_id"], sourceAttributes := ["build_id"], memberAttributes := ["build_id"], congruenceMembers := [], project := true, required := false }
-  ]
-  optionalPresence := some {
-    memberRelation := "source_build_sealed_at"
-    discriminatorRelation := "source_build_state"
-    discriminatorAttribute := "state"
-    presentValue := "SEALED"
-    absentValues := ["OPEN", "ABANDONED"]
-  }
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem source_build_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck source_build_vertical_contract = true := by
-  native_decide
-
-theorem source_build_vertical_view_projection :
-    VerticalFamilyViewProjection source_build_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound source_build_vertical_contract
-    source_build_vertical_view_projection_check
-
-theorem source_build_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck source_build_vertical_contract = true := by
-  native_decide
-
-theorem source_build_vertical_well_formed :
-    VerticalFamilyWellFormed source_build_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound source_build_vertical_contract
-    source_build_vertical_well_formed_check
-
-theorem source_build_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck source_build_vertical_contract = true := by
-  native_decide
-
-theorem source_build_vertical_lossless :
-    VerticalFamilyLossless source_build_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound source_build_vertical_contract
-    source_build_vertical_lossless_join_check
-
-theorem source_build_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck source_build_vertical_contract = true := by
-  native_decide
-
-theorem source_build_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving source_build_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound source_build_vertical_contract
-    source_build_vertical_dependency_preservation_check
-
-def build_manifest_vertical_contract : VerticalFamilyContract where
-  name := "build_manifest_vertical"
-  anchorRelation := "build_manifest_anchor"
-  sealRelation := "build_manifest_seal"
-  keyAttributes := ["build_id"]
-  anchorAttributes := ["build_id"]
-  sealAttributes := ["build_id"]
-  semanticAttributes := ["build_id", "manifest_sha256", "gallery_count", "file_count", "byte_count", "computed_at"]
-  semanticFDs := [
-    { determinant := ["build_id"], dependent := ["manifest_sha256", "gallery_count", "file_count", "byte_count", "computed_at"] }
-  ]
-  viewAttributes := ["build_id", "manifest_sha256", "gallery_count", "file_count", "byte_count", "computed_at"]
-  viewFDs := [
-    { determinant := ["build_id"], dependent := ["manifest_sha256", "gallery_count", "file_count", "byte_count", "computed_at"] }
-  ]
-  members := [
-    { relationName := "build_manifest_manifest_sha256", keyAttributes := ["build_id"], valueAttribute := "manifest_sha256", projectionAttribute := "manifest_sha256", attributes := ["build_id", "manifest_sha256"], declaredKeys := [["build_id"]], declaredFDs := [{ determinant := ["build_id"], dependent := ["manifest_sha256"] }], sourceRelation := "build_manifest_seal", sourceRelationAttributes := ["build_id"], sourceAttributes := ["build_id"], memberAttributes := ["build_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "source_build_discovery_gallery_count", keyAttributes := ["build_id"], valueAttribute := "gallery_count", projectionAttribute := "gallery_count", attributes := ["build_id", "gallery_count"], declaredKeys := [["build_id"]], declaredFDs := [{ determinant := ["build_id"], dependent := ["gallery_count"] }], sourceRelation := "build_manifest_seal", sourceRelationAttributes := ["build_id"], sourceAttributes := ["build_id"], memberAttributes := ["build_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "build_manifest_file_count", keyAttributes := ["build_id"], valueAttribute := "file_count", projectionAttribute := "file_count", attributes := ["build_id", "file_count"], declaredKeys := [["build_id"]], declaredFDs := [{ determinant := ["build_id"], dependent := ["file_count"] }], sourceRelation := "build_manifest_seal", sourceRelationAttributes := ["build_id"], sourceAttributes := ["build_id"], memberAttributes := ["build_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "build_manifest_byte_count", keyAttributes := ["build_id"], valueAttribute := "byte_count", projectionAttribute := "byte_count", attributes := ["build_id", "byte_count"], declaredKeys := [["build_id"]], declaredFDs := [{ determinant := ["build_id"], dependent := ["byte_count"] }], sourceRelation := "build_manifest_seal", sourceRelationAttributes := ["build_id"], sourceAttributes := ["build_id"], memberAttributes := ["build_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "source_build_sealed_at", keyAttributes := ["build_id"], valueAttribute := "sealed_at", projectionAttribute := "computed_at", attributes := ["build_id", "sealed_at"], declaredKeys := [["build_id"]], declaredFDs := [{ determinant := ["build_id"], dependent := ["sealed_at"] }], sourceRelation := "build_manifest_seal", sourceRelationAttributes := ["build_id"], sourceAttributes := ["build_id"], memberAttributes := ["build_id"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem build_manifest_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck build_manifest_vertical_contract = true := by
-  native_decide
-
-theorem build_manifest_vertical_view_projection :
-    VerticalFamilyViewProjection build_manifest_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound build_manifest_vertical_contract
-    build_manifest_vertical_view_projection_check
-
-theorem build_manifest_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck build_manifest_vertical_contract = true := by
-  native_decide
-
-theorem build_manifest_vertical_well_formed :
-    VerticalFamilyWellFormed build_manifest_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound build_manifest_vertical_contract
-    build_manifest_vertical_well_formed_check
-
-theorem build_manifest_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck build_manifest_vertical_contract = true := by
-  native_decide
-
-theorem build_manifest_vertical_lossless :
-    VerticalFamilyLossless build_manifest_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound build_manifest_vertical_contract
-    build_manifest_vertical_lossless_join_check
-
-theorem build_manifest_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck build_manifest_vertical_contract = true := by
-  native_decide
-
-theorem build_manifest_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving build_manifest_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound build_manifest_vertical_contract
-    build_manifest_vertical_dependency_preservation_check
-
-def source_snapshot_manifest_identity_vertical_contract : VerticalFamilyContract where
-  name := "source_snapshot_manifest_identity_vertical"
-  anchorRelation := "source_snapshot_manifest_identity_anchor"
-  sealRelation := "source_snapshot_manifest_identity_seal"
-  keyAttributes := ["snapshot_manifest_sha256"]
-  anchorAttributes := ["snapshot_manifest_sha256"]
-  sealAttributes := ["snapshot_manifest_sha256"]
-  semanticAttributes := ["snapshot_manifest_sha256", "gallery_count", "file_count", "byte_count"]
-  semanticFDs := [
-    { determinant := ["snapshot_manifest_sha256"], dependent := ["gallery_count", "file_count", "byte_count"] }
-  ]
-  viewAttributes := ["snapshot_manifest_sha256", "gallery_count", "file_count", "byte_count"]
-  viewFDs := [
-    { determinant := ["snapshot_manifest_sha256"], dependent := ["gallery_count", "file_count", "byte_count"] }
-  ]
-  members := [
-    { relationName := "source_snapshot_manifest_identity_gallery_count", keyAttributes := ["snapshot_manifest_sha256"], valueAttribute := "gallery_count", projectionAttribute := "gallery_count", attributes := ["snapshot_manifest_sha256", "gallery_count"], declaredKeys := [["snapshot_manifest_sha256"]], declaredFDs := [{ determinant := ["snapshot_manifest_sha256"], dependent := ["gallery_count"] }], sourceRelation := "source_snapshot_manifest_identity_seal", sourceRelationAttributes := ["snapshot_manifest_sha256"], sourceAttributes := ["snapshot_manifest_sha256"], memberAttributes := ["snapshot_manifest_sha256"], congruenceMembers := [], project := true, required := true },
-    { relationName := "source_snapshot_manifest_identity_file_count", keyAttributes := ["snapshot_manifest_sha256"], valueAttribute := "file_count", projectionAttribute := "file_count", attributes := ["snapshot_manifest_sha256", "file_count"], declaredKeys := [["snapshot_manifest_sha256"]], declaredFDs := [{ determinant := ["snapshot_manifest_sha256"], dependent := ["file_count"] }], sourceRelation := "source_snapshot_manifest_identity_seal", sourceRelationAttributes := ["snapshot_manifest_sha256"], sourceAttributes := ["snapshot_manifest_sha256"], memberAttributes := ["snapshot_manifest_sha256"], congruenceMembers := [], project := true, required := true },
-    { relationName := "source_snapshot_manifest_identity_byte_count", keyAttributes := ["snapshot_manifest_sha256"], valueAttribute := "byte_count", projectionAttribute := "byte_count", attributes := ["snapshot_manifest_sha256", "byte_count"], declaredKeys := [["snapshot_manifest_sha256"]], declaredFDs := [{ determinant := ["snapshot_manifest_sha256"], dependent := ["byte_count"] }], sourceRelation := "source_snapshot_manifest_identity_seal", sourceRelationAttributes := ["snapshot_manifest_sha256"], sourceAttributes := ["snapshot_manifest_sha256"], memberAttributes := ["snapshot_manifest_sha256"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem source_snapshot_manifest_identity_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck source_snapshot_manifest_identity_vertical_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_vertical_view_projection :
-    VerticalFamilyViewProjection source_snapshot_manifest_identity_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound source_snapshot_manifest_identity_vertical_contract
-    source_snapshot_manifest_identity_vertical_view_projection_check
-
-theorem source_snapshot_manifest_identity_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck source_snapshot_manifest_identity_vertical_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_vertical_well_formed :
-    VerticalFamilyWellFormed source_snapshot_manifest_identity_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound source_snapshot_manifest_identity_vertical_contract
-    source_snapshot_manifest_identity_vertical_well_formed_check
-
-theorem source_snapshot_manifest_identity_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck source_snapshot_manifest_identity_vertical_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_vertical_lossless :
-    VerticalFamilyLossless source_snapshot_manifest_identity_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound source_snapshot_manifest_identity_vertical_contract
-    source_snapshot_manifest_identity_vertical_lossless_join_check
-
-theorem source_snapshot_manifest_identity_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck source_snapshot_manifest_identity_vertical_contract = true := by
-  native_decide
-
-theorem source_snapshot_manifest_identity_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving source_snapshot_manifest_identity_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound source_snapshot_manifest_identity_vertical_contract
-    source_snapshot_manifest_identity_vertical_dependency_preservation_check
-
-def manifest_policy_vertical_contract : VerticalFamilyContract where
-  name := "manifest_policy_vertical"
-  anchorRelation := "manifest_policy_anchor"
-  sealRelation := "manifest_policy_seal"
-  keyAttributes := ["manifest_policy_id"]
-  anchorAttributes := ["manifest_policy_id"]
-  sealAttributes := ["manifest_policy_id"]
-  semanticAttributes := ["manifest_policy_id", "manifest_algorithm_version", "file_order_version"]
-  semanticFDs := [
-    { determinant := ["manifest_policy_id"], dependent := ["manifest_algorithm_version", "file_order_version"] },
-    { determinant := ["manifest_algorithm_version", "file_order_version"], dependent := ["manifest_policy_id"] }
-  ]
-  viewAttributes := ["manifest_policy_id", "manifest_algorithm_version", "file_order_version"]
-  viewFDs := [
-    { determinant := ["manifest_policy_id"], dependent := ["manifest_algorithm_version", "file_order_version"] },
-    { determinant := ["manifest_algorithm_version", "file_order_version"], dependent := ["manifest_policy_id"] }
-  ]
-  members := [
-    { relationName := "manifest_policy_manifest_algorithm_version", keyAttributes := ["manifest_policy_id"], valueAttribute := "manifest_algorithm_version", projectionAttribute := "manifest_algorithm_version", attributes := ["manifest_policy_id", "manifest_algorithm_version"], declaredKeys := [["manifest_policy_id"]], declaredFDs := [{ determinant := ["manifest_policy_id"], dependent := ["manifest_algorithm_version"] }], sourceRelation := "manifest_policy_seal", sourceRelationAttributes := ["manifest_policy_id"], sourceAttributes := ["manifest_policy_id"], memberAttributes := ["manifest_policy_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "manifest_policy_file_order_version", keyAttributes := ["manifest_policy_id"], valueAttribute := "file_order_version", projectionAttribute := "file_order_version", attributes := ["manifest_policy_id", "file_order_version"], declaredKeys := [["manifest_policy_id"]], declaredFDs := [{ determinant := ["manifest_policy_id"], dependent := ["file_order_version"] }], sourceRelation := "manifest_policy_seal", sourceRelationAttributes := ["manifest_policy_id"], sourceAttributes := ["manifest_policy_id"], memberAttributes := ["manifest_policy_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "manifest_policy_identity", keyAttributes := ["manifest_algorithm_version", "file_order_version"], valueAttribute := "manifest_policy_id", projectionAttribute := "manifest_policy_id", attributes := ["manifest_algorithm_version", "file_order_version", "manifest_policy_id"], declaredKeys := [["manifest_algorithm_version", "file_order_version"], ["manifest_policy_id"]], declaredFDs := [{ determinant := ["manifest_algorithm_version", "file_order_version"], dependent := ["manifest_policy_id"] }, { determinant := ["manifest_policy_id"], dependent := ["manifest_algorithm_version", "file_order_version"] }], sourceRelation := "manifest_policy_seal", sourceRelationAttributes := ["manifest_policy_id"], sourceAttributes := ["manifest_policy_id"], memberAttributes := ["manifest_policy_id"], congruenceMembers := [], project := false, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem manifest_policy_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck manifest_policy_vertical_contract = true := by
-  native_decide
-
-theorem manifest_policy_vertical_view_projection :
-    VerticalFamilyViewProjection manifest_policy_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound manifest_policy_vertical_contract
-    manifest_policy_vertical_view_projection_check
-
-theorem manifest_policy_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck manifest_policy_vertical_contract = true := by
-  native_decide
-
-theorem manifest_policy_vertical_well_formed :
-    VerticalFamilyWellFormed manifest_policy_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound manifest_policy_vertical_contract
-    manifest_policy_vertical_well_formed_check
-
-theorem manifest_policy_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck manifest_policy_vertical_contract = true := by
-  native_decide
-
-theorem manifest_policy_vertical_lossless :
-    VerticalFamilyLossless manifest_policy_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound manifest_policy_vertical_contract
-    manifest_policy_vertical_lossless_join_check
-
-theorem manifest_policy_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck manifest_policy_vertical_contract = true := by
-  native_decide
-
-theorem manifest_policy_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving manifest_policy_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound manifest_policy_vertical_contract
-    manifest_policy_vertical_dependency_preservation_check
-
-def source_scope_vertical_contract : VerticalFamilyContract where
-  name := "source_scope_vertical"
-  anchorRelation := "source_scope_anchor"
-  sealRelation := "source_scope_seal"
-  keyAttributes := ["scope_key"]
-  anchorAttributes := ["scope_key"]
-  sealAttributes := ["scope_key"]
-  semanticAttributes := ["scope_key", "source_provider", "source_root_sha256", "identity_policy_version"]
-  semanticFDs := [
-    { determinant := ["scope_key"], dependent := ["source_provider", "source_root_sha256", "identity_policy_version"] },
-    { determinant := ["source_provider", "source_root_sha256", "identity_policy_version"], dependent := ["scope_key"] }
-  ]
-  viewAttributes := ["scope_key", "source_provider", "source_root_sha256", "identity_policy_version"]
-  viewFDs := [
-    { determinant := ["scope_key"], dependent := ["source_provider", "source_root_sha256", "identity_policy_version"] },
-    { determinant := ["source_provider", "source_root_sha256", "identity_policy_version"], dependent := ["scope_key"] }
-  ]
-  members := [
-    { relationName := "source_scope_source_provider", keyAttributes := ["scope_key"], valueAttribute := "source_provider", projectionAttribute := "source_provider", attributes := ["scope_key", "source_provider"], declaredKeys := [["scope_key"]], declaredFDs := [{ determinant := ["scope_key"], dependent := ["source_provider"] }], sourceRelation := "source_scope_seal", sourceRelationAttributes := ["scope_key"], sourceAttributes := ["scope_key"], memberAttributes := ["scope_key"], congruenceMembers := [], project := true, required := true },
-    { relationName := "source_scope_source_root_sha256", keyAttributes := ["scope_key"], valueAttribute := "source_root_sha256", projectionAttribute := "source_root_sha256", attributes := ["scope_key", "source_root_sha256"], declaredKeys := [["scope_key"]], declaredFDs := [{ determinant := ["scope_key"], dependent := ["source_root_sha256"] }], sourceRelation := "source_scope_seal", sourceRelationAttributes := ["scope_key"], sourceAttributes := ["scope_key"], memberAttributes := ["scope_key"], congruenceMembers := [], project := true, required := true },
-    { relationName := "source_scope_identity_policy_version", keyAttributes := ["scope_key"], valueAttribute := "identity_policy_version", projectionAttribute := "identity_policy_version", attributes := ["scope_key", "identity_policy_version"], declaredKeys := [["scope_key"]], declaredFDs := [{ determinant := ["scope_key"], dependent := ["identity_policy_version"] }], sourceRelation := "source_scope_seal", sourceRelationAttributes := ["scope_key"], sourceAttributes := ["scope_key"], memberAttributes := ["scope_key"], congruenceMembers := [], project := true, required := true },
-    { relationName := "source_scope_identity", keyAttributes := ["source_provider", "source_root_sha256", "identity_policy_version"], valueAttribute := "scope_key", projectionAttribute := "scope_key", attributes := ["source_provider", "source_root_sha256", "identity_policy_version", "scope_key"], declaredKeys := [["source_provider", "source_root_sha256", "identity_policy_version"], ["scope_key"]], declaredFDs := [{ determinant := ["source_provider", "source_root_sha256", "identity_policy_version"], dependent := ["scope_key"] }, { determinant := ["scope_key"], dependent := ["source_provider", "source_root_sha256", "identity_policy_version"] }], sourceRelation := "source_scope_seal", sourceRelationAttributes := ["scope_key"], sourceAttributes := ["scope_key"], memberAttributes := ["scope_key"], congruenceMembers := [], project := false, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem source_scope_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck source_scope_vertical_contract = true := by
-  native_decide
-
-theorem source_scope_vertical_view_projection :
-    VerticalFamilyViewProjection source_scope_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound source_scope_vertical_contract
-    source_scope_vertical_view_projection_check
-
-theorem source_scope_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck source_scope_vertical_contract = true := by
-  native_decide
-
-theorem source_scope_vertical_well_formed :
-    VerticalFamilyWellFormed source_scope_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound source_scope_vertical_contract
-    source_scope_vertical_well_formed_check
-
-theorem source_scope_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck source_scope_vertical_contract = true := by
-  native_decide
-
-theorem source_scope_vertical_lossless :
-    VerticalFamilyLossless source_scope_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound source_scope_vertical_contract
-    source_scope_vertical_lossless_join_check
-
-theorem source_scope_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck source_scope_vertical_contract = true := by
-  native_decide
-
-theorem source_scope_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving source_scope_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound source_scope_vertical_contract
-    source_scope_vertical_dependency_preservation_check
-
-def analysis_policy_vertical_contract : VerticalFamilyContract where
-  name := "analysis_policy_vertical"
-  anchorRelation := "analysis_policy_anchor"
-  sealRelation := "analysis_policy_seal"
-  keyAttributes := ["policy_id"]
-  anchorAttributes := ["policy_id"]
-  sealAttributes := ["policy_id"]
-  semanticAttributes := ["policy_id", "algorithm_version", "spam_artist_threshold", "spam_occurrence_threshold", "content_owner_rule_version", "gid_winner_rule_version"]
-  semanticFDs := [
-    { determinant := ["policy_id"], dependent := ["algorithm_version", "spam_artist_threshold", "spam_occurrence_threshold", "content_owner_rule_version", "gid_winner_rule_version"] },
-    { determinant := ["algorithm_version", "spam_artist_threshold", "spam_occurrence_threshold", "content_owner_rule_version", "gid_winner_rule_version"], dependent := ["policy_id"] }
-  ]
-  viewAttributes := ["policy_id", "algorithm_version", "spam_artist_threshold", "spam_occurrence_threshold", "content_owner_rule_version", "gid_winner_rule_version"]
-  viewFDs := [
-    { determinant := ["policy_id"], dependent := ["algorithm_version", "spam_artist_threshold", "spam_occurrence_threshold", "content_owner_rule_version", "gid_winner_rule_version"] },
-    { determinant := ["algorithm_version", "spam_artist_threshold", "spam_occurrence_threshold", "content_owner_rule_version", "gid_winner_rule_version"], dependent := ["policy_id"] }
-  ]
-  members := [
-    { relationName := "analysis_policy_algorithm_version", keyAttributes := ["policy_id"], valueAttribute := "algorithm_version", projectionAttribute := "algorithm_version", attributes := ["policy_id", "algorithm_version"], declaredKeys := [["policy_id"]], declaredFDs := [{ determinant := ["policy_id"], dependent := ["algorithm_version"] }], sourceRelation := "analysis_policy_seal", sourceRelationAttributes := ["policy_id"], sourceAttributes := ["policy_id"], memberAttributes := ["policy_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_policy_spam_artist_threshold", keyAttributes := ["policy_id"], valueAttribute := "spam_artist_threshold", projectionAttribute := "spam_artist_threshold", attributes := ["policy_id", "spam_artist_threshold"], declaredKeys := [["policy_id"]], declaredFDs := [{ determinant := ["policy_id"], dependent := ["spam_artist_threshold"] }], sourceRelation := "analysis_policy_seal", sourceRelationAttributes := ["policy_id"], sourceAttributes := ["policy_id"], memberAttributes := ["policy_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_policy_spam_occurrence_threshold", keyAttributes := ["policy_id"], valueAttribute := "spam_occurrence_threshold", projectionAttribute := "spam_occurrence_threshold", attributes := ["policy_id", "spam_occurrence_threshold"], declaredKeys := [["policy_id"]], declaredFDs := [{ determinant := ["policy_id"], dependent := ["spam_occurrence_threshold"] }], sourceRelation := "analysis_policy_seal", sourceRelationAttributes := ["policy_id"], sourceAttributes := ["policy_id"], memberAttributes := ["policy_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_policy_content_owner_rule_version", keyAttributes := ["policy_id"], valueAttribute := "content_owner_rule_version", projectionAttribute := "content_owner_rule_version", attributes := ["policy_id", "content_owner_rule_version"], declaredKeys := [["policy_id"]], declaredFDs := [{ determinant := ["policy_id"], dependent := ["content_owner_rule_version"] }], sourceRelation := "analysis_policy_seal", sourceRelationAttributes := ["policy_id"], sourceAttributes := ["policy_id"], memberAttributes := ["policy_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_policy_gid_winner_rule_version", keyAttributes := ["policy_id"], valueAttribute := "gid_winner_rule_version", projectionAttribute := "gid_winner_rule_version", attributes := ["policy_id", "gid_winner_rule_version"], declaredKeys := [["policy_id"]], declaredFDs := [{ determinant := ["policy_id"], dependent := ["gid_winner_rule_version"] }], sourceRelation := "analysis_policy_seal", sourceRelationAttributes := ["policy_id"], sourceAttributes := ["policy_id"], memberAttributes := ["policy_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "analysis_policy_identity", keyAttributes := ["algorithm_version", "spam_artist_threshold", "spam_occurrence_threshold", "content_owner_rule_version", "gid_winner_rule_version"], valueAttribute := "policy_id", projectionAttribute := "policy_id", attributes := ["algorithm_version", "spam_artist_threshold", "spam_occurrence_threshold", "content_owner_rule_version", "gid_winner_rule_version", "policy_id"], declaredKeys := [["algorithm_version", "spam_artist_threshold", "spam_occurrence_threshold", "content_owner_rule_version", "gid_winner_rule_version"], ["policy_id"]], declaredFDs := [{ determinant := ["algorithm_version", "spam_artist_threshold", "spam_occurrence_threshold", "content_owner_rule_version", "gid_winner_rule_version"], dependent := ["policy_id"] }, { determinant := ["policy_id"], dependent := ["algorithm_version", "spam_artist_threshold", "spam_occurrence_threshold", "content_owner_rule_version", "gid_winner_rule_version"] }], sourceRelation := "analysis_policy_seal", sourceRelationAttributes := ["policy_id"], sourceAttributes := ["policy_id"], memberAttributes := ["policy_id"], congruenceMembers := [], project := false, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem analysis_policy_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck analysis_policy_vertical_contract = true := by
-  native_decide
-
-theorem analysis_policy_vertical_view_projection :
-    VerticalFamilyViewProjection analysis_policy_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound analysis_policy_vertical_contract
-    analysis_policy_vertical_view_projection_check
-
-theorem analysis_policy_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck analysis_policy_vertical_contract = true := by
-  native_decide
-
-theorem analysis_policy_vertical_well_formed :
-    VerticalFamilyWellFormed analysis_policy_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound analysis_policy_vertical_contract
-    analysis_policy_vertical_well_formed_check
-
-theorem analysis_policy_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck analysis_policy_vertical_contract = true := by
-  native_decide
-
-theorem analysis_policy_vertical_lossless :
-    VerticalFamilyLossless analysis_policy_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound analysis_policy_vertical_contract
-    analysis_policy_vertical_lossless_join_check
-
-theorem analysis_policy_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck analysis_policy_vertical_contract = true := by
-  native_decide
-
-theorem analysis_policy_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving analysis_policy_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound analysis_policy_vertical_contract
-    analysis_policy_vertical_dependency_preservation_check
-
-def artifact_zip_writer_policy_vertical_contract : VerticalFamilyContract where
-  name := "artifact_zip_writer_policy_vertical"
-  anchorRelation := "artifact_zip_writer_policy_anchor"
-  sealRelation := "artifact_zip_writer_policy_seal"
-  keyAttributes := ["artifact_algorithm_version"]
-  anchorAttributes := ["artifact_algorithm_version"]
-  sealAttributes := ["artifact_algorithm_version"]
-  semanticAttributes := ["artifact_algorithm_version", "zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"]
-  semanticFDs := [
-    { determinant := ["artifact_algorithm_version"], dependent := ["zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"] },
-    { determinant := ["zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"], dependent := ["artifact_algorithm_version"] }
-  ]
-  viewAttributes := ["artifact_algorithm_version", "zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"]
-  viewFDs := [
-    { determinant := ["artifact_algorithm_version"], dependent := ["zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"] },
-    { determinant := ["zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"], dependent := ["artifact_algorithm_version"] }
-  ]
-  members := [
-    { relationName := "artifact_zip_writer_policy_zip_codec_version", keyAttributes := ["artifact_algorithm_version"], valueAttribute := "zip_codec_version", projectionAttribute := "zip_codec_version", attributes := ["artifact_algorithm_version", "zip_codec_version"], declaredKeys := [["artifact_algorithm_version"]], declaredFDs := [{ determinant := ["artifact_algorithm_version"], dependent := ["zip_codec_version"] }], sourceRelation := "artifact_zip_writer_policy_seal", sourceRelationAttributes := ["artifact_algorithm_version"], sourceAttributes := ["artifact_algorithm_version"], memberAttributes := ["artifact_algorithm_version"], congruenceMembers := [], project := true, required := true },
-    { relationName := "artifact_zip_writer_policy_compression_method", keyAttributes := ["artifact_algorithm_version"], valueAttribute := "compression_method", projectionAttribute := "compression_method", attributes := ["artifact_algorithm_version", "compression_method"], declaredKeys := [["artifact_algorithm_version"]], declaredFDs := [{ determinant := ["artifact_algorithm_version"], dependent := ["compression_method"] }], sourceRelation := "artifact_zip_writer_policy_seal", sourceRelationAttributes := ["artifact_algorithm_version"], sourceAttributes := ["artifact_algorithm_version"], memberAttributes := ["artifact_algorithm_version"], congruenceMembers := [], project := true, required := true },
-    { relationName := "artifact_zip_writer_policy_compression_level", keyAttributes := ["artifact_algorithm_version"], valueAttribute := "compression_level", projectionAttribute := "compression_level", attributes := ["artifact_algorithm_version", "compression_level"], declaredKeys := [["artifact_algorithm_version"]], declaredFDs := [{ determinant := ["artifact_algorithm_version"], dependent := ["compression_level"] }], sourceRelation := "artifact_zip_writer_policy_seal", sourceRelationAttributes := ["artifact_algorithm_version"], sourceAttributes := ["artifact_algorithm_version"], memberAttributes := ["artifact_algorithm_version"], congruenceMembers := [], project := true, required := true },
-    { relationName := "artifact_zip_writer_policy_dos_date", keyAttributes := ["artifact_algorithm_version"], valueAttribute := "dos_date", projectionAttribute := "dos_date", attributes := ["artifact_algorithm_version", "dos_date"], declaredKeys := [["artifact_algorithm_version"]], declaredFDs := [{ determinant := ["artifact_algorithm_version"], dependent := ["dos_date"] }], sourceRelation := "artifact_zip_writer_policy_seal", sourceRelationAttributes := ["artifact_algorithm_version"], sourceAttributes := ["artifact_algorithm_version"], memberAttributes := ["artifact_algorithm_version"], congruenceMembers := [], project := true, required := true },
-    { relationName := "artifact_zip_writer_policy_dos_time", keyAttributes := ["artifact_algorithm_version"], valueAttribute := "dos_time", projectionAttribute := "dos_time", attributes := ["artifact_algorithm_version", "dos_time"], declaredKeys := [["artifact_algorithm_version"]], declaredFDs := [{ determinant := ["artifact_algorithm_version"], dependent := ["dos_time"] }], sourceRelation := "artifact_zip_writer_policy_seal", sourceRelationAttributes := ["artifact_algorithm_version"], sourceAttributes := ["artifact_algorithm_version"], memberAttributes := ["artifact_algorithm_version"], congruenceMembers := [], project := true, required := true },
-    { relationName := "artifact_zip_writer_policy_unix_mode", keyAttributes := ["artifact_algorithm_version"], valueAttribute := "unix_mode", projectionAttribute := "unix_mode", attributes := ["artifact_algorithm_version", "unix_mode"], declaredKeys := [["artifact_algorithm_version"]], declaredFDs := [{ determinant := ["artifact_algorithm_version"], dependent := ["unix_mode"] }], sourceRelation := "artifact_zip_writer_policy_seal", sourceRelationAttributes := ["artifact_algorithm_version"], sourceAttributes := ["artifact_algorithm_version"], memberAttributes := ["artifact_algorithm_version"], congruenceMembers := [], project := true, required := true },
-    { relationName := "artifact_zip_writer_policy_general_purpose_flags", keyAttributes := ["artifact_algorithm_version"], valueAttribute := "general_purpose_flags", projectionAttribute := "general_purpose_flags", attributes := ["artifact_algorithm_version", "general_purpose_flags"], declaredKeys := [["artifact_algorithm_version"]], declaredFDs := [{ determinant := ["artifact_algorithm_version"], dependent := ["general_purpose_flags"] }], sourceRelation := "artifact_zip_writer_policy_seal", sourceRelationAttributes := ["artifact_algorithm_version"], sourceAttributes := ["artifact_algorithm_version"], memberAttributes := ["artifact_algorithm_version"], congruenceMembers := [], project := true, required := true },
-    { relationName := "artifact_zip_writer_policy_create_system", keyAttributes := ["artifact_algorithm_version"], valueAttribute := "create_system", projectionAttribute := "create_system", attributes := ["artifact_algorithm_version", "create_system"], declaredKeys := [["artifact_algorithm_version"]], declaredFDs := [{ determinant := ["artifact_algorithm_version"], dependent := ["create_system"] }], sourceRelation := "artifact_zip_writer_policy_seal", sourceRelationAttributes := ["artifact_algorithm_version"], sourceAttributes := ["artifact_algorithm_version"], memberAttributes := ["artifact_algorithm_version"], congruenceMembers := [], project := true, required := true },
-    { relationName := "artifact_zip_writer_policy_archive_name_codec_version", keyAttributes := ["artifact_algorithm_version"], valueAttribute := "archive_name_codec_version", projectionAttribute := "archive_name_codec_version", attributes := ["artifact_algorithm_version", "archive_name_codec_version"], declaredKeys := [["artifact_algorithm_version"]], declaredFDs := [{ determinant := ["artifact_algorithm_version"], dependent := ["archive_name_codec_version"] }], sourceRelation := "artifact_zip_writer_policy_seal", sourceRelationAttributes := ["artifact_algorithm_version"], sourceAttributes := ["artifact_algorithm_version"], memberAttributes := ["artifact_algorithm_version"], congruenceMembers := [], project := true, required := true },
-    { relationName := "artifact_zip_writer_policy_artifact_name_codec_version", keyAttributes := ["artifact_algorithm_version"], valueAttribute := "artifact_name_codec_version", projectionAttribute := "artifact_name_codec_version", attributes := ["artifact_algorithm_version", "artifact_name_codec_version"], declaredKeys := [["artifact_algorithm_version"]], declaredFDs := [{ determinant := ["artifact_algorithm_version"], dependent := ["artifact_name_codec_version"] }], sourceRelation := "artifact_zip_writer_policy_seal", sourceRelationAttributes := ["artifact_algorithm_version"], sourceAttributes := ["artifact_algorithm_version"], memberAttributes := ["artifact_algorithm_version"], congruenceMembers := [], project := true, required := true },
-    { relationName := "artifact_zip_writer_policy_identity", keyAttributes := ["zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"], valueAttribute := "artifact_algorithm_version", projectionAttribute := "artifact_algorithm_version", attributes := ["zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version", "artifact_algorithm_version"], declaredKeys := [["zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"], ["artifact_algorithm_version"]], declaredFDs := [{ determinant := ["zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"], dependent := ["artifact_algorithm_version"] }, { determinant := ["artifact_algorithm_version"], dependent := ["zip_codec_version", "compression_method", "compression_level", "dos_date", "dos_time", "unix_mode", "general_purpose_flags", "create_system", "archive_name_codec_version", "artifact_name_codec_version"] }], sourceRelation := "artifact_zip_writer_policy_seal", sourceRelationAttributes := ["artifact_algorithm_version"], sourceAttributes := ["artifact_algorithm_version"], memberAttributes := ["artifact_algorithm_version"], congruenceMembers := [], project := false, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem artifact_zip_writer_policy_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck artifact_zip_writer_policy_vertical_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_vertical_view_projection :
-    VerticalFamilyViewProjection artifact_zip_writer_policy_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound artifact_zip_writer_policy_vertical_contract
-    artifact_zip_writer_policy_vertical_view_projection_check
-
-theorem artifact_zip_writer_policy_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck artifact_zip_writer_policy_vertical_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_vertical_well_formed :
-    VerticalFamilyWellFormed artifact_zip_writer_policy_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound artifact_zip_writer_policy_vertical_contract
-    artifact_zip_writer_policy_vertical_well_formed_check
-
-theorem artifact_zip_writer_policy_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck artifact_zip_writer_policy_vertical_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_vertical_lossless :
-    VerticalFamilyLossless artifact_zip_writer_policy_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound artifact_zip_writer_policy_vertical_contract
-    artifact_zip_writer_policy_vertical_lossless_join_check
-
-theorem artifact_zip_writer_policy_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck artifact_zip_writer_policy_vertical_contract = true := by
-  native_decide
-
-theorem artifact_zip_writer_policy_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving artifact_zip_writer_policy_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound artifact_zip_writer_policy_vertical_contract
-    artifact_zip_writer_policy_vertical_dependency_preservation_check
-
-def artifact_storage_codec_vertical_contract : VerticalFamilyContract where
-  name := "artifact_storage_codec_vertical"
-  anchorRelation := "artifact_storage_codec_anchor"
-  sealRelation := "artifact_storage_codec_seal"
-  keyAttributes := ["storage_codec_version"]
-  anchorAttributes := ["storage_codec_version"]
-  sealAttributes := ["storage_codec_version"]
-  semanticAttributes := ["storage_codec_version", "adapter_id", "locator_codec_version", "protection_token_codec_version"]
-  semanticFDs := [
-    { determinant := ["storage_codec_version"], dependent := ["adapter_id", "locator_codec_version", "protection_token_codec_version"] },
-    { determinant := ["adapter_id"], dependent := ["storage_codec_version", "locator_codec_version", "protection_token_codec_version"] }
-  ]
-  viewAttributes := ["storage_codec_version", "adapter_id", "locator_codec_version", "protection_token_codec_version"]
-  viewFDs := [
-    { determinant := ["storage_codec_version"], dependent := ["adapter_id", "locator_codec_version", "protection_token_codec_version"] },
-    { determinant := ["adapter_id"], dependent := ["storage_codec_version", "locator_codec_version", "protection_token_codec_version"] }
-  ]
-  members := [
-    { relationName := "artifact_storage_codec_adapter_id", keyAttributes := ["storage_codec_version"], valueAttribute := "adapter_id", projectionAttribute := "adapter_id", attributes := ["storage_codec_version", "adapter_id"], declaredKeys := [["storage_codec_version"], ["adapter_id"]], declaredFDs := [{ determinant := ["storage_codec_version"], dependent := ["adapter_id"] }, { determinant := ["adapter_id"], dependent := ["storage_codec_version"] }], sourceRelation := "artifact_storage_codec_seal", sourceRelationAttributes := ["storage_codec_version"], sourceAttributes := ["storage_codec_version"], memberAttributes := ["storage_codec_version"], congruenceMembers := [], project := true, required := true },
-    { relationName := "artifact_storage_codec_locator_codec_version", keyAttributes := ["storage_codec_version"], valueAttribute := "locator_codec_version", projectionAttribute := "locator_codec_version", attributes := ["storage_codec_version", "locator_codec_version"], declaredKeys := [["storage_codec_version"]], declaredFDs := [{ determinant := ["storage_codec_version"], dependent := ["locator_codec_version"] }], sourceRelation := "artifact_storage_codec_seal", sourceRelationAttributes := ["storage_codec_version"], sourceAttributes := ["storage_codec_version"], memberAttributes := ["storage_codec_version"], congruenceMembers := [], project := true, required := true },
-    { relationName := "artifact_storage_codec_protection_token_codec_version", keyAttributes := ["storage_codec_version"], valueAttribute := "protection_token_codec_version", projectionAttribute := "protection_token_codec_version", attributes := ["storage_codec_version", "protection_token_codec_version"], declaredKeys := [["storage_codec_version"]], declaredFDs := [{ determinant := ["storage_codec_version"], dependent := ["protection_token_codec_version"] }], sourceRelation := "artifact_storage_codec_seal", sourceRelationAttributes := ["storage_codec_version"], sourceAttributes := ["storage_codec_version"], memberAttributes := ["storage_codec_version"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem artifact_storage_codec_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck artifact_storage_codec_vertical_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_vertical_view_projection :
-    VerticalFamilyViewProjection artifact_storage_codec_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound artifact_storage_codec_vertical_contract
-    artifact_storage_codec_vertical_view_projection_check
-
-theorem artifact_storage_codec_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck artifact_storage_codec_vertical_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_vertical_well_formed :
-    VerticalFamilyWellFormed artifact_storage_codec_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound artifact_storage_codec_vertical_contract
-    artifact_storage_codec_vertical_well_formed_check
-
-theorem artifact_storage_codec_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck artifact_storage_codec_vertical_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_vertical_lossless :
-    VerticalFamilyLossless artifact_storage_codec_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound artifact_storage_codec_vertical_contract
-    artifact_storage_codec_vertical_lossless_join_check
-
-theorem artifact_storage_codec_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck artifact_storage_codec_vertical_contract = true := by
-  native_decide
-
-theorem artifact_storage_codec_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving artifact_storage_codec_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound artifact_storage_codec_vertical_contract
-    artifact_storage_codec_vertical_dependency_preservation_check
-
-def artifact_policy_semantics_vertical_contract : VerticalFamilyContract where
-  name := "artifact_policy_semantics_vertical"
-  anchorRelation := "artifact_policy_semantics_anchor"
-  sealRelation := "artifact_policy_semantics_seal"
-  keyAttributes := ["policy_component_sha256"]
-  anchorAttributes := ["policy_component_sha256"]
-  sealAttributes := ["policy_component_sha256"]
-  semanticAttributes := ["policy_component_sha256", "artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"]
-  semanticFDs := [
-    { determinant := ["policy_component_sha256"], dependent := ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"] },
-    { determinant := ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"], dependent := ["policy_component_sha256"] }
-  ]
-  viewAttributes := ["policy_component_sha256", "artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"]
-  viewFDs := [
-    { determinant := ["policy_component_sha256"], dependent := ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"] },
-    { determinant := ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"], dependent := ["policy_component_sha256"] }
-  ]
-  members := [
-    { relationName := "artifact_policy_semantics_artifact_algorithm_version", keyAttributes := ["policy_component_sha256"], valueAttribute := "artifact_algorithm_version", projectionAttribute := "artifact_algorithm_version", attributes := ["policy_component_sha256", "artifact_algorithm_version"], declaredKeys := [["policy_component_sha256"]], declaredFDs := [{ determinant := ["policy_component_sha256"], dependent := ["artifact_algorithm_version"] }], sourceRelation := "artifact_policy_semantics_seal", sourceRelationAttributes := ["policy_component_sha256"], sourceAttributes := ["policy_component_sha256"], memberAttributes := ["policy_component_sha256"], congruenceMembers := [], project := true, required := true },
-    { relationName := "artifact_policy_semantics_max_image_short_side", keyAttributes := ["policy_component_sha256"], valueAttribute := "max_image_short_side", projectionAttribute := "max_image_short_side", attributes := ["policy_component_sha256", "max_image_short_side"], declaredKeys := [["policy_component_sha256"]], declaredFDs := [{ determinant := ["policy_component_sha256"], dependent := ["max_image_short_side"] }], sourceRelation := "artifact_policy_semantics_seal", sourceRelationAttributes := ["policy_component_sha256"], sourceAttributes := ["policy_component_sha256"], memberAttributes := ["policy_component_sha256"], congruenceMembers := [], project := true, required := true },
-    { relationName := "artifact_policy_semantics_producer_fingerprint_sha256", keyAttributes := ["policy_component_sha256"], valueAttribute := "producer_fingerprint_sha256", projectionAttribute := "producer_fingerprint_sha256", attributes := ["policy_component_sha256", "producer_fingerprint_sha256"], declaredKeys := [["policy_component_sha256"]], declaredFDs := [{ determinant := ["policy_component_sha256"], dependent := ["producer_fingerprint_sha256"] }], sourceRelation := "artifact_policy_semantics_seal", sourceRelationAttributes := ["policy_component_sha256"], sourceAttributes := ["policy_component_sha256"], memberAttributes := ["policy_component_sha256"], congruenceMembers := [], project := true, required := true },
-    { relationName := "artifact_policy_semantics_identity", keyAttributes := ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"], valueAttribute := "policy_component_sha256", projectionAttribute := "policy_component_sha256", attributes := ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256", "policy_component_sha256"], declaredKeys := [["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"], ["policy_component_sha256"]], declaredFDs := [{ determinant := ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"], dependent := ["policy_component_sha256"] }, { determinant := ["policy_component_sha256"], dependent := ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"] }], sourceRelation := "artifact_policy_semantics_seal", sourceRelationAttributes := ["policy_component_sha256"], sourceAttributes := ["policy_component_sha256"], memberAttributes := ["policy_component_sha256"], congruenceMembers := [], project := false, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem artifact_policy_semantics_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck artifact_policy_semantics_vertical_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_vertical_view_projection :
-    VerticalFamilyViewProjection artifact_policy_semantics_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound artifact_policy_semantics_vertical_contract
-    artifact_policy_semantics_vertical_view_projection_check
-
-theorem artifact_policy_semantics_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck artifact_policy_semantics_vertical_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_vertical_well_formed :
-    VerticalFamilyWellFormed artifact_policy_semantics_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound artifact_policy_semantics_vertical_contract
-    artifact_policy_semantics_vertical_well_formed_check
-
-theorem artifact_policy_semantics_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck artifact_policy_semantics_vertical_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_vertical_lossless :
-    VerticalFamilyLossless artifact_policy_semantics_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound artifact_policy_semantics_vertical_contract
-    artifact_policy_semantics_vertical_lossless_join_check
-
-theorem artifact_policy_semantics_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck artifact_policy_semantics_vertical_contract = true := by
-  native_decide
-
-theorem artifact_policy_semantics_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving artifact_policy_semantics_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound artifact_policy_semantics_vertical_contract
-    artifact_policy_semantics_vertical_dependency_preservation_check
-
-def publication_candidate_vertical_contract : VerticalFamilyContract where
-  name := "publication_candidate_vertical"
-  anchorRelation := "publication_candidate_anchor"
-  sealRelation := "publication_candidate_definition_seal"
-  keyAttributes := ["candidate_id"]
-  anchorAttributes := ["candidate_id"]
-  sealAttributes := ["candidate_id"]
-  semanticAttributes := ["candidate_id", "analysis_id", "reserved_revision", "artifact_policy_id", "display_title_policy_id", "artifacts_required", "created_at"]
-  semanticFDs := [
-    { determinant := ["candidate_id"], dependent := ["analysis_id", "reserved_revision", "artifact_policy_id", "display_title_policy_id", "artifacts_required", "created_at"] },
-    { determinant := ["reserved_revision"], dependent := ["candidate_id", "analysis_id", "artifact_policy_id", "display_title_policy_id", "artifacts_required", "created_at"] }
-  ]
-  viewAttributes := ["candidate_id", "analysis_id", "reserved_revision", "artifact_policy_id", "display_title_policy_id", "artifacts_required", "created_at"]
-  viewFDs := [
-    { determinant := ["candidate_id"], dependent := ["analysis_id", "reserved_revision", "artifact_policy_id", "display_title_policy_id", "artifacts_required", "created_at"] },
-    { determinant := ["reserved_revision"], dependent := ["candidate_id", "analysis_id", "artifact_policy_id", "display_title_policy_id", "artifacts_required", "created_at"] }
-  ]
-  members := [
-    { relationName := "publication_candidate_analysis_id", keyAttributes := ["candidate_id"], valueAttribute := "analysis_id", projectionAttribute := "analysis_id", attributes := ["candidate_id", "analysis_id"], declaredKeys := [["candidate_id"]], declaredFDs := [{ determinant := ["candidate_id"], dependent := ["analysis_id"] }], sourceRelation := "publication_candidate_definition_seal", sourceRelationAttributes := ["candidate_id"], sourceAttributes := ["candidate_id"], memberAttributes := ["candidate_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_candidate_reserved_revision", keyAttributes := ["candidate_id"], valueAttribute := "reserved_revision", projectionAttribute := "reserved_revision", attributes := ["candidate_id", "reserved_revision"], declaredKeys := [["candidate_id"], ["reserved_revision"]], declaredFDs := [{ determinant := ["candidate_id"], dependent := ["reserved_revision"] }, { determinant := ["reserved_revision"], dependent := ["candidate_id"] }], sourceRelation := "publication_candidate_definition_seal", sourceRelationAttributes := ["candidate_id"], sourceAttributes := ["candidate_id"], memberAttributes := ["candidate_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_candidate_artifact_policy_id", keyAttributes := ["candidate_id"], valueAttribute := "artifact_policy_id", projectionAttribute := "artifact_policy_id", attributes := ["candidate_id", "artifact_policy_id"], declaredKeys := [["candidate_id"]], declaredFDs := [{ determinant := ["candidate_id"], dependent := ["artifact_policy_id"] }], sourceRelation := "publication_candidate_definition_seal", sourceRelationAttributes := ["candidate_id"], sourceAttributes := ["candidate_id"], memberAttributes := ["candidate_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_candidate_display_title_policy_id", keyAttributes := ["candidate_id"], valueAttribute := "display_title_policy_id", projectionAttribute := "display_title_policy_id", attributes := ["candidate_id", "display_title_policy_id"], declaredKeys := [["candidate_id"]], declaredFDs := [{ determinant := ["candidate_id"], dependent := ["display_title_policy_id"] }], sourceRelation := "publication_candidate_definition_seal", sourceRelationAttributes := ["candidate_id"], sourceAttributes := ["candidate_id"], memberAttributes := ["candidate_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_candidate_artifacts_required", keyAttributes := ["candidate_id"], valueAttribute := "artifacts_required", projectionAttribute := "artifacts_required", attributes := ["candidate_id", "artifacts_required"], declaredKeys := [["candidate_id"]], declaredFDs := [{ determinant := ["candidate_id"], dependent := ["artifacts_required"] }], sourceRelation := "publication_candidate_definition_seal", sourceRelationAttributes := ["candidate_id"], sourceAttributes := ["candidate_id"], memberAttributes := ["candidate_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_candidate_created_at", keyAttributes := ["candidate_id"], valueAttribute := "created_at", projectionAttribute := "created_at", attributes := ["candidate_id", "created_at"], declaredKeys := [["candidate_id"]], declaredFDs := [{ determinant := ["candidate_id"], dependent := ["created_at"] }], sourceRelation := "publication_candidate_definition_seal", sourceRelationAttributes := ["candidate_id"], sourceAttributes := ["candidate_id"], memberAttributes := ["candidate_id"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem publication_candidate_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck publication_candidate_vertical_contract = true := by
-  native_decide
-
-theorem publication_candidate_vertical_view_projection :
-    VerticalFamilyViewProjection publication_candidate_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound publication_candidate_vertical_contract
-    publication_candidate_vertical_view_projection_check
-
-theorem publication_candidate_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck publication_candidate_vertical_contract = true := by
-  native_decide
-
-theorem publication_candidate_vertical_well_formed :
-    VerticalFamilyWellFormed publication_candidate_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound publication_candidate_vertical_contract
-    publication_candidate_vertical_well_formed_check
-
-theorem publication_candidate_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck publication_candidate_vertical_contract = true := by
-  native_decide
-
-theorem publication_candidate_vertical_lossless :
-    VerticalFamilyLossless publication_candidate_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound publication_candidate_vertical_contract
-    publication_candidate_vertical_lossless_join_check
-
-theorem publication_candidate_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck publication_candidate_vertical_contract = true := by
-  native_decide
-
-theorem publication_candidate_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving publication_candidate_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound publication_candidate_vertical_contract
-    publication_candidate_vertical_dependency_preservation_check
-
 def catalog_contributor_vertical_contract : VerticalFamilyContract where
   name := "catalog_contributor_vertical"
   anchorRelation := "catalog_contributor_anchor"
@@ -21379,261 +11854,6 @@ theorem catalog_contributor_vertical_dependency_preserving :
     VerticalFamilyDependencyPreserving catalog_contributor_vertical_contract :=
   verticalFamilyDependencyPreservationCheck_sound catalog_contributor_vertical_contract
     catalog_contributor_vertical_dependency_preservation_check
-
-def publication_finalization_checkpoint_vertical_contract : VerticalFamilyContract where
-  name := "publication_finalization_checkpoint_vertical"
-  anchorRelation := "publication_finalization_checkpoint_anchor"
-  sealRelation := "publication_finalization_checkpoint_seal"
-  keyAttributes := ["receipt_id"]
-  anchorAttributes := ["receipt_id"]
-  sealAttributes := ["receipt_id"]
-  semanticAttributes := ["receipt_id", "generation", "cursor", "processed_count", "state", "updated_at"]
-  semanticFDs := [
-    { determinant := ["receipt_id"], dependent := ["generation", "cursor", "processed_count", "state", "updated_at"] }
-  ]
-  viewAttributes := ["receipt_id", "generation", "cursor", "processed_count", "state", "updated_at"]
-  viewFDs := [
-    { determinant := ["receipt_id"], dependent := ["generation", "cursor", "processed_count", "state", "updated_at"] }
-  ]
-  members := [
-    { relationName := "publication_finalization_checkpoint_generation", keyAttributes := ["receipt_id"], valueAttribute := "generation", projectionAttribute := "generation", attributes := ["receipt_id", "generation"], declaredKeys := [["receipt_id"]], declaredFDs := [{ determinant := ["receipt_id"], dependent := ["generation"] }], sourceRelation := "publication_finalization_checkpoint_seal", sourceRelationAttributes := ["receipt_id"], sourceAttributes := ["receipt_id"], memberAttributes := ["receipt_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_finalization_checkpoint_cursor", keyAttributes := ["receipt_id"], valueAttribute := "cursor", projectionAttribute := "cursor", attributes := ["receipt_id", "cursor"], declaredKeys := [["receipt_id"]], declaredFDs := [{ determinant := ["receipt_id"], dependent := ["cursor"] }], sourceRelation := "publication_finalization_checkpoint_seal", sourceRelationAttributes := ["receipt_id"], sourceAttributes := ["receipt_id"], memberAttributes := ["receipt_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_finalization_checkpoint_processed_count", keyAttributes := ["receipt_id"], valueAttribute := "processed_count", projectionAttribute := "processed_count", attributes := ["receipt_id", "processed_count"], declaredKeys := [["receipt_id"]], declaredFDs := [{ determinant := ["receipt_id"], dependent := ["processed_count"] }], sourceRelation := "publication_finalization_checkpoint_seal", sourceRelationAttributes := ["receipt_id"], sourceAttributes := ["receipt_id"], memberAttributes := ["receipt_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_finalization_checkpoint_state", keyAttributes := ["receipt_id"], valueAttribute := "state", projectionAttribute := "state", attributes := ["receipt_id", "state"], declaredKeys := [["receipt_id"]], declaredFDs := [{ determinant := ["receipt_id"], dependent := ["state"] }], sourceRelation := "publication_finalization_checkpoint_seal", sourceRelationAttributes := ["receipt_id"], sourceAttributes := ["receipt_id"], memberAttributes := ["receipt_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_finalization_checkpoint_updated_at", keyAttributes := ["receipt_id"], valueAttribute := "updated_at", projectionAttribute := "updated_at", attributes := ["receipt_id", "updated_at"], declaredKeys := [["receipt_id"]], declaredFDs := [{ determinant := ["receipt_id"], dependent := ["updated_at"] }], sourceRelation := "publication_finalization_checkpoint_seal", sourceRelationAttributes := ["receipt_id"], sourceAttributes := ["receipt_id"], memberAttributes := ["receipt_id"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem publication_finalization_checkpoint_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck publication_finalization_checkpoint_vertical_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_vertical_view_projection :
-    VerticalFamilyViewProjection publication_finalization_checkpoint_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound publication_finalization_checkpoint_vertical_contract
-    publication_finalization_checkpoint_vertical_view_projection_check
-
-theorem publication_finalization_checkpoint_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck publication_finalization_checkpoint_vertical_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_vertical_well_formed :
-    VerticalFamilyWellFormed publication_finalization_checkpoint_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound publication_finalization_checkpoint_vertical_contract
-    publication_finalization_checkpoint_vertical_well_formed_check
-
-theorem publication_finalization_checkpoint_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck publication_finalization_checkpoint_vertical_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_vertical_lossless :
-    VerticalFamilyLossless publication_finalization_checkpoint_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound publication_finalization_checkpoint_vertical_contract
-    publication_finalization_checkpoint_vertical_lossless_join_check
-
-theorem publication_finalization_checkpoint_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck publication_finalization_checkpoint_vertical_contract = true := by
-  native_decide
-
-theorem publication_finalization_checkpoint_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving publication_finalization_checkpoint_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound publication_finalization_checkpoint_vertical_contract
-    publication_finalization_checkpoint_vertical_dependency_preservation_check
-
-def publication_finalization_batch_receipt_stored_vertical_contract : VerticalFamilyContract where
-  name := "publication_finalization_batch_receipt_stored_vertical"
-  anchorRelation := "publication_finalization_batch_receipt_anchor"
-  sealRelation := "publication_finalization_batch_receipt_seal"
-  keyAttributes := ["receipt_id", "start_generation"]
-  anchorAttributes := ["receipt_id", "start_generation"]
-  sealAttributes := ["receipt_id", "start_generation"]
-  semanticAttributes := ["receipt_id", "start_generation", "batch_key", "start_cursor", "start_processed_count", "next_cursor", "row_count", "committed_at"]
-  semanticFDs := [
-    { determinant := ["receipt_id", "batch_key"], dependent := ["start_generation", "start_cursor", "start_processed_count", "next_cursor", "row_count", "committed_at"] },
-    { determinant := ["receipt_id", "start_generation"], dependent := ["batch_key", "start_cursor", "start_processed_count", "next_cursor", "row_count", "committed_at"] }
-  ]
-  viewAttributes := ["receipt_id", "start_generation", "batch_key", "start_cursor", "start_processed_count", "next_cursor", "row_count", "committed_at"]
-  viewFDs := [
-    { determinant := ["receipt_id", "batch_key"], dependent := ["start_generation", "start_cursor", "start_processed_count", "next_cursor", "row_count", "committed_at"] },
-    { determinant := ["receipt_id", "start_generation"], dependent := ["batch_key", "start_cursor", "start_processed_count", "next_cursor", "row_count", "committed_at"] }
-  ]
-  members := [
-    { relationName := "publication_finalization_batch_receipt_coordinate", keyAttributes := ["receipt_id", "batch_key"], valueAttribute := "start_generation", projectionAttribute := "start_generation", attributes := ["receipt_id", "batch_key", "start_generation"], declaredKeys := [["receipt_id", "batch_key"], ["receipt_id", "start_generation"]], declaredFDs := [{ determinant := ["receipt_id", "batch_key"], dependent := ["start_generation"] }, { determinant := ["receipt_id", "start_generation"], dependent := ["batch_key"] }], sourceRelation := "publication_finalization_batch_receipt_seal", sourceRelationAttributes := ["receipt_id", "start_generation"], sourceAttributes := ["receipt_id", "start_generation"], memberAttributes := ["receipt_id", "start_generation"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_finalization_batch_receipt_start_cursor", keyAttributes := ["receipt_id", "start_generation"], valueAttribute := "start_cursor", projectionAttribute := "start_cursor", attributes := ["receipt_id", "start_generation", "start_cursor"], declaredKeys := [["receipt_id", "start_generation"]], declaredFDs := [{ determinant := ["receipt_id", "start_generation"], dependent := ["start_cursor"] }], sourceRelation := "publication_finalization_batch_receipt_seal", sourceRelationAttributes := ["receipt_id", "start_generation"], sourceAttributes := ["receipt_id", "start_generation"], memberAttributes := ["receipt_id", "start_generation"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_finalization_batch_receipt_start_processed_count", keyAttributes := ["receipt_id", "start_generation"], valueAttribute := "start_processed_count", projectionAttribute := "start_processed_count", attributes := ["receipt_id", "start_generation", "start_processed_count"], declaredKeys := [["receipt_id", "start_generation"]], declaredFDs := [{ determinant := ["receipt_id", "start_generation"], dependent := ["start_processed_count"] }], sourceRelation := "publication_finalization_batch_receipt_seal", sourceRelationAttributes := ["receipt_id", "start_generation"], sourceAttributes := ["receipt_id", "start_generation"], memberAttributes := ["receipt_id", "start_generation"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_finalization_batch_receipt_next_cursor", keyAttributes := ["receipt_id", "start_generation"], valueAttribute := "next_cursor", projectionAttribute := "next_cursor", attributes := ["receipt_id", "start_generation", "next_cursor"], declaredKeys := [["receipt_id", "start_generation"]], declaredFDs := [{ determinant := ["receipt_id", "start_generation"], dependent := ["next_cursor"] }], sourceRelation := "publication_finalization_batch_receipt_seal", sourceRelationAttributes := ["receipt_id", "start_generation"], sourceAttributes := ["receipt_id", "start_generation"], memberAttributes := ["receipt_id", "start_generation"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_finalization_batch_receipt_row_count", keyAttributes := ["receipt_id", "start_generation"], valueAttribute := "row_count", projectionAttribute := "row_count", attributes := ["receipt_id", "start_generation", "row_count"], declaredKeys := [["receipt_id", "start_generation"]], declaredFDs := [{ determinant := ["receipt_id", "start_generation"], dependent := ["row_count"] }], sourceRelation := "publication_finalization_batch_receipt_seal", sourceRelationAttributes := ["receipt_id", "start_generation"], sourceAttributes := ["receipt_id", "start_generation"], memberAttributes := ["receipt_id", "start_generation"], congruenceMembers := [], project := true, required := true },
-    { relationName := "publication_finalization_batch_receipt_committed_at", keyAttributes := ["receipt_id", "start_generation"], valueAttribute := "committed_at", projectionAttribute := "committed_at", attributes := ["receipt_id", "start_generation", "committed_at"], declaredKeys := [["receipt_id", "start_generation"]], declaredFDs := [{ determinant := ["receipt_id", "start_generation"], dependent := ["committed_at"] }], sourceRelation := "publication_finalization_batch_receipt_seal", sourceRelationAttributes := ["receipt_id", "start_generation"], sourceAttributes := ["receipt_id", "start_generation"], memberAttributes := ["receipt_id", "start_generation"], congruenceMembers := [], project := true, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem publication_finalization_batch_receipt_stored_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck publication_finalization_batch_receipt_stored_vertical_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_stored_vertical_view_projection :
-    VerticalFamilyViewProjection publication_finalization_batch_receipt_stored_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound publication_finalization_batch_receipt_stored_vertical_contract
-    publication_finalization_batch_receipt_stored_vertical_view_projection_check
-
-theorem publication_finalization_batch_receipt_stored_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck publication_finalization_batch_receipt_stored_vertical_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_stored_vertical_well_formed :
-    VerticalFamilyWellFormed publication_finalization_batch_receipt_stored_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound publication_finalization_batch_receipt_stored_vertical_contract
-    publication_finalization_batch_receipt_stored_vertical_well_formed_check
-
-theorem publication_finalization_batch_receipt_stored_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck publication_finalization_batch_receipt_stored_vertical_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_stored_vertical_lossless :
-    VerticalFamilyLossless publication_finalization_batch_receipt_stored_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound publication_finalization_batch_receipt_stored_vertical_contract
-    publication_finalization_batch_receipt_stored_vertical_lossless_join_check
-
-theorem publication_finalization_batch_receipt_stored_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck publication_finalization_batch_receipt_stored_vertical_contract = true := by
-  native_decide
-
-theorem publication_finalization_batch_receipt_stored_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving publication_finalization_batch_receipt_stored_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound publication_finalization_batch_receipt_stored_vertical_contract
-    publication_finalization_batch_receipt_stored_vertical_dependency_preservation_check
-
-def title_sort_policy_vertical_contract : VerticalFamilyContract where
-  name := "title_sort_policy_vertical"
-  anchorRelation := "title_sort_policy_anchor"
-  sealRelation := "title_sort_policy_seal"
-  keyAttributes := ["title_sort_policy_id"]
-  anchorAttributes := ["title_sort_policy_id"]
-  sealAttributes := ["title_sort_policy_id"]
-  semanticAttributes := ["title_sort_policy_id", "title_sort_algorithm_version", "unicode_data_version"]
-  semanticFDs := [
-    { determinant := ["title_sort_policy_id"], dependent := ["title_sort_algorithm_version", "unicode_data_version"] },
-    { determinant := ["title_sort_algorithm_version", "unicode_data_version"], dependent := ["title_sort_policy_id"] }
-  ]
-  viewAttributes := ["title_sort_policy_id", "title_sort_algorithm_version", "unicode_data_version"]
-  viewFDs := [
-    { determinant := ["title_sort_policy_id"], dependent := ["title_sort_algorithm_version", "unicode_data_version"] },
-    { determinant := ["title_sort_algorithm_version", "unicode_data_version"], dependent := ["title_sort_policy_id"] }
-  ]
-  members := [
-    { relationName := "title_sort_policy_algorithm_version", keyAttributes := ["title_sort_policy_id"], valueAttribute := "title_sort_algorithm_version", projectionAttribute := "title_sort_algorithm_version", attributes := ["title_sort_policy_id", "title_sort_algorithm_version"], declaredKeys := [["title_sort_policy_id"]], declaredFDs := [{ determinant := ["title_sort_policy_id"], dependent := ["title_sort_algorithm_version"] }], sourceRelation := "title_sort_policy_seal", sourceRelationAttributes := ["title_sort_policy_id"], sourceAttributes := ["title_sort_policy_id"], memberAttributes := ["title_sort_policy_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "title_sort_policy_unicode_data_version", keyAttributes := ["title_sort_policy_id"], valueAttribute := "unicode_data_version", projectionAttribute := "unicode_data_version", attributes := ["title_sort_policy_id", "unicode_data_version"], declaredKeys := [["title_sort_policy_id"]], declaredFDs := [{ determinant := ["title_sort_policy_id"], dependent := ["unicode_data_version"] }], sourceRelation := "title_sort_policy_seal", sourceRelationAttributes := ["title_sort_policy_id"], sourceAttributes := ["title_sort_policy_id"], memberAttributes := ["title_sort_policy_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "title_sort_policy_identity", keyAttributes := ["title_sort_algorithm_version", "unicode_data_version"], valueAttribute := "title_sort_policy_id", projectionAttribute := "title_sort_policy_id", attributes := ["title_sort_algorithm_version", "unicode_data_version", "title_sort_policy_id"], declaredKeys := [["title_sort_algorithm_version", "unicode_data_version"], ["title_sort_policy_id"]], declaredFDs := [{ determinant := ["title_sort_algorithm_version", "unicode_data_version"], dependent := ["title_sort_policy_id"] }, { determinant := ["title_sort_policy_id"], dependent := ["title_sort_algorithm_version", "unicode_data_version"] }], sourceRelation := "title_sort_policy_seal", sourceRelationAttributes := ["title_sort_policy_id"], sourceAttributes := ["title_sort_policy_id"], memberAttributes := ["title_sort_policy_id"], congruenceMembers := [], project := false, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem title_sort_policy_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck title_sort_policy_vertical_contract = true := by
-  native_decide
-
-theorem title_sort_policy_vertical_view_projection :
-    VerticalFamilyViewProjection title_sort_policy_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound title_sort_policy_vertical_contract
-    title_sort_policy_vertical_view_projection_check
-
-theorem title_sort_policy_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck title_sort_policy_vertical_contract = true := by
-  native_decide
-
-theorem title_sort_policy_vertical_well_formed :
-    VerticalFamilyWellFormed title_sort_policy_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound title_sort_policy_vertical_contract
-    title_sort_policy_vertical_well_formed_check
-
-theorem title_sort_policy_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck title_sort_policy_vertical_contract = true := by
-  native_decide
-
-theorem title_sort_policy_vertical_lossless :
-    VerticalFamilyLossless title_sort_policy_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound title_sort_policy_vertical_contract
-    title_sort_policy_vertical_lossless_join_check
-
-theorem title_sort_policy_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck title_sort_policy_vertical_contract = true := by
-  native_decide
-
-theorem title_sort_policy_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving title_sort_policy_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound title_sort_policy_vertical_contract
-    title_sort_policy_vertical_dependency_preservation_check
-
-def display_title_policy_vertical_contract : VerticalFamilyContract where
-  name := "display_title_policy_vertical"
-  anchorRelation := "display_title_policy_anchor"
-  sealRelation := "display_title_policy_seal"
-  keyAttributes := ["display_title_policy_id"]
-  anchorAttributes := ["display_title_policy_id"]
-  sealAttributes := ["display_title_policy_id"]
-  semanticAttributes := ["display_title_policy_id", "display_title_algorithm_version", "title_sort_policy_id"]
-  semanticFDs := [
-    { determinant := ["display_title_policy_id"], dependent := ["display_title_algorithm_version", "title_sort_policy_id"] },
-    { determinant := ["display_title_algorithm_version", "title_sort_policy_id"], dependent := ["display_title_policy_id"] }
-  ]
-  viewAttributes := ["display_title_policy_id", "display_title_algorithm_version", "title_sort_policy_id"]
-  viewFDs := [
-    { determinant := ["display_title_policy_id"], dependent := ["display_title_algorithm_version", "title_sort_policy_id"] },
-    { determinant := ["display_title_algorithm_version", "title_sort_policy_id"], dependent := ["display_title_policy_id"] }
-  ]
-  members := [
-    { relationName := "display_title_policy_algorithm_version", keyAttributes := ["display_title_policy_id"], valueAttribute := "display_title_algorithm_version", projectionAttribute := "display_title_algorithm_version", attributes := ["display_title_policy_id", "display_title_algorithm_version"], declaredKeys := [["display_title_policy_id"]], declaredFDs := [{ determinant := ["display_title_policy_id"], dependent := ["display_title_algorithm_version"] }], sourceRelation := "display_title_policy_seal", sourceRelationAttributes := ["display_title_policy_id"], sourceAttributes := ["display_title_policy_id"], memberAttributes := ["display_title_policy_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "display_title_policy_title_sort_policy_id", keyAttributes := ["display_title_policy_id"], valueAttribute := "title_sort_policy_id", projectionAttribute := "title_sort_policy_id", attributes := ["display_title_policy_id", "title_sort_policy_id"], declaredKeys := [["display_title_policy_id"]], declaredFDs := [{ determinant := ["display_title_policy_id"], dependent := ["title_sort_policy_id"] }], sourceRelation := "display_title_policy_seal", sourceRelationAttributes := ["display_title_policy_id"], sourceAttributes := ["display_title_policy_id"], memberAttributes := ["display_title_policy_id"], congruenceMembers := [], project := true, required := true },
-    { relationName := "display_title_policy_identity", keyAttributes := ["display_title_algorithm_version", "title_sort_policy_id"], valueAttribute := "display_title_policy_id", projectionAttribute := "display_title_policy_id", attributes := ["display_title_algorithm_version", "title_sort_policy_id", "display_title_policy_id"], declaredKeys := [["display_title_algorithm_version", "title_sort_policy_id"], ["display_title_policy_id"]], declaredFDs := [{ determinant := ["display_title_algorithm_version", "title_sort_policy_id"], dependent := ["display_title_policy_id"] }, { determinant := ["display_title_policy_id"], dependent := ["display_title_algorithm_version", "title_sort_policy_id"] }], sourceRelation := "display_title_policy_seal", sourceRelationAttributes := ["display_title_policy_id"], sourceAttributes := ["display_title_policy_id"], memberAttributes := ["display_title_policy_id"], congruenceMembers := [], project := false, required := true }
-  ]
-  optionalPresence := none
-  markerRelation := none
-  markerAttributes := []
-  markerPredicate := none
-
-theorem display_title_policy_vertical_view_projection_check :
-    verticalFamilyViewProjectionCheck display_title_policy_vertical_contract = true := by
-  native_decide
-
-theorem display_title_policy_vertical_view_projection :
-    VerticalFamilyViewProjection display_title_policy_vertical_contract :=
-  verticalFamilyViewProjectionCheck_sound display_title_policy_vertical_contract
-    display_title_policy_vertical_view_projection_check
-
-theorem display_title_policy_vertical_well_formed_check :
-    verticalFamilyWellFormedCheck display_title_policy_vertical_contract = true := by
-  native_decide
-
-theorem display_title_policy_vertical_well_formed :
-    VerticalFamilyWellFormed display_title_policy_vertical_contract :=
-  verticalFamilyWellFormedCheck_sound display_title_policy_vertical_contract
-    display_title_policy_vertical_well_formed_check
-
-theorem display_title_policy_vertical_lossless_join_check :
-    verticalFamilyLosslessJoinCheck display_title_policy_vertical_contract = true := by
-  native_decide
-
-theorem display_title_policy_vertical_lossless :
-    VerticalFamilyLossless display_title_policy_vertical_contract :=
-  verticalFamilyLosslessJoinCheck_sound display_title_policy_vertical_contract
-    display_title_policy_vertical_lossless_join_check
-
-theorem display_title_policy_vertical_dependency_preservation_check :
-    verticalFamilyDependencyPreservationCheck display_title_policy_vertical_contract = true := by
-  native_decide
-
-theorem display_title_policy_vertical_dependency_preserving :
-    VerticalFamilyDependencyPreserving display_title_policy_vertical_contract :=
-  verticalFamilyDependencyPreservationCheck_sound display_title_policy_vertical_contract
-    display_title_policy_vertical_dependency_preservation_check
 
 def analysis_file_hash_decision_shadow_vertical_contract : VerticalFamilyContract where
   name := "analysis_file_hash_decision_shadow_vertical"
@@ -22388,11 +12608,11 @@ theorem artifact_payload_and_preparation_occurrence_dependency_preserving :
 def artifact_policy_and_registered_producer_contract : BinaryDecompositionContract where
   name := "artifact_policy_and_registered_producer"
   universalAttributes := ["policy_component_sha256", "artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"]
-  leftAttributes := ["policy_component_sha256", "artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"]
+  leftAttributes := ["policy_component_sha256", "max_image_short_side", "producer_fingerprint_sha256"]
   rightAttributes := ["producer_fingerprint_sha256", "artifact_algorithm_version", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"]
   declaredFDs := [
     { determinant := ["policy_component_sha256"], dependent := ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"] },
-    { determinant := ["artifact_algorithm_version", "max_image_short_side", "producer_fingerprint_sha256"], dependent := ["policy_component_sha256"] },
+    { determinant := ["max_image_short_side", "producer_fingerprint_sha256"], dependent := ["policy_component_sha256"] },
     { determinant := ["producer_fingerprint_sha256"], dependent := ["artifact_algorithm_version", "producer_equivalence_class", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"] },
     { determinant := ["producer_equivalence_class"], dependent := ["producer_fingerprint_sha256", "artifact_algorithm_version", "writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"] },
     { determinant := ["writer_id", "python_abi", "pillow_build", "libjpeg_build", "zlib_build"], dependent := ["producer_fingerprint_sha256", "artifact_algorithm_version", "producer_equivalence_class"] }
@@ -22412,7 +12632,7 @@ theorem artifact_policy_and_registered_producer_intersection_check :
     sameAttrSet (attributeIntersection
       artifact_policy_and_registered_producer_contract.leftAttributes
       artifact_policy_and_registered_producer_contract.rightAttributes)
-      ["artifact_algorithm_version", "producer_fingerprint_sha256"] = true := by
+      ["producer_fingerprint_sha256"] = true := by
   native_decide
 
 theorem artifact_policy_and_registered_producer_lossless_check :
@@ -22571,8 +12791,8 @@ theorem artifact_input_and_semantic_identity_dependency_preserving :
   dependencyPreservationCheck_sound artifact_input_and_semantic_identity_contract
     artifact_input_and_semantic_identity_dependency_preservation_check
 
-def publication_candidate_and_optional_base_source_contract : BinaryDecompositionContract where
-  name := "publication_candidate_and_optional_base_source"
+def publication_candidate_and_optional_common_base_contract : BinaryDecompositionContract where
+  name := "publication_candidate_and_optional_common_base"
   universalAttributes := ["candidate_id", "analysis_id", "reserved_revision", "artifact_policy_id", "display_title_policy_id", "base_receipt_id", "artifacts_required", "created_at"]
   leftAttributes := ["candidate_id", "analysis_id", "reserved_revision", "artifact_policy_id", "display_title_policy_id", "artifacts_required", "created_at"]
   rightAttributes := ["candidate_id", "base_receipt_id"]
@@ -22581,85 +12801,40 @@ def publication_candidate_and_optional_base_source_contract : BinaryDecompositio
     { determinant := ["reserved_revision"], dependent := ["candidate_id", "analysis_id", "artifact_policy_id", "display_title_policy_id", "base_receipt_id", "artifacts_required", "created_at"] }
   ]
 
-theorem publication_candidate_and_optional_base_source_projection_check :
+theorem publication_candidate_and_optional_common_base_projection_check :
     binaryDecompositionWellFormedCheck
-      publication_candidate_and_optional_base_source_contract = true := by
+      publication_candidate_and_optional_common_base_contract = true := by
   native_decide
 
-theorem publication_candidate_and_optional_base_source_projection_well_formed :
-    BinaryDecompositionWellFormed publication_candidate_and_optional_base_source_contract :=
+theorem publication_candidate_and_optional_common_base_projection_well_formed :
+    BinaryDecompositionWellFormed publication_candidate_and_optional_common_base_contract :=
   binaryDecompositionWellFormedCheck_sound
-    publication_candidate_and_optional_base_source_contract publication_candidate_and_optional_base_source_projection_check
+    publication_candidate_and_optional_common_base_contract publication_candidate_and_optional_common_base_projection_check
 
-theorem publication_candidate_and_optional_base_source_intersection_check :
+theorem publication_candidate_and_optional_common_base_intersection_check :
     sameAttrSet (attributeIntersection
-      publication_candidate_and_optional_base_source_contract.leftAttributes
-      publication_candidate_and_optional_base_source_contract.rightAttributes)
+      publication_candidate_and_optional_common_base_contract.leftAttributes
+      publication_candidate_and_optional_common_base_contract.rightAttributes)
       ["candidate_id"] = true := by
   native_decide
 
-theorem publication_candidate_and_optional_base_source_lossless_check :
-    binaryLosslessCheck publication_candidate_and_optional_base_source_contract = true := by
+theorem publication_candidate_and_optional_common_base_lossless_check :
+    binaryLosslessCheck publication_candidate_and_optional_common_base_contract = true := by
   native_decide
 
-theorem publication_candidate_and_optional_base_source_lossless : BinaryLossless publication_candidate_and_optional_base_source_contract :=
-  ⟨publication_candidate_and_optional_base_source_projection_well_formed,
-    binaryLosslessCheck_sound publication_candidate_and_optional_base_source_contract
-      publication_candidate_and_optional_base_source_lossless_check⟩
+theorem publication_candidate_and_optional_common_base_lossless : BinaryLossless publication_candidate_and_optional_common_base_contract :=
+  ⟨publication_candidate_and_optional_common_base_projection_well_formed,
+    binaryLosslessCheck_sound publication_candidate_and_optional_common_base_contract
+      publication_candidate_and_optional_common_base_lossless_check⟩
 
-theorem publication_candidate_and_optional_base_source_dependency_preservation_check :
-    dependencyPreservationCheck publication_candidate_and_optional_base_source_contract = true := by
+theorem publication_candidate_and_optional_common_base_dependency_preservation_check :
+    dependencyPreservationCheck publication_candidate_and_optional_common_base_contract = true := by
   native_decide
 
-theorem publication_candidate_and_optional_base_source_dependency_preserving :
-    DependencyPreserving publication_candidate_and_optional_base_source_contract :=
-  dependencyPreservationCheck_sound publication_candidate_and_optional_base_source_contract
-    publication_candidate_and_optional_base_source_dependency_preservation_check
-
-def publication_candidate_and_optional_base_catalog_contract : BinaryDecompositionContract where
-  name := "publication_candidate_and_optional_base_catalog"
-  universalAttributes := ["candidate_id", "analysis_id", "reserved_revision", "artifact_policy_id", "display_title_policy_id", "base_receipt_id", "artifacts_required", "created_at"]
-  leftAttributes := ["candidate_id", "analysis_id", "reserved_revision", "artifact_policy_id", "display_title_policy_id", "artifacts_required", "created_at"]
-  rightAttributes := ["candidate_id", "base_receipt_id"]
-  declaredFDs := [
-    { determinant := ["candidate_id"], dependent := ["analysis_id", "reserved_revision", "artifact_policy_id", "display_title_policy_id", "base_receipt_id", "artifacts_required", "created_at"] },
-    { determinant := ["reserved_revision"], dependent := ["candidate_id", "analysis_id", "artifact_policy_id", "display_title_policy_id", "base_receipt_id", "artifacts_required", "created_at"] }
-  ]
-
-theorem publication_candidate_and_optional_base_catalog_projection_check :
-    binaryDecompositionWellFormedCheck
-      publication_candidate_and_optional_base_catalog_contract = true := by
-  native_decide
-
-theorem publication_candidate_and_optional_base_catalog_projection_well_formed :
-    BinaryDecompositionWellFormed publication_candidate_and_optional_base_catalog_contract :=
-  binaryDecompositionWellFormedCheck_sound
-    publication_candidate_and_optional_base_catalog_contract publication_candidate_and_optional_base_catalog_projection_check
-
-theorem publication_candidate_and_optional_base_catalog_intersection_check :
-    sameAttrSet (attributeIntersection
-      publication_candidate_and_optional_base_catalog_contract.leftAttributes
-      publication_candidate_and_optional_base_catalog_contract.rightAttributes)
-      ["candidate_id"] = true := by
-  native_decide
-
-theorem publication_candidate_and_optional_base_catalog_lossless_check :
-    binaryLosslessCheck publication_candidate_and_optional_base_catalog_contract = true := by
-  native_decide
-
-theorem publication_candidate_and_optional_base_catalog_lossless : BinaryLossless publication_candidate_and_optional_base_catalog_contract :=
-  ⟨publication_candidate_and_optional_base_catalog_projection_well_formed,
-    binaryLosslessCheck_sound publication_candidate_and_optional_base_catalog_contract
-      publication_candidate_and_optional_base_catalog_lossless_check⟩
-
-theorem publication_candidate_and_optional_base_catalog_dependency_preservation_check :
-    dependencyPreservationCheck publication_candidate_and_optional_base_catalog_contract = true := by
-  native_decide
-
-theorem publication_candidate_and_optional_base_catalog_dependency_preserving :
-    DependencyPreserving publication_candidate_and_optional_base_catalog_contract :=
-  dependencyPreservationCheck_sound publication_candidate_and_optional_base_catalog_contract
-    publication_candidate_and_optional_base_catalog_dependency_preservation_check
+theorem publication_candidate_and_optional_common_base_dependency_preserving :
+    DependencyPreserving publication_candidate_and_optional_common_base_contract :=
+  dependencyPreservationCheck_sound publication_candidate_and_optional_common_base_contract
+    publication_candidate_and_optional_common_base_dependency_preservation_check
 
 def catalog_revision_and_generation_publication_seal_contract : BinaryDecompositionContract where
   name := "catalog_revision_and_generation_publication_seal"
@@ -23044,8 +13219,7 @@ theorem all_manifest_decompositions_lossless :
     BinaryLossless artifact_payload_and_catalog_occurrence_contract ∧
     BinaryLossless artifact_semantics_and_catalog_occurrence_contract ∧
     BinaryLossless artifact_input_and_semantic_identity_contract ∧
-    BinaryLossless publication_candidate_and_optional_base_source_contract ∧
-    BinaryLossless publication_candidate_and_optional_base_catalog_contract ∧
+    BinaryLossless publication_candidate_and_optional_common_base_contract ∧
     BinaryLossless catalog_revision_and_generation_publication_seal_contract ∧
     BinaryLossless publication_head_revision_and_advanced_at_contract ∧
     BinaryLossless publication_selection_occurrence_and_gallery_contract ∧
@@ -23073,8 +13247,7 @@ theorem all_manifest_decompositions_lossless :
     artifact_payload_and_catalog_occurrence_lossless,
     artifact_semantics_and_catalog_occurrence_lossless,
     artifact_input_and_semantic_identity_lossless,
-    publication_candidate_and_optional_base_source_lossless,
-    publication_candidate_and_optional_base_catalog_lossless,
+    publication_candidate_and_optional_common_base_lossless,
     catalog_revision_and_generation_publication_seal_lossless,
     publication_head_revision_and_advanced_at_lossless,
     publication_selection_occurrence_and_gallery_lossless,
@@ -23104,8 +13277,7 @@ theorem all_manifest_decompositions_dependency_preserving :
     DependencyPreserving artifact_payload_and_catalog_occurrence_contract ∧
     DependencyPreserving artifact_semantics_and_catalog_occurrence_contract ∧
     DependencyPreserving artifact_input_and_semantic_identity_contract ∧
-    DependencyPreserving publication_candidate_and_optional_base_source_contract ∧
-    DependencyPreserving publication_candidate_and_optional_base_catalog_contract ∧
+    DependencyPreserving publication_candidate_and_optional_common_base_contract ∧
     DependencyPreserving catalog_revision_and_generation_publication_seal_contract ∧
     DependencyPreserving publication_head_revision_and_advanced_at_contract ∧
     DependencyPreserving publication_selection_occurrence_and_gallery_contract ∧
@@ -23133,8 +13305,7 @@ theorem all_manifest_decompositions_dependency_preserving :
     artifact_payload_and_catalog_occurrence_dependency_preserving,
     artifact_semantics_and_catalog_occurrence_dependency_preserving,
     artifact_input_and_semantic_identity_dependency_preserving,
-    publication_candidate_and_optional_base_source_dependency_preserving,
-    publication_candidate_and_optional_base_catalog_dependency_preserving,
+    publication_candidate_and_optional_common_base_dependency_preserving,
     catalog_revision_and_generation_publication_seal_dependency_preserving,
     publication_head_revision_and_advanced_at_dependency_preserving,
     publication_selection_occurrence_and_gallery_dependency_preserving,
@@ -23159,34 +13330,16 @@ theorem all_manifest_base_relations_bcnf :
     BCNF canonical_value_page_seal_contract ∧
     BCNF canonical_value_page_parent_contract ∧
     BCNF canonical_value_identity_contract ∧
-    BCNF manifest_policy_anchor_contract ∧
-    BCNF manifest_policy_manifest_algorithm_version_contract ∧
-    BCNF manifest_policy_file_order_version_contract ∧
-    BCNF manifest_policy_identity_contract ∧
-    BCNF manifest_policy_seal_contract ∧
-    BCNF source_build_anchor_contract ∧
-    BCNF source_build_scope_key_contract ∧
-    BCNF source_build_manifest_policy_id_contract ∧
+    BCNF manifest_policy_contract ∧
     BCNF source_build_state_contract ∧
-    BCNF source_build_created_at_contract ∧
-    BCNF source_build_descriptor_seal_contract ∧
     BCNF source_build_sealed_at_contract ∧
+    BCNF source_build_descriptor_contract ∧
     BCNF source_build_base_publication_commit_contract ∧
     BCNF channel_registry_contract ∧
     BCNF source_provider_registry_contract ∧
     BCNF source_build_channel_contract ∧
-    BCNF source_scope_anchor_contract ∧
-    BCNF source_scope_source_provider_contract ∧
-    BCNF source_scope_source_root_sha256_contract ∧
-    BCNF source_scope_identity_policy_version_contract ∧
-    BCNF source_scope_identity_contract ∧
-    BCNF source_scope_seal_contract ∧
-    BCNF source_build_discovery_anchor_contract ∧
-    BCNF source_build_discovery_scan_attempt_contract ∧
-    BCNF source_build_discovery_gallery_count_contract ∧
-    BCNF source_build_discovery_tree_observation_sha256_contract ∧
-    BCNF source_build_discovery_completed_at_contract ∧
-    BCNF source_build_discovery_seal_contract ∧
+    BCNF source_scope_contract ∧
+    BCNF source_build_discovery_contract ∧
     BCNF source_build_expected_gallery_contract ∧
     BCNF source_locator_identity_contract ∧
     BCNF gallery_identity_contract ∧
@@ -23236,41 +13389,17 @@ theorem all_manifest_base_relations_bcnf :
     BCNF tag_term_identity_contract ∧
     BCNF tag_term_seal_contract ∧
     BCNF gallery_observation_tag_contract ∧
-    BCNF build_manifest_anchor_contract ∧
-    BCNF build_manifest_manifest_sha256_contract ∧
-    BCNF build_manifest_file_count_contract ∧
-    BCNF build_manifest_byte_count_contract ∧
-    BCNF build_manifest_seal_contract ∧
+    BCNF build_manifest_core_contract ∧
     BCNF gallery_manifest_contract ∧
-    BCNF analysis_policy_anchor_contract ∧
-    BCNF analysis_policy_algorithm_version_contract ∧
-    BCNF analysis_policy_spam_artist_threshold_contract ∧
-    BCNF analysis_policy_spam_occurrence_threshold_contract ∧
-    BCNF analysis_policy_content_owner_rule_version_contract ∧
-    BCNF analysis_policy_gid_winner_rule_version_contract ∧
-    BCNF analysis_policy_identity_contract ∧
-    BCNF analysis_policy_seal_contract ∧
-    BCNF analysis_run_anchor_contract ∧
-    BCNF analysis_run_build_id_contract ∧
-    BCNF analysis_run_policy_id_contract ∧
-    BCNF analysis_run_input_manifest_sha256_contract ∧
-    BCNF analysis_run_identity_contract ∧
-    BCNF analysis_run_started_at_contract ∧
+    BCNF analysis_policy_contract ∧
     BCNF analysis_run_state_contract ∧
-    BCNF analysis_run_descriptor_seal_contract ∧
     BCNF analysis_run_completed_at_contract ∧
+    BCNF analysis_run_descriptor_contract ∧
     BCNF analysis_baseline_contract ∧
     BCNF analysis_state_ancestry_contract ∧
-    BCNF source_snapshot_manifest_identity_anchor_contract ∧
-    BCNF source_snapshot_manifest_identity_gallery_count_contract ∧
-    BCNF source_snapshot_manifest_identity_file_count_contract ∧
-    BCNF source_snapshot_manifest_identity_byte_count_contract ∧
-    BCNF source_snapshot_manifest_identity_seal_contract ∧
+    BCNF source_snapshot_manifest_identity_contract ∧
     BCNF analysis_snapshot_manifest_contract ∧
-    BCNF source_revision_anchor_contract ∧
-    BCNF source_revision_channel_contract ∧
-    BCNF source_revision_snapshot_manifest_contract ∧
-    BCNF source_revision_descriptor_seal_contract ∧
+    BCNF source_revision_descriptor_contract ∧
     BCNF source_revision_provenance_contract ∧
     BCNF gallery_observation_artist_contract ∧
     BCNF gallery_observation_file_hash_occurrence_contract ∧
@@ -23300,127 +13429,36 @@ theorem all_manifest_base_relations_bcnf :
     BCNF analysis_gid_candidate_tombstone_contract ∧
     BCNF analysis_gid_winner_selection_contract ∧
     BCNF analysis_gid_winner_tombstone_contract ∧
-    BCNF analysis_state_component_anchor_contract ∧
-    BCNF analysis_state_component_row_count_contract ∧
-    BCNF analysis_state_component_sealed_at_contract ∧
-    BCNF analysis_state_component_completion_seal_contract ∧
-    BCNF analysis_stage_anchor_contract ∧
-    BCNF analysis_stage_order_contract ∧
-    BCNF analysis_stage_cursor_codec_contract ∧
-    BCNF analysis_stage_seal_contract ∧
-    BCNF analysis_checkpoint_anchor_contract ∧
-    BCNF analysis_checkpoint_generation_contract ∧
-    BCNF analysis_checkpoint_cursor_contract ∧
-    BCNF analysis_checkpoint_processed_count_contract ∧
-    BCNF analysis_checkpoint_state_contract ∧
-    BCNF analysis_checkpoint_updated_at_contract ∧
-    BCNF analysis_checkpoint_seal_contract ∧
-    BCNF analysis_batch_receipt_anchor_contract ∧
-    BCNF analysis_batch_receipt_coordinate_contract ∧
-    BCNF analysis_batch_receipt_start_cursor_contract ∧
-    BCNF analysis_batch_receipt_start_processed_count_contract ∧
-    BCNF analysis_batch_receipt_page_limit_contract ∧
-    BCNF analysis_batch_receipt_next_cursor_contract ∧
-    BCNF analysis_batch_receipt_row_count_contract ∧
-    BCNF analysis_batch_receipt_committed_at_contract ∧
-    BCNF analysis_batch_receipt_seal_contract ∧
-    BCNF publication_candidate_anchor_contract ∧
-    BCNF publication_candidate_analysis_id_contract ∧
-    BCNF publication_candidate_reserved_revision_contract ∧
-    BCNF publication_candidate_artifact_policy_id_contract ∧
-    BCNF publication_candidate_display_title_policy_id_contract ∧
-    BCNF publication_candidate_artifacts_required_contract ∧
-    BCNF publication_candidate_created_at_contract ∧
-    BCNF publication_candidate_definition_seal_contract ∧
+    BCNF analysis_state_component_seal_contract ∧
+    BCNF analysis_stage_contract ∧
+    BCNF analysis_checkpoint_contract ∧
+    BCNF analysis_batch_receipt_stored_contract ∧
+    BCNF publication_candidate_contract ∧
     BCNF publication_candidate_projection_seal_contract ∧
     BCNF publication_candidate_base_publication_commit_contract ∧
     BCNF publication_selection_storage_contract ∧
     BCNF publication_selection_occurrence_identity_contract ∧
-    BCNF publication_stage_anchor_contract ∧
-    BCNF publication_stage_order_contract ∧
-    BCNF publication_stage_cursor_codec_contract ∧
-    BCNF publication_stage_seal_contract ∧
-    BCNF publication_checkpoint_anchor_contract ∧
-    BCNF publication_checkpoint_generation_contract ∧
-    BCNF publication_checkpoint_cursor_contract ∧
-    BCNF publication_checkpoint_processed_count_contract ∧
-    BCNF publication_checkpoint_state_contract ∧
-    BCNF publication_checkpoint_updated_at_contract ∧
-    BCNF publication_checkpoint_seal_contract ∧
-    BCNF publication_batch_receipt_anchor_contract ∧
-    BCNF publication_batch_receipt_coordinate_contract ∧
-    BCNF publication_batch_receipt_start_cursor_contract ∧
-    BCNF publication_batch_receipt_start_processed_count_contract ∧
-    BCNF publication_batch_receipt_next_cursor_contract ∧
-    BCNF publication_batch_receipt_row_count_contract ∧
-    BCNF publication_batch_receipt_committed_at_contract ∧
-    BCNF publication_batch_receipt_seal_contract ∧
-    BCNF publication_finalization_checkpoint_anchor_contract ∧
-    BCNF publication_finalization_checkpoint_generation_contract ∧
-    BCNF publication_finalization_checkpoint_cursor_contract ∧
-    BCNF publication_finalization_checkpoint_processed_count_contract ∧
-    BCNF publication_finalization_checkpoint_state_contract ∧
-    BCNF publication_finalization_checkpoint_updated_at_contract ∧
-    BCNF publication_finalization_checkpoint_seal_contract ∧
-    BCNF publication_finalization_batch_receipt_anchor_contract ∧
-    BCNF publication_finalization_batch_receipt_coordinate_contract ∧
-    BCNF publication_finalization_batch_receipt_start_cursor_contract ∧
-    BCNF publication_finalization_batch_receipt_start_processed_count_contract ∧
-    BCNF publication_finalization_batch_receipt_next_cursor_contract ∧
-    BCNF publication_finalization_batch_receipt_row_count_contract ∧
-    BCNF publication_finalization_batch_receipt_committed_at_contract ∧
-    BCNF publication_finalization_batch_receipt_seal_contract ∧
-    BCNF artifact_zip_writer_policy_anchor_contract ∧
-    BCNF artifact_zip_writer_policy_zip_codec_version_contract ∧
-    BCNF artifact_zip_writer_policy_compression_method_contract ∧
-    BCNF artifact_zip_writer_policy_compression_level_contract ∧
-    BCNF artifact_zip_writer_policy_dos_date_contract ∧
-    BCNF artifact_zip_writer_policy_dos_time_contract ∧
-    BCNF artifact_zip_writer_policy_unix_mode_contract ∧
-    BCNF artifact_zip_writer_policy_general_purpose_flags_contract ∧
-    BCNF artifact_zip_writer_policy_create_system_contract ∧
-    BCNF artifact_zip_writer_policy_archive_name_codec_version_contract ∧
-    BCNF artifact_zip_writer_policy_artifact_name_codec_version_contract ∧
-    BCNF artifact_zip_writer_policy_identity_contract ∧
-    BCNF artifact_zip_writer_policy_seal_contract ∧
-    BCNF artifact_producer_fingerprint_anchor_contract ∧
-    BCNF artifact_producer_fingerprint_algorithm_version_contract ∧
-    BCNF artifact_producer_fingerprint_equivalence_class_contract ∧
-    BCNF artifact_producer_fingerprint_identity_contract ∧
-    BCNF artifact_producer_fingerprint_seal_contract ∧
-    BCNF artifact_storage_codec_anchor_contract ∧
-    BCNF artifact_storage_codec_adapter_id_contract ∧
-    BCNF artifact_storage_codec_locator_codec_version_contract ∧
-    BCNF artifact_storage_codec_protection_token_codec_version_contract ∧
-    BCNF artifact_storage_codec_seal_contract ∧
-    BCNF artifact_policy_semantics_anchor_contract ∧
-    BCNF artifact_policy_semantics_artifact_algorithm_version_contract ∧
-    BCNF artifact_policy_semantics_max_image_short_side_contract ∧
-    BCNF artifact_policy_semantics_producer_fingerprint_sha256_contract ∧
-    BCNF artifact_policy_semantics_identity_contract ∧
-    BCNF artifact_policy_semantics_seal_contract ∧
+    BCNF publication_stage_contract ∧
+    BCNF publication_checkpoint_contract ∧
+    BCNF publication_batch_receipt_stored_contract ∧
+    BCNF publication_finalization_checkpoint_contract ∧
+    BCNF publication_finalization_batch_receipt_stored_contract ∧
+    BCNF artifact_zip_writer_policy_contract ∧
+    BCNF artifact_producer_fingerprint_contract ∧
+    BCNF artifact_storage_codec_contract ∧
+    BCNF artifact_policy_semantics_contract ∧
     BCNF artifact_policy_contract ∧
     BCNF artifact_semantic_input_contract ∧
     BCNF artifact_input_contract ∧
     BCNF artifact_operation_contract ∧
     BCNF artifact_blob_contract ∧
     BCNF prepared_artifact_contract ∧
-    BCNF catalog_revision_anchor_contract ∧
-    BCNF catalog_revision_publication_count_contract ∧
-    BCNF catalog_revision_descriptor_seal_contract ∧
+    BCNF catalog_revision_descriptor_contract ∧
     BCNF publication_generation_node_contract ∧
     BCNF publication_generation_successor_contract ∧
     BCNF publication_identity_contract ∧
-    BCNF display_title_policy_anchor_contract ∧
-    BCNF display_title_policy_algorithm_version_contract ∧
-    BCNF display_title_policy_title_sort_policy_id_contract ∧
-    BCNF display_title_policy_identity_contract ∧
-    BCNF display_title_policy_seal_contract ∧
-    BCNF title_sort_policy_anchor_contract ∧
-    BCNF title_sort_policy_algorithm_version_contract ∧
-    BCNF title_sort_policy_unicode_data_version_contract ∧
-    BCNF title_sort_policy_identity_contract ∧
-    BCNF title_sort_policy_seal_contract ∧
+    BCNF display_title_policy_contract ∧
+    BCNF title_sort_policy_contract ∧
     BCNF display_title_choice_contract ∧
     BCNF title_sort_contract ∧
     BCNF catalog_publication_storage_contract ∧
@@ -23436,20 +13474,7 @@ theorem all_manifest_base_relations_bcnf :
     BCNF catalog_subject_contract ∧
     BCNF catalog_artifact_contract ∧
     BCNF publication_commit_anchor_contract ∧
-    BCNF publication_commit_candidate_contract ∧
-    BCNF publication_commit_catalog_revision_contract ∧
-    BCNF publication_commit_source_revision_contract ∧
-    BCNF publication_commit_generation_contract ∧
-    BCNF publication_commit_operational_preparation_contract ∧
-    BCNF publication_commit_operational_policy_contract ∧
-    BCNF publication_commit_artifact_policy_contract ∧
-    BCNF publication_commit_display_title_policy_contract ∧
-    BCNF publication_commit_new_galleries_contract ∧
-    BCNF publication_commit_changed_galleries_contract ∧
-    BCNF publication_commit_removed_galleries_contract ∧
-    BCNF publication_commit_duplicate_losers_contract ∧
-    BCNF publication_commit_committed_at_contract ∧
-    BCNF publication_commit_seal_contract ∧
+    BCNF publication_commit_contract ∧
     BCNF publication_commit_finalization_contract ∧
     BCNF publication_commit_head_receipt_contract := by
   exact ⟨canonical_digest_policy_bcnf,
@@ -23465,34 +13490,16 @@ theorem all_manifest_base_relations_bcnf :
     canonical_value_page_seal_bcnf,
     canonical_value_page_parent_bcnf,
     canonical_value_identity_bcnf,
-    manifest_policy_anchor_bcnf,
-    manifest_policy_manifest_algorithm_version_bcnf,
-    manifest_policy_file_order_version_bcnf,
-    manifest_policy_identity_bcnf,
-    manifest_policy_seal_bcnf,
-    source_build_anchor_bcnf,
-    source_build_scope_key_bcnf,
-    source_build_manifest_policy_id_bcnf,
+    manifest_policy_bcnf,
     source_build_state_bcnf,
-    source_build_created_at_bcnf,
-    source_build_descriptor_seal_bcnf,
     source_build_sealed_at_bcnf,
+    source_build_descriptor_bcnf,
     source_build_base_publication_commit_bcnf,
     channel_registry_bcnf,
     source_provider_registry_bcnf,
     source_build_channel_bcnf,
-    source_scope_anchor_bcnf,
-    source_scope_source_provider_bcnf,
-    source_scope_source_root_sha256_bcnf,
-    source_scope_identity_policy_version_bcnf,
-    source_scope_identity_bcnf,
-    source_scope_seal_bcnf,
-    source_build_discovery_anchor_bcnf,
-    source_build_discovery_scan_attempt_bcnf,
-    source_build_discovery_gallery_count_bcnf,
-    source_build_discovery_tree_observation_sha256_bcnf,
-    source_build_discovery_completed_at_bcnf,
-    source_build_discovery_seal_bcnf,
+    source_scope_bcnf,
+    source_build_discovery_bcnf,
     source_build_expected_gallery_bcnf,
     source_locator_identity_bcnf,
     gallery_identity_bcnf,
@@ -23542,41 +13549,17 @@ theorem all_manifest_base_relations_bcnf :
     tag_term_identity_bcnf,
     tag_term_seal_bcnf,
     gallery_observation_tag_bcnf,
-    build_manifest_anchor_bcnf,
-    build_manifest_manifest_sha256_bcnf,
-    build_manifest_file_count_bcnf,
-    build_manifest_byte_count_bcnf,
-    build_manifest_seal_bcnf,
+    build_manifest_core_bcnf,
     gallery_manifest_bcnf,
-    analysis_policy_anchor_bcnf,
-    analysis_policy_algorithm_version_bcnf,
-    analysis_policy_spam_artist_threshold_bcnf,
-    analysis_policy_spam_occurrence_threshold_bcnf,
-    analysis_policy_content_owner_rule_version_bcnf,
-    analysis_policy_gid_winner_rule_version_bcnf,
-    analysis_policy_identity_bcnf,
-    analysis_policy_seal_bcnf,
-    analysis_run_anchor_bcnf,
-    analysis_run_build_id_bcnf,
-    analysis_run_policy_id_bcnf,
-    analysis_run_input_manifest_sha256_bcnf,
-    analysis_run_identity_bcnf,
-    analysis_run_started_at_bcnf,
+    analysis_policy_bcnf,
     analysis_run_state_bcnf,
-    analysis_run_descriptor_seal_bcnf,
     analysis_run_completed_at_bcnf,
+    analysis_run_descriptor_bcnf,
     analysis_baseline_bcnf,
     analysis_state_ancestry_bcnf,
-    source_snapshot_manifest_identity_anchor_bcnf,
-    source_snapshot_manifest_identity_gallery_count_bcnf,
-    source_snapshot_manifest_identity_file_count_bcnf,
-    source_snapshot_manifest_identity_byte_count_bcnf,
-    source_snapshot_manifest_identity_seal_bcnf,
+    source_snapshot_manifest_identity_bcnf,
     analysis_snapshot_manifest_bcnf,
-    source_revision_anchor_bcnf,
-    source_revision_channel_bcnf,
-    source_revision_snapshot_manifest_bcnf,
-    source_revision_descriptor_seal_bcnf,
+    source_revision_descriptor_bcnf,
     source_revision_provenance_bcnf,
     gallery_observation_artist_bcnf,
     gallery_observation_file_hash_occurrence_bcnf,
@@ -23606,127 +13589,36 @@ theorem all_manifest_base_relations_bcnf :
     analysis_gid_candidate_tombstone_bcnf,
     analysis_gid_winner_selection_bcnf,
     analysis_gid_winner_tombstone_bcnf,
-    analysis_state_component_anchor_bcnf,
-    analysis_state_component_row_count_bcnf,
-    analysis_state_component_sealed_at_bcnf,
-    analysis_state_component_completion_seal_bcnf,
-    analysis_stage_anchor_bcnf,
-    analysis_stage_order_bcnf,
-    analysis_stage_cursor_codec_bcnf,
-    analysis_stage_seal_bcnf,
-    analysis_checkpoint_anchor_bcnf,
-    analysis_checkpoint_generation_bcnf,
-    analysis_checkpoint_cursor_bcnf,
-    analysis_checkpoint_processed_count_bcnf,
-    analysis_checkpoint_state_bcnf,
-    analysis_checkpoint_updated_at_bcnf,
-    analysis_checkpoint_seal_bcnf,
-    analysis_batch_receipt_anchor_bcnf,
-    analysis_batch_receipt_coordinate_bcnf,
-    analysis_batch_receipt_start_cursor_bcnf,
-    analysis_batch_receipt_start_processed_count_bcnf,
-    analysis_batch_receipt_page_limit_bcnf,
-    analysis_batch_receipt_next_cursor_bcnf,
-    analysis_batch_receipt_row_count_bcnf,
-    analysis_batch_receipt_committed_at_bcnf,
-    analysis_batch_receipt_seal_bcnf,
-    publication_candidate_anchor_bcnf,
-    publication_candidate_analysis_id_bcnf,
-    publication_candidate_reserved_revision_bcnf,
-    publication_candidate_artifact_policy_id_bcnf,
-    publication_candidate_display_title_policy_id_bcnf,
-    publication_candidate_artifacts_required_bcnf,
-    publication_candidate_created_at_bcnf,
-    publication_candidate_definition_seal_bcnf,
+    analysis_state_component_seal_bcnf,
+    analysis_stage_bcnf,
+    analysis_checkpoint_bcnf,
+    analysis_batch_receipt_stored_bcnf,
+    publication_candidate_bcnf,
     publication_candidate_projection_seal_bcnf,
     publication_candidate_base_publication_commit_bcnf,
     publication_selection_storage_bcnf,
     publication_selection_occurrence_identity_bcnf,
-    publication_stage_anchor_bcnf,
-    publication_stage_order_bcnf,
-    publication_stage_cursor_codec_bcnf,
-    publication_stage_seal_bcnf,
-    publication_checkpoint_anchor_bcnf,
-    publication_checkpoint_generation_bcnf,
-    publication_checkpoint_cursor_bcnf,
-    publication_checkpoint_processed_count_bcnf,
-    publication_checkpoint_state_bcnf,
-    publication_checkpoint_updated_at_bcnf,
-    publication_checkpoint_seal_bcnf,
-    publication_batch_receipt_anchor_bcnf,
-    publication_batch_receipt_coordinate_bcnf,
-    publication_batch_receipt_start_cursor_bcnf,
-    publication_batch_receipt_start_processed_count_bcnf,
-    publication_batch_receipt_next_cursor_bcnf,
-    publication_batch_receipt_row_count_bcnf,
-    publication_batch_receipt_committed_at_bcnf,
-    publication_batch_receipt_seal_bcnf,
-    publication_finalization_checkpoint_anchor_bcnf,
-    publication_finalization_checkpoint_generation_bcnf,
-    publication_finalization_checkpoint_cursor_bcnf,
-    publication_finalization_checkpoint_processed_count_bcnf,
-    publication_finalization_checkpoint_state_bcnf,
-    publication_finalization_checkpoint_updated_at_bcnf,
-    publication_finalization_checkpoint_seal_bcnf,
-    publication_finalization_batch_receipt_anchor_bcnf,
-    publication_finalization_batch_receipt_coordinate_bcnf,
-    publication_finalization_batch_receipt_start_cursor_bcnf,
-    publication_finalization_batch_receipt_start_processed_count_bcnf,
-    publication_finalization_batch_receipt_next_cursor_bcnf,
-    publication_finalization_batch_receipt_row_count_bcnf,
-    publication_finalization_batch_receipt_committed_at_bcnf,
-    publication_finalization_batch_receipt_seal_bcnf,
-    artifact_zip_writer_policy_anchor_bcnf,
-    artifact_zip_writer_policy_zip_codec_version_bcnf,
-    artifact_zip_writer_policy_compression_method_bcnf,
-    artifact_zip_writer_policy_compression_level_bcnf,
-    artifact_zip_writer_policy_dos_date_bcnf,
-    artifact_zip_writer_policy_dos_time_bcnf,
-    artifact_zip_writer_policy_unix_mode_bcnf,
-    artifact_zip_writer_policy_general_purpose_flags_bcnf,
-    artifact_zip_writer_policy_create_system_bcnf,
-    artifact_zip_writer_policy_archive_name_codec_version_bcnf,
-    artifact_zip_writer_policy_artifact_name_codec_version_bcnf,
-    artifact_zip_writer_policy_identity_bcnf,
-    artifact_zip_writer_policy_seal_bcnf,
-    artifact_producer_fingerprint_anchor_bcnf,
-    artifact_producer_fingerprint_algorithm_version_bcnf,
-    artifact_producer_fingerprint_equivalence_class_bcnf,
-    artifact_producer_fingerprint_identity_bcnf,
-    artifact_producer_fingerprint_seal_bcnf,
-    artifact_storage_codec_anchor_bcnf,
-    artifact_storage_codec_adapter_id_bcnf,
-    artifact_storage_codec_locator_codec_version_bcnf,
-    artifact_storage_codec_protection_token_codec_version_bcnf,
-    artifact_storage_codec_seal_bcnf,
-    artifact_policy_semantics_anchor_bcnf,
-    artifact_policy_semantics_artifact_algorithm_version_bcnf,
-    artifact_policy_semantics_max_image_short_side_bcnf,
-    artifact_policy_semantics_producer_fingerprint_sha256_bcnf,
-    artifact_policy_semantics_identity_bcnf,
-    artifact_policy_semantics_seal_bcnf,
+    publication_stage_bcnf,
+    publication_checkpoint_bcnf,
+    publication_batch_receipt_stored_bcnf,
+    publication_finalization_checkpoint_bcnf,
+    publication_finalization_batch_receipt_stored_bcnf,
+    artifact_zip_writer_policy_bcnf,
+    artifact_producer_fingerprint_bcnf,
+    artifact_storage_codec_bcnf,
+    artifact_policy_semantics_bcnf,
     artifact_policy_bcnf,
     artifact_semantic_input_bcnf,
     artifact_input_bcnf,
     artifact_operation_bcnf,
     artifact_blob_bcnf,
     prepared_artifact_bcnf,
-    catalog_revision_anchor_bcnf,
-    catalog_revision_publication_count_bcnf,
-    catalog_revision_descriptor_seal_bcnf,
+    catalog_revision_descriptor_bcnf,
     publication_generation_node_bcnf,
     publication_generation_successor_bcnf,
     publication_identity_bcnf,
-    display_title_policy_anchor_bcnf,
-    display_title_policy_algorithm_version_bcnf,
-    display_title_policy_title_sort_policy_id_bcnf,
-    display_title_policy_identity_bcnf,
-    display_title_policy_seal_bcnf,
-    title_sort_policy_anchor_bcnf,
-    title_sort_policy_algorithm_version_bcnf,
-    title_sort_policy_unicode_data_version_bcnf,
-    title_sort_policy_identity_bcnf,
-    title_sort_policy_seal_bcnf,
+    display_title_policy_bcnf,
+    title_sort_policy_bcnf,
     display_title_choice_bcnf,
     title_sort_bcnf,
     catalog_publication_storage_bcnf,
@@ -23742,20 +13634,7 @@ theorem all_manifest_base_relations_bcnf :
     catalog_subject_bcnf,
     catalog_artifact_bcnf,
     publication_commit_anchor_bcnf,
-    publication_commit_candidate_bcnf,
-    publication_commit_catalog_revision_bcnf,
-    publication_commit_source_revision_bcnf,
-    publication_commit_generation_bcnf,
-    publication_commit_operational_preparation_bcnf,
-    publication_commit_operational_policy_bcnf,
-    publication_commit_artifact_policy_bcnf,
-    publication_commit_display_title_policy_bcnf,
-    publication_commit_new_galleries_bcnf,
-    publication_commit_changed_galleries_bcnf,
-    publication_commit_removed_galleries_bcnf,
-    publication_commit_duplicate_losers_bcnf,
-    publication_commit_committed_at_bcnf,
-    publication_commit_seal_bcnf,
+    publication_commit_bcnf,
     publication_commit_finalization_bcnf,
     publication_commit_head_receipt_bcnf⟩
 
@@ -23777,38 +13656,17 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes canonical_value_page_descriptor_contract ∧
     KeysDetermineAllAttributes canonical_value_page_parent_contract ∧
     KeysDetermineAllAttributes canonical_value_identity_contract ∧
-    KeysDetermineAllAttributes manifest_policy_anchor_contract ∧
-    KeysDetermineAllAttributes manifest_policy_manifest_algorithm_version_contract ∧
-    KeysDetermineAllAttributes manifest_policy_file_order_version_contract ∧
-    KeysDetermineAllAttributes manifest_policy_identity_contract ∧
-    KeysDetermineAllAttributes manifest_policy_seal_contract ∧
     KeysDetermineAllAttributes manifest_policy_contract ∧
-    KeysDetermineAllAttributes source_build_anchor_contract ∧
-    KeysDetermineAllAttributes source_build_scope_key_contract ∧
-    KeysDetermineAllAttributes source_build_manifest_policy_id_contract ∧
     KeysDetermineAllAttributes source_build_state_contract ∧
-    KeysDetermineAllAttributes source_build_created_at_contract ∧
-    KeysDetermineAllAttributes source_build_descriptor_seal_contract ∧
     KeysDetermineAllAttributes source_build_sealed_at_contract ∧
+    KeysDetermineAllAttributes source_build_descriptor_contract ∧
     KeysDetermineAllAttributes source_build_contract ∧
     KeysDetermineAllAttributes source_build_base_publication_commit_contract ∧
     KeysDetermineAllAttributes source_build_base_source_contract ∧
     KeysDetermineAllAttributes channel_registry_contract ∧
     KeysDetermineAllAttributes source_provider_registry_contract ∧
     KeysDetermineAllAttributes source_build_channel_contract ∧
-    KeysDetermineAllAttributes source_scope_anchor_contract ∧
-    KeysDetermineAllAttributes source_scope_source_provider_contract ∧
-    KeysDetermineAllAttributes source_scope_source_root_sha256_contract ∧
-    KeysDetermineAllAttributes source_scope_identity_policy_version_contract ∧
-    KeysDetermineAllAttributes source_scope_identity_contract ∧
-    KeysDetermineAllAttributes source_scope_seal_contract ∧
     KeysDetermineAllAttributes source_scope_contract ∧
-    KeysDetermineAllAttributes source_build_discovery_anchor_contract ∧
-    KeysDetermineAllAttributes source_build_discovery_scan_attempt_contract ∧
-    KeysDetermineAllAttributes source_build_discovery_gallery_count_contract ∧
-    KeysDetermineAllAttributes source_build_discovery_tree_observation_sha256_contract ∧
-    KeysDetermineAllAttributes source_build_discovery_completed_at_contract ∧
-    KeysDetermineAllAttributes source_build_discovery_seal_contract ∧
     KeysDetermineAllAttributes source_build_discovery_contract ∧
     KeysDetermineAllAttributes source_build_expected_gallery_contract ∧
     KeysDetermineAllAttributes source_locator_identity_contract ∧
@@ -23866,46 +13724,19 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes tag_term_seal_contract ∧
     KeysDetermineAllAttributes tag_term_contract ∧
     KeysDetermineAllAttributes gallery_observation_tag_contract ∧
-    KeysDetermineAllAttributes build_manifest_anchor_contract ∧
-    KeysDetermineAllAttributes build_manifest_manifest_sha256_contract ∧
-    KeysDetermineAllAttributes build_manifest_file_count_contract ∧
-    KeysDetermineAllAttributes build_manifest_byte_count_contract ∧
-    KeysDetermineAllAttributes build_manifest_seal_contract ∧
+    KeysDetermineAllAttributes build_manifest_core_contract ∧
     KeysDetermineAllAttributes build_manifest_contract ∧
     KeysDetermineAllAttributes gallery_manifest_contract ∧
-    KeysDetermineAllAttributes analysis_policy_anchor_contract ∧
-    KeysDetermineAllAttributes analysis_policy_algorithm_version_contract ∧
-    KeysDetermineAllAttributes analysis_policy_spam_artist_threshold_contract ∧
-    KeysDetermineAllAttributes analysis_policy_spam_occurrence_threshold_contract ∧
-    KeysDetermineAllAttributes analysis_policy_content_owner_rule_version_contract ∧
-    KeysDetermineAllAttributes analysis_policy_gid_winner_rule_version_contract ∧
-    KeysDetermineAllAttributes analysis_policy_identity_contract ∧
-    KeysDetermineAllAttributes analysis_policy_seal_contract ∧
     KeysDetermineAllAttributes analysis_policy_contract ∧
-    KeysDetermineAllAttributes analysis_run_anchor_contract ∧
-    KeysDetermineAllAttributes analysis_run_build_id_contract ∧
-    KeysDetermineAllAttributes analysis_run_policy_id_contract ∧
-    KeysDetermineAllAttributes analysis_run_input_manifest_sha256_contract ∧
-    KeysDetermineAllAttributes analysis_run_identity_contract ∧
-    KeysDetermineAllAttributes analysis_run_started_at_contract ∧
     KeysDetermineAllAttributes analysis_run_state_contract ∧
-    KeysDetermineAllAttributes analysis_run_descriptor_seal_contract ∧
     KeysDetermineAllAttributes analysis_run_completed_at_contract ∧
+    KeysDetermineAllAttributes analysis_run_descriptor_contract ∧
     KeysDetermineAllAttributes analysis_run_contract ∧
     KeysDetermineAllAttributes analysis_baseline_contract ∧
     KeysDetermineAllAttributes analysis_state_anchor_contract ∧
     KeysDetermineAllAttributes analysis_state_ancestry_contract ∧
-    KeysDetermineAllAttributes source_snapshot_manifest_identity_anchor_contract ∧
-    KeysDetermineAllAttributes source_snapshot_manifest_identity_gallery_count_contract ∧
-    KeysDetermineAllAttributes source_snapshot_manifest_identity_file_count_contract ∧
-    KeysDetermineAllAttributes source_snapshot_manifest_identity_byte_count_contract ∧
-    KeysDetermineAllAttributes source_snapshot_manifest_identity_seal_contract ∧
     KeysDetermineAllAttributes source_snapshot_manifest_identity_contract ∧
     KeysDetermineAllAttributes analysis_snapshot_manifest_contract ∧
-    KeysDetermineAllAttributes source_revision_anchor_contract ∧
-    KeysDetermineAllAttributes source_revision_channel_contract ∧
-    KeysDetermineAllAttributes source_revision_snapshot_manifest_contract ∧
-    KeysDetermineAllAttributes source_revision_descriptor_seal_contract ∧
     KeysDetermineAllAttributes source_revision_descriptor_contract ∧
     KeysDetermineAllAttributes source_revision_contract ∧
     KeysDetermineAllAttributes source_revision_generation_contract ∧
@@ -23951,43 +13782,11 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes analysis_gid_winner_shadow_contract ∧
     KeysDetermineAllAttributes analysis_gid_winner_tombstone_contract ∧
     KeysDetermineAllAttributes analysis_gid_winner_resolved_contract ∧
-    KeysDetermineAllAttributes analysis_state_component_anchor_contract ∧
-    KeysDetermineAllAttributes analysis_state_component_row_count_contract ∧
-    KeysDetermineAllAttributes analysis_state_component_sealed_at_contract ∧
-    KeysDetermineAllAttributes analysis_state_component_completion_seal_contract ∧
     KeysDetermineAllAttributes analysis_state_component_seal_contract ∧
-    KeysDetermineAllAttributes analysis_stage_anchor_contract ∧
-    KeysDetermineAllAttributes analysis_stage_order_contract ∧
-    KeysDetermineAllAttributes analysis_stage_cursor_codec_contract ∧
-    KeysDetermineAllAttributes analysis_stage_seal_contract ∧
     KeysDetermineAllAttributes analysis_stage_contract ∧
-    KeysDetermineAllAttributes analysis_checkpoint_anchor_contract ∧
-    KeysDetermineAllAttributes analysis_checkpoint_generation_contract ∧
-    KeysDetermineAllAttributes analysis_checkpoint_cursor_contract ∧
-    KeysDetermineAllAttributes analysis_checkpoint_processed_count_contract ∧
-    KeysDetermineAllAttributes analysis_checkpoint_state_contract ∧
-    KeysDetermineAllAttributes analysis_checkpoint_updated_at_contract ∧
-    KeysDetermineAllAttributes analysis_checkpoint_seal_contract ∧
     KeysDetermineAllAttributes analysis_checkpoint_contract ∧
-    KeysDetermineAllAttributes analysis_batch_receipt_anchor_contract ∧
-    KeysDetermineAllAttributes analysis_batch_receipt_coordinate_contract ∧
-    KeysDetermineAllAttributes analysis_batch_receipt_start_cursor_contract ∧
-    KeysDetermineAllAttributes analysis_batch_receipt_start_processed_count_contract ∧
-    KeysDetermineAllAttributes analysis_batch_receipt_page_limit_contract ∧
-    KeysDetermineAllAttributes analysis_batch_receipt_next_cursor_contract ∧
-    KeysDetermineAllAttributes analysis_batch_receipt_row_count_contract ∧
-    KeysDetermineAllAttributes analysis_batch_receipt_committed_at_contract ∧
-    KeysDetermineAllAttributes analysis_batch_receipt_seal_contract ∧
     KeysDetermineAllAttributes analysis_batch_receipt_stored_contract ∧
     KeysDetermineAllAttributes analysis_batch_receipt_contract ∧
-    KeysDetermineAllAttributes publication_candidate_anchor_contract ∧
-    KeysDetermineAllAttributes publication_candidate_analysis_id_contract ∧
-    KeysDetermineAllAttributes publication_candidate_reserved_revision_contract ∧
-    KeysDetermineAllAttributes publication_candidate_artifact_policy_id_contract ∧
-    KeysDetermineAllAttributes publication_candidate_display_title_policy_id_contract ∧
-    KeysDetermineAllAttributes publication_candidate_artifacts_required_contract ∧
-    KeysDetermineAllAttributes publication_candidate_created_at_contract ∧
-    KeysDetermineAllAttributes publication_candidate_definition_seal_contract ∧
     KeysDetermineAllAttributes publication_candidate_contract ∧
     KeysDetermineAllAttributes publication_candidate_projection_seal_contract ∧
     KeysDetermineAllAttributes publication_candidate_projection_contract ∧
@@ -23997,79 +13796,16 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes publication_selection_storage_contract ∧
     KeysDetermineAllAttributes publication_selection_occurrence_identity_contract ∧
     KeysDetermineAllAttributes publication_selection_contract ∧
-    KeysDetermineAllAttributes publication_stage_anchor_contract ∧
-    KeysDetermineAllAttributes publication_stage_order_contract ∧
-    KeysDetermineAllAttributes publication_stage_cursor_codec_contract ∧
-    KeysDetermineAllAttributes publication_stage_seal_contract ∧
     KeysDetermineAllAttributes publication_stage_contract ∧
-    KeysDetermineAllAttributes publication_checkpoint_anchor_contract ∧
-    KeysDetermineAllAttributes publication_checkpoint_generation_contract ∧
-    KeysDetermineAllAttributes publication_checkpoint_cursor_contract ∧
-    KeysDetermineAllAttributes publication_checkpoint_processed_count_contract ∧
-    KeysDetermineAllAttributes publication_checkpoint_state_contract ∧
-    KeysDetermineAllAttributes publication_checkpoint_updated_at_contract ∧
-    KeysDetermineAllAttributes publication_checkpoint_seal_contract ∧
     KeysDetermineAllAttributes publication_checkpoint_contract ∧
-    KeysDetermineAllAttributes publication_batch_receipt_anchor_contract ∧
-    KeysDetermineAllAttributes publication_batch_receipt_coordinate_contract ∧
-    KeysDetermineAllAttributes publication_batch_receipt_start_cursor_contract ∧
-    KeysDetermineAllAttributes publication_batch_receipt_start_processed_count_contract ∧
-    KeysDetermineAllAttributes publication_batch_receipt_next_cursor_contract ∧
-    KeysDetermineAllAttributes publication_batch_receipt_row_count_contract ∧
-    KeysDetermineAllAttributes publication_batch_receipt_committed_at_contract ∧
-    KeysDetermineAllAttributes publication_batch_receipt_seal_contract ∧
     KeysDetermineAllAttributes publication_batch_receipt_stored_contract ∧
     KeysDetermineAllAttributes publication_batch_receipt_contract ∧
-    KeysDetermineAllAttributes publication_finalization_checkpoint_anchor_contract ∧
-    KeysDetermineAllAttributes publication_finalization_checkpoint_generation_contract ∧
-    KeysDetermineAllAttributes publication_finalization_checkpoint_cursor_contract ∧
-    KeysDetermineAllAttributes publication_finalization_checkpoint_processed_count_contract ∧
-    KeysDetermineAllAttributes publication_finalization_checkpoint_state_contract ∧
-    KeysDetermineAllAttributes publication_finalization_checkpoint_updated_at_contract ∧
-    KeysDetermineAllAttributes publication_finalization_checkpoint_seal_contract ∧
     KeysDetermineAllAttributes publication_finalization_checkpoint_contract ∧
-    KeysDetermineAllAttributes publication_finalization_batch_receipt_anchor_contract ∧
-    KeysDetermineAllAttributes publication_finalization_batch_receipt_coordinate_contract ∧
-    KeysDetermineAllAttributes publication_finalization_batch_receipt_start_cursor_contract ∧
-    KeysDetermineAllAttributes publication_finalization_batch_receipt_start_processed_count_contract ∧
-    KeysDetermineAllAttributes publication_finalization_batch_receipt_next_cursor_contract ∧
-    KeysDetermineAllAttributes publication_finalization_batch_receipt_row_count_contract ∧
-    KeysDetermineAllAttributes publication_finalization_batch_receipt_committed_at_contract ∧
-    KeysDetermineAllAttributes publication_finalization_batch_receipt_seal_contract ∧
     KeysDetermineAllAttributes publication_finalization_batch_receipt_stored_contract ∧
     KeysDetermineAllAttributes publication_finalization_batch_receipt_contract ∧
-    KeysDetermineAllAttributes artifact_zip_writer_policy_anchor_contract ∧
-    KeysDetermineAllAttributes artifact_zip_writer_policy_zip_codec_version_contract ∧
-    KeysDetermineAllAttributes artifact_zip_writer_policy_compression_method_contract ∧
-    KeysDetermineAllAttributes artifact_zip_writer_policy_compression_level_contract ∧
-    KeysDetermineAllAttributes artifact_zip_writer_policy_dos_date_contract ∧
-    KeysDetermineAllAttributes artifact_zip_writer_policy_dos_time_contract ∧
-    KeysDetermineAllAttributes artifact_zip_writer_policy_unix_mode_contract ∧
-    KeysDetermineAllAttributes artifact_zip_writer_policy_general_purpose_flags_contract ∧
-    KeysDetermineAllAttributes artifact_zip_writer_policy_create_system_contract ∧
-    KeysDetermineAllAttributes artifact_zip_writer_policy_archive_name_codec_version_contract ∧
-    KeysDetermineAllAttributes artifact_zip_writer_policy_artifact_name_codec_version_contract ∧
-    KeysDetermineAllAttributes artifact_zip_writer_policy_identity_contract ∧
-    KeysDetermineAllAttributes artifact_zip_writer_policy_seal_contract ∧
     KeysDetermineAllAttributes artifact_zip_writer_policy_contract ∧
-    KeysDetermineAllAttributes artifact_producer_fingerprint_anchor_contract ∧
-    KeysDetermineAllAttributes artifact_producer_fingerprint_algorithm_version_contract ∧
-    KeysDetermineAllAttributes artifact_producer_fingerprint_equivalence_class_contract ∧
-    KeysDetermineAllAttributes artifact_producer_fingerprint_identity_contract ∧
-    KeysDetermineAllAttributes artifact_producer_fingerprint_seal_contract ∧
     KeysDetermineAllAttributes artifact_producer_fingerprint_contract ∧
-    KeysDetermineAllAttributes artifact_storage_codec_anchor_contract ∧
-    KeysDetermineAllAttributes artifact_storage_codec_adapter_id_contract ∧
-    KeysDetermineAllAttributes artifact_storage_codec_locator_codec_version_contract ∧
-    KeysDetermineAllAttributes artifact_storage_codec_protection_token_codec_version_contract ∧
-    KeysDetermineAllAttributes artifact_storage_codec_seal_contract ∧
     KeysDetermineAllAttributes artifact_storage_codec_contract ∧
-    KeysDetermineAllAttributes artifact_policy_semantics_anchor_contract ∧
-    KeysDetermineAllAttributes artifact_policy_semantics_artifact_algorithm_version_contract ∧
-    KeysDetermineAllAttributes artifact_policy_semantics_max_image_short_side_contract ∧
-    KeysDetermineAllAttributes artifact_policy_semantics_producer_fingerprint_sha256_contract ∧
-    KeysDetermineAllAttributes artifact_policy_semantics_identity_contract ∧
-    KeysDetermineAllAttributes artifact_policy_semantics_seal_contract ∧
     KeysDetermineAllAttributes artifact_policy_semantics_contract ∧
     KeysDetermineAllAttributes artifact_policy_contract ∧
     KeysDetermineAllAttributes artifact_semantic_input_contract ∧
@@ -24079,26 +13815,13 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes artifact_operation_contract ∧
     KeysDetermineAllAttributes artifact_blob_contract ∧
     KeysDetermineAllAttributes prepared_artifact_contract ∧
-    KeysDetermineAllAttributes catalog_revision_anchor_contract ∧
-    KeysDetermineAllAttributes catalog_revision_publication_count_contract ∧
-    KeysDetermineAllAttributes catalog_revision_descriptor_seal_contract ∧
     KeysDetermineAllAttributes catalog_revision_descriptor_contract ∧
     KeysDetermineAllAttributes catalog_revision_contract ∧
     KeysDetermineAllAttributes catalog_revision_generation_contract ∧
     KeysDetermineAllAttributes publication_generation_node_contract ∧
     KeysDetermineAllAttributes publication_generation_successor_contract ∧
     KeysDetermineAllAttributes publication_identity_contract ∧
-    KeysDetermineAllAttributes display_title_policy_anchor_contract ∧
-    KeysDetermineAllAttributes display_title_policy_algorithm_version_contract ∧
-    KeysDetermineAllAttributes display_title_policy_title_sort_policy_id_contract ∧
-    KeysDetermineAllAttributes display_title_policy_identity_contract ∧
-    KeysDetermineAllAttributes display_title_policy_seal_contract ∧
     KeysDetermineAllAttributes display_title_policy_contract ∧
-    KeysDetermineAllAttributes title_sort_policy_anchor_contract ∧
-    KeysDetermineAllAttributes title_sort_policy_algorithm_version_contract ∧
-    KeysDetermineAllAttributes title_sort_policy_unicode_data_version_contract ∧
-    KeysDetermineAllAttributes title_sort_policy_identity_contract ∧
-    KeysDetermineAllAttributes title_sort_policy_seal_contract ∧
     KeysDetermineAllAttributes title_sort_policy_contract ∧
     KeysDetermineAllAttributes display_title_choice_contract ∧
     KeysDetermineAllAttributes title_sort_contract ∧
@@ -24118,20 +13841,6 @@ theorem all_manifest_candidate_keys_determine_attributes :
     KeysDetermineAllAttributes catalog_subject_contract ∧
     KeysDetermineAllAttributes catalog_artifact_contract ∧
     KeysDetermineAllAttributes publication_commit_anchor_contract ∧
-    KeysDetermineAllAttributes publication_commit_candidate_contract ∧
-    KeysDetermineAllAttributes publication_commit_catalog_revision_contract ∧
-    KeysDetermineAllAttributes publication_commit_source_revision_contract ∧
-    KeysDetermineAllAttributes publication_commit_generation_contract ∧
-    KeysDetermineAllAttributes publication_commit_operational_preparation_contract ∧
-    KeysDetermineAllAttributes publication_commit_operational_policy_contract ∧
-    KeysDetermineAllAttributes publication_commit_artifact_policy_contract ∧
-    KeysDetermineAllAttributes publication_commit_display_title_policy_contract ∧
-    KeysDetermineAllAttributes publication_commit_new_galleries_contract ∧
-    KeysDetermineAllAttributes publication_commit_changed_galleries_contract ∧
-    KeysDetermineAllAttributes publication_commit_removed_galleries_contract ∧
-    KeysDetermineAllAttributes publication_commit_duplicate_losers_contract ∧
-    KeysDetermineAllAttributes publication_commit_committed_at_contract ∧
-    KeysDetermineAllAttributes publication_commit_seal_contract ∧
     KeysDetermineAllAttributes publication_commit_contract ∧
     KeysDetermineAllAttributes publication_commit_finalization_contract ∧
     KeysDetermineAllAttributes publication_commit_head_receipt_contract ∧
@@ -24156,38 +13865,17 @@ theorem all_manifest_candidate_keys_determine_attributes :
     canonical_value_page_descriptor_candidate_keys_determine_all_attributes,
     canonical_value_page_parent_candidate_keys_determine_all_attributes,
     canonical_value_identity_candidate_keys_determine_all_attributes,
-    manifest_policy_anchor_candidate_keys_determine_all_attributes,
-    manifest_policy_manifest_algorithm_version_candidate_keys_determine_all_attributes,
-    manifest_policy_file_order_version_candidate_keys_determine_all_attributes,
-    manifest_policy_identity_candidate_keys_determine_all_attributes,
-    manifest_policy_seal_candidate_keys_determine_all_attributes,
     manifest_policy_candidate_keys_determine_all_attributes,
-    source_build_anchor_candidate_keys_determine_all_attributes,
-    source_build_scope_key_candidate_keys_determine_all_attributes,
-    source_build_manifest_policy_id_candidate_keys_determine_all_attributes,
     source_build_state_candidate_keys_determine_all_attributes,
-    source_build_created_at_candidate_keys_determine_all_attributes,
-    source_build_descriptor_seal_candidate_keys_determine_all_attributes,
     source_build_sealed_at_candidate_keys_determine_all_attributes,
+    source_build_descriptor_candidate_keys_determine_all_attributes,
     source_build_candidate_keys_determine_all_attributes,
     source_build_base_publication_commit_candidate_keys_determine_all_attributes,
     source_build_base_source_candidate_keys_determine_all_attributes,
     channel_registry_candidate_keys_determine_all_attributes,
     source_provider_registry_candidate_keys_determine_all_attributes,
     source_build_channel_candidate_keys_determine_all_attributes,
-    source_scope_anchor_candidate_keys_determine_all_attributes,
-    source_scope_source_provider_candidate_keys_determine_all_attributes,
-    source_scope_source_root_sha256_candidate_keys_determine_all_attributes,
-    source_scope_identity_policy_version_candidate_keys_determine_all_attributes,
-    source_scope_identity_candidate_keys_determine_all_attributes,
-    source_scope_seal_candidate_keys_determine_all_attributes,
     source_scope_candidate_keys_determine_all_attributes,
-    source_build_discovery_anchor_candidate_keys_determine_all_attributes,
-    source_build_discovery_scan_attempt_candidate_keys_determine_all_attributes,
-    source_build_discovery_gallery_count_candidate_keys_determine_all_attributes,
-    source_build_discovery_tree_observation_sha256_candidate_keys_determine_all_attributes,
-    source_build_discovery_completed_at_candidate_keys_determine_all_attributes,
-    source_build_discovery_seal_candidate_keys_determine_all_attributes,
     source_build_discovery_candidate_keys_determine_all_attributes,
     source_build_expected_gallery_candidate_keys_determine_all_attributes,
     source_locator_identity_candidate_keys_determine_all_attributes,
@@ -24245,46 +13933,19 @@ theorem all_manifest_candidate_keys_determine_attributes :
     tag_term_seal_candidate_keys_determine_all_attributes,
     tag_term_candidate_keys_determine_all_attributes,
     gallery_observation_tag_candidate_keys_determine_all_attributes,
-    build_manifest_anchor_candidate_keys_determine_all_attributes,
-    build_manifest_manifest_sha256_candidate_keys_determine_all_attributes,
-    build_manifest_file_count_candidate_keys_determine_all_attributes,
-    build_manifest_byte_count_candidate_keys_determine_all_attributes,
-    build_manifest_seal_candidate_keys_determine_all_attributes,
+    build_manifest_core_candidate_keys_determine_all_attributes,
     build_manifest_candidate_keys_determine_all_attributes,
     gallery_manifest_candidate_keys_determine_all_attributes,
-    analysis_policy_anchor_candidate_keys_determine_all_attributes,
-    analysis_policy_algorithm_version_candidate_keys_determine_all_attributes,
-    analysis_policy_spam_artist_threshold_candidate_keys_determine_all_attributes,
-    analysis_policy_spam_occurrence_threshold_candidate_keys_determine_all_attributes,
-    analysis_policy_content_owner_rule_version_candidate_keys_determine_all_attributes,
-    analysis_policy_gid_winner_rule_version_candidate_keys_determine_all_attributes,
-    analysis_policy_identity_candidate_keys_determine_all_attributes,
-    analysis_policy_seal_candidate_keys_determine_all_attributes,
     analysis_policy_candidate_keys_determine_all_attributes,
-    analysis_run_anchor_candidate_keys_determine_all_attributes,
-    analysis_run_build_id_candidate_keys_determine_all_attributes,
-    analysis_run_policy_id_candidate_keys_determine_all_attributes,
-    analysis_run_input_manifest_sha256_candidate_keys_determine_all_attributes,
-    analysis_run_identity_candidate_keys_determine_all_attributes,
-    analysis_run_started_at_candidate_keys_determine_all_attributes,
     analysis_run_state_candidate_keys_determine_all_attributes,
-    analysis_run_descriptor_seal_candidate_keys_determine_all_attributes,
     analysis_run_completed_at_candidate_keys_determine_all_attributes,
+    analysis_run_descriptor_candidate_keys_determine_all_attributes,
     analysis_run_candidate_keys_determine_all_attributes,
     analysis_baseline_candidate_keys_determine_all_attributes,
     analysis_state_anchor_candidate_keys_determine_all_attributes,
     analysis_state_ancestry_candidate_keys_determine_all_attributes,
-    source_snapshot_manifest_identity_anchor_candidate_keys_determine_all_attributes,
-    source_snapshot_manifest_identity_gallery_count_candidate_keys_determine_all_attributes,
-    source_snapshot_manifest_identity_file_count_candidate_keys_determine_all_attributes,
-    source_snapshot_manifest_identity_byte_count_candidate_keys_determine_all_attributes,
-    source_snapshot_manifest_identity_seal_candidate_keys_determine_all_attributes,
     source_snapshot_manifest_identity_candidate_keys_determine_all_attributes,
     analysis_snapshot_manifest_candidate_keys_determine_all_attributes,
-    source_revision_anchor_candidate_keys_determine_all_attributes,
-    source_revision_channel_candidate_keys_determine_all_attributes,
-    source_revision_snapshot_manifest_candidate_keys_determine_all_attributes,
-    source_revision_descriptor_seal_candidate_keys_determine_all_attributes,
     source_revision_descriptor_candidate_keys_determine_all_attributes,
     source_revision_candidate_keys_determine_all_attributes,
     source_revision_generation_candidate_keys_determine_all_attributes,
@@ -24330,43 +13991,11 @@ theorem all_manifest_candidate_keys_determine_attributes :
     analysis_gid_winner_shadow_candidate_keys_determine_all_attributes,
     analysis_gid_winner_tombstone_candidate_keys_determine_all_attributes,
     analysis_gid_winner_resolved_candidate_keys_determine_all_attributes,
-    analysis_state_component_anchor_candidate_keys_determine_all_attributes,
-    analysis_state_component_row_count_candidate_keys_determine_all_attributes,
-    analysis_state_component_sealed_at_candidate_keys_determine_all_attributes,
-    analysis_state_component_completion_seal_candidate_keys_determine_all_attributes,
     analysis_state_component_seal_candidate_keys_determine_all_attributes,
-    analysis_stage_anchor_candidate_keys_determine_all_attributes,
-    analysis_stage_order_candidate_keys_determine_all_attributes,
-    analysis_stage_cursor_codec_candidate_keys_determine_all_attributes,
-    analysis_stage_seal_candidate_keys_determine_all_attributes,
     analysis_stage_candidate_keys_determine_all_attributes,
-    analysis_checkpoint_anchor_candidate_keys_determine_all_attributes,
-    analysis_checkpoint_generation_candidate_keys_determine_all_attributes,
-    analysis_checkpoint_cursor_candidate_keys_determine_all_attributes,
-    analysis_checkpoint_processed_count_candidate_keys_determine_all_attributes,
-    analysis_checkpoint_state_candidate_keys_determine_all_attributes,
-    analysis_checkpoint_updated_at_candidate_keys_determine_all_attributes,
-    analysis_checkpoint_seal_candidate_keys_determine_all_attributes,
     analysis_checkpoint_candidate_keys_determine_all_attributes,
-    analysis_batch_receipt_anchor_candidate_keys_determine_all_attributes,
-    analysis_batch_receipt_coordinate_candidate_keys_determine_all_attributes,
-    analysis_batch_receipt_start_cursor_candidate_keys_determine_all_attributes,
-    analysis_batch_receipt_start_processed_count_candidate_keys_determine_all_attributes,
-    analysis_batch_receipt_page_limit_candidate_keys_determine_all_attributes,
-    analysis_batch_receipt_next_cursor_candidate_keys_determine_all_attributes,
-    analysis_batch_receipt_row_count_candidate_keys_determine_all_attributes,
-    analysis_batch_receipt_committed_at_candidate_keys_determine_all_attributes,
-    analysis_batch_receipt_seal_candidate_keys_determine_all_attributes,
     analysis_batch_receipt_stored_candidate_keys_determine_all_attributes,
     analysis_batch_receipt_candidate_keys_determine_all_attributes,
-    publication_candidate_anchor_candidate_keys_determine_all_attributes,
-    publication_candidate_analysis_id_candidate_keys_determine_all_attributes,
-    publication_candidate_reserved_revision_candidate_keys_determine_all_attributes,
-    publication_candidate_artifact_policy_id_candidate_keys_determine_all_attributes,
-    publication_candidate_display_title_policy_id_candidate_keys_determine_all_attributes,
-    publication_candidate_artifacts_required_candidate_keys_determine_all_attributes,
-    publication_candidate_created_at_candidate_keys_determine_all_attributes,
-    publication_candidate_definition_seal_candidate_keys_determine_all_attributes,
     publication_candidate_candidate_keys_determine_all_attributes,
     publication_candidate_projection_seal_candidate_keys_determine_all_attributes,
     publication_candidate_projection_candidate_keys_determine_all_attributes,
@@ -24376,79 +14005,16 @@ theorem all_manifest_candidate_keys_determine_attributes :
     publication_selection_storage_candidate_keys_determine_all_attributes,
     publication_selection_occurrence_identity_candidate_keys_determine_all_attributes,
     publication_selection_candidate_keys_determine_all_attributes,
-    publication_stage_anchor_candidate_keys_determine_all_attributes,
-    publication_stage_order_candidate_keys_determine_all_attributes,
-    publication_stage_cursor_codec_candidate_keys_determine_all_attributes,
-    publication_stage_seal_candidate_keys_determine_all_attributes,
     publication_stage_candidate_keys_determine_all_attributes,
-    publication_checkpoint_anchor_candidate_keys_determine_all_attributes,
-    publication_checkpoint_generation_candidate_keys_determine_all_attributes,
-    publication_checkpoint_cursor_candidate_keys_determine_all_attributes,
-    publication_checkpoint_processed_count_candidate_keys_determine_all_attributes,
-    publication_checkpoint_state_candidate_keys_determine_all_attributes,
-    publication_checkpoint_updated_at_candidate_keys_determine_all_attributes,
-    publication_checkpoint_seal_candidate_keys_determine_all_attributes,
     publication_checkpoint_candidate_keys_determine_all_attributes,
-    publication_batch_receipt_anchor_candidate_keys_determine_all_attributes,
-    publication_batch_receipt_coordinate_candidate_keys_determine_all_attributes,
-    publication_batch_receipt_start_cursor_candidate_keys_determine_all_attributes,
-    publication_batch_receipt_start_processed_count_candidate_keys_determine_all_attributes,
-    publication_batch_receipt_next_cursor_candidate_keys_determine_all_attributes,
-    publication_batch_receipt_row_count_candidate_keys_determine_all_attributes,
-    publication_batch_receipt_committed_at_candidate_keys_determine_all_attributes,
-    publication_batch_receipt_seal_candidate_keys_determine_all_attributes,
     publication_batch_receipt_stored_candidate_keys_determine_all_attributes,
     publication_batch_receipt_candidate_keys_determine_all_attributes,
-    publication_finalization_checkpoint_anchor_candidate_keys_determine_all_attributes,
-    publication_finalization_checkpoint_generation_candidate_keys_determine_all_attributes,
-    publication_finalization_checkpoint_cursor_candidate_keys_determine_all_attributes,
-    publication_finalization_checkpoint_processed_count_candidate_keys_determine_all_attributes,
-    publication_finalization_checkpoint_state_candidate_keys_determine_all_attributes,
-    publication_finalization_checkpoint_updated_at_candidate_keys_determine_all_attributes,
-    publication_finalization_checkpoint_seal_candidate_keys_determine_all_attributes,
     publication_finalization_checkpoint_candidate_keys_determine_all_attributes,
-    publication_finalization_batch_receipt_anchor_candidate_keys_determine_all_attributes,
-    publication_finalization_batch_receipt_coordinate_candidate_keys_determine_all_attributes,
-    publication_finalization_batch_receipt_start_cursor_candidate_keys_determine_all_attributes,
-    publication_finalization_batch_receipt_start_processed_count_candidate_keys_determine_all_attributes,
-    publication_finalization_batch_receipt_next_cursor_candidate_keys_determine_all_attributes,
-    publication_finalization_batch_receipt_row_count_candidate_keys_determine_all_attributes,
-    publication_finalization_batch_receipt_committed_at_candidate_keys_determine_all_attributes,
-    publication_finalization_batch_receipt_seal_candidate_keys_determine_all_attributes,
     publication_finalization_batch_receipt_stored_candidate_keys_determine_all_attributes,
     publication_finalization_batch_receipt_candidate_keys_determine_all_attributes,
-    artifact_zip_writer_policy_anchor_candidate_keys_determine_all_attributes,
-    artifact_zip_writer_policy_zip_codec_version_candidate_keys_determine_all_attributes,
-    artifact_zip_writer_policy_compression_method_candidate_keys_determine_all_attributes,
-    artifact_zip_writer_policy_compression_level_candidate_keys_determine_all_attributes,
-    artifact_zip_writer_policy_dos_date_candidate_keys_determine_all_attributes,
-    artifact_zip_writer_policy_dos_time_candidate_keys_determine_all_attributes,
-    artifact_zip_writer_policy_unix_mode_candidate_keys_determine_all_attributes,
-    artifact_zip_writer_policy_general_purpose_flags_candidate_keys_determine_all_attributes,
-    artifact_zip_writer_policy_create_system_candidate_keys_determine_all_attributes,
-    artifact_zip_writer_policy_archive_name_codec_version_candidate_keys_determine_all_attributes,
-    artifact_zip_writer_policy_artifact_name_codec_version_candidate_keys_determine_all_attributes,
-    artifact_zip_writer_policy_identity_candidate_keys_determine_all_attributes,
-    artifact_zip_writer_policy_seal_candidate_keys_determine_all_attributes,
     artifact_zip_writer_policy_candidate_keys_determine_all_attributes,
-    artifact_producer_fingerprint_anchor_candidate_keys_determine_all_attributes,
-    artifact_producer_fingerprint_algorithm_version_candidate_keys_determine_all_attributes,
-    artifact_producer_fingerprint_equivalence_class_candidate_keys_determine_all_attributes,
-    artifact_producer_fingerprint_identity_candidate_keys_determine_all_attributes,
-    artifact_producer_fingerprint_seal_candidate_keys_determine_all_attributes,
     artifact_producer_fingerprint_candidate_keys_determine_all_attributes,
-    artifact_storage_codec_anchor_candidate_keys_determine_all_attributes,
-    artifact_storage_codec_adapter_id_candidate_keys_determine_all_attributes,
-    artifact_storage_codec_locator_codec_version_candidate_keys_determine_all_attributes,
-    artifact_storage_codec_protection_token_codec_version_candidate_keys_determine_all_attributes,
-    artifact_storage_codec_seal_candidate_keys_determine_all_attributes,
     artifact_storage_codec_candidate_keys_determine_all_attributes,
-    artifact_policy_semantics_anchor_candidate_keys_determine_all_attributes,
-    artifact_policy_semantics_artifact_algorithm_version_candidate_keys_determine_all_attributes,
-    artifact_policy_semantics_max_image_short_side_candidate_keys_determine_all_attributes,
-    artifact_policy_semantics_producer_fingerprint_sha256_candidate_keys_determine_all_attributes,
-    artifact_policy_semantics_identity_candidate_keys_determine_all_attributes,
-    artifact_policy_semantics_seal_candidate_keys_determine_all_attributes,
     artifact_policy_semantics_candidate_keys_determine_all_attributes,
     artifact_policy_candidate_keys_determine_all_attributes,
     artifact_semantic_input_candidate_keys_determine_all_attributes,
@@ -24458,26 +14024,13 @@ theorem all_manifest_candidate_keys_determine_attributes :
     artifact_operation_candidate_keys_determine_all_attributes,
     artifact_blob_candidate_keys_determine_all_attributes,
     prepared_artifact_candidate_keys_determine_all_attributes,
-    catalog_revision_anchor_candidate_keys_determine_all_attributes,
-    catalog_revision_publication_count_candidate_keys_determine_all_attributes,
-    catalog_revision_descriptor_seal_candidate_keys_determine_all_attributes,
     catalog_revision_descriptor_candidate_keys_determine_all_attributes,
     catalog_revision_candidate_keys_determine_all_attributes,
     catalog_revision_generation_candidate_keys_determine_all_attributes,
     publication_generation_node_candidate_keys_determine_all_attributes,
     publication_generation_successor_candidate_keys_determine_all_attributes,
     publication_identity_candidate_keys_determine_all_attributes,
-    display_title_policy_anchor_candidate_keys_determine_all_attributes,
-    display_title_policy_algorithm_version_candidate_keys_determine_all_attributes,
-    display_title_policy_title_sort_policy_id_candidate_keys_determine_all_attributes,
-    display_title_policy_identity_candidate_keys_determine_all_attributes,
-    display_title_policy_seal_candidate_keys_determine_all_attributes,
     display_title_policy_candidate_keys_determine_all_attributes,
-    title_sort_policy_anchor_candidate_keys_determine_all_attributes,
-    title_sort_policy_algorithm_version_candidate_keys_determine_all_attributes,
-    title_sort_policy_unicode_data_version_candidate_keys_determine_all_attributes,
-    title_sort_policy_identity_candidate_keys_determine_all_attributes,
-    title_sort_policy_seal_candidate_keys_determine_all_attributes,
     title_sort_policy_candidate_keys_determine_all_attributes,
     display_title_choice_candidate_keys_determine_all_attributes,
     title_sort_candidate_keys_determine_all_attributes,
@@ -24497,20 +14050,6 @@ theorem all_manifest_candidate_keys_determine_attributes :
     catalog_subject_candidate_keys_determine_all_attributes,
     catalog_artifact_candidate_keys_determine_all_attributes,
     publication_commit_anchor_candidate_keys_determine_all_attributes,
-    publication_commit_candidate_candidate_keys_determine_all_attributes,
-    publication_commit_catalog_revision_candidate_keys_determine_all_attributes,
-    publication_commit_source_revision_candidate_keys_determine_all_attributes,
-    publication_commit_generation_candidate_keys_determine_all_attributes,
-    publication_commit_operational_preparation_candidate_keys_determine_all_attributes,
-    publication_commit_operational_policy_candidate_keys_determine_all_attributes,
-    publication_commit_artifact_policy_candidate_keys_determine_all_attributes,
-    publication_commit_display_title_policy_candidate_keys_determine_all_attributes,
-    publication_commit_new_galleries_candidate_keys_determine_all_attributes,
-    publication_commit_changed_galleries_candidate_keys_determine_all_attributes,
-    publication_commit_removed_galleries_candidate_keys_determine_all_attributes,
-    publication_commit_duplicate_losers_candidate_keys_determine_all_attributes,
-    publication_commit_committed_at_candidate_keys_determine_all_attributes,
-    publication_commit_seal_candidate_keys_determine_all_attributes,
     publication_commit_candidate_keys_determine_all_attributes,
     publication_commit_finalization_candidate_keys_determine_all_attributes,
     publication_commit_head_receipt_candidate_keys_determine_all_attributes,

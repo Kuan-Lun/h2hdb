@@ -12,6 +12,11 @@ from vnext_publication_fixtures import seed_publication_commit
 from h2hdb import vnext_identity as identity
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.vnext_cleanup_repository import (
+    CleanupBatchCommand,
+    CleanupTargetKind,
+    VNextCleanupRepository,
+)
 from h2hdb.vnext_maintenance_gate_repository import (
     GateLease,
     MaintenanceGateRepository,
@@ -20,6 +25,7 @@ from h2hdb.vnext_publication_finalization_repository import (
     PublicationFinalizationAcknowledgement,
     PublicationFinalizationBatchReceipt,
     PublicationFinalizationConflictError,
+    PublicationFinalizationCorruptionError,
     PublicationFinalizationPage,
     PublicationFinalizationRepository,
     PublicationFinalizationStorageEvidence,
@@ -31,6 +37,9 @@ _CANDIDATE = b"c" * 16
 _RECEIPT = b"r" * 16
 _CHANNEL = b"default"
 _PREPARED_STAGE = b"VALIDATE_PREPARED_ARTIFACT"
+_ANALYSIS = b"a" * 16
+_BUILD = b"b" * 16
+_BASE_ANALYSIS = b"z" * 16
 
 
 def _database(path: Path) -> SQLiteConnector:
@@ -72,47 +81,22 @@ def _insert_validation_batch(
     row_count: int,
     committed_at: int,
 ) -> None:
-    key = (_CANDIDATE, _PREPARED_STAGE, start_generation)
     connector.execute(
-        "INSERT INTO catalog_publication_batch_receipt_anchors "
-        "(candidate_id, stage, start_generation) VALUES (%s, %s, %s)",
-        key,
-    )
-    connector.execute(
-        "INSERT INTO catalog_publication_batch_receipt_coordinates "
-        "(candidate_id, stage, batch_key, start_generation) "
-        "VALUES (%s, %s, %s, %s)",
-        (_CANDIDATE, _PREPARED_STAGE, batch_key, start_generation),
-    )
-    for table, column, value in (
+        "INSERT INTO catalog_publication_batch_receipt_stored "
+        "(candidate_id, stage, start_generation, batch_key, start_cursor, "
+        "start_processed_count, next_cursor, row_count, committed_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
         (
-            "catalog_publication_batch_receipt_start_cursors",
-            "start_cursor",
+            _CANDIDATE,
+            _PREPARED_STAGE,
+            start_generation,
+            batch_key,
             start_cursor,
-        ),
-        (
-            "catalog_publication_batch_receipt_start_processed_counts",
-            "start_processed_count",
             start_count,
-        ),
-        ("catalog_publication_batch_receipt_next_cursors", "next_cursor", next_cursor),
-        ("catalog_publication_batch_receipt_row_counts", "row_count", row_count),
-        (
-            "catalog_publication_batch_receipt_committed_ats",
-            "committed_at",
+            next_cursor,
+            row_count,
             committed_at,
         ),
-    ):
-        connector.execute(
-            f"INSERT INTO {table} "
-            f"(candidate_id, stage, start_generation, {column}) "
-            "VALUES (%s, %s, %s, %s)",
-            (*key, value),
-        )
-    connector.execute(
-        "INSERT INTO catalog_publication_batch_receipt_seals "
-        "(candidate_id, stage, start_generation) VALUES (%s, %s, %s)",
-        key,
     )
 
 
@@ -150,33 +134,18 @@ def _seed_validation_receipt(
         committed_at=19,
     )
     connector.execute(
-        "INSERT INTO catalog_publication_checkpoint_anchors "
-        "(candidate_id, stage) VALUES (%s, %s)",
-        (_CANDIDATE, _PREPARED_STAGE),
-    )
-    for table, column, value in (
+        "INSERT INTO catalog_publication_checkpoints "
+        "(candidate_id, stage, generation, `cursor`, processed_count, state, "
+        "updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
         (
-            "catalog_publication_checkpoint_generations",
-            "generation",
+            _CANDIDATE,
+            _PREPARED_STAGE,
             checkpoint_generation,
-        ),
-        ("catalog_publication_checkpoint_cursors", "cursor", cursor),
-        (
-            "catalog_publication_checkpoint_processed_counts",
-            "processed_count",
+            cursor,
             expected_count,
+            "COMPLETE",
+            19,
         ),
-        ("catalog_publication_checkpoint_states", "state", "COMPLETE"),
-        ("catalog_publication_checkpoint_updated_ats", "updated_at", 19),
-    ):
-        connector.execute(
-            f"INSERT INTO {table} (candidate_id, stage, {column}) VALUES (%s, %s, %s)",
-            (_CANDIDATE, _PREPARED_STAGE, value),
-        )
-    connector.execute(
-        "INSERT INTO catalog_publication_checkpoint_seals "
-        "(candidate_id, stage) VALUES (%s, %s)",
-        (_CANDIDATE, _PREPARED_STAGE),
     )
 
 
@@ -232,32 +201,18 @@ def _seed_publication(
     tokens: list[bytes] = []
     connector.execute("PRAGMA foreign_keys = OFF")
     try:
-        connector.execute("INSERT INTO catalog_revision_anchors (revision) VALUES (1)")
         connector.execute(
-            "INSERT INTO catalog_revision_publication_counts "
+            "INSERT INTO catalog_revision_descriptors "
             "(revision, publication_count) VALUES (1, %s)",
             (item_count,),
         )
         connector.execute(
-            "INSERT INTO catalog_revision_descriptor_seals (revision) VALUES (1)"
+            "INSERT INTO catalog_source_revision_descriptors "
+            "(source_revision, channel, snapshot_manifest_sha256) "
+            "VALUES (1, %s, %s)",
+            (_CHANNEL, b"s" * 32),
         )
-        connector.execute(
-            "INSERT INTO catalog_source_revision_anchors (source_revision) VALUES (1)"
-        )
-        connector.execute(
-            "INSERT INTO catalog_source_revision_channels "
-            "(source_revision, channel) VALUES (1, %s)",
-            (_CHANNEL,),
-        )
-        connector.execute(
-            "INSERT INTO catalog_source_revision_snapshot_manifests "
-            "(source_revision, snapshot_manifest_sha256) VALUES (1, %s)",
-            (b"s" * 32,),
-        )
-        connector.execute(
-            "INSERT INTO catalog_source_revision_descriptor_seals "
-            "(source_revision) VALUES (1)"
-        )
+        _seed_published_analysis_lineage(connector)
         seed_publication_commit(
             connector,
             receipt_id=_RECEIPT,
@@ -297,6 +252,280 @@ def _seed_publication(
     return publication_keys, tuple(tokens)
 
 
+def _seed_published_analysis_lineage(connector: SQLiteConnector) -> None:
+    connector.execute(
+        "INSERT INTO catalog_source_build_descriptor "
+        "(build_id, scope_key, manifest_policy_id, created_at) "
+        "VALUES (%s, %s, 1, 10)",
+        (_BUILD, b"k" * 32),
+    )
+    connector.execute(
+        "INSERT INTO catalog_source_build_states (build_id, state) "
+        "VALUES (%s, 'SEALED')",
+        (_BUILD,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_source_build_sealed_ats (build_id, sealed_at) "
+        "VALUES (%s, 11)",
+        (_BUILD,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_analysis_run_descriptor "
+        "(analysis_id, build_id, policy_id, input_manifest_sha256, started_at) "
+        "VALUES (%s, %s, 1, %s, 12)",
+        (_ANALYSIS, _BUILD, b"i" * 32),
+    )
+    connector.execute(
+        "INSERT INTO catalog_analysis_run_states (analysis_id, state) "
+        "VALUES (%s, 'COMPLETE')",
+        (_ANALYSIS,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_analysis_run_completed_ats "
+        "(analysis_id, completed_at) VALUES (%s, 13)",
+        (_ANALYSIS,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_analysis_state_ancestry "
+        "(analysis_id, ancestor_depth, ancestor_analysis_id) "
+        "VALUES (%s, 0, %s)",
+        (_ANALYSIS, _ANALYSIS),
+    )
+    for state_component in sorted(identity.ANALYSIS_STATE_COMPONENTS):
+        connector.execute(
+            "INSERT INTO catalog_analysis_state_component_seals "
+            "(analysis_id, state_component, row_count, sealed_at) "
+            "VALUES (%s, %s, 0, 13)",
+            (_ANALYSIS, state_component.encode("ascii")),
+        )
+    connector.execute(
+        "INSERT INTO catalog_analysis_snapshot_manifest "
+        "(analysis_id, snapshot_manifest_sha256) VALUES (%s, %s)",
+        (_ANALYSIS, b"s" * 32),
+    )
+    connector.execute(
+        "INSERT INTO catalog_publication_candidates "
+        "(candidate_id, analysis_id, reserved_revision, artifact_policy_id, "
+        "display_title_policy_id, artifacts_required, created_at) "
+        "VALUES (%s, %s, 1, 1, 1, 1, 14)",
+        (_CANDIDATE, _ANALYSIS),
+    )
+    connector.execute(
+        "INSERT INTO catalog_source_revision_provenance "
+        "(source_revision, analysis_id) VALUES (1, %s)",
+        (_ANALYSIS,),
+    )
+
+
+def _seed_depth_zero_compaction_baseline(
+    connector: SQLiteConnector,
+    *,
+    base_depth: int = 16,
+) -> None:
+    connector.execute("PRAGMA foreign_keys = OFF")
+    try:
+        connector.execute(
+            "INSERT INTO catalog_analysis_run_descriptor "
+            "(analysis_id, build_id, policy_id, input_manifest_sha256, started_at) "
+            "VALUES (%s, %s, 1, %s, 1)",
+            (_BASE_ANALYSIS, b"B" * 16, b"j" * 32),
+        )
+        connector.execute(
+            "INSERT INTO catalog_analysis_run_states (analysis_id, state) "
+            "VALUES (%s, 'COMPLETE')",
+            (_BASE_ANALYSIS,),
+        )
+        connector.execute(
+            "INSERT INTO catalog_analysis_run_completed_ats "
+            "(analysis_id, completed_at) VALUES (%s, 2)",
+            (_BASE_ANALYSIS,),
+        )
+        ancestors = (_BASE_ANALYSIS,) + tuple(
+            bytes((index,)) * 16 for index in range(1, base_depth + 1)
+        )
+        for depth, ancestor in enumerate(ancestors):
+            connector.execute(
+                "INSERT INTO catalog_analysis_state_ancestry "
+                "(analysis_id, ancestor_depth, ancestor_analysis_id) "
+                "VALUES (%s, %s, %s)",
+                (_BASE_ANALYSIS, depth, ancestor),
+            )
+        for state_component in sorted(identity.ANALYSIS_STATE_COMPONENTS):
+            connector.execute(
+                "INSERT INTO catalog_analysis_state_component_seals "
+                "(analysis_id, state_component, row_count, sealed_at) "
+                "VALUES (%s, %s, 0, 2)",
+                (_BASE_ANALYSIS, state_component.encode("ascii")),
+            )
+        connector.execute(
+            "INSERT INTO catalog_analysis_baselines "
+            "(analysis_id, base_analysis_id) VALUES (%s, %s)",
+            (_ANALYSIS, _BASE_ANALYSIS),
+        )
+        connector.execute(
+            "INSERT INTO catalog_source_build_base_publication_commits "
+            "(build_id, base_receipt_id) VALUES (%s, %s)",
+            (_BUILD, b"q" * 16),
+        )
+    finally:
+        connector.execute("PRAGMA foreign_keys = ON")
+
+
+def _seed_complete_seventeen_run_chain(
+    connector: SQLiteConnector,
+) -> tuple[bytes, ...]:
+    analyses = tuple(
+        b"z" + bytes((index,)) + bytes((index + 1,)) * 14 for index in range(16)
+    ) + (_BASE_ANALYSIS,)
+    connector.execute("PRAGMA foreign_keys = OFF")
+    try:
+        for index, analysis_id in enumerate(analyses):
+            build_id = b"y" + bytes((index,)) + bytes((index + 1,)) * 14
+            connector.execute(
+                "INSERT INTO catalog_source_build_descriptor "
+                "(build_id, scope_key, manifest_policy_id, created_at) "
+                "VALUES (%s, %s, 1, 1)",
+                (build_id, bytes((index + 1,)) * 32),
+            )
+            connector.execute(
+                "INSERT INTO catalog_source_build_states (build_id, state) "
+                "VALUES (%s, 'SEALED')",
+                (build_id,),
+            )
+            connector.execute(
+                "INSERT INTO catalog_source_build_sealed_ats "
+                "(build_id, sealed_at) VALUES (%s, 1)",
+                (build_id,),
+            )
+            connector.execute(
+                "INSERT INTO catalog_analysis_run_descriptor "
+                "(analysis_id, build_id, policy_id, input_manifest_sha256, "
+                "started_at) VALUES (%s, %s, 1, %s, 1)",
+                (analysis_id, build_id, bytes((index + 17,)) * 32),
+            )
+            connector.execute(
+                "INSERT INTO catalog_analysis_run_states (analysis_id, state) "
+                "VALUES (%s, 'COMPLETE')",
+                (analysis_id,),
+            )
+            connector.execute(
+                "INSERT INTO catalog_analysis_run_completed_ats "
+                "(analysis_id, completed_at) VALUES (%s, 2)",
+                (analysis_id,),
+            )
+            for state_component in sorted(identity.ANALYSIS_STATE_COMPONENTS):
+                connector.execute(
+                    "INSERT INTO catalog_analysis_state_component_seals "
+                    "(analysis_id, state_component, row_count, sealed_at) "
+                    "VALUES (%s, %s, 0, 2)",
+                    (analysis_id, state_component.encode("ascii")),
+                )
+        for index, analysis_id in enumerate(analyses):
+            suffix = tuple(reversed(analyses[: index + 1]))
+            for depth, ancestor in enumerate(suffix):
+                connector.execute(
+                    "INSERT INTO catalog_analysis_state_ancestry "
+                    "(analysis_id, ancestor_depth, ancestor_analysis_id) "
+                    "VALUES (%s, %s, %s)",
+                    (analysis_id, depth, ancestor),
+                )
+            if index:
+                connector.execute(
+                    "INSERT INTO catalog_analysis_baselines "
+                    "(analysis_id, base_analysis_id) VALUES (%s, %s)",
+                    (analysis_id, analyses[index - 1]),
+                )
+        connector.execute(
+            "INSERT INTO catalog_analysis_baselines "
+            "(analysis_id, base_analysis_id) VALUES (%s, %s)",
+            (_ANALYSIS, analyses[-1]),
+        )
+        connector.execute(
+            "INSERT INTO catalog_source_build_base_publication_commits "
+            "(build_id, base_receipt_id) VALUES (%s, %s)",
+            (_BUILD, b"q" * 16),
+        )
+    finally:
+        connector.execute("PRAGMA foreign_keys = ON")
+    return analyses
+
+
+def _claim_expired_shared_gate_exclusively(
+    connector: SQLiteConnector,
+    *,
+    now: int,
+) -> GateLease:
+    with (
+        connector.transaction(),
+        patch(
+            "h2hdb.vnext_maintenance_gate_repository._new_owner_token",
+            return_value=b"x" * 16,
+        ),
+    ):
+        return MaintenanceGateRepository.claim_exclusive(
+            VNextUnitOfWork(connector, backend="sqlite"),
+            now=now,
+            lease_duration=100_000,
+        )
+
+
+def _cleanup_analysis_shard_to_fixed_point(
+    connector: SQLiteConnector,
+    *,
+    gate: GateLease,
+    shard_no: int,
+    now: int,
+) -> tuple[int, ...]:
+    timestamp = now
+    remaining_counts: list[int] = []
+    for cycle_index in range(18):
+        with connector.transaction():
+            cycle = VNextCleanupRepository.begin_cycle(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                target_kind=CleanupTargetKind.ANALYSIS_RUN,
+                shard_no=shard_no,
+                cycle_cutoff_at=100,
+                max_rows_per_transaction=128,
+                now=timestamp,
+            )
+        generation = 1
+        for attempt in range(64):
+            timestamp += 1
+            with connector.transaction():
+                result = VNextCleanupRepository.advance(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    cycle=cycle,
+                    command=CleanupBatchCommand(
+                        sha256(
+                            b"fixed-point-cleanup"
+                            + cycle_index.to_bytes(2, "big")
+                            + attempt.to_bytes(2, "big")
+                        ).digest(),
+                        generation,
+                    ),
+                    now=timestamp,
+                )
+            if result.cycle_complete:
+                break
+            assert result.generation is not None
+            generation = result.generation
+        else:
+            raise AssertionError("analysis cleanup cycle did not terminate")
+        remaining = connector.fetch_one(
+            "SELECT COUNT(*) FROM catalog_analysis_run_descriptor "
+            "WHERE SUBSTR(analysis_id, 1, 1) = %s AND analysis_id <> %s",
+            (bytes((shard_no,)), _ANALYSIS),
+        )
+        assert remaining is not None
+        remaining_counts.append(int(remaining[0]))
+        if remaining == (0,):
+            return tuple(remaining_counts)
+        timestamp += 1
+    raise AssertionError("analysis cleanup did not reach a fixed point")
+
+
 def _issue(
     connector: SQLiteConnector,
     gate: GateLease,
@@ -332,21 +561,8 @@ def _commit(
 
 def _delete_transient_candidate_state(connector: SQLiteConnector) -> None:
     tables = (
-        "catalog_publication_batch_receipt_seals",
-        "catalog_publication_batch_receipt_committed_ats",
-        "catalog_publication_batch_receipt_row_counts",
-        "catalog_publication_batch_receipt_next_cursors",
-        "catalog_publication_batch_receipt_start_processed_counts",
-        "catalog_publication_batch_receipt_start_cursors",
-        "catalog_publication_batch_receipt_coordinates",
-        "catalog_publication_batch_receipt_anchors",
-        "catalog_publication_checkpoint_seals",
-        "catalog_publication_checkpoint_updated_ats",
-        "catalog_publication_checkpoint_states",
-        "catalog_publication_checkpoint_processed_counts",
-        "catalog_publication_checkpoint_cursors",
-        "catalog_publication_checkpoint_generations",
-        "catalog_publication_checkpoint_anchors",
+        "catalog_publication_batch_receipt_stored",
+        "catalog_publication_checkpoints",
         "catalog_prepared_artifacts",
     )
     connector.execute("PRAGMA foreign_keys = OFF")
@@ -381,10 +597,10 @@ class _MonotoneAdapter:
         return PublicationFinalizationStorageEvidence(True)
 
 
-def test_permanent_batch_replays_after_cleanup_and_expired_gate(
+def test_current_batch_replays_after_cleanup_and_expired_gate(
     tmp_path: Path,
 ) -> None:
-    connector = _database(tmp_path / "permanent-replay.sqlite3")
+    connector = _database(tmp_path / "current-replay.sqlite3")
     try:
         _keys, tokens = _seed_publication(connector, item_count=1)
         gate = _shared_gate(connector)
@@ -452,6 +668,8 @@ def test_terminal_marker_checkpoint_and_finalized_at_are_one_derived_commit(
         gate = _shared_gate(connector)
         adapter = _MonotoneAdapter()
 
+        acknowledgements: list[PublicationFinalizationAcknowledgement] = []
+        receipts: list[PublicationFinalizationBatchReceipt] = []
         now = 30
         for index in range(2):
             page = _issue(
@@ -471,7 +689,48 @@ def test_terminal_marker_checkpoint_and_finalized_at_are_one_derived_commit(
             )
             receipt = _commit(connector, acknowledgement, now=now + 2)
             assert receipt.next_state == "OPEN"
+            acknowledgements.append(acknowledgement)
+            receipts.append(receipt)
+            assert connector.fetch_all(
+                "SELECT start_generation, batch_key "
+                "FROM catalog_publication_finalization_batch_stored "
+                "WHERE receipt_id = %s",
+                (_RECEIPT,),
+            ) == [(index + 1, f"page-{index}".encode())]
             now += 3
+
+        with (
+            patch.object(connector, "execute", wraps=connector.execute) as execute,
+            patch.object(
+                connector,
+                "execute_affected",
+                wraps=connector.execute_affected,
+            ) as execute_affected,
+        ):
+            assert _commit(connector, acknowledgements[-1], now=now) == receipts[-1]
+        execute.assert_not_called()
+        execute_affected.assert_not_called()
+        assert (
+            PublicationFinalizationRepository.get_batch_receipt(
+                connector,
+                receipt_id=_RECEIPT,
+                batch_key=b"page-0",
+            )
+            is None
+        )
+        assert (
+            PublicationFinalizationRepository.get_batch_receipt(
+                connector,
+                receipt_id=_RECEIPT,
+                start_generation=1,
+            )
+            is None
+        )
+        with pytest.raises(
+            PublicationFinalizationConflictError,
+            match="checkpoint advanced",
+        ):
+            _commit(connector, acknowledgements[0], now=now)
 
         terminal_page = _issue(
             connector,
@@ -492,6 +751,12 @@ def test_terminal_marker_checkpoint_and_finalized_at_are_one_derived_commit(
         assert terminal.terminal
         assert terminal.row_count == 0
         assert terminal.next_state == "COMPLETE"
+        assert connector.fetch_all(
+            "SELECT start_generation, batch_key "
+            "FROM catalog_publication_finalization_batch_stored "
+            "WHERE receipt_id = %s",
+            (_RECEIPT,),
+        ) == [(3, b"terminal")]
         assert connector.fetch_one(
             "SELECT generation, cursor, processed_count, state, updated_at "
             "FROM catalog_publication_finalization_checkpoints "
@@ -521,6 +786,367 @@ def test_terminal_marker_checkpoint_and_finalized_at_are_one_derived_commit(
         ) == ("PROJECTION_FINALIZED", now + 2)
         with pytest.raises(PublicationFinalizationUnavailableError):
             _issue(connector, gate, batch_key=b"after-terminal", now=40)
+    finally:
+        connector.close()
+
+
+def test_terminal_handoff_prunes_only_the_published_depth_zero_working_baseline(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "terminal-baseline-prune.sqlite3")
+    try:
+        _seed_publication(connector, item_count=0)
+        _seed_depth_zero_compaction_baseline(connector)
+        gate = _shared_gate(connector)
+        page = _issue(
+            connector,
+            gate,
+            batch_key=b"terminal-prune",
+            now=30,
+        )
+        assert page.terminal
+        acknowledgement = PublicationFinalizationRepository.release_page(
+            connector,
+            backend="sqlite",
+            page=page,
+            adapters={},
+            now=31,
+        )
+        assert connector.fetch_one(
+            "SELECT base_analysis_id FROM catalog_analysis_baselines "
+            "WHERE analysis_id = %s",
+            (_ANALYSIS,),
+        ) == (_BASE_ANALYSIS,)
+
+        receipt = _commit(connector, acknowledgement, now=32)
+
+        assert receipt.terminal
+        assert (
+            connector.fetch_one(
+                "SELECT base_analysis_id FROM catalog_analysis_baselines "
+                "WHERE analysis_id = %s",
+                (_ANALYSIS,),
+            )
+            == ()
+        )
+        assert connector.fetch_one(
+            "SELECT state FROM catalog_publication_receipts WHERE receipt_id = %s",
+            (_RECEIPT,),
+        ) == ("PROJECTION_FINALIZED",)
+        assert connector.fetch_one(
+            "SELECT ancestor_analysis_id "
+            "FROM catalog_analysis_state_ancestry "
+            "WHERE analysis_id = %s AND ancestor_depth = 0",
+            (_ANALYSIS,),
+        ) == (_ANALYSIS,)
+
+        with (
+            patch.object(connector, "execute", wraps=connector.execute) as execute,
+            patch.object(
+                connector,
+                "execute_affected",
+                wraps=connector.execute_affected,
+            ) as execute_affected,
+        ):
+            assert _commit(connector, acknowledgement, now=5_000) == receipt
+        execute.assert_not_called()
+        execute_affected.assert_not_called()
+    finally:
+        connector.close()
+
+
+def test_terminal_handoff_retains_a_positive_depth_immediate_baseline(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "terminal-positive-depth.sqlite3")
+    try:
+        _seed_publication(connector, item_count=0)
+        _seed_depth_zero_compaction_baseline(connector, base_depth=0)
+        connector.execute(
+            "INSERT INTO catalog_analysis_state_ancestry "
+            "(analysis_id, ancestor_depth, ancestor_analysis_id) "
+            "VALUES (%s, 1, %s)",
+            (_ANALYSIS, _BASE_ANALYSIS),
+        )
+        gate = _shared_gate(connector)
+        page = _issue(
+            connector,
+            gate,
+            batch_key=b"terminal-positive-depth",
+            now=30,
+        )
+        acknowledgement = PublicationFinalizationRepository.release_page(
+            connector,
+            backend="sqlite",
+            page=page,
+            adapters={},
+            now=31,
+        )
+
+        receipt = _commit(connector, acknowledgement, now=32)
+
+        assert receipt.terminal
+        assert connector.fetch_one(
+            "SELECT base_analysis_id FROM catalog_analysis_baselines "
+            "WHERE analysis_id = %s",
+            (_ANALYSIS,),
+        ) == (_BASE_ANALYSIS,)
+    finally:
+        connector.close()
+
+
+def test_non_genesis_terminal_handoff_rejects_a_missing_baseline_zero_write(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "terminal-missing-baseline.sqlite3")
+    try:
+        _seed_publication(connector, item_count=0)
+        _seed_depth_zero_compaction_baseline(connector)
+        connector.execute(
+            "DELETE FROM catalog_analysis_baselines WHERE analysis_id = %s",
+            (_ANALYSIS,),
+        )
+        gate = _shared_gate(connector)
+        page = _issue(
+            connector,
+            gate,
+            batch_key=b"terminal-missing-baseline",
+            now=30,
+        )
+        acknowledgement = PublicationFinalizationRepository.release_page(
+            connector,
+            backend="sqlite",
+            page=page,
+            adapters={},
+            now=31,
+        )
+
+        with pytest.raises(
+            PublicationFinalizationCorruptionError,
+            match="lost its working baseline",
+        ):
+            _commit(connector, acknowledgement, now=32)
+
+        assert (
+            connector.fetch_one(
+                "SELECT receipt_id FROM catalog_publication_commit_finalizations "
+                "WHERE receipt_id = %s",
+                (_RECEIPT,),
+            )
+            == ()
+        )
+        assert connector.fetch_one(
+            "SELECT generation, state FROM "
+            "catalog_publication_finalization_checkpoints WHERE receipt_id = %s",
+            (_RECEIPT,),
+        ) == (1, "OPEN")
+        assert (
+            connector.fetch_one(
+                "SELECT batch_key FROM catalog_publication_finalization_batch_stored "
+                "WHERE receipt_id = %s",
+                (_RECEIPT,),
+            )
+            == ()
+        )
+    finally:
+        connector.close()
+
+
+def test_depth_sixteen_compaction_prune_releases_the_old_chain_to_fixed_point_cleanup(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "terminal-seventeen-chain-cleanup.sqlite3")
+    try:
+        _seed_publication(connector, item_count=0)
+        old_chain = _seed_complete_seventeen_run_chain(connector)
+        gate = _shared_gate(connector)
+        page = _issue(
+            connector,
+            gate,
+            batch_key=b"terminal-seventeen-chain",
+            now=30,
+        )
+        acknowledgement = PublicationFinalizationRepository.release_page(
+            connector,
+            backend="sqlite",
+            page=page,
+            adapters={},
+            now=31,
+        )
+
+        receipt = _commit(connector, acknowledgement, now=32)
+
+        assert receipt.terminal
+        assert (
+            connector.fetch_one(
+                "SELECT base_analysis_id FROM catalog_analysis_baselines "
+                "WHERE analysis_id = %s",
+                (_ANALYSIS,),
+            )
+            == ()
+        )
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM catalog_analysis_run_descriptor "
+            "WHERE SUBSTR(analysis_id, 1, 1) = %s",
+            (b"z",),
+        ) == (17,)
+
+        exclusive = _claim_expired_shared_gate_exclusively(connector, now=2_000)
+        remaining_counts = _cleanup_analysis_shard_to_fixed_point(
+            connector,
+            gate=exclusive,
+            shard_no=old_chain[0][0],
+            now=2_001,
+        )
+        assert remaining_counts == tuple(range(16, -1, -1))
+
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM catalog_analysis_run_descriptor "
+            "WHERE SUBSTR(analysis_id, 1, 1) = %s",
+            (b"z",),
+        ) == (0,)
+        assert connector.fetch_one(
+            "SELECT analysis_id FROM catalog_analysis_run_descriptor "
+            "WHERE analysis_id = %s",
+            (_ANALYSIS,),
+        ) == (_ANALYSIS,)
+    finally:
+        connector.close()
+
+
+@pytest.mark.parametrize("fail_at", range(1, 5))
+def test_terminal_baseline_prune_rolls_back_with_every_database_mutation(
+    tmp_path: Path,
+    fail_at: int,
+) -> None:
+    base_path = tmp_path / "terminal-prune-fault-base.sqlite3"
+    base = _database(base_path)
+    _seed_publication(base, item_count=0)
+    _seed_depth_zero_compaction_baseline(base)
+    gate = _shared_gate(base)
+    page = _issue(base, gate, batch_key=b"terminal-prune-fault", now=30)
+    acknowledgement = PublicationFinalizationRepository.release_page(
+        base,
+        backend="sqlite",
+        page=page,
+        adapters={},
+        now=31,
+    )
+    base.close()
+
+    fault_path = tmp_path / f"terminal-prune-fault-{fail_at}.sqlite3"
+    copyfile(base_path, fault_path)
+    connector = SQLiteConnector(str(fault_path))
+    connector.connect()
+    try:
+        with pytest.raises(
+            _InjectedFault, match=f"fault at finalization mutation {fail_at}"
+        ):
+            _commit_with_injected_fault(
+                connector,
+                acknowledgement,
+                fail_at=fail_at,
+            )
+        assert connector.fetch_one(
+            "SELECT base_analysis_id FROM catalog_analysis_baselines "
+            "WHERE analysis_id = %s",
+            (_ANALYSIS,),
+        ) == (_BASE_ANALYSIS,)
+        assert (
+            connector.fetch_one(
+                "SELECT receipt_id FROM catalog_publication_commit_finalizations "
+                "WHERE receipt_id = %s",
+                (_RECEIPT,),
+            )
+            == ()
+        )
+        assert connector.fetch_one(
+            "SELECT generation, state FROM "
+            "catalog_publication_finalization_checkpoints WHERE receipt_id = %s",
+            (_RECEIPT,),
+        ) == (1, "OPEN")
+        assert (
+            connector.fetch_one(
+                "SELECT batch_key FROM catalog_publication_finalization_batch_stored "
+                "WHERE receipt_id = %s",
+                (_RECEIPT,),
+            )
+            == ()
+        )
+    finally:
+        connector.close()
+
+
+def test_missing_finalization_predecessor_rolls_back_successor_and_checkpoint(
+    tmp_path: Path,
+) -> None:
+    connector = _database(tmp_path / "missing-predecessor.sqlite3")
+    try:
+        publication_keys, _tokens = _seed_publication(connector, item_count=2)
+        gate = _shared_gate(connector)
+        adapter = _MonotoneAdapter()
+
+        first_page = _issue(
+            connector,
+            gate,
+            batch_key=b"predecessor",
+            page_limit=1,
+            now=30,
+        )
+        first_ack = PublicationFinalizationRepository.release_page(
+            connector,
+            backend="sqlite",
+            page=first_page,
+            adapters={adapter.adapter_id: adapter},
+            now=31,
+        )
+        _commit(connector, first_ack, now=32)
+        connector.execute(
+            "DELETE FROM catalog_publication_finalization_batch_stored "
+            "WHERE receipt_id = %s AND start_generation = %s",
+            (_RECEIPT, 1),
+        )
+
+        second_page = _issue(
+            connector,
+            gate,
+            batch_key=b"successor",
+            page_limit=1,
+            now=33,
+        )
+        second_ack = PublicationFinalizationRepository.release_page(
+            connector,
+            backend="sqlite",
+            page=second_page,
+            adapters={adapter.adapter_id: adapter},
+            now=34,
+        )
+        with pytest.raises(
+            PublicationFinalizationCorruptionError,
+            match="predecessor",
+        ):
+            _commit(connector, second_ack, now=35)
+
+        assert connector.fetch_one(
+            "SELECT generation, cursor, processed_count, state, updated_at "
+            "FROM catalog_publication_finalization_checkpoints "
+            "WHERE receipt_id = %s",
+            (_RECEIPT,),
+        ) == (2, publication_keys[0], 1, "OPEN", 32)
+        assert connector.fetch_all(
+            "SELECT publication_key, state FROM catalog_prepared_artifacts "
+            "WHERE candidate_id = %s ORDER BY publication_key",
+            (_CANDIDATE,),
+        ) == [
+            (publication_keys[0], "COMMITTED"),
+            (publication_keys[1], "PREPARED"),
+        ]
+        assert connector.fetch_one(
+            "SELECT COUNT(*) "
+            "FROM catalog_publication_finalization_batch_stored "
+            "WHERE receipt_id = %s",
+            (_RECEIPT,),
+        ) == (0,)
     finally:
         connector.close()
 
@@ -580,7 +1206,7 @@ def test_post_external_races_fail_closed(tmp_path: Path, race: str) -> None:
             expected_batch_count = 1
 
         assert connector.fetch_one(
-            "SELECT COUNT(*) FROM catalog_publication_finalization_batch_seals "
+            "SELECT COUNT(*) FROM catalog_publication_finalization_batch_stored "
             "WHERE receipt_id = %s",
             (_RECEIPT,),
         ) == (expected_batch_count,)
@@ -671,7 +1297,7 @@ def test_every_post_external_commit_mutation_rolls_back(tmp_path: Path) -> None:
             fail_at=None,
         )
         assert receipt is not None and receipt.row_count == 1
-        assert mutation_count == 13
+        assert mutation_count == 3
     finally:
         successful.close()
 
@@ -698,7 +1324,7 @@ def test_every_post_external_commit_mutation_rolls_back(tmp_path: Path) -> None:
                 (_RECEIPT,),
             ) == (1, b"", 0, "OPEN", 20)
             assert connector.fetch_one(
-                "SELECT COUNT(*) FROM catalog_publication_finalization_batch_seals "
+                "SELECT COUNT(*) FROM catalog_publication_finalization_batch_stored "
                 "WHERE receipt_id = %s",
                 (_RECEIPT,),
             ) == (0,)

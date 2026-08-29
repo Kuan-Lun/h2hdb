@@ -10,6 +10,8 @@ from typing import Any
 
 import pytest
 
+from h2hdb.vnext_capacity import RECOMPOSED_REGISTRY_MAXIMUM_ROWS
+
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "verification" / "schema" / "catalog.toml"
 OPERATIONAL = ROOT / "verification" / "schema" / "operational.toml"
@@ -128,7 +130,15 @@ def test_catalog_contract_is_valid_and_covers_vnext_workflows() -> None:
     seal = relation_by_name["analysis_state_component_seal"]
     assert anchor.materialization is not None
     assert ancestry.materialization is not None
-    assert seal.materialization is not None
+    assert seal.materialization is None
+    assert seal.attributes == (
+        "analysis_id",
+        "state_component",
+        "row_count",
+        "sealed_at",
+    )
+    assert seal.declared_keys == (frozenset({"analysis_id", "state_component"}),)
+    assert not checker.bcnf_violations(seal)
     assert anchor.materialization["root_rule"] == "depth_zero_self_anchor"
     assert anchor.materialization["policy_rule"] == (
         "same_policy_or_depth_zero_compaction"
@@ -136,9 +146,9 @@ def test_catalog_contract_is_valid_and_covers_vnext_workflows() -> None:
     assert ancestry.materialization["ancestry_invariant"] == (
         "acyclic_depth_contiguous"
     )
-    assert seal.materialization["delta_completeness"] == "exact_old_new_snapshot"
-    assert seal.materialization["compaction_validation"] == ("full_evaluator_equality")
-    assert seal.materialization["cleanup_guard"] == "no_reachable_descendants"
+    assert resolution.delta_basis == "exact_old_new_build_membership"
+    assert resolution.compaction == "depth_zero_full_shadow_at_limit_or_policy_change"
+    assert resolution.cleanup_guard == "no_reachable_descendants"
 
     observation_artist = relation_by_name["gallery_observation_artist"]
     observation_hash = relation_by_name["gallery_observation_file_hash_occurrence"]
@@ -178,11 +188,11 @@ def test_catalog_contract_is_valid_and_covers_vnext_workflows() -> None:
     )
     assert set(long_value_contract.opaque_audit_references) == {
         "analysis_snapshot_manifest.snapshot_manifest_sha256",
-        "source_revision_snapshot_manifest.snapshot_manifest_sha256",
+        "source_revision_descriptor.snapshot_manifest_sha256",
     }
     for relation_name in (
         "analysis_snapshot_manifest",
-        "source_revision_snapshot_manifest",
+        "source_revision_descriptor",
     ):
         relation = relation_by_name[relation_name]
         assert not any(
@@ -230,21 +240,8 @@ def test_catalog_contract_is_valid_and_covers_vnext_workflows() -> None:
         "modified_time",
     )
     assert report.vertical_families == (
-        "source_build_discovery_vertical",
         "gallery_observation_file_filesystem_vertical",
-        "artifact_producer_fingerprint_vertical",
-        "analysis_stage_vertical",
-        "publication_stage_vertical",
-        "source_revision_descriptor_vertical",
-        "catalog_revision_descriptor_vertical",
-        "publication_commit_vertical",
-        "analysis_run_vertical",
-        "analysis_state_component_seal_vertical",
         "analysis_exclusion_delta_vertical",
-        "analysis_checkpoint_vertical",
-        "analysis_batch_receipt_stored_vertical",
-        "publication_checkpoint_vertical",
-        "publication_batch_receipt_stored_vertical",
         "canonical_value_allocation_vertical",
         "canonical_value_page_vertical",
         "gallery_observation_page_descriptor_vertical",
@@ -252,24 +249,10 @@ def test_catalog_contract_is_valid_and_covers_vnext_workflows() -> None:
         "file_name_identity_vertical",
         "gallery_observation_file_vertical",
         "tag_term_vertical",
-        "source_build_vertical",
-        "build_manifest_vertical",
-        "source_snapshot_manifest_identity_vertical",
-        "manifest_policy_vertical",
-        "source_scope_vertical",
-        "analysis_policy_vertical",
-        "artifact_zip_writer_policy_vertical",
-        "artifact_storage_codec_vertical",
-        "artifact_policy_semantics_vertical",
-        "publication_candidate_vertical",
         "catalog_contributor_vertical",
-        "publication_finalization_checkpoint_vertical",
-        "publication_finalization_batch_receipt_stored_vertical",
-        "title_sort_policy_vertical",
-        "display_title_policy_vertical",
         "analysis_file_hash_decision_shadow_vertical",
     )
-    assert len(contract.vertical_families) == 38
+    assert len(contract.vertical_families) == 11
     assert report.generation_streams == ()
     assert contract.publication_commit_contract is not None
     assert len(contract.batch_receipt_projections) == 3
@@ -385,10 +368,16 @@ def test_catalog_contract_is_valid_and_covers_vnext_workflows() -> None:
     artifact_policy = relation_by_name[byte_producer.policy_relation]
     assert artifact_policy.attributes == (
         "policy_component_sha256",
-        "artifact_algorithm_version",
         "max_image_short_side",
         "producer_fingerprint_sha256",
     )
+    assert set(artifact_policy.declared_keys) == {
+        frozenset({"policy_component_sha256"}),
+        frozenset({"max_image_short_side", "producer_fingerprint_sha256"}),
+    }
+    producer_relation = relation_by_name[byte_producer.producer_relation]
+    assert byte_producer.algorithm_attribute in producer_relation.attributes
+    assert byte_producer.algorithm_attribute not in artifact_policy.attributes
     assert member_plan.component_kind == "member_plan"
     assert "excluded_flag" in member_plan.entry_fields
     assert "source_size_bytes" in member_plan.entry_fields
@@ -404,10 +393,9 @@ def test_catalog_contract_is_valid_and_covers_vnext_workflows() -> None:
         decomposition.name for decomposition in contract.decompositions
     }
     assert {
-        "publication_candidate_and_optional_base_source",
+        "publication_candidate_and_optional_common_base",
         "catalog_publication_and_title_basis",
         "catalog_publication_and_optional_content",
-        "publication_candidate_and_optional_base_catalog",
         "source_build_and_optional_base_source",
     } <= set(report.lossless_decompositions)
     assert all(
@@ -461,6 +449,229 @@ def test_catalog_contract_is_valid_and_covers_vnext_workflows() -> None:
     assert "old_revision" not in relation_by_name["artifact_delta_old"].attributes
 
 
+def test_capacity_plan_is_exact_and_matches_both_manifest_base_counts() -> None:
+    catalog = checker.load_contract(CATALOG)
+    operational = checker.load_contract(OPERATIONAL)
+    plan = catalog.capacity_plan
+    assert plan is not None
+    assert plan.measurement_scope == (
+        "decimal bytes for DATA plus indexes at peak retained state"
+    )
+    assert plan.newly_recomposed_relation_soft_limit_bytes == 400_000_000
+    assert plan.conditional_relation_soft_limit_bytes == 1_000_000_000
+    assert plan.conditional_limit_trigger_table_count == 250
+    assert (plan.planning_gallery_count, plan.planning_average_files_per_gallery) == (
+        300_000,
+        50,
+    )
+    assert plan.stress_gallery_count == 1_000_000
+    assert (
+        plan.selected_catalog_family_count,
+        plan.selected_catalog_physical_relations_before,
+        plan.selected_catalog_physical_relations_after,
+    ) == (27, 178, 32)
+    assert (
+        plan.catalog_physical_table_count_before,
+        plan.catalog_physical_table_count_after,
+        plan.operational_physical_table_count_before,
+        plan.operational_physical_table_count_after,
+        plan.total_physical_table_count_before,
+        plan.total_physical_table_count_after,
+    ) == (306, 160, 75, 70, 381, 230)
+    assert plan.conditional_one_gigabyte_limit_required is False
+    assert plan.mariadb_measurement_version == "10.11.11"
+    assert plan.bounded_registry_relations == (
+        "manifest_policy",
+        "analysis_policy",
+        "title_sort_policy",
+        "display_title_policy",
+        "artifact_producer_fingerprint",
+        "artifact_policy_semantics",
+    )
+    assert (
+        plan.bounded_registry_maximum_rows == RECOMPOSED_REGISTRY_MAXIMUM_ROWS == 50_000
+    )
+    assert len(plan.affected_catalog_relations) == 27
+    assert plan.affected_operational_relations == (
+        "download_generation_owner",
+        "ingest_generation_owner",
+        "gallery_observation_staging",
+        "gallery_observation_staging_request",
+        "gallery_observation_staging_request_budget",
+        "cleanup_job",
+        "cleanup_cycle_root",
+    )
+    categories = (
+        set(plan.fixed_bootstrap_relations),
+        set(plan.bounded_registry_relations),
+        set(plan.lineage_current_only_relations),
+        set(plan.singleton_owner_relations),
+        set(plan.planning_gallery_derived_relations),
+        set(plan.bounded_protocol_relations),
+        set(plan.staging_capacity_relations),
+    )
+    assert sum(map(len, categories)) == len(set().union(*categories)) == 34
+    assert set().union(*categories) == set(plan.affected_catalog_relations) | set(
+        plan.affected_operational_relations
+    )
+    assert plan.analysis_current_chain_peak_rows == (
+        plan.analysis_overlay_max_depth + 1
+    )
+    assert plan.analysis_latest_abandoned_peak_rows == 1
+    assert (
+        plan.analysis_retained_run_peak_rows
+        == (
+            plan.analysis_current_chain_peak_rows
+            + plan.analysis_latest_abandoned_peak_rows
+            + plan.analysis_working_successor_peak_rows
+        )
+        == 19
+    )
+    assert (
+        plan.analysis_checkpoint_peak_rows
+        == (plan.analysis_retained_run_peak_rows * plan.analysis_stage_count)
+        == 285
+    )
+    assert plan.analysis_receipt_peak_rows == 285
+    assert (
+        plan.analysis_component_seal_peak_rows
+        == (plan.analysis_retained_run_peak_rows * plan.analysis_component_count)
+        == 95
+    )
+    assert plan.source_build_lineage_peak_rows == 19
+    assert plan.source_revision_lineage_peak_rows == 18
+    assert plan.source_snapshot_manifest_peak_rows == 18
+    assert plan.publication_candidate_peak_rows == 2
+    assert plan.publication_lineage_peak_rows == 18
+    assert (
+        plan.publication_checkpoint_peak_rows
+        == (
+            plan.publication_candidate_peak_rows
+            * plan.publication_candidate_stage_count
+        )
+        == 32
+    )
+    assert plan.publication_receipt_peak_rows == 32
+    assert plan.finalization_receipt_peak_rows == 18
+    assert (
+        plan.planning_source_scope_peak_rows
+        == (plan.planning_gallery_count + plan.source_build_lineage_peak_rows)
+        == 300_019
+    )
+    assert plan.source_scope_measurement_relation == "source_scope"
+    assert plan.source_scope_measurement_row_count == 300_019
+    assert (
+        plan.staging_measurement_accepted_rows
+        == (
+            plan.staging_measurement_distinct_staging_ids
+            * plan.staging_measurement_synthetic_rows_per_staging_id
+        )
+        == plan.staging_budget_maximum_rows
+        == 1_500_000
+    )
+    assert plan.staging_over_capacity_diagnostic_rows == 1_800_000
+    assert plan.staging_over_capacity_diagnostic_accepted is False
+    assert plan.staging_in_band_retire_maximum_rows_per_transaction == 256
+    assert plan.staging_normal_retained_terminal_gallery_maximum == 1
+    budget_contract = operational.gallery_staging_request_budget_contract
+    retirement_contract = operational.gallery_staging_retirement_contract
+    assert budget_contract is not None
+    assert retirement_contract is not None
+    assert budget_contract.hard_retained_request_cap == 1_500_000
+    assert budget_contract.relation == plan.staging_budget_relation
+    assert budget_contract.request_relation == plan.staging_measurement_relation
+    assert retirement_contract.maximum_rows_per_transaction == 256
+    assert retirement_contract.maximum_terminal_stagings_per_build == 1
+    assert "RETIRING_SEALED" in retirement_contract.generic_cleanup_rule
+    assert "RETIRING_REUSED" in retirement_contract.generic_cleanup_rule
+    staging_relation = next(
+        relation
+        for relation in operational.relations
+        if relation.name == plan.staging_retirement_relation
+    )
+    assert frozenset({"build_id"}) in staging_relation.declared_keys
+    budget_seeds = tuple(
+        seed
+        for seed in operational.bootstrap_seeds
+        if seed.relation == plan.staging_budget_relation
+    )
+    assert tuple((seed.columns, seed.values) for seed in budget_seeds) == (
+        (("singleton_id", "retained_request_count"), ("1", "0")),
+    )
+    assert (
+        plan.cleanup_job_conservative_peak_bytes
+        == (plan.cleanup_job_peak_rows * plan.cleanup_job_accounted_bytes_per_row)
+        == 46_137_344
+    )
+    assert (
+        plan.cleanup_cycle_root_conservative_peak_bytes
+        == (
+            plan.cleanup_cycle_root_peak_rows
+            * plan.cleanup_cycle_root_accounted_bytes_per_row
+        )
+        == 327_680
+    )
+    assert (
+        plan.bounded_nonmeasured_conservative_peak_bytes
+        == (
+            plan.bounded_nonmeasured_peak_rows
+            * plan.bounded_nonmeasured_accounted_bytes_per_row
+        )
+        == 285_000_000
+    )
+    assert (
+        plan.bounded_nonmeasured_conservative_peak_bytes
+        < plan.newly_recomposed_relation_soft_limit_bytes
+    )
+    assert plan.total_physical_table_count_after <= (
+        plan.conditional_limit_trigger_table_count
+    )
+    assert len(catalog.decompositions) == 28
+    report = checker.validate_contract(catalog)
+    assert len(report.lossless_decompositions) == 28
+    assert len(report.dependency_preserving_decompositions) == 28
+    checker.validate_cross_manifest_contracts(catalog, operational)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        (
+            "newly_recomposed_relation_soft_limit_bytes",
+            400_000_001,
+            "newly_recomposed_relation_soft_limit_bytes must be 400000000",
+        ),
+        (
+            "catalog_physical_table_count_after",
+            161,
+            "catalog_physical_table_count_after must be 160",
+        ),
+        (
+            "affected_operational_relations",
+            ("download_generation_owner",),
+            "affected_operational_relations must be",
+        ),
+        (
+            "conditional_one_gigabyte_limit_required",
+            True,
+            "1GB conditional flag",
+        ),
+    ),
+)
+def test_capacity_plan_rejects_limit_count_and_conditional_drift(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    contract = checker.load_contract(CATALOG)
+    plan = contract.capacity_plan
+    assert plan is not None
+    with pytest.raises(checker.ContractValidationError, match=message):
+        checker.validate_contract(
+            replace(contract, capacity_plan=replace(plan, **{field: value}))
+        )
+
+
 def test_vertical_family_rejects_an_unsealed_member_graph() -> None:
     contract = checker.load_contract(CATALOG)
     family = contract.vertical_families[0]
@@ -485,116 +696,116 @@ def test_vertical_family_rejects_an_unsealed_member_graph() -> None:
         checker.validate_contract(invalid)
 
 
-def test_vertical_family_join_must_use_a_complete_member_candidate_key() -> None:
+def test_recomposed_artifact_producer_rejects_a_nonkey_determinant() -> None:
     contract = checker.load_contract(CATALOG)
-    family = next(
-        value
-        for value in contract.vertical_families
-        if value.name == "artifact_producer_fingerprint_vertical"
+    producer = next(
+        relation
+        for relation in contract.relations
+        if relation.name == "artifact_producer_fingerprint"
     )
-    identity_member = next(
-        member
-        for member in family.members
-        if member.relation == "artifact_producer_fingerprint_identity"
-    )
-    invalid_member = replace(
-        identity_member,
-        join=replace(identity_member.join, member_attributes=("writer_id",)),
-    )
-    invalid_family = replace(
-        family,
-        members=tuple(
-            invalid_member if member is identity_member else member
-            for member in family.members
+    invalid_producer = replace(
+        producer,
+        functional_dependencies=(
+            *producer.functional_dependencies,
+            _fd({"artifact_algorithm_version"}, {"writer_id"}),
         ),
     )
     invalid = replace(
         contract,
-        vertical_families=tuple(
-            invalid_family if value is family else value
-            for value in contract.vertical_families
+        relations=tuple(
+            invalid_producer if relation is producer else relation
+            for relation in contract.relations
         ),
     )
 
     with pytest.raises(
         checker.ContractValidationError,
-        match="join must map unique source attributes onto one complete ordered candidate key",
+        match="artifact_producer_fingerprint.*not BCNF",
     ):
         checker.validate_contract(invalid)
 
 
-def test_optional_vertical_member_requires_reverse_fk_and_closed_presence() -> None:
+def test_decomposition_projection_fds_match_relation_closed_world() -> None:
     contract = checker.load_contract(CATALOG)
-    family = next(
+    decomposition = next(
         value
-        for value in contract.vertical_families
-        if value.name == "source_build_vertical"
+        for value in contract.decompositions
+        if value.name == "artifact_policy_and_registered_producer"
     )
-    optional_relation = next(
-        relation
-        for relation in contract.relations
-        if relation.name == "source_build_sealed_at"
+    invalid_decomposition = replace(
+        decomposition,
+        functional_dependencies=(
+            *decomposition.functional_dependencies,
+            _fd({"producer_fingerprint_sha256"}, {"max_image_short_side"}),
+        ),
     )
-    missing_reverse_fk = replace(optional_relation, foreign_keys=())
-    invalid_relations = replace(
+
+    with pytest.raises(
+        checker.ContractValidationError,
+        match="artifact_policy_semantics.*projection semantic dependency missing",
+    ):
+        checker.validate_contract(
+            replace(
+                contract,
+                decompositions=tuple(
+                    invalid_decomposition if value is decomposition else value
+                    for value in contract.decompositions
+                ),
+            )
+        )
+
+
+def test_source_build_lifecycle_projection_rejects_optional_timestamp_drift() -> None:
+    contract = checker.load_contract(CATALOG)
+    view = next(
+        relation for relation in contract.relations if relation.name == "source_build"
+    )
+    assert view.materialization is not None
+    invalid_view = replace(
+        view,
+        materialization={
+            **view.materialization,
+            "timestamp_state": "OPEN",
+        },
+    )
+    invalid = replace(
         contract,
         relations=tuple(
-            missing_reverse_fk if relation is optional_relation else relation
+            invalid_view if relation is view else relation
             for relation in contract.relations
         ),
     )
     with pytest.raises(
         checker.ContractValidationError,
-        match="optional member 'source_build_sealed_at' must reference",
+        match="source_build.*exact descriptor/state/optional-timestamp projection",
     ):
-        checker.validate_contract(invalid_relations)
-
-    missing_presence = replace(family, optional_presence=None)
-    invalid_family = replace(
-        contract,
-        vertical_families=tuple(
-            missing_presence if value is family else value
-            for value in contract.vertical_families
-        ),
-    )
-    with pytest.raises(
-        checker.ContractValidationError,
-        match="optional members require one closed presence rule",
-    ):
-        checker.validate_contract(invalid_family)
+        checker.validate_contract(invalid)
 
 
-def test_vertical_projection_alias_must_match_the_declared_wide_view() -> None:
+def test_build_manifest_projection_rejects_authority_source_drift() -> None:
     contract = checker.load_contract(CATALOG)
-    family = next(
-        value
-        for value in contract.vertical_families
-        if value.name == "build_manifest_vertical"
+    view = next(
+        relation for relation in contract.relations if relation.name == "build_manifest"
     )
-    timestamp = next(
-        member
-        for member in family.members
-        if member.relation == "source_build_sealed_at"
-    )
-    broken_timestamp = replace(timestamp, projection_attribute="sealed_at")
-    broken_family = replace(
-        family,
-        members=tuple(
-            broken_timestamp if member is timestamp else member
-            for member in family.members
-        ),
+    assert view.materialization is not None
+    invalid_view = replace(
+        view,
+        materialization={
+            **view.materialization,
+            "derived_from": ["build_manifest_core", "source_build_discovery"],
+        },
     )
     invalid = replace(
         contract,
-        vertical_families=tuple(
-            broken_family if value is family else value
-            for value in contract.vertical_families
+        relations=tuple(
+            invalid_view if relation is view else relation
+            for relation in contract.relations
         ),
     )
 
     with pytest.raises(
         checker.ContractValidationError,
-        match="view must project exactly the family key",
+        match="build_manifest view.*exact core/discovery/lifecycle projection",
     ):
         checker.validate_contract(invalid)
 
@@ -703,39 +914,33 @@ def test_batch3a_gallery_identity_is_one_bcnf_base_and_other_families_remain() -
     } <= set(physical_domains.relations)
 
 
-def test_batch3b_vertical_families_preserve_views_and_sealed_authority() -> None:
+def test_recomposed_lifecycle_and_build_manifest_preserve_public_read_shapes() -> None:
     contract = checker.load_contract(CATALOG)
     relation_by_name = {relation.name: relation for relation in contract.relations}
-    family_by_name = {family.name: family for family in contract.vertical_families}
-    expected = {
-        "source_build_vertical": (
-            "source_build_anchor",
-            "source_build_descriptor_seal",
-            "source_build",
-            ("build_id",),
-        ),
-        "build_manifest_vertical": (
-            "build_manifest_anchor",
-            "build_manifest_seal",
-            "build_manifest",
-            ("build_id",),
-        ),
-        "source_snapshot_manifest_identity_vertical": (
-            "source_snapshot_manifest_identity_anchor",
-            "source_snapshot_manifest_identity_seal",
-            "source_snapshot_manifest_identity",
-            ("snapshot_manifest_sha256",),
-        ),
-    }
-    assert expected == {
-        name: (
-            family_by_name[name].anchor_relation,
-            family_by_name[name].seal_relation,
-            family_by_name[name].view_relation,
-            family_by_name[name].key_attributes,
-        )
-        for name in expected
-    }
+    family_names = {family.name for family in contract.vertical_families}
+    assert {
+        "source_build_vertical",
+        "build_manifest_vertical",
+        "source_snapshot_manifest_identity_vertical",
+    }.isdisjoint(family_names)
+
+    source_descriptor = relation_by_name["source_build_descriptor"]
+    source_state = relation_by_name["source_build_state"]
+    source_sealed_at = relation_by_name["source_build_sealed_at"]
+    assert source_descriptor.attributes == (
+        "build_id",
+        "scope_key",
+        "manifest_policy_id",
+        "created_at",
+    )
+    assert source_state.attributes == ("build_id", "state")
+    assert source_sealed_at.attributes == ("build_id", "sealed_at")
+    assert all(
+        relation.materialization is None and not checker.bcnf_violations(relation)
+        for relation in (source_descriptor, source_state, source_sealed_at)
+    )
+
+    source_build = relation_by_name["source_build"]
     assert relation_by_name["source_build"].attributes == (
         "build_id",
         "scope_key",
@@ -744,7 +949,26 @@ def test_batch3b_vertical_families_preserve_views_and_sealed_authority() -> None
         "created_at",
         "sealed_at",
     )
-    assert relation_by_name["build_manifest"].attributes == (
+    assert source_build.materialization is not None
+    assert source_build.materialization["view_pattern"] == "lifecycle_projection"
+    assert tuple(source_build.materialization["derived_from"]) == (
+        "source_build_descriptor",
+        "source_build_state",
+        "source_build_sealed_at",
+    )
+    assert source_build.materialization["timestamp_state"] == "SEALED"
+
+    manifest_core = relation_by_name["build_manifest_core"]
+    manifest_view = relation_by_name["build_manifest"]
+    assert manifest_core.attributes == (
+        "build_id",
+        "manifest_sha256",
+        "file_count",
+        "byte_count",
+    )
+    assert manifest_core.materialization is None
+    assert not checker.bcnf_violations(manifest_core)
+    assert manifest_view.attributes == (
         "build_id",
         "manifest_sha256",
         "gallery_count",
@@ -752,20 +976,25 @@ def test_batch3b_vertical_families_preserve_views_and_sealed_authority() -> None
         "byte_count",
         "computed_at",
     )
-    source_build = family_by_name["source_build_vertical"]
-    assert source_build.optional_presence is not None
-    assert source_build.optional_presence.present_value == "SEALED"
-    assert source_build.optional_presence.absent_values == ("OPEN", "ABANDONED")
-    build_timestamp = next(
-        member
-        for member in family_by_name["build_manifest_vertical"].members
-        if member.relation == "source_build_sealed_at"
+    assert manifest_view.materialization is not None
+    assert manifest_view.materialization["view_pattern"] == (
+        "build_manifest_projection"
     )
-    assert build_timestamp.projection_attribute == "computed_at"
-    assert "database-owned created_at" in source_build.write_obligation
-    assert "derives its snapshot-attempt identity" in source_build.write_obligation
-    assert "canonical v2 build identity" in source_build.write_obligation
-    assert "recovery incarnation uses v3 identity" in source_build.write_obligation
+    assert tuple(manifest_view.materialization["derived_from"]) == (
+        "build_manifest_core",
+        "source_build_discovery",
+        "source_build_sealed_at",
+    )
+
+    snapshot_identity = relation_by_name["source_snapshot_manifest_identity"]
+    assert snapshot_identity.attributes == (
+        "snapshot_manifest_sha256",
+        "gallery_count",
+        "file_count",
+        "byte_count",
+    )
+    assert snapshot_identity.materialization is None
+    assert not checker.bcnf_violations(snapshot_identity)
     gallery_manifest = relation_by_name["gallery_manifest"]
     assert gallery_manifest.attributes == (
         "gallery_id",
@@ -776,20 +1005,16 @@ def test_batch3b_vertical_families_preserve_views_and_sealed_authority() -> None
     )
     assert gallery_manifest.materialization is not None
     assert gallery_manifest.materialization.get("storage") != "logical_view"
-    assert "gallery_manifest_vertical" not in family_by_name
+    assert "gallery_manifest_vertical" not in family_names
     snapshot_contract = contract.source_snapshot_manifest_contract
     assert snapshot_contract is not None
     assert "AnalysisRepository.handoff_snapshot_manifest" in (
         snapshot_contract.handoff_obligation
     )
 
-    old_views = {
-        "source_build",
-        "build_manifest",
-        "source_snapshot_manifest_identity",
-    }
+    read_only_views = {"source_build", "build_manifest"}
     assert all(
-        foreign_key.relation not in old_views
+        foreign_key.relation not in read_only_views
         for relation in contract.relations
         for foreign_key in relation.foreign_keys
     )
@@ -799,21 +1024,20 @@ def test_batch3b_vertical_families_preserve_views_and_sealed_authority() -> None
         if obligation.id == "catalog.physical-domains.v1"
     )
     assert {
-        relation_name
-        for family_name in expected
-        for relation_name in (
-            family_by_name[family_name].anchor_relation,
-            family_by_name[family_name].seal_relation,
-            family_by_name[family_name].view_relation,
-            *(member.relation for member in family_by_name[family_name].members),
-        )
+        "source_build_descriptor",
+        "source_build_state",
+        "source_build_sealed_at",
+        "source_build",
+        "build_manifest_core",
+        "build_manifest",
+        "source_snapshot_manifest_identity",
     } <= set(physical_domains.relations)
 
 
 def test_b8_physical_domain_closes_the_complete_publication_graph() -> None:
     contract = checker.load_contract(CATALOG)
     relation_order = tuple(relation.name for relation in contract.relations)
-    publication_start = relation_order.index("publication_candidate_anchor")
+    publication_start = relation_order.index("publication_candidate")
     publication_graph = frozenset(relation_order[publication_start:])
     physical_domains = next(
         obligation
@@ -821,7 +1045,7 @@ def test_b8_physical_domain_closes_the_complete_publication_graph() -> None:
         if obligation.id == "catalog.physical-domains.v1"
     )
     assert publication_graph <= set(physical_domains.relations)
-    assert len(physical_domains.relations) == 272
+    assert len(physical_domains.relations) == 151
 
     invalid_domains = replace(
         physical_domains,
@@ -849,9 +1073,9 @@ def test_generated_lean_closes_the_catalog_physical_domain_partition() -> None:
     catalog_lean = CATALOG_LEAN.read_text(encoding="utf-8")
     operational_lean = OPERATIONAL_LEAN.read_text(encoding="utf-8")
 
-    assert "catalogPhysicalDomainContracts.length = 272" in catalog_lean
-    assert "catalogPhysicalDomainMutationContracts.length = 218" in catalog_lean
-    assert "catalogPhysicalDomainReadOnlyViewContracts.length = 54" in catalog_lean
+    assert "catalogPhysicalDomainContracts.length = 151" in catalog_lean
+    assert "catalogPhysicalDomainMutationContracts.length = 114" in catalog_lean
+    assert "catalogPhysicalDomainReadOnlyViewContracts.length = 37" in catalog_lean
     assert "catalog_physical_domain_has_no_duplicates" in catalog_lean
     assert "catalog_physical_domain_is_manifest_closed" in catalog_lean
     assert "catalog_physical_domain_partition_is_exact" in catalog_lean
@@ -859,32 +1083,55 @@ def test_generated_lean_closes_the_catalog_physical_domain_partition() -> None:
     assert "catalogPhysicalDomainContracts" not in operational_lean
 
 
-def test_batch4_vertical_families_preserve_selected_identity_and_marker_contracts() -> (
+def test_recomposed_analysis_lifecycle_preserves_identity_and_marker_contracts() -> (
     None
 ):
     contract = checker.load_contract(CATALOG)
     relation_by_name = {relation.name: relation for relation in contract.relations}
     family_by_name = {family.name: family for family in contract.vertical_families}
 
-    run = family_by_name["analysis_run_vertical"]
-    identity = next(
-        member for member in run.members if member.relation == "analysis_run_identity"
+    assert "analysis_run_vertical" not in family_by_name
+    descriptor = relation_by_name["analysis_run_descriptor"]
+    assert descriptor.attributes == (
+        "analysis_id",
+        "build_id",
+        "policy_id",
+        "input_manifest_sha256",
+        "started_at",
     )
-    assert identity.congruence_members == (
-        "analysis_run_build_id",
-        "analysis_run_policy_id",
+    assert set(descriptor.declared_keys) == {
+        frozenset({"analysis_id"}),
+        frozenset({"build_id"}),
+    }
+    assert descriptor.materialization is None
+    assert not checker.bcnf_violations(descriptor)
+    assert relation_by_name["analysis_run_state"].attributes == (
+        "analysis_id",
+        "state",
     )
-    assert (
-        relation_by_name["analysis_run_input_manifest_sha256"].referential_unique_keys
-        == ()
+    assert relation_by_name["analysis_run_completed_at"].attributes == (
+        "analysis_id",
+        "completed_at",
     )
-    assert run.optional_presence is not None
-    assert run.optional_presence.member_relation == "analysis_run_completed_at"
-    assert run.optional_presence.present_value == "COMPLETE"
-    assert run.optional_presence.absent_values == ("OPEN", "ABANDONED")
+    run = relation_by_name["analysis_run"]
+    assert run.materialization is not None
+    assert run.materialization["view_pattern"] == "lifecycle_projection"
+    assert run.materialization["timestamp_state"] == "COMPLETE"
+    assert tuple(run.materialization["derived_from"]) == (
+        "analysis_run_descriptor",
+        "analysis_run_state",
+        "analysis_run_completed_at",
+    )
 
-    component = family_by_name["analysis_state_component_seal_vertical"]
-    assert component.seal_relation == "analysis_state_component_completion_seal"
+    component = relation_by_name["analysis_state_component_seal"]
+    assert component.materialization is None
+    assert component.attributes == (
+        "analysis_id",
+        "state_component",
+        "row_count",
+        "sealed_at",
+    )
+    assert not checker.bcnf_violations(component)
     delta = family_by_name["analysis_exclusion_delta_vertical"]
     assert delta.marker_relation == "analysis_exclusion_delta_change"
     assert delta.marker_predicate == "old_excluded != new_excluded"
@@ -894,7 +1141,8 @@ def test_batch4_vertical_families_preserve_selected_identity_and_marker_contract
     run_contract = contract.analysis_run_contract
     assert run_contract is not None
     assert "fresh allocation capability" in run_contract.write_obligation
-    assert "ignoring proposed_analysis_id" in run_contract.write_obligation
+    assert "resume the already stored analysis_id" in run_contract.write_obligation
+    assert "reject a different-policy sibling" in run_contract.write_obligation
     assert "ignores the retry proposal" in run_contract.attempt_rule
     assert "exact-compared on natural-key replay" not in run_contract.attempt_rule
 
@@ -912,75 +1160,26 @@ def test_analysis_retry_proposal_cannot_be_restored_as_authority(field: str) -> 
         checker.validate_contract(replace(contract, analysis_run_contract=invalid))
 
 
-@pytest.mark.parametrize(
-    "congruence_members",
-    [
-        (),
-        ("analysis_run_build_id", "analysis_run_build_id"),
-        ("analysis_run_build_id", "analysis_run_missing_fact"),
-    ],
-)
-def test_selected_natural_identity_rejects_empty_duplicate_or_unknown_facts(
-    congruence_members: tuple[str, ...],
-) -> None:
+def test_recomposed_analysis_descriptor_requires_the_natural_candidate_key() -> None:
     contract = checker.load_contract(CATALOG)
-    family = next(
-        value
-        for value in contract.vertical_families
-        if value.name == "analysis_run_vertical"
-    )
-    identity = next(
-        member
-        for member in family.members
-        if member.relation == "analysis_run_identity"
-    )
-    invalid_identity = replace(identity, congruence_members=congruence_members)
-    invalid_family = replace(
-        family,
-        members=tuple(
-            invalid_identity if member is identity else member
-            for member in family.members
-        ),
-    )
-    with pytest.raises(
-        checker.ContractValidationError,
-        match="selects unknown, duplicate, or empty congruence members",
-    ):
-        checker.validate_contract(
-            replace(
-                contract,
-                vertical_families=tuple(
-                    invalid_family if value is family else value
-                    for value in contract.vertical_families
-                ),
-            )
-        )
-
-
-def test_selected_natural_identity_requires_each_selected_fact_congruence_fk() -> None:
-    contract = checker.load_contract(CATALOG)
-    identity = next(
+    descriptor = next(
         relation
         for relation in contract.relations
-        if relation.name == "analysis_run_identity"
+        if relation.name == "analysis_run_descriptor"
     )
-    invalid_identity = replace(
-        identity,
-        foreign_keys=tuple(
-            foreign_key
-            for foreign_key in identity.foreign_keys
-            if foreign_key.relation != "analysis_run_policy_id"
-        ),
+    invalid_descriptor = replace(
+        descriptor,
+        declared_keys=(frozenset({"analysis_id"}),),
     )
     with pytest.raises(
         checker.ContractValidationError,
-        match="natural identity.*lacks congruence FK",
+        match="analysis_run_descriptor.*omits candidate keys|descriptor has the wrong complete BCNF shape",
     ):
         checker.validate_contract(
             replace(
                 contract,
                 relations=tuple(
-                    invalid_identity if relation is identity else relation
+                    invalid_descriptor if relation is descriptor else relation
                     for relation in contract.relations
                 ),
             )
@@ -1126,31 +1325,48 @@ def test_secondary_sealed_projection_cannot_omit_a_value_source() -> None:
         )
 
 
-def test_vertical_identity_requires_every_fact_congruence_fk() -> None:
+def test_recomposed_manifest_policy_is_one_atomic_bcnf_registry() -> None:
     contract = checker.load_contract(CATALOG)
-    identity = next(
+    policy = next(
         relation
         for relation in contract.relations
-        if relation.name == "manifest_policy_identity"
+        if relation.name == "manifest_policy"
     )
-    invalid_identity = replace(
-        identity,
-        foreign_keys=tuple(
-            foreign_key
-            for foreign_key in identity.foreign_keys
-            if foreign_key.relation != "manifest_policy_manifest_algorithm_version"
+    assert policy.attributes == (
+        "manifest_policy_id",
+        "manifest_algorithm_version",
+        "file_order_version",
+    )
+    assert set(policy.declared_keys) == {
+        frozenset({"manifest_policy_id"}),
+        frozenset({"manifest_algorithm_version", "file_order_version"}),
+    }
+    assert not checker.bcnf_violations(policy)
+    assert {
+        "manifest_policy_anchor",
+        "manifest_policy_identity",
+        "manifest_policy_manifest_algorithm_version",
+        "manifest_policy_file_order_version",
+        "manifest_policy_seal",
+    }.isdisjoint(relation.name for relation in contract.relations)
+
+    invalid_policy = replace(
+        policy,
+        functional_dependencies=(
+            *policy.functional_dependencies,
+            _fd({"manifest_algorithm_version"}, {"file_order_version"}),
         ),
     )
 
     with pytest.raises(
         checker.ContractValidationError,
-        match="natural identity.*lacks congruence FK",
+        match="manifest_policy.*not BCNF|manifest_policy.*omits candidate keys",
     ):
         checker.validate_contract(
             replace(
                 contract,
                 relations=tuple(
-                    invalid_identity if relation is identity else relation
+                    invalid_policy if relation is policy else relation
                     for relation in contract.relations
                 ),
             )
@@ -1162,11 +1378,11 @@ def test_referential_unique_key_must_strictly_contain_a_true_candidate() -> None
     fact = next(
         relation
         for relation in contract.relations
-        if relation.name == "manifest_policy_manifest_algorithm_version"
+        if relation.name == "build_manifest_core"
     )
     invalid_fact = replace(
         fact,
-        referential_unique_keys=(("manifest_algorithm_version",),),
+        referential_unique_keys=(("manifest_sha256",),),
     )
 
     with pytest.raises(
@@ -1189,13 +1405,11 @@ def test_referential_unique_key_cannot_be_declared_as_a_candidate_key() -> None:
     fact = next(
         relation
         for relation in contract.relations
-        if relation.name == "manifest_policy_manifest_algorithm_version"
+        if relation.name == "build_manifest_core"
     )
     invalid_fact = replace(
         fact,
-        declared_keys=(
-            frozenset({"manifest_policy_id", "manifest_algorithm_version"}),
-        ),
+        declared_keys=(frozenset({"build_id", "manifest_sha256"}),),
     )
 
     with pytest.raises(
@@ -1213,31 +1427,26 @@ def test_referential_unique_key_cannot_be_declared_as_a_candidate_key() -> None:
         )
 
 
-def test_producer_vertical_family_requires_collision_checked_registration() -> None:
+def test_recomposed_producer_registry_requires_collision_checked_registration() -> None:
     contract = checker.load_contract(CATALOG)
-    family = next(
-        value
-        for value in contract.vertical_families
-        if value.name == "artifact_producer_fingerprint_vertical"
-    )
-    invalid_family = replace(
-        family,
-        write_obligation=family.write_obligation.replace(
-            "byte-compares the full five-field preimage", "trusts the digest"
+    producer = contract.artifact_byte_producer_contract
+    assert producer is not None
+    invalid_producer = replace(
+        producer,
+        runtime_obligation=producer.runtime_obligation.replace(
+            "recompute the raw producer fingerprint frame and equivalence codec",
+            "trust the supplied digest",
         ),
     )
 
     with pytest.raises(
         checker.ContractValidationError,
-        match="must pin collision-checked runtime registration and consumption",
+        match="artifact byte-producer contract runtime obligation is incomplete",
     ):
         checker.validate_contract(
             replace(
                 contract,
-                vertical_families=tuple(
-                    invalid_family if value is family else value
-                    for value in contract.vertical_families
-                ),
+                artifact_byte_producer_contract=invalid_producer,
             )
         )
 
@@ -1254,7 +1463,7 @@ def test_producer_equivalence_class_requires_exact_reversible_codec() -> None:
     equivalence_relation = next(
         relation
         for relation in contract.relations
-        if relation.name == "artifact_producer_fingerprint_equivalence_class"
+        if relation.name == "artifact_producer_fingerprint"
     )
 
     with pytest.raises(
@@ -1291,7 +1500,7 @@ def test_producer_equivalence_class_requires_exact_reversible_codec() -> None:
 
     with pytest.raises(
         checker.ContractValidationError,
-        match="producer equivalence codec must key both exact representations",
+        match="producer registry keys are incomplete|omits candidate keys",
     ):
         checker.validate_contract(
             replace(
@@ -1353,7 +1562,7 @@ def test_source_scope_retention_uses_the_root_fact_not_scope_key() -> None:
     for required_term in (
         "canonical_value_allocation_anchor.value_sha256",
         "never by treating scope_key as a canonical allocation key",
-        "every same-root scope family",
+        "every same-root scope row",
     ):
         invalid_scope = replace(
             source_scope,
@@ -1493,13 +1702,22 @@ def test_analysis_candidate_contract_is_one_closed_executable_v1_codec() -> None
 @pytest.mark.parametrize(
     "removed_source",
     (
-        "analysis_run_build_id",
+        "analysis_impacted_gallery",
+        "analysis_run_descriptor",
+        "analysis_policy",
+        "source_build_gallery",
+        "gallery_observation_file",
         "file_name_identity",
-        "analysis_run_policy_id",
+        "analysis_file_hash_decision_resolved",
+        "gallery_observation_tag",
         "tag_term_identity",
+        "canonical_value_identity",
+        "canonical_value_allocation",
         "canonical_value_page",
         "canonical_value_page_descriptor",
-        "source_build_gallery",
+        "canonical_value_page_parent",
+        "gallery_observation_tree_root",
+        "gallery_observation_page_child",
         "gallery_observation_metadata_local",
     ),
 )
@@ -1651,9 +1869,8 @@ def test_impacted_key_contract_rejects_unbounded_or_inexact_provenance() -> None
 
     for required_authority in (
         "analysis_baseline",
-        "analysis_run_build_id",
+        "analysis_run_descriptor",
         "file_name_identity",
-        "analysis_run_policy_id",
         "analysis_policy",
     ):
         missing_authority_metadata = dict(provenance.materialization or {})
@@ -1681,9 +1898,8 @@ def test_impacted_key_contract_rejects_unbounded_or_inexact_provenance() -> None
 
     for authority_text, invalid_text in (
         ("analysis_baseline.base_analysis_id", "current analysis_id"),
-        ("current analysis_run_build_id", "caller build_id"),
+        ("current analysis_run_descriptor", "caller build_id"),
         ("file_name_identity.file_role", "untyped file name"),
-        ("current analysis_run_policy_id", "caller policy_id"),
         ("sealed analysis_policy", "unsealed policy"),
     ):
         invalid_metadata = dict(provenance.materialization or {})
@@ -2001,7 +2217,7 @@ def test_publication_receipt_uses_only_sealed_common_commit_authority(
             foreign_keys=tuple(
                 foreign_key
                 for foreign_key in receipt.foreign_keys
-                if foreign_key.relation != "publication_commit_seal"
+                if foreign_key.relation != "publication_commit"
             ),
         )
     elif mutation == "candidate_fk":
@@ -2043,7 +2259,11 @@ def test_publication_receipt_uses_only_sealed_common_commit_authority(
 @pytest.mark.parametrize(
     ("obligation", "required_term", "error"),
     (
-        ("runtime_obligation", "tip-local O(1)", "hot-path obligation"),
+        (
+            "runtime_obligation",
+            "sole complete immutable commit authority",
+            "hot-path obligation",
+        ),
         (
             "runtime_obligation",
             "replay is candidate/preparation-key local O(1)",
@@ -2057,17 +2277,17 @@ def test_publication_receipt_uses_only_sealed_common_commit_authority(
         ("runtime_obligation", "append-only", "hot-path obligation"),
         (
             "ready_obligation",
-            "linear full-history scan",
+            "retained current/reachable publication window",
             "full READY/quick readiness distinction",
         ),
         (
             "ready_obligation",
-            "no fork, orphan, or gap",
+            "no fork/orphan/gap after the compacted floor",
             "full READY/quick readiness distinction",
         ),
         (
             "ready_obligation",
-            "head is the maximum no-successor tip",
+            "unique maximum no-successor head",
             "full READY/quick readiness distinction",
         ),
         (
@@ -2120,7 +2340,7 @@ def test_common_head_cannot_bypass_the_sealed_publication_commit() -> None:
                     "publication_commit_anchor",
                     foreign_key.referenced_attributes,
                 )
-                if foreign_key.relation == "publication_commit_seal"
+                if foreign_key.relation == "publication_commit"
                 else foreign_key
             )
             for foreign_key in head.foreign_keys
@@ -2657,6 +2877,51 @@ def _replace_retention_target(
     )
 
 
+def test_retention_v2_rejects_legacy_obligation_and_history_roots() -> None:
+    contract = checker.load_contract(CATALOG)
+    retention = contract.retention_contract
+    assert retention is not None
+    assert retention.version == 2
+    assert retention.semantic_obligation_id == "catalog.retention.v2"
+    assert retention.analysis_relation == "analysis_run_descriptor"
+    assert retention.build_relation == "source_build_descriptor"
+
+    invalid = replace(
+        contract,
+        retention_contract=replace(
+            retention,
+            version=1,
+            semantic_obligation_id="catalog.retention.v1",
+            analysis_relation="analysis_run",
+            build_relation="source_build",
+        ),
+    )
+    with pytest.raises(
+        checker.ContractValidationError,
+        match="retention contract must be version 2|catalog.retention.v2",
+    ):
+        checker.validate_contract(invalid)
+
+
+def test_retention_v2_rejects_a_legacy_machine_gate_binding() -> None:
+    contract = checker.load_contract(CATALOG)
+    target = next(item for item in contract.retention_targets if item.machine_gates)
+    legacy_gate = replace(
+        target.machine_gates[0],
+        semantic_obligation_id="catalog.retention.v1",
+    )
+    invalid = _replace_retention_target(
+        contract,
+        target.target,
+        machine_gates=(legacy_gate, *target.machine_gates[1:]),
+    )
+    with pytest.raises(
+        checker.ContractValidationError,
+        match="machine gate.*lacks its resolver|machine gates must be exactly",
+    ):
+        checker.validate_contract(invalid)
+
+
 def test_retention_contract_rejects_unknown_root_relation() -> None:
     contract = checker.load_contract(CATALOG)
     invalid = _replace_retention_target(
@@ -2693,7 +2958,7 @@ def test_retention_contract_rejects_missing_fk_blocker() -> None:
     blockers = tuple(
         blocker
         for blocker in target.external_blockers
-        if blocker.relation != "analysis_run_build_id"
+        if blocker.attributes != ("build_id",)
     )
     invalid = _replace_retention_target(
         contract, "SOURCE_BUILD", external_blockers=blockers
@@ -2701,7 +2966,7 @@ def test_retention_contract_rejects_missing_fk_blocker() -> None:
 
     with pytest.raises(
         checker.ContractValidationError,
-        match=r"leaves FK descendant 'analysis_run_build_id'.*unclassified",
+        match=r"leaves FK descendant 'analysis_run_descriptor'.*unclassified",
     ):
         checker.validate_contract(invalid)
 
@@ -2914,36 +3179,42 @@ def test_retention_contract_rejects_broken_active_provenance_path() -> None:
         checker.validate_contract(invalid)
 
 
-@pytest.mark.parametrize(
-    ("field", "bad_value", "message"),
-    [
-        ("delta_completeness", "changed_rows_only", "delta_completeness"),
-        ("compaction_validation", "row_count_only", "compaction_validation"),
-        ("ancestry_invariant", "depth_only", "acyclic ancestry"),
-    ],
-)
-def test_analysis_resolution_contract_rejects_unproved_seal_rules(
-    field: str, bad_value: str, message: str
+@pytest.mark.parametrize("removed_attribute", ("row_count", "sealed_at"))
+def test_analysis_resolution_contract_rejects_incomplete_wide_seal(
+    removed_attribute: str,
 ) -> None:
     contract = checker.load_contract(CATALOG)
-    resolution = contract.analysis_resolution_contract
-    assert resolution is not None
-    relations = tuple(
-        (
+    seal = next(
+        relation
+        for relation in contract.relations
+        if relation.name == "analysis_state_component_seal"
+    )
+    invalid_seal = replace(
+        seal,
+        attributes=tuple(
+            attribute for attribute in seal.attributes if attribute != removed_attribute
+        ),
+        functional_dependencies=tuple(
             replace(
-                relation,
-                materialization={
-                    **(relation.materialization or {}),
-                    field: bad_value,
-                },
+                dependency,
+                dependent=frozenset(
+                    attribute
+                    for attribute in dependency.dependent
+                    if attribute != removed_attribute
+                ),
             )
-            if relation.name == "analysis_state_component_seal"
-            else relation
-        )
+            for dependency in seal.functional_dependencies
+        ),
+    )
+    relations = tuple(
+        invalid_seal if relation is seal else relation
         for relation in contract.relations
     )
 
-    with pytest.raises(checker.ContractValidationError, match=message):
+    with pytest.raises(
+        checker.ContractValidationError,
+        match="completion seal must be one complete BCNF row",
+    ):
         checker.validate_contract(replace(contract, relations=relations))
 
 
@@ -3370,7 +3641,7 @@ def test_operational_external_relation_key_shapes_are_checked() -> None:
     external = next(
         relation
         for relation in contract.external_relations
-        if relation.name == "source_build_descriptor_seal"
+        if relation.name == "source_build_descriptor"
     )
     invalid = replace(
         contract,
@@ -3568,6 +3839,25 @@ def test_f_plus_projection_includes_dependencies_with_hidden_intermediates() -> 
     assert checker.attribute_closure({"a"}, projected) == frozenset({"a", "c"})
 
 
+def test_decomposition_semantic_signatures_must_be_unique() -> None:
+    contract = checker.load_contract(CATALOG)
+    original = contract.decompositions[0]
+    duplicate = replace(
+        original,
+        name=f"{original.name}_duplicate",
+        functional_dependencies=tuple(reversed(original.functional_dependencies)),
+        projections=tuple(reversed(original.projections)),
+    )
+
+    with pytest.raises(
+        checker.ContractValidationError,
+        match="duplicates the semantic signature of",
+    ):
+        checker.validate_contract(
+            replace(contract, decompositions=(*contract.decompositions, duplicate))
+        )
+
+
 def test_lossless_non_dependency_preserving_decomposition_is_rejected() -> None:
     left = _relation(
         "left",
@@ -3648,8 +3938,8 @@ def test_cli_returns_zero_for_catalog_and_nonzero_for_invalid_contract(
         text=True,
     )
     assert valid.returncode == 0, valid.stderr
-    assert "306 BCNF base relations" in valid.stdout
-    assert "73 intentional logical views" in valid.stdout
+    assert "160 BCNF base relations" in valid.stdout
+    assert "49 intentional logical views" in valid.stdout
     assert f"{len(contract.decompositions)} lossless decompositions" in valid.stdout
     assert (
         f"{len(contract.decompositions)} dependency-preserving decompositions"

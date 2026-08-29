@@ -84,21 +84,20 @@ def _set_publication_checkpoint(
     state: str,
     updated_at: int,
 ) -> None:
-    for table, column, value in (
-        ("catalog_publication_checkpoint_generations", "generation", generation),
-        ("catalog_publication_checkpoint_cursors", "cursor", cursor),
+    connector.execute(
+        "UPDATE catalog_publication_checkpoints SET generation = %s, `cursor` = %s, "
+        "processed_count = %s, state = %s, updated_at = %s "
+        "WHERE candidate_id = %s AND stage = %s",
         (
-            "catalog_publication_checkpoint_processed_counts",
-            "processed_count",
+            generation,
+            cursor,
             processed_count,
+            state,
+            updated_at,
+            _CANDIDATE,
+            stage,
         ),
-        ("catalog_publication_checkpoint_states", "state", state),
-        ("catalog_publication_checkpoint_updated_ats", "updated_at", updated_at),
-    ):
-        connector.execute(
-            f"UPDATE {table} SET {column} = %s WHERE candidate_id = %s AND stage = %s",
-            (value, _CANDIDATE, stage),
-        )
+    )
 
 
 def _insert_publication_batch_receipt(
@@ -114,49 +113,21 @@ def _insert_publication_batch_receipt(
     committed_at: int,
 ) -> None:
     connector.execute(
-        "INSERT INTO catalog_publication_batch_receipt_anchors "
-        "(candidate_id, stage, start_generation) VALUES (%s, %s, %s)",
-        (_CANDIDATE, stage, start_generation),
-    )
-    connector.execute(
-        "INSERT INTO catalog_publication_batch_receipt_coordinates "
-        "(candidate_id, stage, batch_key, start_generation) "
-        "VALUES (%s, %s, %s, %s)",
-        (_CANDIDATE, stage, batch_key, start_generation),
-    )
-    for table, column, value in (
+        "INSERT INTO catalog_publication_batch_receipt_stored "
+        "(candidate_id, stage, start_generation, batch_key, start_cursor, "
+        "start_processed_count, next_cursor, row_count, committed_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
         (
-            "catalog_publication_batch_receipt_start_cursors",
-            "start_cursor",
+            _CANDIDATE,
+            stage,
+            start_generation,
+            batch_key,
             start_cursor,
-        ),
-        (
-            "catalog_publication_batch_receipt_start_processed_counts",
-            "start_processed_count",
             start_processed_count,
-        ),
-        (
-            "catalog_publication_batch_receipt_next_cursors",
-            "next_cursor",
             next_cursor,
-        ),
-        ("catalog_publication_batch_receipt_row_counts", "row_count", row_count),
-        (
-            "catalog_publication_batch_receipt_committed_ats",
-            "committed_at",
+            row_count,
             committed_at,
         ),
-    ):
-        connector.execute(
-            f"INSERT INTO {table} "
-            f"(candidate_id, stage, start_generation, {column}) "
-            "VALUES (%s, %s, %s, %s)",
-            (_CANDIDATE, stage, start_generation, value),
-        )
-    connector.execute(
-        "INSERT INTO catalog_publication_batch_receipt_seals "
-        "(candidate_id, stage, start_generation) VALUES (%s, %s, %s)",
-        (_CANDIDATE, stage, start_generation),
     )
 
 
@@ -365,23 +336,16 @@ def _seed_artifact_input(
     if not materialize:
         byte_count = len(metadata_bytes) + len(image_bytes)
         connector.execute(
-            "UPDATE catalog_build_manifest_file_counts SET file_count = %s "
+            "UPDATE catalog_build_manifest_core SET file_count = %s, byte_count = %s "
             "WHERE build_id = %s",
-            (2, _BUILD),
+            (2, byte_count, _BUILD),
         )
         connector.execute(
-            "UPDATE catalog_build_manifest_byte_counts SET byte_count = %s "
-            "WHERE build_id = %s",
-            (byte_count, _BUILD),
-        )
-        connector.execute(
-            "UPDATE catalog_source_snapshot_manifest_identity_file_counts "
-            "SET file_count = %s",
+            "UPDATE catalog_source_snapshot_manifest_identity SET file_count = %s",
             (2,),
         )
         connector.execute(
-            "UPDATE catalog_source_snapshot_manifest_identity_byte_counts "
-            "SET byte_count = %s",
+            "UPDATE catalog_source_snapshot_manifest_identity SET byte_count = %s",
             (byte_count,),
         )
         return publication_key, member_plan
@@ -828,23 +792,16 @@ def _seed_many_artifact_sources(connector: SQLiteConnector, *, count: int) -> No
             row_count=count,
         )
     connector.execute(
-        "UPDATE catalog_build_manifest_file_counts SET file_count = %s "
+        "UPDATE catalog_build_manifest_core SET file_count = %s, byte_count = %s "
         "WHERE build_id = %s",
-        (count * 2, _BUILD),
+        (count * 2, count * 32, _BUILD),
     )
     connector.execute(
-        "UPDATE catalog_build_manifest_byte_counts SET byte_count = %s "
-        "WHERE build_id = %s",
-        (count * 32, _BUILD),
-    )
-    connector.execute(
-        "UPDATE catalog_source_snapshot_manifest_identity_file_counts "
-        "SET file_count = %s",
+        "UPDATE catalog_source_snapshot_manifest_identity SET file_count = %s",
         (count * 2,),
     )
     connector.execute(
-        "UPDATE catalog_source_snapshot_manifest_identity_byte_counts "
-        "SET byte_count = %s",
+        "UPDATE catalog_source_snapshot_manifest_identity SET byte_count = %s",
         (count * 32,),
     )
 
@@ -1019,24 +976,117 @@ def test_issue_authority_loads_each_registry_family_exactly_once(
             now=110,
         )
 
-    registry_seals = (
-        "catalog_display_title_policy_seals",
-        "catalog_title_sort_policy_seals",
-        "catalog_source_scope_seals",
-        "catalog_manifest_policy_seals",
-        "catalog_analysis_policy_seals",
-        "catalog_artifact_policy_semantics_seals",
-        "catalog_artifact_producer_fingerprint_seals",
-        "catalog_artifact_zip_writer_policy_seals",
-        "catalog_artifact_storage_codec_seals",
+    registries = (
+        "catalog_display_title_policies",
+        "catalog_title_sort_policy",
+        "catalog_source_scopes",
+        "catalog_manifest_policies",
+        "catalog_analysis_policies",
+        "catalog_artifact_policy_semantics",
+        "catalog_artifact_producer_fingerprints",
+        "catalog_artifact_zip_writer_policies",
+        "catalog_artifact_storage_codecs",
     )
     assert {
-        table: sum(table in query for query in queries) for table in registry_seals
-    } == {table: 1 for table in registry_seals}
-    assert (
-        sum(any(table in query for table in registry_seals) for query in queries) == 9
-    )
+        table: sum(table in query for query in queries) for table in registries
+    } == {table: 1 for table in registries}
+    assert sum(any(table in query for table in registries) for query in queries) == 8
     connector.close()
+
+
+@pytest.mark.parametrize(
+    "missing_table",
+    (
+        "catalog_artifact_policy_semantics",
+        "catalog_artifact_producer_fingerprints",
+    ),
+)
+def test_issue_authority_policy_contract_join_fails_closed_for_missing_family(
+    tmp_path: Path,
+    missing_table: str,
+) -> None:
+    connector, gate, turn, publication_key, _member_plan = (
+        _database_with_artifact_input(tmp_path)
+    )
+    connector.execute("PRAGMA foreign_keys = OFF")
+    try:
+        connector.execute(f"DELETE FROM {missing_table}")
+    finally:
+        connector.execute("PRAGMA foreign_keys = ON")
+
+    with (
+        patch.object(connector, "execute", side_effect=AssertionError("write")),
+        connector.transaction(),
+        pytest.raises(
+            ArtifactPreparationNotReadyError,
+            match="policy/producer contract is missing",
+        ),
+    ):
+        ArtifactPreparationRepository.issue_authority(
+            VNextUnitOfWork(connector, backend="sqlite"),
+            gate_lease=gate,
+            ingest_turn=turn,
+            candidate_id=_CANDIDATE,
+            publication_key=publication_key,
+            now=110,
+        )
+    connector.close()
+
+
+@pytest.mark.parametrize("mutated_column", range(10))
+def test_artifact_policy_contract_join_rejects_every_mismatched_column(
+    mutated_column: int,
+) -> None:
+    producer = _PRODUCER_FINGERPRINT
+    policy = identity.artifact_policy_digest(1, 2048, producer)
+    row: list[object] = [
+        policy,
+        1,
+        2048,
+        producer,
+        identity.artifact_producer_equivalence_class(producer),
+        *_PRODUCER_FIELDS,
+    ]
+    mutations: tuple[object, ...] = (
+        b"p" * 32,
+        2,
+        2049,
+        b"f" * 32,
+        b"wrong-equivalence",
+        b"wrong-writer",
+        b"wrong-python",
+        b"wrong-pillow",
+        b"wrong-libjpeg",
+        b"wrong-zlib",
+    )
+    row[mutated_column] = mutations[mutated_column]
+
+    class RecordingConnector:
+        def __init__(self) -> None:
+            self.queries: list[tuple[str, tuple[object, ...]]] = []
+
+        def fetch_one(
+            self,
+            query: str,
+            data: tuple[object, ...] = (),
+        ) -> tuple[object, ...]:
+            self.queries.append((query, data))
+            return tuple(row)
+
+    connector = RecordingConnector()
+    with pytest.raises(
+        ArtifactPreparationConflictError,
+        match="policy/producer contract",
+    ):
+        artifact_module._load_artifact_policy_contract(
+            VNextUnitOfWork(cast(SQLiteConnector, connector), backend="mariadb"),
+            policy,
+        )
+    assert len(connector.queries) == 1
+    query, parameters = connector.queries[0]
+    assert "catalog_artifact_policy_semantics" in query
+    assert "catalog_artifact_producer_fingerprints" in query
+    assert parameters == (policy,)
 
 
 def test_wrong_storage_adapter_fails_before_rendering(tmp_path: Path) -> None:
@@ -1525,7 +1575,7 @@ def test_nonterminal_checkpoint_fails_closed_without_writes(tmp_path: Path) -> N
         _database_with_artifact_input(tmp_path)
     )
     connector.execute(
-        "UPDATE catalog_publication_checkpoint_states SET state = %s "
+        "UPDATE catalog_publication_checkpoints SET state = %s "
         "WHERE candidate_id = %s AND stage = %s",
         ("OPEN", _CANDIDATE, b"VALIDATE_ARTIFACT_INPUT_DELTA"),
     )
@@ -1886,8 +1936,7 @@ def test_artifact_projection_persistence_and_seal_end_to_end(tmp_path: Path) -> 
         (_CANDIDATE,),
     ) == (1, 0, 0, 1, 0)
     assert not connector.fetch_one(
-        "SELECT receipt_id FROM catalog_publication_commit_candidates "
-        "WHERE candidate_id = %s",
+        "SELECT receipt_id FROM catalog_publication_commits WHERE candidate_id = %s",
         (_CANDIDATE,),
     )
     connector.close()
@@ -2164,23 +2213,23 @@ def test_persistence_collision_forgery_and_each_statement_fault_roll_back(
                 now=now + 2,
             )
     assert connector.fetch_one(
-        "SELECT generation FROM catalog_publication_checkpoint_generations "
+        "SELECT generation FROM catalog_publication_checkpoints "
         "WHERE candidate_id = %s AND stage = %s",
         (_CANDIDATE, b"VALIDATE_PREPARED_ARTIFACT"),
     ) == (1,)
     assert connector.fetch_one(
-        "SELECT cursor FROM catalog_publication_checkpoint_cursors "
+        "SELECT `cursor` FROM catalog_publication_checkpoints "
         "WHERE candidate_id = %s AND stage = %s",
         (_CANDIDATE, b"VALIDATE_PREPARED_ARTIFACT"),
     ) == (b"",)
     assert connector.fetch_one(
         "SELECT processed_count "
-        "FROM catalog_publication_checkpoint_processed_counts "
+        "FROM catalog_publication_checkpoints "
         "WHERE candidate_id = %s AND stage = %s",
         (_CANDIDATE, b"VALIDATE_PREPARED_ARTIFACT"),
     ) == (0,)
     assert connector.fetch_one(
-        "SELECT state FROM catalog_publication_checkpoint_states "
+        "SELECT state FROM catalog_publication_checkpoints "
         "WHERE candidate_id = %s AND stage = %s",
         (_CANDIDATE, b"VALIDATE_PREPARED_ARTIFACT"),
     ) == ("OPEN",)
@@ -2236,9 +2285,9 @@ def test_high_cardinality_stages_five_to_seven_are_fixed_128_and_no_child_scan(
         ) as source_loader,
         patch.object(
             artifact_module,
-            "_load_artifact_policy_semantics",
-            wraps=artifact_module._load_artifact_policy_semantics,
-        ) as semantics_loader,
+            "_load_artifact_policy_contract",
+            wraps=artifact_module._load_artifact_policy_contract,
+        ) as artifact_contract_loader,
         patch.object(
             artifact_module,
             "_load_zip_writer_policy",
@@ -2249,11 +2298,6 @@ def test_high_cardinality_stages_five_to_seven_are_fixed_128_and_no_child_scan(
             "_load_storage_codec",
             wraps=artifact_module._load_storage_codec,
         ) as storage_loader,
-        patch.object(
-            artifact_module,
-            "_load_producer_fingerprint",
-            wraps=artifact_module._load_producer_fingerprint,
-        ) as producer_loader,
     ):
         plan = ArtifactPreparationRepository.prepare_artifact_input_projection(
             connector,
@@ -2269,10 +2313,9 @@ def test_high_cardinality_stages_five_to_seven_are_fixed_128_and_no_child_scan(
         manifest_loader,
         analysis_loader,
         source_loader,
-        semantics_loader,
+        artifact_contract_loader,
         zip_loader,
         storage_loader,
-        producer_loader,
     ):
         assert loader.call_count == 2
     with plan, validation:
@@ -2345,7 +2388,7 @@ def test_high_cardinality_stages_five_to_seven_are_fixed_128_and_no_child_scan(
     connector.close()
 
 
-def test_seeded_artifact_codecs_use_one_sealed_narrow_query_each(
+def test_seeded_artifact_codecs_use_one_wide_query_each(
     tmp_path: Path,
 ) -> None:
     connector = _generated_database(tmp_path / "artifact-codec-shape.sqlite3")
@@ -2368,64 +2411,33 @@ def test_seeded_artifact_codecs_use_one_sealed_narrow_query_each(
             assert artifact_module._load_storage_codec(work, 1) == (
                 artifact_module._STORAGE_CODEC_V1
             )
-        assert (
-            sum("catalog_artifact_zip_writer_policy_seals" in q for q in queries) == 1
-        )
-        assert sum("catalog_artifact_storage_codec_seals" in q for q in queries) == 1
-        normalized = " ".join(queries)
-        assert "catalog_artifact_zip_writer_policies" not in normalized
-        assert "catalog_artifact_storage_codecs" not in normalized
-        assert "FOR UPDATE" not in normalized.upper()
+        assert sum("catalog_artifact_zip_writer_policies" in q for q in queries) == 1
+        assert sum("catalog_artifact_storage_codecs" in q for q in queries) == 1
+        assert "FOR UPDATE" not in " ".join(queries).upper()
     finally:
         connector.close()
 
 
 @pytest.mark.parametrize(
-    ("family", "member_table"),
+    ("family", "table"),
     (
-        (
-            "zip",
-            "catalog_artifact_zip_writer_policy_zip_codec_versions",
-        ),
-        ("zip", "catalog_artifact_zip_writer_policy_compression_methods"),
-        ("zip", "catalog_artifact_zip_writer_policy_compression_levels"),
-        ("zip", "catalog_artifact_zip_writer_policy_dos_dates"),
-        ("zip", "catalog_artifact_zip_writer_policy_dos_times"),
-        ("zip", "catalog_artifact_zip_writer_policy_unix_modes"),
-        ("zip", "catalog_artifact_zip_writer_policy_general_purpose_flags"),
-        ("zip", "catalog_artifact_zip_writer_policy_create_systems"),
-        (
-            "zip",
-            "catalog_artifact_zip_writer_policy_archive_name_codec_versions",
-        ),
-        (
-            "zip",
-            "catalog_artifact_zip_writer_policy_artifact_name_codec_versions",
-        ),
-        ("zip", "catalog_artifact_zip_writer_policy_identities"),
-        ("storage", "catalog_artifact_storage_codec_adapter_ids"),
-        ("storage", "catalog_artifact_storage_codec_locator_codec_versions"),
-        (
-            "storage",
-            "catalog_artifact_storage_codec_protection_token_codec_versions",
-        ),
+        ("zip", "catalog_artifact_zip_writer_policies"),
+        ("storage", "catalog_artifact_storage_codecs"),
     ),
 )
-def test_artifact_codec_loaders_fail_closed_for_every_missing_member(
+def test_artifact_codec_loaders_fail_closed_for_missing_wide_row(
     tmp_path: Path,
     family: str,
-    member_table: str,
+    table: str,
 ) -> None:
-    connector = _generated_database(
-        tmp_path / f"artifact-codec-partial-{member_table}.sqlite3"
-    )
+    connector = _generated_database(tmp_path / f"artifact-codec-missing-{family}.db")
     try:
         key_column = (
             "artifact_algorithm_version" if family == "zip" else "storage_codec_version"
         )
         connector.execute("PRAGMA foreign_keys = OFF")
         connector.execute(
-            f"DELETE FROM {member_table} WHERE {key_column} = %s",
+            f"DELETE FROM {table} WHERE {key_column} = %s",
             (1,),
         )
         connector.execute("PRAGMA foreign_keys = ON")
@@ -2436,9 +2448,7 @@ def test_artifact_codec_loaders_fail_closed_for_every_missing_member(
         )
         with (
             patch.object(connector, "execute", wraps=connector.execute) as execute,
-            pytest.raises(
-                ArtifactPreparationNotReadyError, match="missing or incomplete"
-            ),
+            pytest.raises(ArtifactPreparationNotReadyError, match="is missing"),
         ):
             loader(VNextUnitOfWork(connector, backend="sqlite"), 1)
         execute.assert_not_called()
@@ -2447,47 +2457,20 @@ def test_artifact_codec_loaders_fail_closed_for_every_missing_member(
 
 
 @pytest.mark.parametrize(
-    ("family", "member_table"),
+    ("family", "table"),
     (
-        (
-            "manifest",
-            "catalog_manifest_policy_manifest_algorithm_versions",
-        ),
-        ("manifest", "catalog_manifest_policy_file_order_versions"),
-        ("manifest", "catalog_manifest_policy_identities"),
-        ("source", "catalog_source_scope_source_providers"),
-        ("source", "catalog_source_scope_source_root_sha256s"),
-        ("source", "catalog_source_scope_identity_policy_versions"),
-        ("source", "catalog_source_scope_identities"),
-        (
-            "semantics",
-            "catalog_artifact_policy_semantics_artifact_algorithm_versions",
-        ),
-        ("semantics", "catalog_artifact_policy_semantics_max_image_short_sides"),
-        (
-            "semantics",
-            "catalog_artifact_policy_semantics_producer_fingerprint_sha256s",
-        ),
-        ("semantics", "catalog_artifact_policy_semantics_identities"),
-        (
-            "producer",
-            "catalog_artifact_producer_fingerprint_algorithm_versions",
-        ),
-        (
-            "producer",
-            "catalog_artifact_producer_fingerprint_equivalence_classes",
-        ),
-        ("producer", "catalog_artifact_producer_fingerprint_identities"),
+        ("manifest", "catalog_manifest_policies"),
+        ("source", "catalog_source_scopes"),
+        ("semantics", "catalog_artifact_policy_semantics"),
+        ("producer", "catalog_artifact_producer_fingerprints"),
     ),
 )
-def test_artifact_contract_loaders_fail_closed_for_every_missing_member(
+def test_artifact_contract_loaders_fail_closed_for_missing_wide_row(
     tmp_path: Path,
     family: str,
-    member_table: str,
+    table: str,
 ) -> None:
-    connector = _generated_database(
-        tmp_path / f"artifact-contract-partial-{member_table}.sqlite3"
-    )
+    connector = _generated_database(tmp_path / f"artifact-contract-{family}.sqlite3")
     try:
         _gate, turn = _authorities(connector)
         _seed_completed_analysis(connector, turn, with_base=False)
@@ -2501,9 +2484,7 @@ def test_artifact_contract_loaders_fail_closed_for_every_missing_member(
             )
         elif family == "source":
             key_column = "scope_key"
-            key = connector.fetch_one(
-                "SELECT scope_key FROM catalog_source_scope_seals"
-            )[0]
+            key = connector.fetch_one("SELECT scope_key FROM catalog_source_scopes")[0]
             loader = cast(
                 Callable[[VNextUnitOfWork, object], object],
                 artifact_module._load_source_scope,
@@ -2511,8 +2492,7 @@ def test_artifact_contract_loaders_fail_closed_for_every_missing_member(
         elif family == "semantics":
             key_column = "policy_component_sha256"
             key = connector.fetch_one(
-                "SELECT policy_component_sha256 "
-                "FROM catalog_artifact_policy_semantics_seals"
+                "SELECT policy_component_sha256 FROM catalog_artifact_policy_semantics"
             )[0]
             loader = cast(
                 Callable[[VNextUnitOfWork, object], object],
@@ -2527,15 +2507,13 @@ def test_artifact_contract_loaders_fail_closed_for_every_missing_member(
             )
         connector.execute("PRAGMA foreign_keys = OFF")
         connector.execute(
-            f"DELETE FROM {member_table} WHERE {key_column} = %s",
+            f"DELETE FROM {table} WHERE {key_column} = %s",
             (key,),
         )
         connector.execute("PRAGMA foreign_keys = ON")
         with (
             patch.object(connector, "execute", wraps=connector.execute) as execute,
-            pytest.raises(
-                ArtifactPreparationNotReadyError, match="missing or incomplete"
-            ),
+            pytest.raises(ArtifactPreparationNotReadyError, match="is missing"),
         ):
             loader(VNextUnitOfWork(connector, backend="sqlite"), key)
         execute.assert_not_called()
@@ -2625,7 +2603,7 @@ def test_mariadb_prepared_family_duplicate_recovery_uses_locking_narrow_sql() ->
     assert "catalog_prepared_artifact_anchors" not in normalized
 
 
-def test_mariadb_artifact_contract_loaders_use_plain_static_narrow_sql() -> None:
+def test_mariadb_artifact_contract_loaders_use_plain_static_wide_sql() -> None:
     root = b"r" * 32
     scope = identity.source_scope_key("filesystem", root, 1)
     producer = _PRODUCER_FINGERPRINT
@@ -2642,23 +2620,24 @@ def test_mariadb_artifact_contract_loaders_use_plain_static_narrow_sql() -> None
         ) -> tuple[object, ...]:
             del data
             self.queries.append(query)
-            if "catalog_manifest_policy_seals" in query:
-                return (1, 1)
-            if "catalog_analysis_policy_seals" in query:
-                return (1, 1, 3, 1, 1)
-            if "catalog_source_scope_seals" in query:
-                return (b"filesystem", root, 1)
-            if "catalog_artifact_policy_semantics_seals" in query:
-                return (1, 2048, producer)
-            if "catalog_artifact_zip_writer_policy_seals" in query:
-                return artifact_module._ZIP_WRITER_POLICY_V1
-            if "catalog_artifact_storage_codec_seals" in query:
-                return artifact_module._STORAGE_CODEC_V1[1:]
-            if "catalog_artifact_producer_fingerprint_seals" in query:
+            if "catalog_manifest_policies" in query:
+                return (1, 1, 1)
+            if "catalog_analysis_policies" in query:
+                return (1, 1, 1, 3, 1, 1)
+            if "catalog_source_scopes" in query:
+                return (scope, b"filesystem", root, 1)
+            if "catalog_artifact_policy_semantics" in query:
+                return (policy, 1, 2048, producer)
+            if "catalog_artifact_zip_writer_policies" in query:
+                return (1, *artifact_module._ZIP_WRITER_POLICY_V1)
+            if "catalog_artifact_storage_codecs" in query:
+                return artifact_module._STORAGE_CODEC_V1
+            if "catalog_artifact_producer_fingerprints" in query:
                 return (
-                    *_PRODUCER_FIELDS,
+                    producer,
                     1,
                     identity.artifact_producer_equivalence_class(producer),
+                    *_PRODUCER_FIELDS,
                 )
             return ()
 
@@ -2684,7 +2663,7 @@ def test_mariadb_artifact_contract_loaders_use_plain_static_narrow_sql() -> None
     normalized = " ".join(connector.queries)
     assert all("?" not in query for query in connector.queries)
     assert "FOR UPDATE" not in normalized.upper()
-    for old_view in (
+    for registry in (
         "catalog_manifest_policies ",
         "catalog_analysis_policies ",
         "catalog_source_scopes ",
@@ -2693,7 +2672,7 @@ def test_mariadb_artifact_contract_loaders_use_plain_static_narrow_sql() -> None
         "catalog_artifact_storage_codecs ",
         "catalog_artifact_producer_fingerprints ",
     ):
-        assert old_view not in normalized
+        assert registry in normalized
 
 
 def test_mariadb_artifact_evaluators_use_bounded_server_sql_shape() -> None:
@@ -2879,18 +2858,16 @@ def _exact_delta_database(path: Path) -> tuple[SQLiteConnector, bytes]:
         "source_title_sha256 BLOB NOT NULL, source_gallery_name BLOB NOT NULL, "
         "title_sha256 BLOB NOT NULL, PRIMARY KEY (display_title_policy_id, "
         "source_title_sha256, source_gallery_name))",
-        "CREATE TABLE catalog_display_title_policy_title_sort_policy_ids ("
+        "CREATE TABLE catalog_display_title_policies ("
         "display_title_policy_id INTEGER PRIMARY KEY, "
         "title_sort_policy_id INTEGER NOT NULL)",
         "CREATE TABLE catalog_title_sorts ("
         "title_sort_policy_id INTEGER NOT NULL, title_sha256 BLOB NOT NULL, "
         "sort_title_sha256 BLOB NOT NULL, "
         "PRIMARY KEY (title_sort_policy_id, title_sha256))",
-        "CREATE TABLE catalog_publication_commit_catalog_revisions ("
-        "receipt_id BLOB NOT NULL UNIQUE, revision INTEGER PRIMARY KEY)",
-        "CREATE TABLE catalog_publication_commit_seals (receipt_id BLOB PRIMARY KEY)",
-        "CREATE TABLE catalog_publication_commit_display_title_policies ("
-        "receipt_id BLOB PRIMARY KEY, display_title_policy_id INTEGER NOT NULL)",
+        "CREATE TABLE catalog_publication_commits ("
+        "receipt_id BLOB NOT NULL UNIQUE, revision INTEGER PRIMARY KEY, "
+        "display_title_policy_id INTEGER NOT NULL)",
         "CREATE TABLE catalog_publication_contents ("
         "revision INTEGER NOT NULL, publication_key BLOB NOT NULL, "
         "content_sha256 BLOB NOT NULL, PRIMARY KEY (revision, publication_key))",
@@ -2953,21 +2930,12 @@ def _exact_delta_database(path: Path) -> tuple[SQLiteConnector, bytes]:
     sort_title = sha256(b"exact-item-delta-sort-title").digest()
     receipt_id = b"o" * 16
     connector.execute(
-        "INSERT INTO catalog_publication_commit_catalog_revisions "
-        "(receipt_id, revision) VALUES (%s, %s)",
-        (receipt_id, 1),
+        "INSERT INTO catalog_publication_commits "
+        "(receipt_id, revision, display_title_policy_id) VALUES (%s, %s, %s)",
+        (receipt_id, 1, 1),
     )
     connector.execute(
-        "INSERT INTO catalog_publication_commit_seals (receipt_id) VALUES (%s)",
-        (receipt_id,),
-    )
-    connector.execute(
-        "INSERT INTO catalog_publication_commit_display_title_policies "
-        "(receipt_id, display_title_policy_id) VALUES (%s, %s)",
-        (receipt_id, 1),
-    )
-    connector.execute(
-        "INSERT INTO catalog_display_title_policy_title_sort_policy_ids "
+        "INSERT INTO catalog_display_title_policies "
         "(display_title_policy_id, title_sort_policy_id) VALUES (%s, %s)",
         (1, 1),
     )
@@ -3112,7 +3080,7 @@ def _mutate_exact_delta_case(
         if case == "sort-title":
             current_title = title
         connector.execute(
-            "INSERT INTO catalog_display_title_policy_title_sort_policy_ids "
+            "INSERT INTO catalog_display_title_policies "
             "(display_title_policy_id, title_sort_policy_id) VALUES (%s, %s)",
             (2, sort_policy),
         )

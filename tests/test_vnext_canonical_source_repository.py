@@ -31,7 +31,6 @@ from h2hdb.vnext_canonical_value_repository import (
 )
 from h2hdb.vnext_catalog_registry_repository import (
     CatalogRegistryConflictError,
-    CatalogRegistryNotReadyError,
     ensure_source_scope,
     load_source_scope,
 )
@@ -57,8 +56,10 @@ from h2hdb.vnext_maintenance_gate_repository import (
 )
 from h2hdb.vnext_source_build_repository import (
     SourceBuildConflictError,
+    SourceBuildManifestSummary,
     SourceBuildRepository,
     SourceRootBuildCommand,
+    source_build_identity,
 )
 from h2hdb.vnext_transaction import VNextUnitOfWork
 
@@ -193,22 +194,14 @@ def test_writer_lookup_queries_use_declared_key_paths(tmp_path: Path) -> None:
                 (digest, 0),
             ),
             (
-                "SELECT identity.manifest_policy_id "
-                "FROM catalog_manifest_policy_identities AS identity "
-                "JOIN catalog_manifest_policy_seals AS seal "
-                "ON seal.manifest_policy_id = identity.manifest_policy_id "
-                "WHERE identity.manifest_algorithm_version = %s "
-                "AND identity.file_order_version = %s",
+                "SELECT manifest_policy_id FROM catalog_manifest_policies "
+                "WHERE manifest_algorithm_version = %s AND file_order_version = %s",
                 (1, 1),
             ),
             (
-                "SELECT identity.scope_key "
-                "FROM catalog_source_scope_identities AS identity "
-                "JOIN catalog_source_scope_seals AS seal "
-                "ON seal.scope_key = identity.scope_key "
-                "WHERE identity.source_provider = %s "
-                "AND identity.source_root_sha256 = %s "
-                "AND identity.identity_policy_version = %s",
+                "SELECT scope_key FROM catalog_source_scopes "
+                "WHERE source_provider = %s AND source_root_sha256 = %s "
+                "AND identity_policy_version = %s",
                 (b"filesystem", digest, 1),
             ),
             (
@@ -276,7 +269,7 @@ def test_canonical_family_queries_keep_mariadb_placeholders_and_narrow_tables() 
         assert "catalog_canonical_value_page_descriptors" not in query
 
 
-def test_mariadb_source_scope_registry_replay_uses_plain_physical_reads() -> None:
+def test_mariadb_source_scope_registry_replay_uses_plain_wide_reads() -> None:
     root = b"r" * 32
     scope = source_scope_key("filesystem", root, 1)
 
@@ -291,20 +284,10 @@ def test_mariadb_source_scope_registry_replay_uses_plain_physical_reads() -> Non
             data: tuple[Any, ...] = (),
         ) -> tuple[Any, ...]:
             self.selects.append(query)
-            if "FROM catalog_source_scope_anchors AS anchor" in query:
+            if "FROM catalog_source_scopes WHERE scope_key" in query:
                 assert data == (scope,)
-                return (
-                    scope,
-                    b"filesystem",
-                    root,
-                    1,
-                    b"filesystem",
-                    root,
-                    1,
-                    scope,
-                    scope,
-                )
-            if "FROM catalog_source_scope_identities" in query:
+                return (scope, b"filesystem", root, 1)
+            if "SELECT scope_key FROM catalog_source_scopes" in query:
                 assert data == (b"filesystem", root, 1)
                 return (scope,)
             raise AssertionError((query, data))
@@ -325,43 +308,45 @@ def test_mariadb_source_scope_registry_replay_uses_plain_physical_reads() -> Non
     assert len(connector.selects) == 2
     assert all(" FOR UPDATE" not in query.upper() for query in connector.selects)
     assert all("%s" in query and "?" not in query for query in connector.selects)
-    assert all("catalog_source_scopes " not in query for query in connector.selects)
+    assert all("catalog_source_scopes" in query for query in connector.selects)
 
 
-def test_source_scope_partial_and_natural_collision_are_not_repaired(
+def test_source_scope_inserts_atomically_and_natural_collision_is_not_repaired(
     tmp_path: Path,
 ) -> None:
     root = b"r" * 32
     scope = source_scope_key("filesystem", root, 1)
-    partial = _generated_database(tmp_path / "partial-scope.sqlite3")
+    fresh = _generated_database(tmp_path / "fresh-scope.sqlite3")
     try:
-        partial.execute(
-            "INSERT INTO catalog_source_scope_anchors (scope_key) VALUES (%s)",
-            (scope,),
-        )
-        with patch.object(partial, "execute", wraps=partial.execute) as execute:
-            with pytest.raises(CatalogRegistryNotReadyError, match="incomplete"):
-                ensure_source_scope(
-                    partial,
-                    source_provider=b"filesystem",
-                    source_root_sha256=root,
-                    identity_policy_version=1,
-                )
-        execute.assert_not_called()
-        assert partial.fetch_one("SELECT COUNT(*) FROM catalog_source_scope_seals") == (
-            0,
-        )
+        fresh.execute("PRAGMA foreign_keys = OFF")
+        with patch.object(fresh, "execute", wraps=fresh.execute) as execute:
+            inserted = ensure_source_scope(
+                fresh,
+                source_provider=b"filesystem",
+                source_root_sha256=root,
+                identity_policy_version=1,
+            )
+        fresh.execute("PRAGMA foreign_keys = ON")
+        assert not inserted.replayed and inserted.record.scope_key == scope
+        mutations = [
+            call.args[0]
+            for call in execute.call_args_list
+            if call.args[0].startswith("INSERT INTO")
+        ]
+        assert len(mutations) == 1
+        assert "catalog_source_scopes" in mutations[0]
+        assert fresh.fetch_one("SELECT COUNT(*) FROM catalog_source_scopes") == (1,)
     finally:
-        partial.close()
+        fresh.close()
 
     collision = _generated_database(tmp_path / "scope-collision.sqlite3")
     try:
         collision.execute("PRAGMA foreign_keys = OFF")
         collision.execute(
-            "INSERT INTO catalog_source_scope_identities "
-            "(source_provider, source_root_sha256, identity_policy_version, "
-            "scope_key) VALUES (%s, %s, %s, %s)",
-            (b"filesystem", root, 1, b"x" * 32),
+            "INSERT INTO catalog_source_scopes "
+            "(scope_key, source_provider, source_root_sha256, "
+            "identity_policy_version) VALUES (%s, %s, %s, %s)",
+            (b"x" * 32, b"filesystem", root, 1),
         )
         collision.execute("PRAGMA foreign_keys = ON")
         with patch.object(collision, "execute", wraps=collision.execute) as execute:
@@ -373,9 +358,7 @@ def test_source_scope_partial_and_natural_collision_are_not_repaired(
                     identity_policy_version=1,
                 )
         execute.assert_not_called()
-        assert collision.fetch_one(
-            "SELECT COUNT(*) FROM catalog_source_scope_anchors"
-        ) == (0,)
+        assert collision.fetch_one("SELECT COUNT(*) FROM catalog_source_scopes") == (1,)
     finally:
         collision.close()
 
@@ -537,8 +520,21 @@ def test_source_root_handoff_releases_only_claim_and_recovers_response_loss(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     connector = _generated_database(tmp_path / "source-root.sqlite3")
-    command = SourceRootBuildCommand(("Volumes", "資料 A"), b"b" * 16)
+    command = SourceRootBuildCommand(
+        ("Volumes", "資料 A"),
+        SourceBuildManifestSummary.empty(),
+    )
     plan = command.prepare_root_upload()
+    expected_scope = source_scope_key(
+        "filesystem",
+        command.source_root_sha256,
+        1,
+    )
+    expected_build_id = source_build_identity(
+        snapshot_attempt_id=command.build_attempt_id,
+        scope=expected_scope,
+        manifest_policy_id=1,
+    )
     try:
         gate, turn = _authorities(connector)
         _put_plan(connector, gate, turn, plan)
@@ -563,13 +559,15 @@ def test_source_root_handoff_releases_only_claim_and_recovers_response_loss(
                     root_plan=plan,
                     now=31,
                 )
-        assert result.build_id == command.build_attempt_id
+        assert result.build_id == expected_build_id
+        assert result.build_id != command.build_attempt_id
+        assert result.scope_key == expected_scope
         assert not result.replayed
         assert connector.fetch_one(
             "SELECT build_id FROM operational_source_build_generations "
             "WHERE generation = %s",
             (turn.generation,),
-        ) == (command.build_attempt_id,)
+        ) == (expected_build_id,)
         assert (
             connector.fetch_all(
                 "SELECT generation FROM operational_canonical_value_uploads "
@@ -579,12 +577,12 @@ def test_source_root_handoff_releases_only_claim_and_recovers_response_loss(
             == []
         )
 
-        # The attempt token is not generation authority.  After a lost response,
-        # an exact mapped generation returns its durable build even if the caller
-        # generated a fresh attempt token.
+        # After a lost response, the same frozen snapshot deterministically
+        # derives the same attempt capability and returns its scope- and
+        # policy-bound durable build.
         retry_command = SourceRootBuildCommand(
             command.source_root_components,
-            b"c" * 16,
+            command.manifest_summary,
         )
         # A whole-request retry may have recreated the same generation/root
         # upload claim before discovering that the generation was mapped.
@@ -595,8 +593,8 @@ def test_source_root_handoff_releases_only_claim_and_recovers_response_loss(
             query: str,
             data: tuple[Any, ...] = (),
         ) -> None:
-            if query.startswith("INSERT INTO catalog_source_scope_"):
-                raise AssertionError("sealed source-scope replay attempted DML")
+            if query.startswith("INSERT INTO catalog_source_scopes"):
+                raise AssertionError("immutable source-scope replay attempted DML")
             original_execute(query, data)
 
         def reject_database_clock(_work: VNextUnitOfWork) -> int:
@@ -619,7 +617,7 @@ def test_source_root_handoff_releases_only_claim_and_recovers_response_loss(
                     now=33,
                 )
         assert replay.replayed
-        assert replay.build_id == command.build_attempt_id
+        assert replay.build_id == expected_build_id
         assert connector.fetch_one("SELECT COUNT(*) FROM catalog_source_builds") == (1,)
         assert (
             connector.fetch_all(
@@ -639,7 +637,7 @@ def test_source_root_handoff_releases_only_claim_and_recovers_response_loss(
             "SELECT build_id FROM operational_source_build_generations "
             "WHERE generation = %s",
             (turn.generation,),
-        ) == (command.build_attempt_id,)
+        ) == (expected_build_id,)
     finally:
         plan.close()
         connector.close()
@@ -647,7 +645,7 @@ def test_source_root_handoff_releases_only_claim_and_recovers_response_loss(
 
 def test_absolute_slash_source_root_handoff(tmp_path: Path) -> None:
     connector = _generated_database(tmp_path / "slash-root.sqlite3")
-    command = SourceRootBuildCommand((), b"/" * 16)
+    command = SourceRootBuildCommand((), SourceBuildManifestSummary.empty())
     plan = command.prepare_root_upload()
     try:
         gate, turn = _authorities(connector)
@@ -677,9 +675,10 @@ def test_cross_scope_build_attempt_conflict_rolls_back_and_retains_claim(
     tmp_path: Path,
 ) -> None:
     connector = _generated_database(tmp_path / "cross-scope.sqlite3")
-    build_id = b"s" * 16
-    old_command = SourceRootBuildCommand(("old-root",), build_id)
-    new_command = SourceRootBuildCommand(("new-root",), build_id)
+    summary = SourceBuildManifestSummary.empty()
+    old_command = SourceRootBuildCommand(("old-root",), summary)
+    new_command = SourceRootBuildCommand(("new-root",), summary)
+    build_id = new_command.build_attempt_id
     old_plan = old_command.prepare_root_upload()
     new_plan = new_command.prepare_root_upload()
     try:
@@ -718,9 +717,7 @@ def test_cross_scope_build_attempt_conflict_rolls_back_and_retains_claim(
                     root_plan=new_plan,
                     now=61,
                 )
-        assert connector.fetch_one(
-            "SELECT COUNT(*) FROM catalog_source_scope_seals"
-        ) == (1,)
+        assert connector.fetch_one("SELECT COUNT(*) FROM catalog_source_scopes") == (1,)
         assert (
             connector.fetch_all("SELECT 1 FROM operational_source_build_generations")
             == []
@@ -741,27 +738,18 @@ def test_source_handoff_rolls_back_each_major_statement_fault(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     connector = _generated_database(tmp_path / "handoff-faults.sqlite3")
-    command = SourceRootBuildCommand(("fault-root",), b"f" * 16)
+    command = SourceRootBuildCommand(
+        ("fault-root",),
+        SourceBuildManifestSummary.empty(),
+    )
     plan = command.prepare_root_upload()
     try:
         gate, turn = _authorities(connector)
         _put_plan(connector, gate, turn, plan)
         fault_points = (
-            ("execute", "INSERT INTO catalog_source_scope_anchors"),
-            ("execute", "INSERT INTO catalog_source_scope_source_providers"),
-            ("execute", "INSERT INTO catalog_source_scope_source_root_sha256s"),
-            (
-                "execute",
-                "INSERT INTO catalog_source_scope_identity_policy_versions",
-            ),
-            ("execute", "INSERT INTO catalog_source_scope_identities"),
-            ("execute", "INSERT INTO catalog_source_scope_seals"),
-            ("execute", "INSERT INTO catalog_source_build_anchors"),
-            ("execute", "INSERT INTO catalog_source_build_scope_keys"),
-            ("execute", "INSERT INTO catalog_source_build_manifest_policy_ids"),
+            ("execute", "INSERT INTO catalog_source_scopes"),
+            ("execute", "INSERT INTO catalog_source_build_descriptor"),
             ("execute", "INSERT INTO catalog_source_build_states"),
-            ("execute", "INSERT INTO catalog_source_build_created_ats"),
-            ("execute", "INSERT INTO catalog_source_build_descriptor_seals"),
             ("execute", "INSERT INTO catalog_source_build_channel"),
             (
                 "execute",
@@ -807,15 +795,9 @@ def test_source_handoff_rolls_back_each_major_statement_fault(
                             now=51,
                         )
 
-            for table in (
-                "catalog_source_scope_anchors",
-                "catalog_source_scope_source_providers",
-                "catalog_source_scope_source_root_sha256s",
-                "catalog_source_scope_identity_policy_versions",
-                "catalog_source_scope_identities",
-                "catalog_source_scope_seals",
-            ):
-                assert connector.fetch_one(f"SELECT COUNT(*) FROM {table}") == (0,)
+            assert connector.fetch_one(
+                "SELECT COUNT(*) FROM catalog_source_scopes"
+            ) == (0,)
             assert connector.fetch_one(
                 "SELECT COUNT(*) FROM catalog_source_builds"
             ) == (0,)

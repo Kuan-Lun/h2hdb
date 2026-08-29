@@ -13,10 +13,12 @@ candidate sealed_at, finalization timestamp, or mutable activation row.
 
 PublishStatements exposes transaction-local prefix progress.  A prefix crash
 rolls every statement back.  Finalization separates an issue read, an external
-idempotent release, and the permanent receipt/checkpoint CAS commit.  Its
-PK-only marker is written only with the terminal empty batch and COMPLETE
-checkpoint poststate; sealed permanent receipts remain replayable after
-candidate-local cleanup and response loss.
+idempotent release, and one atomic current-receipt/checkpoint CAS commit.  Each
+successor replaces its owner's predecessor receipt in that transaction.  The
+current receipt replays a lost response, while retrying a pruned predecessor is
+stale.  The PK-only marker is written only with the terminal empty batch and
+COMPLETE checkpoint poststate; that terminal current receipt remains the
+finalized_at authority and survives candidate-local cleanup.
 
 TLC exhausts only the finite companion-cfg instance.  This is bounded safety
 evidence, not an unbounded proof.  It does not establish liveness or Python,
@@ -79,7 +81,8 @@ EventKinds == {
     "PUBLISH_PREFIX_CRASH", "IDLE_CRASH", "RESTART",
     "FINALIZE_ISSUE", "FINALIZE_EXTERNAL_RELEASE", "FINALIZE_COMMIT",
     "FINALIZE_RESPONSE_LOST", "FINALIZE_REPLAY",
-    "FINALIZE_REPLAY_RESPONSE_LOST", "CANDIDATE_CLEANUP"
+    "FINALIZE_REPLAY_RESPONSE_LOST", "STALE_FINALIZATION_RETRY",
+    "CANDIDATE_CLEANUP"
 }
 
 VARIABLES
@@ -99,7 +102,7 @@ VARIABLES
     batchTerminal, batchCommittedGeneration, batchCommittedAt,
     batchNextState,
     finalizeAttempt, finalizeIncludeRow, finalizeTerminal,
-    releasedFinalizationBatches,
+    releasedFinalizationBatches, clientCommittedFinalizationBatchKeys,
     txCandidate, txPrefix, lastEvent, txStartSnapshot,
     replaySnapshot, staleSnapshot, crashSnapshot
 
@@ -128,9 +131,11 @@ DatabaseVariables ==
     <<PreparationVariables, CandidateVariables, CommitVariables,
       FinalizationVariables>>
 TransactionVariables == <<txCandidate, txPrefix>>
+\* The client key set models collision-free opaque keys already observed by
+\* this finite environment.  It is deliberately outside DatabaseVariables.
 FinalizerControlVariables ==
     <<finalizeAttempt, finalizeIncludeRow, finalizeTerminal,
-      releasedFinalizationBatches>>
+      releasedFinalizationBatches, clientCommittedFinalizationBatchKeys>>
 ClientVariables == <<processUp, lostResponse, FinalizerControlVariables>>
 AuditVariables ==
     <<lastEvent, txStartSnapshot, replaySnapshot,
@@ -261,6 +266,7 @@ Init ==
     /\ finalizeIncludeRow = FALSE
     /\ finalizeTerminal = FALSE
     /\ releasedFinalizationBatches = {}
+    /\ clientCommittedFinalizationBatchKeys = {}
     /\ txCandidate = NoCandidate
     /\ txPrefix = 0
     /\ lastEvent = "INIT"
@@ -418,7 +424,7 @@ CrashIdle ==
     /\ lastEvent' = "IDLE_CRASH"
     /\ UNCHANGED
         <<DatabaseVariables, TransactionVariables, lostResponse,
-          releasedFinalizationBatches,
+          releasedFinalizationBatches, clientCommittedFinalizationBatchKeys,
           txStartSnapshot, replaySnapshot, staleSnapshot, crashSnapshot>>
 
 Restart ==
@@ -442,7 +448,7 @@ IssueFinalization(c, key, includeRow, terminal) ==
        /\ c \in finalizationCheckpoints
        /\ c \notin receiptFinalizations
        /\ checkpointState[c] = "OPEN"
-       /\ batch \notin finalizationBatchReceipts
+       /\ batch \notin clientCommittedFinalizationBatchKeys
        /\ includeRow \in BOOLEAN
        /\ terminal \in BOOLEAN
        /\ includeRow \/ terminal
@@ -459,8 +465,8 @@ IssueFinalization(c, key, includeRow, terminal) ==
        /\ lastEvent' = "FINALIZE_ISSUE"
        /\ UNCHANGED
             <<DatabaseVariables, TransactionVariables, processUp, lostResponse,
-              releasedFinalizationBatches, txStartSnapshot, replaySnapshot,
-              staleSnapshot, crashSnapshot>>
+              releasedFinalizationBatches, clientCommittedFinalizationBatchKeys,
+              txStartSnapshot, replaySnapshot, staleSnapshot, crashSnapshot>>
 
 ReleaseFinalization ==
     /\ processUp
@@ -475,6 +481,7 @@ ReleaseFinalization ==
     /\ UNCHANGED
         <<DatabaseVariables, TransactionVariables, processUp, lostResponse,
           finalizeAttempt, finalizeIncludeRow, finalizeTerminal,
+          clientCommittedFinalizationBatchKeys,
           txStartSnapshot, replaySnapshot, staleSnapshot, crashSnapshot>>
 
 CommitFinalization(responseLost) ==
@@ -500,7 +507,7 @@ CommitFinalization(responseLost) ==
        /\ c \in finalizationCheckpoints
        /\ c \notin receiptFinalizations
        /\ checkpointState[c] = "OPEN"
-       /\ batch \notin finalizationBatchReceipts
+       /\ batch \notin clientCommittedFinalizationBatchKeys
        /\ responseLost \in BOOLEAN
        /\ (includeRow => batch \in releasedFinalizationBatches)
        /\ (includeRow =>
@@ -523,7 +530,9 @@ CommitFinalization(responseLost) ==
        /\ checkpointState' = [checkpointState EXCEPT ![c] = nextState]
        /\ checkpointUpdatedAt' =
             [checkpointUpdatedAt EXCEPT ![c] = committedAt]
-       /\ finalizationBatchReceipts' = finalizationBatchReceipts \cup {batch}
+       /\ finalizationBatchReceipts' =
+            (finalizationBatchReceipts \ FinalizationBatchesFor(c))
+            \cup {batch}
        /\ batchStartGeneration' =
             [batchStartGeneration EXCEPT ![batch] = startGeneration]
        /\ batchStartCursor' =
@@ -545,6 +554,8 @@ CommitFinalization(responseLost) ==
        /\ receiptFinalizations' =
             IF terminal THEN receiptFinalizations \cup {c}
             ELSE receiptFinalizations
+       /\ clientCommittedFinalizationBatchKeys' =
+            clientCommittedFinalizationBatchKeys \cup {batch}
        /\ finalizeAttempt' = NoResponse
        /\ finalizeIncludeRow' = FALSE
        /\ finalizeTerminal' = FALSE
@@ -576,6 +587,24 @@ ReplayFinalization(c, key, responseLost) ==
             <<DatabaseVariables, TransactionVariables, processUp,
               FinalizerControlVariables, txStartSnapshot,
               staleSnapshot, crashSnapshot>>
+
+RejectStaleFinalizationRetry(c, key) ==
+    LET batch == FinalizeId(c, key)
+        current == FinalizationBatchesFor(c)
+    IN /\ processUp
+       /\ txCandidate = NoCandidate
+       /\ lostResponse = NoResponse
+       /\ finalizeAttempt = NoResponse
+       /\ batch \in clientCommittedFinalizationBatchKeys
+       /\ batch \notin finalizationBatchReceipts
+       /\ \E successor \in current :
+            batchCommittedGeneration[batch]
+                < batchCommittedGeneration[successor]
+       /\ lastEvent' = "STALE_FINALIZATION_RETRY"
+       /\ staleSnapshot' = DurableFingerprint
+       /\ UNCHANGED
+            <<DatabaseVariables, TransactionVariables, ClientVariables,
+              txStartSnapshot, replaySnapshot, crashSnapshot>>
 
 CleanupCandidate(c) ==
     /\ processUp
@@ -618,6 +647,8 @@ Next ==
     \/ \E c \in Candidates, key \in BatchKeys,
           responseLost \in BOOLEAN :
         ReplayFinalization(c, key, responseLost)
+    \/ \E c \in Candidates, key \in BatchKeys :
+        RejectStaleFinalizationRetry(c, key)
     \/ \E c \in Candidates : CleanupCandidate(c)
 
 Spec == Init /\ [][Next]_vars
@@ -667,6 +698,7 @@ TypeOK ==
     /\ finalizeIncludeRow \in BOOLEAN
     /\ finalizeTerminal \in BOOLEAN
     /\ releasedFinalizationBatches \subseteq FinalizeIds
+    /\ clientCommittedFinalizationBatchKeys \subseteq FinalizeIds
     /\ txCandidate \in Candidates \cup {NoCandidate}
     /\ txPrefix \in 0..PublishStatementCount
     /\ lastEvent \in EventKinds
@@ -780,7 +812,22 @@ ExternalReleasePrecedesCommittedRow ==
     \A batch \in finalizationBatchReceipts :
         batchRowIncluded[batch] => batch \in releasedFinalizationBatches
 
-FinalizationIsAppendOnlyAndDerived ==
+CurrentFinalizationReceiptIsUnique ==
+    /\ finalizationBatchReceipts
+        \subseteq clientCommittedFinalizationBatchKeys
+    /\ \A c \in Candidates : Cardinality(FinalizationBatchesFor(c)) <= 1
+
+SuccessorCASAndPredecessorDeleteAreAtomic ==
+    /\ CurrentFinalizationReceiptIsUnique
+    /\ \A c \in finalizationCheckpoints :
+        LET batches == FinalizationBatchesFor(c)
+        IN IF checkpointGeneration[c] = 1
+           THEN batches = {}
+           ELSE \E batch \in batches :
+                /\ batches = {batch}
+                /\ CheckpointMatchesBatch(c, batch)
+
+FinalizationMarkerAndCurrentReceiptAgree ==
     /\ receiptFinalizations \subseteq commitSeals
     /\ \A c \in Candidates :
         /\ (ReceiptState(c) = "PROJECTION_FINALIZED"
@@ -796,7 +843,8 @@ FinalizationIsAppendOnlyAndDerived ==
 FinalizationCoherence ==
     /\ FinalizationBatchEquations
     /\ ExternalReleasePrecedesCommittedRow
-    /\ FinalizationIsAppendOnlyAndDerived
+    /\ SuccessorCASAndPredecessorDeleteAreAtomic
+    /\ FinalizationMarkerAndCurrentReceiptAgree
     /\ \A c \in finalizationCheckpoints :
         LET batches == FinalizationBatchesFor(c)
         IN IF batches = {}
@@ -812,7 +860,7 @@ FinalizationCoherence ==
                 /\ \A other \in batches :
                     LatestFinalizationBatch(c, other) => other = batch
 
-FinalizationReplaySurvivesCandidateCleanup ==
+TerminalCurrentReceiptReplaySurvivesCandidateCleanup ==
     \A c \in receiptFinalizations :
         c \notin candidateDefinitions =>
             /\ c \in commitSeals
@@ -820,12 +868,23 @@ FinalizationReplaySurvivesCandidateCleanup ==
             /\ \E batch \in FinalizationBatchesFor(c) :
                 ExactTerminalBatch(c, batch)
 
-ResponseLossHasPermanentReplayAuthority ==
+ResponseLossHasCurrentReplayAuthority ==
     /\ \A c \in Candidates :
         lostResponse = PublishRequest(c) => ExactCommit(c)
     /\ \A c \in Candidates, key \in BatchKeys :
         lostResponse = FinalizeRequest(c, key) =>
             FinalizeId(c, key) \in finalizationBatchReceipts
+
+StalePredecessorRetryHasZeroDurableWrites ==
+    lastEvent = "STALE_FINALIZATION_RETRY"
+    => DurableFingerprint = staleSnapshot
+
+TerminalCurrentReceiptIsFinalizedAtAuthority ==
+    \A c \in receiptFinalizations :
+        \E batch \in FinalizationBatchesFor(c) :
+            /\ FinalizationBatchesFor(c) = {batch}
+            /\ ExactTerminalBatch(c, batch)
+            /\ ReceiptFinalizedAt(c) = batchCommittedAt[batch]
 
 SafetyView ==
     <<DatabaseVariables, TransactionVariables, ClientVariables, lastEvent>>

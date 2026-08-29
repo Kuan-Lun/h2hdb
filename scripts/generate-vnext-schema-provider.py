@@ -468,6 +468,7 @@ def _view_dependencies(relation: Mapping[str, Any]) -> tuple[str, ...]:
         "analysis_gid_winner_keyset",
         "artifact_delta_old",
         "artifact_delta_new",
+        "build_manifest_projection",
         "analysis_impacted_gid_projection",
         "analysis_impacted_gid_provenance_projection",
         "batch_receipt_derived",
@@ -485,6 +486,7 @@ def _view_dependencies(relation: Mapping[str, Any]) -> tuple[str, ...]:
         "publication_commit_published_descriptor",
         "publication_candidate_projection",
         "publication_receipt",
+        "lifecycle_projection",
     }:
         return _strings(raw_view.get("source_relations"), "view source_relations")
     raise ValueError(f"unsupported physical view pattern {pattern!r}")
@@ -515,6 +517,8 @@ def _render_view(
         return _render_artifact_delta_old_view(relation, relations, backend)
     if pattern == "artifact_delta_new":
         return _render_artifact_delta_new_view(relation, relations, backend)
+    if pattern == "build_manifest_projection":
+        return _render_build_manifest_projection_view(relation, relations, backend)
     if pattern in {
         "publication_selection_occurrence_identity",
         "catalog_publication_occurrence_identity",
@@ -558,6 +562,8 @@ def _render_view(
         return _render_publication_receipt_view(relation, relations, backend)
     if pattern == "publication_commit_activation":
         return _render_publication_commit_activation_view(relation, relations, backend)
+    if pattern == "lifecycle_projection":
+        return _render_lifecycle_projection_view(relation, relations, backend)
     raise ValueError(f"unsupported physical view pattern {pattern!r}")
 
 
@@ -826,6 +832,171 @@ SELECT
   {projection}
 FROM {q(str(seal["table"]))} AS sealed
 {chr(10).join(joins)}{where}"""
+
+
+def _render_lifecycle_projection_view(
+    relation: Mapping[str, Any],
+    relations: Mapping[str, dict[str, Any]],
+    backend: str,
+) -> str:
+    """Join an immutable descriptor to mutable state and one terminal fact."""
+
+    raw_view = relation.get("view")
+    if not isinstance(raw_view, dict):
+        raise ValueError(f"view relation {relation.get('name')!r} lacks view metadata")
+    source_names = _strings(raw_view.get("source_relations"), "view source_relations")
+    if len(source_names) != 3:
+        raise ValueError("lifecycle_projection requires descriptor, state, terminal")
+    descriptor, state, terminal = (relations[name] for name in source_names)
+    relation_name = _required_string(relation, "name", "view relation")
+    present_state = {
+        "analysis_run": "COMPLETE",
+        "source_build": "SEALED",
+    }.get(relation_name)
+    if present_state is None:
+        raise ValueError(f"unsupported lifecycle projection relation {relation_name!r}")
+    absent_states = {
+        "analysis_run": ("OPEN", "ABANDONED"),
+        "source_build": ("OPEN", "ABANDONED"),
+    }[relation_name]
+
+    def q(value: str) -> str:
+        return _quote(value, backend)
+
+    key_attributes = _strings(relation.get("primary_key"), "lifecycle view key")
+    descriptor_attributes = {
+        str(column["attribute"])
+        for column in _tables(descriptor.get("column"), "descriptor columns")
+    }
+    state_attributes = {
+        str(column["attribute"])
+        for column in _tables(state.get("column"), "state columns")
+    }
+    terminal_attributes = {
+        str(column["attribute"])
+        for column in _tables(terminal.get("column"), "terminal columns")
+    }
+    expressions: dict[str, str] = {}
+    for column in _tables(relation.get("column"), "view columns"):
+        attribute = str(column["attribute"])
+        if attribute in descriptor_attributes:
+            source, alias = descriptor, "descriptor"
+        elif attribute in state_attributes:
+            source, alias = state, "mutable_state"
+        elif attribute in terminal_attributes:
+            source, alias = terminal, "terminal"
+        else:
+            raise ValueError(
+                f"lifecycle projection {relation_name!r} cannot source {attribute!r}"
+            )
+        expressions[attribute] = f"{alias}.{q(_column_name(source, attribute))}"
+
+    raw_columns = _tables(relation.get("column"), "view columns")
+    projection = ",\n  ".join(
+        f"{expressions[str(column['attribute'])]} AS {q(str(column['name']))}"
+        for column in raw_columns
+    )
+    state_join = "\n AND ".join(
+        f"mutable_state.{q(_column_name(state, attribute))} "
+        f"= descriptor.{q(_column_name(descriptor, attribute))}"
+        for attribute in key_attributes
+    )
+    terminal_join = "\n AND ".join(
+        f"terminal.{q(_column_name(terminal, attribute))} "
+        f"= descriptor.{q(_column_name(descriptor, attribute))}"
+        for attribute in key_attributes
+    )
+    state_column = f"mutable_state.{q(_column_name(state, 'state'))}"
+    terminal_key = f"terminal.{q(_column_name(terminal, key_attributes[0]))}"
+
+    def literal(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
+
+    absent_sql = ", ".join(literal(value) for value in absent_states)
+    prefix = (
+        "CREATE VIEW IF NOT EXISTS"
+        if backend == "sqlite"
+        else "CREATE SQL SECURITY INVOKER VIEW IF NOT EXISTS"
+    )
+    column_list = ", ".join(q(str(column["name"])) for column in raw_columns)
+    return f"""{prefix} {q(str(relation["table"]))} ({column_list}) AS
+SELECT
+  {projection}
+FROM {q(str(descriptor["table"]))} AS descriptor
+JOIN {q(str(state["table"]))} AS mutable_state
+  ON {state_join}
+LEFT JOIN {q(str(terminal["table"]))} AS terminal
+  ON {terminal_join}
+WHERE {state_column} = {literal(present_state)} AND {terminal_key} IS NOT NULL
+   OR {state_column} IN ({absent_sql}) AND {terminal_key} IS NULL"""
+
+
+def _render_build_manifest_projection_view(
+    relation: Mapping[str, Any],
+    relations: Mapping[str, dict[str, Any]],
+    backend: str,
+) -> str:
+    """Expose shared build discovery/terminal facts without duplicating authority."""
+
+    raw_view = relation.get("view")
+    if not isinstance(raw_view, dict):
+        raise ValueError(f"view relation {relation.get('name')!r} lacks view metadata")
+    source_names = _strings(raw_view.get("source_relations"), "view source_relations")
+    source_by_name = {name: relations[name] for name in source_names}
+    if set(source_by_name) != {
+        "build_manifest_core",
+        "source_build_discovery",
+        "source_build_sealed_at",
+    }:
+        raise ValueError("build_manifest_projection source set drift")
+    core = source_by_name["build_manifest_core"]
+    discovery = source_by_name["source_build_discovery"]
+    terminal = source_by_name["source_build_sealed_at"]
+
+    def q(value: str) -> str:
+        return _quote(value, backend)
+
+    core_attributes = {
+        str(column["attribute"])
+        for column in _tables(core.get("column"), "build manifest core columns")
+    }
+    raw_columns = _tables(relation.get("column"), "view columns")
+    expressions: dict[str, str] = {}
+    for column in raw_columns:
+        attribute = str(column["attribute"])
+        if attribute in core_attributes:
+            expressions[attribute] = f"core.{q(_column_name(core, attribute))}"
+        elif attribute == "gallery_count":
+            expressions[attribute] = (
+                f"discovery.{q(_column_name(discovery, 'gallery_count'))}"
+            )
+        elif attribute == "computed_at":
+            expressions[attribute] = (
+                f"terminal.{q(_column_name(terminal, 'sealed_at'))}"
+            )
+        else:
+            raise ValueError(f"build_manifest_projection cannot source {attribute!r}")
+    projection = ",\n  ".join(
+        f"{expressions[str(column['attribute'])]} AS {q(str(column['name']))}"
+        for column in raw_columns
+    )
+    key = "build_id"
+    prefix = (
+        "CREATE VIEW IF NOT EXISTS"
+        if backend == "sqlite"
+        else "CREATE SQL SECURITY INVOKER VIEW IF NOT EXISTS"
+    )
+    column_list = ", ".join(q(str(column["name"])) for column in raw_columns)
+    return f"""{prefix} {q(str(relation["table"]))} ({column_list}) AS
+SELECT
+  {projection}
+FROM {q(str(core["table"]))} AS core
+JOIN {q(str(discovery["table"]))} AS discovery
+  ON discovery.{q(_column_name(discovery, key))}
+   = core.{q(_column_name(core, key))}
+JOIN {q(str(terminal["table"]))} AS terminal
+  ON terminal.{q(_column_name(terminal, key))}
+   = core.{q(_column_name(core, key))}"""
 
 
 def _render_revision_generation_baseline_view(
@@ -1554,7 +1725,7 @@ def _render_analysis_gid_winner_keyset_view(
     }
     selection = sources["analysis_gid_winner_selection"]
     impacted = sources["analysis_impacted_gid"]
-    run_build = sources["analysis_run_build_id"]
+    run_build = sources["analysis_run_descriptor"]
     build_gallery = sources["source_build_gallery"]
     metadata = sources["gallery_observation_metadata"]
 
@@ -1939,51 +2110,27 @@ def _render_publication_commit_activation_view(
     sources = {
         str(source["name"]): source for source in _view_sources(relation, relations)
     }
-    seal = sources["publication_commit_seal"]
-    source_revision = sources["publication_commit_source_revision"]
-    preparation = sources["publication_commit_operational_preparation"]
-    policy = sources["publication_commit_operational_policy"]
-    committed_at = sources["publication_commit_committed_at"]
+    if set(sources) != {"publication_commit"}:
+        raise ValueError("publication commit activation source set drift")
+    commit = sources["publication_commit"]
 
     def q(value: str) -> str:
         return _quote(value, backend)
 
     expressions = {
-        "source_revision": (
-            f"source_member.{q(_column_name(source_revision, 'source_revision'))}"
-        ),
-        "preparation_id": (
-            f"preparation_member.{q(_column_name(preparation, 'preparation_id'))}"
-        ),
+        "source_revision": f"committed.{q(_column_name(commit, 'source_revision'))}",
+        "preparation_id": f"committed.{q(_column_name(commit, 'preparation_id'))}",
         "operational_policy_id": (
-            f"policy_member.{q(_column_name(policy, 'operational_policy_id'))}"
+            f"committed.{q(_column_name(commit, 'operational_policy_id'))}"
         ),
-        "activated_at": (
-            f"time_member.{q(_column_name(committed_at, 'committed_at'))}"
-        ),
+        "activated_at": f"committed.{q(_column_name(commit, 'committed_at'))}",
     }
-    seal_receipt = q(_column_name(seal, "receipt_id"))
-
-    def join(source: Mapping[str, Any], alias: str) -> str:
-        return (
-            f"JOIN {q(str(source['table']))} AS {alias}\n"
-            f"  ON {alias}.{q(_column_name(source, 'receipt_id'))}\n"
-            f"   = sealed.{seal_receipt}"
-        )
 
     return _render_projection_view(
         relation,
         backend,
         expressions,
-        f"FROM {q(str(seal['table']))} AS sealed\n"
-        + "\n".join(
-            (
-                join(source_revision, "source_member"),
-                join(preparation, "preparation_member"),
-                join(policy, "policy_member"),
-                join(committed_at, "time_member"),
-            )
-        ),
+        f"FROM {q(str(commit['table']))} AS committed",
     )
 
 

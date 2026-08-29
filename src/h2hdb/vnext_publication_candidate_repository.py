@@ -21,6 +21,7 @@ __all__ = [
     "PublicationCandidate",
     "PublicationCandidateBatch",
     "PublicationCandidateConflictError",
+    "PublicationCandidateCorruptionError",
     "PublicationCandidateHeadRaceError",
     "PublicationCandidateNotReadyError",
     "PublicationCandidateRepository",
@@ -100,54 +101,17 @@ from .vnext_publication_family import (
 from .vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 
 _CANDIDATE_TABLE = "catalog_publication_candidates"
-_CANDIDATE_ANCHOR_TABLE = "catalog_publication_candidate_anchors"
-_CANDIDATE_DEFINITION_SEAL_TABLE = "catalog_publication_candidate_definition_seals"
 _CANDIDATE_PROJECTION_SEAL_TABLE = "catalog_publication_candidate_projection_seals"
 _BASE_COMMIT_TABLE = "catalog_publication_candidate_base_publication_commits"
 _BUILD_BASE_COMMIT_TABLE = "catalog_source_build_base_publication_commits"
 _ANALYSIS_MANIFEST_TABLE = "catalog_analysis_snapshot_manifest"
 _COMMIT_HEAD_TABLE = "catalog_publication_commit_head_receipts"
-_COMMIT_SEAL_TABLE = "catalog_publication_commit_seals"
-_COMMIT_CANDIDATE_TABLE = "catalog_publication_commit_candidates"
-_COMMIT_SOURCE_REVISION_TABLE = "catalog_publication_commit_source_revisions"
-_COMMIT_CATALOG_REVISION_TABLE = "catalog_publication_commit_catalog_revisions"
-_COMMIT_GENERATION_TABLE = "catalog_publication_commit_generations"
-_COMMIT_COMMITTED_AT_TABLE = "catalog_publication_commit_committed_ats"
-_SOURCE_REVISION_CHANNEL_TABLE = "catalog_source_revision_channels"
-_SOURCE_REVISION_DESCRIPTOR_SEAL_TABLE = "catalog_source_revision_descriptor_seals"
-_CATALOG_REVISION_ANCHOR_TABLE = "catalog_revision_anchors"
-_CATALOG_REVISION_COUNT_TABLE = "catalog_revision_publication_counts"
-_CATALOG_REVISION_DESCRIPTOR_SEAL_TABLE = "catalog_revision_descriptor_seals"
-_PUBLICATION_STAGE_ORDER_TABLE = "catalog_publication_stage_orders"
-_PUBLICATION_STAGE_CURSOR_CODEC_TABLE = "catalog_publication_stage_cursor_codecs"
-_PUBLICATION_STAGE_SEAL_TABLE = "catalog_publication_stage_seals"
-_PUBLICATION_CHECKPOINT_ANCHOR_TABLE = "catalog_publication_checkpoint_anchors"
-_PUBLICATION_CHECKPOINT_GENERATION_TABLE = "catalog_publication_checkpoint_generations"
-_PUBLICATION_CHECKPOINT_CURSOR_TABLE = "catalog_publication_checkpoint_cursors"
-_PUBLICATION_CHECKPOINT_COUNT_TABLE = "catalog_publication_checkpoint_processed_counts"
-_PUBLICATION_CHECKPOINT_STATE_TABLE = "catalog_publication_checkpoint_states"
-_PUBLICATION_CHECKPOINT_UPDATED_AT_TABLE = "catalog_publication_checkpoint_updated_ats"
-_PUBLICATION_CHECKPOINT_SEAL_TABLE = "catalog_publication_checkpoint_seals"
-_PUBLICATION_BATCH_RECEIPT_ANCHOR_TABLE = "catalog_publication_batch_receipt_anchors"
-_PUBLICATION_BATCH_RECEIPT_COORDINATE_TABLE = (
-    "catalog_publication_batch_receipt_coordinates"
-)
-_PUBLICATION_BATCH_RECEIPT_START_CURSOR_TABLE = (
-    "catalog_publication_batch_receipt_start_cursors"
-)
-_PUBLICATION_BATCH_RECEIPT_START_COUNT_TABLE = (
-    "catalog_publication_batch_receipt_start_processed_counts"
-)
-_PUBLICATION_BATCH_RECEIPT_NEXT_CURSOR_TABLE = (
-    "catalog_publication_batch_receipt_next_cursors"
-)
-_PUBLICATION_BATCH_RECEIPT_ROW_COUNT_TABLE = (
-    "catalog_publication_batch_receipt_row_counts"
-)
-_PUBLICATION_BATCH_RECEIPT_COMMITTED_AT_TABLE = (
-    "catalog_publication_batch_receipt_committed_ats"
-)
-_PUBLICATION_BATCH_RECEIPT_SEAL_TABLE = "catalog_publication_batch_receipt_seals"
+_COMMIT_TABLE = "catalog_publication_commits"
+_SOURCE_REVISION_DESCRIPTOR_TABLE = "catalog_source_revision_descriptors"
+_CATALOG_REVISION_DESCRIPTOR_TABLE = "catalog_revision_descriptors"
+_PUBLICATION_STAGE_TABLE = "catalog_publication_stages"
+_PUBLICATION_CHECKPOINT_TABLE = "catalog_publication_checkpoints"
+_PUBLICATION_BATCH_RECEIPT_STORED_TABLE = "catalog_publication_batch_receipt_stored"
 _PUBLICATION_SELECTION_TABLE = "catalog_publication_selections"
 _DISPLAY_TITLE_TABLE = "catalog_display_title_choices"
 _TITLE_SORT_TABLE = "catalog_title_sorts"
@@ -240,6 +204,10 @@ class PublicationCandidateNotReadyError(PublicationCandidateRepositoryError):
 
 class PublicationCandidateConflictError(PublicationCandidateRepositoryError):
     """A durable candidate or normalized authority has conflicting facts."""
+
+
+class PublicationCandidateCorruptionError(PublicationCandidateRepositoryError):
+    """A durable publication-candidate family is partial or inconsistent."""
 
 
 class PublicationCandidateHeadRaceError(PublicationCandidateNotReadyError):
@@ -1665,27 +1633,17 @@ def _read_common_head(
     channel: bytes,
 ) -> tuple[_Head | None, _Head | None]:
     row = work.connector.fetch_one(
-        "SELECT registry.channel, head.receipt_id, seal.receipt_id, "
-        "source.source_revision, catalog.revision, generation.generation, "
-        "committed.committed_at, source_channel.channel, "
+        "SELECT registry.channel, head.receipt_id, committed.receipt_id, "
+        "committed.source_revision, committed.revision, committed.generation, "
+        "committed.committed_at, source_descriptor.channel, "
         "source_descriptor.source_revision "
         "FROM catalog_channel_registry AS registry "
         f"LEFT JOIN {_COMMIT_HEAD_TABLE} AS head "
         "ON head.channel = registry.channel "
-        f"LEFT JOIN {_COMMIT_SEAL_TABLE} AS seal "
-        "ON seal.receipt_id = head.receipt_id "
-        f"LEFT JOIN {_COMMIT_SOURCE_REVISION_TABLE} AS source "
-        "ON source.receipt_id = head.receipt_id "
-        f"LEFT JOIN {_COMMIT_CATALOG_REVISION_TABLE} AS catalog "
-        "ON catalog.receipt_id = head.receipt_id "
-        f"LEFT JOIN {_COMMIT_GENERATION_TABLE} AS generation "
-        "ON generation.receipt_id = head.receipt_id "
-        f"LEFT JOIN {_COMMIT_COMMITTED_AT_TABLE} AS committed "
+        f"LEFT JOIN {_COMMIT_TABLE} AS committed "
         "ON committed.receipt_id = head.receipt_id "
-        f"LEFT JOIN {_SOURCE_REVISION_CHANNEL_TABLE} AS source_channel "
-        "ON source_channel.source_revision = source.source_revision "
-        f"LEFT JOIN {_SOURCE_REVISION_DESCRIPTOR_SEAL_TABLE} AS source_descriptor "
-        "ON source_descriptor.source_revision = source.source_revision "
+        f"LEFT JOIN {_SOURCE_REVISION_DESCRIPTOR_TABLE} AS source_descriptor "
+        "ON source_descriptor.source_revision = committed.source_revision "
         "WHERE registry.channel = %s",
         (channel,),
     )
@@ -2776,37 +2734,24 @@ def _ensure_reserved_catalog_revision(
             "catalog revision descriptor timestamp precedes its candidate"
         )
     row = work.connector.fetch_one(
-        "SELECT anchor.revision, count.publication_count, seal.revision "
-        f"FROM {_CATALOG_REVISION_ANCHOR_TABLE} AS anchor "
-        f"LEFT JOIN {_CATALOG_REVISION_COUNT_TABLE} AS count "
-        "ON count.revision = anchor.revision "
-        f"LEFT JOIN {_CATALOG_REVISION_DESCRIPTOR_SEAL_TABLE} AS seal "
-        "ON seal.revision = anchor.revision WHERE anchor.revision = %s",
+        "SELECT revision, publication_count "
+        f"FROM {_CATALOG_REVISION_DESCRIPTOR_TABLE} WHERE revision = %s",
         (authority.candidate.reserved_revision,),
     )
     if row:
         if (
-            len(row) != 3
+            len(row) != 2
             or row[0] != authority.candidate.reserved_revision
             or row[1] != count
-            or row[2] != authority.candidate.reserved_revision
         ):
             raise PublicationCandidateConflictError(
                 "reserved catalog revision differs from selection authority"
             )
         return
     work.connector.execute(
-        f"INSERT INTO {_CATALOG_REVISION_ANCHOR_TABLE} (revision) VALUES (%s)",
-        (authority.candidate.reserved_revision,),
-    )
-    work.connector.execute(
-        f"INSERT INTO {_CATALOG_REVISION_COUNT_TABLE} "
+        f"INSERT INTO {_CATALOG_REVISION_DESCRIPTOR_TABLE} "
         "(revision, publication_count) VALUES (%s, %s)",
         (authority.candidate.reserved_revision, count),
-    )
-    work.connector.execute(
-        f"INSERT INTO {_CATALOG_REVISION_DESCRIPTOR_SEAL_TABLE} (revision) VALUES (%s)",
-        (authority.candidate.reserved_revision,),
     )
 
 
@@ -3262,10 +3207,8 @@ def _compare_reserved_catalog_revision(
             "catalog validation timestamp precedes its candidate"
         )
     row = work.connector.fetch_one(
-        "SELECT count.publication_count "
-        f"FROM {_CATALOG_REVISION_DESCRIPTOR_SEAL_TABLE} AS seal "
-        f"JOIN {_CATALOG_REVISION_COUNT_TABLE} AS count "
-        "ON count.revision = seal.revision WHERE seal.revision = %s",
+        "SELECT publication_count "
+        f"FROM {_CATALOG_REVISION_DESCRIPTOR_TABLE} WHERE revision = %s",
         (authority.candidate.reserved_revision,),
     )
     if (
@@ -3664,27 +3607,22 @@ def _lock_begin_authority(
     if run.state != "COMPLETE" or run.completed_at is None:
         raise PublicationCandidateNotReadyError("candidate analysis is not COMPLETE")
     query = (
-        "SELECT b.state, created.created_at, sealed.sealed_at, bc.channel, "
+        "SELECT state.state, descriptor.created_at, sealed.sealed_at, channel.channel, "
         "sm.snapshot_manifest_sha256, "
-        "m_gallery.gallery_count, "
-        "m_file.file_count, m_byte.byte_count, ap.policy_component_sha256 "
-        "FROM catalog_source_build_descriptor_seals b_seal "
-        "JOIN catalog_source_build_states b ON b.build_id = b_seal.build_id "
-        "JOIN catalog_source_build_created_ats created "
-        "ON created.build_id = b.build_id "
-        "JOIN catalog_source_build_sealed_ats sealed ON sealed.build_id = b.build_id "
-        "JOIN catalog_source_build_channel bc ON bc.build_id = b.build_id "
+        "manifest.gallery_count, manifest.file_count, manifest.byte_count, "
+        "ap.policy_component_sha256 "
+        "FROM catalog_source_build_descriptor AS descriptor "
+        "JOIN catalog_source_build_states AS state "
+        "ON state.build_id = descriptor.build_id "
+        "JOIN catalog_source_build_sealed_ats AS sealed "
+        "ON sealed.build_id = descriptor.build_id "
+        "JOIN catalog_source_build_channel AS channel "
+        "ON channel.build_id = descriptor.build_id "
         f"JOIN {_ANALYSIS_MANIFEST_TABLE} sm ON sm.analysis_id = %s "
-        "JOIN catalog_source_snapshot_manifest_identity_seals m_seal "
-        "ON m_seal.snapshot_manifest_sha256 = sm.snapshot_manifest_sha256 "
-        "JOIN catalog_source_snapshot_manifest_identity_gallery_counts m_gallery "
-        "ON m_gallery.snapshot_manifest_sha256 = m_seal.snapshot_manifest_sha256 "
-        "JOIN catalog_source_snapshot_manifest_identity_file_counts m_file "
-        "ON m_file.snapshot_manifest_sha256 = m_seal.snapshot_manifest_sha256 "
-        "JOIN catalog_source_snapshot_manifest_identity_byte_counts m_byte "
-        "ON m_byte.snapshot_manifest_sha256 = m_seal.snapshot_manifest_sha256 "
+        "JOIN catalog_source_snapshot_manifest_identity AS manifest "
+        "ON manifest.snapshot_manifest_sha256 = sm.snapshot_manifest_sha256 "
         "JOIN catalog_artifact_policies ap ON ap.artifact_policy_id = %s "
-        "WHERE b_seal.build_id = %s"
+        "WHERE descriptor.build_id = %s"
     )
     row = work.connector.fetch_one(
         query,
@@ -3983,7 +3921,7 @@ def _candidate_graph_state(
         (candidate_id,),
     )
     published = work.connector.fetch_one(
-        f"SELECT receipt_id FROM {_COMMIT_CANDIDATE_TABLE} WHERE candidate_id = %s",
+        f"SELECT receipt_id FROM {_COMMIT_TABLE} WHERE candidate_id = %s",
         (candidate_id,),
     )
     if published and not projection:
@@ -4002,14 +3940,13 @@ def _lock_candidate(
     channel: bytes,
 ) -> _CandidateRow:
     candidate = require_uuid16(candidate_id, field="working candidate_id")
-    seal = work.lock_row(
+    definition = work.lock_row(
         LockRank.WORKING_ROOT,
         encode_lock_key("publication-candidate", 4, candidate),
-        f"SELECT candidate_id FROM {_CANDIDATE_DEFINITION_SEAL_TABLE} "
-        "WHERE candidate_id = %s",
+        f"SELECT candidate_id FROM {_CANDIDATE_TABLE} WHERE candidate_id = %s",
         (candidate,),
     )
-    if seal != (candidate,):
+    if definition != (candidate,):
         raise PublicationCandidateConflictError(
             "catalog working root points to a missing candidate"
         )
@@ -4025,7 +3962,7 @@ def _lock_candidate(
         ) from error
     if family is None:
         raise PublicationCandidateConflictError(
-            "candidate definition seal exposes no complete family"
+            "candidate definition row disappeared after it was locked"
         )
     return _candidate_row_from_family(
         family,
@@ -4041,13 +3978,13 @@ def _lock_candidate_collision(
     transient = work.lock_row(
         LockRank.WORKING_ROOT,
         encode_lock_key("publication-candidate", 4, candidate_id),
-        f"SELECT candidate_id FROM {_CANDIDATE_ANCHOR_TABLE} WHERE candidate_id = %s",
+        f"SELECT candidate_id FROM {_CANDIDATE_TABLE} WHERE candidate_id = %s",
         (candidate_id,),
     )
     permanent = work.lock_row(
         LockRank.WORKING_ROOT,
         encode_lock_key("publication-candidate", 5, candidate_id),
-        f"SELECT receipt_id FROM {_COMMIT_CANDIDATE_TABLE} WHERE candidate_id = %s",
+        f"SELECT receipt_id FROM {_COMMIT_TABLE} WHERE candidate_id = %s",
         (candidate_id,),
     )
     return bool(transient or permanent)
@@ -4102,18 +4039,11 @@ def _load_build_base_source(
     build_id: bytes,
 ) -> _Head | None:
     row = work.connector.fetch_one(
-        "SELECT base.base_receipt_id, seal.receipt_id, source.source_revision, "
-        "catalog.revision, generation.generation, committed.committed_at "
+        "SELECT base.base_receipt_id, committed.receipt_id, "
+        "committed.source_revision, committed.revision, committed.generation, "
+        "committed.committed_at "
         f"FROM {_BUILD_BASE_COMMIT_TABLE} AS base "
-        f"LEFT JOIN {_COMMIT_SEAL_TABLE} AS seal "
-        "ON seal.receipt_id = base.base_receipt_id "
-        f"LEFT JOIN {_COMMIT_SOURCE_REVISION_TABLE} AS source "
-        "ON source.receipt_id = base.base_receipt_id "
-        f"LEFT JOIN {_COMMIT_CATALOG_REVISION_TABLE} AS catalog "
-        "ON catalog.receipt_id = base.base_receipt_id "
-        f"LEFT JOIN {_COMMIT_GENERATION_TABLE} AS generation "
-        "ON generation.receipt_id = base.base_receipt_id "
-        f"LEFT JOIN {_COMMIT_COMMITTED_AT_TABLE} AS committed "
+        f"LEFT JOIN {_COMMIT_TABLE} AS committed "
         "ON committed.receipt_id = base.base_receipt_id "
         "WHERE base.build_id = %s",
         (build_id,),
@@ -4127,18 +4057,11 @@ def _load_candidate_bases(
     candidate_id: bytes,
 ) -> tuple[_Head | None, _Head | None]:
     row = work.connector.fetch_one(
-        "SELECT base.base_receipt_id, seal.receipt_id, source.source_revision, "
-        "catalog.revision, generation.generation, committed.committed_at "
+        "SELECT base.base_receipt_id, committed.receipt_id, "
+        "committed.source_revision, committed.revision, committed.generation, "
+        "committed.committed_at "
         f"FROM {_BASE_COMMIT_TABLE} AS base "
-        f"LEFT JOIN {_COMMIT_SEAL_TABLE} AS seal "
-        "ON seal.receipt_id = base.base_receipt_id "
-        f"LEFT JOIN {_COMMIT_SOURCE_REVISION_TABLE} AS source "
-        "ON source.receipt_id = base.base_receipt_id "
-        f"LEFT JOIN {_COMMIT_CATALOG_REVISION_TABLE} AS catalog "
-        "ON catalog.receipt_id = base.base_receipt_id "
-        f"LEFT JOIN {_COMMIT_GENERATION_TABLE} AS generation "
-        "ON generation.receipt_id = base.base_receipt_id "
-        f"LEFT JOIN {_COMMIT_COMMITTED_AT_TABLE} AS committed "
+        f"LEFT JOIN {_COMMIT_TABLE} AS committed "
         "ON committed.receipt_id = base.base_receipt_id "
         "WHERE base.candidate_id = %s",
         (candidate_id,),
@@ -4155,11 +4078,11 @@ def _base_commit_from_row(
         return None, None
     if len(row) != 6 or any(value is None for value in row):
         raise PublicationCandidateConflictError(
-            f"{label} permanent commit family is incomplete"
+            f"{label} permanent commit row is incomplete"
         )
     receipt_id = require_uuid16(row[0], field=f"{label} receipt_id")
     if receipt_id != row[1]:
-        raise PublicationCandidateConflictError(f"{label} commit seal is malformed")
+        raise PublicationCandidateConflictError(f"{label} commit identity is malformed")
     generation = require_positive_int63(row[4], field=f"{label} generation")
     committed_at = require_int63(row[5], field=f"{label} committed_at")
     return (
@@ -4197,27 +4120,17 @@ def _lock_common_head(
     row = work.lock_row(
         LockRank.HEAD,
         encode_lock_key("publication-candidate", 0, channel),
-        "SELECT registry.channel, head.receipt_id, seal.receipt_id, "
-        "source.source_revision, catalog.revision, generation.generation, "
-        "committed.committed_at, source_channel.channel, "
+        "SELECT registry.channel, head.receipt_id, committed.receipt_id, "
+        "committed.source_revision, committed.revision, committed.generation, "
+        "committed.committed_at, source_descriptor.channel, "
         "source_descriptor.source_revision "
         "FROM catalog_channel_registry AS registry "
         f"LEFT JOIN {_COMMIT_HEAD_TABLE} AS head "
         "ON head.channel = registry.channel "
-        f"LEFT JOIN {_COMMIT_SEAL_TABLE} AS seal "
-        "ON seal.receipt_id = head.receipt_id "
-        f"LEFT JOIN {_COMMIT_SOURCE_REVISION_TABLE} AS source "
-        "ON source.receipt_id = head.receipt_id "
-        f"LEFT JOIN {_COMMIT_CATALOG_REVISION_TABLE} AS catalog "
-        "ON catalog.receipt_id = head.receipt_id "
-        f"LEFT JOIN {_COMMIT_GENERATION_TABLE} AS generation "
-        "ON generation.receipt_id = head.receipt_id "
-        f"LEFT JOIN {_COMMIT_COMMITTED_AT_TABLE} AS committed "
+        f"LEFT JOIN {_COMMIT_TABLE} AS committed "
         "ON committed.receipt_id = head.receipt_id "
-        f"LEFT JOIN {_SOURCE_REVISION_CHANNEL_TABLE} AS source_channel "
-        "ON source_channel.source_revision = source.source_revision "
-        f"LEFT JOIN {_SOURCE_REVISION_DESCRIPTOR_SEAL_TABLE} AS source_descriptor "
-        "ON source_descriptor.source_revision = source.source_revision "
+        f"LEFT JOIN {_SOURCE_REVISION_DESCRIPTOR_TABLE} AS source_descriptor "
+        "ON source_descriptor.source_revision = committed.source_revision "
         "WHERE registry.channel = %s",
         (channel,),
     )
@@ -4243,11 +4156,13 @@ def _common_head_from_row(
         return None, None
     if any(value is None for value in members):
         raise PublicationCandidateConflictError(
-            f"{detail} vertical family is incomplete"
+            f"{detail} wide commit projection is incomplete"
         )
     receipt_id = require_uuid16(row[1], field=f"{detail} receipt_id")
     if receipt_id != row[2]:
-        raise PublicationCandidateConflictError(f"{detail} commit seal is malformed")
+        raise PublicationCandidateConflictError(
+            f"{detail} commit identity is malformed"
+        )
     if row[7] != channel:
         raise PublicationCandidateConflictError(
             f"{detail} descriptor has a conflicting channel"
@@ -4512,47 +4427,19 @@ def _lock_publication_checkpoint(
     candidate_id: bytes,
     spec: _StageSpec,
 ) -> _Checkpoint:
-    generation_row = work.lock_row(
+    row = work.lock_row(
         LockRank.CHECKPOINT,
         encode_lock_key("publication-candidate-checkpoint", candidate_id, spec.order),
-        f"SELECT generation FROM {_PUBLICATION_CHECKPOINT_GENERATION_TABLE} "
+        "SELECT generation, `cursor`, processed_count, state, updated_at "
+        f"FROM {_PUBLICATION_CHECKPOINT_TABLE} "
         "WHERE candidate_id = %s AND stage = %s",
         (candidate_id, spec.name),
     )
-    row = work.connector.fetch_one(
-        "SELECT anchor.candidate_id, generation.generation, "
-        "checkpoint_cursor.`cursor`, "
-        "count.processed_count, state.state, updated.updated_at, seal.candidate_id "
-        f"FROM {_PUBLICATION_CHECKPOINT_ANCHOR_TABLE} AS anchor "
-        f"LEFT JOIN {_PUBLICATION_CHECKPOINT_GENERATION_TABLE} AS generation "
-        "ON generation.candidate_id = anchor.candidate_id "
-        "AND generation.stage = anchor.stage "
-        f"LEFT JOIN {_PUBLICATION_CHECKPOINT_CURSOR_TABLE} AS checkpoint_cursor "
-        "ON checkpoint_cursor.candidate_id = anchor.candidate_id "
-        "AND checkpoint_cursor.stage = anchor.stage "
-        f"LEFT JOIN {_PUBLICATION_CHECKPOINT_COUNT_TABLE} AS count "
-        "ON count.candidate_id = anchor.candidate_id AND count.stage = anchor.stage "
-        f"LEFT JOIN {_PUBLICATION_CHECKPOINT_STATE_TABLE} AS state "
-        "ON state.candidate_id = anchor.candidate_id AND state.stage = anchor.stage "
-        f"LEFT JOIN {_PUBLICATION_CHECKPOINT_UPDATED_AT_TABLE} AS updated "
-        "ON updated.candidate_id = anchor.candidate_id AND updated.stage = anchor.stage "
-        f"LEFT JOIN {_PUBLICATION_CHECKPOINT_SEAL_TABLE} AS seal "
-        "ON seal.candidate_id = anchor.candidate_id AND seal.stage = anchor.stage "
-        "WHERE anchor.candidate_id = %s AND anchor.stage = %s",
-        (candidate_id, spec.name),
-    )
-    if (
-        len(generation_row) != 1
-        or len(row) != 7
-        or any(value is None for value in row)
-        or row[0] != candidate_id
-        or row[6] != candidate_id
-        or generation_row[0] != row[1]
-    ):
+    if len(row) != 5 or any(value is None for value in row):
         raise PublicationCandidateConflictError(
             "publication checkpoint is missing or malformed"
         )
-    checkpoint = _checkpoint_from_row(row[1:6])
+    checkpoint = _checkpoint_from_row(row)
     _validate_stage_cursor(spec.cursor_codec, checkpoint.cursor)
     return checkpoint
 
@@ -4563,23 +4450,9 @@ def _read_publication_checkpoint(
     spec: _StageSpec,
 ) -> _Checkpoint:
     row = work.connector.fetch_one(
-        "SELECT generation.generation, checkpoint_cursor.`cursor`, "
-        "count.processed_count, "
-        "state.state, updated.updated_at "
-        f"FROM {_PUBLICATION_CHECKPOINT_SEAL_TABLE} AS seal "
-        f"JOIN {_PUBLICATION_CHECKPOINT_GENERATION_TABLE} AS generation "
-        "ON generation.candidate_id = seal.candidate_id "
-        "AND generation.stage = seal.stage "
-        f"JOIN {_PUBLICATION_CHECKPOINT_CURSOR_TABLE} AS checkpoint_cursor "
-        "ON checkpoint_cursor.candidate_id = seal.candidate_id "
-        "AND checkpoint_cursor.stage = seal.stage "
-        f"JOIN {_PUBLICATION_CHECKPOINT_COUNT_TABLE} AS count "
-        "ON count.candidate_id = seal.candidate_id AND count.stage = seal.stage "
-        f"JOIN {_PUBLICATION_CHECKPOINT_STATE_TABLE} AS state "
-        "ON state.candidate_id = seal.candidate_id AND state.stage = seal.stage "
-        f"JOIN {_PUBLICATION_CHECKPOINT_UPDATED_AT_TABLE} AS updated "
-        "ON updated.candidate_id = seal.candidate_id AND updated.stage = seal.stage "
-        "WHERE seal.candidate_id = %s AND seal.stage = %s",
+        "SELECT generation, `cursor`, processed_count, state, updated_at "
+        f"FROM {_PUBLICATION_CHECKPOINT_TABLE} "
+        "WHERE candidate_id = %s AND stage = %s",
         (candidate_id, spec.name),
     )
     checkpoint = _checkpoint_from_row(row)
@@ -4597,11 +4470,9 @@ def _require_stage_prerequisite(
         return
     predecessor = _CANDIDATE_STAGES[index - 1]
     row = work.connector.fetch_one(
-        "SELECT state.state "
-        f"FROM {_PUBLICATION_CHECKPOINT_STATE_TABLE} AS state "
-        f"JOIN {_PUBLICATION_CHECKPOINT_SEAL_TABLE} AS seal "
-        "ON seal.candidate_id = state.candidate_id AND seal.stage = state.stage "
-        "WHERE state.candidate_id = %s AND state.stage = %s",
+        "SELECT state "
+        f"FROM {_PUBLICATION_CHECKPOINT_TABLE} "
+        "WHERE candidate_id = %s AND stage = %s",
         (candidate_id, predecessor.name),
     )
     if row != (_CHECKPOINT_COMPLETE,):
@@ -4797,108 +4668,58 @@ def _commit_candidate_batch(
     successor = checkpoint.generation + 1
     timestamp = require_int63(now, field="publication batch committed_at")
     work.connector.execute(
-        f"INSERT INTO {_PUBLICATION_BATCH_RECEIPT_ANCHOR_TABLE} "
-        "(candidate_id, stage, start_generation) VALUES (%s, %s, %s)",
+        f"INSERT INTO {_PUBLICATION_BATCH_RECEIPT_STORED_TABLE} "
+        "(candidate_id, stage, start_generation, batch_key, start_cursor, "
+        "start_processed_count, next_cursor, row_count, committed_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
         (
             authority.candidate.candidate_id,
             stage,
             checkpoint.generation,
-        ),
-    )
-    work.connector.execute(
-        f"INSERT INTO {_PUBLICATION_BATCH_RECEIPT_COORDINATE_TABLE} "
-        "(candidate_id, stage, batch_key, start_generation) "
-        "VALUES (%s, %s, %s, %s)",
-        (
-            authority.candidate.candidate_id,
-            stage,
             batch_key,
-            checkpoint.generation,
-        ),
-    )
-    for table, column, value in (
-        (
-            _PUBLICATION_BATCH_RECEIPT_START_CURSOR_TABLE,
-            "start_cursor",
             checkpoint.cursor,
-        ),
-        (
-            _PUBLICATION_BATCH_RECEIPT_START_COUNT_TABLE,
-            "start_processed_count",
             checkpoint.processed_count,
-        ),
-        (
-            _PUBLICATION_BATCH_RECEIPT_NEXT_CURSOR_TABLE,
-            "next_cursor",
             next_cursor,
-        ),
-        (_PUBLICATION_BATCH_RECEIPT_ROW_COUNT_TABLE, "row_count", count),
-        (
-            _PUBLICATION_BATCH_RECEIPT_COMMITTED_AT_TABLE,
-            "committed_at",
+            count,
             timestamp,
-        ),
-    ):
-        work.connector.execute(
-            f"INSERT INTO {table} "
-            f"(candidate_id, stage, start_generation, {column}) "
-            "VALUES (%s, %s, %s, %s)",
-            (
-                authority.candidate.candidate_id,
-                stage,
-                checkpoint.generation,
-                value,
-            ),
-        )
-    work.connector.execute(
-        f"INSERT INTO {_PUBLICATION_BATCH_RECEIPT_SEAL_TABLE} "
-        "(candidate_id, stage, start_generation) VALUES (%s, %s, %s)",
-        (
-            authority.candidate.candidate_id,
-            stage,
-            checkpoint.generation,
         ),
     )
     checkpoint_key = (authority.candidate.candidate_id, stage)
-    if next_cursor != checkpoint.cursor:
-        work.compare_and_swap(
-            f"UPDATE {_PUBLICATION_CHECKPOINT_CURSOR_TABLE} SET `cursor` = %s "
-            "WHERE candidate_id = %s AND stage = %s AND `cursor` = %s",
-            (next_cursor, *checkpoint_key, checkpoint.cursor),
-            authority=f"publication candidate stage {stage!r} cursor",
-        )
-    if next_count != checkpoint.processed_count:
-        work.compare_and_swap(
-            f"UPDATE {_PUBLICATION_CHECKPOINT_COUNT_TABLE} "
-            "SET processed_count = %s WHERE candidate_id = %s AND stage = %s "
-            "AND processed_count = %s",
-            (next_count, *checkpoint_key, checkpoint.processed_count),
-            authority=f"publication candidate stage {stage!r} processed_count",
-        )
-    if next_state != checkpoint.state:
-        work.compare_and_swap(
-            f"UPDATE {_PUBLICATION_CHECKPOINT_STATE_TABLE} SET state = %s "
-            "WHERE candidate_id = %s AND stage = %s AND state = %s",
-            (next_state, *checkpoint_key, checkpoint.state),
-            authority=f"publication candidate stage {stage!r} state",
-        )
-    if timestamp != checkpoint.updated_at:
-        work.compare_and_swap(
-            f"UPDATE {_PUBLICATION_CHECKPOINT_UPDATED_AT_TABLE} SET updated_at = %s "
-            "WHERE candidate_id = %s AND stage = %s AND updated_at = %s",
-            (timestamp, *checkpoint_key, checkpoint.updated_at),
-            authority=f"publication candidate stage {stage!r} updated_at",
-        )
     work.compare_and_swap(
-        f"UPDATE {_PUBLICATION_CHECKPOINT_GENERATION_TABLE} SET generation = %s "
-        "WHERE candidate_id = %s AND stage = %s AND generation = %s",
+        f"UPDATE {_PUBLICATION_CHECKPOINT_TABLE} "
+        "SET generation = %s, `cursor` = %s, processed_count = %s, state = %s, "
+        "updated_at = %s WHERE candidate_id = %s AND stage = %s "
+        "AND generation = %s AND `cursor` = %s AND processed_count = %s "
+        "AND state = %s AND updated_at = %s",
         (
             successor,
+            next_cursor,
+            next_count,
+            next_state,
+            timestamp,
             *checkpoint_key,
             checkpoint.generation,
+            checkpoint.cursor,
+            checkpoint.processed_count,
+            checkpoint.state,
+            checkpoint.updated_at,
         ),
-        authority=f"publication candidate stage {stage!r} generation",
+        authority=f"publication candidate stage {stage!r} checkpoint",
     )
+    if checkpoint.generation > 1:
+        deleted = work.connector.execute_affected(
+            f"DELETE FROM {_PUBLICATION_BATCH_RECEIPT_STORED_TABLE} "
+            "WHERE candidate_id = %s AND stage = %s AND start_generation = %s",
+            (
+                authority.candidate.candidate_id,
+                stage,
+                checkpoint.generation - 1,
+            ),
+        )
+        if deleted != 1:
+            raise PublicationCandidateCorruptionError(
+                "publication predecessor receipt is missing before safe acknowledgement"
+            )
     return PublicationCandidateBatch(
         authority.candidate.candidate_id,
         stage,
@@ -4926,7 +4747,7 @@ def _load_candidate_batch(
     expected_start_generation: int | None = None,
 ) -> tuple[Any, ...] | None:
     coordinate = work.connector.fetch_one(
-        f"SELECT start_generation FROM {_PUBLICATION_BATCH_RECEIPT_COORDINATE_TABLE} "
+        f"SELECT start_generation FROM {_PUBLICATION_BATCH_RECEIPT_STORED_TABLE} "
         "WHERE candidate_id = %s AND stage = %s AND batch_key = %s",
         (candidate_id, stage, batch_key),
     )
@@ -4958,7 +4779,7 @@ def _load_candidate_batch(
     )
     if stored is None or stored[0] != batch_key:
         raise PublicationCandidateConflictError(
-            "publication batch vertical family is incomplete"
+            "publication batch receipt coordinate is inconsistent"
         )
     return stored[1:]
 
@@ -4970,54 +4791,23 @@ def _load_candidate_batch_at_generation(
     start_generation: int,
 ) -> tuple[Any, ...] | None:
     row = work.connector.fetch_one(
-        "SELECT coordinate.batch_key, anchor.start_generation, "
-        "start_cursor.start_cursor, start_count.start_processed_count, "
-        "next_cursor.next_cursor, row_count.row_count, committed.committed_at, "
-        "seal.start_generation "
-        f"FROM {_PUBLICATION_BATCH_RECEIPT_ANCHOR_TABLE} AS anchor "
-        f"LEFT JOIN {_PUBLICATION_BATCH_RECEIPT_COORDINATE_TABLE} AS coordinate "
-        "ON coordinate.candidate_id = anchor.candidate_id "
-        "AND coordinate.stage = anchor.stage "
-        "AND coordinate.start_generation = anchor.start_generation "
-        f"LEFT JOIN {_PUBLICATION_BATCH_RECEIPT_START_CURSOR_TABLE} AS start_cursor "
-        "ON start_cursor.candidate_id = anchor.candidate_id "
-        "AND start_cursor.stage = anchor.stage "
-        "AND start_cursor.start_generation = anchor.start_generation "
-        f"LEFT JOIN {_PUBLICATION_BATCH_RECEIPT_START_COUNT_TABLE} AS start_count "
-        "ON start_count.candidate_id = anchor.candidate_id "
-        "AND start_count.stage = anchor.stage "
-        "AND start_count.start_generation = anchor.start_generation "
-        f"LEFT JOIN {_PUBLICATION_BATCH_RECEIPT_NEXT_CURSOR_TABLE} AS next_cursor "
-        "ON next_cursor.candidate_id = anchor.candidate_id "
-        "AND next_cursor.stage = anchor.stage "
-        "AND next_cursor.start_generation = anchor.start_generation "
-        f"LEFT JOIN {_PUBLICATION_BATCH_RECEIPT_ROW_COUNT_TABLE} AS row_count "
-        "ON row_count.candidate_id = anchor.candidate_id "
-        "AND row_count.stage = anchor.stage "
-        "AND row_count.start_generation = anchor.start_generation "
-        f"LEFT JOIN {_PUBLICATION_BATCH_RECEIPT_COMMITTED_AT_TABLE} AS committed "
-        "ON committed.candidate_id = anchor.candidate_id "
-        "AND committed.stage = anchor.stage "
-        "AND committed.start_generation = anchor.start_generation "
-        f"LEFT JOIN {_PUBLICATION_BATCH_RECEIPT_SEAL_TABLE} AS seal "
-        "ON seal.candidate_id = anchor.candidate_id AND seal.stage = anchor.stage "
-        "AND seal.start_generation = anchor.start_generation "
-        "WHERE anchor.candidate_id = %s AND anchor.stage = %s "
-        "AND anchor.start_generation = %s",
+        "SELECT batch_key, start_generation, start_cursor, start_processed_count, "
+        "next_cursor, row_count, committed_at "
+        f"FROM {_PUBLICATION_BATCH_RECEIPT_STORED_TABLE} "
+        "WHERE candidate_id = %s AND stage = %s AND start_generation = %s",
         (candidate_id, stage, start_generation),
     )
     if not row:
         return None
     if (
-        len(row) != 8
+        len(row) != 7
         or any(value is None for value in row)
         or row[1] != start_generation
-        or row[7] != start_generation
     ):
         raise PublicationCandidateConflictError(
-            "publication batch vertical family is incomplete"
+            "publication batch receipt is malformed"
         )
-    return row[:7]
+    return row
 
 
 def _candidate_batch_from_row(
@@ -5161,17 +4951,13 @@ def _validate_optional_base_pair(
 def _require_exact_stage_registry(work: VNextUnitOfWork) -> None:
     """Require the generated provider's closed seventeen-stage registry."""
 
-    if not work.connector.check_table_exists(_PUBLICATION_STAGE_SEAL_TABLE):
+    if not work.connector.check_table_exists(_PUBLICATION_STAGE_TABLE):
         raise PublicationCandidateStageRegistryUnavailableError(
             "generated schema has no closed publication-stage registry"
         )
     rows = work.connector.fetch_all(
-        "SELECT seal.stage, ordering.stage_order, codec.cursor_codec "
-        f"FROM {_PUBLICATION_STAGE_SEAL_TABLE} AS seal "
-        f"JOIN {_PUBLICATION_STAGE_ORDER_TABLE} AS ordering "
-        "ON ordering.stage = seal.stage "
-        f"JOIN {_PUBLICATION_STAGE_CURSOR_CODEC_TABLE} AS codec "
-        "ON codec.stage = seal.stage ORDER BY ordering.stage_order LIMIT 18"
+        "SELECT stage, stage_order, cursor_codec "
+        f"FROM {_PUBLICATION_STAGE_TABLE} ORDER BY stage_order LIMIT 18"
     )
     actual: list[tuple[bytes, bytes, bytes]] = []
     try:
@@ -5219,29 +5005,14 @@ def _require_exact_candidate_checkpoints(
     now: int,
 ) -> None:
     rows = work.connector.fetch_all(
-        "SELECT anchor.stage, generation.generation, checkpoint_cursor.`cursor`, "
-        "count.processed_count, state.state, updated.updated_at, seal.stage "
-        f"FROM {_PUBLICATION_CHECKPOINT_ANCHOR_TABLE} AS anchor "
-        f"LEFT JOIN {_PUBLICATION_CHECKPOINT_GENERATION_TABLE} AS generation "
-        "ON generation.candidate_id = anchor.candidate_id "
-        "AND generation.stage = anchor.stage "
-        f"LEFT JOIN {_PUBLICATION_CHECKPOINT_CURSOR_TABLE} AS checkpoint_cursor "
-        "ON checkpoint_cursor.candidate_id = anchor.candidate_id "
-        "AND checkpoint_cursor.stage = anchor.stage "
-        f"LEFT JOIN {_PUBLICATION_CHECKPOINT_COUNT_TABLE} AS count "
-        "ON count.candidate_id = anchor.candidate_id AND count.stage = anchor.stage "
-        f"LEFT JOIN {_PUBLICATION_CHECKPOINT_STATE_TABLE} AS state "
-        "ON state.candidate_id = anchor.candidate_id AND state.stage = anchor.stage "
-        f"LEFT JOIN {_PUBLICATION_CHECKPOINT_UPDATED_AT_TABLE} AS updated "
-        "ON updated.candidate_id = anchor.candidate_id AND updated.stage = anchor.stage "
-        f"LEFT JOIN {_PUBLICATION_CHECKPOINT_SEAL_TABLE} AS seal "
-        "ON seal.candidate_id = anchor.candidate_id AND seal.stage = anchor.stage "
-        "WHERE anchor.candidate_id = %s ORDER BY anchor.stage LIMIT 18",
+        "SELECT stage, generation, `cursor`, processed_count, state, updated_at "
+        f"FROM {_PUBLICATION_CHECKPOINT_TABLE} "
+        "WHERE candidate_id = %s ORDER BY stage LIMIT 18",
         (candidate_id,),
     )
     by_stage: dict[bytes, tuple[Any, ...]] = {}
     for row in rows:
-        if len(row) != 7 or any(value is None for value in row):
+        if len(row) != 6 or any(value is None for value in row):
             raise PublicationCandidateConflictError(
                 "publication checkpoint is malformed"
             )
@@ -5251,10 +5022,6 @@ def _require_exact_candidate_checkpoints(
         if stage in by_stage:
             raise PublicationCandidateConflictError(
                 "publication candidate has duplicate checkpoints"
-            )
-        if row[6] != stage:
-            raise PublicationCandidateConflictError(
-                "publication checkpoint seal is malformed"
             )
         by_stage[stage] = row
     if set(by_stage) != set(_CANDIDATE_STAGE_BY_NAME):
@@ -5288,42 +5055,23 @@ def _initialize_candidate_checkpoints(
 ) -> None:
     timestamp = require_int63(now, field="publication checkpoint initialized_at")
     affected = work.connector.execute_affected(
-        f"INSERT INTO {_PUBLICATION_CHECKPOINT_ANCHOR_TABLE} "
-        "(candidate_id, stage) SELECT %s, stage "
-        f"FROM {_PUBLICATION_STAGE_SEAL_TABLE} WHERE stage <> %s ORDER BY stage",
-        (candidate_id, _FINALIZATION_STAGE.name),
+        f"INSERT INTO {_PUBLICATION_CHECKPOINT_TABLE} "
+        "(candidate_id, stage, generation, `cursor`, processed_count, state, "
+        "updated_at) SELECT %s, stage, %s, %s, %s, %s, %s "
+        f"FROM {_PUBLICATION_STAGE_TABLE} WHERE stage <> %s ORDER BY stage",
+        (
+            candidate_id,
+            1,
+            b"",
+            0,
+            _CHECKPOINT_OPEN,
+            timestamp,
+            _FINALIZATION_STAGE.name,
+        ),
     )
     if affected != len(_CANDIDATE_STAGES):
         raise PublicationCandidateConflictError(
-            "publication checkpoint anchor initialization was incomplete"
-        )
-    for table, column, value in (
-        (_PUBLICATION_CHECKPOINT_GENERATION_TABLE, "generation", 1),
-        (_PUBLICATION_CHECKPOINT_CURSOR_TABLE, "cursor", b""),
-        (_PUBLICATION_CHECKPOINT_COUNT_TABLE, "processed_count", 0),
-        (_PUBLICATION_CHECKPOINT_STATE_TABLE, "state", _CHECKPOINT_OPEN),
-        (_PUBLICATION_CHECKPOINT_UPDATED_AT_TABLE, "updated_at", timestamp),
-    ):
-        sql_column = f"`{column}`" if column == "cursor" else column
-        affected = work.connector.execute_affected(
-            f"INSERT INTO {table} (candidate_id, stage, {sql_column}) "
-            f"SELECT %s, stage, %s FROM {_PUBLICATION_STAGE_SEAL_TABLE} "
-            "WHERE stage <> %s ORDER BY stage",
-            (candidate_id, value, _FINALIZATION_STAGE.name),
-        )
-        if affected != len(_CANDIDATE_STAGES):
-            raise PublicationCandidateConflictError(
-                f"publication checkpoint {column} initialization was incomplete"
-            )
-    affected = work.connector.execute_affected(
-        f"INSERT INTO {_PUBLICATION_CHECKPOINT_SEAL_TABLE} "
-        "(candidate_id, stage) SELECT %s, stage "
-        f"FROM {_PUBLICATION_STAGE_SEAL_TABLE} WHERE stage <> %s ORDER BY stage",
-        (candidate_id, _FINALIZATION_STAGE.name),
-    )
-    if affected != len(_CANDIDATE_STAGES):
-        raise PublicationCandidateConflictError(
-            "publication checkpoint seal initialization was incomplete"
+            "publication checkpoint initialization was incomplete"
         )
 
 

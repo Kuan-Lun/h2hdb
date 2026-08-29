@@ -11,6 +11,7 @@ from hypothesis import strategies as st
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKER = ROOT / "verification" / "schema" / "check_contract.py"
+CATALOG = ROOT / "verification" / "schema" / "catalog.toml"
 ATTRIBUTES = ("a", "b", "c", "d", "e")
 
 
@@ -30,6 +31,21 @@ def _load_checker() -> ModuleType:
 
 
 checker = cast(Any, _load_checker())
+
+
+def test_all_recomposition_decompositions_are_lossless_and_dependency_preserving() -> (
+    None
+):
+    contract = checker.load_contract(CATALOG)
+    assert len(contract.decompositions) == 28
+    assert all(
+        checker.is_binary_lossless(decomposition)
+        for decomposition in contract.decompositions
+    )
+    assert all(
+        checker.is_dependency_preserving(decomposition)
+        for decomposition in contract.decompositions
+    )
 
 
 @st.composite

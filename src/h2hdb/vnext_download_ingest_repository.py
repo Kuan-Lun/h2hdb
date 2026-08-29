@@ -39,7 +39,6 @@ from .vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 _DOWNLOAD_GENERATION_TABLE = "operational_download_generations"
 _DOWNLOAD_HEAD_TABLE = "operational_download_coordination_heads"
 _DOWNLOAD_OWNER_TABLE = "operational_download_generation_owners"
-_DOWNLOAD_LEASE_TABLE = "operational_download_generation_leases"
 _HANDOFF_TABLE = "operational_download_ingest_handoffs"
 _CONSUMPTION_TABLE = "operational_download_ingest_consumptions"
 _COMPLETION_TABLE = "operational_coordinated_ingest_completions"
@@ -47,7 +46,6 @@ _COMPLETION_TABLE = "operational_coordinated_ingest_completions"
 _INGEST_GENERATION_TABLE = "operational_ingest_generations"
 _INGEST_HEAD_TABLE = "operational_ingest_coordination_heads"
 _INGEST_OWNER_TABLE = "operational_ingest_generation_owners"
-_INGEST_LEASE_TABLE = "operational_ingest_generation_leases"
 
 
 DownloadIngestUnavailableError = IngestFenceUnavailableError
@@ -218,13 +216,9 @@ class DownloadIngestRepository:
         )
         work.connector.execute(
             f"INSERT INTO {_DOWNLOAD_OWNER_TABLE} "
-            "(generation, owner_token, claimed_at) VALUES (%s, %s, %s)",
-            (successor, token, timestamp),
-        )
-        work.connector.execute(
-            f"INSERT INTO {_DOWNLOAD_LEASE_TABLE} "
-            "(generation, lease_expires_at) VALUES (%s, %s)",
-            (successor, deadline),
+            "(generation, owner_token, claimed_at, lease_expires_at) "
+            "VALUES (%s, %s, %s, %s)",
+            (successor, token, timestamp, deadline),
         )
         work.compare_and_swap(
             f"UPDATE {_DOWNLOAD_HEAD_TABLE} SET current_generation = %s, "
@@ -273,10 +267,17 @@ class DownloadIngestRepository:
         if deadline <= requested.lease_expires_at:
             return requested
         work.compare_and_swap(
-            f"UPDATE {_DOWNLOAD_LEASE_TABLE} SET lease_expires_at = %s "
-            "WHERE generation = %s AND lease_expires_at = %s",
-            (deadline, requested.generation, requested.lease_expires_at),
-            authority="download generation lease",
+            f"UPDATE {_DOWNLOAD_OWNER_TABLE} SET lease_expires_at = %s "
+            "WHERE generation = %s AND owner_token = %s AND claimed_at = %s "
+            "AND lease_expires_at = %s",
+            (
+                deadline,
+                requested.generation,
+                requested.owner_token,
+                state.claimed_at,
+                requested.lease_expires_at,
+            ),
+            authority="download generation owner lease",
         )
         return DownloadTurn(requested.generation, requested.owner_token, deadline)
 
@@ -694,17 +695,15 @@ def _transition_download_handoff(
     )
     _delete_exactly_one(
         work,
-        f"DELETE FROM {_DOWNLOAD_LEASE_TABLE} WHERE generation = %s "
-        "AND lease_expires_at = %s",
-        (requested.generation, requested.lease_expires_at),
-        authority="handed-off download lease",
-    )
-    _delete_exactly_one(
-        work,
         f"DELETE FROM {_DOWNLOAD_OWNER_TABLE} WHERE generation = %s "
-        "AND owner_token = %s",
-        (requested.generation, requested.owner_token),
-        authority="handed-off download owner",
+        "AND owner_token = %s AND claimed_at = %s AND lease_expires_at = %s",
+        (
+            requested.generation,
+            requested.owner_token,
+            state.claimed_at,
+            requested.lease_expires_at,
+        ),
+        authority="handed-off download authority",
     )
     return _DownloadHandoffTransition(result, True)
 
@@ -775,11 +774,12 @@ def _lock_download_state(work: VNextUnitOfWork, generation: int) -> _DownloadSta
     owner_row = work.lock_row(
         LockRank.DOWNLOAD_FENCE,
         encode_lock_key("download", 2, current),
-        f"SELECT owner_token, claimed_at FROM {_DOWNLOAD_OWNER_TABLE} "
+        f"SELECT owner_token, claimed_at, lease_expires_at "
+        f"FROM {_DOWNLOAD_OWNER_TABLE} "
         "WHERE generation = %s",
         (current,),
     )
-    if owner_row and len(owner_row) != 2:
+    if owner_row and len(owner_row) != 3:
         raise DownloadIngestCorruptionError("download owner has an invalid shape")
     owner_token = (
         None
@@ -791,19 +791,10 @@ def _lock_download_state(work: VNextUnitOfWork, generation: int) -> _DownloadSta
         if not owner_row
         else require_int63(owner_row[1], field="download claimed_at")
     )
-
-    lease_row = work.lock_row(
-        LockRank.DOWNLOAD_FENCE,
-        encode_lock_key("download", 3, current),
-        f"SELECT lease_expires_at FROM {_DOWNLOAD_LEASE_TABLE} WHERE generation = %s",
-        (current,),
-    )
-    if lease_row and len(lease_row) != 1:
-        raise DownloadIngestCorruptionError("download lease has an invalid shape")
     lease_expires_at = (
         None
-        if not lease_row
-        else require_int63(lease_row[0], field="download lease_expires_at")
+        if not owner_row
+        else require_int63(owner_row[2], field="download lease_expires_at")
     )
 
     handoff_row = work.lock_row(
@@ -1007,17 +998,15 @@ def _take_over_expired_download(
     )
     _delete_exactly_one(
         work,
-        f"DELETE FROM {_DOWNLOAD_LEASE_TABLE} WHERE generation = %s "
-        "AND lease_expires_at = %s",
-        (state.generation, state.lease_expires_at),
-        authority="expired download lease",
-    )
-    _delete_exactly_one(
-        work,
         f"DELETE FROM {_DOWNLOAD_OWNER_TABLE} WHERE generation = %s "
-        "AND owner_token = %s",
-        (state.generation, state.owner_token),
-        authority="expired download owner",
+        "AND owner_token = %s AND claimed_at = %s AND lease_expires_at = %s",
+        (
+            state.generation,
+            state.owner_token,
+            state.claimed_at,
+            state.lease_expires_at,
+        ),
+        authority="expired download authority",
     )
     return handoff
 
@@ -1140,13 +1129,8 @@ def _lock_and_validate_completed_ingest(
     owner = work.lock_row(
         LockRank.INGEST_FENCE,
         encode_lock_key("ingest", 2, expected.ingest_generation),
-        f"SELECT owner_token FROM {_INGEST_OWNER_TABLE} WHERE generation = %s",
-        (expected.ingest_generation,),
-    )
-    lease = work.lock_row(
-        LockRank.INGEST_FENCE,
-        encode_lock_key("ingest", 3, expected.ingest_generation),
-        f"SELECT lease_expires_at FROM {_INGEST_LEASE_TABLE} WHERE generation = %s",
+        f"SELECT owner_token, lease_expires_at FROM {_INGEST_OWNER_TABLE} "
+        "WHERE generation = %s",
         (expected.ingest_generation,),
     )
     receipt = work.lock_row(
@@ -1159,7 +1143,6 @@ def _lock_and_validate_completed_ingest(
     if (
         generation != (expected.completed_at,)
         or owner
-        or lease
         or len(receipt) != 2
         or require_uuid16(receipt[0], field="completion receipt owner_token")
         != expected.owner_token

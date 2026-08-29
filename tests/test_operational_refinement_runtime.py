@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import pytest
 
+import h2hdb.operational_refinement as operational_runtime
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.operational_refinement import (
     OPERATIONAL_RUNTIME_WRITER_BLOCKERS,
@@ -186,6 +187,33 @@ def test_generated_greenfield_and_bootstrap_pass_every_read_validator(
     check_bootstrap_contract_v1(greenfield)
 
 
+@pytest.mark.parametrize("orphan", ("seal", "stream"))
+def test_full_check_rejects_operational_effect_roots_without_live_owner(
+    greenfield: SQLiteConnector,
+    orphan: str,
+) -> None:
+    _disable_integrity(greenfield)
+    preparation_id = b"o" * 16
+    if orphan == "seal":
+        greenfield.connection.execute(
+            "INSERT INTO operational_operational_preparation_effect_seals "
+            "(preparation_id, event_count, final_chain_sha256, sealed_at) "
+            "VALUES (?, 0, ?, 1)",
+            (preparation_id, b"e" * 32),
+        )
+        message = "effect seal lacks preparation or commit authority"
+    else:
+        greenfield.connection.execute(
+            "INSERT INTO operational_operational_event_streams "
+            "(preparation_id, created_at) VALUES (?, 1)",
+            (preparation_id,),
+        )
+        message = "event stream lacks preparation or seal authority"
+
+    with pytest.raises(OperationalSemanticValidationError, match=message):
+        operational_runtime.check_event_integrity_contract_v1(greenfield)
+
+
 def test_runtime_blockers_name_every_delegated_high_cardinality_duty() -> None:
     assert set(OPERATIONAL_RUNTIME_WRITER_BLOCKERS) == set(
         builtin_operational_semantic_validators()
@@ -243,14 +271,6 @@ def test_fencing_checks_only_exact_current_projection(
         """,
         (1, 1, 0, "DOWNLOADING", 1),
     )
-    greenfield.connection.execute(
-        """
-        INSERT INTO operational_ingest_generation_leases
-            (generation, lease_expires_at)
-        VALUES (?, ?)
-        """,
-        (1, 10),
-    )
     with pytest.raises(OperationalSemanticValidationError, match="exact owner"):
         check_fencing_contract_v1(greenfield)
 
@@ -259,10 +279,10 @@ def test_fencing_checks_only_exact_current_projection(
     greenfield.connection.execute(
         """
         INSERT INTO operational_ingest_generation_owners
-            (generation, owner_token, claimed_at)
-        VALUES (?, ?, ?)
+            (generation, owner_token, claimed_at, lease_expires_at)
+        VALUES (?, ?, ?, ?)
         """,
-        (1, owner, 1),
+        (1, owner, 1, 10),
     )
     check_fencing_contract_v1(greenfield)
 
@@ -398,10 +418,24 @@ def _insert_open_cleanup_job(connector: SQLiteConnector) -> tuple[bytes, str]:
         INSERT INTO operational_cleanup_jobs
             (cleanup_id, target_key, cycle_generation, cycle_cutoff_at,
              algorithm_version, max_rows_per_transaction,
-             hash_cache_max_age_microseconds, state, created_at, completed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             hash_cache_max_age_microseconds, frozen_root_count,
+             frozen_root_set_sha256, state, created_at, completed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (cleanup_id, target_key, 1, 0, 1, 256, 0, "OPEN", 0, None),
+        (
+            cleanup_id,
+            target_key,
+            1,
+            0,
+            2,
+            256,
+            0,
+            0,
+            operational_runtime._cleanup_frozen_root_set_sha256(cleanup_id, ()),
+            "OPEN",
+            0,
+            None,
+        ),
     )
     phase = connector.connection.execute("""
         SELECT phase
@@ -416,6 +450,17 @@ def test_cleanup_terminal_state_is_equivalent_to_empty_receipt(
     greenfield: SQLiteConnector,
 ) -> None:
     cleanup_id, phase = _insert_open_cleanup_job(greenfield)
+    prior_chain = b"p" * 32
+    input_sha256 = b"i" * 32
+    terminal_output = operational_runtime._cleanup_next_chain_sha256(
+        prior_chain,
+        phase,
+        2,
+        b"next",
+        b"next",
+        input_sha256,
+        0,
+    )
     greenfield.connection.execute(
         """
         INSERT INTO operational_cleanup_checkpoints
@@ -423,34 +468,53 @@ def test_cleanup_terminal_state_is_equivalent_to_empty_receipt(
              chain_sha256, state, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (cleanup_id, phase, 1, b"next", 0, b"c" * 32, "OPEN", 0),
+        (cleanup_id, phase, 2, b"next", 0, terminal_output, "OPEN", 0),
     )
     greenfield.connection.execute(
         """
-        INSERT INTO operational_cleanup_batch_receipts
-            (cleanup_id, phase, batch_key, start_cursor, next_cursor,
-             input_sha256, output_sha256, row_count,
-             committed_generation, committed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO operational_cleanup_batch_receipts
+                (cleanup_id, phase, batch_key, start_cursor, next_cursor,
+                 prior_chain_sha256, prior_deleted_count,
+                 input_sha256, output_sha256, row_count,
+                 committed_generation, committed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             cleanup_id,
             phase,
             b"k" * 32,
-            b"",
             b"next",
-            b"i" * 32,
-            b"o" * 32,
+            b"next",
+            prior_chain,
             0,
-            1,
+            input_sha256,
+            terminal_output,
+            0,
+            2,
             0,
         ),
     )
     with pytest.raises(OperationalSemanticValidationError, match="equivalence"):
         check_bounded_work_contract_v1(greenfield)
 
+    nonterminal_output = operational_runtime._cleanup_next_chain_sha256(
+        prior_chain,
+        phase,
+        2,
+        b"",
+        b"next",
+        input_sha256,
+        1,
+    )
     greenfield.connection.execute(
-        "UPDATE operational_cleanup_batch_receipts SET row_count = 1"
+        "UPDATE operational_cleanup_batch_receipts "
+        "SET row_count = 1, start_cursor = x'', output_sha256 = ?",
+        (nonterminal_output,),
+    )
+    greenfield.connection.execute(
+        "UPDATE operational_cleanup_checkpoints "
+        "SET deleted_count = 1, chain_sha256 = ?",
+        (nonterminal_output,),
     )
     check_bounded_work_contract_v1(greenfield)
 
@@ -459,11 +523,46 @@ def test_cleanup_terminal_state_is_equivalent_to_empty_receipt(
     )
     with pytest.raises(OperationalSemanticValidationError, match="equivalence"):
         check_bounded_work_contract_v1(greenfield)
-
+    next_terminal_output = operational_runtime._cleanup_next_chain_sha256(
+        nonterminal_output,
+        phase,
+        2,
+        b"next",
+        b"next",
+        input_sha256,
+        0,
+    )
     greenfield.connection.execute(
-        "UPDATE operational_cleanup_batch_receipts SET row_count = 0"
+        "UPDATE operational_cleanup_batch_receipts SET row_count = 0, "
+        "start_cursor = next_cursor, prior_chain_sha256 = ?, "
+        "prior_deleted_count = 1, output_sha256 = ?",
+        (nonterminal_output, next_terminal_output),
+    )
+    greenfield.connection.execute(
+        "UPDATE operational_cleanup_checkpoints SET chain_sha256 = ?",
+        (next_terminal_output,),
     )
     check_bounded_work_contract_v1(greenfield)
+
+
+def test_generated_cleanup_layout_requires_state_to_root_phase_chains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    records = ARTIFACT_DATA["backends"]["sqlite"]["bootstrap_seeded_relations"]
+    phase_record = cast(
+        dict[str, Any],
+        next(value for value in records if value["relation"] == "cleanup_phase"),
+    )
+    expected_rows = cast(tuple[tuple[object, ...], ...], phase_record["expected_rows"])
+    drifted = tuple(
+        ("AR_STATE_BYPASS", target_kind, order)
+        if phase == "AR_STATE"
+        else (phase, target_kind, order)
+        for phase, target_kind, order in expected_rows
+    )
+    monkeypatch.setitem(phase_record, "expected_rows", drifted)
+    with pytest.raises(OperationalSemanticRegistryError, match="phase chain drifts"):
+        operational_runtime._cleanup_layout("sqlite")
 
 
 def test_cleanup_cycle_codec_corruption_fails_closed(
@@ -480,10 +579,24 @@ def test_cleanup_cycle_codec_corruption_fails_closed(
         INSERT INTO operational_cleanup_jobs
             (cleanup_id, target_key, cycle_generation, cycle_cutoff_at,
              algorithm_version, max_rows_per_transaction,
-             hash_cache_max_age_microseconds, state, created_at, completed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             hash_cache_max_age_microseconds, frozen_root_count,
+             frozen_root_set_sha256, state, created_at, completed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (b"x" * 16, target[0], 1, 0, 1, 256, 0, "OPEN", 0, None),
+        (
+            b"x" * 16,
+            target[0],
+            1,
+            0,
+            2,
+            256,
+            0,
+            0,
+            operational_runtime._cleanup_frozen_root_set_sha256(b"x" * 16, ()),
+            "OPEN",
+            0,
+            None,
+        ),
     )
     with pytest.raises(OperationalSemanticValidationError, match="cleanup_id"):
         check_attempt_identity_contract_v1(greenfield)
@@ -557,7 +670,7 @@ def _table_name(relation_name: str) -> str:
     )
 
 
-def test_ready_query_budget_excludes_high_cardinality_corpus(
+def test_full_check_query_budget_limits_transition_and_owner_audits(
     greenfield: SQLiteConnector,
 ) -> None:
     _insert_ready_ingest_head(greenfield)
@@ -590,12 +703,10 @@ def test_ready_query_budget_excludes_high_cardinality_corpus(
         "ingest_coordination_head",
         "ingest_generation",
         "ingest_generation_owner",
-        "ingest_generation_lease",
         "ingest_generation_handoff",
         "download_coordination_head",
         "download_generation",
         "download_generation_owner",
-        "download_generation_lease",
         "download_ingest_handoff",
         "download_ingest_consumption",
         "coordinated_ingest_completion",
@@ -607,14 +718,23 @@ def test_ready_query_budget_excludes_high_cardinality_corpus(
         "cleanup_sweep_target",
         "cleanup_phase",
         "cleanup_job",
+        "cleanup_cycle_root",
         "cleanup_completion",
         "cleanup_checkpoint",
         "cleanup_batch_receipt",
         "revision_allocator",
         "identity_allocator",
+        "gallery_observation_staging_request_budget",
+        "gallery_observation_staging_request",
+        "publication_commit",
+        "operational_preparation",
+        "operational_preparation_effect_seal",
+        "operational_event_stream",
     }
     allowed_tables = {_table_name(name) for name in allowed_relations}
     allowed_tables.add("h2hdb_schema_epoch")
+    cleanup_cycle_root_table = _table_name("cleanup_cycle_root")
+    assert cleanup_cycle_root_table == "operational_cleanup_cycle_roots"
     fixed_scan_tables = {
         _table_name(name)
         for name in {
@@ -623,11 +743,23 @@ def test_ready_query_budget_excludes_high_cardinality_corpus(
             "cleanup_sweep_target",
             "cleanup_phase",
             "cleanup_job",
+            "cleanup_cycle_root",
             "cleanup_completion",
             "cleanup_checkpoint",
             "cleanup_batch_receipt",
             "revision_allocator",
             "identity_allocator",
+            "gallery_observation_staging_request_budget",
+        }
+    }
+    capped_request_table = _table_name("gallery_observation_staging_request")
+    owner_audit_tables = {
+        _table_name(name)
+        for name in {
+            "publication_commit",
+            "operational_preparation",
+            "operational_preparation_effect_seal",
+            "operational_event_stream",
         }
     }
     relation_pattern = re.compile(r"\b(?:FROM|JOIN)\s+([a-z0-9_]+)", re.I)
@@ -638,14 +770,29 @@ def test_ready_query_budget_excludes_high_cardinality_corpus(
         tables = {match.lower() for match in relation_pattern.findall(query)}
         queried_tables.update(tables)
         assert tables <= allowed_tables
-        assert " LIMIT " in f" {normalized.upper()} "
+        if tables == {capped_request_table}:
+            assert normalized == f"SELECT COUNT(*) FROM {capped_request_table}"
+        else:
+            assert " LIMIT " in f" {normalized.upper()} "
 
         plan = greenfield.connection.execute(
             "EXPLAIN QUERY PLAN " + query.replace("%s", "?"), data
         ).fetchall()
         if any("SCAN" in cast(str, row[3]).upper() for row in plan):
-            assert tables <= fixed_scan_tables
+            assert (
+                tables <= fixed_scan_tables
+                or tables == {capped_request_table}
+                or tables <= owner_audit_tables
+            )
 
     assert _table_name("download_request") not in queried_tables
     assert _table_name("source_revision") not in queried_tables
     assert _table_name("gallery_observation_staging") not in queried_tables
+    cycle_root_queries = [
+        " ".join(query.split()).upper()
+        for query, _data in recording.queries
+        if cleanup_cycle_root_table in query.lower()
+    ]
+    assert cycle_root_queries
+    assert all(" LIMIT 257" in query for query in cycle_root_queries)
+    assert capped_request_table in queried_tables

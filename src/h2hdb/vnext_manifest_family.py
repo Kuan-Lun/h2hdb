@@ -1,8 +1,9 @@
-"""Exact storage protocols for source and manifest families.
+"""Exact storage protocols for source and manifest relations.
 
-Source, build, and snapshot descriptors remain sealed narrow families.  A
-gallery manifest is one atomic BCNF row, so readers and writers use that base
-directly and exact-compare it on replay.
+Immutable descriptors and manifests are atomic BCNF rows.  Source-build state
+and its optional terminal timestamp remain separate lifecycle authorities, so
+readers validate the complete lifecycle shape and every replay exact-compares
+the durable tuple.
 """
 
 from __future__ import annotations
@@ -37,28 +38,17 @@ from .vnext_domains import (
 from .vnext_identity import artifact_source_manifest_digest
 from .vnext_transaction import LockRank, VNextUnitOfWork, encode_lock_key
 
-_SOURCE_BUILD_ANCHOR = "catalog_source_build_anchors"
-_SOURCE_BUILD_SCOPE = "catalog_source_build_scope_keys"
-_SOURCE_BUILD_POLICY = "catalog_source_build_manifest_policy_ids"
+_SOURCE_BUILD_DESCRIPTOR = "catalog_source_build_descriptor"
 _SOURCE_BUILD_STATE = "catalog_source_build_states"
-_SOURCE_BUILD_CREATED = "catalog_source_build_created_ats"
-_SOURCE_BUILD_DESCRIPTOR_SEAL = "catalog_source_build_descriptor_seals"
 _SOURCE_BUILD_SEALED = "catalog_source_build_sealed_ats"
 
-_BUILD_MANIFEST_ANCHOR = "catalog_build_manifest_anchors"
-_BUILD_MANIFEST_DIGEST = "catalog_build_manifest_manifest_sha256s"
-_BUILD_MANIFEST_FILE_COUNT = "catalog_build_manifest_file_counts"
-_BUILD_MANIFEST_BYTE_COUNT = "catalog_build_manifest_byte_counts"
-_BUILD_MANIFEST_SEAL = "catalog_build_manifest_seals"
-_DISCOVERY_GALLERY_COUNT = "catalog_source_build_discovery_gallery_counts"
+_BUILD_MANIFEST_CORE = "catalog_build_manifest_core"
+_SOURCE_BUILD_DISCOVERY = "catalog_source_build_discoveries"
 
 _GALLERY_MANIFEST = "catalog_gallery_manifests"
+_MANIFEST_POLICY = "catalog_manifest_policies"
 
-_SNAPSHOT_ANCHOR = "catalog_source_snapshot_manifest_identity_anchors"
-_SNAPSHOT_GALLERY_COUNT = "catalog_source_snapshot_manifest_identity_gallery_counts"
-_SNAPSHOT_FILE_COUNT = "catalog_source_snapshot_manifest_identity_file_counts"
-_SNAPSHOT_BYTE_COUNT = "catalog_source_snapshot_manifest_identity_byte_counts"
-_SNAPSHOT_SEAL = "catalog_source_snapshot_manifest_identity_seals"
+_SNAPSHOT_MANIFEST = "catalog_source_snapshot_manifest_identity"
 
 
 class ManifestFamilyCollisionError(RuntimeError):
@@ -176,37 +166,28 @@ def load_source_build_family(
     build = require_uuid16(build_id, field="build_id")
     row = connector.fetch_one(
         "WITH family_keys(build_id) AS ("
-        f"SELECT build_id FROM {_SOURCE_BUILD_ANCHOR} WHERE build_id = %s UNION "
-        f"SELECT build_id FROM {_SOURCE_BUILD_SCOPE} WHERE build_id = %s UNION "
-        f"SELECT build_id FROM {_SOURCE_BUILD_POLICY} WHERE build_id = %s UNION "
+        f"SELECT build_id FROM {_SOURCE_BUILD_DESCRIPTOR} WHERE build_id = %s UNION "
         f"SELECT build_id FROM {_SOURCE_BUILD_STATE} WHERE build_id = %s UNION "
-        f"SELECT build_id FROM {_SOURCE_BUILD_CREATED} WHERE build_id = %s UNION "
-        f"SELECT build_id FROM {_SOURCE_BUILD_DESCRIPTOR_SEAL} WHERE build_id = %s UNION "
         f"SELECT build_id FROM {_SOURCE_BUILD_SEALED} WHERE build_id = %s) "
-        "SELECT k.build_id, a.build_id, scope.build_id, scope.scope_key, "
-        "policy.build_id, policy.manifest_policy_id, state.build_id, state.state, "
-        "created.build_id, created.created_at, descriptor.build_id, "
-        "sealed.build_id, sealed.sealed_at FROM family_keys k "
-        f"LEFT JOIN {_SOURCE_BUILD_ANCHOR} a ON a.build_id = k.build_id "
-        f"LEFT JOIN {_SOURCE_BUILD_SCOPE} scope ON scope.build_id = k.build_id "
-        f"LEFT JOIN {_SOURCE_BUILD_POLICY} policy ON policy.build_id = k.build_id "
-        f"LEFT JOIN {_SOURCE_BUILD_STATE} state ON state.build_id = k.build_id "
-        f"LEFT JOIN {_SOURCE_BUILD_CREATED} created ON created.build_id = k.build_id "
-        f"LEFT JOIN {_SOURCE_BUILD_DESCRIPTOR_SEAL} descriptor "
+        "SELECT k.build_id, descriptor.build_id, descriptor.scope_key, "
+        "descriptor.manifest_policy_id, descriptor.created_at, state.build_id, "
+        "state.state, sealed.build_id, sealed.sealed_at FROM family_keys k "
+        f"LEFT JOIN {_SOURCE_BUILD_DESCRIPTOR} descriptor "
         "ON descriptor.build_id = k.build_id "
+        f"LEFT JOIN {_SOURCE_BUILD_STATE} state ON state.build_id = k.build_id "
         f"LEFT JOIN {_SOURCE_BUILD_SEALED} sealed ON sealed.build_id = k.build_id",
-        (build,) * 7,
+        (build,) * 3,
     )
     if not row:
         return None
-    if len(row) != 13 or any(row[index] != build for index in (0, 1, 2, 4, 6, 8, 10)):
+    if len(row) != 9 or any(row[index] != build for index in (0, 1, 5)):
         raise ManifestFamilyPartialError(
-            "source build has an existing incomplete descriptor family"
+            "source build has an existing incomplete lifecycle family"
         )
-    if row[11] not in {None, build}:
+    if row[7] not in {None, build}:
         raise ManifestFamilyPartialError("source build sealed_at key differs")
     try:
-        return SourceBuildFamily(build, row[3], row[5], row[7], row[9], row[12])
+        return SourceBuildFamily(build, row[2], row[3], row[6], row[4], row[8])
     except (TypeError, ValueError) as error:
         raise ManifestFamilyCollisionError(
             "source build contains invalid descriptor facts"
@@ -237,29 +218,19 @@ def ensure_source_build_family(
             )
         return existing
     connector.execute(
-        f"INSERT INTO {_SOURCE_BUILD_ANCHOR} (build_id) VALUES (%s)",
-        (proposed.build_id,),
-    )
-    connector.execute(
-        f"INSERT INTO {_SOURCE_BUILD_SCOPE} (build_id, scope_key) VALUES (%s, %s)",
-        (proposed.build_id, proposed.scope_key),
-    )
-    connector.execute(
-        f"INSERT INTO {_SOURCE_BUILD_POLICY} "
-        "(build_id, manifest_policy_id) VALUES (%s, %s)",
-        (proposed.build_id, proposed.manifest_policy_id),
+        f"INSERT INTO {_SOURCE_BUILD_DESCRIPTOR} "
+        "(build_id, scope_key, manifest_policy_id, created_at) "
+        "VALUES (%s, %s, %s, %s)",
+        (
+            proposed.build_id,
+            proposed.scope_key,
+            proposed.manifest_policy_id,
+            proposed.created_at,
+        ),
     )
     connector.execute(
         f"INSERT INTO {_SOURCE_BUILD_STATE} (build_id, state) VALUES (%s, %s)",
         (proposed.build_id, "OPEN"),
-    )
-    connector.execute(
-        f"INSERT INTO {_SOURCE_BUILD_CREATED} (build_id, created_at) VALUES (%s, %s)",
-        (proposed.build_id, proposed.created_at),
-    )
-    connector.execute(
-        f"INSERT INTO {_SOURCE_BUILD_DESCRIPTOR_SEAL} (build_id) VALUES (%s)",
-        (proposed.build_id,),
     )
     return proposed
 
@@ -271,36 +242,24 @@ def load_build_manifest_family(
 ) -> BuildManifestFamily | None:
     build = require_uuid16(build_id, field="build_id")
     row = connector.fetch_one(
-        "WITH family_keys(build_id) AS ("
-        f"SELECT build_id FROM {_BUILD_MANIFEST_ANCHOR} WHERE build_id = %s UNION "
-        f"SELECT build_id FROM {_BUILD_MANIFEST_DIGEST} WHERE build_id = %s UNION "
-        f"SELECT build_id FROM {_BUILD_MANIFEST_FILE_COUNT} WHERE build_id = %s UNION "
-        f"SELECT build_id FROM {_BUILD_MANIFEST_BYTE_COUNT} WHERE build_id = %s UNION "
-        f"SELECT build_id FROM {_BUILD_MANIFEST_SEAL} WHERE build_id = %s) "
-        "SELECT k.build_id, a.build_id, digest.build_id, digest.manifest_sha256, "
-        "files.build_id, files.file_count, bytes.build_id, bytes.byte_count, "
-        "seal.build_id, galleries.build_id, galleries.gallery_count, "
-        "completed.build_id, completed.sealed_at FROM family_keys k "
-        f"LEFT JOIN {_BUILD_MANIFEST_ANCHOR} a ON a.build_id = k.build_id "
-        f"LEFT JOIN {_BUILD_MANIFEST_DIGEST} digest ON digest.build_id = k.build_id "
-        f"LEFT JOIN {_BUILD_MANIFEST_FILE_COUNT} files ON files.build_id = k.build_id "
-        f"LEFT JOIN {_BUILD_MANIFEST_BYTE_COUNT} bytes ON bytes.build_id = k.build_id "
-        f"LEFT JOIN {_BUILD_MANIFEST_SEAL} seal ON seal.build_id = k.build_id "
-        f"LEFT JOIN {_DISCOVERY_GALLERY_COUNT} galleries "
-        "ON galleries.build_id = k.build_id "
-        f"LEFT JOIN {_SOURCE_BUILD_SEALED} completed ON completed.build_id = k.build_id",
-        (build,) * 5,
+        "SELECT manifest.build_id, manifest.manifest_sha256, "
+        "manifest.file_count, manifest.byte_count, discovery.build_id, "
+        "discovery.gallery_count, completed.build_id, completed.sealed_at FROM "
+        f"{_BUILD_MANIFEST_CORE} manifest "
+        f"LEFT JOIN {_SOURCE_BUILD_DISCOVERY} discovery "
+        "ON discovery.build_id = manifest.build_id "
+        f"LEFT JOIN {_SOURCE_BUILD_SEALED} completed "
+        "ON completed.build_id = manifest.build_id WHERE manifest.build_id = %s",
+        (build,),
     )
     if not row:
         return None
-    if len(row) != 13 or any(
-        row[index] != build for index in (0, 1, 2, 4, 6, 8, 9, 11)
-    ):
+    if len(row) != 8 or any(row[index] != build for index in (0, 4, 6)):
         raise ManifestFamilyPartialError(
             "build manifest has an existing incomplete sealed family"
         )
     try:
-        return BuildManifestFamily(build, row[3], row[10], row[5], row[7], row[12])
+        return BuildManifestFamily(build, row[1], row[5], row[2], row[3], row[7])
     except (TypeError, ValueError) as error:
         raise ManifestFamilyCollisionError(
             "build manifest contains invalid immutable facts"
@@ -331,7 +290,7 @@ def ensure_build_manifest_family(
             raise ManifestFamilyCollisionError("build manifest replay differs")
         return existing
     if connector.fetch_one(
-        f"SELECT gallery_count FROM {_DISCOVERY_GALLERY_COUNT} WHERE build_id = %s",
+        f"SELECT gallery_count FROM {_SOURCE_BUILD_DISCOVERY} WHERE build_id = %s",
         (proposed.build_id,),
     ) != (proposed.gallery_count,):
         raise ManifestFamilyCollisionError(
@@ -340,32 +299,24 @@ def ensure_build_manifest_family(
     if connector.fetch_one(
         f"SELECT sealed_at FROM {_SOURCE_BUILD_SEALED} WHERE build_id = %s",
         (proposed.build_id,),
-    ) != (proposed.computed_at,):
-        raise ManifestFamilyCollisionError(
-            "build manifest computed_at differs from source build sealed_at"
+    ):
+        raise ManifestFamilyPartialError(
+            "source build sealed_at exists without its manifest core"
         )
     connector.execute(
-        f"INSERT INTO {_BUILD_MANIFEST_ANCHOR} (build_id) VALUES (%s)",
-        (proposed.build_id,),
+        f"INSERT INTO {_BUILD_MANIFEST_CORE} "
+        "(build_id, manifest_sha256, file_count, byte_count) "
+        "VALUES (%s, %s, %s, %s)",
+        (
+            proposed.build_id,
+            proposed.manifest_sha256,
+            proposed.file_count,
+            proposed.byte_count,
+        ),
     )
     connector.execute(
-        f"INSERT INTO {_BUILD_MANIFEST_DIGEST} "
-        "(build_id, manifest_sha256) VALUES (%s, %s)",
-        (proposed.build_id, proposed.manifest_sha256),
-    )
-    connector.execute(
-        f"INSERT INTO {_BUILD_MANIFEST_FILE_COUNT} "
-        "(build_id, file_count) VALUES (%s, %s)",
-        (proposed.build_id, proposed.file_count),
-    )
-    connector.execute(
-        f"INSERT INTO {_BUILD_MANIFEST_BYTE_COUNT} "
-        "(build_id, byte_count) VALUES (%s, %s)",
-        (proposed.build_id, proposed.byte_count),
-    )
-    connector.execute(
-        f"INSERT INTO {_BUILD_MANIFEST_SEAL} (build_id) VALUES (%s)",
-        (proposed.build_id,),
+        f"INSERT INTO {_SOURCE_BUILD_SEALED} (build_id, sealed_at) VALUES (%s, %s)",
+        (proposed.build_id, proposed.computed_at),
     )
     return proposed
 
@@ -427,13 +378,8 @@ def ensure_gallery_manifest_family(
         field="observation_identity_sha256",
     )
     policy = work.connector.fetch_one(
-        "SELECT algorithm.manifest_algorithm_version, orders.file_order_version "
-        "FROM catalog_manifest_policy_seals seal "
-        "JOIN catalog_manifest_policy_manifest_algorithm_versions algorithm "
-        "ON algorithm.manifest_policy_id = seal.manifest_policy_id "
-        "JOIN catalog_manifest_policy_file_order_versions orders "
-        "ON orders.manifest_policy_id = seal.manifest_policy_id "
-        "WHERE seal.manifest_policy_id = %s",
+        "SELECT manifest_algorithm_version, file_order_version "
+        f"FROM {_MANIFEST_POLICY} WHERE manifest_policy_id = %s",
         (policy_id,),
     )
     if len(policy) != 2:
@@ -491,31 +437,16 @@ def load_snapshot_manifest_family(
         field="snapshot_manifest_sha256",
     )
     row = connector.fetch_one(
-        "WITH family_keys(snapshot_manifest_sha256) AS ("
-        f"SELECT snapshot_manifest_sha256 FROM {_SNAPSHOT_ANCHOR} WHERE snapshot_manifest_sha256 = %s UNION "
-        f"SELECT snapshot_manifest_sha256 FROM {_SNAPSHOT_GALLERY_COUNT} WHERE snapshot_manifest_sha256 = %s UNION "
-        f"SELECT snapshot_manifest_sha256 FROM {_SNAPSHOT_FILE_COUNT} WHERE snapshot_manifest_sha256 = %s UNION "
-        f"SELECT snapshot_manifest_sha256 FROM {_SNAPSHOT_BYTE_COUNT} WHERE snapshot_manifest_sha256 = %s UNION "
-        f"SELECT snapshot_manifest_sha256 FROM {_SNAPSHOT_SEAL} WHERE snapshot_manifest_sha256 = %s) "
-        "SELECT k.snapshot_manifest_sha256, a.snapshot_manifest_sha256, "
-        "g.snapshot_manifest_sha256, g.gallery_count, f.snapshot_manifest_sha256, "
-        "f.file_count, b.snapshot_manifest_sha256, b.byte_count, "
-        "s.snapshot_manifest_sha256 FROM family_keys k "
-        f"LEFT JOIN {_SNAPSHOT_ANCHOR} a USING (snapshot_manifest_sha256) "
-        f"LEFT JOIN {_SNAPSHOT_GALLERY_COUNT} g USING (snapshot_manifest_sha256) "
-        f"LEFT JOIN {_SNAPSHOT_FILE_COUNT} f USING (snapshot_manifest_sha256) "
-        f"LEFT JOIN {_SNAPSHOT_BYTE_COUNT} b USING (snapshot_manifest_sha256) "
-        f"LEFT JOIN {_SNAPSHOT_SEAL} s USING (snapshot_manifest_sha256)",
-        (value,) * 5,
+        "SELECT snapshot_manifest_sha256, gallery_count, file_count, byte_count "
+        f"FROM {_SNAPSHOT_MANIFEST} WHERE snapshot_manifest_sha256 = %s",
+        (value,),
     )
     if not row:
         return None
-    if len(row) != 9 or any(row[index] != value for index in (0, 1, 2, 4, 6, 8)):
-        raise ManifestFamilyPartialError(
-            "snapshot manifest has an existing incomplete sealed family"
-        )
     try:
-        return SnapshotManifestFamily(value, row[3], row[5], row[7])
+        if len(row) != 4 or row[0] != value:
+            raise ValueError("snapshot manifest row has an invalid shape")
+        return SnapshotManifestFamily(value, row[1], row[2], row[3])
     except (TypeError, ValueError) as error:
         raise ManifestFamilyCollisionError(
             "snapshot manifest contains invalid immutable counts"
@@ -547,20 +478,14 @@ def ensure_snapshot_manifest_family(
             )
         return existing
     connector.execute(
-        f"INSERT INTO {_SNAPSHOT_ANCHOR} (snapshot_manifest_sha256) VALUES (%s)",
-        (proposed.snapshot_manifest_sha256,),
-    )
-    for table, column, value in (
-        (_SNAPSHOT_GALLERY_COUNT, "gallery_count", proposed.gallery_count),
-        (_SNAPSHOT_FILE_COUNT, "file_count", proposed.file_count),
-        (_SNAPSHOT_BYTE_COUNT, "byte_count", proposed.byte_count),
-    ):
-        connector.execute(
-            f"INSERT INTO {table} (snapshot_manifest_sha256, {column}) VALUES (%s, %s)",
-            (proposed.snapshot_manifest_sha256, value),
-        )
-    connector.execute(
-        f"INSERT INTO {_SNAPSHOT_SEAL} (snapshot_manifest_sha256) VALUES (%s)",
-        (proposed.snapshot_manifest_sha256,),
+        f"INSERT INTO {_SNAPSHOT_MANIFEST} "
+        "(snapshot_manifest_sha256, gallery_count, file_count, byte_count) "
+        "VALUES (%s, %s, %s, %s)",
+        (
+            proposed.snapshot_manifest_sha256,
+            proposed.gallery_count,
+            proposed.file_count,
+            proposed.byte_count,
+        ),
     )
     return proposed

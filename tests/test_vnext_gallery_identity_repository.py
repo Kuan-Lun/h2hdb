@@ -30,6 +30,7 @@ from h2hdb.vnext_maintenance_gate_repository import (
     MaintenanceGateRepository,
 )
 from h2hdb.vnext_source_build_repository import (
+    SourceBuildManifestSummary,
     SourceBuildRepository,
     SourceRootBuildCommand,
 )
@@ -111,12 +112,14 @@ def _working_build(
     connector: SQLiteConnector,
 ) -> tuple[GateLease, IngestTurn, bytes, CanonicalValueUploadPlan]:
     gate, turn = _authorities(connector)
-    build_id = b"b" * 16
-    root_command = SourceRootBuildCommand(("Volumes", "資料"), build_id)
+    root_command = SourceRootBuildCommand(
+        ("Volumes", "資料"),
+        SourceBuildManifestSummary.empty(),
+    )
     root_plan = root_command.prepare_root_upload()
     _put_plan(connector, gate, turn, root_plan, now=20)
     with connector.transaction():
-        SourceBuildRepository.handoff_root(
+        handoff = SourceBuildRepository.handoff_root(
             VNextUnitOfWork(connector, backend="sqlite"),
             gate_lease=gate,
             ingest_turn=turn,
@@ -124,7 +127,7 @@ def _working_build(
             root_plan=root_plan,
             now=23,
         )
-    return gate, turn, build_id, root_plan
+    return gate, turn, handoff.build_id, root_plan
 
 
 def _handoff(

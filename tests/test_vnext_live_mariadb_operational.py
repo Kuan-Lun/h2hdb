@@ -6,20 +6,24 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from vnext_canonical_value_fixtures import seed_canonical_value
+from vnext_catalog_identity_fixtures import seed_gallery_identity
 from vnext_catalog_registry_fixtures import (
     seed_artifact_policy_semantics,
     seed_artifact_producer_fingerprint,
     seed_display_title_policy,
     seed_manifest_policy,
+    seed_source_scope,
     seed_title_sort_policy,
 )
-from vnext_manifest_fixtures import seed_snapshot_manifest
+from vnext_manifest_fixtures import seed_snapshot_manifest, seed_source_build
 from vnext_publication_fixtures import seed_publication_finalization_checkpoint
 
 from h2hdb import CoreConfig
 from h2hdb import vnext_identity as identity
 from h2hdb._generated_vnext_schema import ARTIFACT
 from h2hdb.mariadb_connector import MariaDBConnector
+from h2hdb.sql_connector import DatabaseDuplicateKeyError
 from h2hdb.vnext_allocator_repository import (
     IdentityStream,
     RevisionStream,
@@ -28,6 +32,16 @@ from h2hdb.vnext_allocator_repository import (
 from h2hdb.vnext_canonical_value_repository import (
     CanonicalValueRepository,
     CanonicalValueUploadPlan,
+)
+from h2hdb.vnext_cleanup_repository import (
+    CleanupBatchCommand,
+    CleanupTargetKind,
+    VNextCleanupRepository,
+)
+from h2hdb.vnext_gallery_staging_budget import (
+    lock_gallery_staging_request_budget,
+    release_gallery_staging_request_budget,
+    reserve_gallery_staging_request_budget,
 )
 from h2hdb.vnext_hash_cache_repository import (
     FileHashCacheConflictError,
@@ -55,11 +69,16 @@ from h2hdb.vnext_queue_repository import (
     VNextQueueRepository,
 )
 from h2hdb.vnext_source_build_repository import (
+    SourceBuildManifestSummary,
     SourceBuildRepository,
     SourceDiscoveryPlan,
     SourceRootBuildCommand,
 )
-from h2hdb.vnext_transaction import VNextUnitOfWork
+from h2hdb.vnext_transaction import (
+    LockRank,
+    VNextUnitOfWork,
+    encode_lock_key,
+)
 
 
 class _LiveMariaDBConnector(MariaDBConnector):
@@ -125,11 +144,6 @@ def generated_mariadb(
         "max_batch_rows) VALUES (%s, %s, %s, %s)",
         (1, 1, 1, 64),
     )
-    connector.execute(
-        "INSERT INTO operational_operational_consumers "
-        "(consumer_id, consumer_name) VALUES (%s, %s)",
-        (1, "live-mariadb-downloader"),
-    )
     try:
         yield connector
     finally:
@@ -170,12 +184,8 @@ def _ingest_snapshot(connector: MariaDBConnector) -> tuple[object, ...]:
                 "last_transition_at FROM operational_ingest_coordination_heads"
             ),
             connector.fetch_all(
-                "SELECT generation, owner_token, claimed_at "
+                "SELECT generation, owner_token, claimed_at, lease_expires_at "
                 "FROM operational_ingest_generation_owners ORDER BY generation"
-            ),
-            connector.fetch_all(
-                "SELECT generation, lease_expires_at "
-                "FROM operational_ingest_generation_leases ORDER BY generation"
             ),
         )
 
@@ -293,6 +303,380 @@ def _allocate_catalog_concurrently(
             )
     finally:
         connector.close()
+
+
+def _seed_live_canonical_value(
+    connector: MariaDBConnector,
+    *,
+    digest_domain: str,
+    payload: bytes,
+    now: int,
+) -> bytes:
+    value_sha256 = identity.canonical_value_digest(digest_domain, payload)
+    tree = identity.build_canonical_value_tree(
+        value_sha256,
+        len(payload),
+        (payload,),
+    )
+    assert len(tree.pages) == 1
+    page = tree.pages[0]
+    seed_canonical_value(
+        connector,
+        value_sha256=value_sha256,
+        digest_domain=digest_domain.encode("ascii"),
+        page_sha256=page.page_sha256,
+        page_bytes=page.page_bytes,
+        subtree_item_count=len(payload),
+        allocated_at=now,
+    )
+    return value_sha256
+
+
+def _reserve_live_staging_request(
+    config: CoreConfig,
+    barrier: Barrier,
+    *,
+    staging_id: bytes,
+    request_sha256: bytes,
+) -> str:
+    connector = _connector(config)
+    try:
+        barrier.wait(timeout=10)
+        with connector.transaction():
+            work = _work(connector)
+            reserve_gallery_staging_request_budget(work)
+            row = work.lock_row(
+                LockRank.CHILD,
+                encode_lock_key("gallery-staging-request", request_sha256),
+                "SELECT staging_id FROM "
+                "operational_gallery_observation_staging_requests "
+                "WHERE request_sha256 = %s",
+                (request_sha256,),
+            )
+            assert row == ()
+            connector.execute(
+                "INSERT INTO operational_gallery_observation_staging_requests "
+                "(request_sha256, staging_id) VALUES (%s, %s)",
+                (request_sha256, staging_id),
+            )
+        return "reserve"
+    finally:
+        connector.close()
+
+
+def _release_live_staging_request(
+    config: CoreConfig,
+    barrier: Barrier,
+    *,
+    staging_id: bytes,
+    request_sha256: bytes,
+) -> str:
+    connector = _connector(config)
+    try:
+        barrier.wait(timeout=10)
+        with connector.transaction():
+            work = _work(connector)
+            retained = lock_gallery_staging_request_budget(work)
+            row = work.lock_row(
+                LockRank.CHILD,
+                encode_lock_key("gallery-staging-request", request_sha256),
+                "SELECT staging_id FROM "
+                "operational_gallery_observation_staging_requests "
+                "WHERE request_sha256 = %s",
+                (request_sha256,),
+            )
+            assert row == (staging_id,)
+            assert (
+                connector.execute_affected(
+                    "DELETE FROM operational_gallery_observation_staging_requests "
+                    "WHERE request_sha256 = %s",
+                    (request_sha256,),
+                )
+                == 1
+            )
+            release_gallery_staging_request_budget(
+                work,
+                retained_request_count=retained,
+                deleted_count=1,
+            )
+        return "release"
+    finally:
+        connector.close()
+
+
+def test_live_mariadb_gallery_staging_budget_and_retiring_slot_serialize(
+    generated_mariadb: _LiveMariaDBConnector,
+    mariadb_config: CoreConfig,
+) -> None:
+    connector = generated_mariadb
+    root_sha256 = _seed_live_canonical_value(
+        connector,
+        digest_domain="source_root_v1",
+        payload=b"root",
+        now=10,
+    )
+    scope_key = seed_source_scope(
+        connector,
+        source_root_sha256=root_sha256,
+    ).scope_key
+    build_id = b"b" * 16
+    seed_source_build(
+        connector,
+        build_id=build_id,
+        scope_key=scope_key,
+        state="OPEN",
+        created_at=11,
+    )
+    for gallery_id, name in ((1, "gallery-one"), (2, "gallery-two")):
+        locator_payload = identity.encode_source_relative_locator((name,))
+        locator_sha256 = _seed_live_canonical_value(
+            connector,
+            digest_domain="source_relative_locator_v1",
+            payload=locator_payload,
+            now=11 + gallery_id,
+        )
+        connector.execute(
+            "INSERT INTO catalog_source_locator_identity "
+            "(locator_sha256, source_gallery_name) VALUES (%s, %s)",
+            (locator_sha256, name.encode("ascii")),
+        )
+        seed_gallery_identity(
+            connector,
+            gallery_id=gallery_id,
+            gallery_key=identity.gallery_key(scope_key, locator_sha256),
+            scope_key=scope_key,
+            locator_sha256=locator_sha256,
+        )
+        connector.execute(
+            "INSERT INTO catalog_gallery_observation_allocations "
+            "(gallery_id, observation_id, allocated_at) VALUES (%s, 1, 20)",
+            (gallery_id,),
+        )
+    connector.commit()
+
+    staging_id = b"s" * 16
+    with connector.transaction():
+        connector.execute(
+            "INSERT INTO operational_gallery_observation_stagings "
+            "(staging_id, build_id, gallery_id, observation_id, state, "
+            "created_at, sealed_at, terminal_byte_count) "
+            "VALUES (%s, %s, 1, 1, %s, 30, 31, 0)",
+            (staging_id, build_id, "RETIRING_SEALED"),
+        )
+    with pytest.raises(DatabaseDuplicateKeyError):
+        with connector.transaction():
+            connector.execute(
+                "INSERT INTO operational_gallery_observation_stagings "
+                "(staging_id, build_id, gallery_id, observation_id, state, "
+                "created_at, sealed_at, terminal_byte_count) "
+                "VALUES (%s, %s, 2, 1, %s, 32, 33, 0)",
+                (b"t" * 16, build_id, "RETIRING_REUSED"),
+            )
+
+    retired_request = b"r" * 32
+    with connector.transaction():
+        connector.execute(
+            "INSERT INTO operational_gallery_observation_staging_requests "
+            "(request_sha256, staging_id) VALUES (%s, %s)",
+            (retired_request, staging_id),
+        )
+        connector.execute(
+            "UPDATE operational_gallery_observation_staging_request_budgets "
+            "SET retained_request_count = 1 WHERE singleton_id = 1"
+        )
+
+    inserted_request = b"i" * 32
+    barrier = Barrier(2)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reserve = pool.submit(
+            _reserve_live_staging_request,
+            mariadb_config,
+            barrier,
+            staging_id=staging_id,
+            request_sha256=inserted_request,
+        )
+        release = pool.submit(
+            _release_live_staging_request,
+            mariadb_config,
+            barrier,
+            staging_id=staging_id,
+            request_sha256=retired_request,
+        )
+        assert {reserve.result(timeout=20), release.result(timeout=20)} == {
+            "reserve",
+            "release",
+        }
+    assert _read_one(
+        connector,
+        "SELECT retained_request_count FROM "
+        "operational_gallery_observation_staging_request_budgets "
+        "WHERE singleton_id = 1",
+    ) == (1,)
+    assert _read_all(
+        connector,
+        "SELECT request_sha256 FROM "
+        "operational_gallery_observation_staging_requests "
+        "ORDER BY request_sha256",
+    ) == [(inserted_request,)]
+
+    before_rollback = _read_all(
+        connector,
+        "SELECT request_sha256 FROM "
+        "operational_gallery_observation_staging_requests "
+        "ORDER BY request_sha256",
+    )
+    with pytest.raises(RuntimeError, match="budget rollback"):
+        with connector.transaction():
+            work = _work(connector)
+            reserve_gallery_staging_request_budget(work)
+            connector.execute(
+                "INSERT INTO operational_gallery_observation_staging_requests "
+                "(request_sha256, staging_id) VALUES (%s, %s)",
+                (b"z" * 32, staging_id),
+            )
+            raise RuntimeError("budget rollback")
+    assert (
+        _read_all(
+            connector,
+            "SELECT request_sha256 FROM "
+            "operational_gallery_observation_staging_requests "
+            "ORDER BY request_sha256",
+        )
+        == before_rollback
+    )
+    assert _read_one(
+        connector,
+        "SELECT retained_request_count FROM "
+        "operational_gallery_observation_staging_request_budgets "
+        "WHERE singleton_id = 1",
+    ) == (1,)
+
+
+def test_live_mariadb_cleanup_frozen_root_set_and_rollback(
+    generated_mariadb: _LiveMariaDBConnector,
+) -> None:
+    connector = generated_mariadb
+    source_identity = _seed_live_canonical_value(
+        connector,
+        digest_domain="filesystem_source_identity_v1",
+        payload=b"frozen-root-source",
+        now=10,
+    )
+    fingerprint = _seed_live_canonical_value(
+        connector,
+        digest_domain="filesystem_fingerprint_v1",
+        payload=b"frozen-root-fingerprint",
+        now=11,
+    )
+    file_sha256 = b"f" * 32
+    with connector.transaction():
+        connector.execute(
+            "INSERT INTO catalog_content_blobs (file_sha256, size_bytes) "
+            "VALUES (%s, 7)",
+            (file_sha256,),
+        )
+        connector.execute(
+            "INSERT INTO operational_hash_cache_observations "
+            "(source_identity_sha256, fingerprint_sha256, observed_at) "
+            "VALUES (%s, %s, 12)",
+            (source_identity, fingerprint),
+        )
+        connector.execute(
+            "INSERT INTO operational_file_hash_caches "
+            "(source_identity_sha256, fingerprint_sha256, file_sha256, cached_at) "
+            "VALUES (%s, %s, %s, 13)",
+            (source_identity, fingerprint, file_sha256),
+        )
+
+    gate = _claim_exclusive(
+        connector,
+        b"cleanup-frozen01",
+        now=20,
+        duration=100,
+    )
+    with connector.transaction():
+        cycle = VNextCleanupRepository.begin_cycle(
+            _work(connector),
+            gate_lease=gate,
+            target_kind=CleanupTargetKind.HASH_CACHE_OBSERVATION,
+            shard_no=source_identity[0],
+            cycle_cutoff_at=100,
+            max_rows_per_transaction=1,
+            hash_cache_max_age_microseconds=0,
+            now=21,
+        )
+    assert _read_one(
+        connector,
+        "SELECT frozen_root_count FROM operational_cleanup_jobs WHERE cleanup_id = %s",
+        (cycle.cleanup_id,),
+    ) == (1,)
+    assert _read_one(
+        connector,
+        "SELECT COUNT(*) FROM operational_cleanup_cycle_roots WHERE cleanup_id = %s",
+        (cycle.cleanup_id,),
+    ) == (1,)
+
+    def advance(batch_key: bytes, generation: int, now: int) -> Any:
+        with connector.transaction():
+            return VNextCleanupRepository.advance(
+                _work(connector),
+                gate_lease=gate,
+                cycle=cycle,
+                command=CleanupBatchCommand(batch_key, generation),
+                now=now,
+            )
+
+    first = advance(b"1" * 32, 1, 22)
+    assert first.phase == "HC_FILE" and first.generation == 2
+    second = advance(b"2" * 32, 2, 23)
+    assert second.phase == "HC_ROOT" and second.generation == 1
+    third = advance(b"3" * 32, 1, 24)
+    assert third.phase == "HC_ROOT" and third.generation == 2
+
+    command = CleanupBatchCommand(b"4" * 32, 2)
+    with pytest.raises(RuntimeError, match="abort frozen completion"):
+        with connector.transaction():
+            completed = VNextCleanupRepository.advance(
+                _work(connector),
+                gate_lease=gate,
+                cycle=cycle,
+                command=command,
+                now=25,
+            )
+            assert completed.cycle_complete
+            raise RuntimeError("abort frozen completion")
+    assert _read_one(
+        connector,
+        "SELECT state FROM operational_cleanup_jobs WHERE cleanup_id = %s",
+        (cycle.cleanup_id,),
+    ) == ("OPEN",)
+    assert _read_one(
+        connector,
+        "SELECT COUNT(*) FROM operational_cleanup_cycle_roots WHERE cleanup_id = %s",
+        (cycle.cleanup_id,),
+    ) == (1,)
+    assert (
+        _read_one(
+            connector,
+            "SELECT target_key FROM operational_cleanup_completions "
+            "WHERE target_key = %s",
+            (cycle.target_key,),
+        )
+        == ()
+    )
+
+    committed = advance(b"4" * 32, 2, 26)
+    assert committed.cycle_complete and not committed.replayed
+    replayed = advance(b"4" * 32, 2, 27)
+    assert replayed.cycle_complete and replayed.replayed
+    assert (
+        _read_one(
+            connector,
+            "SELECT 1 FROM operational_cleanup_cycle_roots WHERE cleanup_id = %s",
+            (cycle.cleanup_id,),
+        )
+        == ()
+    )
 
 
 def test_live_mariadb_operational_writer_workflows(
@@ -548,12 +932,11 @@ def test_live_mariadb_operational_writer_workflows(
     # Build and hash-cache authority is created only through production writer
     # APIs. The empty discovery is a valid exact source snapshot and keeps the
     # integration focused on the operational state machines.
-    build_id = b"mariadb-build001"
-    root_command = SourceRootBuildCommand((), build_id)
+    root_command = SourceRootBuildCommand((), SourceBuildManifestSummary.empty())
     with root_command.prepare_root_upload() as root_plan:
         _upload(connector, current_gate, current_turn, root_plan, now=501)
         with connector.transaction():
-            SourceBuildRepository.handoff_root(
+            source = SourceBuildRepository.handoff_root(
                 _work(connector),
                 gate_lease=current_gate,
                 ingest_turn=current_turn,
@@ -561,6 +944,7 @@ def test_live_mariadb_operational_writer_workflows(
                 root_plan=root_plan,
                 now=504,
             )
+    build_id = source.build_id
 
     source_plan = CanonicalValueUploadPlan.from_parts(
         "filesystem_source_identity_v1",
@@ -678,36 +1062,15 @@ def test_live_mariadb_operational_writer_workflows(
         byte_count=0,
     )
     connector.execute(
-        "INSERT INTO catalog_source_revision_anchors (source_revision) VALUES (%s)",
-        (source_revision,),
+        "INSERT INTO catalog_source_revision_descriptors "
+        "(source_revision, channel, snapshot_manifest_sha256) "
+        "VALUES (%s, %s, %s)",
+        (source_revision, b"default", snapshot_manifest_sha256),
     )
     connector.execute(
-        "INSERT INTO catalog_source_revision_channels "
-        "(source_revision, channel) VALUES (%s, %s)",
-        (source_revision, b"default"),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_revision_snapshot_manifests "
-        "(source_revision, snapshot_manifest_sha256) VALUES (%s, %s)",
-        (source_revision, snapshot_manifest_sha256),
-    )
-    connector.execute(
-        "INSERT INTO catalog_source_revision_descriptor_seals "
-        "(source_revision) VALUES (%s)",
-        (source_revision,),
-    )
-    connector.execute(
-        "INSERT INTO catalog_revision_anchors (revision) VALUES (%s)",
-        (catalog_revision,),
-    )
-    connector.execute(
-        "INSERT INTO catalog_revision_publication_counts "
+        "INSERT INTO catalog_revision_descriptors "
         "(revision, publication_count) VALUES (%s, %s)",
         (catalog_revision, 0),
-    )
-    connector.execute(
-        "INSERT INTO catalog_revision_descriptor_seals (revision) VALUES (%s)",
-        (catalog_revision,),
     )
     producer = seed_artifact_producer_fingerprint(
         connector,
@@ -825,49 +1188,7 @@ def test_live_mariadb_operational_writer_workflows(
         )
     assert seal.event_count == 2
     receipt_id = b"live-receipt-001"
-    commit_members = (
-        (
-            "catalog_publication_commit_candidates",
-            "candidate_id",
-            b"live-candidate01",
-        ),
-        (
-            "catalog_publication_commit_catalog_revisions",
-            "revision",
-            catalog_revision,
-        ),
-        (
-            "catalog_publication_commit_source_revisions",
-            "source_revision",
-            source_revision,
-        ),
-        ("catalog_publication_commit_generations", "generation", 1),
-        (
-            "catalog_publication_commit_operational_preparations",
-            "preparation_id",
-            preparation.preparation_id,
-        ),
-        (
-            "catalog_publication_commit_operational_policies",
-            "operational_policy_id",
-            1,
-        ),
-        ("catalog_publication_commit_artifact_policies", "artifact_policy_id", 1),
-        (
-            "catalog_publication_commit_display_title_policies",
-            "display_title_policy_id",
-            1,
-        ),
-        ("catalog_publication_commit_new_galleries", "new_galleries", 0),
-        ("catalog_publication_commit_changed_galleries", "changed_galleries", 0),
-        ("catalog_publication_commit_removed_galleries", "removed_galleries", 0),
-        (
-            "catalog_publication_commit_duplicate_losers",
-            "duplicate_losers",
-            0,
-        ),
-        ("catalog_publication_commit_committed_ats", "committed_at", 600),
-    )
+    candidate_id = b"live-candidate01"
     with connector.transaction():
         connector.execute(
             "INSERT INTO catalog_publication_generation_nodes (generation) VALUES (%s)",
@@ -882,20 +1203,57 @@ def test_live_mariadb_operational_writer_workflows(
             "INSERT INTO catalog_publication_commit_anchors (receipt_id) VALUES (%s)",
             (receipt_id,),
         )
-        for table, value_column, value in commit_members:
-            connector.execute(
-                f"INSERT INTO {table} (receipt_id, {value_column}) VALUES (%s, %s)",
-                (receipt_id, value),
-            )
         seed_publication_finalization_checkpoint(
             connector,
             receipt_id=receipt_id,
             updated_at=600,
         )
         connector.execute(
-            "INSERT INTO catalog_publication_commit_seals (receipt_id) VALUES (%s)",
-            (receipt_id,),
+            "INSERT INTO catalog_publication_commits "
+            "(receipt_id, candidate_id, revision, source_revision, generation, "
+            "preparation_id, operational_policy_id, artifact_policy_id, "
+            "display_title_policy_id, new_galleries, changed_galleries, "
+            "removed_galleries, duplicate_losers, committed_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (
+                receipt_id,
+                candidate_id,
+                catalog_revision,
+                source_revision,
+                1,
+                preparation.preparation_id,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                600,
+            ),
         )
+    assert _read_one(
+        connector,
+        "SELECT candidate_id, revision, source_revision, generation, preparation_id, "
+        "operational_policy_id, artifact_policy_id, display_title_policy_id, "
+        "new_galleries, changed_galleries, removed_galleries, duplicate_losers, "
+        "committed_at FROM catalog_publication_commits WHERE receipt_id = %s",
+        (receipt_id,),
+    ) == (
+        candidate_id,
+        catalog_revision,
+        source_revision,
+        1,
+        preparation.preparation_id,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        600,
+    )
     activation = _read_one(
         connector,
         "SELECT source_revision, preparation_id, operational_policy_id, "
@@ -904,32 +1262,12 @@ def test_live_mariadb_operational_writer_workflows(
         (source_revision,),
     )
     assert activation == (source_revision, preparation.preparation_id, 1, 600)
-    with connector.transaction():
-        acknowledgement = OperationalEffectRepository.acknowledge_through(
-            _work(connector),
-            consumer_id=1,
-            source_revision=source_revision,
-            through_sequence_no=1,
-            now=610,
-        )
-    assert acknowledgement.evidence_count == 2
-    with connector.transaction():
-        acknowledgement_replay = OperationalEffectRepository.acknowledge_through(
-            _work(connector),
-            consumer_id=1,
-            source_revision=source_revision,
-            through_sequence_no=1,
-            now=611,
-        )
-    assert acknowledgement_replay.replayed
     assert _read_all(
         connector,
         "SELECT sequence_no, event_type FROM operational_operational_events "
         "ORDER BY sequence_no",
     ) == [(0, "REMOVED_GID"), (1, "DELETION_CONSUMPTION")]
-    assert _read_one(
-        connector, "SELECT COUNT(*) FROM operational_operational_event_acks"
-    ) == (2,)
+    assert not hasattr(OperationalEffectRepository, "acknowledge_through")
 
     # These were real MariaDB SELECT ... FOR UPDATE statements, not a recorder.
     locked_sql = "\n".join(connector.for_update_queries)

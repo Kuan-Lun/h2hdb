@@ -15,30 +15,38 @@ sibling packages.
 
 The current schema is a clean epoch-2 design:
 
-- 306 catalog data-plane base relations checked as BCNF, plus 73 generated
-  logical views for read-oriented projections. Thirty-eight generic sealed vertical
-  families keep ordinary bases at their semantic key plus at most one value.
-- 29 declared decompositions, each checked as lossless and
+- 160 catalog data-plane base relations checked as BCNF, plus 49 generated
+  logical views for read-oriented projections. Eleven remaining sealed vertical
+  families are reserved for relations whose partial construction is itself
+  observable workflow state.
+- 28 declared decompositions, each checked as lossless and
   dependency-preserving.
-- 75 operational control-plane base relations checked as BCNF, one of which is
+- 70 operational control-plane base relations checked as BCNF, one of which is
   the separately created epoch-control relation, plus one derived activation
-  view. The complete epoch therefore contains 306 + 75 = 381 base tables and
-  74 logical views, or 455 schema objects in those two manifests.
+  view. The complete epoch therefore contains 160 + 70 = 230 base tables and
+  50 logical views, or 280 schema objects in those two manifests.
+- Operational events are current/retry publication control rather than an OPDS
+  delivery log. Unreachable finalized non-head snapshots are retired by bounded
+  compound cleanup; no event-consumer registry, per-event acknowledgement, or
+  cross-revision event history is retained.
+- Relative to the former 75-base operational schema, two lease tables are
+  folded into their BCNF owner relations, the staging-request owner is replaced
+  by one bounded budget authority, four unreachable event-delivery scaffold
+  relations are removed, and one frozen cleanup-root relation is added. The net
+  operational reduction is five base tables.
 - One generated physical schema for SQLite and MariaDB, with backend-specific
   SQL rendered from the same closed-world manifests.
 - A separate physical-width gate requires each ordinary `catalog_*` base table
   to have its semantic primary key plus at most one atomic non-key value. It
-  reports 294 narrow bases and 12 exact approved-wide BCNF recompositions: the
-  seven gallery-linear current-state rows for observation metadata, scan,
-  directory, stat, gallery manifest, analysis owner candidate, catalog
-  publication storage, plus gallery identity, artifact
-  semantic input, prepared artifact, catalog artifact occurrence, and artifact
-  blob with its mandatory locator. Logical views are excluded from that policy.
-- The closed catalog physical-domain authority contains exactly 272 relations:
-  218 mutation relations and 54 read-only views. The complete publication graph
-  is inside that closure, including permanent finalization replay state.
-- The generated provider installs exactly 4,913 typed bootstrap rows per
-  backend, including all 18 fixed 256-shard cleanup ranges.
+  reports 122 narrow bases and 38 exact reviewed-wide BCNF relations. Twenty-seven
+  selected families replace 178 former physical relations with 32 base relations;
+  each new wide table is covered by the capacity contract. Logical views are
+  excluded from the width policy.
+- The closed catalog physical-domain authority contains exactly 151 relations:
+  114 mutation relations and 37 read-only views. The complete publication graph
+  is inside that closure, including current-only finalization replay state.
+- The generated provider installs exactly 5,838 typed bootstrap rows per
+  backend, including all 22 fixed 256-shard cleanup ranges.
 
 The logical sources of truth are
 [`verification/schema/catalog.toml`](verification/schema/catalog.toml) and

@@ -10,12 +10,13 @@ The storage operation is deliberately outside every database transaction:
   idempotent storage release operations.
 * :meth:`PublicationFinalizationRepository.commit_page` consumes only the
   repository-issued acknowledgement.  It locks and revalidates the checkpoint,
-  advances the complete page atomically, and seals a permanent batch receipt.
+  advances the complete page atomically, and retains the current batch receipt.
 
 There is intentionally no issuance relation.  A lost issue response is rebuilt
-from the unchanged checkpoint, while a lost commit response is returned from
-the permanent ``(receipt_id, batch_key)`` receipt before any transient
-authority, candidate fact, or live lease is consulted.
+from the unchanged checkpoint, while the current lost commit response is
+returned from ``(receipt_id, batch_key)`` before any transient authority,
+candidate fact, or live lease is consulted.  Once an exact successor is
+durable, its safely acknowledged predecessor is pruned and becomes stale.
 """
 
 from __future__ import annotations
@@ -75,32 +76,18 @@ _PREPARED_STAGE = b"VALIDATE_PREPARED_ARTIFACT"
 _PAGE_CAPABILITY = object()
 _ACK_CAPABILITY = object()
 
-_CHECKPOINT_ANCHOR = "catalog_publication_finalization_checkpoint_anchors"
-_CHECKPOINT_GENERATION = "catalog_publication_finalization_checkpoint_generations"
-_CHECKPOINT_CURSOR = "catalog_publication_finalization_checkpoint_cursors"
-_CHECKPOINT_COUNT = "catalog_publication_finalization_checkpoint_counts"
-_CHECKPOINT_STATE = "catalog_publication_finalization_checkpoint_states"
-_CHECKPOINT_UPDATED_AT = "catalog_publication_finalization_checkpoint_updated_ats"
-_CHECKPOINT_SEAL = "catalog_publication_finalization_checkpoint_seals"
-_CHECKPOINT_VIEW = "catalog_publication_finalization_checkpoints"
+_CHECKPOINT_TABLE = "catalog_publication_finalization_checkpoints"
 
-_BATCH_ANCHOR = "catalog_publication_finalization_batch_anchors"
-_BATCH_COORDINATE = "catalog_publication_finalization_batch_coordinates"
-_BATCH_START_CURSOR = "catalog_publication_finalization_batch_start_cursors"
-_BATCH_START_COUNT = "catalog_publication_finalization_batch_start_counts"
-_BATCH_NEXT_CURSOR = "catalog_publication_finalization_batch_next_cursors"
-_BATCH_ROW_COUNT = "catalog_publication_finalization_batch_row_counts"
-_BATCH_COMMITTED_AT = "catalog_publication_finalization_batch_committed_ats"
-_BATCH_SEAL = "catalog_publication_finalization_batch_seals"
+_BATCH_TABLE = "catalog_publication_finalization_batch_stored"
 _BATCH_VIEW = "catalog_publication_finalization_batch_receipts"
 
-_COMMIT_VIEW = "catalog_publication_commits"
+_COMMIT_TABLE = "catalog_publication_commits"
 _PUBLICATION_RECEIPT_VIEW = "catalog_publication_receipts"
 _FINALIZATION_MARKER = "catalog_publication_commit_finalizations"
 
 
 class PublicationFinalizationRepositoryError(RuntimeError):
-    """Base class for permanent publication-finalization failures."""
+    """Base class for publication-finalization protocol failures."""
 
 
 class PublicationFinalizationUnavailableError(PublicationFinalizationRepositoryError):
@@ -323,7 +310,7 @@ class PublicationFinalizationAcknowledgement:
 
 @dataclass(frozen=True, slots=True)
 class PublicationFinalizationBatchReceipt:
-    """Permanent response reconstructed from one sealed commit-owned batch."""
+    """Current response reconstructed from one sealed commit-owned batch."""
 
     receipt_id: bytes
     batch_key: bytes
@@ -411,7 +398,7 @@ class _CommitContext:
 
 
 class PublicationFinalizationRepository:
-    """Finalize one sealed publication commit in permanent bounded pages."""
+    """Finalize one sealed publication commit in current bounded pages."""
 
     @staticmethod
     def issue_page(
@@ -541,14 +528,14 @@ class PublicationFinalizationRepository:
         acknowledgement: PublicationFinalizationAcknowledgement,
         now: int,
     ) -> PublicationFinalizationBatchReceipt:
-        """Commit one acknowledged page, replaying permanent receipts first."""
+        """Commit one acknowledged page, replaying the current receipt first."""
 
         ack = _require_acknowledgement(acknowledgement)
         page = ack.page
         timestamp = require_int63(now, field="publication finalization commit now")
 
-        # Unconditional response-loss safety: no live gate, candidate row, or
-        # mutable checkpoint is needed once this exact response is sealed.
+        # Current response-loss safety: no live gate, candidate row, or mutable
+        # checkpoint is needed while this exact response remains the head.
         stored = _load_batch_by_key(
             work.connector,
             page.receipt_id,
@@ -630,11 +617,39 @@ class PublicationFinalizationRepository:
                 next_state="COMPLETE" if terminal else "OPEN",
                 updated_at=timestamp,
             )
+            if checkpoint.generation > 1:
+                deleted = work.connector.execute_affected(
+                    f"DELETE FROM {_BATCH_TABLE} "
+                    "WHERE receipt_id = %s AND start_generation = %s",
+                    (page.receipt_id, checkpoint.generation - 1),
+                )
+                if deleted != 1:
+                    raise PublicationFinalizationCorruptionError(
+                        "publication finalization predecessor receipt is missing "
+                        "before safe acknowledgement"
+                    )
             if terminal:
                 work.connector.execute(
                     f"INSERT INTO {_FINALIZATION_MARKER} (receipt_id) VALUES (%s)",
                     (page.receipt_id,),
                 )
+                prunable_baseline = _published_depth_zero_working_baseline(
+                    work,
+                    receipt_id=page.receipt_id,
+                    candidate_id=page.candidate_id,
+                )
+                if prunable_baseline is not None:
+                    analysis_id, baseline_analysis_id = prunable_baseline
+                    deleted = work.connector.execute_affected(
+                        "DELETE FROM catalog_analysis_baselines "
+                        "WHERE analysis_id = %s AND base_analysis_id = %s",
+                        (analysis_id, baseline_analysis_id),
+                    )
+                    if deleted != 1:
+                        raise PublicationFinalizationCorruptionError(
+                            "published depth-zero analysis baseline changed before "
+                            "safe handoff"
+                        )
         except StaleWriteError as error:
             raise PublicationFinalizationConflictError(
                 "publication finalization authority changed during commit"
@@ -660,7 +675,7 @@ class PublicationFinalizationRepository:
         batch_key: bytes | None = None,
         start_generation: int | None = None,
     ) -> PublicationFinalizationBatchReceipt | None:
-        """Read one permanent response by either of its exact coordinates."""
+        """Read the current response by either of its exact coordinates."""
 
         receipt = require_uuid16(
             receipt_id,
@@ -689,18 +704,15 @@ _ITEM_SELECT = (
     "prepared.artifact_sha256, prepared.storage_codec_version, "
     "prepared.storage_generation, prepared.protection_token, prepared.state, "
     "artifact_blob.size_bytes, artifact_blob.artifact_locator_sha256, "
-    "codec_seal.storage_codec_version, "
-    "adapter.adapter_id "
+    "codec.storage_codec_version, codec.adapter_id "
 )
 
 _ITEM_JOINS = (
     "FROM catalog_prepared_artifacts AS prepared "
     "LEFT JOIN catalog_artifact_blobs AS artifact_blob "
     "ON artifact_blob.artifact_sha256 = prepared.artifact_sha256 "
-    "LEFT JOIN catalog_artifact_storage_codec_seals AS codec_seal "
-    "ON codec_seal.storage_codec_version = prepared.storage_codec_version "
-    "LEFT JOIN catalog_artifact_storage_codec_adapter_ids AS adapter "
-    "ON adapter.storage_codec_version = prepared.storage_codec_version "
+    "LEFT JOIN catalog_artifact_storage_codecs AS codec "
+    "ON codec.storage_codec_version = prepared.storage_codec_version "
 )
 
 
@@ -710,7 +722,7 @@ def _initialize_finalization_checkpoint(
     receipt_id: bytes,
     initialized_at: int,
 ) -> None:
-    """Insert the total OPEN checkpoint before the publication commit seal."""
+    """Insert the total OPEN checkpoint before the publication commit row."""
 
     receipt = require_uuid16(
         receipt_id,
@@ -721,24 +733,10 @@ def _initialize_finalization_checkpoint(
         field="publication finalization initialized_at",
     )
     connector.execute(
-        f"INSERT INTO {_CHECKPOINT_ANCHOR} (receipt_id) VALUES (%s)",
-        (receipt,),
-    )
-    for table, column, value in (
-        (_CHECKPOINT_GENERATION, "generation", 1),
-        (_CHECKPOINT_CURSOR, "cursor", b""),
-        (_CHECKPOINT_COUNT, "processed_count", 0),
-        (_CHECKPOINT_STATE, "state", "OPEN"),
-        (_CHECKPOINT_UPDATED_AT, "updated_at", timestamp),
-    ):
-        sql_column = f"`{column}`" if column == "cursor" else column
-        connector.execute(
-            f"INSERT INTO {table} (receipt_id, {sql_column}) VALUES (%s, %s)",
-            (receipt, value),
-        )
-    connector.execute(
-        f"INSERT INTO {_CHECKPOINT_SEAL} (receipt_id) VALUES (%s)",
-        (receipt,),
+        f"INSERT INTO {_CHECKPOINT_TABLE} "
+        "(receipt_id, generation, `cursor`, processed_count, state, updated_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s)",
+        (receipt, 1, b"", 0, "OPEN", timestamp),
     )
 
 
@@ -915,7 +913,7 @@ def _load_open_commit_context(
 ) -> _CommitContext:
     row = connector.fetch_one(
         f"SELECT committed.candidate_id, committed.committed_at, receipt.state "
-        f"FROM {_COMMIT_VIEW} AS committed "
+        f"FROM {_COMMIT_TABLE} AS committed "
         f"JOIN {_PUBLICATION_RECEIPT_VIEW} AS receipt "
         "ON receipt.receipt_id = committed.receipt_id "
         "WHERE committed.receipt_id = %s",
@@ -935,6 +933,250 @@ def _load_open_commit_context(
         require_int63(row[1], field="publication finalization committed_at"),
         state,
     )
+
+
+def _published_depth_zero_working_baseline(
+    work: VNextUnitOfWork,
+    *,
+    receipt_id: bytes,
+    candidate_id: bytes,
+) -> tuple[bytes, bytes] | None:
+    """Return the exact disposable working baseline of one finalized compaction.
+
+    A depth-zero result is fully materialized behind its self-only ancestry.  Its
+    baseline remains necessary while the run or publication is still working,
+    but retaining it after the terminal projection handoff would permanently
+    pin the predecessor depth-16 chain.  This check derives every identity from
+    the current commit and its durable source provenance; no caller value is
+    lineage authority.
+    """
+
+    row = work.connector.fetch_one(
+        "SELECT committed.candidate_id, committed.generation, "
+        "candidate.analysis_id, provenance.analysis_id, run.build_id, "
+        "run.policy_id, run.state, build.state, anchor.anchor_analysis_id, "
+        "anchor.overlay_depth, source.snapshot_manifest_sha256, "
+        "snapshot.snapshot_manifest_sha256, baseline.base_analysis_id "
+        "FROM catalog_publication_commits AS committed "
+        "JOIN catalog_publication_candidates AS candidate "
+        "ON candidate.candidate_id = committed.candidate_id "
+        "JOIN catalog_source_revision_provenance AS provenance "
+        "ON provenance.source_revision = committed.source_revision "
+        "JOIN catalog_analysis_runs AS run "
+        "ON run.analysis_id = candidate.analysis_id "
+        "JOIN catalog_source_builds AS build ON build.build_id = run.build_id "
+        "JOIN catalog_analysis_state_anchors AS anchor "
+        "ON anchor.analysis_id = run.analysis_id "
+        "JOIN catalog_source_revision_descriptors AS source "
+        "ON source.source_revision = committed.source_revision "
+        "JOIN catalog_analysis_snapshot_manifest AS snapshot "
+        "ON snapshot.analysis_id = run.analysis_id "
+        "LEFT JOIN catalog_analysis_baselines AS baseline "
+        "ON baseline.analysis_id = run.analysis_id "
+        "WHERE committed.receipt_id = %s",
+        (receipt_id,),
+    )
+    if len(row) != 13:
+        raise PublicationFinalizationCorruptionError(
+            "terminal publication lacks one complete analysis lineage"
+        )
+    committed_candidate = require_uuid16(
+        row[0],
+        field="published baseline commit candidate_id",
+    )
+    generation = require_positive_int63(
+        row[1],
+        field="published baseline commit generation",
+    )
+    analysis_id = require_uuid16(
+        row[2],
+        field="published baseline candidate analysis_id",
+    )
+    provenance_analysis_id = require_uuid16(
+        row[3],
+        field="published baseline provenance analysis_id",
+    )
+    build_id = require_uuid16(row[4], field="published baseline build_id")
+    policy_id = require_positive_int63(
+        row[5],
+        field="published baseline policy_id",
+    )
+    anchor_analysis_id = require_uuid16(
+        row[8],
+        field="published baseline anchor_analysis_id",
+    )
+    overlay_depth = require_int63(
+        row[9],
+        field="published baseline overlay_depth",
+    )
+    source_snapshot = require_digest32(
+        row[10],
+        field="published baseline source snapshot",
+    )
+    analysis_snapshot = require_digest32(
+        row[11],
+        field="published baseline analysis snapshot",
+    )
+    if (
+        committed_candidate != candidate_id
+        or analysis_id != provenance_analysis_id
+        or row[6] != "COMPLETE"
+        or row[7] != "SEALED"
+        or overlay_depth > 16
+        or source_snapshot != analysis_snapshot
+    ):
+        raise PublicationFinalizationCorruptionError(
+            "terminal publication analysis lineage is not one sealed bounded result"
+        )
+    current_ancestry = _require_exact_published_analysis_ancestry(
+        work,
+        analysis_id=analysis_id,
+        expected_depth=overlay_depth,
+    )
+    if anchor_analysis_id != current_ancestry[-1]:
+        raise PublicationFinalizationCorruptionError(
+            "terminal publication analysis anchor differs from its exact ancestry"
+        )
+    _require_exact_published_analysis_components(work, analysis_id=analysis_id)
+
+    if overlay_depth > 0:
+        if row[12] is None:
+            raise PublicationFinalizationCorruptionError(
+                "positive-depth publication lost its ancestry baseline"
+            )
+        baseline_analysis_id = require_uuid16(
+            row[12],
+            field="published positive-depth base_analysis_id",
+        )
+        if baseline_analysis_id != current_ancestry[1]:
+            raise PublicationFinalizationCorruptionError(
+                "positive-depth publication baseline is not its immediate ancestor"
+            )
+        return None
+
+    if anchor_analysis_id != analysis_id:
+        raise PublicationFinalizationCorruptionError(
+            "published depth-zero analysis is not its own anchor"
+        )
+
+    if row[12] is None:
+        base_rows = work.connector.fetch_all(
+            "SELECT base_receipt_id "
+            "FROM catalog_source_build_base_publication_commits "
+            "WHERE build_id = %s LIMIT 2",
+            (build_id,),
+        )
+        if generation != 1 or base_rows:
+            raise PublicationFinalizationCorruptionError(
+                "non-genesis depth-zero publication lost its working baseline"
+            )
+        return None
+
+    baseline_analysis_id = require_uuid16(
+        row[12],
+        field="published baseline base_analysis_id",
+    )
+    if baseline_analysis_id == analysis_id:
+        raise PublicationFinalizationCorruptionError(
+            "published depth-zero baseline cycles to itself"
+        )
+    baseline_row = work.connector.fetch_one(
+        "SELECT run.policy_id, run.state, anchor.anchor_analysis_id, "
+        "anchor.overlay_depth FROM catalog_analysis_runs AS run "
+        "JOIN catalog_analysis_state_anchors AS anchor "
+        "ON anchor.analysis_id = run.analysis_id "
+        "WHERE run.analysis_id = %s",
+        (baseline_analysis_id,),
+    )
+    if len(baseline_row) != 4:
+        raise PublicationFinalizationCorruptionError(
+            "published depth-zero baseline analysis is incomplete"
+        )
+    baseline_policy_id = require_positive_int63(
+        baseline_row[0],
+        field="published baseline predecessor policy_id",
+    )
+    baseline_anchor = require_uuid16(
+        baseline_row[2],
+        field="published baseline predecessor anchor",
+    )
+    baseline_depth = require_int63(
+        baseline_row[3],
+        field="published baseline predecessor depth",
+    )
+    if (
+        baseline_row[1] != "COMPLETE"
+        or baseline_depth > 16
+        or (baseline_policy_id == policy_id and baseline_depth != 16)
+    ):
+        raise PublicationFinalizationCorruptionError(
+            "published depth-zero baseline is not one legal sealed compaction parent"
+        )
+    ancestry = _require_exact_published_analysis_ancestry(
+        work,
+        analysis_id=baseline_analysis_id,
+        expected_depth=baseline_depth,
+    )
+    if baseline_anchor != ancestry[-1] or analysis_id in ancestry:
+        raise PublicationFinalizationCorruptionError(
+            "published depth-zero baseline ancestry is inconsistent"
+        )
+    _require_exact_published_analysis_components(
+        work,
+        analysis_id=baseline_analysis_id,
+    )
+    return analysis_id, baseline_analysis_id
+
+
+def _require_exact_published_analysis_ancestry(
+    work: VNextUnitOfWork,
+    *,
+    analysis_id: bytes,
+    expected_depth: int,
+) -> tuple[bytes, ...]:
+    rows = work.connector.fetch_all(
+        "SELECT ancestor_depth, ancestor_analysis_id "
+        "FROM catalog_analysis_state_ancestry WHERE analysis_id = %s "
+        "ORDER BY ancestor_depth LIMIT 18",
+        (analysis_id,),
+    )
+    ancestry = tuple(
+        require_uuid16(row[1], field="published baseline ancestor_analysis_id")
+        for row in rows
+    )
+    if (
+        len(rows) != expected_depth + 1
+        or not ancestry
+        or ancestry[0] != analysis_id
+        or len(set(ancestry)) != len(ancestry)
+        or any(
+            require_int63(row[0], field="published baseline ancestor_depth") != depth
+            for depth, row in enumerate(rows)
+        )
+    ):
+        raise PublicationFinalizationCorruptionError(
+            "published analysis ancestry is not one exact bounded suffix"
+        )
+    return ancestry
+
+
+def _require_exact_published_analysis_components(
+    work: VNextUnitOfWork,
+    *,
+    analysis_id: bytes,
+) -> None:
+    rows = work.connector.fetch_all(
+        "SELECT state_component FROM catalog_analysis_state_component_seals "
+        "WHERE analysis_id = %s ORDER BY state_component LIMIT 6",
+        (analysis_id,),
+    )
+    expected = frozenset(
+        component.encode("ascii") for component in identity.ANALYSIS_STATE_COMPONENTS
+    )
+    if len(rows) != len(expected) or {row[0] for row in rows} != expected:
+        raise PublicationFinalizationCorruptionError(
+            "published analysis lacks its exact five component seals"
+        )
 
 
 def _load_expected_prepared_count(
@@ -971,7 +1213,7 @@ def _load_expected_prepared_count(
 def _load_checkpoint(connector: SQLConnector, receipt_id: bytes) -> _Checkpoint:
     row = connector.fetch_one(
         f"SELECT generation, `cursor`, processed_count, state, updated_at "
-        f"FROM {_CHECKPOINT_VIEW} WHERE receipt_id = %s",
+        f"FROM {_CHECKPOINT_TABLE} WHERE receipt_id = %s",
         (receipt_id,),
     )
     return _checkpoint_from_row(row)
@@ -981,21 +1223,8 @@ def _lock_checkpoint(work: VNextUnitOfWork, receipt_id: bytes) -> _Checkpoint:
     row = work.lock_row(
         LockRank.CHECKPOINT,
         encode_lock_key("publication-finalization-checkpoint", receipt_id),
-        f"SELECT generation.generation, checkpoint_cursor.`cursor`, "
-        "count.processed_count, "
-        "state.state, updated.updated_at "
-        f"FROM {_CHECKPOINT_SEAL} AS seal "
-        f"JOIN {_CHECKPOINT_GENERATION} AS generation "
-        "ON generation.receipt_id = seal.receipt_id "
-        f"JOIN {_CHECKPOINT_CURSOR} AS checkpoint_cursor "
-        "ON checkpoint_cursor.receipt_id = seal.receipt_id "
-        f"JOIN {_CHECKPOINT_COUNT} AS count "
-        "ON count.receipt_id = seal.receipt_id "
-        f"JOIN {_CHECKPOINT_STATE} AS state "
-        "ON state.receipt_id = seal.receipt_id "
-        f"JOIN {_CHECKPOINT_UPDATED_AT} AS updated "
-        "ON updated.receipt_id = seal.receipt_id "
-        "WHERE seal.receipt_id = %s",
+        "SELECT generation, `cursor`, processed_count, state, updated_at "
+        f"FROM {_CHECKPOINT_TABLE} WHERE receipt_id = %s",
         (receipt_id,),
     )
     return _checkpoint_from_row(row)
@@ -1069,35 +1298,21 @@ def _insert_batch_receipt(
     page: PublicationFinalizationPage,
     committed_at: int,
 ) -> None:
-    key = (page.receipt_id, page.start_generation)
     connector.execute(
-        f"INSERT INTO {_BATCH_ANCHOR} (receipt_id, start_generation) VALUES (%s, %s)",
-        key,
-    )
-    connector.execute(
-        f"INSERT INTO {_BATCH_COORDINATE} "
-        "(receipt_id, batch_key, start_generation) VALUES (%s, %s, %s)",
-        (page.receipt_id, page.batch_key, page.start_generation),
-    )
-    for table, column, value in (
-        (_BATCH_START_CURSOR, "start_cursor", page.start_cursor),
+        f"INSERT INTO {_BATCH_TABLE} "
+        "(receipt_id, start_generation, batch_key, start_cursor, "
+        "start_processed_count, next_cursor, row_count, committed_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
         (
-            _BATCH_START_COUNT,
-            "start_processed_count",
+            page.receipt_id,
+            page.start_generation,
+            page.batch_key,
+            page.start_cursor,
             page.start_processed_count,
+            page.next_cursor,
+            len(page.items),
+            committed_at,
         ),
-        (_BATCH_NEXT_CURSOR, "next_cursor", page.next_cursor),
-        (_BATCH_ROW_COUNT, "row_count", len(page.items)),
-        (_BATCH_COMMITTED_AT, "committed_at", committed_at),
-    ):
-        connector.execute(
-            f"INSERT INTO {table} "
-            f"(receipt_id, start_generation, {column}) VALUES (%s, %s, %s)",
-            (*key, value),
-        )
-    connector.execute(
-        f"INSERT INTO {_BATCH_SEAL} (receipt_id, start_generation) VALUES (%s, %s)",
-        key,
     )
 
 
@@ -1111,37 +1326,25 @@ def _advance_checkpoint(
     next_state: str,
     updated_at: int,
 ) -> None:
-    changes = (
-        (_CHECKPOINT_CURSOR, "cursor", checkpoint.cursor, next_cursor),
-        (
-            _CHECKPOINT_COUNT,
-            "processed_count",
-            checkpoint.processed_count,
-            next_processed_count,
-        ),
-        (_CHECKPOINT_STATE, "state", checkpoint.state, next_state),
-        (
-            _CHECKPOINT_UPDATED_AT,
-            "updated_at",
-            checkpoint.updated_at,
-            updated_at,
-        ),
-    )
-    for table, column, old_value, new_value in changes:
-        if old_value == new_value:
-            continue
-        sql_column = f"`{column}`" if column == "cursor" else column
-        work.compare_and_swap(
-            f"UPDATE {table} SET {sql_column} = %s "
-            f"WHERE receipt_id = %s AND {sql_column} = %s",
-            (new_value, receipt_id, old_value),
-            authority=f"publication finalization checkpoint {column}",
-        )
     work.compare_and_swap(
-        f"UPDATE {_CHECKPOINT_GENERATION} SET generation = %s "
-        "WHERE receipt_id = %s AND generation = %s",
-        (checkpoint.generation + 1, receipt_id, checkpoint.generation),
-        authority="publication finalization checkpoint generation",
+        f"UPDATE {_CHECKPOINT_TABLE} SET generation = %s, `cursor` = %s, "
+        "processed_count = %s, state = %s, updated_at = %s "
+        "WHERE receipt_id = %s AND generation = %s AND `cursor` = %s "
+        "AND processed_count = %s AND state = %s AND updated_at = %s",
+        (
+            checkpoint.generation + 1,
+            next_cursor,
+            next_processed_count,
+            next_state,
+            updated_at,
+            receipt_id,
+            checkpoint.generation,
+            checkpoint.cursor,
+            checkpoint.processed_count,
+            checkpoint.state,
+            checkpoint.updated_at,
+        ),
+        authority="publication finalization checkpoint tuple",
     )
 
 
@@ -1260,7 +1463,7 @@ def _require_receipt_matches_page(
     )
     if actual != expected:
         raise PublicationFinalizationConflictError(
-            "permanent finalization receipt conflicts with issued page"
+            "current finalization receipt conflicts with issued page"
         )
 
 

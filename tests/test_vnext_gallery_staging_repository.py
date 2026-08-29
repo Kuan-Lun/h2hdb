@@ -20,15 +20,24 @@ from vnext_catalog_registry_fixtures import (
     seed_manifest_policy,
     seed_source_scope,
 )
-from vnext_manifest_fixtures import seed_source_build
+from vnext_manifest_fixtures import seed_build_manifest, seed_source_build
 
 import h2hdb.domain as domain_module
+import h2hdb.vnext_gallery_staging_budget as staging_budget_module
 import h2hdb.vnext_gallery_staging_repository as staging_module
 from h2hdb._generated_vnext_schema import ARTIFACT
+from h2hdb.sql_connector import DatabaseDuplicateKeyError
 from h2hdb.sqlite_connector import SQLiteConnector
 from h2hdb.vnext_allocator_repository import (
     IdentityStream,
     VNextAllocatorRepository,
+)
+from h2hdb.vnext_cleanup_repository import (
+    CleanupBatchCommand,
+    CleanupCorruptionError,
+    CleanupCycle,
+    CleanupTargetKind,
+    VNextCleanupRepository,
 )
 from h2hdb.vnext_domains import INT63_MAX
 from h2hdb.vnext_gallery_identity_repository import GalleryIdentityHandoff
@@ -40,10 +49,13 @@ from h2hdb.vnext_gallery_staging_repository import (
     FileContentReceipt,
     FileObservation,
     GalleryObservationStagingRepository,
+    GalleryStagingCapacityError,
     GalleryStagingConflictError,
     GalleryStagingHandle,
     GalleryStagingNotReadyError,
     GalleryStagingReceipt,
+    GalleryStagingRetiredError,
+    GalleryStagingRetirement,
     GalleryStagingSeal,
     MatchBatchCommand,
     MatchBatchReceipt,
@@ -228,6 +240,48 @@ def _seed_working_gallery(
     return build_id, 1
 
 
+def _seed_additional_gallery(
+    connector: SQLiteConnector,
+    *,
+    build_id: bytes,
+    gallery_id: int,
+    position: int,
+) -> None:
+    scope_key = connector.fetch_one(
+        "SELECT scope_key FROM catalog_gallery_identities WHERE gallery_id = 1"
+    )[0]
+    assert isinstance(scope_key, bytes)
+    source_name = f"gallery-{gallery_id}".encode("ascii")
+    locator = _seed_canonical_identity(
+        connector,
+        digest_domain="source_relative_locator_v1",
+        payload=source_name,
+        now=12,
+    )
+    connector.execute(
+        "INSERT INTO catalog_source_locator_identity "
+        "(locator_sha256, source_gallery_name) VALUES (%s, %s)",
+        (locator, source_name),
+    )
+    seed_gallery_identity(
+        connector,
+        gallery_id=gallery_id,
+        gallery_key=gallery_key(scope_key, locator),
+        scope_key=scope_key,
+        locator_sha256=locator,
+    )
+    connector.execute(
+        "INSERT INTO operational_gallery_observation_allocators "
+        "(gallery_id, next_observation_id, updated_at) VALUES (%s, 1, 12)",
+        (gallery_id,),
+    )
+    connector.execute(
+        "INSERT INTO catalog_source_build_expected_gallery "
+        "(build_id, position, gallery_id) VALUES (%s, %s, %s)",
+        (build_id, position, gallery_id),
+    )
+
+
 def _begin(
     connector: SQLiteConnector,
     gate: GateLease,
@@ -369,6 +423,180 @@ def _match(
             ingest_turn=turn,
             handle=handle,
             command=command,
+            now=now,
+        )
+
+
+def _stage_minimal_gallery(
+    connector: SQLiteConnector,
+    gate: GateLease,
+    turn: IngestTurn,
+    build_id: bytes,
+    gallery_id: int,
+    *,
+    now: int,
+) -> tuple[GalleryStagingHandle, GalleryStagingSeal]:
+    handle = _begin(connector, gate, turn, build_id, gallery_id, now=now)
+    file = _file_observation(0)
+    _put_files(
+        connector,
+        gate,
+        turn,
+        handle,
+        FileBatchCommand((file,), True, BatchAttempt(b"f" * 16, None)),
+        now=now + 1,
+    )
+    _put_directories(
+        connector,
+        gate,
+        turn,
+        handle,
+        DirectoryBatchCommand(
+            (_directory_observation(file),),
+            True,
+            BatchAttempt(b"d" * 16, None),
+        ),
+        now=now + 2,
+    )
+    _put_tags(
+        connector,
+        gate,
+        turn,
+        handle,
+        TagBatchCommand(
+            (TagObservation("artist", "Alice"),),
+            True,
+            BatchAttempt(b"t" * 16, None),
+        ),
+        now=now + 3,
+    )
+    metadata = encode_gallery_observation_metadata(
+        GalleryObservationMetadata(
+            1,
+            "title",
+            "comment",
+            "uploader",
+            1,
+            2,
+            3,
+            1,
+            1,
+            1,
+        )
+    )
+    _put_metadata(
+        connector,
+        gate,
+        turn,
+        handle,
+        MetadataBatchCommand(
+            metadata,
+            True,
+            BatchAttempt(b"m" * 16, None),
+        ),
+        now=now + 4,
+    )
+    matched = _match(
+        connector,
+        gate,
+        turn,
+        handle,
+        MatchBatchCommand(b"x" * 16, None),
+        now=now + 5,
+    )
+    assert matched.state == "COMPLETE"
+    with connector.transaction():
+        seal = GalleryObservationStagingRepository.seal(
+            VNextUnitOfWork(connector, backend="sqlite"),
+            gate_lease=gate,
+            ingest_turn=turn,
+            handle=handle,
+            now=now + 6,
+        )
+    return handle, seal
+
+
+def _request_budget_count(connector: SQLiteConnector) -> int:
+    row = connector.fetch_one(
+        "SELECT retained_request_count FROM "
+        "operational_gallery_observation_staging_request_budgets "
+        "WHERE singleton_id = 1"
+    )
+    assert len(row) == 1 and isinstance(row[0], int)
+    return row[0]
+
+
+def _replace_shared_with_exclusive(
+    connector: SQLiteConnector,
+    shared: GateLease,
+    *,
+    now: int,
+    owner_token: bytes,
+) -> GateLease:
+    with connector.transaction():
+        MaintenanceGateRepository.release(
+            VNextUnitOfWork(connector, backend="sqlite"),
+            shared,
+            now=now,
+        )
+    with (
+        connector.transaction(),
+        patch(
+            "h2hdb.vnext_maintenance_gate_repository._new_owner_token",
+            return_value=owner_token,
+        ),
+    ):
+        return MaintenanceGateRepository.claim_exclusive(
+            VNextUnitOfWork(connector, backend="sqlite"),
+            now=now + 1,
+            lease_duration=100_000,
+        )
+
+
+def _replace_exclusive_with_shared(
+    connector: SQLiteConnector,
+    exclusive: GateLease,
+    *,
+    now: int,
+    owner_token: bytes,
+) -> GateLease:
+    with connector.transaction():
+        MaintenanceGateRepository.release(
+            VNextUnitOfWork(connector, backend="sqlite"),
+            exclusive,
+            now=now,
+        )
+    with (
+        connector.transaction(),
+        patch(
+            "h2hdb.vnext_maintenance_gate_repository._new_owner_token",
+            return_value=owner_token,
+        ),
+    ):
+        return MaintenanceGateRepository.claim_shared(
+            VNextUnitOfWork(connector, backend="sqlite"),
+            now=now + 1,
+            lease_duration=100_000,
+        )
+
+
+def _begin_cleanup(
+    connector: SQLiteConnector,
+    gate: GateLease,
+    *,
+    kind: CleanupTargetKind,
+    shard_no: int,
+    cutoff: int,
+    now: int,
+) -> CleanupCycle:
+    with connector.transaction():
+        return VNextCleanupRepository.begin_cycle(
+            VNextUnitOfWork(connector, backend="sqlite"),
+            gate_lease=gate,
+            target_kind=kind,
+            shard_no=shard_no,
+            cycle_cutoff_at=cutoff,
+            max_rows_per_transaction=256,
             now=now,
         )
 
@@ -587,6 +815,12 @@ def test_file_response_loss_replay_rejects_normalized_leaf_corruption_zero_write
         gate, turn = _authorities(connector)
         build_id, gallery_id = _seed_working_gallery(connector, turn)
         handle = _begin(connector, gate, turn, build_id, gallery_id, now=20)
+        with pytest.raises(DatabaseDuplicateKeyError):
+            connector.execute(
+                "UPDATE operational_gallery_observation_stagings "
+                "SET terminal_byte_count = 1 WHERE staging_id = %s",
+                (handle.staging_id,),
+            )
         command = FileBatchCommand(
             (_file_observation(0),),
             True,
@@ -1357,7 +1591,7 @@ def test_mariadb_staging_authority_locks_use_for_update_in_global_order() -> Non
         ) -> tuple[Any, ...]:
             self.queries.append((query, data))
             if "operational_gallery_observation_stagings" in query:
-                return (b"b" * 16, 1, 2, "OPEN", 3, None)
+                return (b"b" * 16, 1, 2, "OPEN", 3, None, None)
             if "operational_gallery_observation_staging_claims" in query:
                 return (4, 5, 6)
             raise AssertionError(query)
@@ -1409,16 +1643,24 @@ def test_mariadb_staging_authority_locks_use_for_update_in_global_order() -> Non
             data: tuple[Any, ...] = (),
         ) -> tuple[Any, ...]:
             self.queries.append((query, data))
-            if "request_owners" in query:
+            if "staging_request_budgets" in query:
+                return (0,)
+            if "staging_requests" in query:
                 return (self.staging_id,) if data == (self.predecessor,) else ()
             if "request_predecessors" in query:
-                return ()
-            if "staging_requests" in query:
                 return ()
             raise AssertionError(query)
 
         def execute(self, query: str, data: tuple[Any, ...] = ()) -> None:
             self.executions.append((query, data))
+
+        def execute_affected(
+            self,
+            query: str,
+            data: tuple[Any, ...] = (),
+        ) -> int:
+            self.executions.append((query, data))
+            return 1
 
     staging_id = b"s" * 16
     predecessor = b"p" * 32
@@ -1436,9 +1678,10 @@ def test_mariadb_staging_authority_locks_use_for_update_in_global_order() -> Non
     locked = [
         query for query, _data in request_connector.queries if "FOR UPDATE" in query
     ]
-    assert len(locked) == 3
+    assert len(locked) == 4
     assert all(query.endswith(" FOR UPDATE") for query in locked)
-    assert sum("request_owners" in query for query in locked) == 2
+    assert "staging_request_budgets" in locked[0]
+    assert sum("staging_requests" in query for query in locked) == 2
     assert sum("request_predecessors" in query for query in locked) == 1
 
 
@@ -1459,7 +1702,7 @@ def test_mariadb_gallery_manifest_policy_is_plain_read_and_writer_is_atomic() ->
             self.fetches.append(query)
             if "FROM catalog_gallery_observations" in query:
                 return (observation_identity,)
-            if "FROM catalog_manifest_policy_seals" in query:
+            if "FROM catalog_manifest_policies" in query:
                 return (1, 1)
             if "FROM catalog_gallery_manifests" in query:
                 return ()
@@ -1487,7 +1730,7 @@ def test_mariadb_gallery_manifest_policy_is_plain_read_and_writer_is_atomic() ->
         query for query in connector.fetches if "catalog_gallery_observations" in query
     )
     policy_query = next(
-        query for query in connector.fetches if "catalog_manifest_policy_seals" in query
+        query for query in connector.fetches if "catalog_manifest_policies" in query
     )
     assert observation_query.endswith(" FOR UPDATE")
     assert "FOR UPDATE" not in policy_query
@@ -1571,9 +1814,7 @@ def test_mariadb_metadata_shared_fact_writes_are_serialized_by_ingest_head() -> 
             if "operational_ingest_generations" in query:
                 return (1, None)
             if "operational_ingest_generation_owners" in query:
-                return (b"i" * 16,)
-            if "operational_ingest_generation_leases" in query:
-                return (100,)
+                return (b"i" * 16, 100)
             raise AssertionError(query)
 
     gate = GateLease(b"g" * 16, 1, GateMode.SHARED, (0,), 100)
@@ -1593,7 +1834,7 @@ def test_mariadb_metadata_shared_fact_writes_are_serialized_by_ingest_head() -> 
 
     assert generation == 1
     gate_lock.assert_called_once()
-    assert len(connector.queries) == 4
+    assert len(connector.queries) == 3
     assert "operational_ingest_coordination_heads" in connector.queries[0][0]
     assert all(query.endswith(" FOR UPDATE") for query, _data in connector.queries)
 
@@ -2715,10 +2956,14 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
         # Assembly may seal the source build after the gallery response was
         # lost.  The exact terminal receipt remains replayable and read-only;
         # only fresh staging work is fenced to an OPEN build.
-        connector.execute(
-            "INSERT INTO catalog_source_build_sealed_ats (build_id, sealed_at) "
-            "VALUES (%s, %s)",
-            (build_id, 100),
+        seed_build_manifest(
+            connector,
+            build_id=build_id,
+            manifest_sha256=b"m" * 32,
+            gallery_count=1,
+            file_count=257,
+            byte_count=total_byte_count,
+            computed_at=100,
         )
         connector.execute(
             "UPDATE catalog_source_build_states SET state = %s WHERE build_id = %s",
@@ -2750,7 +2995,437 @@ def test_begin_rolls_back_replays_and_large_vertical_slice_seals(
         connector.close()
 
 
-def test_metadata_256_leaf_boundary_carries_to_one_minimal_root(tmp_path: Path) -> None:
+def test_request_budget_backpressure_is_zero_write_and_replay_is_neutral(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connector = _generated_database(tmp_path / "gallery-request-budget.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        build_id, gallery_id = _seed_working_gallery(connector, turn)
+        handle = _begin(connector, gate, turn, build_id, gallery_id, now=20)
+        command = FileBatchCommand(
+            (_file_observation(0),),
+            True,
+            BatchAttempt(b"a" * 16, None),
+        )
+        before = _request_snapshot(connector)
+        monkeypatch.setattr(
+            staging_budget_module,
+            "GALLERY_STAGING_REQUEST_LIMIT",
+            0,
+        )
+        with pytest.raises(GalleryStagingCapacityError) as captured:
+            _put_files(connector, gate, turn, handle, command, now=21)
+        assert captured.value.retained_request_count == 0
+        assert captured.value.request_limit == 0
+        assert _request_snapshot(connector) == before
+        assert _request_budget_count(connector) == 0
+
+        monkeypatch.setattr(
+            staging_budget_module,
+            "GALLERY_STAGING_REQUEST_LIMIT",
+            1_500_000,
+        )
+        receipt = _put_files(connector, gate, turn, handle, command, now=22)
+        retained = _request_budget_count(connector)
+        assert retained > 0
+        replay = _put_files(connector, gate, turn, handle, command, now=23)
+        assert replay.replayed and replay.request_sha256 == receipt.request_sha256
+        assert _request_budget_count(connector) == retained
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM operational_gallery_observation_staging_requests"
+        ) == (retained,)
+    finally:
+        connector.close()
+
+
+def test_fresh_tag_allocator_precedes_request_budget_head_lock(tmp_path: Path) -> None:
+    connector = _generated_database(tmp_path / "gallery-tag-budget-order.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        build_id, gallery_id = _seed_working_gallery(connector, turn)
+        handle = _begin(connector, gate, turn, build_id, gallery_id, now=20)
+        receipt = _put_tags(
+            connector,
+            gate,
+            turn,
+            handle,
+            TagBatchCommand(
+                (TagObservation("artist", "fresh"),),
+                True,
+                BatchAttempt(b"t" * 16, None),
+            ),
+            now=21,
+        )
+        assert receipt.state == "COMPLETE"
+        assert connector.fetch_one("SELECT COUNT(*) FROM catalog_tag_terms") == (1,)
+        retained = _request_budget_count(connector)
+        assert retained == 1
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM operational_gallery_observation_staging_requests"
+        ) == (retained,)
+    finally:
+        connector.close()
+
+
+def test_terminal_retirement_is_child_first_bounded_and_replayable(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "gallery-retirement.sqlite3")
+    try:
+        gate, turn = _authorities(connector)
+        build_id, gallery_id = _seed_working_gallery(connector, turn)
+        handle, seal = _stage_minimal_gallery(
+            connector,
+            gate,
+            turn,
+            build_id,
+            gallery_id,
+            now=20,
+        )
+        final_stat = connector.fetch_one(
+            "SELECT file_count, byte_count FROM catalog_gallery_observation_stat "
+            "WHERE gallery_id = %s AND observation_id = %s",
+            (gallery_id, seal.observation_id),
+        )
+        assert len(final_stat) == 2
+        assert connector.fetch_one(
+            "SELECT state, terminal_byte_count FROM "
+            "operational_gallery_observation_stagings WHERE staging_id = %s",
+            (handle.staging_id,),
+        ) == ("SEALED", final_stat[1])
+        _seed_additional_gallery(
+            connector,
+            build_id=build_id,
+            gallery_id=2,
+            position=1,
+        )
+        with pytest.raises(
+            GalleryStagingNotReadyError,
+            match="prior gallery staging must retire",
+        ):
+            _begin(connector, gate, turn, build_id, 2, now=29)
+        request_count = connector.fetch_one(
+            "SELECT COUNT(*) FROM operational_gallery_observation_staging_requests"
+        )[0]
+        assert isinstance(request_count, int) and request_count > 0
+        assert _request_budget_count(connector) == request_count
+
+        with connector.transaction():
+            pending = GalleryObservationStagingRepository.find_pending_retirement(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                ingest_turn=turn,
+                build_id=build_id,
+                now=30,
+            )
+        assert pending is not None
+        assert pending.acknowledged is False
+        assert pending.seal.replayed
+        assert pending.seal == GalleryStagingSeal(
+            seal.build_id,
+            seal.gallery_id,
+            seal.observation_id,
+            seal.observation_identity_sha256,
+            seal.state,
+            True,
+        )
+
+        before_rollback = _request_snapshot(connector)
+        with pytest.raises(RuntimeError, match="retirement crash"):
+            with connector.transaction():
+                first = GalleryObservationStagingRepository.retire_sealed(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    seal=seal,
+                    now=31,
+                )
+                assert first.phase == "RECEIPT_FRONTIER"
+                assert connector.fetch_one(
+                    "SELECT state FROM "
+                    "operational_gallery_observation_stagings "
+                    "WHERE staging_id = %s",
+                    (handle.staging_id,),
+                ) == ("RETIRING_SEALED",)
+                raise RuntimeError("retirement crash")
+        assert connector.fetch_one(
+            "SELECT state FROM operational_gallery_observation_stagings "
+            "WHERE staging_id = %s",
+            (handle.staging_id,),
+        ) == ("SEALED",)
+        assert _request_snapshot(connector) == before_rollback
+        assert _request_budget_count(connector) == request_count
+
+        phases: list[str] = []
+        retirement_now = 40
+        while True:
+            with connector.transaction():
+                retirement = GalleryObservationStagingRepository.retire_sealed(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    seal=seal,
+                    now=retirement_now,
+                )
+            retirement_now += 1
+            assert isinstance(retirement, GalleryStagingRetirement)
+            assert retirement.deleted_count <= 256
+            if retirement.phase is not None:
+                phases.append(retirement.phase)
+            retained = _request_budget_count(connector)
+            assert connector.fetch_one(
+                "SELECT COUNT(*) FROM operational_gallery_observation_staging_requests"
+            ) == (retained,)
+            if not retirement.complete:
+                with connector.transaction():
+                    pending = (
+                        GalleryObservationStagingRepository.find_pending_retirement(
+                            VNextUnitOfWork(connector, backend="sqlite"),
+                            gate_lease=gate,
+                            ingest_turn=turn,
+                            build_id=build_id,
+                            now=retirement_now,
+                        )
+                    )
+                assert pending is not None
+                assert pending.acknowledged is True
+                assert pending.seal.replayed
+                assert pending.seal.state == seal.state
+                with pytest.raises(GalleryStagingRetiredError):
+                    with connector.transaction():
+                        GalleryObservationStagingRepository.seal(
+                            VNextUnitOfWork(connector, backend="sqlite"),
+                            gate_lease=gate,
+                            ingest_turn=turn,
+                            handle=handle,
+                            now=retirement_now,
+                        )
+                if retirement.phase == "CHECKPOINT":
+                    retained_before_corruption = _request_snapshot(connector)
+                    terminal_byte_count = connector.fetch_one(
+                        "SELECT terminal_byte_count FROM "
+                        "operational_gallery_observation_stagings "
+                        "WHERE staging_id = %s",
+                        (handle.staging_id,),
+                    )[0]
+                    assert isinstance(terminal_byte_count, int)
+                    connector.execute(
+                        "UPDATE catalog_gallery_observation_stat "
+                        "SET byte_count = %s WHERE gallery_id = %s "
+                        "AND observation_id = %s",
+                        (
+                            terminal_byte_count + 1,
+                            gallery_id,
+                            seal.observation_id,
+                        ),
+                    )
+                    with (
+                        connector.transaction(),
+                        pytest.raises(
+                            GalleryStagingConflictError,
+                            match="byte authority",
+                        ),
+                    ):
+                        GalleryObservationStagingRepository.retire_sealed(
+                            VNextUnitOfWork(connector, backend="sqlite"),
+                            gate_lease=gate,
+                            ingest_turn=turn,
+                            seal=seal,
+                            now=retirement_now,
+                        )
+                    assert _request_snapshot(connector) == retained_before_corruption
+                    assert connector.fetch_one(
+                        "SELECT 1 FROM "
+                        "operational_gallery_observation_staging_claims "
+                        "WHERE staging_id = %s",
+                        (handle.staging_id,),
+                    ) == (1,)
+                    connector.execute(
+                        "UPDATE catalog_gallery_observation_stat "
+                        "SET byte_count = %s WHERE gallery_id = %s "
+                        "AND observation_id = %s",
+                        (terminal_byte_count, gallery_id, seal.observation_id),
+                    )
+                if retirement.phase == "CLAIM":
+                    old_turn = turn
+                    with connector.transaction():
+                        turn = IngestFenceRepository.claim(
+                            VNextUnitOfWork(connector, backend="sqlite"),
+                            owner_token=b"n" * 16,
+                            now=100_012,
+                            lease_duration=100_000,
+                        )
+                    connector.execute(
+                        "INSERT INTO operational_source_build_generations "
+                        "(build_id, generation) VALUES (%s, %s)",
+                        (build_id, turn.generation),
+                    )
+                    with pytest.raises(IngestFenceUnavailableError, match="stale"):
+                        with connector.transaction():
+                            GalleryObservationStagingRepository.retire_sealed(
+                                VNextUnitOfWork(connector, backend="sqlite"),
+                                gate_lease=gate,
+                                ingest_turn=old_turn,
+                                seal=seal,
+                                now=100_013,
+                            )
+                    retirement_now = 100_014
+            else:
+                break
+
+        assert phases == [
+            "RECEIPT_FRONTIER",
+            "PAGE_ASSOCIATION",
+            "REQUEST_DESCRIPTOR",
+            "REQUEST_IDENTITY",
+            "CHECKPOINT",
+            "CLAIM",
+            "ROOT",
+        ]
+        assert _request_budget_count(connector) == 0
+        assert connector.fetch_one(
+            "SELECT observation_id FROM catalog_source_build_galleries "
+            "WHERE build_id = %s AND gallery_id = %s",
+            (build_id, gallery_id),
+        ) == (seal.observation_id,)
+        with connector.transaction():
+            replay = GalleryObservationStagingRepository.retire_sealed(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                ingest_turn=turn,
+                seal=seal,
+                now=retirement_now,
+            )
+        assert replay == GalleryStagingRetirement(
+            build_id,
+            gallery_id,
+            None,
+            0,
+            True,
+            True,
+        )
+        successor = _begin(
+            connector,
+            gate,
+            turn,
+            build_id,
+            2,
+            now=retirement_now + 1,
+        )
+        assert successor.gallery_id == 2
+    finally:
+        connector.close()
+
+
+def test_generic_staging_cleanup_revalidates_sealed_byte_authority(
+    tmp_path: Path,
+) -> None:
+    connector = _generated_database(tmp_path / "gallery-generic-retirement.sqlite3")
+    try:
+        shared, turn = _authorities(connector)
+        build_id, gallery_id = _seed_working_gallery(connector, turn)
+        handle, seal = _stage_minimal_gallery(
+            connector,
+            shared,
+            turn,
+            build_id,
+            gallery_id,
+            now=20,
+        )
+        terminal_byte_count = connector.fetch_one(
+            "SELECT terminal_byte_count FROM "
+            "operational_gallery_observation_stagings WHERE staging_id = %s",
+            (handle.staging_id,),
+        )[0]
+        assert isinstance(terminal_byte_count, int)
+        with pytest.raises(DatabaseDuplicateKeyError):
+            connector.execute(
+                "UPDATE operational_gallery_observation_stagings "
+                "SET terminal_byte_count = NULL WHERE staging_id = %s",
+                (handle.staging_id,),
+            )
+        connector.execute(
+            "UPDATE catalog_gallery_observation_stat SET byte_count = %s "
+            "WHERE gallery_id = %s AND observation_id = %s",
+            (terminal_byte_count + 1, gallery_id, seal.observation_id),
+        )
+        exclusive = _replace_shared_with_exclusive(
+            connector,
+            shared,
+            now=30,
+            owner_token=b"e" * 16,
+        )
+        cycle = _begin_cleanup(
+            connector,
+            exclusive,
+            kind=CleanupTargetKind.GALLERY_OBSERVATION_STAGING,
+            shard_no=handle.staging_id[0],
+            cutoff=100,
+            now=32,
+        )
+        before = _request_snapshot(connector)
+        before_staging = connector.fetch_one(
+            "SELECT state, terminal_byte_count FROM "
+            "operational_gallery_observation_stagings WHERE staging_id = %s",
+            (handle.staging_id,),
+        )
+        with (
+            connector.transaction(),
+            pytest.raises(CleanupCorruptionError, match="authority is corrupt"),
+        ):
+            VNextCleanupRepository.advance(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=exclusive,
+                cycle=cycle,
+                command=CleanupBatchCommand(b"c" * 32, 1),
+                now=33,
+            )
+        assert _request_snapshot(connector) == before
+        assert (
+            connector.fetch_one(
+                "SELECT state, terminal_byte_count FROM "
+                "operational_gallery_observation_stagings WHERE staging_id = %s",
+                (handle.staging_id,),
+            )
+            == before_staging
+        )
+        connector.execute(
+            "UPDATE catalog_gallery_observation_stat SET byte_count = %s "
+            "WHERE gallery_id = %s AND observation_id = %s",
+            (terminal_byte_count, gallery_id, seal.observation_id),
+        )
+        connector.execute("PRAGMA foreign_keys = OFF")
+        try:
+            connector.execute(
+                "DELETE FROM operational_gallery_observation_stagings "
+                "WHERE staging_id = %s",
+                (handle.staging_id,),
+            )
+        finally:
+            connector.execute("PRAGMA foreign_keys = ON")
+        orphaned_children = _request_snapshot(connector)
+        with (
+            connector.transaction(),
+            pytest.raises(CleanupCorruptionError, match="frozen root disappeared"),
+        ):
+            VNextCleanupRepository.advance(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=exclusive,
+                cycle=cycle,
+                command=CleanupBatchCommand(b"d" * 32, 1),
+                now=34,
+            )
+        assert _request_snapshot(connector) == orphaned_children
+    finally:
+        connector.close()
+
+
+def test_metadata_256_leaf_boundary_carries_to_one_minimal_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     connector = _generated_database(tmp_path / "gallery-frontier-carry.sqlite3")
     try:
         gate, turn = _authorities(connector)
@@ -2777,26 +3452,61 @@ def test_metadata_256_leaf_boundary_carries_to_one_minimal_root(tmp_path: Path) 
         assert len(chunks) == 256
 
         previous: bytes | None = None
-        final_command: MetadataBatchCommand | None = None
-        final_receipt: GalleryStagingReceipt | None = None
-        for position, chunk in enumerate(chunks):
+        for position, chunk in enumerate(chunks[:-1]):
             operation = (position + 1).to_bytes(16, "big")
-            final_command = MetadataBatchCommand(
+            command = MetadataBatchCommand(
                 chunk,
-                position == len(chunks) - 1,
+                False,
                 BatchAttempt(operation, previous),
             )
-            final_receipt = _put_metadata(
+            _put_metadata(
+                connector,
+                gate,
+                turn,
+                handle,
+                command,
+                now=30 + position,
+            )
+            previous = operation
+
+        final_command = MetadataBatchCommand(
+            chunks[-1],
+            True,
+            BatchAttempt((256).to_bytes(16, "big"), previous),
+        )
+        assert _request_budget_count(connector) == 255
+        before_capacity = _request_snapshot(connector)
+        monkeypatch.setattr(
+            staging_budget_module,
+            "GALLERY_STAGING_REQUEST_LIMIT",
+            256,
+        )
+        with pytest.raises(GalleryStagingCapacityError) as captured:
+            _put_metadata(
                 connector,
                 gate,
                 turn,
                 handle,
                 final_command,
-                now=30 + position,
+                now=285,
             )
-            previous = operation
+        assert captured.value.retained_request_count == 256
+        assert _request_budget_count(connector) == 255
+        assert _request_snapshot(connector) == before_capacity
 
-        assert final_command is not None and final_receipt is not None
+        monkeypatch.setattr(
+            staging_budget_module,
+            "GALLERY_STAGING_REQUEST_LIMIT",
+            1_500_000,
+        )
+        final_receipt = _put_metadata(
+            connector,
+            gate,
+            turn,
+            handle,
+            final_command,
+            now=286,
+        )
         assert final_receipt.state == "COMPLETE"
         assert final_receipt.cursor == len(encoded)
         assert final_receipt.root_page_sha256 is not None
@@ -2819,6 +3529,11 @@ def test_metadata_256_leaf_boundary_carries_to_one_minimal_root(tmp_path: Path) 
             "WHERE q.staging_id = %s AND q.component = %s",
             (handle.staging_id, b"METADATA"),
         ) == [(1, 0)]
+        retained = _request_budget_count(connector)
+        assert connector.fetch_one(
+            "SELECT COUNT(*) FROM operational_gallery_observation_staging_requests"
+        ) == (retained,)
+        assert retained == 257
         before_replay = _request_snapshot(connector)
         replayed = _put_metadata(
             connector,
@@ -2838,6 +3553,73 @@ def test_metadata_256_leaf_boundary_carries_to_one_minimal_root(tmp_path: Path) 
             True,
         )
         assert _request_snapshot(connector) == before_replay
+
+        _put_files(
+            connector,
+            gate,
+            turn,
+            handle,
+            FileBatchCommand((), True, BatchAttempt(b"f" * 16, None)),
+            now=301,
+        )
+        _put_directories(
+            connector,
+            gate,
+            turn,
+            handle,
+            DirectoryBatchCommand((), True, BatchAttempt(b"d" * 16, None)),
+            now=302,
+        )
+        _put_tags(
+            connector,
+            gate,
+            turn,
+            handle,
+            TagBatchCommand((), True, BatchAttempt(b"t" * 16, None)),
+            now=303,
+        )
+        assert (
+            _match(
+                connector,
+                gate,
+                turn,
+                handle,
+                MatchBatchCommand(b"x" * 16, None),
+                now=304,
+            ).state
+            == "COMPLETE"
+        )
+        with connector.transaction():
+            seal = GalleryObservationStagingRepository.seal(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=gate,
+                ingest_turn=turn,
+                handle=handle,
+                now=305,
+            )
+        assert _request_budget_count(connector) == 261
+
+        request_identity_batches: list[int] = []
+        for step in range(32):
+            with connector.transaction():
+                retirement = GalleryObservationStagingRepository.retire_sealed(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    ingest_turn=turn,
+                    seal=seal,
+                    now=400 + step,
+                )
+            if retirement.phase == "REQUEST_IDENTITY":
+                request_identity_batches.append(retirement.deleted_count)
+                assert _request_budget_count(connector) == 261 - sum(
+                    request_identity_batches
+                )
+            if retirement.complete:
+                break
+        else:
+            pytest.fail("bounded terminal retirement did not reach ROOT")
+        assert request_identity_batches == [256, 5]
+        assert _request_budget_count(connector) == 0
     finally:
         connector.close()
 
@@ -2946,12 +3728,8 @@ def test_identical_observation_on_a_later_build_reuses_canonical_identity(
             )
         second_build = b"c" * 16
         scope_key, manifest_policy_id = connector.fetch_one(
-            "SELECT scope.scope_key, policy.manifest_policy_id "
-            "FROM catalog_source_build_descriptor_seals seal "
-            "JOIN catalog_source_build_scope_keys scope "
-            "ON scope.build_id = seal.build_id "
-            "JOIN catalog_source_build_manifest_policy_ids policy "
-            "ON policy.build_id = seal.build_id WHERE seal.build_id = %s",
+            "SELECT scope_key, manifest_policy_id "
+            "FROM catalog_source_build_descriptor WHERE build_id = %s",
             (first_build,),
         )
         seed_source_build(
@@ -3035,6 +3813,115 @@ def test_identical_observation_on_a_later_build_reuses_canonical_identity(
             True,
         )
         assert _request_snapshot(connector) == before_replay
+        assert connector.fetch_one(
+            "SELECT terminal_byte_count FROM "
+            "operational_gallery_observation_stagings WHERE staging_id = %s",
+            (second_handle.staging_id,),
+        ) == (0,)
+
+        # The generic GALLERY_OBSERVATION path may remove the provisional
+        # REUSED control family, but it must first prove that its four roots
+        # are byte-identical to the different final observation.
+        original_final_identity = connector.fetch_one(
+            "SELECT observation_identity_sha256 FROM catalog_gallery_observations "
+            "WHERE gallery_id = %s AND observation_id = %s",
+            (gallery_id, first_seal.observation_id),
+        )[0]
+        assert original_final_identity == first_seal.observation_identity_sha256
+        connector.execute("PRAGMA foreign_keys = OFF")
+        try:
+            connector.execute(
+                "UPDATE catalog_gallery_observations "
+                "SET observation_identity_sha256 = %s WHERE gallery_id = %s "
+                "AND observation_id = %s",
+                (b"z" * 32, gallery_id, first_seal.observation_id),
+            )
+        finally:
+            connector.execute("PRAGMA foreign_keys = ON")
+        exclusive = _replace_shared_with_exclusive(
+            connector,
+            gate,
+            now=100_031,
+            owner_token=b"q" * 16,
+        )
+        observation_cycle = _begin_cleanup(
+            connector,
+            exclusive,
+            kind=CleanupTargetKind.GALLERY_OBSERVATION,
+            shard_no=gallery_id % 256,
+            cutoff=200_000,
+            now=100_033,
+        )
+        before_generic_failure = _request_snapshot(connector)
+        with (
+            connector.transaction(),
+            pytest.raises(CleanupCorruptionError, match="authority is corrupt"),
+        ):
+            VNextCleanupRepository.advance(
+                VNextUnitOfWork(connector, backend="sqlite"),
+                gate_lease=exclusive,
+                cycle=observation_cycle,
+                command=CleanupBatchCommand(b"o" * 32, 1),
+                now=100_034,
+            )
+        assert _request_snapshot(connector) == before_generic_failure
+        assert connector.fetch_one(
+            "SELECT state FROM operational_gallery_observation_stagings "
+            "WHERE staging_id = %s",
+            (second_handle.staging_id,),
+        ) == ("REUSED",)
+        connector.execute("PRAGMA foreign_keys = OFF")
+        try:
+            connector.execute(
+                "UPDATE catalog_gallery_observations "
+                "SET observation_identity_sha256 = %s WHERE gallery_id = %s "
+                "AND observation_id = %s",
+                (original_final_identity, gallery_id, first_seal.observation_id),
+            )
+        finally:
+            connector.execute("PRAGMA foreign_keys = ON")
+        gate = _replace_exclusive_with_shared(
+            connector,
+            exclusive,
+            now=100_035,
+            owner_token=b"h" * 16,
+        )
+        second_request_count = connector.fetch_one(
+            "SELECT COUNT(*) FROM "
+            "operational_gallery_observation_staging_requests "
+            "WHERE staging_id = %s",
+            (second_handle.staging_id,),
+        )[0]
+        assert isinstance(second_request_count, int) and second_request_count > 0
+        retained_before = _request_budget_count(connector)
+        for step in range(16):
+            with connector.transaction():
+                retirement = GalleryObservationStagingRepository.retire_sealed(
+                    VNextUnitOfWork(connector, backend="sqlite"),
+                    gate_lease=gate,
+                    ingest_turn=second_turn,
+                    seal=reused,
+                    now=100_040 + step,
+                )
+            if step == 0:
+                assert connector.fetch_one(
+                    "SELECT state FROM "
+                    "operational_gallery_observation_stagings "
+                    "WHERE staging_id = %s",
+                    (second_handle.staging_id,),
+                ) == ("RETIRING_REUSED",)
+            if retirement.complete:
+                break
+        else:
+            pytest.fail("REUSED staging retirement did not reach ROOT")
+        assert _request_budget_count(connector) == (
+            retained_before - second_request_count
+        )
+        assert connector.fetch_one(
+            "SELECT observation_id FROM catalog_source_build_galleries "
+            "WHERE build_id = %s AND gallery_id = %s",
+            (second_build, gallery_id),
+        ) == (first_seal.observation_id,)
     finally:
         connector.close()
 

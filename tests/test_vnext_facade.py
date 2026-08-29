@@ -297,37 +297,15 @@ def _publication_commit_fixture(
     try:
         statements: tuple[tuple[str, tuple[object, ...]], ...] = (
             (
-                "INSERT INTO catalog_source_revision_anchors "
-                "(source_revision) VALUES (%s)",
-                (1,),
+                "INSERT INTO catalog_source_revision_descriptors "
+                "(source_revision, channel, snapshot_manifest_sha256) "
+                "VALUES (%s, %s, %s)",
+                (1, b"default", snapshot_manifest_sha256),
             ),
             (
-                "INSERT INTO catalog_source_revision_channels "
-                "(source_revision, channel) VALUES (%s, %s)",
-                (1, b"default"),
-            ),
-            (
-                "INSERT INTO catalog_source_revision_snapshot_manifests "
-                "(source_revision, snapshot_manifest_sha256) VALUES (%s, %s)",
-                (1, snapshot_manifest_sha256),
-            ),
-            (
-                "INSERT INTO catalog_source_revision_descriptor_seals "
-                "(source_revision) VALUES (%s)",
-                (1,),
-            ),
-            (
-                "INSERT INTO catalog_revision_anchors (revision) VALUES (%s)",
-                (1,),
-            ),
-            (
-                "INSERT INTO catalog_revision_publication_counts "
+                "INSERT INTO catalog_revision_descriptors "
                 "(revision, publication_count) VALUES (%s, %s)",
                 (1, 1),
-            ),
-            (
-                "INSERT INTO catalog_revision_descriptor_seals (revision) VALUES (%s)",
-                (1,),
             ),
             (
                 "INSERT INTO catalog_publication_generation_nodes "

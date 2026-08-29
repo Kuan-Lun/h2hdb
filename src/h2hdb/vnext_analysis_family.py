@@ -1,9 +1,8 @@
 """Exact physical storage protocols for the analysis lifecycle families.
 
-The historical wide analysis relations are read-only views.  Workflow
-repositories use these helpers to read and write the narrow physical families,
-insert immutable completion seals last, and reject a partially persisted family
-instead of attempting to repair it.
+Immutable descriptors and component receipts are stored as complete BCNF rows.
+Mutable lifecycle state remains isolated from the descriptor, and completion
+timestamps are optional immutable facts constrained by that state.
 """
 
 from __future__ import annotations
@@ -42,21 +41,12 @@ from .vnext_domains import (
 )
 from .vnext_transaction import VNextUnitOfWork
 
-_RUN_ANCHOR = "catalog_analysis_run_anchors"
-_RUN_BUILD = "catalog_analysis_run_build_ids"
-_RUN_POLICY = "catalog_analysis_run_policy_ids"
-_RUN_INPUT = "catalog_analysis_run_input_manifest_sha256s"
-_RUN_IDENTITY = "catalog_analysis_run_identities"
-_RUN_STARTED = "catalog_analysis_run_started_ats"
+_RUN_DESCRIPTOR = "catalog_analysis_run_descriptor"
 _RUN_STATE = "catalog_analysis_run_states"
-_RUN_DESCRIPTOR_SEAL = "catalog_analysis_run_descriptor_seals"
 _RUN_COMPLETED = "catalog_analysis_run_completed_ats"
 _SOURCE_BUILD_SEALED = "catalog_source_build_sealed_ats"
 
-_COMPONENT_ANCHOR = "catalog_analysis_state_component_anchors"
-_COMPONENT_ROW_COUNT = "catalog_analysis_state_component_row_counts"
-_COMPONENT_SEALED_AT = "catalog_analysis_state_component_sealed_ats"
-_COMPONENT_SEAL = "catalog_analysis_state_component_completion_seals"
+_COMPONENT_SEAL = "catalog_analysis_state_component_seals"
 
 _EXCLUSION_ANCHOR = "catalog_analysis_exclusion_delta_anchors"
 _EXCLUSION_OLD = "catalog_analysis_exclusion_delta_old_excluded_flags"
@@ -154,34 +144,22 @@ def _run_family_row(connector: Any, analysis_id: bytes) -> tuple[Any, ...]:
     analysis = require_uuid16(analysis_id, field="analysis_id")
     row = connector.fetch_one(
         "WITH family_keys(analysis_id) AS ("
-        f"SELECT analysis_id FROM {_RUN_ANCHOR} WHERE analysis_id = %s UNION "
-        f"SELECT analysis_id FROM {_RUN_BUILD} WHERE analysis_id = %s UNION "
-        f"SELECT analysis_id FROM {_RUN_POLICY} WHERE analysis_id = %s UNION "
-        f"SELECT analysis_id FROM {_RUN_INPUT} WHERE analysis_id = %s UNION "
-        f"SELECT analysis_id FROM {_RUN_IDENTITY} WHERE analysis_id = %s UNION "
-        f"SELECT analysis_id FROM {_RUN_STARTED} WHERE analysis_id = %s UNION "
+        f"SELECT analysis_id FROM {_RUN_DESCRIPTOR} WHERE analysis_id = %s UNION "
         f"SELECT analysis_id FROM {_RUN_STATE} WHERE analysis_id = %s UNION "
-        f"SELECT analysis_id FROM {_RUN_DESCRIPTOR_SEAL} WHERE analysis_id = %s UNION "
         f"SELECT analysis_id FROM {_RUN_COMPLETED} WHERE analysis_id = %s) "
-        "SELECT k.analysis_id, anchor.analysis_id, build.analysis_id, build.build_id, "
-        "policy.analysis_id, policy.policy_id, input.analysis_id, "
-        "input.input_manifest_sha256, identity.analysis_id, identity.build_id, "
-        "identity.policy_id, started.analysis_id, started.started_at, "
-        "state.analysis_id, state.state, seal.analysis_id, completed.analysis_id, "
-        "completed.completed_at, source.sealed_at FROM family_keys AS k "
-        f"LEFT JOIN {_RUN_ANCHOR} AS anchor ON anchor.analysis_id = k.analysis_id "
-        f"LEFT JOIN {_RUN_BUILD} AS build ON build.analysis_id = k.analysis_id "
-        f"LEFT JOIN {_RUN_POLICY} AS policy ON policy.analysis_id = k.analysis_id "
-        f"LEFT JOIN {_RUN_INPUT} AS input ON input.analysis_id = k.analysis_id "
-        f"LEFT JOIN {_RUN_IDENTITY} AS identity ON identity.analysis_id = k.analysis_id "
-        f"LEFT JOIN {_RUN_STARTED} AS started ON started.analysis_id = k.analysis_id "
+        "SELECT k.analysis_id, descriptor.analysis_id, descriptor.build_id, "
+        "descriptor.policy_id, descriptor.input_manifest_sha256, "
+        "descriptor.started_at, state.analysis_id, state.state, "
+        "completed.analysis_id, completed.completed_at, source.sealed_at "
+        "FROM family_keys AS k "
+        f"LEFT JOIN {_RUN_DESCRIPTOR} AS descriptor "
+        "ON descriptor.analysis_id = k.analysis_id "
         f"LEFT JOIN {_RUN_STATE} AS state ON state.analysis_id = k.analysis_id "
-        f"LEFT JOIN {_RUN_DESCRIPTOR_SEAL} AS seal ON seal.analysis_id = k.analysis_id "
         f"LEFT JOIN {_RUN_COMPLETED} AS completed "
         "ON completed.analysis_id = k.analysis_id "
         f"LEFT JOIN {_SOURCE_BUILD_SEALED} AS source "
-        "ON source.build_id = build.build_id",
-        (analysis,) * 9,
+        "ON source.build_id = descriptor.build_id",
+        (analysis,) * 3,
     )
     return tuple(row)
 
@@ -191,37 +169,33 @@ def load_analysis_run_family(
     *,
     analysis_id: bytes,
 ) -> AnalysisRunFamily | None:
-    """Load one total run family, including natural-key congruence."""
+    """Load one total run family, including sole-build congruence."""
 
     analysis = require_uuid16(analysis_id, field="analysis_id")
     row = _run_family_row(connector, analysis)
     if not row:
         return None
-    mandatory_key_indexes = (0, 1, 2, 4, 6, 8, 11, 13, 15)
-    if len(row) != 19 or any(row[index] != analysis for index in mandatory_key_indexes):
+    mandatory_key_indexes = (0, 1, 6)
+    if len(row) != 11 or any(row[index] != analysis for index in mandatory_key_indexes):
         raise AnalysisFamilyPartialError(
             "analysis run has an existing incomplete descriptor family"
         )
-    if row[16] not in {None, analysis}:
+    if row[8] not in {None, analysis}:
         raise AnalysisFamilyPartialError("analysis completed_at key differs")
-    if row[9:11] != (row[3], row[5]):
-        raise AnalysisFamilyCollisionError(
-            "analysis natural identity differs from its projected facts"
-        )
-    if row[18] is None:
+    if row[10] is None:
         raise AnalysisFamilyCollisionError("analysis source build is not sealed")
     try:
         family = AnalysisRunFamily(
             analysis,
+            row[2],
             row[3],
+            row[4],
             row[5],
             row[7],
-            row[12],
-            row[14],
-            row[17],
+            row[9],
         )
         source_sealed_at = require_int63(
-            row[18],
+            row[10],
             field="analysis source build sealed_at",
         )
     except (TypeError, ValueError) as error:
@@ -232,6 +206,15 @@ def load_analysis_run_family(
         raise AnalysisFamilyCollisionError(
             "analysis started_at precedes source build sealed_at"
         )
+    build_rows = connector.fetch_all(
+        f"SELECT analysis_id FROM {_RUN_DESCRIPTOR} "
+        "WHERE build_id = %s ORDER BY analysis_id LIMIT 2",
+        (family.build_id,),
+    )
+    if build_rows != [(analysis,)]:
+        raise AnalysisFamilyCollisionError(
+            "analysis build has multiple or incongruent run descriptors"
+        )
     return family
 
 
@@ -241,21 +224,29 @@ def load_analysis_run_family_by_identity(
     build_id: bytes,
     policy_id: int,
 ) -> AnalysisRunFamily | None:
+    """Load the sole analysis for a build and exact-check its policy."""
+
     build = require_uuid16(build_id, field="analysis build_id")
     policy = require_positive_int63(policy_id, field="analysis policy_id")
-    row = connector.fetch_one(
-        f"SELECT analysis_id FROM {_RUN_IDENTITY} "
-        "WHERE build_id = %s AND policy_id = %s",
-        (build, policy),
+    rows = connector.fetch_all(
+        f"SELECT analysis_id FROM {_RUN_DESCRIPTOR} "
+        "WHERE build_id = %s ORDER BY analysis_id LIMIT 2",
+        (build,),
     )
-    if not row:
+    if not rows:
         return None
-    if len(row) != 1:
-        raise AnalysisFamilyCollisionError("analysis natural identity is malformed")
-    family = load_analysis_run_family(connector, analysis_id=row[0])
-    if family is None or (family.build_id, family.policy_id) != (build, policy):
+    if len(rows) != 1 or len(rows[0]) != 1:
+        raise AnalysisFamilyCollisionError(
+            "analysis build identity is duplicated or malformed"
+        )
+    family = load_analysis_run_family(connector, analysis_id=rows[0][0])
+    if family is None or family.build_id != build:
         raise AnalysisFamilyPartialError(
-            "analysis natural identity has no congruent sealed descriptor"
+            "analysis build identity has no congruent sealed descriptor"
+        )
+    if family.policy_id != policy:
+        raise AnalysisFamilyCollisionError(
+            "analysis build already belongs to a different policy"
         )
     return family
 
@@ -269,7 +260,7 @@ def ensure_analysis_run_family(
     input_manifest_sha256: bytes,
     started_at: int,
 ) -> tuple[AnalysisRunFamily, bool]:
-    """Insert a new OPEN descriptor seal-last or exact-compare its replay."""
+    """Insert a new OPEN descriptor and state or exact-compare its replay."""
 
     proposed = AnalysisRunFamily(
         analysis_id,
@@ -288,7 +279,7 @@ def ensure_analysis_run_family(
     if existing is not None:
         if existing.input_manifest_sha256 != proposed.input_manifest_sha256:
             raise AnalysisFamilyCollisionError(
-                "analysis natural-key replay changed its server-derived input"
+                "analysis build replay changed its server-derived input"
             )
         return existing, False
     by_id = load_analysis_run_family(
@@ -310,38 +301,20 @@ def ensure_analysis_run_family(
             "analysis database start time precedes its sealed source build"
         )
     connector.execute(
-        f"INSERT INTO {_RUN_ANCHOR} (analysis_id) VALUES (%s)",
-        (proposed.analysis_id,),
-    )
-    connector.execute(
-        f"INSERT INTO {_RUN_BUILD} (analysis_id, build_id) VALUES (%s, %s)",
-        (proposed.analysis_id, proposed.build_id),
-    )
-    connector.execute(
-        f"INSERT INTO {_RUN_POLICY} (analysis_id, policy_id) VALUES (%s, %s)",
-        (proposed.analysis_id, proposed.policy_id),
-    )
-    connector.execute(
-        f"INSERT INTO {_RUN_INPUT} "
-        "(analysis_id, input_manifest_sha256) VALUES (%s, %s)",
-        (proposed.analysis_id, proposed.input_manifest_sha256),
-    )
-    connector.execute(
-        f"INSERT INTO {_RUN_STARTED} (analysis_id, started_at) VALUES (%s, %s)",
-        (proposed.analysis_id, proposed.started_at),
+        f"INSERT INTO {_RUN_DESCRIPTOR} "
+        "(analysis_id, build_id, policy_id, input_manifest_sha256, started_at) "
+        "VALUES (%s, %s, %s, %s, %s)",
+        (
+            proposed.analysis_id,
+            proposed.build_id,
+            proposed.policy_id,
+            proposed.input_manifest_sha256,
+            proposed.started_at,
+        ),
     )
     connector.execute(
         f"INSERT INTO {_RUN_STATE} (analysis_id, state) VALUES (%s, %s)",
         (proposed.analysis_id, "OPEN"),
-    )
-    connector.execute(
-        f"INSERT INTO {_RUN_IDENTITY} "
-        "(build_id, policy_id, analysis_id) VALUES (%s, %s, %s)",
-        (proposed.build_id, proposed.policy_id, proposed.analysis_id),
-    )
-    connector.execute(
-        f"INSERT INTO {_RUN_DESCRIPTOR_SEAL} (analysis_id) VALUES (%s)",
-        (proposed.analysis_id,),
     )
     return proposed, True
 
@@ -384,33 +357,10 @@ def _component_family_row(
     state_component: bytes,
 ) -> tuple[Any, ...]:
     row = connector.fetch_one(
-        "WITH family_keys(analysis_id, state_component) AS ("
-        f"SELECT analysis_id, state_component FROM {_COMPONENT_ANCHOR} "
-        "WHERE analysis_id = %s AND state_component = %s UNION "
-        f"SELECT analysis_id, state_component FROM {_COMPONENT_ROW_COUNT} "
-        "WHERE analysis_id = %s AND state_component = %s UNION "
-        f"SELECT analysis_id, state_component FROM {_COMPONENT_SEALED_AT} "
-        "WHERE analysis_id = %s AND state_component = %s UNION "
-        f"SELECT analysis_id, state_component FROM {_COMPONENT_SEAL} "
-        "WHERE analysis_id = %s AND state_component = %s) "
-        "SELECT k.analysis_id, k.state_component, anchor.analysis_id, "
-        "anchor.state_component, count.analysis_id, count.state_component, "
-        "count.row_count, sealed.analysis_id, sealed.state_component, "
-        "sealed.sealed_at, seal.analysis_id, seal.state_component "
-        "FROM family_keys AS k "
-        f"LEFT JOIN {_COMPONENT_ANCHOR} AS anchor "
-        "ON anchor.analysis_id = k.analysis_id "
-        "AND anchor.state_component = k.state_component "
-        f"LEFT JOIN {_COMPONENT_ROW_COUNT} AS count "
-        "ON count.analysis_id = k.analysis_id "
-        "AND count.state_component = k.state_component "
-        f"LEFT JOIN {_COMPONENT_SEALED_AT} AS sealed "
-        "ON sealed.analysis_id = k.analysis_id "
-        "AND sealed.state_component = k.state_component "
-        f"LEFT JOIN {_COMPONENT_SEAL} AS seal "
-        "ON seal.analysis_id = k.analysis_id "
-        "AND seal.state_component = k.state_component",
-        (analysis_id, state_component) * 4,
+        f"SELECT analysis_id, state_component, row_count, sealed_at "
+        f"FROM {_COMPONENT_SEAL} "
+        "WHERE analysis_id = %s AND state_component = %s",
+        (analysis_id, state_component),
     )
     return tuple(row)
 
@@ -432,14 +382,10 @@ def load_analysis_state_component_family(
     if not row:
         return None
     expected = (analysis, component)
-    if len(row) != 12 or any(
-        row[index : index + 2] != expected for index in (0, 2, 4, 7, 10)
-    ):
-        raise AnalysisFamilyPartialError(
-            "analysis component has an existing incomplete sealed family"
-        )
+    if len(row) != 4 or row[:2] != expected:
+        raise AnalysisFamilyPartialError("analysis component row is malformed")
     try:
-        return AnalysisStateComponentFamily(analysis, component, row[6], row[9])
+        return AnalysisStateComponentFamily(analysis, component, row[2], row[3])
     except (TypeError, ValueError) as error:
         raise AnalysisFamilyCollisionError(
             "analysis component contains invalid receipt facts"
@@ -455,13 +401,9 @@ def load_analysis_state_component_families(
     analysis = require_uuid16(analysis_id, field="component analysis_id")
     bound = require_positive_int63(limit, field="component family limit")
     keys = connector.fetch_all(
-        "SELECT state_component FROM ("
-        f"SELECT state_component FROM {_COMPONENT_ANCHOR} WHERE analysis_id = %s UNION "
-        f"SELECT state_component FROM {_COMPONENT_ROW_COUNT} WHERE analysis_id = %s UNION "
-        f"SELECT state_component FROM {_COMPONENT_SEALED_AT} WHERE analysis_id = %s UNION "
-        f"SELECT state_component FROM {_COMPONENT_SEAL} WHERE analysis_id = %s"
-        ") AS component_keys ORDER BY state_component LIMIT %s",
-        (analysis, analysis, analysis, analysis, bound),
+        f"SELECT state_component FROM {_COMPONENT_SEAL} "
+        "WHERE analysis_id = %s ORDER BY state_component LIMIT %s",
+        (analysis, bound),
     )
     result: list[AnalysisStateComponentFamily] = []
     for row in keys:
@@ -503,25 +445,16 @@ def ensure_analysis_state_component_family(
                 "analysis component replay differs from terminal receipt"
             )
         return existing, False
-    key = (proposed.analysis_id, proposed.state_component)
     connector.execute(
-        f"INSERT INTO {_COMPONENT_ANCHOR} "
-        "(analysis_id, state_component) VALUES (%s, %s)",
-        key,
-    )
-    connector.execute(
-        f"INSERT INTO {_COMPONENT_ROW_COUNT} "
-        "(analysis_id, state_component, row_count) VALUES (%s, %s, %s)",
-        (*key, proposed.row_count),
-    )
-    connector.execute(
-        f"INSERT INTO {_COMPONENT_SEALED_AT} "
-        "(analysis_id, state_component, sealed_at) VALUES (%s, %s, %s)",
-        (*key, proposed.sealed_at),
-    )
-    connector.execute(
-        f"INSERT INTO {_COMPONENT_SEAL} (analysis_id, state_component) VALUES (%s, %s)",
-        key,
+        f"INSERT INTO {_COMPONENT_SEAL} "
+        "(analysis_id, state_component, row_count, sealed_at) "
+        "VALUES (%s, %s, %s, %s)",
+        (
+            proposed.analysis_id,
+            proposed.state_component,
+            proposed.row_count,
+            proposed.sealed_at,
+        ),
     )
     return proposed, True
 

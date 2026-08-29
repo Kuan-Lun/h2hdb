@@ -37,12 +37,14 @@ DIGEST32 = {
     "file_sha256",
     "fingerprint_sha256",
     "final_chain_sha256",
+    "frozen_root_set_sha256",
     "input_sha256",
     "manifest_sha256",
     "manifest_chain_sha256",
     "start_manifest_chain_sha256",
     "next_manifest_chain_sha256",
     "output_sha256",
+    "prior_chain_sha256",
     "page_sha256",
     "last_page_sha256",
     "root_page_sha256",
@@ -88,6 +90,7 @@ COUNTERS = {
     "completed_generation",
     "current_generation",
     "deleted_count",
+    "frozen_root_count",
     "deletion_request_generation",
     "download_generation",
     "epoch",
@@ -104,11 +107,13 @@ COUNTERS = {
     "operational_policy_id",
     "operational_schema_version",
     "processed_count",
+    "prior_deleted_count",
     "start_processed_count",
     "next_processed_count",
     "processed_gallery_count",
     "processed_file_count",
     "processed_byte_count",
+    "terminal_byte_count",
     "start_gallery_count",
     "next_gallery_count",
     "start_file_count",
@@ -127,7 +132,6 @@ COUNTERS = {
     "through_sequence_no",
     "version",
     "hash_cache_max_age_microseconds",
-    "consumer_id",
     "gallery_id",
     "item_count",
     "level",
@@ -139,6 +143,7 @@ COUNTERS = {
     "cursor",
     "subtree_item_count",
     "regular_count",
+    "retained_request_count",
     "matched_count",
     "start_matched_count",
     "remaining_text_bytes",
@@ -177,7 +182,7 @@ ENUMS = {
     "stream",
     "target_kind",
 }
-NAMES = {"consumer_name"}
+NAMES: set[str] = set()
 
 SEMANTIC_OBLIGATION_CHECKS = {
     "h2hdb.operational.physical-domains.v1": (
@@ -240,6 +245,11 @@ SEMANTIC_OBLIGATION_CHECKS = {
         "retention_protocol",
         "operational_refinement.check_cleanup_reachability_v1",
     ),
+    "h2hdb.operational.cleanup-frozen-root-set.v1": (
+        "ready_and_runtime",
+        "transaction_protocol",
+        "operational_refinement.check_cleanup_frozen_root_set_v1",
+    ),
     "h2hdb.operational.revision-allocation.v1": (
         "ready_and_runtime",
         "transaction_protocol",
@@ -249,6 +259,11 @@ SEMANTIC_OBLIGATION_CHECKS = {
         "ready_and_runtime",
         "transaction_protocol",
         "operational_refinement.check_gallery_staging_contract_v1",
+    ),
+    "h2hdb.operational.gallery-staging-request-budget.v1": (
+        "ready_and_runtime",
+        "transaction_protocol",
+        "operational_refinement.check_gallery_staging_request_budget_v1",
     ),
     "h2hdb.operational.bootstrap-genesis.v1": (
         "building_only",
@@ -265,14 +280,12 @@ GENERATION_OBLIGATION_BINDINGS = {
             "download_generation",
             "download_coordination_head",
             "download_generation_owner",
-            "download_generation_lease",
             "download_ingest_handoff",
             "download_ingest_consumption",
             "coordinated_ingest_completion",
             "ingest_generation",
             "ingest_coordination_head",
             "ingest_generation_owner",
-            "ingest_generation_lease",
         ),
         "Validate repository-issued download capabilities, exact live handoff or expired takeover, one-to-one ingest consumption, quiescent periodic ingest, coordinated completion, and zero-write exact response-loss replay across normalized download and ingest authority.",
     ),
@@ -317,32 +330,31 @@ GENERATION_OBLIGATION_BINDINGS = {
         (
             "operational_event_stream",
             "operational_preparation",
+            "operational_preparation_checkpoint",
+            "operational_preparation_batch_receipt",
             "operational_preparation_effect_seal",
             "publication_candidate_preparation",
             "operational_activation",
             "operational_event",
             "operational_removed_gid_event",
             "operational_deletion_consumption_event",
-            "operational_event_ack",
-            "operational_event_ack_head",
+            "cleanup_job",
+            "cleanup_cycle_root",
+            "cleanup_checkpoint",
         ),
-        "Validate invisible preparation-scoped event streams, contiguous exact digest chains and immutable effect seals, one-to-one candidate binding to an exact sealed preparation, O(1) activation, exactly one type-matching subtype, and monotone same-preparation acknowledgement only after activation and durable bounded-prefix coverage.",
+        "Bind generated event key shapes; full CHECK rejects effect seals without preparation or commit authority and streams without preparation or seal authority, and admits missing transient coordinates only for an exact frozen OPEN PUBLICATION_COMMIT covered prefix or compound receipt. Contiguous digest-chain, exact subtype, and writer-produced seal completeness remain obligations of bounded event writers and cleanup fault/integration evidence rather than an unbounded READY scan.",
     ),
     "h2hdb.operational.cleanup-reachability.v1": (
         (
             "cleanup_target_kind",
             "cleanup_phase",
             "cleanup_job",
+            "cleanup_cycle_root",
             "cleanup_checkpoint",
-            "source_build_descriptor_seal",
-            "publication_candidate_anchor",
-            "publication_candidate_definition_seal",
-            "publication_candidate_analysis_id",
-            "publication_candidate_reserved_revision",
-            "publication_candidate_artifact_policy_id",
-            "publication_candidate_display_title_policy_id",
-            "publication_candidate_artifacts_required",
-            "publication_candidate_created_at",
+            "source_build_descriptor",
+            "source_build_base_publication_commit",
+            "publication_candidate",
+            "publication_commit",
             "analysis_snapshot_manifest",
             "source_revision",
             "catalog_revision",
@@ -350,16 +362,46 @@ GENERATION_OBLIGATION_BINDINGS = {
             "content_blob",
             "operational_event_stream",
             "operational_preparation",
+            "operational_preparation_checkpoint",
+            "operational_preparation_batch_receipt",
             "operational_preparation_effect_seal",
             "publication_candidate_preparation",
             "operational_activation",
             "operational_event",
             "operational_removed_gid_event",
             "operational_deletion_consumption_event",
-            "operational_event_ack",
-            "operational_event_ack_head",
         ),
-        "Validate the exact seeded cleanup kind/phase registry, 32-byte target-key codecs, static writer hooks, retention-root closure, blocker identities, candidate-to-preparation binding, and conditional child-first preparation cleanup: activated effects outlive control rows, bound or unactivated COMPLETE work is retained, and ABANDONED invisible streams leave no orphan.",
+        "Validate the exact seeded cleanup kind/phase registry, 32-byte target-key codecs, frozen-root membership, static writer hooks, retention-root closure, blocker identities, and candidate-to-preparation binding. Generic preparation cleanup retains COMPLETE retry and commit-to-build lineage; only the same unreachable publication-commit lifecycle may release its safe build base, exact-delete its binding and preparation control family, compact transient typed/events with exact cursor/receipt rechecks, and atomically delete commit, effect seal, and stream, while ABANDONED invisible streams leave no orphan.",
+    ),
+    "h2hdb.operational.cleanup-frozen-root-set.v1": (
+        (
+            "cleanup_job",
+            "cleanup_cycle_root",
+            "cleanup_checkpoint",
+        ),
+        "Validate the single-OPEN serialized cleanup pipeline, exact at-most-256 immutable per-cycle frozen root membership, canonical typed frame maximum derived as 260 bytes from every registered root physical domain, count/digest seal, static-phase membership restriction, and same-transaction terminal membership removal.",
+    ),
+    "h2hdb.operational.gallery-staging-request-budget.v1": (
+        (
+            "gallery_observation_staging_request_budget",
+            "gallery_observation_staging",
+            "gallery_observation_staging_claim",
+            "gallery_observation_staging_checkpoint",
+            "gallery_observation_staging_request",
+            "gallery_observation_staging_request_chunk",
+            "gallery_observation_staging_request_predecessor",
+            "gallery_observation_staging_page_request",
+            "gallery_observation_staging_request_page",
+            "gallery_observation_staging_receipt",
+            "gallery_observation_staging_frontier",
+            "gallery_observation_staging_match_checkpoint",
+            "gallery_observation_staging_match_request",
+            "gallery_observation_staging_match_receipt",
+            "gallery_observation_staging_metadata_parser",
+            "source_working_build",
+            "source_build_gallery",
+        ),
+        "Validate the seeded exact request-budget singleton, replay-neutral reserve and actual-delete release accounting under one lock order, the 1,500,000-row emergency cap, one active staging slot per build, and shared-fenced seven-phase implicit-ACK retirement with durable-link replay and terminal generic-cleanup backstop.",
     ),
     "h2hdb.operational.bootstrap-genesis.v1": (
         (
@@ -367,8 +409,9 @@ GENERATION_OBLIGATION_BINDINGS = {
             "identity_allocator",
             "deletion_request_generation",
             "deletion_request_generation_head",
+            "gallery_observation_staging_request_budget",
         ),
-        "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG/POLICY identity allocator genesis rows, the real immutable deletion generation-zero empty-queue fact and its singleton head, and the declared absence of all request, event, lease, staging, work, cache, policy, and cleanup facts.",
+        "Validate the exact typed SOURCE/CATALOG revision and GALLERY/TAG/POLICY identity allocator genesis rows, the real immutable deletion generation-zero empty-queue fact and its singleton head, the zero-valued request-budget singleton, and the declared absence of all request, event, lease, staging, work, cache, policy, and cleanup facts.",
     ),
 }
 
@@ -383,6 +426,8 @@ def _column(relation: str, attribute: str) -> tuple[str, bool, str, str]:
             "root_page_sha256",
         }
         or attribute == "sealed_at"
+        and relation == "gallery_observation_staging"
+        or attribute == "terminal_byte_count"
         and relation == "gallery_observation_staging"
         or (
             relation == "gallery_observation_staging_metadata_parser"
@@ -409,6 +454,8 @@ def _column(relation: str, attribute: str) -> tuple[str, bool, str, str]:
         return attribute, nullable, "BLOB", "VARBINARY(3)"
     if attribute == "component":
         return attribute, nullable, "BLOB", "VARBINARY(9)"
+    if attribute == "frozen_root_key":
+        return attribute, nullable, "BLOB", "VARBINARY(260)"
     if attribute in {"file_page_sha256", "directory_page_sha256"}:
         return attribute, nullable, "BLOB", "BINARY(32)"
     if (
@@ -686,6 +733,7 @@ def _bootstrap_seeds(
         "identity_allocator",
         "deletion_request_generation",
         "deletion_request_generation_head",
+        "gallery_observation_staging_request_budget",
         "cleanup_target_kind",
         "cleanup_phase",
         "cleanup_sweep_target",
@@ -717,6 +765,13 @@ def _bootstrap_seeds(
             "deletion_request_generation_head",
             (1, 0, 0),
             ("uint64", "uint64", "unix_microseconds"),
+        ),
+    }
+    expected_request_budget_rows = {
+        "h2hdb.operational.gallery-staging-request-budget.genesis.v1": (
+            "gallery_observation_staging_request_budget",
+            (1, 0),
+            ("uint64", "uint64"),
         ),
     }
     targets = logical.get("cleanup_target")
@@ -788,14 +843,17 @@ def _bootstrap_seeds(
         elif relation_name in {
             "deletion_request_generation",
             "deletion_request_generation_head",
+            "gallery_observation_staging_request_budget",
         }:
-            deletion_row = expected_deletion_generation_rows.get(seed_id)
-            if deletion_row is None or deletion_row[0] != relation_name:
+            singleton_row = (
+                expected_deletion_generation_rows | expected_request_budget_rows
+            ).get(seed_id)
+            if singleton_row is None or singleton_row[0] != relation_name:
                 expected_values = None
                 expected_types = ()
             else:
-                expected_values = deletion_row[1]
-                expected_types = deletion_row[2]
+                expected_values = singleton_row[1]
+                expected_types = singleton_row[2]
         elif relation_name == "cleanup_target_kind":
             expected_values = expected_target_rows.get(seed_id)
             expected_types = ("ascii_enum",)
@@ -817,7 +875,12 @@ def _bootstrap_seeds(
         ):
             raise ValueError(f"bootstrap seed {seed_id!r} portable values drift")
         key_value = repr(
-            actual_values[:2] if relation_name == "cleanup_phase" else actual_values[:1]
+            (
+                relation_name,
+                actual_values[:2]
+                if relation_name == "cleanup_phase"
+                else actual_values[:1],
+            )
         )
         if key_value in seen_keys:
             raise ValueError("bootstrap registry keys are not unique")
@@ -826,6 +889,7 @@ def _bootstrap_seeds(
         set(expected_allocator_rows)
         | set(expected_identity_allocator_rows)
         | set(expected_deletion_generation_rows)
+        | set(expected_request_budget_rows)
         | set(expected_target_rows)
         | set(expected_phase_rows)
     )
@@ -1106,12 +1170,18 @@ def render() -> str:
         # Physical specification can point to external logical relation names;
         # the independent loader maps them to the declared stub tables.
         indexes = [] if is_logical_view else _indexes(name, raw_relation)
+        index_names = [index_name for index_name, _attributes in indexes]
+        if len(index_names) != len(set(index_names)):
+            raise ValueError(f"Operational relation {name!r} has duplicate index names")
         for index_name, attributes in indexes:
             lines.append(
                 "[[relation.required_index]]\n"
                 f"name = {_quote(index_name)}\nattributes = {_array(attributes)}\nunique = false"
             )
         checks = [] if is_logical_view else _checks(name, raw_relation)
+        check_names = [check_name for check_name, _sqlite, _mariadb in checks]
+        if len(check_names) != len(set(check_names)):
+            raise ValueError(f"Operational relation {name!r} has duplicate check names")
         for check_name, sqlite_expression, mariadb_expression in checks:
             lines.append(
                 "[[relation.check]]\n"
@@ -1151,8 +1221,6 @@ def _indexes(name: str, relation: dict[str, Any]) -> list[tuple[str, tuple[str, 
         indexes.append(
             (_identifier(f"ix_{name}_revision"), ("source_revision", "sequence_no"))
         )
-    if {"consumer_id", "event_id"} <= attributes:
-        indexes.append((_identifier(f"ix_{name}_event"), ("event_id", "consumer_id")))
     if {"file_sha256", "cached_at"} <= attributes:
         indexes.append((_identifier(f"ix_{name}_hash"), ("file_sha256", "cached_at")))
     access_paths = [
@@ -1320,16 +1388,32 @@ def _checks(name: str, relation: dict[str, Any]) -> list[tuple[str, str, str]]:
                 ),
                 (
                     "ck_gallery_observation_staging_state_time",
-                    "state IN ('OPEN', 'SEALED', 'REUSED', 'ABANDONED') AND "
-                    "(state IN ('OPEN', 'ABANDONED') AND sealed_at IS NULL OR "
-                    "state IN ('SEALED', 'REUSED') AND sealed_at IS NOT NULL "
+                    "state IN ('OPEN', 'SEALED', 'REUSED', 'ABANDONED', "
+                    "'RETIRING_SEALED', 'RETIRING_REUSED') AND "
+                    "(state IN ('OPEN', 'ABANDONED') AND sealed_at IS NULL "
+                    "AND terminal_byte_count IS NULL OR "
+                    "state IN ('SEALED', 'REUSED', 'RETIRING_SEALED', "
+                    "'RETIRING_REUSED') AND sealed_at IS NOT NULL "
+                    "AND terminal_byte_count IS NOT NULL "
                     "AND sealed_at >= created_at)",
-                    "state IN ('OPEN', 'SEALED', 'REUSED', 'ABANDONED') AND "
-                    "(state IN ('OPEN', 'ABANDONED') AND sealed_at IS NULL OR "
-                    "state IN ('SEALED', 'REUSED') AND sealed_at IS NOT NULL "
+                    "state IN ('OPEN', 'SEALED', 'REUSED', 'ABANDONED', "
+                    "'RETIRING_SEALED', 'RETIRING_REUSED') AND "
+                    "(state IN ('OPEN', 'ABANDONED') AND sealed_at IS NULL "
+                    "AND terminal_byte_count IS NULL OR "
+                    "state IN ('SEALED', 'REUSED', 'RETIRING_SEALED', "
+                    "'RETIRING_REUSED') AND sealed_at IS NOT NULL "
+                    "AND terminal_byte_count IS NOT NULL "
                     "AND sealed_at >= created_at)",
                 ),
             ]
+        )
+    if name == "gallery_observation_staging_request_budget":
+        checks.append(
+            (
+                "ck_gallery_observation_staging_request_budget_count",
+                "retained_request_count >= 0 AND retained_request_count <= 1500000",
+                "retained_request_count >= 0 AND retained_request_count <= 1500000",
+            )
         )
     if name == "gallery_observation_staging_claim":
         checks.append(
@@ -1700,8 +1784,14 @@ def _checks(name: str, relation: dict[str, Any]) -> list[tuple[str, str, str]]:
                 ),
                 (
                     "ck_cleanup_job_progress_bounds",
-                    "algorithm_version > 0 AND max_rows_per_transaction > 0",
-                    "algorithm_version > 0 AND max_rows_per_transaction > 0",
+                    "algorithm_version = 2 AND max_rows_per_transaction > 0 "
+                    "AND max_rows_per_transaction <= 256 "
+                    "AND frozen_root_count >= 0 "
+                    "AND frozen_root_count <= max_rows_per_transaction",
+                    "algorithm_version = 2 AND max_rows_per_transaction > 0 "
+                    "AND max_rows_per_transaction <= 256 "
+                    "AND frozen_root_count >= 0 "
+                    "AND frozen_root_count <= max_rows_per_transaction",
                 ),
                 (
                     "ck_cleanup_job_state_completed_at",
@@ -1713,6 +1803,15 @@ def _checks(name: str, relation: dict[str, Any]) -> list[tuple[str, str, str]]:
                     "completed_at >= created_at",
                 ),
             ]
+        )
+    if name == "cleanup_cycle_root":
+        checks.append(
+            (
+                "ck_cleanup_cycle_root_frame_bounds",
+                "length(frozen_root_key) >= 3 AND length(frozen_root_key) <= 260",
+                "octet_length(frozen_root_key) >= 3 "
+                "AND octet_length(frozen_root_key) <= 260",
+            )
         )
     if name == "operational_event":
         checks.append(
