@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-08-29T06:34:34+00:00",
+  "checked_at": "2026-08-29T17:14:21+00:00",
   "manifest_sha256": "a7e8b5c134349c95aabb0597ac5e5241ec79218d91cf0b9f27e0835986ef155a",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.25.0",
+  "project_version": "0.26.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0,<2.0.0",
@@ -112,7 +112,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed every direct build, runtime, development, and Node dependency against current registry metadata and upstream release notes on 2026-08-29. Pydantic 2.13.5 contains validator-plugin, GC-traversal, and smart-union fixes without changing APIs used here. Build 1.6.0 adds CLI/reporting and build-environment features, fixes output and constraint handling, removes BuildBackendException.exc_info, and deprecates project_wheel_metadata; h2hdb uses only the unaffected python -m build CLI. Ruff 0.16.5 changes preview rules and fixes ASYNC210, DTZ007, and SIM401, none of which are selected by this non-preview rule set. All latest releases satisfy the declared ranges; no bound change or exception is required, and the exact-tree release gate remains the compatibility authority.",
+    "note": "Reviewed every direct build, runtime, development, and Node dependency for h2hdb 0.26.0 against current registry metadata and upstream release notes on 2026-08-30. The epoch-3 single-library change requires no new dependency. Pydantic 2.13.5 supplies validator, garbage-collection, and smart-union fixes without changing APIs used here; build 1.6.0 removals and deprecations do not affect the python -m build workflow; packaging 26.3 additions are unused; Ruff 0.16.5 preview-rule changes and fixes are outside this explicit non-preview ruleset. All current candidates satisfy the declared ranges, so no dependency bound exception is required; the exact-tree SQLite, MariaDB, schema, formal, and distribution gates remain the compatibility authority.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
