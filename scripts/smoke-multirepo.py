@@ -184,7 +184,7 @@ def _assert_wide_bcnf_recompositions(database_path: Path) -> None:
     assert sum(kind == "view" for kind in relation_types.values()) == 33
     assert required <= relation_types.keys()
     assert removed.isdisjoint(relation_types)
-    assert relation_types["catalog_analysis_impacted_gid"] == "table"
+    assert relation_types["catalog_analysis_impacted_gid"] == "view"
 
 
 def main() -> None:
